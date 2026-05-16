@@ -190,7 +190,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             &s.prompt_footer,
         ]);
 
-        println!(
+        crate::ui::progress::println(&format!(
             "\n{} [{}/{}] {} (scene={}, weather={})",
             style("▶").cyan().bold(),
             idx + 1,
@@ -198,8 +198,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             style(&task.name).bold(),
             task.scene,
             task.weather,
-        );
-        println!("  {}: {}", style("pre-enhance").dim(), short(&pre_refine, 160));
+        ));
+        crate::ui::progress::println(&format!(
+            "  {}: {}",
+            style("pre-enhance").dim(),
+            short(&pre_refine, 160)
+        ));
 
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
@@ -208,19 +212,27 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 .await
                 .with_context(|| format!("enhancing prompt for task {:?}", task.name))?
         };
-        println!("  {}: {}", style("enhanced").dim(), short(&enhanced, 160));
+        crate::ui::progress::println(&format!(
+            "  {}: {}",
+            style("enhanced").dim(),
+            short(&enhanced, 160)
+        ));
 
         let final_prompt = join_parts(&[&s.lora_header, &enhanced, &s.lora_footer]);
-        println!("  {}: {}", style("final").dim(), short(&final_prompt, 160));
+        crate::ui::progress::println(&format!(
+            "  {}: {}",
+            style("final").dim(),
+            short(&final_prompt, 160)
+        ));
 
         if args.dry_run {
-            println!(
+            crate::ui::progress::println(&format!(
                 "  {} would generate {} image(s) with seeds {}..{}",
                 style("(dry-run)").dim(),
                 count,
                 seed + seed_offset,
                 seed + seed_offset + count as u64 - 1,
-            );
+            ));
             seed_offset += count as u64;
             continue;
         }

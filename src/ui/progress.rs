@@ -3,6 +3,7 @@
 //! loading, denoising loops) don't collide horizontally on the terminal.
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::io::IsTerminal;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -24,6 +25,18 @@ pub fn step_bar(total: u64, label: &str) -> ProgressBar {
     );
     pb.set_prefix(label.to_string());
     pb
+}
+
+/// Print a line that won't be clobbered by active bars. On a TTY this routes
+/// through the shared MultiProgress so the text lands above active bars and
+/// the bars re-render below it. On a piped stream (where indicatif suppresses
+/// everything), falls back to `println!` so log captures still see it.
+pub fn println(msg: &str) {
+    if std::io::stderr().is_terminal() {
+        let _ = shared().println(msg);
+    } else {
+        println!("{msg}");
+    }
 }
 
 /// Add a new spinner to the shared MultiProgress.

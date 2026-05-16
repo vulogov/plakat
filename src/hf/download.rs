@@ -97,10 +97,14 @@ pub async fn get_file(repo: &str, file: &str) -> Result<PathBuf> {
     let pb = crate::ui::progress::spinner(&format!("⤓ {repo}  {file}"));
     match api.get(file).await {
         Ok(path) => {
-            pb.finish_with_message(format!("✓ {repo}  {file}"));
+            // Successful downloads disappear once done — keeps the terminal
+            // clean across multi-task scenarios where the same files are
+            // re-fetched-from-cache for every task.
+            pb.finish_and_clear();
             Ok(path)
         }
         Err(e) => {
+            // Failures stay visible so the user can see what didn't fetch.
             pb.finish_with_message(format!("✗ {repo}  {file}"));
             Err(friendly_error(&repo, file, e))
         }

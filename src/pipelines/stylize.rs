@@ -189,7 +189,7 @@ pub async fn run(req: Request) -> Result<()> {
         }
     }
     crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &req.out)?;
-    tracing::info!(target: "plakat", "→ {}", req.out.display());
+    crate::ui::progress::println(&format!("→ {}", req.out.display()));
     Ok(())
 }
 
