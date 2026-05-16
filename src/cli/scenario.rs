@@ -49,6 +49,13 @@ struct ScenarioFile {
     #[serde(rename = "refine-strength")]
     refine_strength: Option<f32>,
 
+    /// If true (and model is SDXL/SDXL-Turbo) use the real SDXL refiner
+    /// UNet for the last fraction of every task's schedule.
+    #[serde(default)]
+    refiner: bool,
+    #[serde(rename = "refiner-frac")]
+    refiner_frac: Option<f32>,
+
     // ---------- prompt-assembly fragments ----------
     #[serde(rename = "lora-header", default)]
     lora_header: String,
@@ -222,6 +229,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     if let Some(r) = s.refine {
         println!("  refine:    {r} steps × strength {refine_strength}");
     }
+    if s.refiner {
+        let frac = s.refiner_frac.unwrap_or(0.8);
+        println!(
+            "  refiner:   on (switch at {:.0}% of schedule, SDXL only)",
+            frac * 100.0
+        );
+    }
     if s.upscale.upscale {
         println!(
             "  upscale:   {:.2}× {} (post-stylize if `style` is set, else original)",
@@ -245,6 +259,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 device: device.clone(),
                 loras: loras.clone(),
                 lora_scale,
+                use_refiner: s.refiner,
             })
             .await?,
         )
@@ -325,6 +340,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
 
         let task_out = out_root.join(safe_name(&task.name));
+        let refiner_frac_val = s.refiner_frac.unwrap_or(0.8);
         let gen_req = GenRequest {
             prompt: final_prompt,
             negative: s.negative.clone(),
@@ -338,6 +354,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             scheduler,
             refine: s.refine,
             refine_strength,
+            refiner_frac: if s.refiner { Some(refiner_frac_val) } else { None },
         };
         match &pipeline {
             // SD: reuse the loaded weights across tasks.
@@ -361,6 +378,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     scheduler: gen_req.scheduler,
                     refine: gen_req.refine,
                     refine_strength: gen_req.refine_strength,
+                    use_refiner: s.refiner,
+                    refiner_frac: refiner_frac_val,
                 };
                 t2i::run(req).await?;
             }

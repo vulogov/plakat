@@ -17,7 +17,9 @@ pulled from HuggingFace and cached locally.
   (auto-discovered), per-LoRA `:SCALE` and a global multiplier
 - **Schedulers** — DDIM, Euler-Ancestral, UniPC / DPM-Solver++
 - **Polish pass** — extra denoising pass (`--refine N`) at low strength
-  for sharper details
+  for sharper details (same model)
+- **SDXL refiner** — `--refiner` enables the official
+  `stable-diffusion-xl-refiner-1.0` UNet for the last 20% of the schedule
 - **Upscale** — classical resampling (Lanczos / bicubic / bilinear / nearest)
 - **Transparent** — chroma-key the upper-left pixel to alpha
 - **Model browser** — recommend trending T2I models, inspect repo sizes,
@@ -126,8 +128,10 @@ A working example lives at `examples/scenario.hjson`. The schema:
     out:             ./out/scenario
 
     scheduler:       euler-a                  # default | ddim | euler-a | unipc
-    refine:          6                        # extra polish denoise steps
+    refine:          6                        # extra same-model polish steps
     refine-strength: 0.3                      # 0..1
+    refiner:         false                    # real SDXL refiner UNet (SDXL only, +6 GB)
+    refiner-frac:    0.8                      # last 20% of schedule runs on refiner
 
     # ===== optional post-generate upscale =====
     # See "Per-image pipeline" below for the styled-vs-original rule.
@@ -347,8 +351,6 @@ then all `count` images share the enhanced prompt).
 
 ## What's not in here yet
 
-- Real SDXL refiner (separate UNet + weights — `--refine` is an honest
-  single-model polish pass instead)
 - ML upscaling (Real-ESRGAN / SwinIR) — `upscale` is classical only
 - Text-encoder LoRA merging (UNet LoRA only)
 - LyCORIS / DoRA decompositions

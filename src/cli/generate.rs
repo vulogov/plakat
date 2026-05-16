@@ -83,6 +83,17 @@ pub struct GenerateArgs {
     /// Strength of the --refine polish (0.0 = no effect, 1.0 = full re-noise).
     #[arg(long, default_value_t = 0.3)]
     pub refine_strength: f32,
+
+    /// Use the real SDXL refiner UNet (stable-diffusion-xl-refiner-1.0) for
+    /// the last fraction of the schedule. SDXL/SDXL-Turbo only. Adds a
+    /// ~6 GB download on first run. Independent of --refine; both can be on.
+    #[arg(long)]
+    pub refiner: bool,
+
+    /// Fraction of the schedule where the refiner takes over (last 1-FRAC).
+    /// 0.8 = last 20% of steps run on the refiner.
+    #[arg(long, default_value_t = 0.8)]
+    pub refiner_frac: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -113,6 +124,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         scheduler: args.scheduler,
         refine: args.refine,
         refine_strength: args.refine_strength,
+        use_refiner: args.refiner,
+        refiner_frac: args.refiner_frac,
     })
     .await
 }

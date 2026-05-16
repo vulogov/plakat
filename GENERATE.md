@@ -165,10 +165,35 @@ the polish loop:
 - `0.2–0.4` → subtle sharpening, recommended.
 - `0.5+` → significant re-rendering, can change subject features.
 
-**This is NOT the official SDXL refiner.** Stability's refiner is a
-separate model that needs its own UNet + 6 GB of weights. `--refine` is a
-single-model polish pass. The gap matters most for SDXL output where the
-real refiner would do better.
+This is the **same-model polish pass** — distinct from the real refiner
+below. Useful for SD 1.5 / 2.1 (no separate refiner exists for those) or
+when you want extra detail without the 6 GB refiner download.
+
+#### `--refiner` + `--refiner-frac <FLOAT>` (defaults: off, 0.8)
+
+Use the **official SDXL refiner** (`stabilityai/stable-diffusion-xl-refiner-1.0`)
+for the last fraction of the schedule. The base SDXL UNet handles the
+first `frac×N` steps; the refiner UNet handles the remaining
+`(1−frac)×N` on the same latents.
+
+- **`--refiner-frac 0.8`** (default) — last 20% of steps run on refiner.
+  Diffusers reference uses this.
+- Lower values (0.6) give the refiner more responsibility — different
+  trade-off, sometimes better for portraits / fine textures.
+- Higher values (0.9) keep more of the base's composition.
+
+SDXL / SDXL-Turbo only — errors on SD 1.5/2.1 or Flux. Adds **~6 GB
+download** for the refiner UNet on first run.
+
+**Known limitation in plakat's refiner port** — candle 0.8's UNet has no
+`add_embedding` projection, so the refiner's pooled-CLIP-G + time_ids
+micro-conditioning is unused. The refiner still runs and produces
+recognizably better output than base alone, but the gap to the diffusers
+reference is real (~70–90% of reference quality). The same gap already
+applies to plakat's base SDXL.
+
+`--refiner` and `--refine` are independent — you can stack both (refiner
+for the last 20%, then a polish pass on top).
 
 ### LoRA
 
