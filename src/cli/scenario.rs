@@ -13,6 +13,7 @@ use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
 use crate::pipelines::flux;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
+use crate::pipelines::stylize;
 use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline, Variant};
 
 #[derive(ClapArgs, Debug)]
@@ -275,6 +276,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .await?,
         )
     };
+    // -------- preload the stylize pipeline if any task uses `style` --------
+    let any_style = s.tasks.iter().any(|t| t.style.is_some());
+    let stylize_pipeline: Option<stylize::Pipeline> = if !args.dry_run && any_style {
+        // stylize is SD 1.5 only — the IP-Adapter projection targets the SD 1.5
+        // cross-attention dim (768). The scenario's main `model` can still be
+        // anything (we operate on the produced image bytes, not on latents).
+        Some(
+            stylize::Pipeline::load(stylize::LoadRequest {
+                model: "sd15".to_string(),
+                device: device.clone(),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+
     let mut flux_pipeline: Option<flux::Pipeline> = if args.dry_run || !variant.is_flux() {
         None
     } else {
@@ -435,17 +453,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     style("warn:").yellow().bold(),
                     style_ref.display(),
                 ));
-            } else {
+            } else if let Some(sp) = stylize_pipeline.as_ref() {
                 run_style_pass(
+                    sp,
                     style_ref,
                     task.style_strength.unwrap_or(0.6),
                     &gen_req.out_dir,
                     seed + seed_offset,
                     count,
                     Variant::detect(&model).is_flux(),
-                    &device,
-                )
-                .await;
+                );
             }
         }
 
@@ -524,14 +541,14 @@ fn join_parts(parts: &[&str]) -> String {
 /// Failures on individual images are logged but don't abort the scenario —
 /// you keep the original even if stylization fails (e.g. SDXL output with
 /// dims stylize can't handle).
-async fn run_style_pass(
+fn run_style_pass(
+    pipeline: &stylize::Pipeline,
     ref_path: &std::path::Path,
     strength: f32,
     out_dir: &std::path::Path,
     seed_start: u64,
     count: u32,
     is_flux: bool,
-    device: &candle_core::Device,
 ) {
     let prefix = if is_flux { "plakat-flux" } else { "plakat" };
     for i in 0..count {
@@ -556,17 +573,15 @@ async fn run_style_pass(
             strength,
         ));
 
-        let req = crate::pipelines::stylize::Request {
+        let req = stylize::GenRequest {
             input: in_path,
             reference: ref_path.to_path_buf(),
             out: out_path,
             strength,
-            model: "sd15".to_string(),
             steps: 30,
             seed: Some(seed),
-            device: device.clone(),
         };
-        if let Err(e) = crate::pipelines::stylize::run(req).await {
+        if let Err(e) = pipeline.stylize_one(&req) {
             crate::ui::progress::println(&format!(
                 "  {} stylize failed: {e}",
                 style("warn:").yellow().bold(),
