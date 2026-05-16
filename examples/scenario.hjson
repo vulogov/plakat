@@ -1,0 +1,161 @@
+{
+    # ---------- plakat scenario sample ----------
+    # Run with:
+    #   export DEEPSEEK_API_KEY=sk-...
+    #   plakat scenario examples/scenario.hjson
+    #
+    # Validate without generating or calling the enhancer:
+    #   plakat scenario examples/scenario.hjson --dry-run
+    # --------------------------------------------
+
+    # === generation parameters (override CLI defaults) ===
+    model: stable-diffusion-v1-5/stable-diffusion-v1-5
+
+    # device options: auto | cuda[:N] | metal | cpu
+    device: metal
+
+    # SD 1.5 was trained at 512². Use 512x512 for best fidelity.
+    size: 512x512
+    # aspect/base are an alternative to size:
+    # aspect: 3:2
+    # base: 512
+
+    # images per task
+    count: 2
+
+    steps: 28
+    guidance: 7.0
+
+    # base seed — per-task seeds are seed, seed+count, seed+2*count, …
+    seed: 1000
+    out: ./out/scenario
+
+    # scheduler options: default | ddim | euler-a | unipc
+    scheduler: euler-a
+
+    # extra polish denoise steps appended after the main loop
+    refine: 6
+    # polish strength 0..1; lower = subtler
+    refine-strength: 0.3
+
+    # === LoRA stacking ===
+    loras:
+    [
+        # SD 1.5 watercolor LoRA — single .safetensors auto-discovered.
+        # `:0.8` is the per-LoRA scale (multiplied by `lora-scale` below).
+        Arczisan/ink-watercolor:0.8
+    ]
+    lora-scale: 1.0
+
+    # === prompt assembly ===
+    #
+    # The final per-task prompt is assembled as:
+    #     lora-header + ENHANCED(prompt-header + scene + weather + task + prompt-footer) + lora-footer
+    #
+    # Stray leading/trailing commas in each fragment are normalized.
+
+    # Inserted AFTER the enhancer — these are LoRA trigger tokens that the
+    # enhancer should not rewrite.
+    lora-header: "colorful inkpainting, watercolor,"
+    lora-footer: ", masterpiece, high detail"
+
+    # Inserted BEFORE the enhancer — global style/quality cues.
+    prompt-header: "fantasy art,"
+    prompt-footer: ", soft natural lighting, painterly composition"
+
+    # `enhancer` is REQUIRED — currently: deepseek (uses DEEPSEEK_API_KEY)
+    # or gemini (uses GEMINI_API_KEY)
+    enhancer: deepseek
+
+    negative: "blurry, low quality, deformed anatomy, watermark, text, signature, jpeg artifacts"
+
+    # === catalogs: scenes ===
+    # Each entry: { name: <ref>, prompt: <multiline-supported> }
+    scene:
+    [
+        {
+            name: town
+            prompt:
+                '''
+                a medieval European town with cobblestone streets,
+                tiled clay rooftops, hanging wooden signs above shop fronts,
+                stone-walled houses with timber framing,
+                people in period clothing walking the streets
+                '''
+        }
+        {
+            name: harbor
+            prompt:
+                '''
+                a fishing harbor at dawn, wooden piers extending into still water,
+                tall-masted ships at anchor, nets drying on racks,
+                gulls wheeling overhead, lanterns reflecting on dark water
+                '''
+        }
+        {
+            name: forest
+            prompt:
+                '''
+                an ancient temperate forest with twisted oaks and birches,
+                mossy stones along a winding path,
+                shafts of light cutting through the canopy,
+                a small clearing with wildflowers
+                '''
+        }
+    ]
+
+    # === catalogs: weather ===
+    weather:
+    [
+        {
+            name: rain
+            prompt:
+                '''
+                heavy summer rain, dark grey clouds overhead,
+                glistening puddles on the ground, rain falling in visible streaks,
+                damp atmosphere
+                '''
+        }
+        {
+            name: snow
+            prompt:
+                '''
+                fresh snowfall under a pale winter sky,
+                soft drifts on rooftops and ground,
+                breath visible in cold air, muffled quiet ambience
+                '''
+        }
+        {
+            name: golden_hour
+            prompt:
+                '''
+                late afternoon golden hour, warm low sunlight,
+                long soft shadows, dust motes in the air,
+                colors saturated and warm
+                '''
+        }
+    ]
+
+    # === tasks: scene × weather combinations to render ===
+    tasks:
+    [
+        {
+            name: town_rainy
+            scene: town
+            weather: rain
+            prompt: "merchants under awnings, children splashing in puddles"
+        }
+        {
+            name: harbor_golden
+            scene: harbor
+            weather: golden_hour
+            prompt: "fishermen mending nets, a boy with a wooden boat at the water's edge"
+        }
+        {
+            name: forest_snow
+            scene: forest
+            weather: snow
+            prompt: "a lone traveler in a hooded cloak with a lantern"
+        }
+    ]
+}
