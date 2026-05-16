@@ -2,14 +2,25 @@
 name = "plakat"
 version = "0.1.0"
 edition = "2024"
-description = "Local text-to-image and style-reference image generation CLI"
-license = "MIT"
+rust-version = "1.85"
+authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
+description = "Local text-to-image, style transfer, LoRA, upscale and color-key CLI built on candle"
+license = "Unlicense"
+readme = "README.md"
+repository = "https://github.com/vulogov/plakat"
+homepage = "https://github.com/vulogov/plakat"
+keywords = ["stable-diffusion", "image-generation", "ai", "huggingface", "candle"]
+categories = ["command-line-utilities", "multimedia::images"]
+# Don't ship local test outputs / scratch with the crate. cargo also excludes
+# target/ and gitignored files automatically.
+exclude = ["out/", "*.png", ".github/", ".vscode/"]
 
 [features]
-# No backend selected by default — user picks one at build time.
-#   macOS:        cargo build --release --features metal
-#   Linux+NVIDIA: cargo build --release --features cuda
-#   Anywhere:     cargo build --release --features cpu
+# No backend selected by default. `cargo install plakat` builds a CPU-only
+# binary that runs everywhere but is slow. For real perf, pick one:
+#   macOS:        cargo install plakat --features metal
+#   Linux+NVIDIA: cargo install plakat --features cuda
+#   Linux+NVIDIA: cargo install plakat --features cudnn   (cuda + cuDNN)
 default = []
 cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

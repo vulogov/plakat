@@ -6,6 +6,7 @@ pub mod generate;
 pub mod models;
 pub mod stylize;
 pub mod transparent;
+pub mod upscale;
 
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
@@ -35,6 +36,8 @@ pub enum Command {
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
     Transparent(transparent::TransparentArgs),
+    /// Resize an image larger using a classical filter (Lanczos by default).
+    Upscale(upscale::UpscaleArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -54,6 +57,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             stylize::run(args, device).await
         }
         Command::Transparent(args) => transparent::run(args).await,
+        Command::Upscale(args) => upscale::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
     }
 }

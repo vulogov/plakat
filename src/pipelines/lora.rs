@@ -260,6 +260,28 @@ struct LoraGroup {
     alpha: Option<Tensor>,
 }
 
+/// Guess what base model the LoRA was made for by looking at a delta's
+/// "in" dim (last axis), which on cross-attention layers equals the base
+/// model's `cross_attention_dim`.
+fn guess_base_mismatch_hint(base_dims: &[usize], delta_dims: &[usize]) -> String {
+    let base_in = base_dims.get(1).copied().unwrap_or(0);
+    let delta_in = delta_dims.last().copied().unwrap_or(0);
+
+    let name = |d: usize| match d {
+        768 => Some("SD 1.5 (--model sd15)"),
+        1024 => Some("SD 2.1 (--model sd21)"),
+        2048 => Some("SDXL (--model sdxl or sdxl-turbo)"),
+        _ => None,
+    };
+    match (name(delta_in), name(base_in)) {
+        (Some(want), Some(have)) => {
+            format!("LoRA looks trained for {want}; you're running with {have}. Re-run with the matching --model.")
+        }
+        (Some(want), None) => format!("LoRA looks trained for {want}. Re-run with the matching --model."),
+        _ => "Try a different --model that matches this LoRA's training base.".to_string(),
+    }
+}
+
 fn squeeze_trailing_1x1(t: &Tensor) -> Result<Tensor> {
     let dims = t.dims();
     if dims.len() == 4 && dims[2] == 1 && dims[3] == 1 {
@@ -400,6 +422,8 @@ fn apply_one_lora(
 
     let mut count = 0usize;
     let mut sample_unmatched: Option<String> = None;
+    let mut shape_mismatches = 0usize;
+    let mut sample_shape_mismatch: Option<(String, Vec<usize>, Vec<usize>)> = None;
 
     for (lora_base, g) in groups {
         // Text-encoder targets aren't merged into the UNet here.
@@ -456,6 +480,21 @@ fn apply_one_lora(
         let base_dtype = base.dtype();
         let base_f32 = base.to_dtype(DType::F32)?;
 
+        // delta_flat has shape (out, in*kh*kw). Reshape only if the base is
+        // a 4D conv weight AND the element counts match. If the LoRA was
+        // trained for a different base (e.g. SDXL vs SD 1.5), shapes won't
+        // line up — skip with a count instead of crashing.
+        let base_shape = base.dims().to_vec();
+        let delta_elems = delta_flat.elem_count();
+        let base_elems = base.elem_count();
+        if delta_elems != base_elems {
+            shape_mismatches += 1;
+            if sample_shape_mismatch.is_none() {
+                sample_shape_mismatch =
+                    Some((diffusers_key.clone(), base_shape, delta_flat.dims().to_vec()));
+            }
+            continue;
+        }
         let delta_shaped = if base.dims().len() == 4 {
             let (oc, ic, kh, kw) = base.dims4()?;
             delta_flat.reshape((oc, ic, kh, kw))?
@@ -469,6 +508,24 @@ fn apply_one_lora(
     }
     if let Some(s) = sample_unmatched {
         tracing::debug!(target: "plakat", "first unmatched LoRA target: {s}");
+    }
+    if shape_mismatches > 0 {
+        let (key, base_dims, delta_dims) = sample_shape_mismatch.unwrap();
+        let hint = guess_base_mismatch_hint(&base_dims, &delta_dims);
+        if count == 0 {
+            return Err(anyhow!(
+                "all {shape_mismatches} LoRA target(s) have shape mismatch with the base model — \
+                 this LoRA was trained for a different SD variant.\n\
+                 example: {key} base={base_dims:?} vs delta={delta_dims:?}\n\
+                 {hint}"
+            ));
+        } else {
+            tracing::warn!(
+                target: "plakat",
+                "{shape_mismatches} target(s) skipped due to shape mismatch \
+                 (example: {key} base={base_dims:?} delta={delta_dims:?}). {hint}"
+            );
+        }
     }
     Ok((count, total_targets))
 }

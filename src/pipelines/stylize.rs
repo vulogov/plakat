@@ -149,9 +149,9 @@ pub async fn run(req: Request) -> Result<()> {
 
     // -------- img2img denoise --------
     let seed = req.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
-    req.device
-        .set_seed(seed)
-        .map_err(|e| anyhow!("set_seed: {e}"))?;
+    if let Err(e) = req.device.set_seed(seed) {
+        tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+    }
 
     let mut scheduler = cfg.build_scheduler(req.steps)?;
     let timesteps = scheduler.timesteps().to_vec();
