@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
-use crate::imaging::upscale::Method as UpscaleMethod;
+use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::t2i::{self, GenRequest, LoadRequest, Pipeline, Variant};
@@ -237,15 +237,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         );
     }
     if s.upscale.upscale {
+        let shown = upscale_method.native_scale().unwrap_or(s.upscale.scale);
         println!(
             "  upscale:   {:.2}× {} (post-stylize if `style` is set, else original)",
-            s.upscale.scale, s.upscale.method
+            shown, s.upscale.method
         );
     }
 
     if !args.dry_run {
         std::fs::create_dir_all(&out_root)?;
     }
+
+    // -------- preload the Real-ESRGAN model if used --------
+    // Without this, every task would re-download + re-build the model.
+    let esrgan: Option<EsrganPipeline> =
+        if !args.dry_run && s.upscale.upscale && upscale_method.is_ml() {
+            Some(EsrganPipeline::load(upscale_method, &device).await?)
+        } else {
+            None
+        };
 
     // -------- load pipeline once (skipped for dry-run and for Flux) --------
     // For Flux scenarios we still call t2i::run per task; the SD Pipeline
@@ -422,6 +432,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 s.upscale.scale,
                 upscale_method,
                 &device,
+                esrgan.as_ref(),
             )
             .await;
         }
@@ -549,6 +560,7 @@ async fn run_upscale_pass(
     scale: f32,
     method: UpscaleMethod,
     device: &candle_core::Device,
+    esrgan: Option<&EsrganPipeline>,
 ) {
     let prefix = if is_flux { "plakat-flux" } else { "plakat" };
     for i in 0..count {
@@ -578,10 +590,15 @@ async fn run_upscale_pass(
         }
         let dest = out_dir.join(format!("{prefix}-{seed}-{suffix}.png"));
 
-        let result = if method.is_ml() {
-            crate::imaging::upscale::ml_upscale(&source, &dest, method, device).await
-        } else {
-            crate::imaging::upscale::upscale(&source, &dest, scale, method)
+        let result = match (method.is_ml(), esrgan) {
+            // Cached ESRGAN model — no per-image build cost.
+            (true, Some(p)) => p.upscale_file(&source, &dest),
+            // ML method but no preloaded pipeline (shouldn't happen in normal
+            // scenario flow; fall back to the one-shot path).
+            (true, None) => {
+                crate::imaging::upscale::ml_upscale(&source, &dest, method, device).await
+            }
+            (false, _) => crate::imaging::upscale::upscale(&source, &dest, scale, method),
         };
         match result {
             Ok((w, h, nw, nh)) => {

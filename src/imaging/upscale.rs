@@ -87,29 +87,65 @@ fn esrgan_variant(m: Method) -> Option<EsrganVariant> {
 /// ML upscaler — downloads weights if needed, builds the model, runs inference.
 /// Returns (in_w, in_h, out_w, out_h). Native scale is fixed by the model
 /// (`--scale` from CLI is ignored when method is ML).
+///
+/// One-shot path: each call re-downloads + re-builds. For multi-call use
+/// (scenarios with N tasks all upscaling), construct an `EsrganPipeline` once
+/// and call its `upscale_file` repeatedly.
 pub async fn ml_upscale(
     in_path: &Path,
     out_path: &Path,
     method: Method,
     device: &Device,
 ) -> Result<(u32, u32, u32, u32)> {
-    let variant = esrgan_variant(method)
-        .ok_or_else(|| anyhow!("ml_upscale called with non-ML method {method:?}"))?;
-    let (repo, cfg) = real_esrgan::variant_repo_and_config(variant);
+    let p = EsrganPipeline::load(method, device).await?;
+    p.upscale_file(in_path, out_path)
+}
 
-    let dl = crate::ui::progress::spinner(&format!("Downloading Real-ESRGAN ({repo})"));
-    let weights = crate::hf::download::get_first_of(&[
-        (repo, "diffusion_pytorch_model.fp16.safetensors"),
-        (repo, "diffusion_pytorch_model.safetensors"),
-    ])
-    .await?;
-    dl.finish_with_message(format!("✓ weights ready ({repo})"));
+/// Reusable Real-ESRGAN model handle. Build once with `load`, call
+/// `upscale_file` any number of times — model stays resident on the device.
+pub struct EsrganPipeline {
+    model: real_esrgan::Model,
+    variant: real_esrgan::Variant,
+    device: Device,
+}
 
-    let build = crate::ui::progress::spinner(&format!("Loading Real-ESRGAN ({variant:?})"));
-    let model = real_esrgan::Model::load(&weights, &cfg, device)?;
-    build.finish_with_message(format!("✓ model loaded ({variant:?})"));
+impl EsrganPipeline {
+    pub async fn load(method: Method, device: &Device) -> Result<Self> {
+        let variant = esrgan_variant(method)
+            .ok_or_else(|| anyhow!("EsrganPipeline::load needs an ML method, got {method:?}"))?;
+        let (repo, cfg) = real_esrgan::variant_repo_and_config(variant);
 
-    model.upscale_file(in_path, out_path, device)
+        let dl = crate::ui::progress::spinner(&format!("Downloading Real-ESRGAN ({repo})"));
+        let weights = crate::hf::download::get_first_of(&[
+            (repo, "diffusion_pytorch_model.fp16.safetensors"),
+            (repo, "diffusion_pytorch_model.safetensors"),
+        ])
+        .await?;
+        dl.finish_with_message(format!("✓ weights ready ({repo})"));
+
+        let build = crate::ui::progress::spinner(&format!("Loading Real-ESRGAN ({variant:?})"));
+        let model = real_esrgan::Model::load(&weights, &cfg, device)?;
+        build.finish_with_message(format!("✓ model loaded ({variant:?})"));
+
+        Ok(Self {
+            model,
+            variant,
+            device: device.clone(),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn variant(&self) -> real_esrgan::Variant {
+        self.variant
+    }
+
+    pub fn upscale_file(
+        &self,
+        in_path: &Path,
+        out_path: &Path,
+    ) -> Result<(u32, u32, u32, u32)> {
+        self.model.upscale_file(in_path, out_path, &self.device)
+    }
 }
 
 pub fn upscale(
