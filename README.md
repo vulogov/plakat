@@ -8,9 +8,10 @@ pulled from HuggingFace and cached locally.
 ## Features
 
 - **Text-to-image** — Stable Diffusion 1.5 / 2.1 / SDXL / SDXL-Turbo and
-  Flux (schnell / dev)
-- **Scenario** — batch-generate from an HJSON file that crosses scenes,
-  weather, and per-task prompts with shared LoRAs and enhancer
+  Flux (schnell / dev, BF16 on accelerators for numerical stability)
+- **Scenario** — batch-generate from an HJSON file: crosses scenes, weather,
+  per-task prompts; optionally restyles each output with a reference image
+  (IP-Adapter) and upscales the result. Loads SD models once across tasks.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
 - **LoRA** — kohya + diffusers/PEFT formats, local files or HF repos
   (auto-discovered), per-LoRA `:SCALE` and a global multiplier
@@ -127,6 +128,16 @@ A working example lives at `examples/scenario.hjson`. The schema:
     refine:          6                        # extra polish denoise steps
     refine-strength: 0.3                      # 0..1
 
+    # ===== optional post-generate upscale =====
+    # See "Per-image pipeline" below for the styled-vs-original rule.
+    # method options: nearest | bilinear | bicubic | lanczos
+    upscale:
+    {
+        upscale: false
+        scale: 2.0
+        method: lanczos
+    }
+
     # ===== LoRA stacking =====
     loras:
     [
@@ -172,6 +183,13 @@ A working example lives at `examples/scenario.hjson`. The schema:
     ]
 
     # ===== tasks: which (scene × weather) combinations to render =====
+    #
+    # Optional per-task fields:
+    #   style:          path to a reference image. If set, every image this
+    #                   task generates is also run through IP-Adapter
+    #                   stylize using this image as REF. Original + styled
+    #                   both persist.
+    #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
     tasks:
     [
         {
@@ -179,18 +197,56 @@ A working example lives at `examples/scenario.hjson`. The schema:
             scene: town
             weather: rain
             prompt: "merchants under awnings, children splashing"
+            # style: ./references/watercolor.jpg
+            # style-strength: 0.65
         }
         # … more tasks
     ]
 }
 ```
 
-Outputs land in `<out>/<task_name>/plakat-<seed>.png`. Seeds across tasks
-are contiguous: task 1 uses `seed..seed+count-1`, task 2 uses `seed+count..`,
-etc., so a re-run with the same file produces identical compositions.
+### Per-image pipeline
 
-Use `plakat scenario file.hjson --dry-run` to validate the schema and see
-the planned prompts without making any API calls or generating images.
+For every image a task generates, the steps applied (in order) are:
+
+1. **Generate** with the loaded SD/Flux pipeline → `plakat-<seed>.png` (or
+   `plakat-flux-<seed>.png` for Flux).
+2. **Stylize** (if the task has `style`) → `plakat-<seed>-styled.png`. Uses
+   IP-Adapter on SD 1.5 regardless of the base model used in step 1.
+3. **Upscale** (if `upscale.upscale: true`) → either
+   `plakat-<seed>-styled-upscaled.png` (when `style` was set and the styled
+   file exists) or `plakat-<seed>-upscaled.png` (otherwise). Classical
+   resampling via the existing `upscale` subcommand's filters.
+
+Each step writes a new file — nothing is overwritten. A single task with
+`count: 2`, `style: ref.jpg`, and `upscale: true` produces six files per
+task (2 originals + 2 styled + 2 upscaled-of-styled).
+
+Failure in step 2 or 3 doesn't abort the scenario; the failure is logged
+and earlier outputs persist.
+
+### Output layout
+
+Outputs land in `<out>/<task_name>/plakat-<seed>.png` (plus `-styled` and
+`-upscaled` siblings when those steps run). Seeds across tasks are
+contiguous: task 1 uses `seed..seed+count-1`, task 2 uses
+`seed+count..`, etc., so a re-run with the same file produces identical
+compositions.
+
+### Dry-run
+
+`plakat scenario file.hjson --dry-run` validates the schema, lists every
+planned prompt, and shows what stylize/upscale steps would fire — without
+calling the enhancer or generating anything.
+
+### Performance
+
+For SD-family scenarios, the UNet/VAE/CLIP/LoRA are loaded **once** and
+shared across all tasks (see `Pipeline` in `src/pipelines/t2i.rs`). For a
+5-task scenario this saves roughly 5× the model-load time on Metal.
+
+Flux scenarios reload per task (Flux has its own pipeline module; a shared
+`FluxPipeline` is a future addition).
 
 **HJSON gotchas**
 
@@ -295,8 +351,12 @@ then all `count` images share the enhanced prompt).
 - ML upscaling (Real-ESRGAN / SwinIR) — `upscale` is classical only
 - Text-encoder LoRA merging (UNet LoRA only)
 - LyCORIS / DoRA decompositions
-- Per-image prompt overrides inside a scenario task
-- Pipeline caching across tasks (each task currently re-loads the UNet/VAE/CLIP)
+- Shared `FluxPipeline` across scenario tasks (SD is shared; Flux still
+  reloads per task)
+- Shared `StylizePipeline` (the IP-Adapter image encoder reloads per image
+  inside the stylize step)
+- Per-task overrides for things currently global (`scheduler`, `refine`,
+  `negative`, …)
 - Schedulers beyond DDIM / Euler-A / UniPC
 
 ## License

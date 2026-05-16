@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
+use crate::imaging::upscale::Method as UpscaleMethod;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::t2i::{self, GenRequest, LoadRequest, Pipeline, Variant};
@@ -65,6 +66,10 @@ struct ScenarioFile {
     #[serde(default)]
     negative: String,
 
+    // ---------- post-generate options ----------
+    #[serde(default)]
+    upscale: UpscaleConfig,
+
     // ---------- catalogs ----------
     #[serde(default)]
     scene: Vec<NamedPrompt>,
@@ -72,6 +77,37 @@ struct ScenarioFile {
     weather: Vec<NamedPrompt>,
     #[serde(default)]
     tasks: Vec<TaskDef>,
+}
+
+/// Top-level `upscale: { ... }` section.
+#[derive(Debug, Deserialize)]
+struct UpscaleConfig {
+    /// Enable the post-generate upscale pass.
+    #[serde(default, alias = "enabled")]
+    upscale: bool,
+    /// Scale factor (2× by default).
+    #[serde(default = "default_upscale_scale")]
+    scale: f32,
+    /// Filter: nearest | bilinear | bicubic | lanczos.
+    #[serde(default = "default_upscale_method")]
+    method: String,
+}
+
+impl Default for UpscaleConfig {
+    fn default() -> Self {
+        Self {
+            upscale: false,
+            scale: default_upscale_scale(),
+            method: default_upscale_method(),
+        }
+    }
+}
+
+fn default_upscale_scale() -> f32 {
+    2.0
+}
+fn default_upscale_method() -> String {
+    "lanczos".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +167,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .ok_or_else(|| anyhow!("scenario requires `enhancer` (deepseek | gemini)"))?;
     validate_enhancer_keys(&enhancer)?;
 
+    // Parse the upscale method now so a bad string fails fast.
+    let upscale_method: UpscaleMethod = s
+        .upscale
+        .method
+        .parse()
+        .with_context(|| format!("upscale.method = {:?}", s.upscale.method))?;
+
     // -------- resolve global parameters --------
     let model = s.model.clone().unwrap_or_else(|| "sd15".to_string());
     let device = crate::device::select(s.device.as_deref().unwrap_or("auto"))?;
@@ -178,6 +221,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     }
     if let Some(r) = s.refine {
         println!("  refine:    {r} steps × strength {refine_strength}");
+    }
+    if s.upscale.upscale {
+        println!(
+            "  upscale:   {:.2}× {} (post-stylize if `style` is set, else original)",
+            s.upscale.scale, s.upscale.method
+        );
     }
 
     if !args.dry_run {
@@ -269,6 +318,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     exists,
                 ));
             }
+            if s.upscale.upscale {
+                let target = if task.style.is_some() {
+                    "styled"
+                } else {
+                    "original"
+                };
+                crate::ui::progress::println(&format!(
+                    "  {} would upscale the {} image(s) at {:.2}× ({:?})",
+                    style("(dry-run)").dim(),
+                    target,
+                    s.upscale.scale,
+                    upscale_method,
+                ));
+            }
             seed_offset += count as u64;
             continue;
         }
@@ -316,6 +379,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
 
         // Optional post-generate style pass.
+        let style_attempted = task.style.is_some();
         if let Some(style_ref) = &task.style {
             if !style_ref.exists() {
                 crate::ui::progress::println(&format!(
@@ -335,6 +399,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 )
                 .await;
             }
+        }
+
+        // Optional post-generate upscale pass.
+        // Targets the stylized image when stylize was requested, otherwise the
+        // original. Falls back to the original (with a warning) if the styled
+        // file isn't on disk (e.g. stylize failed).
+        if s.upscale.upscale {
+            run_upscale_pass(
+                &gen_req.out_dir,
+                seed + seed_offset,
+                count,
+                Variant::detect(&model).is_flux(),
+                style_attempted,
+                s.upscale.scale,
+                upscale_method,
+            );
         }
 
         seed_offset += count as u64;
@@ -440,6 +520,71 @@ async fn run_style_pass(
                 "  {} stylize failed: {e}",
                 style("warn:").yellow().bold(),
             ));
+        }
+    }
+}
+
+/// Run the classical upscaler on every image produced by a task.
+///
+/// Target file:
+///   - If `style_attempted` and `<task>/plakat-<seed>-styled.png` exists → upscale it.
+///   - Else → upscale `<task>/plakat-<seed>.png`.
+///
+/// Output is written next to the source with `-upscaled` appended.
+fn run_upscale_pass(
+    out_dir: &std::path::Path,
+    seed_start: u64,
+    count: u32,
+    is_flux: bool,
+    style_attempted: bool,
+    scale: f32,
+    method: UpscaleMethod,
+) {
+    let prefix = if is_flux { "plakat-flux" } else { "plakat" };
+    for i in 0..count {
+        let seed = (seed_start + i as u64) & (u32::MAX as u64);
+        let styled = out_dir.join(format!("{prefix}-{seed}-styled.png"));
+        let orig = out_dir.join(format!("{prefix}-{seed}.png"));
+
+        // Pick source per the rule.
+        let (source, suffix) = if style_attempted && styled.exists() {
+            (styled, "styled-upscaled")
+        } else {
+            if style_attempted {
+                crate::ui::progress::println(&format!(
+                    "  {} styled image missing; upscaling original instead",
+                    style("warn:").yellow().bold(),
+                ));
+            }
+            (orig, "upscaled")
+        };
+        if !source.exists() {
+            crate::ui::progress::println(&format!(
+                "  {} {} not on disk — upscale skipped",
+                style("warn:").yellow().bold(),
+                source.display(),
+            ));
+            continue;
+        }
+        let dest = out_dir.join(format!("{prefix}-{seed}-{suffix}.png"));
+
+        match crate::imaging::upscale::upscale(&source, &dest, scale, method) {
+            Ok((w, h, nw, nh)) => crate::ui::progress::println(&format!(
+                "  {} {} ({}×{} → {}×{}, {:.2}×, {:?})",
+                style("upscale").cyan().bold(),
+                dest.display(),
+                w,
+                h,
+                nw,
+                nh,
+                scale,
+                method,
+            )),
+            Err(e) => crate::ui::progress::println(&format!(
+                "  {} upscale failed for {}: {e}",
+                style("warn:").yellow().bold(),
+                source.display(),
+            )),
         }
     }
 }
