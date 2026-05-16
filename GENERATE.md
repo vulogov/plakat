@@ -223,6 +223,22 @@ Append `:0.7` for per-LoRA scale: `--lora foo.safetensors:0.7`. Multiple
 **Memory**: peak ~3.4 GB on SD 1.5 during merge, ~10 GB on SDXL. Merge
 happens once per `generate` call.
 
+**Targets merged**: plakat runs the merge against each base-model
+component the LoRA touches:
+
+- **UNet** (always)
+- **CLIP-L text encoder** (when the file has `lora_te_*` or `lora_te1_*` keys, or PEFT `text_encoder.*` keys)
+- **CLIP-G text encoder** (SDXL only, when the file has `lora_te2_*` or PEFT `text_encoder_2.*` keys)
+
+Each pass reports a separate `merged X/Y targets` line — so a civitai
+LoRA with both UNet and text-encoder targets shows two lines,
+e.g.:
+
+```
+LoRA … → UNet: 192/192 targets merged
+LoRA … → text encoder: 72/72 targets merged
+```
+
 **Formats recognized**:
 
 | Format | Detection key(s) | Math |

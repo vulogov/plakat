@@ -203,17 +203,87 @@ async fn discover_lora_file(repo: &str) -> Result<String> {
 /// Merge one or more kohya LoRAs into a UNet, write the result to `out_path`.
 /// Returns (modified_keys, total_lora_targets_in_files) — the second number
 /// helps diagnose LoRAs whose targets don't match this base model.
-pub fn merge_loras_into_unet(
+/// Which base-model component (UNet vs text encoder) we're merging into.
+/// Carries the kohya and PEFT prefix(es) used by the LoRA file to address
+/// this component, plus a friendly name for logs.
+#[derive(Clone, Copy, Debug)]
+pub struct MergeTarget {
+    pub kohya_prefixes: &'static [&'static str],
+    pub peft_prefixes: &'static [&'static str],
+    pub name: &'static str,
+}
+
+impl MergeTarget {
+    pub const UNET: Self = Self {
+        kohya_prefixes: &["lora_unet_"],
+        peft_prefixes: &["unet."],
+        name: "UNet",
+    };
+    /// CLIP-L for SD 1.5 / 2.1. kohya uses `lora_te_`; PEFT uses `text_encoder.`.
+    pub const TE_SD15: Self = Self {
+        kohya_prefixes: &["lora_te_"],
+        peft_prefixes: &["text_encoder."],
+        name: "text encoder",
+    };
+    /// CLIP-L on SDXL. Some files emit `lora_te1_`, older ones emit `lora_te_`.
+    pub const TE1_SDXL: Self = Self {
+        kohya_prefixes: &["lora_te1_", "lora_te_"],
+        peft_prefixes: &["text_encoder."],
+        name: "CLIP-L (text encoder)",
+    };
+    /// CLIP-G on SDXL.
+    pub const TE2_SDXL: Self = Self {
+        kohya_prefixes: &["lora_te2_"],
+        peft_prefixes: &["text_encoder_2."],
+        name: "CLIP-G (text encoder 2)",
+    };
+}
+
+/// Union of all kohya/PEFT prefixes plakat understands — used to detect
+/// "obviously not ours" keys during a per-target merge.
+const ALL_KNOWN_PREFIXES: &[&str] = &[
+    "lora_unet_",
+    "lora_te_",
+    "lora_te1_",
+    "lora_te2_",
+    "unet.",
+    "text_encoder.",
+    "text_encoder_2.",
+];
+
+fn is_likely_target(lora_base: &str, target: MergeTarget) -> bool {
+    let ours_kohya = target.kohya_prefixes.iter().any(|p| lora_base.starts_with(p));
+    let ours_peft = target.peft_prefixes.iter().any(|p| lora_base.starts_with(p));
+    if ours_kohya || ours_peft {
+        return true;
+    }
+    // If it explicitly belongs to a different target, skip silently.
+    let theirs = ALL_KNOWN_PREFIXES
+        .iter()
+        .any(|p| lora_base.starts_with(p) && !target.kohya_prefixes.contains(p) && !target.peft_prefixes.contains(p));
+    if theirs {
+        return false;
+    }
+    // No recognized prefix at all — could be ours, let `resolve_lora_base`
+    // decide based on whether the lookup hits our base_keys.
+    true
+}
+
+/// Merge a set of LoRAs into one base safetensors file (UNet OR one of the
+/// text encoders), writing the result to `out_path`. Returns
+/// `(modified_targets, total_target_groups)` where the denominator only
+/// counts LoRA groups that look like they belong to `target`.
+pub fn merge_loras_into_weights(
     base_path: &Path,
     out_path: &Path,
     loras: &[ResolvedLora],
     default_scale: f32,
     device: &Device,
+    target: MergeTarget,
 ) -> Result<(usize, usize)> {
-    // Load all UNet tensors. ~3.4 GB peak RAM for SD 1.5, ~10 GB for SDXL.
     let mut merged: HashMap<String, Tensor> = candle_core::safetensors::load(base_path, device)
-        .with_context(|| format!("loading base UNet {}", base_path.display()))?;
-    let kohya_to_diffusers = build_kohya_map(&merged);
+        .with_context(|| format!("loading base {} weights {}", target.name, base_path.display()))?;
+    let kohya_to_diffusers = build_kohya_map(&merged, target.kohya_prefixes[0]);
 
     let mut modified = 0usize;
     let mut seen_targets = 0usize;
@@ -222,32 +292,60 @@ pub fn merge_loras_into_unet(
             candle_core::safetensors::load(&lora.path, device)
                 .with_context(|| format!("loading LoRA {}", lora.display))?;
         let effective_scale = lora.scale * default_scale;
-        let (n_mod, n_targets) =
-            apply_one_lora(&mut merged, &lora_tensors, &kohya_to_diffusers, effective_scale)?;
+        let (n_mod, n_targets) = apply_one_lora(
+            &mut merged,
+            &lora_tensors,
+            &kohya_to_diffusers,
+            effective_scale,
+            target,
+        )?;
         modified += n_mod;
         seen_targets += n_targets;
-        tracing::info!(
-            target: "plakat",
-            "LoRA {}: {n_mod}/{n_targets} targets merged (scale {:.2})",
-            lora.display,
-            effective_scale
-        );
+        if n_targets > 0 {
+            tracing::info!(
+                target: "plakat",
+                "LoRA {} → {}: {n_mod}/{n_targets} targets merged (scale {:.2})",
+                lora.display,
+                target.name,
+                effective_scale
+            );
+        }
     }
 
     candle_core::safetensors::save(&merged, out_path)
-        .with_context(|| format!("writing merged UNet to {}", out_path.display()))?;
+        .with_context(|| format!("writing merged {} to {}", target.name, out_path.display()))?;
     Ok((modified, seen_targets))
 }
 
-/// Build "lora_unet_..." → "down_blocks.0.attentions...weight" map from the
-/// base UNet's actual key set. Inverts the kohya convention by enumerating.
-fn build_kohya_map(base: &HashMap<String, Tensor>) -> HashMap<String, String> {
+/// Back-compat shim — `merge_loras_into_weights` with `MergeTarget::UNET`.
+#[allow(dead_code)]
+pub fn merge_loras_into_unet(
+    base_path: &Path,
+    out_path: &Path,
+    loras: &[ResolvedLora],
+    default_scale: f32,
+    device: &Device,
+) -> Result<(usize, usize)> {
+    merge_loras_into_weights(
+        base_path,
+        out_path,
+        loras,
+        default_scale,
+        device,
+        MergeTarget::UNET,
+    )
+}
+
+/// Build a `"<kohya_prefix><dotted_path_underscored>" → "<dotted_path>.weight"`
+/// map from the base safetensors' key set. Inverts the kohya convention by
+/// enumerating actual base keys.
+fn build_kohya_map(base: &HashMap<String, Tensor>, prefix: &str) -> HashMap<String, String> {
     let mut map = HashMap::with_capacity(base.len());
     for key in base.keys() {
         let Some(stem) = key.strip_suffix(".weight") else {
             continue;
         };
-        let kohya = format!("lora_unet_{}", stem.replace('.', "_"));
+        let kohya = format!("{prefix}{}", stem.replace('.', "_"));
         map.insert(kohya, key.clone());
     }
     map
@@ -609,26 +707,28 @@ fn match_suffix<'a>(k: &'a str, suffixes: &[&str]) -> Option<&'a str> {
     None
 }
 
-/// Resolve a parsed LoRA base path to an actual base UNet key (one of `merged`'s).
-/// Handles both kohya (underscored, `lora_unet_` prefix) and diffusers (dotted,
-/// optionally `unet.` prefix) styles.
+/// Resolve a parsed LoRA base path to an actual key in this target's base
+/// safetensors. Tries (in order):
+///   1. kohya map lookup
+///   2. PEFT prefix strip for each of this target's `peft_prefixes`
+///   3. no-prefix direct lookup
 fn resolve_lora_base(
     lora_base: &str,
     kohya_map: &HashMap<String, String>,
     base_keys: &HashSet<String>,
+    target: MergeTarget,
 ) -> Option<String> {
-    // 1. kohya: full key starts with "lora_unet_..."
     if let Some(k) = kohya_map.get(lora_base) {
         return Some(k.clone());
     }
-    // 2. diffusers-style with explicit unet. prefix.
-    if let Some(rest) = lora_base.strip_prefix("unet.") {
-        let with_weight = format!("{rest}.weight");
-        if base_keys.contains(&with_weight) {
-            return Some(with_weight);
+    for prefix in target.peft_prefixes {
+        if let Some(rest) = lora_base.strip_prefix(prefix) {
+            let with_weight = format!("{rest}.weight");
+            if base_keys.contains(&with_weight) {
+                return Some(with_weight);
+            }
         }
     }
-    // 3. diffusers-style without prefix.
     let direct = format!("{lora_base}.weight");
     if base_keys.contains(&direct) {
         return Some(direct);
@@ -643,6 +743,7 @@ fn apply_one_lora(
     lora: &HashMap<String, Tensor>,
     kohya_to_diffusers: &HashMap<String, String>,
     scale: f32,
+    target: MergeTarget,
 ) -> Result<(usize, usize)> {
     let base_keys: HashSet<String> = merged.keys().cloned().collect();
 
@@ -710,12 +811,19 @@ fn apply_one_lora(
     let mut shape_mismatches = 0usize;
     let mut sample_shape_mismatch: Option<(String, Vec<usize>, Vec<usize>)> = None;
 
+    let total_target_groups: usize = groups
+        .keys()
+        .filter(|k| is_likely_target(k, target))
+        .count();
+
     for (lora_base, g) in groups {
-        // Text-encoder targets aren't merged into the UNet here.
-        if lora_base.starts_with("lora_te_") || lora_base.starts_with("text_encoder.") {
+        // Silently skip groups belonging to a different target (e.g. UNet
+        // groups when we're merging the text encoder).
+        if !is_likely_target(&lora_base, target) {
             continue;
         }
-        let Some(diffusers_key) = resolve_lora_base(&lora_base, kohya_to_diffusers, &base_keys)
+        let Some(diffusers_key) =
+            resolve_lora_base(&lora_base, kohya_to_diffusers, &base_keys, target)
         else {
             if sample_unmatched.is_none() {
                 sample_unmatched = Some(lora_base);
@@ -863,5 +971,6 @@ fn apply_one_lora(
             );
         }
     }
-    Ok((count, total_targets))
+    let _ = total_targets; // total across all groups (any target); we report per-target now.
+    Ok((count, total_target_groups))
 }

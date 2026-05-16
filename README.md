@@ -353,8 +353,8 @@ then all `count` images share the enhanced prompt).
 ## What's not in here yet
 
 - SwinIR / LDSR upscalers (Real-ESRGAN is in; other ML upscalers aren't)
-- Text-encoder LoRA merging (UNet LoRA only). Standard LoRA / LoCon /
-  DyLoRA / DoRA / LoHa / Tucker LoHa / LoKr all merge into the UNet.
+- (Nothing major outstanding for LoRA — UNet + text-encoder(s) all merge.
+  See GENERATE.md for the format coverage table.)
 - Shared `FluxPipeline` across scenario tasks (SD is shared; Flux still
   reloads per task)
 - Shared `StylizePipeline` (the IP-Adapter image encoder reloads per image
