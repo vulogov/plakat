@@ -99,7 +99,8 @@ plakat models rm sd15 --yes
 | `upscale` | Classical resize using Lanczos/bicubic/bilinear/nearest. |
 | `models {search,recommend,size,pull,ls,rm}` | Manage the local model cache and browse HF. |
 
-`plakat <CMD> --help` for full options on each.
+`plakat <CMD> --help` for full options on each. For a parameter-by-parameter
+reference with what each does, see [GENERATE.md](GENERATE.md).
 
 ## Scenario configuration
 
