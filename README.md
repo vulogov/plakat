@@ -196,6 +196,13 @@ A working example lives at `examples/scenario.hjson`. The schema:
     #                   stylize using this image as REF. Original + styled
     #                   both persist.
     #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
+    #
+    # Per-task overrides for global fields (use the global value when omitted):
+    #   size, aspect, count, steps, guidance, seed, negative,
+    #   scheduler, refine, refine-strength, refiner-frac
+    #
+    # Fields that STAY global (changing them would force a pipeline reload):
+    #   model, device, loras, lora-scale, enhancer, out, upscale.*
     tasks:
     [
         {
@@ -368,8 +375,9 @@ then all `count` images share the enhanced prompt).
 <!-- shared StylizePipeline landed in 0.4 — the 2.5 GB CLIP-H image encoder
      and IP-Adapter projection load once per scenario, reused across every
      `style:` task. -->
-- Per-task overrides for things currently global (`scheduler`, `refine`,
-  `negative`, …)
+<!-- per-task overrides landed in 0.4: size, aspect, count, steps,
+     guidance, seed, negative, scheduler, refine, refine-strength,
+     refiner-frac -->
 - Schedulers beyond DDIM / Euler-A / UniPC
 
 ## License
