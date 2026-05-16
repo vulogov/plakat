@@ -131,6 +131,8 @@ struct TaskDef {
     scene: String,
     weather: String,
     prompt: String,
+
+    // ---------- per-task style pass ----------
     /// Optional path to a style reference image. If set, every generated
     /// image for this task is also run through `stylize` (IP-Adapter) using
     /// this image as REF. Original + styled both land in the task directory.
@@ -139,6 +141,37 @@ struct TaskDef {
     /// IP-Adapter strength for the style pass (0..1). Higher = more REF.
     #[serde(rename = "style-strength", default)]
     style_strength: Option<f32>,
+
+    // ---------- per-task overrides for global fields ----------
+    // When set, override the scenario's global value for THIS task only.
+    // Fields not listed here (model, device, loras, lora-scale, enhancer,
+    // out, upscale.*) stay global because changing them would force the
+    // shared pipeline to reload.
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    aspect: Option<String>,
+    #[serde(default)]
+    count: Option<u32>,
+    #[serde(default)]
+    steps: Option<usize>,
+    #[serde(default)]
+    guidance: Option<f64>,
+    /// Per-task seed override. When set, this task uses exactly this seed
+    /// (the global seed_offset counter still advances so later tasks are
+    /// unaffected).
+    #[serde(default)]
+    seed: Option<u64>,
+    #[serde(default)]
+    negative: Option<String>,
+    #[serde(default)]
+    scheduler: Option<String>,
+    #[serde(default)]
+    refine: Option<usize>,
+    #[serde(rename = "refine-strength", default)]
+    refine_strength: Option<f32>,
+    #[serde(rename = "refiner-frac", default)]
+    refiner_frac: Option<f32>,
 }
 
 pub async fn run(args: ScenarioArgs) -> Result<()> {
@@ -361,13 +394,24 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         crate::ui::progress::println(&wrap_label("final", &final_prompt));
 
         if args.dry_run {
+            // Show effective per-task values in dry-run so a user can see
+            // what overrides are taking effect.
+            let dry_count = task.count.unwrap_or(count);
+            let dry_seed = task.seed.unwrap_or(seed + seed_offset);
             crate::ui::progress::println(&format!(
                 "  {} would generate {} image(s) with seeds {}..{}",
                 style("(dry-run)").dim(),
-                count,
-                seed + seed_offset,
-                seed + seed_offset + count as u64 - 1,
+                dry_count,
+                dry_seed,
+                dry_seed + dry_count as u64 - 1,
             ));
+            if has_overrides(task) {
+                crate::ui::progress::println(&format!(
+                    "  {} overrides: {}",
+                    style("(dry-run)").dim(),
+                    describe_overrides(task)
+                ));
+            }
             if let Some(style_ref) = &task.style {
                 let strength = task.style_strength.unwrap_or(0.6);
                 let exists = if style_ref.exists() { "ok" } else { "MISSING" };
@@ -397,37 +441,69 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             continue;
         }
 
+        // -------- effective per-task values (override-or-global) --------
+        // Resolution: per-task size/aspect override the global pair.
+        let task_size = match task.size.as_deref() {
+            Some(s) => Some(s.parse::<Size>().with_context(|| format!("task size {s:?}"))?),
+            None => None,
+        };
+        let (eff_w, eff_h) = if task_size.is_some() || task.aspect.is_some() {
+            crate::imaging::sizes::resolve(
+                task_size,
+                task.aspect.as_deref(),
+                base,
+            )?
+        } else {
+            (width, height)
+        };
+
+        let eff_count = task.count.unwrap_or(count);
+        let eff_steps = task.steps.unwrap_or(steps);
+        let eff_guidance = task.guidance.unwrap_or(guidance);
+        let eff_negative = task
+            .negative
+            .clone()
+            .unwrap_or_else(|| s.negative.clone());
+        let eff_scheduler: SchedulerKind = match task.scheduler.as_deref() {
+            Some(s) => s.parse().with_context(|| format!("task scheduler {s:?}"))?,
+            None => scheduler,
+        };
+        let eff_refine = task.refine.or(s.refine);
+        let eff_refine_strength = task.refine_strength.unwrap_or(refine_strength);
+        let eff_refiner_frac = task.refiner_frac.unwrap_or(s.refiner_frac.unwrap_or(0.8));
+        // Seed: per-task override picks an absolute seed; global path
+        // advances seed_offset to keep later tasks reproducible.
+        let task_seed = task.seed.unwrap_or(seed + seed_offset);
+
         let task_out = out_root.join(safe_name(&task.name));
-        let refiner_frac_val = s.refiner_frac.unwrap_or(0.8);
         let gen_req = GenRequest {
             prompt: final_prompt,
-            negative: s.negative.clone(),
-            width,
-            height,
-            count,
-            steps,
-            guidance,
-            seed: Some(seed + seed_offset),
+            negative: eff_negative,
+            width: eff_w,
+            height: eff_h,
+            count: eff_count,
+            steps: eff_steps,
+            guidance: eff_guidance,
+            seed: Some(task_seed),
             out_dir: task_out,
-            scheduler,
-            refine: s.refine,
-            refine_strength,
-            refiner_frac: if s.refiner { Some(refiner_frac_val) } else { None },
+            scheduler: eff_scheduler,
+            refine: eff_refine,
+            refine_strength: eff_refine_strength,
+            refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
         };
         match (&pipeline, flux_pipeline.as_mut()) {
             // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
             (Some(p), _) => p.generate(&gen_req)?,
             // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
             (_, Some(fp)) => {
-                // Some Flux scenarios specify `steps` and `guidance` at the
-                // top level; pass them through only if they diverge from
-                // plakat's generic defaults so Flux's variant-specific
-                // defaults stay in play otherwise.
-                let flux_steps = if steps == 28 { None } else { Some(steps) };
-                let flux_guidance = if (guidance - 7.5).abs() < f64::EPSILON {
+                // Pass `steps` / `guidance` through to Flux only if they
+                // diverge from plakat's generic defaults (28 / 7.5) so
+                // Flux's variant-specific defaults stay in play otherwise.
+                let flux_steps = if eff_steps == 28 { None } else { Some(eff_steps) };
+                let flux_guidance = if (eff_guidance - 7.5).abs() < f64::EPSILON {
                     None
                 } else {
-                    Some(guidance)
+                    Some(eff_guidance)
                 };
                 fp.generate(&flux::GenRequest {
                     prompt: gen_req.prompt.clone(),
@@ -459,8 +535,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     style_ref,
                     task.style_strength.unwrap_or(0.6),
                     &gen_req.out_dir,
-                    seed + seed_offset,
-                    count,
+                    task_seed,
+                    eff_count,
                     Variant::detect(&model).is_flux(),
                 );
             }
@@ -473,8 +549,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         if s.upscale.upscale {
             run_upscale_pass(
                 &gen_req.out_dir,
-                seed + seed_offset,
-                count,
+                task_seed,
+                eff_count,
                 Variant::detect(&model).is_flux(),
                 style_attempted,
                 s.upscale.scale,
@@ -485,6 +561,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .await;
         }
 
+        // Global seed_offset always advances by the GLOBAL count so a
+        // re-run with the same scenario gives the same global-seed
+        // tasks the same composition, regardless of per-task overrides.
         seed_offset += count as u64;
     }
 
@@ -714,6 +793,60 @@ fn wrap_label(label: &str, text: &str) -> String {
         out.push_str(line);
     }
     out
+}
+
+/// Any non-default per-task field set? Used to decide whether the dry-run
+/// should print an "overrides:" line.
+fn has_overrides(task: &TaskDef) -> bool {
+    task.size.is_some()
+        || task.aspect.is_some()
+        || task.count.is_some()
+        || task.steps.is_some()
+        || task.guidance.is_some()
+        || task.seed.is_some()
+        || task.negative.is_some()
+        || task.scheduler.is_some()
+        || task.refine.is_some()
+        || task.refine_strength.is_some()
+        || task.refiner_frac.is_some()
+}
+
+fn describe_overrides(task: &TaskDef) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(v) = &task.size {
+        parts.push(format!("size={v}"));
+    }
+    if let Some(v) = &task.aspect {
+        parts.push(format!("aspect={v}"));
+    }
+    if let Some(v) = task.count {
+        parts.push(format!("count={v}"));
+    }
+    if let Some(v) = task.steps {
+        parts.push(format!("steps={v}"));
+    }
+    if let Some(v) = task.guidance {
+        parts.push(format!("guidance={v}"));
+    }
+    if let Some(v) = task.seed {
+        parts.push(format!("seed={v}"));
+    }
+    if task.negative.is_some() {
+        parts.push("negative=…".to_string());
+    }
+    if let Some(v) = &task.scheduler {
+        parts.push(format!("scheduler={v}"));
+    }
+    if let Some(v) = task.refine {
+        parts.push(format!("refine={v}"));
+    }
+    if let Some(v) = task.refine_strength {
+        parts.push(format!("refine-strength={v}"));
+    }
+    if let Some(v) = task.refiner_frac {
+        parts.push(format!("refiner-frac={v}"));
+    }
+    parts.join(", ")
 }
 
 fn terminal_width() -> usize {
