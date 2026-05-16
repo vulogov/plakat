@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
 use crate::pipelines::lora::LoraSpec;
+use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::t2i;
 
 #[derive(ClapArgs, Debug)]
@@ -67,6 +68,21 @@ pub struct GenerateArgs {
     /// Global multiplier applied to every LoRA's per-file scale.
     #[arg(long, default_value_t = 1.0)]
     pub lora_scale: f32,
+
+    /// Sampler: default | ddim | euler-a | unipc (DPM-Solver++).
+    /// Euler-A often improves SD 1.5/SDXL quality at the same step count.
+    #[arg(long, default_value = "default")]
+    pub scheduler: SchedulerKind,
+
+    /// Add a low-strength img2img polish pass at the end (extra denoise steps
+    /// on the generated latents using the SAME base model). Sharpens details
+    /// and removes some artifacts. Not the official SDXL refiner.
+    #[arg(long, value_name = "STEPS")]
+    pub refine: Option<usize>,
+
+    /// Strength of the --refine polish (0.0 = no effect, 1.0 = full re-noise).
+    #[arg(long, default_value_t = 0.3)]
+    pub refine_strength: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -94,6 +110,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         device,
         loras: args.loras,
         lora_scale: args.lora_scale,
+        scheduler: args.scheduler,
+        refine: args.refine,
+        refine_strength: args.refine_strength,
     })
     .await
 }

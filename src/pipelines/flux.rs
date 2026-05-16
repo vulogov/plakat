@@ -220,9 +220,9 @@ pub async fn run(req: Request) -> Result<()> {
             .map(|s| s + idx as u64)
             .unwrap_or_else(rand::random)
             & (u32::MAX as u64);
-        req.device
-            .set_seed(seed)
-            .map_err(|e| anyhow!("set_seed: {e}"))?;
+        if let Err(e) = req.device.set_seed(seed) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
 
         let img = sampling::get_noise(1, h, w, &req.device)?.to_dtype(dtype)?;
         let state = sampling::State::new(&t5_emb, &clip_pooled, &img)?;

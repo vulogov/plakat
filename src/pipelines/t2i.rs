@@ -33,6 +33,9 @@ pub struct Request {
     pub device: Device,
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     pub lora_scale: f32,
+    pub scheduler: crate::pipelines::scheduler::SchedulerKind,
+    pub refine: Option<usize>,
+    pub refine_strength: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +166,8 @@ pub async fn run(req: Request) -> Result<()> {
         })
         .await;
     }
+
+    crate::pipelines::scheduler::check_device_support(req.scheduler, &req.device)?;
 
     let (w, h) = (req.width as usize, req.height as usize);
     let cfg = variant.config(w, h)?;
@@ -321,11 +326,14 @@ pub async fn run(req: Request) -> Result<()> {
             .map(|s| s + idx as u64)
             .unwrap_or_else(rand::random)
             & (u32::MAX as u64);
-        req.device
-            .set_seed(seed)
-            .map_err(|e| anyhow!("set_seed: {e}"))?;
+        if let Err(e) = req.device.set_seed(seed) {
+            // CPU device doesn't support device-level seeding; that's fine —
+            // Tensor::randn falls back to the global RNG. Don't abort.
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
 
-        let mut scheduler = cfg.build_scheduler(req.steps)?;
+        let mut scheduler =
+            crate::pipelines::scheduler::build(req.scheduler, &cfg, req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();
 
         let mut latents = Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &req.device)?
@@ -359,6 +367,54 @@ pub async fn run(req: Request) -> Result<()> {
             bar.set_message(format!("t={timestep} seed={seed}"));
         }
         bar.finish_and_clear();
+
+        // Optional polish pass: img2img on the final latents with the SAME
+        // base UNet. Strength controls how much of the original is preserved
+        // (lower = subtler refinement).
+        if let Some(rsteps) = req.refine {
+            if rsteps > 0 {
+                let strength = req.refine_strength.clamp(0.0, 1.0);
+                let mut polish =
+                    crate::pipelines::scheduler::build(req.scheduler, &cfg, rsteps)?;
+                let pts = polish.timesteps().to_vec();
+                let init_skip = ((rsteps as f32) * (1.0 - strength)).round() as usize;
+                let init_skip = init_skip.min(rsteps.saturating_sub(1));
+                let active = &pts[init_skip..];
+                if let Some(&start_t) = active.first() {
+                    let noise = Tensor::randn(0f32, 1f32, latents.shape(), &req.device)?
+                        .to_dtype(dtype)?;
+                    latents = polish.add_noise(&latents, noise, start_t)?;
+
+                    let rbar = progress::step_bar(
+                        &mp,
+                        active.len() as u64,
+                        &format!("polish {}/{}", idx + 1, req.count),
+                    );
+                    for &timestep in active {
+                        let latent_in = if do_cfg {
+                            Tensor::cat(&[&latents, &latents], 0)?
+                        } else {
+                            latents.clone()
+                        };
+                        let latent_in = polish.scale_model_input(latent_in, timestep)?;
+                        let noise_pred =
+                            unet.forward(&latent_in, timestep as f64, &text_embeddings)?;
+                        let noise_pred = if do_cfg {
+                            let chunks = noise_pred.chunk(2, 0)?;
+                            let uncond = &chunks[0];
+                            let text = &chunks[1];
+                            (uncond + ((text - uncond)? * req.guidance)?)?
+                        } else {
+                            noise_pred
+                        };
+                        latents = polish.step(&noise_pred, timestep, &latents)?;
+                        rbar.inc(1);
+                        rbar.set_message(format!("polish t={timestep}"));
+                    }
+                    rbar.finish_and_clear();
+                }
+            }
+        }
 
         let image = vae.decode(&(&latents / vae_scale)?)?;
         let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
