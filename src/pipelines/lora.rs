@@ -15,7 +15,7 @@
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -291,37 +291,125 @@ fn normalize_lora_pair(down: &Tensor, up: &Tensor) -> Result<(Tensor, Tensor)> {
     Ok((down_2d, up_2d))
 }
 
-/// Group lora_*.lora_down / lora_up / alpha triples, then apply each to its base UNet weight.
+/// Suffixes that identify the three roles of a LoRA tensor.
+/// First match wins; longer / more-specific suffixes appear first.
+const DOWN_SUFFIXES: &[&str] = &[
+    ".lora_A.default.weight",
+    ".lora_down.weight",
+    ".lora_A.weight",
+    ".lora.down.weight",
+];
+const UP_SUFFIXES: &[&str] = &[
+    ".lora_B.default.weight",
+    ".lora_up.weight",
+    ".lora_B.weight",
+    ".lora.up.weight",
+];
+const ALPHA_SUFFIXES: &[&str] = &[".alpha"];
+
+/// Prefixes that wrap the actual layer path. Strip them before matching.
+const STRIP_PREFIXES: &[&str] = &[
+    "base_model.model.",
+    "diffusion_model.",
+];
+
+fn strip_known_prefix(k: &str) -> &str {
+    for p in STRIP_PREFIXES {
+        if let Some(rest) = k.strip_prefix(p) {
+            return rest;
+        }
+    }
+    k
+}
+
+fn match_suffix<'a>(k: &'a str, suffixes: &[&str]) -> Option<&'a str> {
+    for s in suffixes {
+        if let Some(base) = k.strip_suffix(s) {
+            return Some(base);
+        }
+    }
+    None
+}
+
+/// Resolve a parsed LoRA base path to an actual base UNet key (one of `merged`'s).
+/// Handles both kohya (underscored, `lora_unet_` prefix) and diffusers (dotted,
+/// optionally `unet.` prefix) styles.
+fn resolve_lora_base(
+    lora_base: &str,
+    kohya_map: &HashMap<String, String>,
+    base_keys: &HashSet<String>,
+) -> Option<String> {
+    // 1. kohya: full key starts with "lora_unet_..."
+    if let Some(k) = kohya_map.get(lora_base) {
+        return Some(k.clone());
+    }
+    // 2. diffusers-style with explicit unet. prefix.
+    if let Some(rest) = lora_base.strip_prefix("unet.") {
+        let with_weight = format!("{rest}.weight");
+        if base_keys.contains(&with_weight) {
+            return Some(with_weight);
+        }
+    }
+    // 3. diffusers-style without prefix.
+    let direct = format!("{lora_base}.weight");
+    if base_keys.contains(&direct) {
+        return Some(direct);
+    }
+    None
+}
+
+/// Group LoRA-style keys into (down, up, alpha) triples, then apply each to its
+/// base UNet weight. Supports kohya and diffusers/PEFT formats.
 fn apply_one_lora(
     merged: &mut HashMap<String, Tensor>,
     lora: &HashMap<String, Tensor>,
     kohya_to_diffusers: &HashMap<String, String>,
     scale: f32,
 ) -> Result<(usize, usize)> {
+    let base_keys: HashSet<String> = merged.keys().cloned().collect();
+
     let mut groups: BTreeMap<String, LoraGroup> = BTreeMap::new();
+    let mut total_keys = 0usize;
+    let mut sample_unknown: Option<String> = None;
     for (k, t) in lora.iter() {
-        if let Some(base) = k.strip_suffix(".lora_down.weight") {
+        total_keys += 1;
+        let normalized = strip_known_prefix(k);
+        if let Some(base) = match_suffix(normalized, DOWN_SUFFIXES) {
             groups.entry(base.to_string()).or_default().down = Some(t.clone());
-        } else if let Some(base) = k.strip_suffix(".lora_up.weight") {
+        } else if let Some(base) = match_suffix(normalized, UP_SUFFIXES) {
             groups.entry(base.to_string()).or_default().up = Some(t.clone());
-        } else if let Some(base) = k.strip_suffix(".alpha") {
+        } else if let Some(base) = match_suffix(normalized, ALPHA_SUFFIXES) {
             groups.entry(base.to_string()).or_default().alpha = Some(t.clone());
+        } else if sample_unknown.is_none() {
+            sample_unknown = Some(k.clone());
         }
-        // Ignored: lora_te_* (text encoder), metadata, dora_scale, etc.
     }
 
     let total_targets = groups.len();
-    let mut count = 0usize;
-    let mut sample_skip: Option<String> = None;
+    if total_targets == 0 {
+        if let Some(sample) = sample_unknown {
+            tracing::warn!(
+                target: "plakat",
+                "no LoRA-style keys recognized in {total_keys} entries (sample: {sample}). \
+                 Unsupported format? plakat understands kohya (.lora_down/.lora_up/.alpha) \
+                 and diffusers (.lora_A/.lora_B[.default].weight)."
+            );
+        }
+        return Ok((0, 0));
+    }
 
-    for (kohya_base, g) in groups {
-        // Text-encoder targets — common but not yet wired here.
-        if kohya_base.starts_with("lora_te_") {
+    let mut count = 0usize;
+    let mut sample_unmatched: Option<String> = None;
+
+    for (lora_base, g) in groups {
+        // Text-encoder targets aren't merged into the UNet here.
+        if lora_base.starts_with("lora_te_") || lora_base.starts_with("text_encoder.") {
             continue;
         }
-        let Some(diffusers_key) = kohya_to_diffusers.get(&kohya_base) else {
-            if sample_skip.is_none() {
-                sample_skip = Some(kohya_base);
+        let Some(diffusers_key) = resolve_lora_base(&lora_base, kohya_to_diffusers, &base_keys)
+        else {
+            if sample_unmatched.is_none() {
+                sample_unmatched = Some(lora_base);
             }
             continue;
         };
@@ -362,7 +450,7 @@ fn apply_one_lora(
         let delta_flat = (up_f32.matmul(&down_f32)? * coeff as f64)?;
 
         let base = merged
-            .get(diffusers_key)
+            .get(&diffusers_key)
             .ok_or_else(|| anyhow!("base key vanished: {diffusers_key}"))?
             .clone();
         let base_dtype = base.dtype();
@@ -376,10 +464,10 @@ fn apply_one_lora(
         };
 
         let new_base = (base_f32 + delta_shaped)?.to_dtype(base_dtype)?;
-        merged.insert(diffusers_key.clone(), new_base);
+        merged.insert(diffusers_key, new_base);
         count += 1;
     }
-    if let Some(s) = sample_skip {
+    if let Some(s) = sample_unmatched {
         tracing::debug!(target: "plakat", "first unmatched LoRA target: {s}");
     }
     Ok((count, total_targets))
