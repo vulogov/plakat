@@ -10,9 +10,10 @@ use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
 use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
+use crate::pipelines::flux;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
-use crate::pipelines::t2i::{self, GenRequest, LoadRequest, Pipeline, Variant};
+use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline, Variant};
 
 #[derive(ClapArgs, Debug)]
 pub struct ScenarioArgs {
@@ -257,10 +258,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             None
         };
 
-    // -------- load pipeline once (skipped for dry-run and for Flux) --------
-    // For Flux scenarios we still call t2i::run per task; the SD Pipeline
-    // optimization doesn't apply to Flux's separate pipeline module.
-    let pipeline: Option<Pipeline> = if args.dry_run || Variant::detect(&model).is_flux() {
+    // -------- load pipeline once (skipped for dry-run) --------
+    // Two parallel pipeline types; exactly one is populated for non-dry-run.
+    let variant = Variant::detect(&model);
+    let pipeline: Option<Pipeline> = if args.dry_run || variant.is_flux() {
         None
     } else {
         Some(
@@ -270,6 +271,35 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras: loras.clone(),
                 lora_scale,
                 use_refiner: s.refiner,
+            })
+            .await?,
+        )
+    };
+    let mut flux_pipeline: Option<flux::Pipeline> = if args.dry_run || !variant.is_flux() {
+        None
+    } else {
+        if !loras.is_empty() {
+            crate::ui::progress::println(&format!(
+                "  {} ignoring {} LoRA file(s): SD-format LoRAs don't apply to Flux's transformer",
+                style("warn:").yellow().bold(),
+                loras.len()
+            ));
+        }
+        let fvar = if variant == Variant::FluxDev {
+            flux::Variant::Dev
+        } else {
+            flux::Variant::Schnell
+        };
+        let resolved_repo = if model.contains('/') {
+            model.clone()
+        } else {
+            crate::hf::resolve_alias(&model).to_string()
+        };
+        Some(
+            flux::Pipeline::load(flux::LoadRequest {
+                variant: fvar,
+                repo: resolved_repo,
+                device: device.clone(),
             })
             .await?,
         )
@@ -366,33 +396,34 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             refine_strength,
             refiner_frac: if s.refiner { Some(refiner_frac_val) } else { None },
         };
-        match &pipeline {
-            // SD: reuse the loaded weights across tasks.
-            Some(p) => p.generate(&gen_req)?,
-            // Flux (or any case we couldn't preload): per-task t2i::run.
-            None => {
-                let req = t2i::Request {
+        match (&pipeline, flux_pipeline.as_mut()) {
+            // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
+            (Some(p), _) => p.generate(&gen_req)?,
+            // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
+            (_, Some(fp)) => {
+                // Some Flux scenarios specify `steps` and `guidance` at the
+                // top level; pass them through only if they diverge from
+                // plakat's generic defaults so Flux's variant-specific
+                // defaults stay in play otherwise.
+                let flux_steps = if steps == 28 { None } else { Some(steps) };
+                let flux_guidance = if (guidance - 7.5).abs() < f64::EPSILON {
+                    None
+                } else {
+                    Some(guidance)
+                };
+                fp.generate(&flux::GenRequest {
                     prompt: gen_req.prompt.clone(),
-                    negative: gen_req.negative.clone(),
-                    model: model.clone(),
                     width: gen_req.width,
                     height: gen_req.height,
                     count: gen_req.count,
-                    steps: gen_req.steps,
-                    guidance: gen_req.guidance,
+                    steps: flux_steps,
+                    guidance: flux_guidance,
                     seed: gen_req.seed,
                     out_dir: gen_req.out_dir.clone(),
-                    device: device.clone(),
-                    loras: loras.clone(),
-                    lora_scale,
-                    scheduler: gen_req.scheduler,
-                    refine: gen_req.refine,
-                    refine_strength: gen_req.refine_strength,
-                    use_refiner: s.refiner,
-                    refiner_frac: refiner_frac_val,
-                };
-                t2i::run(req).await?;
+                })?;
             }
+            // Dry-run path doesn't reach here.
+            (None, None) => unreachable!("non-dry-run task without a pipeline"),
         }
 
         // Optional post-generate style pass.
