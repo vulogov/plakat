@@ -273,11 +273,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             task.scene,
             task.weather,
         ));
-        crate::ui::progress::println(&format!(
-            "  {}: {}",
-            style("pre-enhance").dim(),
-            short(&pre_refine, 160)
-        ));
+        crate::ui::progress::println(&wrap_label("pre-enhance", &pre_refine));
 
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
@@ -286,18 +282,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 .await
                 .with_context(|| format!("enhancing prompt for task {:?}", task.name))?
         };
-        crate::ui::progress::println(&format!(
-            "  {}: {}",
-            style("enhanced").dim(),
-            short(&enhanced, 160)
-        ));
+        crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
         let final_prompt = join_parts(&[&s.lora_header, &enhanced, &s.lora_footer]);
-        crate::ui::progress::println(&format!(
-            "  {}: {}",
-            style("final").dim(),
-            short(&final_prompt, 160)
-        ));
+        crate::ui::progress::println(&wrap_label("final", &final_prompt));
 
         if args.dry_run {
             crate::ui::progress::println(&format!(
@@ -589,13 +577,57 @@ fn run_upscale_pass(
     }
 }
 
-fn short(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let taken: String = s.chars().take(n).collect();
-        format!("{taken}…")
+/// Word-wrap `text` under a labeled line. Continuation lines are indented
+/// to line up after the `"  <label>: "` prefix so the result reads as one
+/// logical entry. Existing newlines in `text` are treated as whitespace
+/// (HJSON multi-line strings carry editor-formatting newlines that aren't
+/// semantically meaningful to SD).
+///
+/// Format:
+///     "  pre-enhance: first line of wrapped text up to terminal width"
+///     "               second line continues at the same column"
+///     "               third line ..."
+fn wrap_label(label: &str, text: &str) -> String {
+    let cols = terminal_width();
+    let prefix_len = 2 + label.chars().count() + 2; // "  " + label + ": "
+    let avail = cols.saturating_sub(prefix_len).max(40);
+    let indent = " ".repeat(prefix_len);
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count() + 1 + word.chars().count() <= avail {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
     }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    let label_styled = style(label).dim();
+    let mut out = format!("  {label_styled}: {}", lines[0]);
+    for line in &lines[1..] {
+        out.push('\n');
+        out.push_str(&indent);
+        out.push_str(line);
+    }
+    out
+}
+
+fn terminal_width() -> usize {
+    console::Term::stdout()
+        .size_checked()
+        .map(|(_, c)| c as usize)
+        .unwrap_or(100)
 }
 
 /// Sanitize a task name for use as a directory.
