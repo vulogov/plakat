@@ -525,6 +525,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "deser-hjson"
+version = "2.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fbc1498156ddf9adc2eb251c1697b3a0dea599c94fb8cf1313f986adcc70f6e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "directories"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2039,7 +2048,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plakat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -2047,6 +2056,7 @@ dependencies = [
  "candle-transformers",
  "clap",
  "console",
+ "deser-hjson",
  "directories",
  "futures-util",
  "hf-hub",

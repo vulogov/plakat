@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod generate;
 pub mod models;
+pub mod scenario;
 pub mod stylize;
 pub mod transparent;
 pub mod upscale;
@@ -38,6 +39,8 @@ pub enum Command {
     Transparent(transparent::TransparentArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
+    /// Batch-generate images from an HJSON scenario file.
+    Scenario(scenario::ScenarioArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -58,6 +61,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Transparent(args) => transparent::run(args).await,
         Command::Upscale(args) => upscale::run(args).await,
+        Command::Scenario(args) => scenario::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
     }
 }
