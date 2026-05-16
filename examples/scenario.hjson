@@ -137,6 +137,12 @@
     ]
 
     # === tasks: scene × weather combinations to render ===
+    #
+    # Optional per-task fields:
+    #   style:          path to a reference image. If set, every generated
+    #                   image is also run through IP-Adapter stylize using
+    #                   this reference. Original AND styled both persist.
+    #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
     tasks:
     [
         {
@@ -144,6 +150,8 @@
             scene: town
             weather: rain
             prompt: "merchants under awnings, children splashing in puddles"
+            # style: ./references/watercolor.jpg
+            # style-strength: 0.65
         }
         {
             name: harbor_golden
