@@ -425,7 +425,7 @@ pub async fn run(req: Request) -> Result<()> {
 
         let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
         crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
-        tracing::info!(target: "plakat", "→ {}", out_path.display());
+        crate::ui::progress::println(&format!("→ {}", out_path.display()));
     }
 
     Ok(())
