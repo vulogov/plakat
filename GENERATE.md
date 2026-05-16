@@ -223,6 +223,31 @@ Append `:0.7` for per-LoRA scale: `--lora foo.safetensors:0.7`. Multiple
 **Memory**: peak ~3.4 GB on SD 1.5 during merge, ~10 GB on SDXL. Merge
 happens once per `generate` call.
 
+**Formats recognized**:
+
+| Format | Detection key(s) | Math |
+|---|---|---|
+| Standard LoRA / LoCon / DyLoRA | `lora_down` + `lora_up` (kohya), `lora_A` + `lora_B` (PEFT) | `W ← W + (α/rank) · (B · A) · scale` |
+| DoRA | LoRA keys + `dora_scale` (per-row magnitude vector) | `W ← scale · (W + ΔW) / rowwise_L2(W + ΔW)` |
+| LyCORIS LoHa | `hada_w1_a/b` + `hada_w2_a/b` | `W ← W + (W1_b·W1_a) ⊙ (W2_b·W2_a) · α/rank` |
+| LyCORIS LoHa (Tucker) | LoHa keys + `hada_t1` + `hada_t2` | `W ← W + tucker(t1,a1,b1) ⊙ tucker(t2,a2,b2) · α/rank` |
+| LyCORIS LoKr | `lokr_w1` (or `_a`+`_b`) + `lokr_w2` (or `_a`+`_b`) | `W ← W + kron(W1, W2) · α/dim` |
+
+DyLoRA stores as standard LoRA at inference time (its "dynamic rank" is a
+training-time feature), so it's covered by the standard arm with no
+extra detection.
+
+Conv weight shapes handled automatically: 2D Linear, 1×1 conv, and 3×3
+conv (LCM-LoRA exercises all three). LoKr w2 conv weights are flattened
+along trailing dims for the Kronecker reshape. `base_model.model.` /
+`diffusion_model.` prefixes are stripped before matching.
+
+Tucker LoHa uses two matmul contractions to evaluate the einsum
+`"r1 r2 kh kw, r2 in, out r1 -> out in kh kw"` (the two ranks `r1`/`r2`
+are both `lora_dim` in practice; the spatial dims pass through). Only
+emitted by LyCORIS when training on conv layers with non-1 kernels — 2D
+Linear targets don't ship a Tucker form.
+
 #### `--lora-scale <FLOAT>` (default `1.0`)
 
 Multiplier applied to every LoRA's per-file scale. So
