@@ -255,9 +255,31 @@ fn build_kohya_map(base: &HashMap<String, Tensor>) -> HashMap<String, String> {
 
 #[derive(Default)]
 struct LoraGroup {
-    down: Option<Tensor>, // lora_down.weight: (rank, in)  or 4D (rank, in, 1, 1)
-    up: Option<Tensor>,   // lora_up.weight:   (out, rank) or 4D (out, rank, 1, 1)
+    // Standard LoRA / LoCon
+    down: Option<Tensor>, // (rank, in) or 4D (rank, in, kh, kw)
+    up: Option<Tensor>,   // (out, rank) or 4D (out, rank, 1, 1)
     alpha: Option<Tensor>,
+
+    // LyCORIS LoHa
+    hada_w1_a: Option<Tensor>,
+    hada_w1_b: Option<Tensor>,
+    hada_w2_a: Option<Tensor>,
+    hada_w2_b: Option<Tensor>,
+
+    // DoRA — extra magnitude vector on top of LoRA delta
+    dora_scale: Option<Tensor>,
+
+    // LyCORIS LoKr — Kronecker product factors (each may be full OR low-rank)
+    lokr_w1: Option<Tensor>,
+    lokr_w1_a: Option<Tensor>,
+    lokr_w1_b: Option<Tensor>,
+    lokr_w2: Option<Tensor>,
+    lokr_w2_a: Option<Tensor>,
+    lokr_w2_b: Option<Tensor>,
+
+    // Tensor-LoHa (Tucker decomposition) — detected only, not yet applied.
+    hada_t1: Option<Tensor>,
+    hada_t2: Option<Tensor>,
 }
 
 /// Guess what base model the LoRA was made for by looking at a delta's
@@ -280,6 +302,217 @@ fn guess_base_mismatch_hint(base_dims: &[usize], delta_dims: &[usize]) -> String
         (Some(want), None) => format!("LoRA looks trained for {want}. Re-run with the matching --model."),
         _ => "Try a different --model that matches this LoRA's training base.".to_string(),
     }
+}
+
+/// Read alpha as a scalar f32; falls back to `rank` if missing or malformed.
+fn extract_alpha(alpha: Option<&Tensor>, rank: f32) -> Result<f32> {
+    match alpha {
+        Some(a) => {
+            let a_f32 = a.to_dtype(DType::F32)?;
+            Ok(match a_f32.dims().len() {
+                0 => a_f32.to_scalar::<f32>()?,
+                _ => a_f32
+                    .flatten_all()?
+                    .to_vec1::<f32>()
+                    .ok()
+                    .and_then(|v| v.first().copied())
+                    .unwrap_or(rank),
+            })
+        }
+        None => Ok(rank),
+    }
+}
+
+/// Standard LoRA delta in F32, flattened to (out, in*kh*kw).
+fn build_lora_delta(down: &Tensor, up: &Tensor, coeff: f32) -> Result<Tensor> {
+    let (down_2d, up_2d) = normalize_lora_pair(down, up)?;
+    let down_f32 = down_2d.to_dtype(DType::F32)?;
+    let up_f32 = up_2d.to_dtype(DType::F32)?;
+    let delta = up_f32.matmul(&down_f32)?;
+    Ok((delta * coeff as f64)?)
+}
+
+/// LyCORIS LoHa delta: (W1_b @ W1_a) ⊙ (W2_b @ W2_a) · coeff.
+/// All four inputs follow the same shape convention as LoRA's down/up.
+fn build_loha_delta(
+    w1_a: &Tensor,
+    w1_b: &Tensor,
+    w2_a: &Tensor,
+    w2_b: &Tensor,
+    coeff: f32,
+) -> Result<Tensor> {
+    let (w1a_2d, w1b_2d) = normalize_lora_pair(w1_a, w1_b)?;
+    let (w2a_2d, w2b_2d) = normalize_lora_pair(w2_a, w2_b)?;
+    let w1 = w1b_2d
+        .to_dtype(DType::F32)?
+        .matmul(&w1a_2d.to_dtype(DType::F32)?)?;
+    let w2 = w2b_2d
+        .to_dtype(DType::F32)?
+        .matmul(&w2a_2d.to_dtype(DType::F32)?)?;
+    let delta = (w1 * w2)?;
+    Ok((delta * coeff as f64)?)
+}
+
+/// Reconstruct one LoKr factor (w1 or w2). Each factor is either stored
+/// fully, or as a rank-decomposed pair (a, b) where the full form is
+/// `b · a` with shapes `(out, rank) @ (rank, in)`.
+fn build_lokr_factor(
+    full: Option<&Tensor>,
+    a: Option<&Tensor>,
+    b: Option<&Tensor>,
+    name: &str,
+) -> Result<Tensor> {
+    if let Some(w) = full {
+        return Ok(w.to_dtype(DType::F32)?);
+    }
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let a_f32 = a.to_dtype(DType::F32)?;
+            let b_f32 = b.to_dtype(DType::F32)?;
+            Ok(b_f32.matmul(&a_f32)?)
+        }
+        _ => Err(anyhow!(
+            "LoKr factor {name} missing — needs lokr_{name} (full) OR both lokr_{name}_a + lokr_{name}_b"
+        )),
+    }
+}
+
+/// LoKr delta in F32, flattened to (oc, ic*kh*kw). w1 is 2D; w2 may be 2D
+/// (Linear targets) or 4D conv-style — flattened along trailing dims for the
+/// Kronecker reshape, the outer reshape to base 4D happens at the call site.
+///
+/// Kronecker: A (m1, n1) ⊗ B (m2, n2) → (m1·m2, n1·n2) where
+/// `result[i·m2 + p, j·n2 + q] = A[i, j] · B[p, q]`. The 4D-broadcast +
+/// reshape trick below produces that layout for free in candle.
+fn build_lokr_delta(w1: &Tensor, w2: &Tensor, coeff: f32) -> Result<Tensor> {
+    // Flatten w2 to 2D if conv-style: (oc2, ic2, kh, kw) → (oc2, ic2·kh·kw).
+    let w2_2d = match w2.dims().len() {
+        2 => w2.clone(),
+        4 => {
+            let (oc, ic, kh, kw) = w2.dims4()?;
+            w2.reshape((oc, ic * kh * kw))?
+        }
+        n => anyhow::bail!("LoKr w2 has unsupported rank {n}"),
+    };
+    if w1.dims().len() != 2 {
+        anyhow::bail!("LoKr w1 must be 2D (got rank {})", w1.dims().len());
+    }
+
+    let (m1, n1) = (w1.dim(0)?, w1.dim(1)?);
+    let (m2, n2) = (w2_2d.dim(0)?, w2_2d.dim(1)?);
+    let a4 = w1.reshape((m1, 1, n1, 1))?;
+    let b4 = w2_2d.reshape((1, m2, 1, n2))?;
+    let prod = a4.broadcast_mul(&b4)?; // (m1, m2, n1, n2)
+    let kron = prod.reshape((m1 * m2, n1 * n2))?;
+    Ok((kron * coeff as f64)?)
+}
+
+/// Rebuild one Tucker LoHa half from its core tensor + two factor matrices.
+///
+/// Math:
+///   result[o, i, kh, kw] = sum_{r1, r2} t[r1, r2, kh, kw] · w_b[o, r1] · w_a[r2, i]
+///
+/// Shapes:
+///   t:   (r1, r2, kh, kw)          — Tucker core (both ranks usually = lora_dim)
+///   w_a: (r2, in)                  — LoRA-style "down"
+///   w_b: (out, r1)                 — LoRA-style "up"
+///   →    (out, in, kh, kw)
+///
+/// Implemented as two matmuls:
+///   step 1: temp[o, r2, kh, kw] = w_b ⨂_(r1) t
+///   step 2: out[o, in, kh, kw]  = temp ⨂_(r2) w_a    (via permute+reshape)
+fn tucker_factor(t: &Tensor, w_a: &Tensor, w_b: &Tensor) -> Result<Tensor> {
+    let t_f32 = t.to_dtype(DType::F32)?;
+    let wa_f32 = w_a.to_dtype(DType::F32)?;
+    let wb_f32 = w_b.to_dtype(DType::F32)?;
+
+    if t_f32.dims().len() != 4 {
+        anyhow::bail!(
+            "Tucker LoHa core must be 4D (got rank {}); plakat doesn't support \
+             Linear-Tucker (which LyCORIS itself doesn't emit)",
+            t_f32.dims().len()
+        );
+    }
+    let (r1, r2, kh, kw) = t_f32.dims4()?;
+    let (out, r1_check) = (wb_f32.dim(0)?, wb_f32.dim(1)?);
+    let (r2_check, in_dim) = (wa_f32.dim(0)?, wa_f32.dim(1)?);
+    if r1 != r1_check {
+        anyhow::bail!("Tucker rank mismatch: t.dim(0)={r1} but w_b.dim(1)={r1_check}");
+    }
+    if r2 != r2_check {
+        anyhow::bail!("Tucker rank mismatch: t.dim(1)={r2} but w_a.dim(0)={r2_check}");
+    }
+
+    // Step 1: contract r1 — w_b (out, r1) @ t.reshape((r1, r2·kh·kw))
+    let t_flat = t_f32.reshape((r1, r2 * kh * kw))?;
+    let temp_flat = wb_f32.matmul(&t_flat)?; // (out, r2·kh·kw)
+    let temp = temp_flat.reshape((out, r2, kh, kw))?;
+
+    // Step 2: contract r2. Rearrange temp so r2 is the inner matmul dim:
+    //   (out, r2, kh, kw) → permute (0, 2, 3, 1) → (out, kh, kw, r2)
+    //   flatten leading dims → (out·kh·kw, r2)
+    //   matmul w_a → (out·kh·kw, in)
+    //   reshape → (out, kh, kw, in), permute → (out, in, kh, kw)
+    let temp_p = temp.permute((0, 2, 3, 1))?.contiguous()?;
+    let temp_2d = temp_p.reshape((out * kh * kw, r2))?;
+    let out_2d = temp_2d.matmul(&wa_f32)?; // (out·kh·kw, in)
+    let out_4d_perm = out_2d.reshape((out, kh, kw, in_dim))?;
+    let result = out_4d_perm.permute((0, 3, 1, 2))?.contiguous()?;
+    Ok(result)
+}
+
+/// Tucker LoHa delta: `(W1 ⊙ W2) · coeff` where W1 and W2 are each
+/// reconstructed via `tucker_factor`. Returns the flattened
+/// `(out, in·kh·kw)` shape so it slots into the same downstream reshape
+/// path as standard LoRA/LoHa deltas.
+#[allow(clippy::too_many_arguments)]
+fn build_tucker_loha_delta(
+    t1: &Tensor,
+    w1_a: &Tensor,
+    w1_b: &Tensor,
+    t2: &Tensor,
+    w2_a: &Tensor,
+    w2_b: &Tensor,
+    coeff: f32,
+) -> Result<Tensor> {
+    let w1 = tucker_factor(t1, w1_a, w1_b)?; // (out, in, kh, kw) F32
+    let w2 = tucker_factor(t2, w2_a, w2_b)?; // (out, in, kh, kw) F32
+    let delta = (w1 * w2)?; // Hadamard
+    let (out, in_dim, kh, kw) = delta.dims4()?;
+    let flat = delta.reshape((out, in_dim * kh * kw))?;
+    Ok((flat * coeff as f64)?)
+}
+
+/// DoRA merge: W_new = scale · (W + ΔW) / row_L2_norm(W + ΔW).
+/// `dora_scale` is a length-`out_dim` vector; `direction` (= base + delta)
+/// can be 2D or 4D. Output matches the shape of `direction`.
+fn apply_dora(base_f32: &Tensor, delta: &Tensor, dora_scale: &Tensor) -> Result<Tensor> {
+    let direction = (base_f32 + delta)?;
+    let dims = direction.dims().to_vec();
+    let oc = dims[0];
+
+    // Flatten everything past dim 0, compute per-row L2 norm.
+    let flat = direction.flatten_from(1)?;
+    let sq = flat.sqr()?;
+    let sum = sq.sum_keepdim(1)?;
+    let norm = sum.sqrt()?;
+    // Avoid division by zero on dead rows.
+    let eps = Tensor::full(1e-8_f32, norm.shape(), norm.device())?;
+    let norm = norm.maximum(&eps)?;
+
+    let normalized_flat = flat.broadcast_div(&norm)?;
+    let normalized = normalized_flat.reshape(dims.as_slice())?;
+
+    // Reshape dora_scale (oc,) → (oc, 1) for 2D base or (oc, 1, 1, 1) for 4D.
+    let scale_f32 = dora_scale.to_dtype(DType::F32)?.flatten_all()?;
+    let mut shape = Vec::with_capacity(dims.len());
+    shape.push(oc);
+    for _ in 1..dims.len() {
+        shape.push(1);
+    }
+    let scale = scale_f32.reshape(shape)?;
+
+    Ok(normalized.broadcast_mul(&scale)?)
 }
 
 fn squeeze_trailing_1x1(t: &Tensor) -> Result<Tensor> {
@@ -313,7 +546,7 @@ fn normalize_lora_pair(down: &Tensor, up: &Tensor) -> Result<(Tensor, Tensor)> {
     Ok((down_2d, up_2d))
 }
 
-/// Suffixes that identify the three roles of a LoRA tensor.
+/// Suffixes that identify the role of a LoRA-family tensor.
 /// First match wins; longer / more-specific suffixes appear first.
 const DOWN_SUFFIXES: &[&str] = &[
     ".lora_A.default.weight",
@@ -328,6 +561,29 @@ const UP_SUFFIXES: &[&str] = &[
     ".lora.up.weight",
 ];
 const ALPHA_SUFFIXES: &[&str] = &[".alpha"];
+
+// LyCORIS LoHa — Hadamard product of two low-rank pairs.
+const HADA_W1_A_SUFFIXES: &[&str] = &[".hada_w1_a"];
+const HADA_W1_B_SUFFIXES: &[&str] = &[".hada_w1_b"];
+const HADA_W2_A_SUFFIXES: &[&str] = &[".hada_w2_a"];
+const HADA_W2_B_SUFFIXES: &[&str] = &[".hada_w2_b"];
+
+// DoRA — magnitude rescaling on top of standard LoRA delta.
+const DORA_SCALE_SUFFIXES: &[&str] = &[".dora_scale"];
+
+// LyCORIS LoKr — Kronecker product. Each factor (w1, w2) is either stored
+// fully OR rank-decomposed via {_a, _b}.
+const LOKR_W1_SUFFIXES: &[&str] = &[".lokr_w1"];
+const LOKR_W1_A_SUFFIXES: &[&str] = &[".lokr_w1_a"];
+const LOKR_W1_B_SUFFIXES: &[&str] = &[".lokr_w1_b"];
+const LOKR_W2_SUFFIXES: &[&str] = &[".lokr_w2"];
+const LOKR_W2_A_SUFFIXES: &[&str] = &[".lokr_w2_a"];
+const LOKR_W2_B_SUFFIXES: &[&str] = &[".lokr_w2_b"];
+
+// Tensor-LoHa (Tucker form). Detection-only for now — the einsum
+// `"i j k l, j r, i p -> p r k l"` isn't implemented.
+const HADA_T1_SUFFIXES: &[&str] = &[".hada_t1"];
+const HADA_T2_SUFFIXES: &[&str] = &[".hada_t2"];
 
 /// Prefixes that wrap the actual layer path. Strip them before matching.
 const STRIP_PREFIXES: &[&str] = &[
@@ -402,6 +658,32 @@ fn apply_one_lora(
             groups.entry(base.to_string()).or_default().up = Some(t.clone());
         } else if let Some(base) = match_suffix(normalized, ALPHA_SUFFIXES) {
             groups.entry(base.to_string()).or_default().alpha = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_W1_A_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_w1_a = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_W1_B_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_w1_b = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_W2_A_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_w2_a = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_W2_B_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_w2_b = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, DORA_SCALE_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().dora_scale = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W1_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w1 = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W1_A_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w1_a = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W1_B_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w1_b = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W2_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w2 = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W2_A_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w2_a = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, LOKR_W2_B_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().lokr_w2_b = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_T1_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_t1 = Some(t.clone());
+        } else if let Some(base) = match_suffix(normalized, HADA_T2_SUFFIXES) {
+            groups.entry(base.to_string()).or_default().hada_t2 = Some(t.clone());
         } else if sample_unknown.is_none() {
             sample_unknown = Some(k.clone());
         }
@@ -413,8 +695,11 @@ fn apply_one_lora(
             tracing::warn!(
                 target: "plakat",
                 "no LoRA-style keys recognized in {total_keys} entries (sample: {sample}). \
-                 Unsupported format? plakat understands kohya (.lora_down/.lora_up/.alpha) \
-                 and diffusers (.lora_A/.lora_B[.default].weight)."
+                 Unsupported format? plakat understands LoRA / LoCon / DyLoRA \
+                 (.lora_down/.lora_up + alpha), PEFT (.lora_A/.lora_B[.default]), \
+                 DoRA (+ .dora_scale), LyCORIS LoHa (.hada_w{{1,2}}_a/b, with optional \
+                 .hada_t1/_t2 for Tucker), and LyCORIS LoKr (.lokr_w1[/_a/_b], \
+                 .lokr_w2[/_a/_b])."
             );
         }
         return Ok((0, 0));
@@ -437,57 +722,103 @@ fn apply_one_lora(
             }
             continue;
         };
-        let (down, up) = match (g.down, g.up) {
-            (Some(d), Some(u)) => (d, u),
-            _ => continue,
-        };
-
-        let rank = down.dim(0).unwrap_or(1) as f32;
-        let alpha = match &g.alpha {
-            Some(a) => {
-                let a_f32 = a.to_dtype(DType::F32)?;
-                match a_f32.dims().len() {
-                    0 => a_f32.to_scalar::<f32>()?,
-                    _ => a_f32
-                        .flatten_all()?
-                        .to_vec1::<f32>()
-                        .ok()
-                        .and_then(|v| v.first().copied())
-                        .unwrap_or(rank),
-                }
-            }
-            None => rank,
-        };
-        let coeff = (alpha / rank) * scale;
-
-        // Three LoRA-target shapes ship in real safetensors:
-        //   - Linear:   down (rank, in),     up (out, rank)
-        //   - Conv 1×1: down (rank, in,1,1), up (out, rank,1,1)
-        //   - Conv 3×3: down (rank, in,3,3), up (out, rank,1,1)
-        // Normalize all of them to a 2D matmul: down_2d = (rank, in*kh*kw),
-        // up_2d = (out, rank). Then reshape the delta to match the base.
-        let (down_2d, up_2d) = normalize_lora_pair(&down, &up)?;
-
-        // Compute delta in F32 for precision.
-        let down_f32 = down_2d.to_dtype(DType::F32)?;
-        let up_f32 = up_2d.to_dtype(DType::F32)?;
-        let delta_flat = (up_f32.matmul(&down_f32)? * coeff as f64)?;
 
         let base = merged
             .get(&diffusers_key)
             .ok_or_else(|| anyhow!("base key vanished: {diffusers_key}"))?
             .clone();
         let base_dtype = base.dtype();
-        let base_f32 = base.to_dtype(DType::F32)?;
-
-        // delta_flat has shape (out, in*kh*kw). Reshape only if the base is
-        // a 4D conv weight AND the element counts match. If the LoRA was
-        // trained for a different base (e.g. SDXL vs SD 1.5), shapes won't
-        // line up — skip with a count instead of crashing.
         let base_shape = base.dims().to_vec();
-        let delta_elems = delta_flat.elem_count();
-        let base_elems = base.elem_count();
-        if delta_elems != base_elems {
+
+        // Classify the group and compute delta_flat (2D, shape (oc, ic*kh*kw)).
+        let delta_flat = match &g {
+            // Tucker LoHa — Tucker decomposition of both halves before Hadamard.
+            // Requires all 6 keys: t1+w1_a+w1_b and t2+w2_a+w2_b.
+            LoraGroup {
+                hada_t1: Some(t1),
+                hada_w1_a: Some(w1a),
+                hada_w1_b: Some(w1b),
+                hada_t2: Some(t2),
+                hada_w2_a: Some(w2a),
+                hada_w2_b: Some(w2b),
+                alpha,
+                ..
+            } => {
+                let rank = w1a.dim(0).unwrap_or(1) as f32;
+                let alpha_val = extract_alpha(alpha.as_ref(), rank)?;
+                let coeff = (alpha_val / rank) * scale;
+                build_tucker_loha_delta(t1, w1a, w1b, t2, w2a, w2b, coeff)?
+            }
+            // LyCORIS LoKr — Kronecker product of two factors. Detection
+            // priority: take this arm if any lokr_* key is present.
+            LoraGroup {
+                lokr_w1,
+                lokr_w1_a,
+                lokr_w1_b,
+                lokr_w2,
+                lokr_w2_a,
+                lokr_w2_b,
+                alpha,
+                ..
+            } if lokr_w1.is_some()
+                || lokr_w1_a.is_some()
+                || lokr_w2.is_some()
+                || lokr_w2_a.is_some() =>
+            {
+                let w1 = build_lokr_factor(
+                    lokr_w1.as_ref(),
+                    lokr_w1_a.as_ref(),
+                    lokr_w1_b.as_ref(),
+                    "w1",
+                )?;
+                let w2 = build_lokr_factor(
+                    lokr_w2.as_ref(),
+                    lokr_w2_a.as_ref(),
+                    lokr_w2_b.as_ref(),
+                    "w2",
+                )?;
+                // The "dim" for LoKr alpha scaling is the rank of the inner
+                // decomposition. When w1 is full, use its number of rows; when
+                // decomposed, use w1_b.dim(1) (= w1_a.dim(0)) which is the rank.
+                let dim = match (lokr_w1.is_some(), lokr_w1_b.as_ref()) {
+                    (true, _) => w1.dim(0).unwrap_or(1) as f32,
+                    (false, Some(b)) => b.dim(1).unwrap_or(1) as f32,
+                    _ => w1.dim(0).unwrap_or(1) as f32,
+                };
+                let alpha_val = extract_alpha(alpha.as_ref(), dim)?;
+                let coeff = (alpha_val / dim) * scale;
+                build_lokr_delta(&w1, &w2, coeff)?
+            }
+            // LyCORIS LoHa: (W1_b @ W1_a) ⊙ (W2_b @ W2_a)
+            LoraGroup {
+                hada_w1_a: Some(w1a),
+                hada_w1_b: Some(w1b),
+                hada_w2_a: Some(w2a),
+                hada_w2_b: Some(w2b),
+                alpha,
+                ..
+            } => {
+                let rank = w1a.dim(0).unwrap_or(1) as f32;
+                let alpha_val = extract_alpha(alpha.as_ref(), rank)?;
+                let coeff = (alpha_val / rank) * scale;
+                build_loha_delta(w1a, w1b, w2a, w2b, coeff)?
+            }
+            // Standard LoRA / LoCon, possibly with DoRA scaling.
+            LoraGroup {
+                down: Some(down),
+                up: Some(up),
+                alpha,
+                ..
+            } => {
+                let rank = down.dim(0).unwrap_or(1) as f32;
+                let alpha_val = extract_alpha(alpha.as_ref(), rank)?;
+                let coeff = (alpha_val / rank) * scale;
+                build_lora_delta(down, up, coeff)?
+            }
+            _ => continue, // incomplete group
+        };
+
+        if delta_flat.elem_count() != base.elem_count() {
             shape_mismatches += 1;
             if sample_shape_mismatch.is_none() {
                 sample_shape_mismatch =
@@ -495,6 +826,7 @@ fn apply_one_lora(
             }
             continue;
         }
+
         let delta_shaped = if base.dims().len() == 4 {
             let (oc, ic, kh, kw) = base.dims4()?;
             delta_flat.reshape((oc, ic, kh, kw))?
@@ -502,8 +834,12 @@ fn apply_one_lora(
             delta_flat
         };
 
-        let new_base = (base_f32 + delta_shaped)?.to_dtype(base_dtype)?;
-        merged.insert(diffusers_key, new_base);
+        let base_f32 = base.to_dtype(DType::F32)?;
+        let merged_weight = match &g.dora_scale {
+            Some(dora) => apply_dora(&base_f32, &delta_shaped, dora)?,
+            None => (base_f32 + delta_shaped)?,
+        };
+        merged.insert(diffusers_key, merged_weight.to_dtype(base_dtype)?);
         count += 1;
     }
     if let Some(s) = sample_unmatched {
