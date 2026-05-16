@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub mod generate;
 pub mod models;
 pub mod stylize;
+pub mod transparent;
 
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
@@ -32,6 +33,8 @@ pub enum Command {
     Generate(generate::GenerateArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
+    /// Make pixels matching the upper-left corner color transparent.
+    Transparent(transparent::TransparentArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -50,6 +53,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             stylize::run(args, device).await
         }
+        Command::Transparent(args) => transparent::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
     }
 }
