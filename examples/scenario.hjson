@@ -38,6 +38,17 @@
     # polish strength 0..1; lower = subtler
     refine-strength: 0.3
 
+    # === optional post-generate upscale ===
+    # If `upscale: true` and a task has `style`, the styled image is upscaled.
+    # If `upscale: true` and no `style`, the original generated image is upscaled.
+    # method options: nearest | bilinear | bicubic | lanczos
+    upscale:
+    {
+        upscale: false
+        scale: 2.0
+        method: lanczos
+    }
+
     # === LoRA stacking ===
     loras:
     [
