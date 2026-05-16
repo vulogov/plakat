@@ -21,6 +21,7 @@ pulled from HuggingFace and cached locally.
 - **SDXL refiner** — `--refiner` enables the official
   `stable-diffusion-xl-refiner-1.0` UNet for the last 20% of the schedule
 - **Upscale** — classical resampling (Lanczos / bicubic / bilinear / nearest)
+  + Real-ESRGAN (RRDBNet ported to candle: x2plus / x4plus / x4plus_anime_6B)
 - **Transparent** — chroma-key the upper-left pixel to alpha
 - **Model browser** — recommend trending T2I models, inspect repo sizes,
   manage the local cache
@@ -351,7 +352,7 @@ then all `count` images share the enhanced prompt).
 
 ## What's not in here yet
 
-- ML upscaling (Real-ESRGAN / SwinIR) — `upscale` is classical only
+- SwinIR / LDSR upscalers (Real-ESRGAN is in; other ML upscalers aren't)
 - Text-encoder LoRA merging (UNet LoRA only)
 - LyCORIS / DoRA decompositions
 - Shared `FluxPipeline` across scenario tasks (SD is shared; Flux still

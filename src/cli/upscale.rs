@@ -1,4 +1,5 @@
 use anyhow::Result;
+use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
 use std::path::PathBuf;
@@ -15,18 +16,25 @@ pub struct UpscaleArgs {
     #[arg(long, value_name = "OUT")]
     pub out: PathBuf,
 
-    /// Scale factor (e.g. 2 for 2×, 4 for 4×). Non-integer values OK.
+    /// Scale factor for classical filters (e.g. 2 for 2×, 4 for 4×). Ignored
+    /// for ML methods — their scale is fixed by the model.
     #[arg(long, default_value_t = 2.0)]
     pub scale: f32,
 
-    /// Resampling filter: nearest | bilinear | bicubic | lanczos
+    /// Method:
+    ///   nearest | bilinear | bicubic | lanczos                    (classical)
+    ///   real-esrgan-x2 | real-esrgan-x4 | real-esrgan-anime-x4    (ML, RRDBNet)
     #[arg(long, default_value = "lanczos")]
     pub method: Method,
 }
 
-pub async fn run(args: UpscaleArgs) -> Result<()> {
-    let (w, h, nw, nh) =
-        crate::imaging::upscale::upscale(&args.input, &args.out, args.scale, args.method)?;
+pub async fn run(args: UpscaleArgs, device: Device) -> Result<()> {
+    let (w, h, nw, nh) = if args.method.is_ml() {
+        crate::imaging::upscale::ml_upscale(&args.input, &args.out, args.method, &device).await?
+    } else {
+        crate::imaging::upscale::upscale(&args.input, &args.out, args.scale, args.method)?
+    };
+    let effective_scale = args.method.native_scale().unwrap_or(args.scale);
     println!(
         "{}  {}×{} → {}×{}  ({:.2}×, {:?})",
         style("✓").green(),
@@ -34,7 +42,7 @@ pub async fn run(args: UpscaleArgs) -> Result<()> {
         h,
         nw,
         nh,
-        args.scale,
+        effective_scale,
         args.method,
     );
     println!("→ {}", args.out.display());

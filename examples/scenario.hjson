@@ -48,7 +48,9 @@
     # === optional post-generate upscale ===
     # If `upscale: true` and a task has `style`, the styled image is upscaled.
     # If `upscale: true` and no `style`, the original generated image is upscaled.
-    # method options: nearest | bilinear | bicubic | lanczos
+    # method options:
+    #   classical (uses `scale`): nearest | bilinear | bicubic | lanczos
+    #   ML (ignores `scale`):     real-esrgan-x2 | real-esrgan-x4 | real-esrgan-anime-x4
     upscale:
     {
         upscale: false

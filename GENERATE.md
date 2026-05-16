@@ -340,18 +340,35 @@ new dimensions are `round(orig × scale)`.
 
 #### `--method <FILTER>` (default `lanczos`)
 
-Resampling filter. Quality vs. speed tradeoff:
+Two families: **classical** filters (pure CPU resize) and **ML** models
+(RRDBNet / Real-ESRGAN).
 
-| Filter | Quality | Speed | Best for |
-|---|---|---|---|
-| `nearest` | Lowest — pixelated | Fastest | Pixel art, retro look |
-| `bilinear` | Blurry edges | Fast | Thumbnails |
-| `bicubic` | Decent, slight softening | Medium | General-purpose |
-| `lanczos` | Sharpest detail preservation, slight ringing on hard edges | Slowest | Photographic / detailed images |
+**Classical** — fast, predictable, no weights:
 
-Plain upscaling won't recover detail that isn't there. For aggressive
-upscales (4×+) or hallucinated detail, an ML upscaler (Real-ESRGAN,
-SwinIR) is the right tool — not in plakat yet.
+| Filter | Quality | Best for |
+|---|---|---|
+| `nearest` | Lowest — pixelated | Pixel art, retro look |
+| `bilinear` | Blurry edges | Thumbnails |
+| `bicubic` | Decent, slight softening | General-purpose |
+| `lanczos` | Sharpest detail preservation, slight ringing on hard edges | Photographic / detailed images |
+
+**ML — Real-ESRGAN** (RRDBNet ported to candle):
+
+| Method | Scale | Variant | Weights | Use case |
+|---|---|---|---|---|
+| `real-esrgan-x2` | ×2 | xinntao x2plus | ~17 MB | Subtle resolution boost, photographic |
+| `real-esrgan-x4` | ×4 | xinntao x4plus | ~17 MB | Standard 4× upscale, recovers fine detail |
+| `real-esrgan-anime-x4` | ×4 | xinntao x4plus_anime_6B | ~9 MB | Line art / anime / illustration |
+
+ML methods:
+- **Ignore `--scale`** — the model's architecture fixes the factor.
+- Download weights from `hlky/RealESRGAN_*` on first use (small, ~17 MB max).
+- Run on the device chosen by `--device` (Metal/CUDA/CPU). Memory scales with the **output** size — a 4× upscale of 1024² = 4096² requires room for that 64 MB output tensor in F32 plus intermediates.
+
+For aggressive upscales beyond 4× (e.g. 8×), pipe through twice
+(`plakat upscale ... --method real-esrgan-x4 ... && plakat upscale ...
+--method real-esrgan-x2 ...`). Diminishing returns past that — ESRGAN
+models weren't trained for cascaded use.
 
 ---
 

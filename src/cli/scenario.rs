@@ -421,7 +421,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 style_attempted,
                 s.upscale.scale,
                 upscale_method,
-            );
+                &device,
+            )
+            .await;
         }
 
         seed_offset += count as u64;
@@ -538,7 +540,7 @@ async fn run_style_pass(
 ///   - Else → upscale `<task>/plakat-<seed>.png`.
 ///
 /// Output is written next to the source with `-upscaled` appended.
-fn run_upscale_pass(
+async fn run_upscale_pass(
     out_dir: &std::path::Path,
     seed_start: u64,
     count: u32,
@@ -546,6 +548,7 @@ fn run_upscale_pass(
     style_attempted: bool,
     scale: f32,
     method: UpscaleMethod,
+    device: &candle_core::Device,
 ) {
     let prefix = if is_flux { "plakat-flux" } else { "plakat" };
     for i in 0..count {
@@ -575,18 +578,26 @@ fn run_upscale_pass(
         }
         let dest = out_dir.join(format!("{prefix}-{seed}-{suffix}.png"));
 
-        match crate::imaging::upscale::upscale(&source, &dest, scale, method) {
-            Ok((w, h, nw, nh)) => crate::ui::progress::println(&format!(
-                "  {} {} ({}×{} → {}×{}, {:.2}×, {:?})",
-                style("upscale").cyan().bold(),
-                dest.display(),
-                w,
-                h,
-                nw,
-                nh,
-                scale,
-                method,
-            )),
+        let result = if method.is_ml() {
+            crate::imaging::upscale::ml_upscale(&source, &dest, method, device).await
+        } else {
+            crate::imaging::upscale::upscale(&source, &dest, scale, method)
+        };
+        match result {
+            Ok((w, h, nw, nh)) => {
+                let shown = method.native_scale().unwrap_or(scale);
+                crate::ui::progress::println(&format!(
+                    "  {} {} ({}×{} → {}×{}, {:.2}×, {:?})",
+                    style("upscale").cyan().bold(),
+                    dest.display(),
+                    w,
+                    h,
+                    nw,
+                    nh,
+                    shown,
+                    method,
+                ));
+            }
             Err(e) => crate::ui::progress::println(&format!(
                 "  {} upscale failed for {}: {e}",
                 style("warn:").yellow().bold(),
