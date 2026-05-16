@@ -95,10 +95,15 @@ pub struct Request {
 }
 
 pub async fn run(req: Request) -> Result<()> {
+    // Flux was trained in BF16 and its transformer's wide intermediates
+    // (hidden=3072, intermediate=12288) regularly exceed F16's ±65504 range,
+    // producing NaN/Inf that propagate to all-black output. BF16 has F32's
+    // range with F16's memory footprint and is well-supported on CUDA + Metal
+    // in candle 0.8.
     let dtype = if matches!(req.device, Device::Cpu) {
         DType::F32
     } else {
-        DType::F16
+        DType::BF16
     };
     let steps = req.steps.unwrap_or_else(|| req.variant.default_steps());
     let guidance = req.guidance.unwrap_or_else(|| req.variant.default_guidance());

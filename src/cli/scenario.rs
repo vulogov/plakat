@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use crate::imaging::sizes::Size;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
-use crate::pipelines::t2i;
+use crate::pipelines::t2i::{self, GenRequest, LoadRequest, Pipeline, Variant};
 
 #[derive(ClapArgs, Debug)]
 pub struct ScenarioArgs {
@@ -176,6 +176,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         std::fs::create_dir_all(&out_root)?;
     }
 
+    // -------- load pipeline once (skipped for dry-run and for Flux) --------
+    // For Flux scenarios we still call t2i::run per task; the SD Pipeline
+    // optimization doesn't apply to Flux's separate pipeline module.
+    let pipeline: Option<Pipeline> = if args.dry_run || Variant::detect(&model).is_flux() {
+        None
+    } else {
+        Some(
+            Pipeline::load(LoadRequest {
+                model: model.clone(),
+                device: device.clone(),
+                loras: loras.clone(),
+                lora_scale,
+            })
+            .await?,
+        )
+    };
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -238,10 +255,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
 
         let task_out = out_root.join(safe_name(&task.name));
-        let req = t2i::Request {
+        let gen_req = GenRequest {
             prompt: final_prompt,
             negative: s.negative.clone(),
-            model: model.clone(),
             width,
             height,
             count,
@@ -249,14 +265,36 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             guidance,
             seed: Some(seed + seed_offset),
             out_dir: task_out,
-            device: device.clone(),
-            loras: loras.clone(),
-            lora_scale,
             scheduler,
             refine: s.refine,
             refine_strength,
         };
-        t2i::run(req).await?;
+        match &pipeline {
+            // SD: reuse the loaded weights across tasks.
+            Some(p) => p.generate(&gen_req)?,
+            // Flux (or any case we couldn't preload): per-task t2i::run.
+            None => {
+                let req = t2i::Request {
+                    prompt: gen_req.prompt,
+                    negative: gen_req.negative,
+                    model: model.clone(),
+                    width: gen_req.width,
+                    height: gen_req.height,
+                    count: gen_req.count,
+                    steps: gen_req.steps,
+                    guidance: gen_req.guidance,
+                    seed: gen_req.seed,
+                    out_dir: gen_req.out_dir,
+                    device: device.clone(),
+                    loras: loras.clone(),
+                    lora_scale,
+                    scheduler: gen_req.scheduler,
+                    refine: gen_req.refine,
+                    refine_strength: gen_req.refine_strength,
+                };
+                t2i::run(req).await?;
+            }
+        }
         seed_offset += count as u64;
     }
 
