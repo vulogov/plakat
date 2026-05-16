@@ -62,10 +62,9 @@ pub async fn run(req: Request) -> Result<()> {
     };
     let strength = req.strength.clamp(0.0, 1.0);
 
-    let mp = progress::multi();
 
     // -------- download weights --------
-    let dl = progress::spinner(&mp, &format!("Downloading SD 1.5 + IP-Adapter weights"));
+    let dl = progress::spinner(&format!("Downloading SD 1.5 + IP-Adapter weights"));
 
     let tokenizer_path = crate::hf::download::get_first_of(&[
         (&base_repo, "tokenizer/tokenizer.json"),
@@ -96,7 +95,7 @@ pub async fn run(req: Request) -> Result<()> {
     dl.finish_with_message("✓ weights ready");
 
     // -------- load models --------
-    let build = progress::spinner(&mp, "Loading models");
+    let build = progress::spinner("Loading models");
     let tokenizer =
         Tokenizer::from_file(&tokenizer_path).map_err(|e| anyhow!("tokenizer: {e}"))?;
     let text_encoder =
@@ -115,7 +114,7 @@ pub async fn run(req: Request) -> Result<()> {
     build.finish_with_message("✓ models loaded");
 
     // -------- encode REF → image tokens --------
-    let style = progress::spinner(&mp, "Encoding reference image");
+    let style = progress::spinner("Encoding reference image");
     let ref_pixels =
         crate::imaging::preprocess::clip_image_tensor(&req.reference, CLIP_H_INPUT, &req.device, dtype)?;
     let img_embeds = image_encoder.encode(&ref_pixels)?;
@@ -139,7 +138,7 @@ pub async fn run(req: Request) -> Result<()> {
     let encoder_hidden_states = Tensor::cat(&[&text_embeds, &image_tokens], 1)?;
 
     // -------- encode IN → latents --------
-    let enc_in = progress::spinner(&mp, "Encoding input image");
+    let enc_in = progress::spinner("Encoding input image");
     let in_pixels = crate::imaging::preprocess::sd_image_tensor(&req.input, w, h, &req.device, dtype)?;
     // VAE encode: stable_diffusion::vae returns a `DiagonalGaussianDistribution`;
     // we sample the mean (deterministic) and scale by 0.18215.
@@ -168,7 +167,7 @@ pub async fn run(req: Request) -> Result<()> {
     let noise = Tensor::randn(0f32, 1f32, shape, &req.device)?.to_dtype(dtype)?;
     let mut latents = scheduler.add_noise(&init_latents, noise, start_t)?;
 
-    let bar = progress::step_bar(&mp, active.len() as u64, "stylize");
+    let bar = progress::step_bar( active.len() as u64, "stylize");
     for &timestep in active {
         let latent_in = scheduler.scale_model_input(latents.clone(), timestep)?;
         let noise_pred = unet.forward(&latent_in, timestep as f64, &encoder_hidden_states)?;

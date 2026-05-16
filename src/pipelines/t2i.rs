@@ -169,15 +169,18 @@ pub async fn run(req: Request) -> Result<()> {
 
     crate::pipelines::scheduler::check_device_support(req.scheduler, &req.device)?;
 
+    // Defensive: scenario and other callers may pass out_dir as a deep path.
+    std::fs::create_dir_all(&req.out_dir)
+        .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
+
     let (w, h) = (req.width as usize, req.height as usize);
     let cfg = variant.config(w, h)?;
     let dtype = variant.dtype(&req.device);
     let do_cfg = req.guidance > 1.0;
 
-    let mp = progress::multi();
 
     // ---- download weights ----
-    let dl = progress::spinner(&mp, &format!("Resolving weights for {repo}"));
+    let dl = progress::spinner(&format!("Resolving weights for {repo}"));
 
     // Legacy SD repos ship vocab.json + merges.txt instead of the consolidated
     // tokenizer.json. The OpenAI CLIP tokenizer is bit-for-bit identical to
@@ -244,7 +247,7 @@ pub async fn run(req: Request) -> Result<()> {
     dl.finish_with_message(format!("✓ weights ready for {repo}"));
 
     // ---- load models + text embeddings ----
-    let build = progress::spinner(&mp, "Loading models");
+    let build = progress::spinner("Loading models");
 
     let tok_l =
         Tokenizer::from_file(&tokenizer_l).map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
@@ -284,7 +287,7 @@ pub async fn run(req: Request) -> Result<()> {
     let (effective_unet_path, _lora_tmp) = if req.loras.is_empty() {
         (unet_path.clone(), None)
     } else {
-        let resolve_spinner = progress::spinner(&mp, "Resolving LoRA file(s)");
+        let resolve_spinner = progress::spinner("Resolving LoRA file(s)");
         let mut resolved = Vec::with_capacity(req.loras.len());
         for spec in &req.loras {
             resolved.push(spec.resolve().await?);
@@ -294,7 +297,7 @@ pub async fn run(req: Request) -> Result<()> {
             resolved.len()
         ));
 
-        let lora_spinner = progress::spinner(&mp, "Merging LoRA into UNet");
+        let lora_spinner = progress::spinner("Merging LoRA into UNet");
         let tmp = tempfile::Builder::new()
             .prefix("plakat-merged-unet-")
             .suffix(".safetensors")
@@ -341,7 +344,6 @@ pub async fn run(req: Request) -> Result<()> {
         latents = (latents * scheduler.init_noise_sigma())?;
 
         let bar = progress::step_bar(
-            &mp,
             timesteps.len() as u64,
             &format!("img {}/{}", idx + 1, req.count),
         );
@@ -386,7 +388,6 @@ pub async fn run(req: Request) -> Result<()> {
                     latents = polish.add_noise(&latents, noise, start_t)?;
 
                     let rbar = progress::step_bar(
-                        &mp,
                         active.len() as u64,
                         &format!("polish {}/{}", idx + 1, req.count),
                     );

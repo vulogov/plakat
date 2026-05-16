@@ -108,10 +108,9 @@ pub async fn run(req: Request) -> Result<()> {
         bail!("Flux requires width and height divisible by 16, both ≥ 16");
     }
 
-    let mp = progress::multi();
 
     // ---------- download weights ----------
-    let dl = progress::spinner(&mp, &format!("Downloading weights for {}", req.repo));
+    let dl = progress::spinner(&format!("Downloading weights for {}", req.repo));
     let main_path = crate::hf::download::get_file(&req.repo, req.variant.main_filename())
         .await
         .with_context(|| format!("{}", req.variant.main_filename()))?;
@@ -145,7 +144,7 @@ pub async fn run(req: Request) -> Result<()> {
     dl.finish_with_message("✓ weights ready");
 
     // ---------- load text encoders ----------
-    let build = progress::spinner(&mp, "Loading text encoders");
+    let build = progress::spinner("Loading text encoders");
 
     let clip_cfg = sdclip::Config::v1_5(); // CLIP-L
     let clip_text =
@@ -170,7 +169,7 @@ pub async fn run(req: Request) -> Result<()> {
     build.finish_with_message("✓ text encoders ready");
 
     // ---------- encode prompt ----------
-    let enc = progress::spinner(&mp, "Encoding prompt");
+    let enc = progress::spinner("Encoding prompt");
 
     // CLIP-L: tokenize to 77, run, pool at EOT (highest token id position).
     let mut clip_ids = clip_tok
@@ -198,7 +197,7 @@ pub async fn run(req: Request) -> Result<()> {
     enc.finish_with_message("✓ prompt encoded");
 
     // ---------- load flux + ae ----------
-    let load = progress::spinner(&mp, "Loading transformer + autoencoder");
+    let load = progress::spinner("Loading transformer + autoencoder");
     let flux_vb =
         unsafe { VarBuilder::from_mmaped_safetensors(&[&main_path], dtype, &req.device)? };
     let flux_model = fmodel::Flux::new(&req.variant.flux_config(), flux_vb)?;
@@ -235,7 +234,6 @@ pub async fn run(req: Request) -> Result<()> {
         let timesteps = sampling::get_schedule(steps, shift);
 
         let bar = progress::step_bar(
-            &mp,
             (timesteps.len().saturating_sub(1)) as u64,
             &format!("img {}/{}", idx + 1, req.count),
         );

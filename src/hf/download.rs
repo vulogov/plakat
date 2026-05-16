@@ -1,8 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use hf_hub::api::tokio::{Api, ApiBuilder};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
-use std::time::Duration;
 
 fn api() -> Result<Api> {
     let token = std::env::var("HF_TOKEN")
@@ -96,15 +94,7 @@ pub async fn get_file(repo: &str, file: &str) -> Result<PathBuf> {
     let repo = crate::hf::resolve_alias(repo).to_string();
     let api = api()?.model(repo.clone());
 
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    pb.set_message(format!("⤓ {repo}  {file}"));
-    pb.enable_steady_tick(Duration::from_millis(80));
-
+    let pb = crate::ui::progress::spinner(&format!("⤓ {repo}  {file}"));
     match api.get(file).await {
         Ok(path) => {
             pb.finish_with_message(format!("✓ {repo}  {file}"));
