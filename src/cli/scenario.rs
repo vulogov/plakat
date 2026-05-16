@@ -86,6 +86,14 @@ struct TaskDef {
     scene: String,
     weather: String,
     prompt: String,
+    /// Optional path to a style reference image. If set, every generated
+    /// image for this task is also run through `stylize` (IP-Adapter) using
+    /// this image as REF. Original + styled both land in the task directory.
+    #[serde(default)]
+    style: Option<PathBuf>,
+    /// IP-Adapter strength for the style pass (0..1). Higher = more REF.
+    #[serde(rename = "style-strength", default)]
+    style_strength: Option<f32>,
 }
 
 pub async fn run(args: ScenarioArgs) -> Result<()> {
@@ -250,6 +258,17 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 seed + seed_offset,
                 seed + seed_offset + count as u64 - 1,
             ));
+            if let Some(style_ref) = &task.style {
+                let strength = task.style_strength.unwrap_or(0.6);
+                let exists = if style_ref.exists() { "ok" } else { "MISSING" };
+                crate::ui::progress::println(&format!(
+                    "  {} would stylize each with REF {} (strength {:.2}, {})",
+                    style("(dry-run)").dim(),
+                    style_ref.display(),
+                    strength,
+                    exists,
+                ));
+            }
             seed_offset += count as u64;
             continue;
         }
@@ -275,8 +294,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             // Flux (or any case we couldn't preload): per-task t2i::run.
             None => {
                 let req = t2i::Request {
-                    prompt: gen_req.prompt,
-                    negative: gen_req.negative,
+                    prompt: gen_req.prompt.clone(),
+                    negative: gen_req.negative.clone(),
                     model: model.clone(),
                     width: gen_req.width,
                     height: gen_req.height,
@@ -284,7 +303,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     steps: gen_req.steps,
                     guidance: gen_req.guidance,
                     seed: gen_req.seed,
-                    out_dir: gen_req.out_dir,
+                    out_dir: gen_req.out_dir.clone(),
                     device: device.clone(),
                     loras: loras.clone(),
                     lora_scale,
@@ -295,6 +314,29 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 t2i::run(req).await?;
             }
         }
+
+        // Optional post-generate style pass.
+        if let Some(style_ref) = &task.style {
+            if !style_ref.exists() {
+                crate::ui::progress::println(&format!(
+                    "  {} style reference not found: {} — skipping",
+                    style("warn:").yellow().bold(),
+                    style_ref.display(),
+                ));
+            } else {
+                run_style_pass(
+                    style_ref,
+                    task.style_strength.unwrap_or(0.6),
+                    &gen_req.out_dir,
+                    seed + seed_offset,
+                    count,
+                    Variant::detect(&model).is_flux(),
+                    &device,
+                )
+                .await;
+            }
+        }
+
         seed_offset += count as u64;
     }
 
@@ -342,6 +384,64 @@ fn join_parts(parts: &[&str]) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Run the IP-Adapter stylize pass on every image produced by a task. The
+/// original `plakat-<seed>.png` (or `plakat-flux-<seed>.png`) is preserved;
+/// the styled version is written next to it as `…-styled.png`.
+///
+/// Failures on individual images are logged but don't abort the scenario —
+/// you keep the original even if stylization fails (e.g. SDXL output with
+/// dims stylize can't handle).
+async fn run_style_pass(
+    ref_path: &std::path::Path,
+    strength: f32,
+    out_dir: &std::path::Path,
+    seed_start: u64,
+    count: u32,
+    is_flux: bool,
+    device: &candle_core::Device,
+) {
+    let prefix = if is_flux { "plakat-flux" } else { "plakat" };
+    for i in 0..count {
+        let seed = (seed_start + i as u64) & (u32::MAX as u64);
+        let in_path = out_dir.join(format!("{prefix}-{seed}.png"));
+        let out_path = out_dir.join(format!("{prefix}-{seed}-styled.png"));
+
+        if !in_path.exists() {
+            crate::ui::progress::println(&format!(
+                "  {} expected {} not on disk — stylize skipped",
+                style("warn:").yellow().bold(),
+                in_path.display(),
+            ));
+            continue;
+        }
+
+        crate::ui::progress::println(&format!(
+            "  {} {} (REF {}, strength {:.2})",
+            style("stylize").cyan().bold(),
+            in_path.display(),
+            ref_path.display(),
+            strength,
+        ));
+
+        let req = crate::pipelines::stylize::Request {
+            input: in_path,
+            reference: ref_path.to_path_buf(),
+            out: out_path,
+            strength,
+            model: "sd15".to_string(),
+            steps: 30,
+            seed: Some(seed),
+            device: device.clone(),
+        };
+        if let Err(e) = crate::pipelines::stylize::run(req).await {
+            crate::ui::progress::println(&format!(
+                "  {} stylize failed: {e}",
+                style("warn:").yellow().bold(),
+            ));
+        }
+    }
 }
 
 fn short(s: &str, n: usize) -> String {
