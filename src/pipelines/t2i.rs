@@ -204,10 +204,11 @@ pub struct Pipeline {
     refiner_unet: Option<UNet2DConditionModel>,
     device: Device,
     dtype: DType,
-    // Held to keep the merged-UNet tempfile alive for the Pipeline's lifetime.
-    // The UNet's mmap actually survives the temp file's unlink on Unix, but
-    // holding the guard avoids relying on that.
-    _lora_tmp: Option<tempfile::NamedTempFile>,
+    // Held to keep merged-weight tempfiles alive for the Pipeline's lifetime.
+    // One per target merged (UNet, optional CLIP-L, optional CLIP-G). The
+    // mmaps actually survive the temp file's unlink on Unix, but holding
+    // the guards avoids relying on that.
+    _lora_tmp: Vec<tempfile::NamedTempFile>,
 }
 
 const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
@@ -362,12 +363,95 @@ impl Pipeline {
             None => None,
         };
 
+        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
+
+        // ---- LoRA: resolve once, then merge per target ----
+        let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
+            Vec::new()
+        } else {
+            let resolve_spinner = progress::spinner("Resolving LoRA file(s)");
+            let mut v = Vec::with_capacity(req.loras.len());
+            for spec in &req.loras {
+                v.push(spec.resolve().await?);
+            }
+            resolve_spinner.finish_with_message(format!("✓ resolved {} LoRA file(s)", v.len()));
+            v
+        };
+
+        let merge_target_for = |is_xl: bool, target: crate::pipelines::lora::MergeTarget|
+            -> crate::pipelines::lora::MergeTarget {
+            let _ = is_xl;
+            target
+        };
+
+        // Merge into UNet.
+        let effective_unet_path = if resolved_loras.is_empty() {
+            unet_path.clone()
+        } else {
+            let spin = progress::spinner("Merging LoRA into UNet");
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-merged-unet-")
+                .suffix(".safetensors")
+                .tempfile()?;
+            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
+                &unet_path,
+                tmp.path(),
+                &resolved_loras,
+                req.lora_scale,
+                &req.device,
+                crate::pipelines::lora::MergeTarget::UNET,
+            )?;
+            spin.finish_with_message(format!(
+                "✓ merged {modified}/{targets} UNet LoRA target(s)"
+            ));
+            let p = tmp.path().to_path_buf();
+            lora_tmps.push(tmp);
+            p
+        };
+        let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
+
+        // Merge into CLIP-L (text_encoder).
+        let te_l_target = merge_target_for(
+            variant.is_xl(),
+            if variant.is_xl() {
+                crate::pipelines::lora::MergeTarget::TE1_SDXL
+            } else {
+                crate::pipelines::lora::MergeTarget::TE_SD15
+            },
+        );
+        let effective_te_l_path = if resolved_loras.is_empty() {
+            text_enc_l_path.clone()
+        } else {
+            let spin = progress::spinner(&format!("Merging LoRA into {}", te_l_target.name));
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-merged-te-l-")
+                .suffix(".safetensors")
+                .tempfile()?;
+            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
+                &text_enc_l_path,
+                tmp.path(),
+                &resolved_loras,
+                req.lora_scale,
+                &req.device,
+                te_l_target,
+            )?;
+            spin.finish_with_message(format!(
+                "✓ merged {modified}/{targets} {} LoRA target(s)",
+                te_l_target.name
+            ));
+            let p = tmp.path().to_path_buf();
+            lora_tmps.push(tmp);
+            p
+        };
         let text_encoder_l = stable_diffusion::build_clip_transformer(
             &cfg.clip,
-            &text_enc_l_path,
+            &effective_te_l_path,
             &req.device,
             dtype,
         )?;
+
+        // Merge into CLIP-G (text_encoder_2) for SDXL.
         let text_encoder_g = if variant.is_xl() {
             let cfg_g = cfg
                 .clip2
@@ -376,48 +460,40 @@ impl Pipeline {
             let p = text_enc_g_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
+            let effective_te_g_path = if resolved_loras.is_empty() {
+                p.clone()
+            } else {
+                let target = crate::pipelines::lora::MergeTarget::TE2_SDXL;
+                let spin = progress::spinner(&format!("Merging LoRA into {}", target.name));
+                let tmp = tempfile::Builder::new()
+                    .prefix("plakat-merged-te-g-")
+                    .suffix(".safetensors")
+                    .tempfile()?;
+                let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
+                    p,
+                    tmp.path(),
+                    &resolved_loras,
+                    req.lora_scale,
+                    &req.device,
+                    target,
+                )?;
+                spin.finish_with_message(format!(
+                    "✓ merged {modified}/{targets} {} LoRA target(s)",
+                    target.name
+                ));
+                let path = tmp.path().to_path_buf();
+                lora_tmps.push(tmp);
+                path
+            };
             Some(stable_diffusion::build_clip_transformer(
                 cfg_g,
-                p,
+                &effective_te_g_path,
                 &req.device,
                 dtype,
             )?)
         } else {
             None
         };
-
-        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
-
-        // LoRAs: merge into a temp UNet safetensors, then build_unet from that path.
-        let (effective_unet_path, lora_tmp) = if req.loras.is_empty() {
-            (unet_path.clone(), None)
-        } else {
-            let resolve_spinner = progress::spinner("Resolving LoRA file(s)");
-            let mut resolved = Vec::with_capacity(req.loras.len());
-            for spec in &req.loras {
-                resolved.push(spec.resolve().await?);
-            }
-            resolve_spinner
-                .finish_with_message(format!("✓ resolved {} LoRA file(s)", resolved.len()));
-
-            let lora_spinner = progress::spinner("Merging LoRA into UNet");
-            let tmp = tempfile::Builder::new()
-                .prefix("plakat-merged-unet-")
-                .suffix(".safetensors")
-                .tempfile()?;
-            let (modified, targets) = crate::pipelines::lora::merge_loras_into_unet(
-                &unet_path,
-                tmp.path(),
-                &resolved,
-                req.lora_scale,
-                &req.device,
-            )?;
-            lora_spinner.finish_with_message(format!(
-                "✓ merged {modified}/{targets} LoRA target(s) into UNet"
-            ));
-            (tmp.path().to_path_buf(), Some(tmp))
-        };
-        let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
 
         // Optional second UNet: SDXL refiner.
         let refiner_unet = if req.use_refiner {
@@ -469,7 +545,7 @@ impl Pipeline {
             refiner_unet,
             device: req.device,
             dtype,
-            _lora_tmp: lora_tmp,
+            _lora_tmp: lora_tmps,
         })
     }
 
