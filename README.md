@@ -247,15 +247,20 @@ calling the enhancer or generating anything.
 
 ### Performance
 
-Both pipeline families load once and share across all tasks in a
+Every pipeline family loads once and shares across all tasks in a
 scenario:
 
-- SD-family (`Pipeline` in `src/pipelines/t2i.rs`) — UNet, VAE, CLIP
-  text encoders, and merged LoRA(s) all loaded once.
-- Flux (`Pipeline` in `src/pipelines/flux.rs`) — transformer, AE,
-  T5-XXL, and CLIP-L loaded once. For a 5-task Flux scenario this
-  saves ~5 × the model-load time, which on Flux is ~30 s of weight
-  mmap + GPU upload (~33 GB of weights).
+- **SD-family** (`Pipeline` in `src/pipelines/t2i.rs`) — UNet, VAE,
+  CLIP text encoders, and merged LoRA(s) all loaded once.
+- **Flux** (`Pipeline` in `src/pipelines/flux.rs`) — transformer, AE,
+  T5-XXL, and CLIP-L loaded once. ~30 s of weight mmap + GPU upload
+  saved per task on a Flux scenario.
+- **Stylize** (`Pipeline` in `src/pipelines/stylize.rs`, used when any
+  task declares `style:`) — SD 1.5 base + IP-Adapter projection +
+  CLIP-H image encoder (the big one, ~2.5 GB) loaded once. Also
+  caches the empty-text embedding since every stylize call uses it.
+- **Real-ESRGAN** (`EsrganPipeline` in `src/imaging/upscale.rs`) — the
+  RRDBNet model loaded once when `upscale.method` is an ML variant.
 
 **HJSON gotchas**
 
@@ -360,8 +365,9 @@ then all `count` images share the enhanced prompt).
   See GENERATE.md for the format coverage table.)
 <!-- shared FluxPipeline landed in 0.4 — both SD and Flux scenarios load once -->
 
-- Shared `StylizePipeline` (the IP-Adapter image encoder reloads per image
-  inside the stylize step)
+<!-- shared StylizePipeline landed in 0.4 — the 2.5 GB CLIP-H image encoder
+     and IP-Adapter projection load once per scenario, reused across every
+     `style:` task. -->
 - Per-task overrides for things currently global (`scheduler`, `refine`,
   `negative`, …)
 - Schedulers beyond DDIM / Euler-A / UniPC
