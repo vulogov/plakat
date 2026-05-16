@@ -247,12 +247,15 @@ calling the enhancer or generating anything.
 
 ### Performance
 
-For SD-family scenarios, the UNet/VAE/CLIP/LoRA are loaded **once** and
-shared across all tasks (see `Pipeline` in `src/pipelines/t2i.rs`). For a
-5-task scenario this saves roughly 5× the model-load time on Metal.
+Both pipeline families load once and share across all tasks in a
+scenario:
 
-Flux scenarios reload per task (Flux has its own pipeline module; a shared
-`FluxPipeline` is a future addition).
+- SD-family (`Pipeline` in `src/pipelines/t2i.rs`) — UNet, VAE, CLIP
+  text encoders, and merged LoRA(s) all loaded once.
+- Flux (`Pipeline` in `src/pipelines/flux.rs`) — transformer, AE,
+  T5-XXL, and CLIP-L loaded once. For a 5-task Flux scenario this
+  saves ~5 × the model-load time, which on Flux is ~30 s of weight
+  mmap + GPU upload (~33 GB of weights).
 
 **HJSON gotchas**
 
@@ -355,8 +358,8 @@ then all `count` images share the enhanced prompt).
 - SwinIR / LDSR upscalers (Real-ESRGAN is in; other ML upscalers aren't)
 - (Nothing major outstanding for LoRA — UNet + text-encoder(s) all merge.
   See GENERATE.md for the format coverage table.)
-- Shared `FluxPipeline` across scenario tasks (SD is shared; Flux still
-  reloads per task)
+<!-- shared FluxPipeline landed in 0.4 — both SD and Flux scenarios load once -->
+
 - Shared `StylizePipeline` (the IP-Adapter image encoder reloads per image
   inside the stylize step)
 - Per-task overrides for things currently global (`scheduler`, `refine`,
