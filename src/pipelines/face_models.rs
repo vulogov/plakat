@@ -2,20 +2,19 @@
 // aren't all called from the main pipeline — silence the warnings.
 #![allow(dead_code)]
 
-//! Face-identity models for Phase 4 (FaceID).
+//! Face-identity models for the FaceID strategies.
 //!
 //! Three things live here:
 //!   1. **InsightFace IR-ResNet50** — the ArcFace backbone (image → 512-d
 //!      unit-norm embedding).
 //!   2. **`FaceAlignment` + `prepare_face_tensor`** — the bridge from a
 //!      photo on disk to the 112×112 RGB tensor ArcFace consumes. Three
-//!      alignment modes in priority order: 5-point landmarks (Phase
-//!      4c.3, proper similarity-transform alignment via Umeyama's
-//!      method); bbox crop (4c.1); centre-crop fallback (4b).
+//!      alignment modes in priority order: 5-point landmarks (proper
+//!      similarity-transform alignment via Umeyama's method), bbox crop,
+//!      centre-crop fallback.
 //!   3. **`FaceIdEncoder`** — the `IdentityEncoder` impl that combines
 //!      the ArcFace backbone, the IP-Adapter-FaceID image-proj MLP, and
-//!      (optionally, Phase 4c.4) the SCRFD detector for auto landmark
-//!      detection.
+//!      an optional SCRFD detector for auto landmark detection.
 //!
 //! ## IR-ResNet50 architecture
 //!
@@ -91,16 +90,16 @@ pub const LANDMARK_ORDER: &[&str] = &[
 /// from richest to crudest: landmarks > bbox > centre-crop.
 #[derive(Clone, Copy, Debug)]
 pub enum FaceAlignment {
-    /// Phase 4b default — resize + centre-crop. Works for tight
-    /// head-and-shoulders photos.
+    /// Resize + centre-crop fallback. Works for tight head-and-shoulders
+    /// photos.
     CenterCrop,
-    /// Phase 4c.1 — crop to a user-supplied bbox in normalised photo
-    /// coordinates `[x0, y0, x1, y1]` before the 112×112 resize.
+    /// Crop to a user-supplied bbox in normalised photo coordinates
+    /// `[x0, y0, x1, y1]` before the 112×112 resize.
     Bbox([f32; 4]),
-    /// Phase 4c.3 — 5-point similarity-transform alignment to ArcFace's
-    /// canonical 112×112 reference. The `[[x, y]; 5]` array is in
-    /// normalised photo coordinates, ordered per `LANDMARK_ORDER`.
-    /// Recovers the last ~15–25% of ArcFace's discriminative power.
+    /// 5-point similarity-transform alignment to ArcFace's canonical
+    /// 112×112 reference. The `[[x, y]; 5]` array is in normalised
+    /// photo coordinates, ordered per `LANDMARK_ORDER`. Recovers the
+    /// last ~15–25% of ArcFace's discriminative power.
     Landmarks([[f32; 2]; 5]),
 }
 
@@ -294,15 +293,15 @@ fn align_to_arcface_template(
 /// expects, using the richest alignment available.
 ///
 /// Alignment priority (richest first):
-///   * `FaceAlignment::Landmarks` — **Phase 4c.3**: 5-point similarity
-///     transform to ArcFace's canonical template. The right way to
-///     align — recovers the last ~15–25% of ArcFace's discriminative
-///     power vs cruder alignment.
-///   * `FaceAlignment::Bbox` — **Phase 4c.1**: user-supplied bbox.
-///     Crops to the bbox, then resizes to 112×112. No rotation/scale
-///     correction; better than centre-crop on non-centred photos.
-///   * `FaceAlignment::CenterCrop` — **Phase 4b**: shorter-side resize
-///     + centre-crop. Falls back when no better alignment supplied.
+///   * `FaceAlignment::Landmarks` — 5-point similarity transform to
+///     ArcFace's canonical template. The right way to align —
+///     recovers the last ~15–25% of ArcFace's discriminative power vs
+///     cruder alignment.
+///   * `FaceAlignment::Bbox` — user-supplied bbox. Crops to the bbox,
+///     then resizes to 112×112. No rotation/scale correction; better
+///     than centre-crop on non-centred photos.
+///   * `FaceAlignment::CenterCrop` — shorter-side resize + centre-crop.
+///     Falls back when no better alignment supplied.
 ///
 /// All paths use InsightFace's `(x − 127.5) / 127.5` normalisation.
 /// Returns `(1, 3, 112, 112)`.
@@ -423,7 +422,7 @@ impl PRelu {
 //
 // Verified against the `arcface_r50.safetensors` produced by the
 // `onnx2torch` + `safetensors.torch` conversion path in PERSONA.md
-// (Phase 4b setup, Route A). 263 tensors total, 16 per first-stage
+// (see PERSONA.md, FaceID setup Route A). 263 tensors total, 16 per first-stage
 // block + 14 per subsequent.
 // =====================================================================
 
@@ -640,15 +639,11 @@ fn make_layer(
 }
 
 // =====================================================================
-// FaceIdEncoder — Phase 4 scaffolding.
+// FaceIdEncoder — combines IR-ResNet50 + IP-Adapter-FaceID image-proj.
 //
 // Combines IR-ResNet50 (this file) with `ImageProj` (existing IP-Adapter
-// projection from `ip_adapter.rs`) — exactly the shape FaceID needs:
-//     ArcFace(112×112×3) → 512-d → ImageProj(512 → 4 × cross_attn_dim)
-//
-// **Not yet wired into `IdentityEncoder`** because we have no way to
-// produce the aligned 112×112 input from an arbitrary photo. Phase 4b
-// adds SCRFD detection + 5-landmark alignment and the trait impl.
+// projection) — exactly the shape FaceID needs:
+//     ArcFace(112×112×3) → 512-d → image-proj(512 → 4 × cross_attn_dim)
 // =====================================================================
 
 /// IP-Adapter-FaceID image-proj: a 2-layer MLP + LayerNorm. Maps a
@@ -736,8 +731,8 @@ impl FaceIdImageProj {
 }
 
 /// Combined ArcFace + FaceID image-proj encoder, plus an optional
-/// SCRFD detector (Phase 4c.4) that auto-fills 5-point landmarks when
-/// the caller hasn't supplied any.
+/// SCRFD detector that auto-fills 5-point landmarks when the caller
+/// hasn't supplied any.
 pub struct FaceIdEncoder {
     arcface: IResnet50,
     image_proj: FaceIdImageProj,
