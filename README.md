@@ -14,6 +14,9 @@ Models are pulled from HuggingFace and cached locally.
   upscales the result. Pipelines load once and are shared across tasks.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
   (SD 1.5 base).
+- **Portrait** — generate a portrait, optionally guided by a reference
+  photo (IP-Adapter-Plus-Face on SD 1.5). Portrait-tuned defaults: 3:4
+  aspect, face/anatomy negatives baked in.
 - **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
   Local files or HF repos (auto-discovered). UNet + both text encoders.
 - **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
@@ -86,6 +89,10 @@ plakat scenario examples/scenario.hjson
 plakat stylize --in photo.jpg --ref painting.jpg --out styled.png \
     --strength 0.6
 
+# 7b. Portrait from a reference photo (IP-Adapter-Plus-Face)
+plakat portrait "cinematic close-up, soft Rembrandt lighting" \
+    --photo face.jpg --face-strength 0.8 --size 768x1024
+
 # 8. Real-ESRGAN upscale to 4×
 plakat upscale --in small.png --out big.png \
     --method real-esrgan-x4 --device metal
@@ -105,6 +112,7 @@ plakat models rm sd15 --yes
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. All quality knobs (scheduler, refine, LoRA, enhancer) attach here. |
+| `portrait <PROMPT>` | Portrait generation, optionally guided by a reference photo (IP-Adapter-Plus-Face on SD 1.5). |
 | `scenario <FILE>` | Batch-generate from an HJSON config. See [Scenario configuration](#scenario-configuration). |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize an image, classical or Real-ESRGAN. |
@@ -323,6 +331,41 @@ SD 1.5/2.1/SDXL, Euler-Ancestral for SDXL-Turbo).
 
 If unsure, on Metal: `euler-a` (stochastic) or `euler` (deterministic). On
 CUDA/CPU: `dpmpp-2m`. With LCM-LoRA: `lcm`.
+
+## Portrait
+
+```
+plakat portrait <PROMPT> [--photo PATH] [--face-strength F] [...]
+```
+
+Portrait-tuned text-to-image. With `--photo`, uses **IP-Adapter-Plus-Face**
+on SD 1.5: the reference photo's CLIP-H penultimate hidden state is run
+through a Perceiver resampler into 16 image tokens, which are concatenated
+onto the text tokens and consumed by the UNet's cross-attention.
+
+```bash
+# Photo-guided (recommended use)
+plakat portrait "cinematic close-up, golden hour, shallow depth of field" \
+    --photo face.jpg --face-strength 0.8
+
+# Text-only with portrait-tuned defaults (no photo, no extra download)
+plakat portrait "studio portrait of an astronaut, dramatic lighting" \
+    --size 768x1024 --steps 30 --scheduler euler-a
+```
+
+`--face-strength` scales the image-token contribution: `0.0` falls back to
+text-only, `0.8` (default) is a strong likeness, `>1.0` over-amplifies the
+face at the cost of prompt adherence. LoRAs and `--refine` stack normally.
+
+Quality caveat: candle 0.8's UNet exposes no cross-attention hooks, so the
+*decoupled* IP-Adapter path (separate `to_k_ip`/`to_v_ip` per block) is not
+wired up — identity tokens travel via the same cross-attention as text. The
+result is recognisable but not pixel-perfect (~50–70% of the diffusers
+reference). Phase 2 — FaceID / InstantID — is on the roadmap.
+
+Phase 1 limits: SD 1.5 only; no automatic face crop (pass a head-and-shoulders
+photo); first run adds ~50 MB for the Plus-Face safetensors plus ~2.5 GB for
+CLIP-H (shared with `stylize`).
 
 ## Polish & refiner
 

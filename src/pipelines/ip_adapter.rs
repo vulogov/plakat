@@ -12,9 +12,9 @@
 //! unused here. Quality is lower than reference IP-Adapter; visible style
 //! transfer still occurs.
 
-use anyhow::Result;
-use candle_core::{DType, Device, Module, Tensor};
-use candle_nn::VarBuilder;
+use anyhow::{Result, anyhow};
+use candle_core::{D, DType, Device, Module, Tensor};
+use candle_nn::{LayerNorm, Linear, VarBuilder};
 use candle_transformers::models::clip::text_model::Activation;
 use candle_transformers::models::clip::vision_model::{
     ClipVisionConfig, ClipVisionTransformer,
@@ -70,6 +70,30 @@ impl ImageEncoder {
         let pooled = self.vision.forward(pixels)?;
         Ok(self.visual_projection.forward(&pooled)?)
     }
+
+    /// Per-layer hidden states, indexed from the end of the encoder.
+    /// `n_from_end == 2` returns the penultimate transformer block's output
+    /// — the (B, 257, 1280) tensor IP-Adapter-Plus consumes.
+    ///
+    /// candle's `output_hidden_states` returns `num_layers + 1` entries:
+    ///   * indices `0 .. num_layers`: per-transformer-block outputs
+    ///   * index `num_layers`:        pooled + post-layernormed CLS token
+    /// Diffusers' `hidden_states[-2]` (used by IP-Adapter-Plus) is the
+    /// second-to-last transformer output, which lives at `len - 3` here
+    /// (one extra "pooled" entry past the last layer plus a step back).
+    pub fn hidden_state_from_end(&self, pixels: &Tensor, n_from_end: usize) -> Result<Tensor> {
+        let states = self.vision.output_hidden_states(pixels)?;
+        if n_from_end < 1 || n_from_end + 1 > states.len() {
+            return Err(anyhow!(
+                "hidden_state_from_end({n_from_end}) out of range; have {} states",
+                states.len()
+            ));
+        }
+        // states.len() = num_layers + 1.
+        // Diffusers index [-k] over a length-(num_layers+1) list = our (len - 1 - k).
+        // For k=2 (penultimate): index = len - 3.
+        Ok(states[states.len() - 1 - n_from_end].clone())
+    }
 }
 
 /// IP-Adapter image projection: Linear(clip_embed_dim → tokens·cross_attn_dim) + LayerNorm.
@@ -114,5 +138,305 @@ impl ImageProj {
         let x = self.proj.forward(image_embeds)?;
         let x = x.reshape((b, self.num_tokens, self.cross_attn_dim))?;
         Ok(self.norm.forward(&x)?)
+    }
+}
+
+// =====================================================================
+// IP-Adapter Plus: Resampler-based projection.
+//
+// "Plus" variants (incl. Plus-Face) replace the simple Linear+LayerNorm
+// projection with a Perceiver-style resampler that produces 16 image
+// tokens instead of 4, attending over per-layer CLIP-H hidden states
+// (penultimate) rather than the pooled CLIP-H output. Architecturally:
+//
+//   latents (16, dim) ←attn← CLIP-H hidden states (257, embed_dim)
+//                     ↓ FF
+//   ... × 4 layers ...
+//   proj_out → (16, output_dim)  ← concatenated onto text token sequence
+//
+// Used by `portrait` (Plus-Face) and a future SDXL Plus path.
+// =====================================================================
+
+/// Hyperparameters for the Plus resampler. The defaults at
+/// `PlusConfig::sd15_face` match `ip-adapter-plus-face_sd15.safetensors`.
+#[derive(Clone, Copy, Debug)]
+pub struct PlusConfig {
+    /// CLIP-H hidden size feeding the resampler (1280 for CLIP-H/14).
+    pub embedding_dim: usize,
+    /// Resampler internal hidden size.
+    pub dim: usize,
+    /// SD cross-attention dim (768 for SD 1.5, 2048 for SDXL).
+    pub output_dim: usize,
+    /// Number of Perceiver layers (attn + FF blocks).
+    pub depth: usize,
+    /// Number of learned query latents (= image tokens emitted).
+    pub num_queries: usize,
+    /// Multi-head attention heads.
+    pub heads: usize,
+    /// Per-head channel dimension.
+    pub dim_head: usize,
+    /// Feed-forward expansion multiplier.
+    pub ff_mult: usize,
+}
+
+impl PlusConfig {
+    /// Matches `h94/IP-Adapter/models/ip-adapter-plus-face_sd15.safetensors`.
+    pub fn sd15_face() -> Self {
+        Self {
+            embedding_dim: 1280,
+            dim: 1280,
+            output_dim: 768,
+            depth: 4,
+            num_queries: 16,
+            heads: 20,
+            dim_head: 64,
+            ff_mult: 4,
+        }
+    }
+}
+
+/// One Perceiver attention block: latents query against `cat(image, latents)`.
+struct PerceiverAttention {
+    norm1: LayerNorm,
+    norm2: LayerNorm,
+    to_q: Linear,
+    to_kv: Linear,
+    to_out: Linear,
+    heads: usize,
+    head_dim: usize,
+    scale: f64,
+}
+
+impl PerceiverAttention {
+    fn new(vs: VarBuilder, dim: usize, heads: usize, head_dim: usize) -> Result<Self> {
+        let inner = heads * head_dim;
+        Ok(Self {
+            norm1: candle_nn::layer_norm(dim, 1e-5, vs.pp("norm1"))?,
+            norm2: candle_nn::layer_norm(dim, 1e-5, vs.pp("norm2"))?,
+            to_q: candle_nn::linear_no_bias(dim, inner, vs.pp("to_q"))?,
+            to_kv: candle_nn::linear_no_bias(dim, inner * 2, vs.pp("to_kv"))?,
+            to_out: candle_nn::linear_no_bias(inner, dim, vs.pp("to_out"))?,
+            heads,
+            head_dim,
+            scale: (head_dim as f64).powf(-0.5),
+        })
+    }
+
+    fn forward(&self, x: &Tensor, latents: &Tensor) -> Result<Tensor> {
+        // x:       (B, n_img,  dim)
+        // latents: (B, n_lat,  dim)
+        let x_n = self.norm1.forward(x)?;
+        let lat_n = self.norm2.forward(latents)?;
+
+        let q = self.to_q.forward(&lat_n)?; // (B, n_lat, inner)
+        let kv_in = Tensor::cat(&[&x_n, &lat_n], 1)?; // (B, n_img + n_lat, dim)
+        let kv = self.to_kv.forward(&kv_in)?; // (B, n_kv, 2*inner)
+        let kv_parts = kv.chunk(2, D::Minus1)?;
+        let k = &kv_parts[0];
+        let v = &kv_parts[1];
+
+        let (b, n_q, _) = q.dims3()?;
+        let n_kv = k.dim(1)?;
+        let q = q
+            .reshape((b, n_q, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = k
+            .reshape((b, n_kv, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = v
+            .reshape((b, n_kv, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+
+        let scores = (q.matmul(&k.transpose(D::Minus2, D::Minus1)?)? * self.scale)?;
+        let attn = candle_nn::ops::softmax_last_dim(&scores)?;
+        let out = attn.matmul(&v)?; // (B, heads, n_q, head_dim)
+
+        let inner = self.heads * self.head_dim;
+        let out = out
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((b, n_q, inner))?;
+        Ok(self.to_out.forward(&out)?)
+    }
+}
+
+/// FeedForward block. Stored as `Sequential[LayerNorm, Linear, GELU, Linear]`
+/// in the reference (keys: layers.<i>.1.0 / .1.1 / .1.3 — index 2 is the GELU,
+/// which carries no parameters).
+struct PerceiverFeedForward {
+    norm: LayerNorm,
+    fc1: Linear,
+    fc2: Linear,
+}
+
+impl PerceiverFeedForward {
+    fn new(vs: VarBuilder, dim: usize, mult: usize) -> Result<Self> {
+        let inner = dim * mult;
+        Ok(Self {
+            norm: candle_nn::layer_norm(dim, 1e-5, vs.pp("0"))?,
+            fc1: candle_nn::linear_no_bias(dim, inner, vs.pp("1"))?,
+            fc2: candle_nn::linear_no_bias(inner, dim, vs.pp("3"))?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let h = self.norm.forward(x)?;
+        let h = self.fc1.forward(&h)?;
+        let h = h.gelu()?;
+        Ok(self.fc2.forward(&h)?)
+    }
+}
+
+struct PerceiverLayer {
+    attn: PerceiverAttention,
+    ff: PerceiverFeedForward,
+}
+
+impl PerceiverLayer {
+    fn new(
+        vs: VarBuilder,
+        dim: usize,
+        heads: usize,
+        head_dim: usize,
+        ff_mult: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            attn: PerceiverAttention::new(vs.pp("0"), dim, heads, head_dim)?,
+            ff: PerceiverFeedForward::new(vs.pp("1"), dim, ff_mult)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor, latents: &Tensor) -> Result<Tensor> {
+        let latents = (latents + self.attn.forward(x, latents)?)?;
+        let latents = (&latents + self.ff.forward(&latents)?)?;
+        Ok(latents)
+    }
+}
+
+/// Plus-variant IP-Adapter projection (Perceiver resampler). Loads the
+/// `image_proj.*` subtree from `ip-adapter-plus-face_sd15.safetensors` etc.
+pub struct ImageProjPlus {
+    proj_in: Linear,
+    proj_out: Linear,
+    /// Learned query latents, shape `(1, num_queries, dim)`.
+    latents: Tensor,
+    layers: Vec<PerceiverLayer>,
+    norm_out: LayerNorm,
+}
+
+impl ImageProjPlus {
+    pub fn load(
+        weights: &Path,
+        cfg: PlusConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], dtype, device)? };
+        let vb = vb.pp("image_proj");
+        let proj_in = candle_nn::linear(cfg.embedding_dim, cfg.dim, vb.pp("proj_in"))?;
+        let proj_out = candle_nn::linear(cfg.dim, cfg.output_dim, vb.pp("proj_out"))?;
+        let latents = vb.get((1, cfg.num_queries, cfg.dim), "latents")?;
+        let norm_out = candle_nn::layer_norm(cfg.output_dim, 1e-5, vb.pp("norm_out"))?;
+        let mut layers = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            layers.push(PerceiverLayer::new(
+                vb.pp("layers").pp(i.to_string()),
+                cfg.dim,
+                cfg.heads,
+                cfg.dim_head,
+                cfg.ff_mult,
+            )?);
+        }
+        Ok(Self {
+            proj_in,
+            proj_out,
+            latents,
+            layers,
+            norm_out,
+        })
+    }
+
+    /// `(B, n_features, embedding_dim)` → `(B, num_queries, output_dim)`.
+    /// `n_features` is typically 257 for CLIP-H/14 at 224×224
+    /// (1 CLS + 256 patches).
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let b = x.dim(0)?;
+        let (_, n_lat, d) = self.latents.dims3()?;
+        let mut latents = self.latents.broadcast_as((b, n_lat, d))?.contiguous()?;
+        let x = self.proj_in.forward(x)?;
+        for layer in &self.layers {
+            latents = layer.forward(&x, &latents)?;
+        }
+        let out = self.proj_out.forward(&latents)?;
+        Ok(self.norm_out.forward(&out)?)
+    }
+}
+
+// =====================================================================
+// IdentityEncoder trait — Phase-2 plug-in point.
+//
+// Whatever identity-preservation strategy a `portrait` call uses
+// (Plus-Face today; FaceID/InstantID later), it boils down to producing
+// a `(1, num_tokens, cross_attn_dim)` tensor that gets concatenated onto
+// the text embeddings. This trait isolates that contract so adding a new
+// strategy is a drop-in.
+// =====================================================================
+
+pub trait IdentityEncoder: Send + Sync {
+    /// Produce identity tokens for `photo`. Shape: `(1, num_tokens, cross_attn_dim)`.
+    fn encode(&self, photo_path: &Path) -> Result<Tensor>;
+    /// Number of image tokens this encoder emits per call.
+    fn num_tokens(&self) -> usize;
+}
+
+/// IP-Adapter-Plus-Face encoder: CLIP-H penultimate hidden states →
+/// Perceiver resampler → 16 image tokens.
+pub struct PlusFaceEncoder {
+    clip_vision: ImageEncoder,
+    image_proj: ImageProjPlus,
+    cfg: PlusConfig,
+    device: Device,
+    dtype: DType,
+}
+
+impl PlusFaceEncoder {
+    pub fn load(
+        clip_vision_weights: &Path,
+        plus_face_weights: &Path,
+        cfg: PlusConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let clip_vision = ImageEncoder::load(clip_vision_weights, device, dtype)?;
+        let image_proj = ImageProjPlus::load(plus_face_weights, cfg, device, dtype)?;
+        Ok(Self {
+            clip_vision,
+            image_proj,
+            cfg,
+            device: device.clone(),
+            dtype,
+        })
+    }
+}
+
+impl IdentityEncoder for PlusFaceEncoder {
+    fn num_tokens(&self) -> usize {
+        self.cfg.num_queries
+    }
+
+    fn encode(&self, photo_path: &Path) -> Result<Tensor> {
+        let pixels = crate::imaging::preprocess::clip_image_tensor(
+            photo_path,
+            224,
+            &self.device,
+            self.dtype,
+        )?;
+        // Plus uses CLIP-H's penultimate transformer hidden state, not the
+        // pooled projection output. (1, 257, 1280) for CLIP-H/14 @ 224.
+        let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
+        self.image_proj.forward(&hidden)
     }
 }

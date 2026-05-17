@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod generate;
 pub mod models;
+pub mod portrait;
 pub mod scenario;
 pub mod stylize;
 pub mod transparent;
@@ -33,6 +34,8 @@ pub struct Cli {
 pub enum Command {
     /// Generate images from a text prompt.
     Generate(generate::GenerateArgs),
+    /// Generate a portrait, optionally from a reference photo.
+    Portrait(portrait::PortraitArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
@@ -54,6 +57,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Generate(args) => {
             let device = crate::device::select(&cli.device)?;
             generate::run(args, device).await
+        }
+        Command::Portrait(args) => {
+            let device = crate::device::select(&cli.device)?;
+            portrait::run(args, device).await
         }
         Command::Stylize(args) => {
             let device = crate::device::select(&cli.device)?;
