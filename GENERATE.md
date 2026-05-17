@@ -147,10 +147,17 @@ Numerical solver for the reverse diffusion ODE.
 | `default` | Use the variant's built-in (DDIM for SD 1.5/2.1/SDXL, Euler-A for SDXL-Turbo). |
 | `ddim` | Deterministic baseline. Reproduces exactly given a seed. |
 | `euler-a` | Euler-Ancestral. **Often higher quality at the same step count** for SD 1.5 / SDXL. Mildly stochastic (varies even with the same seed across runs). |
-| `unipc` | DPM-Solver++ family. **CUDA / CPU only** — candle's UniPC uses F64 ops Metal doesn't implement. |
+| `unipc` | UniPC corrector with Karras sigmas — DPM-Solver++ family. Predictor-corrector tends to be smooth at low step counts. **CUDA / CPU only** (Metal-guarded). |
+| `dpmpp-2m` | DPM-Solver++ 2M Karras — same UniPC class with corrector disabled. Crisper edges than `unipc` at the same step count; widely considered an A1111/ComfyUI "safe default". **CUDA / CPU only**. |
+| `unipc-exp` | UniPC with exponential sigma schedule (vs Karras). Different noise-step distribution; sometimes better at very low step counts. **CUDA / CPU only**. |
 
-If unsure: try `euler-a`. It's almost always at least as good as DDIM
-for the same step count.
+If unsure on Metal: `euler-a`. On CUDA/CPU: `dpmpp-2m` is a strong
+all-purpose default.
+
+**Not yet ported**: deterministic Euler (no noise injection), Heun,
+LCM (would help LCM-LoRA-trained adapters), DDPM (slow reference).
+Each is ~150–250 LoC of vendored Rust because they're separate
+scheduler classes, not config variants of UniPC.
 
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
