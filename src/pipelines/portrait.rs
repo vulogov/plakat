@@ -34,38 +34,15 @@ use candle_transformers::models::stable_diffusion::{
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
-use crate::pipelines::ip_adapter::{
-    IdentityEncoder, PlusConfig, PlusFaceEncoder,
-};
+use crate::pipelines::ip_adapter::IdentityEncoder;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::ui::progress;
 
-// =====================================================================
-// Identity strategy — Phase-2 extension point.
-// =====================================================================
-
-#[derive(Clone, Copy, Debug)]
-pub enum IdentityKind {
-    /// IP-Adapter-Plus-Face on SD 1.5. Phase 1.
-    PlusFace,
-    // Phase 2 placeholders, kept off the enum for now so the build doesn't
-    // grow dead match arms. When we add FaceID / InstantID we extend here
-    // and route through a separate `IdentityEncoder` impl in `ip_adapter`.
-}
-
-impl std::str::FromStr for IdentityKind {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(match s.to_lowercase().as_str() {
-            "plus-face" | "plusface" | "plus_face" => Self::PlusFace,
-            other => bail!(
-                "unknown identity kind {other:?} (try: plus-face). \
-                 FaceID/InstantID are Phase 2 — not yet implemented."
-            ),
-        })
-    }
-}
+// Re-export so callers (CLI, future scenario integration) can keep using
+// `portrait::IdentityKind` even though the enum lives next to its loaders
+// in `ip_adapter`. Phase-2 strategies are added there, not here.
+pub use crate::pipelines::ip_adapter::IdentityKind;
 
 // =====================================================================
 // Request types.
@@ -131,8 +108,6 @@ pub struct GenRequest {
 // Pipeline.
 // =====================================================================
 
-const IPA_REPO: &str = "h94/IP-Adapter";
-
 pub struct Pipeline {
     cfg: StableDiffusionConfig,
     tokenizer: Tokenizer,
@@ -176,8 +151,8 @@ impl Pipeline {
             DType::F16
         };
 
-        // -------- download base SD 1.5 + (optional) identity weights --------
-        let dl = progress::spinner("Resolving portrait weights");
+        // -------- download base SD 1.5 weights --------
+        let dl = progress::spinner("Resolving SD 1.5 weights");
         let tokenizer_path = crate::hf::download::get_first_of(&[
             (&base_repo, "tokenizer/tokenizer.json"),
             ("openai/clip-vit-large-patch14", "tokenizer.json"),
@@ -199,27 +174,7 @@ impl Pipeline {
             (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
         ])
         .await?;
-
-        let identity_files = if let Some(kind) = req.identity {
-            match kind {
-                IdentityKind::PlusFace => {
-                    let face_weights = crate::hf::download::get_file(
-                        IPA_REPO,
-                        "models/ip-adapter-plus-face_sd15.safetensors",
-                    )
-                    .await?;
-                    let clip_weights = crate::hf::download::get_file(
-                        IPA_REPO,
-                        "models/image_encoder/model.safetensors",
-                    )
-                    .await?;
-                    Some((kind, clip_weights, face_weights))
-                }
-            }
-        } else {
-            None
-        };
-        dl.finish_with_message("✓ portrait weights ready");
+        dl.finish_with_message("✓ SD 1.5 weights ready");
 
         // -------- resolve LoRA files (once) --------
         let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
@@ -300,23 +255,28 @@ impl Pipeline {
             dtype,
         )?;
 
-        // Identity encoder, if requested.
-        let (identity_encoder, identity_num_tokens) = if let Some((kind, clip_w, face_w)) =
-            identity_files
-        {
-            match kind {
-                IdentityKind::PlusFace => {
-                    let cfg_id = PlusConfig::sd15_face();
-                    let enc = PlusFaceEncoder::load(&clip_w, &face_w, cfg_id, &req.device, dtype)?;
-                    let n = enc.num_tokens();
-                    (Some(Box::new(enc) as Box<dyn IdentityEncoder>), n)
-                }
+        build.finish_with_message("✓ portrait models loaded");
+
+        // Identity encoder, if requested. The download + module construction
+        // is fully contained in `IdentityKind::load_encoder`, so adding a new
+        // strategy (FaceID, InstantID, …) is a Phase-2 edit in `ip_adapter`
+        // that this function never has to learn about.
+        let (identity_encoder, identity_num_tokens) = if let Some(kind) = req.identity {
+            // Sanity: SD 1.5 UNet has cross_attn_dim 768. Refuse a strategy
+            // whose tokens won't fit, even though Phase 1 only ships one.
+            if kind.cross_attn_dim() != 768 {
+                bail!(
+                    "identity {:?} targets cross_attn_dim {} but SD 1.5 UNet expects 768",
+                    kind,
+                    kind.cross_attn_dim()
+                );
             }
+            let enc = kind.load_encoder(&req.device, dtype).await?;
+            let n = enc.num_tokens();
+            (Some(enc), n)
         } else {
             (None, 0)
         };
-
-        build.finish_with_message("✓ portrait models loaded");
 
         Ok(Self {
             cfg,
