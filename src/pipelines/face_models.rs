@@ -409,24 +409,33 @@ impl PRelu {
 }
 
 // =====================================================================
-// IBasicBlock — pre-activation residual block.
+// IBasicBlock — BN-fused pre-activation residual block.
 //
-//   identity = x          (or downsample(x) when in/out shapes differ)
-//   out = bn3( conv2( prelu( bn2( conv1( bn1(x) ) ) ) ) )
+// Most ONNX exports of iresnet50 fuse `BatchNorm` into the preceding
+// `Conv2d`, so the deployed weights have:
+//   * a single per-block `bn1` (pre-activation — can't be fused away)
+//   * biased `conv1` / `conv2` (each absorbed a post-conv BN)
+//   * a biased `downsample` conv (no separate BN tensor)
+//
+//   identity = downsample(x) or x   (downsample is a single biased conv)
+//   out = conv2( prelu( conv1( bn1(x) ) ) )
 //   out = out + identity
+//
+// Verified against the `arcface_r50.safetensors` produced by the
+// `onnx2torch` + `safetensors.torch` conversion path in PERSONA.md
+// (Phase 4b setup, Route A). 263 tensors total, 16 per first-stage
+// block + 14 per subsequent.
 // =====================================================================
 
 struct IBasicBlock {
     bn1: BatchNorm,
     conv1: Conv2d,
-    bn2: BatchNorm,
     prelu: PRelu,
     conv2: Conv2d,
-    bn3: BatchNorm,
-    /// `Some` when in/out channels differ OR stride > 1.
-    /// Stored as `(conv 1×1, bn)` matching PyTorch's
-    /// `nn.Sequential(conv, bn)` keying (`downsample.0`, `downsample.1`).
-    downsample: Option<(Conv2d, BatchNorm)>,
+    /// `Some` when in/out channels differ OR stride > 1. Flat single
+    /// conv (with bias) — the post-downsample BN was folded into the
+    /// conv's bias during ONNX export.
+    downsample: Option<Conv2d>,
 }
 
 impl IBasicBlock {
@@ -443,28 +452,27 @@ impl IBasicBlock {
             padding: 1,
             ..Default::default()
         };
-        let conv1 = candle_nn::conv2d_no_bias(
+        // conv1 / conv2 have bias because they absorbed bn2 / bn3.
+        let conv1 = candle_nn::conv2d(
             in_channels,
             out_channels,
             3,
             conv1_cfg,
             vs.pp("conv1"),
         )?;
-        let bn2 = candle_nn::batch_norm(out_channels, bn_cfg, vs.pp("bn2"))?;
         let prelu = PRelu::new(vs.pp("prelu"), out_channels)?;
         let conv2_cfg = Conv2dConfig {
             stride,
             padding: 1,
             ..Default::default()
         };
-        let conv2 = candle_nn::conv2d_no_bias(
+        let conv2 = candle_nn::conv2d(
             out_channels,
             out_channels,
             3,
             conv2_cfg,
             vs.pp("conv2"),
         )?;
-        let bn3 = candle_nn::batch_norm(out_channels, bn_cfg, vs.pp("bn3"))?;
 
         let downsample = if stride != 1 || in_channels != out_channels {
             let cfg = Conv2dConfig {
@@ -472,15 +480,16 @@ impl IBasicBlock {
                 padding: 0,
                 ..Default::default()
             };
-            let conv = candle_nn::conv2d_no_bias(
+            // Single biased conv at `downsample.{weight,bias}` (no
+            // Sequential[conv, bn] nesting). The post-downsample BN
+            // was fused into this conv's bias.
+            Some(candle_nn::conv2d(
                 in_channels,
                 out_channels,
                 1,
                 cfg,
-                vs.pp("downsample").pp("0"),
-            )?;
-            let bn = candle_nn::batch_norm(out_channels, bn_cfg, vs.pp("downsample").pp("1"))?;
-            Some((conv, bn))
+                vs.pp("downsample"),
+            )?)
         } else {
             None
         };
@@ -488,25 +497,21 @@ impl IBasicBlock {
         Ok(Self {
             bn1,
             conv1,
-            bn2,
             prelu,
             conv2,
-            bn3,
             downsample,
         })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let identity = match &self.downsample {
-            Some((conv, bn)) => bn.forward_t(&conv.forward(x)?, EVAL)?,
+            Some(conv) => conv.forward(x)?,
             None => x.clone(),
         };
         let h = self.bn1.forward_t(x, EVAL)?;
         let h = self.conv1.forward(&h)?;
-        let h = self.bn2.forward_t(&h, EVAL)?;
         let h = self.prelu.forward(&h)?;
         let h = self.conv2.forward(&h)?;
-        let h = self.bn3.forward_t(&h, EVAL)?;
         Ok((h + identity)?)
     }
 }
@@ -515,12 +520,11 @@ impl IBasicBlock {
 // IR-ResNet50 — the ArcFace backbone.
 // =====================================================================
 
-/// InsightFace IR-ResNet50, layer counts `[3, 4, 14, 3]`. Produces a
-/// 512-d L2-normalised face embedding from a 112×112 RGB face crop.
+/// InsightFace IR-ResNet50 (BN-fused deployment variant), layer counts
+/// `[3, 4, 14, 3]`. Produces a 512-d L2-normalised face embedding from
+/// a 112×112 RGB face crop. See `IBasicBlock` for the fusion model.
 pub struct IResnet50 {
     conv1: Conv2d,
-    bn1: BatchNorm,
-    prelu: PRelu,
     layer1: Vec<IBasicBlock>,
     layer2: Vec<IBasicBlock>,
     layer3: Vec<IBasicBlock>,
@@ -531,12 +535,18 @@ pub struct IResnet50 {
 }
 
 impl IResnet50 {
-    /// Build from a `VarBuilder` rooted at an IR-ResNet50 PyTorch state
-    /// dict (safetensors). Expected key layout:
-    ///   conv1.weight, bn1.{weight,bias,running_mean,running_var}, prelu.weight,
-    ///   layer{1..4}.<i>.{bn1,conv1,bn2,prelu,conv2,bn3}.<…>,
-    ///   layer<X>.0.downsample.{0,1}.<…>   (when stride > 1 or channels change),
+    /// Build from a `VarBuilder` rooted at a fused IR-ResNet50
+    /// state dict (typical ONNX → safetensors export). Expected key
+    /// layout (≈263 tensors total):
+    ///   conv1.{weight,bias},
+    ///   layer{1..4}.<i>.{bn1.<…>,conv1.{weight,bias},prelu.weight,conv2.{weight,bias}},
+    ///   layer<X>.0.downsample.{weight,bias}   (first block of each stage),
     ///   bn2.<…>, fc.{weight,bias}, features.<…>
+    ///
+    /// (No top-level `bn1` / `prelu` — the stem's BN folded into
+    /// `conv1.bias`. No per-block `bn2` / `bn3` — those folded into
+    /// `conv1.bias` / `conv2.bias` respectively. No `downsample.<idx>`
+    /// nesting — the post-downsample BN folded into the conv's bias.)
     pub fn new(vs: VarBuilder) -> Result<Self> {
         let bn_cfg = BatchNormConfig::default();
         let conv1_cfg = Conv2dConfig {
@@ -544,9 +554,10 @@ impl IResnet50 {
             padding: 1,
             ..Default::default()
         };
-        let conv1 = candle_nn::conv2d_no_bias(3, 64, 3, conv1_cfg, vs.pp("conv1"))?;
-        let bn1 = candle_nn::batch_norm(64, bn_cfg, vs.pp("bn1"))?;
-        let prelu = PRelu::new(vs.pp("prelu"), 64)?;
+        // Biased stem conv. The bn1 + prelu that originally followed
+        // were either fused into this bias or dropped during export —
+        // either way, no top-level activations.
+        let conv1 = candle_nn::conv2d(3, 64, 3, conv1_cfg, vs.pp("conv1"))?;
 
         // All four layers downsample (stride 2 on the first block);
         // channel widths double each stage: 64 → 128 → 256 → 512.
@@ -563,8 +574,6 @@ impl IResnet50 {
 
         Ok(Self {
             conv1,
-            bn1,
-            prelu,
             layer1,
             layer2,
             layer3,
@@ -577,9 +586,9 @@ impl IResnet50 {
 
     /// Forward pass. `x: (B, 3, 112, 112)` → `(B, 512)` unit-norm.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.conv1.forward(x)?;
-        let x = self.bn1.forward_t(&x, EVAL)?;
-        let mut x = self.prelu.forward(&x)?;
+        // Stem: just the biased conv1 — no bn / prelu at this level
+        // (they got folded out during export).
+        let mut x = self.conv1.forward(x)?;
 
         for block in &self.layer1 {
             x = block.forward(&x)?;
