@@ -140,14 +140,17 @@ impl ImageProj {
         })
     }
 
-    /// Load from a PyTorch `.bin` state dict, rooted at a sub-key. Used by
-    /// FaceID — `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15.bin` packs
-    /// `image_proj.*` (this) plus `ip_adapter.*` (a UNet cross-attention
-    /// LoRA we don't yet consume) into one file.
+    /// Load from a PyTorch `.bin` state dict, rooted at a sub-key.
+    /// Originally written for FaceID, but FaceID turned out to need
+    /// the 2-layer MLP variant (`face_models::FaceIdImageProj`) — so
+    /// this single-Linear loader is currently unused. Kept around in
+    /// case some future IP-Adapter variant lives in a `.bin` AND uses
+    /// the basic single-Linear projection.
     ///
     /// `from_pth_with_state` roots the `VarBuilder` at
     /// `state_dict[state_key]`, so the inner keys read as `proj.weight`,
     /// `norm.weight` etc. (no `image_proj.` prefix).
+    #[allow(dead_code)]
     pub fn load_from_pth_subtree(
         weights: &Path,
         state_key: &str,

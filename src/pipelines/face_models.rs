@@ -651,12 +651,96 @@ fn make_layer(
 // adds SCRFD detection + 5-landmark alignment and the trait impl.
 // =====================================================================
 
+/// IP-Adapter-FaceID image-proj: a 2-layer MLP + LayerNorm. Maps a
+/// 512-d ArcFace embedding to `num_tokens × cross_attn_dim` cross-
+/// attention tokens.
+///
+/// Architecture (h94's `MLPProjModel`):
+///
+/// ```text
+///   x (B, 512)
+///     │
+///     ▼ Linear(512, 1024)           ← proj.0.weight / proj.0.bias
+///     ▼ GELU                        ← (no params; PyTorch index 1)
+///     ▼ Linear(1024, T × D)         ← proj.2.weight / proj.2.bias
+///     ▼ reshape (B, T, D)
+///     ▼ LayerNorm(D)                ← norm.weight / norm.bias
+///   tokens (B, T, D)
+/// ```
+///
+/// where `T = num_tokens` (4 for FaceID) and `D = cross_attn_dim`
+/// (768 SD 1.5, 2048 SDXL). Hidden width is fixed at `2 × embedding_dim`
+/// per the reference.
+///
+/// Distinct from `ip_adapter::ImageProj` (which is just `Linear → LN`).
+/// ArcFace's 512-d identity vector needs the extra MLP capacity to
+/// project meaningfully into the cross-attention space — basic
+/// IP-Adapter's single Linear isn't enough.
+pub struct FaceIdImageProj {
+    proj_0: Linear,
+    proj_2: Linear,
+    norm: candle_nn::LayerNorm,
+    num_tokens: usize,
+    cross_attn_dim: usize,
+}
+
+impl FaceIdImageProj {
+    /// Load from a PyTorch `.bin` state dict rooted at a sub-key
+    /// (`image_proj` in h94's FaceID `.bin`).
+    pub fn load_from_pth_subtree(
+        weights: &Path,
+        state_key: &str,
+        embedding_dim: usize,
+        cross_attn_dim: usize,
+        num_tokens: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let vb = VarBuilder::from_pth_with_state(weights, dtype, state_key, device)?;
+        // Hidden width = 2 × embedding_dim per the reference impl.
+        let hidden = embedding_dim * 2;
+        let proj_0 = candle_nn::linear(
+            embedding_dim,
+            hidden,
+            vb.pp("proj").pp("0"),
+        )?;
+        // `proj.1` is the GELU activation (no params); skip to `.2`.
+        let proj_2 = candle_nn::linear(
+            hidden,
+            num_tokens * cross_attn_dim,
+            vb.pp("proj").pp("2"),
+        )?;
+        let norm = candle_nn::layer_norm(
+            cross_attn_dim,
+            1e-5,
+            vb.pp("norm"),
+        )?;
+        Ok(Self {
+            proj_0,
+            proj_2,
+            norm,
+            num_tokens,
+            cross_attn_dim,
+        })
+    }
+
+    /// `(B, embedding_dim)` → `(B, num_tokens, cross_attn_dim)`.
+    pub fn forward(&self, embedding: &Tensor) -> Result<Tensor> {
+        let b = embedding.dim(0)?;
+        let h = self.proj_0.forward(embedding)?;
+        let h = h.gelu()?;
+        let h = self.proj_2.forward(&h)?;
+        let h = h.reshape((b, self.num_tokens, self.cross_attn_dim))?;
+        Ok(self.norm.forward(&h)?)
+    }
+}
+
 /// Combined ArcFace + FaceID image-proj encoder, plus an optional
 /// SCRFD detector (Phase 4c.4) that auto-fills 5-point landmarks when
 /// the caller hasn't supplied any.
 pub struct FaceIdEncoder {
     arcface: IResnet50,
-    image_proj: crate::pipelines::ip_adapter::ImageProj,
+    image_proj: FaceIdImageProj,
     /// Optional face detector. `Some` when `PLAKAT_SCRFD_WEIGHTS` is set
     /// and weights load successfully; auto-fills landmarks for ArcFace
     /// alignment. `None` falls back to centre-crop / user-supplied bbox /
@@ -693,8 +777,12 @@ impl FaceIdEncoder {
             VarBuilder::from_mmaped_safetensors(&[arcface_weights], dtype, device)?
         };
         let arcface = IResnet50::new(vb)?;
-        let image_proj = crate::pipelines::ip_adapter::ImageProj::load(
+        // h94's FaceID image-proj lives in a PyTorch `.bin` under the
+        // `image_proj.*` subtree — same convention as the per-variant
+        // helpers below. No safetensors variant exists for FaceID's MLP.
+        let image_proj = FaceIdImageProj::load_from_pth_subtree(
             faceid_weights,
+            "image_proj",
             512,
             cross_attn_dim,
             4,
@@ -774,7 +862,7 @@ impl FaceIdEncoder {
             VarBuilder::from_mmaped_safetensors(&[arcface_weights], dtype, device)?
         };
         let arcface = IResnet50::new(vb)?;
-        let image_proj = crate::pipelines::ip_adapter::ImageProj::load_from_pth_subtree(
+        let image_proj = FaceIdImageProj::load_from_pth_subtree(
             faceid_weights_pth,
             "image_proj",
             512,

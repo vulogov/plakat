@@ -6,29 +6,22 @@ parameters; a task references a persona by name and routes through the
 SD 1.5 portrait pipeline (IP-Adapter-Plus-Face) instead of the scenario's
 main t2i or Flux pipeline.
 
-Tasks can use **one** persona over the whole image (Phase 1 form) or
-**several** personas with per-persona bounding boxes that get composited
-together via region-masked inpainting (Phase 2 form).
+Tasks can use **one** persona over the whole image, or **several**
+personas with per-persona bounding boxes that get composited together
+via region-masked inpainting.
 
 This document is the full reference for the feature. For an example you
 can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
-> **Phase 4 is feature-complete as of 4c.4d.** FaceID works end-to-end via
-> `--identity faceid` (SD 1.5) or `--identity faceid-sdxl` (SDXL); both
-> apply h94's UNet cross-attention LoRA automatically (opt out via
-> `PLAKAT_FACEID_LORA=off`), and accept 5-point landmarks for proper
-> ArcFace-canonical alignment via Umeyama's similarity transform. Both
-> ArcFace and SCRFD weights resolve from either local files
-> (`PLAKAT_*_WEIGHTS`) **or** HuggingFace specs (`PLAKAT_*_HF=repo#file`).
-> `plakat doctor [--verify]` inspects setup and probes downloads.
-> SCRFD architecture is in tree; end-to-end weight verification depends
-> on user-provided files matching this port's expected layout.
-> **What's not in Phase 4:** a hardcoded canonical default HF repo (blocked
-> on a durable community-hosted safetensors), and InstantID (a separate
-> ControlNet-shaped effort). See [Phase 4 status](#phase-4-status) for
-> the breakdown.
+Four identity strategies ship: `plus-face` (SD 1.5), `plus-face-sdxl`
+(SDXL), `faceid` (SD 1.5, ArcFace-based), `faceid-sdxl` (SDXL,
+ArcFace-based). FaceID strategies additionally need a user-supplied
+ArcFace weights file — see [FaceID setup](#faceid-setup). Optional SCRFD
+auto-detection wires up via `PLAKAT_SCRFD_WEIGHTS` /
+`PLAKAT_SCRFD_HF`. Run `plakat doctor [--verify]` any time to inspect
+your environment.
 
 ---
 
@@ -57,7 +50,8 @@ section in [GENERATE.md](GENERATE.md).
 - [Testing a persona standalone](#testing-a-persona-standalone)
 - [Troubleshooting](#troubleshooting)
 - [Limits](#limits)
-- [Phase 4 status](#phase-4-status)
+- [FaceID setup](#faceid-setup)
+- [Optional SCRFD auto-detection](#optional-scrfd-auto-detection)
 
 ---
 
@@ -135,7 +129,7 @@ The full persona-related surface looks like this:
         {
             name:          alice                    # required, unique
             photo:         ./refs/alice.jpg         # required; PNG/JPEG/WebP
-            identity:      plus-face                # default; Phase-3: faceid / instantid
+            identity:      plus-face                # plus-face | plus-face-sdxl | faceid | faceid-sdxl
             face-strength: 0.85                     # default 0.8 (0..2)
             negative:      "smiling, mustache"      # optional; prepended to task negative
         }
@@ -145,7 +139,7 @@ The full persona-related surface looks like this:
     # ===== inside a task: two accepted forms =====
     tasks:
     [
-        # --- Form 1: bare-name (Phase 1). One persona fills the whole image.
+        # --- Form 1: bare-name. One persona fills the whole image.
         {
             name:    alice_at_cafe
             scene:   cafe
@@ -157,7 +151,7 @@ The full persona-related surface looks like this:
             ]
         }
 
-        # --- Form 2: {name, bbox} (Phase 2). One or more personas, each
+        # --- Form 2: {name, bbox}. One or more personas, each
         # composited into a region. `bbox: [x0, y0, x1, y1]` is normalised
         # to [0, 1] in image space (0,0 = top-left).
         {
@@ -243,13 +237,13 @@ mixed in one scenario because the portrait pipeline loads exactly one
 base model. Mixing produces a load-time error with the offending kinds
 listed.
 
-| Value | Status | Base model | What it does |
-|---|---|---|---|
-| `plus-face` (default) | **Phase 1, shipping** | SD 1.5 (cross-attn dim 768) | IP-Adapter-Plus-Face: CLIP-H penultimate hidden state → Perceiver resampler → 16 image tokens → concat onto text tokens. |
-| `plus-face-sdxl` | **Phase 3, shipping** | SDXL (cross-attn dim 2048) | Same architecture as `plus-face` but at SDXL's wider cross-attn dim. Reuses the SD 1.5 CLIP-H encoder (the `vit-h` SDXL Plus-Face variant). Visible quality lift on every render — SDXL composes and renders portraits better than SD 1.5. |
-| `faceid` | **Phase 4b, shipping** | SD 1.5 (cross-attn dim 768) | InsightFace ArcFace embedding (IR-ResNet50, 512-d identity vector) → IP-Adapter-FaceID image-proj → 4 tokens. Markedly better identity preservation than `plus-face` when the input is face-cropped. **Requires `PLAKAT_ARCFACE_WEIGHTS` env var pointing at an IR-ResNet50 safetensors** — see [Phase 4b setup](#phase-4b-setup-faceid). Alignment is centre-crop (or `--face-bbox` — Phase 4c.1) until Phase 4c.2 auto-detection. |
-| `faceid-sdxl` | **Phase 4c.1, shipping** | SDXL (cross-attn dim 2048) | SDXL variant of `faceid`. Same ArcFace backbone (reuses `PLAKAT_ARCFACE_WEIGHTS`), different FaceID image-proj weights (`models/ip-adapter-faceid_sdxl.bin` from h94). Higher base-quality renders than SD 1.5. Same alignment rules. |
-| `instantid` | **Roadmap, not yet** | SDXL (planned) | ID embedding + landmarks via a ControlNet-style branch. Best likeness; needs ControlNet + face detection + multi-pass orchestration. |
+| Value | Base model | What it does |
+|---|---|---|
+| `plus-face` (default) | SD 1.5 (cross-attn dim 768) | IP-Adapter-Plus-Face: CLIP-H penultimate hidden state → Perceiver resampler → 16 image tokens → concat onto text tokens. |
+| `plus-face-sdxl` | SDXL (cross-attn dim 2048) | Same architecture as `plus-face` but at SDXL's wider cross-attn dim. Reuses the SD 1.5 CLIP-H encoder (the `vit-h` SDXL Plus-Face variant). Visible quality lift on every render — SDXL composes and renders portraits better than SD 1.5. |
+| `faceid` | SD 1.5 (cross-attn dim 768) | InsightFace ArcFace embedding (IR-ResNet50, 512-d identity vector) → IP-Adapter-FaceID image-proj → 4 tokens. Markedly better identity preservation than `plus-face` on face-cropped inputs. **Requires `PLAKAT_ARCFACE_WEIGHTS` or `PLAKAT_ARCFACE_HF`** — see [FaceID setup](#faceid-setup). |
+| `faceid-sdxl` | SDXL (cross-attn dim 2048) | SDXL variant of `faceid`. Same ArcFace backbone (reuses the same ArcFace env vars), different FaceID image-proj weights (`ip-adapter-faceid_sdxl.bin` from h94). Higher base-quality renders than SD 1.5. Same alignment rules. |
+| `instantid` | (planned) | ID embedding + landmarks via a ControlNet-style branch. Best likeness; needs ControlNet integration. Not yet implemented. |
 
 Aliases for `plus-face-sdxl`: `plusface-sdxl`, `plus_face_sdxl`,
 `plus-face-xl`, `plusface-xl`, `sdxl-plus-face` — all parse identically.
@@ -300,24 +294,22 @@ CLI equivalent: `--face-bbox 0.20,0.05,0.80,0.65`.
 
 | Strategy | Uses `face-bbox`? |
 |---|---|
-| `faceid`, `faceid-sdxl` | **Yes** — crops to bbox, then resizes to 112×112 for ArcFace. The user-supplied alignment proxy until Phase 4c.2 auto-detection lands. |
+| `faceid`, `faceid-sdxl` | **Yes** — crops to bbox, then resizes to 112×112 for ArcFace. Useful when the face is off-centre, or to disambiguate which face to use in a multi-face photo. |
 | `plus-face`, `plus-face-sdxl` | No — CLIP-H processes the whole image regardless, so cropping would just throw away useful context. The field is silently ignored. |
 
 **Why specify a bbox at all (FaceID-only):** ArcFace was trained on
-landmark-aligned 112×112 face crops. The Phase 4b default — centre-crop
-of the photo — only works when the face is already roughly centred. A
-wide shot, group photo, or off-centre framing produces a bad input
-because the "face" the centre-crop produces is actually background or
-a body part.
+landmark-aligned 112×112 face crops. The default centre-crop only
+works when the face is already roughly centred. A wide shot, group
+photo, or off-centre framing produces a bad input because the "face"
+the centre-crop produces is actually background or a body part.
 
 Validation: bbox bounds, `x0 < x1`, `y0 < y1`, all in `[0, 1]`. Bad
 bboxes fail at scenario load (or at CLI argument parse for
 `--face-bbox`) with a clear message.
 
-Phase 4c.4 plan: SCRFD detects faces automatically and fills this in,
-so users don't need to eyeball coordinates. The field stays — manual
-bbox remains useful for "force the model to use *this* face when
-there are several in the photo".
+When SCRFD auto-detection is enabled, the detector fills landmarks
+automatically — `face-bbox` remains useful for "use *this* face when
+there are several in the photo" by manually narrowing the region.
 
 ### `face-landmarks`
 
@@ -360,10 +352,10 @@ so the alignment they produce supersedes a bbox crop.
 Validation: every component must be in `[0, 1]`. Errors at scenario load
 or CLI parse with a specific component index in the message.
 
-Phase 4c.4 plan: SCRFD auto-fills this from any photo, eliminating the
-need to provide landmarks manually. The field stays useful for "use
-exactly these landmarks even if a detector would pick different ones"
-(handy when a photo has multiple faces and you want a specific one).
+SCRFD auto-detection (when enabled) fills these landmarks from any
+photo. The field stays useful for "use exactly these landmarks even
+if a detector would pick different ones" — handy when a photo has
+multiple faces and you want a specific one.
 
 ### `negative` (on persona)
 
@@ -645,9 +637,9 @@ identity holds.
 
 ## Photo preparation
 
-The single biggest quality lever in Phase 1 is the reference photo
-itself. Plus-Face has no automatic face detection or alignment, so the
-input photo is treated as-is.
+The reference photo is the single biggest quality lever for `plus-face`
+strategies — no automatic face detection or alignment is applied, so
+the input is treated as-is.
 
 **What works well:**
 
@@ -704,12 +696,13 @@ pose, or lighting requests in favour of duplicating the photo's vibe):
 When **the result barely looks like the person** at `face-strength: 1.0`:
 
 The most common cause is the reference photo itself. See
-[Photo preparation](#photo-preparation). Phase 1 has a hard quality
-ceiling — ~50–70% of the diffusers reference — because candle 0.8's
-UNet doesn't expose attention hooks for IP-Adapter's *decoupled*
-cross-attention path. If you've optimised the photo and pushed
-`face-strength` to 1.5 and likeness is still wrong, Phase 2 (FaceID) is
-the path forward, not further parameter tuning.
+[Photo preparation](#photo-preparation). `plus-face` strategies have a
+hard quality ceiling — ~50–70% of the diffusers reference — because
+candle 0.8's UNet doesn't expose attention hooks for IP-Adapter's
+*decoupled* cross-attention path. If you've optimised the photo and
+pushed `face-strength` to 1.5 and likeness is still wrong, switch to a
+`faceid` strategy (which uses InsightFace ArcFace embeddings instead of
+CLIP-H features) — that's the path forward, not further parameter tuning.
 
 ---
 
@@ -743,9 +736,10 @@ tasks:
 
 ### Compare strength variants ("alice-strong" vs "alice-soft")
 
-Phase 1 has no per-task override of persona params. The recommended
-pattern is to define separate personas for the variants you want to
-compare:
+There's no per-task override of persona params — a task references a
+persona by name and uses that persona's settings as-is. The recommended
+pattern for A/B comparisons is to define separate personas for the
+variants you want to compare:
 
 ```hjson
 personas:
@@ -975,7 +969,7 @@ model AND stylize AND personas loads:
 
 CLIP-H is loaded twice — once for stylize, once for portrait — even
 though it's the same weights file on disk. Sharing it across pipelines
-is a future optimisation; in Phase 1 the duplication is tolerated.
+is a future optimisation; today the duplication is tolerated.
 
 If memory is tight: stick to SD 1.5 as your scenario `model`. The
 portrait pipeline then sits next to a single ~5 GB t2i pipeline, total
@@ -1048,10 +1042,14 @@ carries those forward. Prompt the wardrobe/pose explicitly.
 
 **"The image looks AI-generated even with a real reference."**
 
-This is the Phase 1 ceiling. Without decoupled cross-attention, identity
-tokens compete with text tokens for the same attention budget. Real
-"photographic" likeness needs Phase 2 (FaceID) or Phase 3 (InstantID).
-Workarounds in Phase 1:
+This is the `plus-face` quality ceiling. Without decoupled cross-
+attention (candle 0.8's UNet doesn't expose the hooks), identity tokens
+compete with text tokens for the same attention budget. For more
+photographic likeness, switch to a `faceid` strategy (uses ArcFace
+embeddings, ships a UNet LoRA that lifts identity preservation
+substantially). InstantID would push further but isn't implemented yet.
+
+Workarounds without switching strategies:
 - Use a realistic-portrait LoRA (e.g. `*Realistic*` SD 1.5 LoRA) at
   `lora-scale: 0.7`. The LoRA shapes the rendering style; the persona
   shapes the identity. They stack additively.
@@ -1083,34 +1081,36 @@ Possible causes:
   back to relative paths once it works.
 - `face-strength` was accidentally set to 0.0 (or very low).
 - The `task.personas` list is empty (`[]`) — this counts as "no
-  persona". Phase 1 needs exactly 1 entry to engage the portrait
-  pipeline.
+  persona". Needs at least one entry (bare name or `{name, bbox}`) to
+  engage the portrait pipeline.
 
 ---
 
 ## Limits
 
-These are honest, documented constraints — not bugs:
+Honest, documented constraints — not bugs:
 
-1. **SD 1.5 or SDXL only.** Two shipping identity strategies — `plus-face`
-   (SD 1.5) and `plus-face-sdxl` (SDXL). A scenario must pick one; mixing
-   is rejected at load time because the portrait pipeline loads exactly
-   one base model.
-2. **No automatic face crop or face detection.** You curate the reference
-   photo. Bboxes are placed by hand.
+1. **One base model per scenario.** Within one scenario, every persona's
+   `identity` must target the same model variant (all SD 1.5 or all SDXL).
+   Mixing is rejected at load time because the portrait pipeline loads
+   exactly one base model.
+2. **No automatic face crop on `plus-face*` strategies.** Curate the
+   reference photo or use `--face-bbox`. (FaceID strategies *can* use
+   optional SCRFD auto-detection — see [Optional SCRFD auto-detection](#optional-scrfd-auto-detection).)
 3. **No per-task override of persona parameters.** Define a second persona
    if you need a strength variant (e.g. `alice-soft` vs `alice-strong`).
 4. **No persona-level LoRAs.** Use scenario-level `loras`. The merged
    UNet is reused across all persona passes within a task.
-5. **Identity quality is ~50–70% of diffusers reference** for the
-   `plus-face*` strategies. candle 0.8's UNet exposes no cross-attention
-   hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` / `to_v_ip`
-   per block) is not wired up. Identity tokens travel via the same
-   cross-attention as text. FaceID / InstantID (Phase 4+) are the path
-   to better identity fidelity.
+5. **Identity quality ceiling for `plus-face*` strategies: ~50–70% of
+   diffusers reference.** candle 0.8's UNet exposes no cross-attention
+   hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` /
+   `to_v_ip` per block) is not wired up — identity tokens travel via
+   the same cross-attention as text. `faceid` / `faceid-sdxl` strategies
+   bypass this ceiling by using ArcFace embeddings + an automatically-
+   applied UNet LoRA from h94, landing closer to ~80–90% of reference.
 6. **SDXL micro-conditioning is unused.** SDXL's `add_embedding` (pooled
    CLIP-G + size/crop time-ids) is not wired up because candle 0.8's UNet
-   doesn't expose the projection. Same gap as our base SDXL t2i path —
+   doesn't expose the projection. Same gap as the base SDXL t2i path —
    the model loads and runs but doesn't benefit from size conditioning.
 7. **Multi-persona compositing has visible bbox seams** at high contrast.
    The RePaint-style blend hides most transitions, but a face inpainted
@@ -1121,43 +1121,23 @@ These are honest, documented constraints — not bugs:
 8. **Multi-persona wall time scales linearly with persona count.** A
    2-persona task runs 3 denoise loops (base + 2 inpaints); a 3-persona
    task runs 4. Each loop is full `--steps` long.
+9. **InstantID is not implemented.** Listed in the `identity` schema as
+   a placeholder; the underlying ControlNet integration isn't ported yet.
 
 ---
 
-## Phase 4 status
+## FaceID setup
 
-Phase 4 = `IdentityKind::FaceId`. Shipped across multiple sessions because
-FaceID required new model porting from scratch (not "drop in another
-Plus-Face safetensors"):
+The `faceid` and `faceid-sdxl` strategies need two weight sources:
 
-| | Status | What's in |
-|---|---|---|
-| **Phase 4a** | Shipped | IR-ResNet50 ArcFace backbone in candle (`face_models.rs`), FaceID image-proj reuses `ImageProj`, `FaceIdEncoder` standalone struct. Compiled but not user-callable. |
-| **Phase 4b** | Shipped | `IdentityKind::FaceId` variant + `FromStr` + `load_encoder` arm, `IdentityEncoder` trait impl, h94 FaceID `.bin` loading via PyTorch state-dict path, centre-crop alignment proxy, bring-your-own ArcFace weights via env var. `--identity faceid` works end-to-end today. |
-| **Phase 4c.1** | Shipped | User-supplied face bbox alignment (`--face-bbox X0,Y0,X1,Y1` on CLI; `face-bbox: [...]` on scenario `PersonaDef`); `EncodeOptions` plumbed through `IdentityEncoder` trait; `IdentityKind::FaceIdSdxl` variant for SDXL FaceID; pre-flight ArcFace check before base-model download. |
-| **Phase 4c.2a** | Shipped | SD 1.5 FaceID UNet cross-attention LoRA: `faceid_lora.rs` extracts h94's `ip_adapter.<0..15>.*` subtree, re-keys to kohya format, runs through the existing UNet merge. Default-on; `PLAKAT_FACEID_LORA=off` opts out. Lifts identity preservation from ~60–70% to ~80–90% of diffusers reference. |
-| **Phase 4c.2b** | Shipped | **SDXL** FaceID UNet LoRA, matching the SD 1.5 path. New `sdxl_cross_attn_paths()` generates the 70-entry path table programmatically (down_blocks.1 ×4 + down_blocks.2 ×20 + mid ×10 + up_blocks.0 ×30 + up_blocks.1 ×6). Same converter core, same opt-out env var. SDXL FaceID now has feature parity with SD 1.5. |
-| **Phase 4c.3** | **Shipped** | **5-point similarity-transform alignment** to ArcFace's canonical 112×112 template. `face_models::similarity_transform_2d` (Umeyama's method on 2×2 SVD), `bilinear_warp`, `align_to_arcface_template`. New `FaceAlignment` enum unifies CenterCrop / Bbox / Landmarks paths in `prepare_face_tensor`. `EncodeOptions.face_landmarks` plumbed through. CLI: `--face-landmarks LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 floats normalised). Scenario: `face-landmarks: [[x,y]; 5]` on `PersonaDef`. Landmarks take precedence over bbox when both supplied. Order: `left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner` — same as InsightFace's detection outputs (so any tool that exports those landmarks works as-is). |
-| **Phase 4c.4** | **Architecture shipped, verification pending** | SCRFD face detector ported (`src/pipelines/scrfd.rs`): SCRFDConfig, BasicBlock-based backbone, FPN, detection heads, anchor generation, distance-format bbox decoding, 5-point landmark decoding, NMS, letterbox preprocessing, `SCRFDDetector::detect()`. Wired into `FaceIdEncoder` — when `PLAKAT_SCRFD_WEIGHTS` is set, landmarks auto-detect; otherwise the existing manual paths apply unchanged. **Compiles cleanly but weight loading verification is the user-iteration step** — exact channel widths / key naming for SCRFD-500MF are best-guess from the InsightFace reference. ArcFace HF auto-download remains roadmap. |
-| **Phase 4c.4b** | Shipped (partial) | `PLAKAT_ARCFACE_HF=repo#file` env var — pull IR-ResNet50 safetensors from any HuggingFace repo. Two-route resolution: local wins over HF. New `plakat doctor` subcommand inspects setup. |
-| **Phase 4c.4c** | Shipped | `PLAKAT_SCRFD_HF=repo#file` — symmetric to the ArcFace path. Refactored: `scrfd::resolve_scrfd_weights()` is now async; SCRFD path is resolved at the `IdentityKind::load_encoder` (async) layer and threaded as `Option<&Path>` into the sync `FaceIdEncoder::load_faceid_*` constructors. **Phase 4 face-detector + identity loop is now config-driven end-to-end**. |
-| **Phase 4c.4d** | **Partial shipped** | `plakat doctor --verify` actively probes configured `PLAKAT_*_HF` specs by attempting the HF download — confirms remote-file resolution offline-of-generation, exposes auth-gated and 404 errors with hints. HF Hub discovery URLs added to setup error messages + the empty-doctor output. **Headline goal (hardcoded canonical HF default repo) deferred** — no durable community-hosted IR-ResNet50 safetensors host I'd commit to without verification. Phase 4 is feature-complete from a code standpoint; the missing piece is a community-trusted host emerging that we can hardcode in a single-line patch when it does. |
-| **Phase 5+** | Future | InstantID (ControlNet-shaped), weight-verification CI, possibly more identity strategies. Separate scope from Phase 4. |
-| **InstantID** | Roadmap (separate) | Needs ControlNet integration in the portrait pipeline (~500 LoC) — a substantially larger effort than the rest of Phase 4. |
+1. **IP-Adapter-FaceID image-proj + UNet LoRA** — auto-downloaded from
+   `h94/IP-Adapter-FaceID` on first use. Nothing for you to do.
+2. **ArcFace IR-ResNet50** — supply via one of two routes below.
 
-### Phase 4b setup (FaceID)
-
-FaceID requires two weight files:
-
-**(1) IP-Adapter-FaceID** — auto-downloaded on first use from
-`h94/IP-Adapter/models/ip-adapter-faceid_sd15.bin`. Nothing for you to do.
-
-**(2) ArcFace IR-ResNet50** — two routes as of Phase 4c.4b:
-
-**Route A — local file (`PLAKAT_ARCFACE_WEIGHTS`):**
+### Route A — local file (`PLAKAT_ARCFACE_WEIGHTS`)
 
 ```bash
-# 1. Download the antelopev2 bundle from InsightFace releases:
+# 1. Download the antelopev2 bundle from InsightFace:
 curl -L -o antelopev2.zip \
     https://github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip
 unzip antelopev2.zip                       # → antelopev2/
@@ -1173,32 +1153,31 @@ save_file(m.state_dict(), 'arcface_r50.safetensors')"
 export PLAKAT_ARCFACE_WEIGHTS=$(pwd)/arcface_r50.safetensors
 ```
 
-**Route B — HF-hosted (`PLAKAT_ARCFACE_HF`):** point at any HuggingFace
-repo + file that hosts an IR-ResNet50 safetensors:
+### Route B — HuggingFace-hosted (`PLAKAT_ARCFACE_HF`)
+
+Point at any HF repo + file that hosts an IR-ResNet50 safetensors:
 
 ```bash
 export PLAKAT_ARCFACE_HF=<user>/<repo>#<path/in/repo.safetensors>
-# Example (any community upload that matches the IR-ResNet50 key layout):
-# export PLAKAT_ARCFACE_HF=community-user/arcface-r50#arcface_r50.safetensors
 ```
 
-plakat downloads + caches it via the same HF infrastructure used for
-SD / IP-Adapter weights. **No canonical default repo yet** — there's no
-official InsightFace HF safetensors mirror at time of writing, so route B
-is a user-configured shortcut around the ONNX-to-safetensors conversion.
+plakat downloads + caches via the standard HF infrastructure. There's
+no canonical default repo at the moment (no official InsightFace HF
+safetensors mirror), so this route is a user-configured shortcut around
+the ONNX-to-safetensors conversion. Discover candidates at
+[huggingface.co/models?search=arcface+iresnet50](https://huggingface.co/models?search=arcface+iresnet50).
 
-Either route works. Local file wins if both are set.
-
-Verify your setup before generating:
+Either route works. Local file wins if both are set. Verify any time:
 
 ```bash
-plakat doctor
+plakat doctor          # offline check — parses + verifies local file existence
+plakat doctor --verify # active — attempts the HF download to confirm
 ```
 
-Then:
+### Usage examples
 
 ```bash
-# SD 1.5 FaceID (centre-crop alignment + auto-applied UNet LoRA)
+# SD 1.5 FaceID with centre-crop alignment + auto-applied UNet LoRA.
 plakat --device metal portrait \
     --photo ./refs/alice.jpg \
     --identity faceid \
@@ -1206,8 +1185,8 @@ plakat --device metal portrait \
     --steps 30 \
     "studio portrait, cinematic lighting"
 
-# Same, with user-supplied bbox (Phase 4c.1) — useful when the face
-# is off-centre or the photo isn't a tight head-and-shoulders crop.
+# User-supplied bbox — useful when the face is off-centre or the
+# photo isn't a tight head-and-shoulders crop.
 plakat --device metal portrait \
     --photo ./refs/alice.jpg \
     --identity faceid \
@@ -1215,8 +1194,8 @@ plakat --device metal portrait \
     --face-strength 1.0 \
     "studio portrait, cinematic lighting"
 
-# SDXL FaceID — same ArcFace weights, different FaceID image-proj.
-# Phase 4c.2b: UNet LoRA now applied automatically (70 cross-attn sites).
+# SDXL FaceID — same ArcFace weights, different image-proj.
+# UNet LoRA applied automatically.
 plakat --device metal portrait \
     --photo ./refs/alice.jpg \
     --model sdxl --identity faceid-sdxl \
@@ -1225,19 +1204,17 @@ plakat --device metal portrait \
     --size 832x1216 \
     "studio portrait, cinematic lighting"
 
-# Disable the auto-applied FaceID UNet LoRA (SD 1.5 only). Useful for
-# A/B testing whether your prompt suffers under shared-cross-attention
-# LoRA application.
+# Disable the auto-applied FaceID UNet LoRA. Useful for A/B testing
+# whether a particular prompt suffers under the shared-cross-attention
+# application of the LoRA.
 PLAKAT_FACEID_LORA=off plakat --device metal portrait \
     --photo ./refs/alice.jpg --identity faceid \
     --face-bbox 0.20,0.05,0.80,0.65 --face-strength 1.0 \
     "studio portrait"
 
-# Best alignment available (Phase 4c.3) — proper ArcFace landmark
-# alignment via 5 points. Order: left_eye, right_eye, nose,
-# left_mouth_corner, right_mouth_corner. Coordinates are normalised
-# to [0, 1] in the photo's space (origin top-left).
-# Example: eyes around y=0.40, nose at y=0.55, mouth at y=0.68.
+# Best alignment available: 5-point ArcFace canonical similarity
+# transform. Order: left_eye, right_eye, nose, left_mouth_corner,
+# right_mouth_corner. Normalised to [0, 1] in the photo's space.
 plakat --device metal portrait \
     --photo ./refs/alice.jpg \
     --identity faceid \
@@ -1246,16 +1223,16 @@ plakat --device metal portrait \
     "studio portrait, soft natural lighting"
 ```
 
-### Phase 4c.4 setup (optional SCRFD auto-detection)
+---
 
-`PLAKAT_SCRFD_WEIGHTS` (or `PLAKAT_SCRFD_HF` from 4c.4c) enables
-automatic face detection — the SCRFD detector finds faces and fills in
-the 5-point landmarks the aligner already consumes, so `--face-bbox` /
+## Optional SCRFD auto-detection
+
+`PLAKAT_SCRFD_WEIGHTS` or `PLAKAT_SCRFD_HF` enables automatic face
+detection — the SCRFD detector finds faces and fills in the 5-point
+landmarks the aligner already consumes, so `--face-bbox` /
 `--face-landmarks` flags become unnecessary for typical portrait photos.
 
-Two routes — pick one:
-
-**Route A — local file (`PLAKAT_SCRFD_WEIGHTS`):**
+### Route A — local file (`PLAKAT_SCRFD_WEIGHTS`)
 
 ```bash
 # Download SCRFD-500MF from InsightFace releases
@@ -1269,142 +1246,60 @@ from safetensors.torch import save_file
 m = convert(onnx.load('scrfd_500m_bnkps.onnx'))
 save_file(m.state_dict(), 'scrfd_500m.safetensors')"
 
-# Point plakat at it
 export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 ```
 
-**Route B — HF-hosted (`PLAKAT_SCRFD_HF`):**
+### Route B — HuggingFace-hosted (`PLAKAT_SCRFD_HF`)
 
 ```bash
 export PLAKAT_SCRFD_HF=<user>/<repo>#<path/in/repo.safetensors>
-# plakat downloads + caches via the existing HF infrastructure.
 ```
 
-Local file wins if both are set. Verify with `plakat doctor`.
+Discover candidates at [huggingface.co/models?search=scrfd](https://huggingface.co/models?search=scrfd).
+Local file wins if both are set.
 
-> ⚠️ **Verification status (honest).** Phase 4c.4 ships the SCRFD
-> architecture, decoding, NMS, and pipeline integration. The exact
-> channel widths / block counts / key naming for SCRFD-500MF are taken
-> from the InsightFace reference; **if your converted safetensors uses
-> different key paths**, weight loading will error at the first
-> mismatched layer. When this happens, the architecture in
-> `src/pipelines/scrfd.rs` is parametric — `SCRFDConfig::scrfd_500mf()`
-> exposes every channel width and block count for tuning. File a bug
-> with the actual layer that mismatched + its shape and we'll patch.
+> ⚠️ **Verification status (honest).** The SCRFD architecture in
+> `src/pipelines/scrfd.rs` was ported from the InsightFace reference
+> — exact channel widths / block counts for SCRFD-500MF are best-guess
+> against the published architecture. If your converted safetensors
+> uses a slightly different layout, weight loading will error at the
+> first mismatched layer. `SCRFDConfig::scrfd_500mf()` is parametric,
+> so fixes are usually a one-line change. File a bug with the actual
+> layer that mismatched + its shape and we'll patch.
 
-#### Getting landmarks for Phase 4c.3
+### Alignment priority
 
-For now (until SCRFD auto-detection in Phase 4c.4), `--face-landmarks`
-takes user-supplied points. Options:
+When multiple alignment sources are configured, the encoder picks the
+richest available:
 
-1. **InsightFace's `face_analysis.get()`** (Python) — published 5
-   landmarks per detected face in the same order. Copy them out.
-2. **Any face-landmark tool** that outputs left_eye / right_eye / nose /
-   left_mouth / right_mouth — common formats from MediaPipe, dlib, etc.
-   (Subsetting from 68-point dlib outputs: indices 36, 45, 30, 48, 54.)
+1. **5-point landmarks** (`--face-landmarks` / persona `face-landmarks`)
+   — proper alignment via similarity transform. Captures ~95% of
+   ArcFace's discriminative power.
+2. **SCRFD auto-detected landmarks** (when `PLAKAT_SCRFD_*` is set and
+   no manual landmarks were supplied) — same alignment quality as (1)
+   without you having to type the coordinates.
+3. **Bbox crop** (`--face-bbox` / persona `face-bbox`) — crop to the
+   bbox, then resize to 112×112. No rotation/scale correction.
+   ~75–85% of full power.
+4. **Centre-crop fallback** — shorter-side resize + centre-crop. Works
+   for tight head-and-shoulders photos; degrades on off-centre inputs.
+   ~70–80% of full power.
+
+### Where to get landmarks (when not using SCRFD)
+
+`--face-landmarks` takes user-supplied points in the order
+`left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner`.
+
+1. **InsightFace's `face_analysis.get()`** (Python) publishes 5
+   landmarks per detected face in this exact order — copy them out.
+2. **MediaPipe / dlib / similar** — subset to the 5 ArcFace points.
+   For dlib's 68-point output: indices 36, 45, 30, 48, 54.
 3. **Eyeball them.** For a head-and-shoulders portrait, rough guesses
    in normalised coords usually land within a few pixels of true:
    - eyes typically at `y ≈ 0.35–0.45`, separation `Δx ≈ 0.20`
-   - nose at `y ≈ 0.50–0.60`, centred on the photo's symmetry axis
+   - nose at `y ≈ 0.50–0.60`, centred
    - mouth corners at `y ≈ 0.65–0.75`, separation `Δx ≈ 0.15`
 
-   The similarity transform absorbs reasonable estimation noise — a few
-   percent error in landmark position produces visually similar alignment.
-
-Phase 4c.2 will obsolete the ArcFace setup steps by auto-downloading,
-and obsolete `--face-bbox` for most cases via SCRFD auto-detection.
-
-### Phase 4 current limitations (documented)
-
-1. **Alignment quality is now landmark-accurate, but landmarks are
-   manual.** ArcFace was trained on landmark-aligned 112×112 face
-   crops; three alignment paths ship today, in order of richness:
-   * **`--face-landmarks` / persona `face-landmarks`** (Phase 4c.3) —
-     **proper alignment.** 5-point similarity transform (Umeyama) to
-     ArcFace's canonical template. Captures ~95% of reference identity-
-     discriminative power. **You provide the landmarks**, which means
-     running them through any InsightFace-derived tool or eyeballing
-     them — until SCRFD lands in Phase 4c.4 and auto-fills them.
-   * **`--face-bbox` / persona `face-bbox`** (Phase 4c.1) — user marks
-     where the face is; we crop to it before resizing to 112×112. No
-     rotation/scale correction. ~75–85% of full-FaceID power.
-   * **Centre-crop** (Phase 4b default) — shorter-side resize +
-     centre-crop. Works for tight head-and-shoulders photos; degrades
-     on off-centre inputs. ~70–80% of full-FaceID power.
-
-   **Phase 4c.4** ports SCRFD to eliminate manual-landmark entry — when
-   `PLAKAT_SCRFD_WEIGHTS` is set, FaceID auto-fills landmarks from the
-   detected primary face. The architecture is in tree and compiles, but
-   weight-loading verification is the next iteration (the user is
-   expected to file mismatches; the parametric `SCRFDConfig` makes
-   layer-shape fixes a single-line change).
-
-2. **UNet LoRA: applied automatically for both SD 1.5 and SDXL.**
-   h94's FaceID `.bin` packs both an `image_proj.*` subtree (consumed
-   by `FaceIdEncoder` since Phase 4b) and an `ip_adapter.*` UNet
-   cross-attention LoRA. As of Phase 4c.2b, we extract and apply the
-   LoRA for **both** variants — identity preservation lands closer to
-   the ~80–90% diffusers reference band on either model.
-
-   The LoRA application uses **shared cross-attention** — candle 0.8's
-   UNet has no decoupled `to_k_ip` / `to_v_ip` hooks, so the LoRA
-   modifies the K/V projections that handle text tokens too. Net
-   effect: identity goes up, text-prompt fidelity may shift slightly.
-   Opt out with `PLAKAT_FACEID_LORA=off` if a particular prompt suffers.
-
-3. **ArcFace weights are user-supplied.** As of 4c.4b/c via either local
-   path or HF spec — see [Phase 4b setup](#phase-4b-setup-faceid). A
-   hardcoded canonical default repo is the only remaining Phase-4 gap
-   (see Phase 4c.4d in the status table).
-
-### The drop-in promise held
-
-When Phase 4b landed, no code outside `src/pipelines/{ip_adapter,face_models}.rs`
-needed to change. The portrait pipeline already abstracted identity behind
-the `IdentityEncoder` trait; `IdentityKind::load_encoder` was the only
-construction hook; scenario auto-pick used `target_variant()`. Everything
-established in Phases 1–3 absorbed FaceID without edits.
-
-### Phase 4 retrospective
-
-Across 11 sub-phases (4b → 4c.1 → 4c.2a/b → 4c.3 → 4c.4 → 4c.4b → 4c.4c
-→ 4c.4d), Phase 4 shipped the full FaceID identity-preservation stack
-on candle:
-
-| Capability | Sub-phase |
-|---|---|
-| ArcFace IR-ResNet50 backbone in candle | 4a/4b |
-| `IdentityKind::FaceId` (SD 1.5) end-to-end with centre-crop alignment | 4b |
-| `--face-bbox` manual bbox alignment | 4c.1 |
-| FaceID UNet LoRA application (SD 1.5) | 4c.2a |
-| FaceID UNet LoRA application (SDXL) | 4c.2b |
-| `IdentityKind::FaceIdSdxl` (SDXL FaceID feature parity) | 4c.1/4c.2b |
-| 5-point similarity-transform alignment (Umeyama + bilinear warp) | 4c.3 |
-| SCRFD face-detector architecture (compiles; verification pending) | 4c.4 |
-| `PLAKAT_ARCFACE_HF` env var (HuggingFace download) | 4c.4b |
-| `plakat doctor` subcommand | 4c.4b |
-| `PLAKAT_SCRFD_HF` env var + async SCRFD resolution | 4c.4c |
-| `plakat doctor --verify` active HF probing | 4c.4d |
-| HF Hub discovery hints in setup errors | 4c.4d |
-
-**File budget across Phase 4:** four new modules (`face_models.rs`,
-`faceid_lora.rs`, `scrfd.rs`, `cli/doctor.rs`) + targeted edits to
-`ip_adapter.rs`, `portrait.rs`, `cli/portrait.rs`, `cli/scenario.rs`,
-`cli/mod.rs`. The `IdentityEncoder` trait grew one field
-(`EncodeOptions.face_landmarks` in 4c.3); `IdentityKind` grew ~6
-helper methods. The portrait pipeline, scenario surfaces, and CLI
-all absorbed the full feature stack with no architectural changes
-beyond a single async cascade for SCRFD resolution (4c.4c).
-
-**What we'd do differently with hindsight:** start the SCRFD work
-earlier in Phase 4 (it's the largest verification risk and the
-architecture port took until 4c.4); design `EncodeOptions` as a
-struct from day-one of 4b so the 4c.3 trait extension wouldn't have
-needed touching every impl.
-
-**What stayed clean:** the `IdentityEncoder` trait is the same shape
-as in 4b plus one optional field. The scenario auto-pick logic
-(picks portrait base model from persona identity kind) absorbed
-SDXL FaceID in 4c.1 with no edits. The HJSON `face-bbox` /
-`face-landmarks` extensions for personas mirror the CLI flags, so
-the scenario UX scales naturally as more alignment modes ship.
+   The similarity transform absorbs reasonable estimation noise — a
+   few percent error in landmark position produces visually similar
+   alignment.
