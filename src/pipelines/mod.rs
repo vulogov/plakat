@@ -3,6 +3,7 @@ pub mod flux;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
 pub mod lora;
+pub mod portrait;
 pub mod real_esrgan;
 pub mod scheduler;
 pub mod stylize;
