@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+pub mod doctor;
 pub mod generate;
 pub mod models;
 pub mod portrait;
@@ -47,6 +48,10 @@ pub enum Command {
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
+    /// Health-check the FaceID / SCRFD / cache configuration without
+    /// downloading or loading anything. Run before a long generation
+    /// to verify setup.
+    Doctor(doctor::DoctorArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -73,5 +78,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
+        Command::Doctor(args) => doctor::run(args).await,
     }
 }

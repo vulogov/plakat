@@ -58,52 +58,311 @@ const EVAL: bool = false;
 /// every face crop to 112×112 via similarity transform from 5 landmarks.
 pub const ARCFACE_INPUT: u32 = 112;
 
-/// Centre-crop alignment proxy for Phase 4b. Loads a photo, resizes the
-/// shorter edge to `2 × ARCFACE_INPUT` (gives the face room to be off-centre
-/// while still surviving the 112×112 centre crop), then crops to
-/// `ARCFACE_INPUT² ` and normalises with InsightFace's `(x − 127.5) / 127.5`.
+/// InsightFace's canonical 5-point reference for 112×112 aligned crops.
+/// Order: left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner.
 ///
+/// These are the exact pixel positions ArcFace was trained against —
+/// every face crop in the training set was warped to put landmarks at
+/// these coordinates. Aligning detected landmarks to this template via
+/// a similarity transform (rotation + scale + translation) recovers the
+/// last ~15–25% of ArcFace's discriminative power that centre-crop /
+/// bbox-crop leave on the table.
+///
+/// (Source: InsightFace's `face_align.py` — `arcface_dst`.)
+pub const ARCFACE_5PT_REF: [[f32; 2]; 5] = [
+    [38.2946, 51.6963], // left eye
+    [73.5318, 51.5014], // right eye
+    [56.0252, 71.7366], // nose tip
+    [41.5493, 92.3655], // left mouth corner
+    [70.7299, 92.2041], // right mouth corner
+];
+
+/// Identifies the order in which a 5-landmark array is expected.
+/// Documented as a top-level constant so users authoring scenarios or
+/// passing `--face-landmarks` can find it: this is the same convention
+/// InsightFace publishes its detection outputs in, so users grabbing
+/// landmarks from any InsightFace-derived tool can use them as-is.
+pub const LANDMARK_ORDER: &[&str] = &[
+    "left_eye",
+    "right_eye",
+    "nose",
+    "left_mouth_corner",
+    "right_mouth_corner",
+];
+
+/// Which alignment strategy `prepare_face_tensor` should use. Priority
+/// from richest to crudest: landmarks > bbox > centre-crop.
+#[derive(Clone, Copy, Debug)]
+pub enum FaceAlignment {
+    /// Phase 4b default — resize + centre-crop. Works for tight
+    /// head-and-shoulders photos.
+    CenterCrop,
+    /// Phase 4c.1 — crop to a user-supplied bbox in normalised photo
+    /// coordinates `[x0, y0, x1, y1]` before the 112×112 resize.
+    Bbox([f32; 4]),
+    /// Phase 4c.3 — 5-point similarity-transform alignment to ArcFace's
+    /// canonical 112×112 reference. The `[[x, y]; 5]` array is in
+    /// normalised photo coordinates, ordered per `LANDMARK_ORDER`.
+    /// Recovers the last ~15–25% of ArcFace's discriminative power.
+    Landmarks([[f32; 2]; 5]),
+}
+
+impl FaceAlignment {
+    pub fn from_options(
+        bbox: Option<[f32; 4]>,
+        landmarks: Option<[[f32; 2]; 5]>,
+    ) -> Self {
+        // Landmarks dominate when both are supplied — they're strictly
+        // more informative.
+        if let Some(lm) = landmarks {
+            Self::Landmarks(lm)
+        } else if let Some(b) = bbox {
+            Self::Bbox(b)
+        } else {
+            Self::CenterCrop
+        }
+    }
+}
+
+/// Estimate a 2×3 similarity transform (rotation + uniform scale +
+/// translation) that maps `src` onto `dst` in the least-squares sense.
+/// Umeyama's method (1991) — produces the best similarity matrix for
+/// any number of point pairs ≥ 2.
+///
+/// Returns `[a, b, tx; c, d, ty]` flat in row-major order (six floats:
+/// `[a, b, tx, c, d, ty]`). Apply via `(a*x + b*y + tx, c*x + d*y + ty)`.
+fn similarity_transform_2d(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 6] {
+    assert_eq!(src.len(), dst.len(), "src and dst must be same length");
+    let n = src.len() as f32;
+    debug_assert!(n >= 2.0, "similarity transform needs ≥2 points");
+
+    // Means.
+    let (mut sx, mut sy, mut dx, mut dy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for i in 0..src.len() {
+        sx += src[i][0];
+        sy += src[i][1];
+        dx += dst[i][0];
+        dy += dst[i][1];
+    }
+    let (sx_m, sy_m) = (sx / n, sy / n);
+    let (dx_m, dy_m) = (dx / n, dy / n);
+
+    // Centered points + cross-covariance H (2×2).
+    let mut h = [[0.0f32; 2]; 2];
+    let mut var_src = 0.0f32;
+    for i in 0..src.len() {
+        let sxi = src[i][0] - sx_m;
+        let syi = src[i][1] - sy_m;
+        let dxi = dst[i][0] - dx_m;
+        let dyi = dst[i][1] - dy_m;
+        // H = sum( src_centered_i^T @ dst_centered_i )
+        h[0][0] += sxi * dxi;
+        h[0][1] += sxi * dyi;
+        h[1][0] += syi * dxi;
+        h[1][1] += syi * dyi;
+        var_src += sxi * sxi + syi * syi;
+    }
+
+    // 2×2 SVD via direct formulas (closed form). H = U Σ Vᵀ.
+    // Reference: https://scicomp.stackexchange.com/a/14710
+    let (a, b, c, d) = (h[0][0], h[0][1], h[1][0], h[1][1]);
+    let e = (a + d) * 0.5;
+    let f = (a - d) * 0.5;
+    let g = (c + b) * 0.5;
+    let q = (c - b) * 0.5;
+    let r1 = (e * e + q * q).sqrt();
+    let r2 = (f * f + g * g).sqrt();
+    let sx_sv = r1 + r2;
+    let sy_sv = (r1 - r2).max(0.0);
+    let a1 = q.atan2(e);
+    let a2 = g.atan2(f);
+    let theta = (a1 - a2) * 0.5;
+    let phi = (a1 + a2) * 0.5;
+    // U = R(phi) reflected by sign(d_det), V = R(theta).
+    let det_h = a * d - b * c;
+    let sign = if det_h < 0.0 { -1.0 } else { 1.0 };
+    let (cp, sp) = (phi.cos(), phi.sin());
+    let (ct, st) = (theta.cos(), theta.sin());
+    let u = [[cp, -sp * sign], [sp, cp * sign]]; // 2×2 U with reflection fix
+    let v = [[ct, -st], [st, ct]]; // 2×2 V
+    let s_diag = [sx_sv, sy_sv * sign];
+
+    // Rotation R = U @ Vᵀ.
+    let r = [
+        [
+            u[0][0] * v[0][0] + u[0][1] * v[0][1],
+            u[0][0] * v[1][0] + u[0][1] * v[1][1],
+        ],
+        [
+            u[1][0] * v[0][0] + u[1][1] * v[0][1],
+            u[1][0] * v[1][0] + u[1][1] * v[1][1],
+        ],
+    ];
+
+    // Scale c = sum(Σ) / var_src.
+    let scale = if var_src > 0.0 {
+        (s_diag[0] + s_diag[1]) / var_src
+    } else {
+        1.0
+    };
+
+    // Final 2×3: [scale*R | dst_mean - scale*R @ src_mean].
+    let m00 = scale * r[0][0];
+    let m01 = scale * r[0][1];
+    let m10 = scale * r[1][0];
+    let m11 = scale * r[1][1];
+    let tx = dx_m - (m00 * sx_m + m01 * sy_m);
+    let ty = dy_m - (m10 * sx_m + m11 * sy_m);
+    [m00, m01, tx, m10, m11, ty]
+}
+
+/// Bilinear warp: produce an `out_w × out_h` RGB image by sampling
+/// `src` at `inv_affine([dst_x, dst_y])`. `inv_affine` is the inverse
+/// of the forward transform — we typically build forward dst-from-src
+/// then invert before calling this.
+fn bilinear_warp(
+    src: &image::RgbImage,
+    inv_affine: [f32; 6],
+    out_w: u32,
+    out_h: u32,
+) -> image::RgbImage {
+    let (sw, sh) = (src.width() as f32, src.height() as f32);
+    let mut out = image::RgbImage::new(out_w, out_h);
+    for dy in 0..out_h {
+        for dx in 0..out_w {
+            // Apply inverse affine to dst coords → src coords.
+            let fx = inv_affine[0] * dx as f32
+                + inv_affine[1] * dy as f32
+                + inv_affine[2];
+            let fy = inv_affine[3] * dx as f32
+                + inv_affine[4] * dy as f32
+                + inv_affine[5];
+            // Bilinear sample, clamping outside coords to edge pixels
+            // (avoids black borders when alignment over-extends).
+            let x0 = fx.floor().clamp(0.0, sw - 1.0);
+            let y0 = fy.floor().clamp(0.0, sh - 1.0);
+            let x1 = (x0 + 1.0).min(sw - 1.0);
+            let y1 = (y0 + 1.0).min(sh - 1.0);
+            let ax = (fx - x0).clamp(0.0, 1.0);
+            let ay = (fy - y0).clamp(0.0, 1.0);
+            let p00 = src.get_pixel(x0 as u32, y0 as u32).0;
+            let p10 = src.get_pixel(x1 as u32, y0 as u32).0;
+            let p01 = src.get_pixel(x0 as u32, y1 as u32).0;
+            let p11 = src.get_pixel(x1 as u32, y1 as u32).0;
+            let mut pix = [0u8; 3];
+            for c in 0..3 {
+                let top = p00[c] as f32 * (1.0 - ax) + p10[c] as f32 * ax;
+                let bot = p01[c] as f32 * (1.0 - ax) + p11[c] as f32 * ax;
+                let v = top * (1.0 - ay) + bot * ay;
+                pix[c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            out.put_pixel(dx, dy, image::Rgb(pix));
+        }
+    }
+    out
+}
+
+/// Invert a 2×3 affine `[a, b, tx, c, d, ty]`.
+fn invert_affine_2x3(a: [f32; 6]) -> [f32; 6] {
+    let det = a[0] * a[4] - a[1] * a[3];
+    debug_assert!(det.abs() > 1e-12, "near-singular similarity transform");
+    let inv_det = 1.0 / det;
+    let i00 = a[4] * inv_det;
+    let i01 = -a[1] * inv_det;
+    let i10 = -a[3] * inv_det;
+    let i11 = a[0] * inv_det;
+    let i_tx = -(i00 * a[2] + i01 * a[5]);
+    let i_ty = -(i10 * a[2] + i11 * a[5]);
+    [i00, i01, i_tx, i10, i11, i_ty]
+}
+
+/// Align a face image to ArcFace's canonical 112×112 template via 5-point
+/// similarity transform. `landmarks` are in **pixel coordinates** within
+/// the source image (left_eye, right_eye, nose, left_mouth, right_mouth).
+/// Returns the aligned 112×112 RGB image.
+fn align_to_arcface_template(
+    src: &image::RgbImage,
+    landmarks_px: [[f32; 2]; 5],
+) -> image::RgbImage {
+    // Forward transform: source landmarks → ArcFace reference.
+    let src_pts: Vec<[f32; 2]> = landmarks_px.to_vec();
+    let dst_pts: Vec<[f32; 2]> = ARCFACE_5PT_REF.to_vec();
+    let forward = similarity_transform_2d(&src_pts, &dst_pts);
+    // For backward sampling (dst → src), invert.
+    let inverse = invert_affine_2x3(forward);
+    bilinear_warp(src, inverse, ARCFACE_INPUT, ARCFACE_INPUT)
+}
+
+/// Load a photo and produce the 112×112 RGB tensor ArcFace's IR-ResNet50
+/// expects, using the richest alignment available.
+///
+/// Alignment priority (richest first):
+///   * `FaceAlignment::Landmarks` — **Phase 4c.3**: 5-point similarity
+///     transform to ArcFace's canonical template. The right way to
+///     align — recovers the last ~15–25% of ArcFace's discriminative
+///     power vs cruder alignment.
+///   * `FaceAlignment::Bbox` — **Phase 4c.1**: user-supplied bbox.
+///     Crops to the bbox, then resizes to 112×112. No rotation/scale
+///     correction; better than centre-crop on non-centred photos.
+///   * `FaceAlignment::CenterCrop` — **Phase 4b**: shorter-side resize
+///     + centre-crop. Falls back when no better alignment supplied.
+///
+/// All paths use InsightFace's `(x − 127.5) / 127.5` normalisation.
 /// Returns `(1, 3, 112, 112)`.
-///
-/// **Quality caveat**: this is NOT proper alignment. ArcFace was trained
-/// on landmark-aligned crops; centre-crop loses ~20–30% of embedding
-/// accuracy on photos where the face is off-centre, tilted, or scaled
-/// unexpectedly. Phase 4c replaces this with SCRFD detection + 5-point
-/// similarity-transform alignment.
-///
-/// In the meantime: pass tight head-and-shoulders crops (the same kind
-/// of photo Plus-Face wants). With a well-framed input this proxy
-/// captures ~75% of full-FaceID identity preservation — still markedly
-/// better than Plus-Face on most faces.
 pub fn prepare_face_tensor(
     photo_path: &Path,
+    alignment: FaceAlignment,
     device: &Device,
     dtype: DType,
 ) -> Result<Tensor> {
-    let img = image::open(photo_path)?.to_rgb8();
-    let img = DynamicImage::ImageRgb8(img);
+    let img_rgb = image::open(photo_path)?.to_rgb8();
+    let img = DynamicImage::ImageRgb8(img_rgb.clone());
     let (w, h) = img.dimensions();
 
-    // Shorter-side resize to 2 × 112 = 224 — gives breathing room before the
-    // centre crop. Matches the resolution Plus-Face also feeds into CLIP-H.
-    let target_short: u32 = ARCFACE_INPUT * 2;
-    let (rw, rh) = if w < h {
-        let s = target_short;
-        (s, ((h as f32) * (s as f32) / (w as f32)).round() as u32)
-    } else {
-        let s = target_short;
-        (((w as f32) * (s as f32) / (h as f32)).round() as u32, s)
+    let aligned_rgb = match alignment {
+        FaceAlignment::Landmarks(lm_norm) => {
+            // Normalised → pixel coords. The aligner does the warp
+            // straight to 112×112 — no intermediate resize.
+            let lm_px: [[f32; 2]; 5] = std::array::from_fn(|i| {
+                [
+                    lm_norm[i][0] * w as f32,
+                    lm_norm[i][1] * h as f32,
+                ]
+            });
+            align_to_arcface_template(&img_rgb, lm_px)
+        }
+        FaceAlignment::Bbox([x0, y0, x1, y1]) => {
+            // Crop to bbox (clamped to image bounds), then resize.
+            let px0 = (x0.clamp(0.0, 1.0) * w as f32).floor() as u32;
+            let py0 = (y0.clamp(0.0, 1.0) * h as f32).floor() as u32;
+            let px1 = (x1.clamp(0.0, 1.0) * w as f32).ceil() as u32;
+            let py1 = (y1.clamp(0.0, 1.0) * h as f32).ceil() as u32;
+            let bw = px1.saturating_sub(px0).max(1).min(w - px0);
+            let bh = py1.saturating_sub(py0).max(1).min(h - py0);
+            img.crop_imm(px0, py0, bw, bh)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .to_rgb8()
+        }
+        FaceAlignment::CenterCrop => {
+            // Shorter-side resize to 2 × 112 = 224 (breathing room),
+            // then centre-crop, then resize.
+            let target_short: u32 = ARCFACE_INPUT * 2;
+            let (rw, rh) = if w < h {
+                let s = target_short;
+                (s, ((h as f32) * (s as f32) / (w as f32)).round() as u32)
+            } else {
+                let s = target_short;
+                (((w as f32) * (s as f32) / (h as f32)).round() as u32, s)
+            };
+            let resized = img.resize_exact(rw, rh, FilterType::CatmullRom);
+            let cx = rw.saturating_sub(target_short) / 2;
+            let cy = rh.saturating_sub(target_short) / 2;
+            resized
+                .crop_imm(cx, cy, target_short, target_short)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .to_rgb8()
+        }
     };
-    let resized = img.resize_exact(rw, rh, FilterType::CatmullRom);
-
-    // Centre-crop to (target_short × target_short).
-    let cx = rw.saturating_sub(target_short) / 2;
-    let cy = rh.saturating_sub(target_short) / 2;
-    let cropped = resized.crop_imm(cx, cy, target_short, target_short);
-
-    // Final resize to ArcFace's 112×112.
-    let aligned = cropped.resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom);
-    let aligned = aligned.to_rgb8();
 
     // InsightFace normalisation: x ∈ [0, 255] → (x − 127.5) / 127.5 ∈ [−1, 1].
     // Channel-first: RGB → (1, 3, 112, 112).
@@ -112,7 +371,7 @@ pub fn prepare_face_tensor(
     for c in 0..3usize {
         for y in 0..n {
             for x in 0..n {
-                let px = aligned.get_pixel(x as u32, y as u32).0[c];
+                let px = aligned_rgb.get_pixel(x as u32, y as u32).0[c];
                 data.push((px as f32 - 127.5) / 127.5);
             }
         }
@@ -386,12 +645,17 @@ fn make_layer(
 // adds SCRFD detection + 5-landmark alignment and the trait impl.
 // =====================================================================
 
-/// Combined ArcFace + FaceID image-proj encoder. Once Phase 4b lands the
-/// face detector, this gets an `encode(photo_path)` method and an
-/// `IdentityEncoder` trait impl.
+/// Combined ArcFace + FaceID image-proj encoder, plus an optional
+/// SCRFD detector (Phase 4c.4) that auto-fills 5-point landmarks when
+/// the caller hasn't supplied any.
 pub struct FaceIdEncoder {
     arcface: IResnet50,
     image_proj: crate::pipelines::ip_adapter::ImageProj,
+    /// Optional face detector. `Some` when `PLAKAT_SCRFD_WEIGHTS` is set
+    /// and weights load successfully; auto-fills landmarks for ArcFace
+    /// alignment. `None` falls back to centre-crop / user-supplied bbox /
+    /// user-supplied landmarks.
+    detector: Option<crate::pipelines::scrfd::SCRFDDetector>,
     #[allow(dead_code)]
     device: candle_core::Device,
     #[allow(dead_code)]
@@ -430,9 +694,11 @@ impl FaceIdEncoder {
             device,
             dtype,
         )?;
+        let detector = try_load_scrfd_detector(device, dtype)?;
         Ok(Self {
             arcface,
             image_proj,
+            detector,
             device: device.clone(),
             dtype,
         })
@@ -445,10 +711,34 @@ impl FaceIdEncoder {
     /// `PLAKAT_ARCFACE_WEIGHTS`). `faceid_weights_pth` is the h94
     /// `ip-adapter-faceid_sd15.bin` PyTorch file — we read just the
     /// `image_proj.*` subtree out of it (the file also contains UNet
-    /// LoRA weights under `ip_adapter.*` which are Phase 4c polish).
+    /// LoRA weights under `ip_adapter.*` which are Phase 4c.2 polish).
     pub fn load_faceid_sd15(
         arcface_weights: &Path,
         faceid_weights_pth: &Path,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        Self::load_faceid_with_dim(arcface_weights, faceid_weights_pth, 768, device, dtype)
+    }
+
+    /// Specialised constructor for SDXL FaceID — the path
+    /// `IdentityKind::FaceIdSdxl.load_encoder` takes. Same ArcFace
+    /// backbone as SD 1.5 (so the same env-var-supplied weights file
+    /// works); differs only in the image-proj output dim (2048 vs 768)
+    /// and the FaceID `.bin` file consumed.
+    pub fn load_faceid_sdxl(
+        arcface_weights: &Path,
+        faceid_weights_pth: &Path,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        Self::load_faceid_with_dim(arcface_weights, faceid_weights_pth, 2048, device, dtype)
+    }
+
+    fn load_faceid_with_dim(
+        arcface_weights: &Path,
+        faceid_weights_pth: &Path,
+        cross_attn_dim: usize,
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
@@ -460,14 +750,16 @@ impl FaceIdEncoder {
             faceid_weights_pth,
             "image_proj",
             512,
-            768, // SD 1.5 cross_attn_dim
+            cross_attn_dim,
             4,
             device,
             dtype,
         )?;
+        let detector = try_load_scrfd_detector(device, dtype)?;
         Ok(Self {
             arcface,
             image_proj,
+            detector,
             device: device.clone(),
             dtype,
         })
@@ -481,10 +773,17 @@ impl FaceIdEncoder {
         self.image_proj.forward(&embedding)
     }
 
-    /// Photo → identity tokens. Centre-crop alignment proxy (Phase 4b);
-    /// Phase 4c replaces with SCRFD + landmark alignment.
-    pub fn encode_photo(&self, photo_path: &Path) -> Result<Tensor> {
-        let aligned = prepare_face_tensor(photo_path, &self.device, self.dtype)?;
+    /// Photo → identity tokens. `alignment` picks how the 112×112 crop
+    /// is produced (see `FaceAlignment`). Landmarks (Phase 4c.3) give
+    /// the best quality; bbox (4c.1) is the middle option; centre-crop
+    /// (4b) is the fallback.
+    pub fn encode_photo(
+        &self,
+        photo_path: &Path,
+        alignment: FaceAlignment,
+    ) -> Result<Tensor> {
+        let aligned =
+            prepare_face_tensor(photo_path, alignment, &self.device, self.dtype)?;
         self.encode_aligned(&aligned)
     }
 
@@ -500,7 +799,11 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
         FaceIdEncoder::num_tokens(self)
     }
 
-    fn encode(&self, photo_path: &Path) -> Result<Tensor> {
+    fn encode(
+        &self,
+        photo_path: &Path,
+        opts: crate::pipelines::ip_adapter::EncodeOptions,
+    ) -> Result<Tensor> {
         if !photo_path.exists() {
             return Err(anyhow::anyhow!(
                 "persona photo not found: {} (resolved from current working \
@@ -508,6 +811,60 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
                 photo_path.display()
             ));
         }
-        self.encode_photo(photo_path)
+        // Alignment priority:
+        //   1. Manual landmarks (caller-supplied — overrides everything)
+        //   2. SCRFD-detected landmarks (auto-fill, Phase 4c.4)
+        //   3. Manual bbox (caller-supplied)
+        //   4. Centre-crop fallback
+        let detected_landmarks = match (&opts.face_landmarks, &self.detector) {
+            (Some(_), _) => None, // user supplied; don't override
+            (None, Some(det)) => {
+                let s = crate::ui::progress::spinner("SCRFD: detecting face");
+                match det.detect_primary_normalised(photo_path) {
+                    Ok(Some(lm)) => {
+                        s.finish_with_message("✓ SCRFD landmarks ready");
+                        Some(lm)
+                    }
+                    Ok(None) => {
+                        s.finish_with_message(
+                            "⚠ SCRFD found no face — falling back to bbox/centre-crop",
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        s.finish_with_message(format!(
+                            "⚠ SCRFD failed ({e}) — falling back to bbox/centre-crop"
+                        ));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let landmarks = opts.face_landmarks.or(detected_landmarks);
+        let alignment = FaceAlignment::from_options(opts.face_bbox, landmarks);
+        self.encode_photo(photo_path, alignment)
     }
+}
+
+/// Try to construct an SCRFD detector from `PLAKAT_SCRFD_WEIGHTS`.
+/// Returns `Ok(None)` if the env var is unset (the common case until
+/// Phase 4c.4 lands HF auto-download). Returns `Err` only if the env
+/// var is set but loading fails — fail loudly so the user knows.
+fn try_load_scrfd_detector(
+    device: &Device,
+    dtype: DType,
+) -> Result<Option<crate::pipelines::scrfd::SCRFDDetector>> {
+    let Some(path) = crate::pipelines::scrfd::resolve_scrfd_weights()? else {
+        return Ok(None);
+    };
+    let s = crate::ui::progress::spinner("Loading SCRFD face detector");
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(
+        &path,
+        crate::pipelines::scrfd::SCRFDConfig::default(),
+        device,
+        dtype,
+    )?;
+    s.finish_with_message("✓ SCRFD ready");
+    Ok(Some(det))
 }

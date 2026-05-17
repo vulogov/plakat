@@ -102,16 +102,31 @@ struct PersonaDef {
     /// Referenced by `task.personas: [<name>]`. Must be unique within the file.
     name: String,
     /// Reference photo path. Resolved relative to the process's working
-    /// directory (same convention as `task.style`). Head-and-shoulders crops
-    /// work best — Phase 1 has no automatic face detection.
+    /// directory (same convention as `task.style`).
     photo: PathBuf,
-    /// Which identity strategy. Defaults to `plus-face`. Phase 2 will add
-    /// `faceid` / `instantid`.
+    /// Which identity strategy. Defaults to `plus-face`. Other options:
+    /// `plus-face-sdxl`, `faceid`, `faceid-sdxl`.
     #[serde(default)]
     identity: Option<String>,
     /// IP-Adapter scale on the image tokens (0..). Defaults to 0.8.
     #[serde(rename = "face-strength", default)]
     face_strength: Option<f32>,
+    /// Optional face bbox in the photo, `[x0, y0, x1, y1]` normalised to
+    /// `[0, 1]` with origin top-left. Used by FaceID strategies to crop
+    /// the photo to the face region before ArcFace embedding (Phase 4c.1);
+    /// CLIP-H strategies ignore it. Phase 4c.4 will auto-fill via SCRFD.
+    #[serde(rename = "face-bbox", default)]
+    face_bbox: Option<[f32; 4]>,
+    /// Optional 5-point landmarks in the photo (Phase 4c.3). When set,
+    /// FaceID strategies perform a similarity-transform alignment to
+    /// ArcFace's canonical 112×112 template — the proper alignment.
+    /// Takes precedence over `face-bbox` when both are set.
+    ///
+    /// Format: `[[x, y]; 5]` normalised, order:
+    /// `left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner`.
+    /// CLIP-H strategies (`plus-face*`) ignore this field.
+    #[serde(rename = "face-landmarks", default)]
+    face_landmarks: Option<[[f32; 2]; 5]>,
     /// Optional persona-specific negative prompt (e.g. "no glasses, no beard").
     /// Prepended to the task's effective negative when this persona is
     /// imposed — kept with the persona because it describes the *who*, not
@@ -314,6 +329,35 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 let _: IdentityKind = id
                     .parse()
                     .with_context(|| format!("persona {:?} identity", p.name))?;
+            }
+            if let Some([x0, y0, x1, y1]) = p.face_bbox {
+                let in_unit = (0.0..=1.0).contains(&x0)
+                    && (0.0..=1.0).contains(&y0)
+                    && (0.0..=1.0).contains(&x1)
+                    && (0.0..=1.0).contains(&y1);
+                if !in_unit || x0 >= x1 || y0 >= y1 {
+                    bail!(
+                        "persona {:?} face-bbox {:?} is invalid \
+                         (must be [x0,y0,x1,y1] with 0 ≤ x0 < x1 ≤ 1 \
+                         and 0 ≤ y0 < y1 ≤ 1)",
+                        p.name,
+                        p.face_bbox.unwrap(),
+                    );
+                }
+            }
+            if let Some(lm) = p.face_landmarks {
+                for (i, [x, y]) in lm.iter().enumerate() {
+                    if !(0.0..=1.0).contains(x) || !(0.0..=1.0).contains(y) {
+                        bail!(
+                            "persona {:?} face-landmarks point {} = [{}, {}] \
+                             is out of range [0, 1]",
+                            p.name,
+                            i,
+                            x,
+                            y
+                        );
+                    }
+                }
             }
             map.insert(p.name.as_str(), p);
         }
@@ -857,6 +901,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     refine: eff_refine,
                     refine_strength: eff_refine_strength,
                     face_strength,
+                    face_bbox: persona.face_bbox,
+                    face_landmarks: persona.face_landmarks,
                 })?;
             }
 
@@ -904,6 +950,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         refine: None,
                         refine_strength: 0.3,
                         face_strength: 0.0,
+                        face_bbox: None,
+                        face_landmarks: None,
                     };
 
                     let mut latents = pp.generate_latents_one(&base_req, img_seed)?;
@@ -937,6 +985,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             refine: None,
                             refine_strength: 0.3,
                             face_strength,
+                            face_bbox: persona.face_bbox,
+                    face_landmarks: persona.face_landmarks,
                         };
                         let pass_seed = img_seed
                             .wrapping_add(1)
