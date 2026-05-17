@@ -150,14 +150,16 @@ Numerical solver for the reverse diffusion ODE.
 | `unipc` | UniPC corrector with Karras sigmas — DPM-Solver++ family. Predictor-corrector tends to be smooth at low step counts. **CUDA / CPU only** (Metal-guarded). |
 | `dpmpp-2m` | DPM-Solver++ 2M Karras — same UniPC class with corrector disabled. Crisper edges than `unipc` at the same step count; widely considered an A1111/ComfyUI "safe default". **CUDA / CPU only**. |
 | `unipc-exp` | UniPC with exponential sigma schedule (vs Karras). Different noise-step distribution; sometimes better at very low step counts. **CUDA / CPU only**. |
+| `lcm` | LCM consistency-function scheduler. **Pair with an LCM-LoRA** (e.g. `latent-consistency/lcm-lora-sdv1-5`) at 4–8 steps with `--guidance 1.0–2.0`. Pure F32 math — works on Metal/CUDA/CPU. `--steps` must be ≤ 50. |
 
 If unsure on Metal: `euler-a`. On CUDA/CPU: `dpmpp-2m` is a strong
-all-purpose default.
+all-purpose default. With LCM-LoRA at low step counts: `lcm` is the
+correct choice — pairing the LoRA with DDIM works but produces visibly
+muddier output than the LCM scheduler at the same step count.
 
 **Not yet ported**: deterministic Euler (no noise injection), Heun,
-LCM (would help LCM-LoRA-trained adapters), DDPM (slow reference).
-Each is ~150–250 LoC of vendored Rust because they're separate
-scheduler classes, not config variants of UniPC.
+DDPM (slow reference). Each is ~150–250 LoC of vendored Rust because
+they're separate scheduler classes.
 
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
