@@ -752,7 +752,7 @@ impl FaceIdEncoder {
     ///
     /// * `arcface_weights` — IR-ResNet50 safetensors. Most accessible
     ///   source: HF-hosted conversion of InsightFace's `w600k_r50.onnx`
-    ///   (antelopev2 / buffalo_l bundle). Phase 4b wires the download.
+    ///   (antelopev2 / buffalo_l bundle). See PERSONA.md FaceID setup.
     /// * `faceid_weights` — `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15`
     ///   (the `image_proj.*` subtree). The same file also contains LoRA
     ///   weights for the UNet's cross-attention; those are NOT applied
@@ -885,9 +885,8 @@ impl FaceIdEncoder {
     }
 
     /// Photo → identity tokens. `alignment` picks how the 112×112 crop
-    /// is produced (see `FaceAlignment`). Landmarks (Phase 4c.3) give
-    /// the best quality; bbox (4c.1) is the middle option; centre-crop
-    /// (4b) is the fallback.
+    /// is produced (see `FaceAlignment`). Landmarks give the best
+    /// quality, bbox is the middle option, centre-crop is the fallback.
     pub fn encode_photo(
         &self,
         photo_path: &Path,
@@ -924,7 +923,7 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
         }
         // Alignment priority:
         //   1. Manual landmarks (caller-supplied — overrides everything)
-        //   2. SCRFD-detected landmarks (auto-fill, Phase 4c.4)
+        //   2. SCRFD-detected landmarks (auto-fill, if detector loaded)
         //   3. Manual bbox (caller-supplied)
         //   4. Centre-crop fallback
         let detected_landmarks = match (&opts.face_landmarks, &self.detector) {

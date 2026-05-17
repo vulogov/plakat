@@ -155,7 +155,7 @@ pub struct GenRequest {
     /// strategies to crop the photo before ArcFace embedding. CLIP-H
     /// strategies (PlusFace*) ignore it.
     pub face_bbox: Option<[f32; 4]>,
-    /// Optional 5-point landmarks (Phase 4c.3). Takes precedence over
+    /// Optional 5-point landmarks. Takes precedence over
     /// `face_bbox`. FaceID strategies do similarity-transform alignment
     /// to ArcFace's canonical 112×112 template. Order: left_eye,
     /// right_eye, nose, left_mouth, right_mouth. Normalised to `[0, 1]`.
