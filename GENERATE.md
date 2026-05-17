@@ -462,12 +462,48 @@ Output PNG path. Created (with parent dirs) if absent.
 
 #### `--strength <FLOAT>` (default `0.7`)
 
-How much to redraw IN. Higher = more like REF, less like IN.
+How much to redraw IN. Higher = more like REF, less like IN. This is the
+single most important knob — pick it based on **what IN is**, not what
+you want REF to do.
 
-- `0.0` → no change to IN (output ≈ input).
-- `0.3` → subtle restyling, IN mostly preserved.
-- `0.6` → balanced — recognizable IN with REF's style.
-- `0.9` → heavy restyling, IN may lose recognizable detail.
+| Strength | Face input | Non-face input |
+|---|---|---|
+| `0.2` | reference barely visible, face exact | barely visible, photo unchanged |
+| `0.3 – 0.4` | subtle restyling, face preserved | mild palette shift |
+| `0.5` | clear style shift, mild face drift | balanced restyling |
+| `0.6` | strong style shift, face starts to drift | recognisable IN, distinctive REF |
+| `0.7` (default) | heavy restyle, identity wobble — **too much for faces** | balanced→heavy restyle |
+| `0.8 +` | IN is essentially a composition hint; identity gone | heavy redraw |
+
+The default `0.7` is tuned for scenes/landscapes. For face inputs use
+`0.35` (or `--for portrait`, below).
+
+#### `--for <PRESET>` (default off)
+
+Strength preset shortcut — picks a documented `--strength` for a use
+case. Explicit `--strength` always wins if both are passed.
+
+| Preset | Strength | Use for |
+|---|---|---|
+| `portrait` (aliases: `face`, `person`) | `0.35` | Face inputs — preserves identity while picking up REF's palette/brushwork. |
+| `scene` (aliases: `landscape`, `balanced`) | `0.55` | Landscapes, architecture, objects. Clear style shift, structure preserved. |
+| `grading` (aliases: `grade`, `tonal`, `color`) | `0.25` | Tonal/colour grading — adds REF's character without redrawing anything. Safest preset for photos you want to keep recognisable. |
+
+Examples:
+
+```bash
+# Face-preserving style transfer.
+plakat stylize --in face.jpg --ref painting.jpg --out styled.png --for portrait
+
+# Landscape restyling.
+plakat stylize --in landscape.jpg --ref ukiyoe.jpg --out styled.png --for scene
+
+# Just borrow the reference's colour palette.
+plakat stylize --in photo.jpg --ref gradient.jpg --out graded.png --for grading
+
+# Preset + explicit override → explicit wins (warns about the conflict).
+plakat stylize ... --for portrait --strength 0.45   # uses 0.45
+```
 
 #### `--steps <N>` (default `30`)
 
