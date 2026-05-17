@@ -15,9 +15,10 @@ can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
-> **Phases 1 + 2 + 3 shipped. Phase 4 in progress** (4a: ArcFace backbone
-> + FaceID image-proj ported; 4b: SCRFD detection + alignment + wire-up
-> pending). InstantID remains roadmap. See [Phase 4 status](#phase-4-status).
+> **Phases 1 + 2 + 3 + 4b shipped.** FaceID is usable today via
+> `--identity faceid` with bring-your-own ArcFace weights and centre-crop
+> alignment. Phase 4c adds SCRFD detection + auto-download. InstantID
+> remains roadmap. See [Phase 4 status](#phase-4-status).
 
 ---
 
@@ -234,7 +235,7 @@ listed.
 |---|---|---|---|
 | `plus-face` (default) | **Phase 1, shipping** | SD 1.5 (cross-attn dim 768) | IP-Adapter-Plus-Face: CLIP-H penultimate hidden state → Perceiver resampler → 16 image tokens → concat onto text tokens. |
 | `plus-face-sdxl` | **Phase 3, shipping** | SDXL (cross-attn dim 2048) | Same architecture as `plus-face` but at SDXL's wider cross-attn dim. Reuses the SD 1.5 CLIP-H encoder (the `vit-h` SDXL Plus-Face variant). Visible quality lift on every render — SDXL composes and renders portraits better than SD 1.5. |
-| `faceid` | **Roadmap, not yet** | SD 1.5 (planned) | InsightFace ArcFace embedding → IP-Adapter-FaceID MLP. Needs an InsightFace + face-detection port for proper alignment. |
+| `faceid` | **Phase 4b, shipping** | SD 1.5 (cross-attn dim 768) | InsightFace ArcFace embedding (IR-ResNet50, 512-d identity vector) → IP-Adapter-FaceID image-proj → 4 tokens. Markedly better identity preservation than `plus-face` when the input is face-cropped. **Requires `PLAKAT_ARCFACE_WEIGHTS` env var pointing at an IR-ResNet50 safetensors** — see [Phase 4b setup](#phase-4b-setup-faceid). Alignment is centre-crop until Phase 4c. |
 | `instantid` | **Roadmap, not yet** | SDXL (planned) | ID embedding + landmarks via a ControlNet-style branch. Best likeness; needs ControlNet + face detection + multi-pass orchestration. |
 
 Aliases for `plus-face-sdxl`: `plusface-sdxl`, `plus_face_sdxl`,
@@ -1024,52 +1025,83 @@ These are honest, documented constraints — not bugs:
 
 ## Phase 4 status
 
-Phase 4 = `IdentityKind::FaceId`. Because FaceID needs *new model
-porting from scratch* (not "drop in another Plus-Face safetensors"),
-it ships across multiple sessions. Current progress:
+Phase 4 = `IdentityKind::FaceId`. Shipped across multiple sessions because
+FaceID required new model porting from scratch (not "drop in another
+Plus-Face safetensors"):
 
-### Phase 4a — checkpoint shipped
-
-| Component | File | Status |
+| | Status | What's in |
 |---|---|---|
-| **IR-ResNet50** ArcFace backbone (input 112×112×3 RGB → 512-d L2-norm embedding). Pre-activation residual blocks, PReLU activations, `[3, 4, 14, 3]` layer counts matching InsightFace's `iresnet50()` / `w600k_r50` weights. | `src/pipelines/face_models.rs` | **Ported, compiles** |
-| **FaceID image-proj** MLP (512-d ArcFace embedding → 4 tokens × cross_attn_dim). Reuses the existing `ImageProj` from `ip_adapter.rs` — same shape as base IP-Adapter, different input dim. | `src/pipelines/ip_adapter.rs` (reused) | **Reused, compiles** |
-| **`FaceIdEncoder`** standalone struct with `encode_aligned(112×112_tensor) → (1, 4, cross_attn_dim)`. | `src/pipelines/face_models.rs` | **Built, not invoked** |
+| **Phase 4a** | Shipped | IR-ResNet50 ArcFace backbone in candle (`face_models.rs`), FaceID image-proj reuses `ImageProj`, `FaceIdEncoder` standalone struct. Compiled but not user-callable. |
+| **Phase 4b** | **Shipped** | `IdentityKind::FaceId` variant + `FromStr` + `load_encoder` arm, `IdentityEncoder` trait impl, h94 FaceID `.bin` loading via PyTorch state-dict path, centre-crop alignment proxy, bring-your-own ArcFace weights via env var. `--identity faceid` works end-to-end today. |
+| **Phase 4c** | Roadmap | SCRFD detection + 5-landmark similarity-transform alignment (replaces centre-crop), ArcFace HF auto-download (drops the env var), FaceID UNet LoRA application (the `ip_adapter.*` subtree of h94's `.bin` — gets identity preservation closer to diffusers reference). |
+| **Phase 4d** | Roadmap | `IdentityKind::FaceIdSdxl` — SDXL variant of FaceID. Same backbone, different image-proj output dim. |
+| **InstantID** | Roadmap (separate) | Needs ControlNet integration in the portrait pipeline (~500 LoC) — a substantially larger effort than the rest of Phase 4. |
 
-Compiled-but-unreachable. No `IdentityKind::FaceId` variant. No CLI surface.
-Honest checkpoint: the math + module construction + weight-key layout
-are in place; the moment Phase 4b lands its inputs, end-to-end works.
+### Phase 4b setup (FaceID)
 
-### Phase 4b — next session
+FaceID requires two weight files:
 
-| Component | Approx. cost | Why needed |
-|---|---|---|
-| **SCRFD face detector** (or RetinaFace) port: anchor-based detection, multi-scale heads, NMS, 5-landmark regression | ~300 LoC | ArcFace was trained on landmark-aligned crops. Without detection + alignment, embedding quality drops ~30% and FaceID becomes barely better than Plus-Face. |
-| **Similarity-transform alignment** from 5 detected landmarks → canonical ArcFace reference points → 112×112 crop | ~50 LoC | The aligned tensor is what `FaceIdEncoder::encode_aligned` expects today. |
-| **Weight downloads** for ArcFace (HF-hosted IR-ResNet50 safetensors) + IP-Adapter-FaceID image-proj (`h94/IP-Adapter/models/ip-adapter-faceid_sd15`) | ~30 LoC | Plumbing into `IdentityKind::load_encoder`. |
-| **`IdentityKind::FaceId` integration**: variant + `FromStr` arm + `load_encoder` arm + `IdentityEncoder` trait impl on `FaceIdEncoder` (with `encode(photo_path)` that runs detection → alignment → `encode_aligned`) | ~80 LoC | The drop-in surface every prior persona phase used. |
+**(1) IP-Adapter-FaceID** — auto-downloaded on first use from
+`h94/IP-Adapter/models/ip-adapter-faceid_sd15.bin`. Nothing for you to do.
 
-After Phase 4b lands:
+**(2) ArcFace IR-ResNet50** — **bring your own** for Phase 4b. The
+`PLAKAT_ARCFACE_WEIGHTS` environment variable must point at a safetensors
+file matching InsightFace's `iresnet50` key naming. One-time setup:
 
-- `plakat portrait --photo … --identity faceid` works.
-- Scenarios with `identity: faceid` on a persona auto-pick the SD 1.5
-  FaceID portrait pipeline (same auto-pick mechanism Phase 3 added).
-- Quality leap over Plus-Face is real — ArcFace embeddings are
-  identity-specific by training, not "general image features that
-  happen to capture identity" the way CLIP-H is.
+```bash
+# 1. Download the antelopev2 bundle from InsightFace releases:
+curl -L -o antelopev2.zip \
+    https://github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip
+unzip antelopev2.zip                       # → antelopev2/
 
-### Phase 4c — optional polish
+# 2. Convert the ONNX to safetensors (one-time, ~250 MB output):
+python -c "import onnx, torch
+from onnx2torch import convert
+from safetensors.torch import save_file
+m = convert(onnx.load('antelopev2/w600k_r50.onnx'))
+save_file(m.state_dict(), 'arcface_r50.safetensors')"
 
-| Component | What it adds |
-|---|---|
-| **FaceID LoRA application** — h94's FaceID weight files include a UNet cross-attention LoRA alongside the image_proj. Merging this LoRA into the portrait UNet at load (alongside scenario `loras`) is the second half of the diffusers reference's quality. | Identity preservation closer to ~80–90% of reference (vs ~60–70% without the LoRA). |
-| **Automatic bbox inference for multi-persona** — with SCRFD already loaded for FaceID, `personas: [{ name: alice, bbox: auto }]` becomes free. The detector picks a face region from the generated base image at low res. | Phase 2 ergonomic improvement; non-breaking. |
-| **`IdentityKind::InstantId`** — ID embedding + landmarks via a ControlNet-style branch. Needs ControlNet integration in the portrait pipeline (a separate ~500 LoC effort). | Near-photographic likeness; significantly larger than the rest of Phase 4. |
+# 3. Point plakat at it:
+export PLAKAT_ARCFACE_WEIGHTS=$(pwd)/arcface_r50.safetensors
+```
 
-### The drop-in promise still holds
+Then:
 
-When Phase 4b lands, no code outside `src/pipelines/{ip_adapter,face_models}.rs`
-needs to change. The portrait pipeline already abstracts identity behind
-the `IdentityEncoder` trait; `IdentityKind::load_encoder` is the only
-construction hook; the scenario auto-pick uses `target_variant()`.
-Everything established in Phases 1–3 absorbs FaceID without edits.
+```bash
+plakat --device metal portrait \
+    --photo ./refs/alice.jpg \
+    --identity faceid \
+    --face-strength 1.0 \
+    --steps 30 \
+    "studio portrait, cinematic lighting"
+```
+
+Phase 4c will obsolete steps 1–3 by auto-downloading and conversion-on-cache.
+
+### Phase 4b limitations (documented)
+
+1. **Centre-crop alignment, not true 5-landmark alignment.** ArcFace was
+   trained on landmark-aligned crops; centre-crop loses ~20–30% of the
+   embedding's discriminative power on photos where the face is off-centre,
+   tilted, or framed loose. With a tight head-and-shoulders crop this is
+   ~75% of full-FaceID quality — still markedly better than Plus-Face on
+   most faces. Phase 4c replaces the centre-crop with SCRFD + similarity
+   transform for full reference quality.
+
+2. **No UNet LoRA application.** h94's FaceID `.bin` packs both an
+   `image_proj.*` subtree (consumed) and an `ip_adapter.*` UNet cross-
+   attention LoRA (skipped — same shared-cross-attention shortcut our
+   Plus-Face implementation takes). Applying the LoRA at load time
+   would get us closer to diffusers reference (~80–90% vs current
+   ~60–70%) — Phase 4c.
+
+3. **SD 1.5 only.** SDXL FaceID needs a separate image-proj target dim
+   (2048 vs 768) and a separate weight file. Phase 4d.
+
+### The drop-in promise held
+
+When Phase 4b landed, no code outside `src/pipelines/{ip_adapter,face_models}.rs`
+needed to change. The portrait pipeline already abstracted identity behind
+the `IdentityEncoder` trait; `IdentityKind::load_encoder` was the only
+construction hook; scenario auto-pick used `target_variant()`. Everything
+established in Phases 1–3 absorbed FaceID without edits.

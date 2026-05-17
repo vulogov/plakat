@@ -25,8 +25,14 @@ pub struct PortraitArgs {
     #[arg(long, value_name = "PATH")]
     pub photo: Option<PathBuf>,
 
-    /// Identity strategy. `plus-face` for SD 1.5 (default), `plus-face-sdxl`
-    /// for SDXL. FaceID / InstantID are roadmap.
+    /// Identity strategy:
+    ///   * `plus-face` (default) — IP-Adapter-Plus-Face on SD 1.5
+    ///   * `plus-face-sdxl`     — IP-Adapter-Plus-Face on SDXL (vit-h)
+    ///   * `faceid`             — IP-Adapter-FaceID on SD 1.5 (ArcFace);
+    ///                            Phase 4b — requires PLAKAT_ARCFACE_WEIGHTS
+    ///                            env var and centre-crop alignment
+    ///                            (Phase 4c adds SCRFD + auto-download).
+    /// InstantID is roadmap.
     #[arg(long, default_value = "plus-face")]
     pub identity: IdentityKind,
 
