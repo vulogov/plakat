@@ -1,4 +1,5 @@
 pub mod extra_schedulers;
+pub mod face_models;
 pub mod flux;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
