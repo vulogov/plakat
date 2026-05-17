@@ -30,8 +30,9 @@ pub struct PortraitArgs {
     ///   * `plus-face-sdxl`     — IP-Adapter-Plus-Face on SDXL (vit-h)
     ///   * `faceid`             — IP-Adapter-FaceID on SD 1.5 (ArcFace)
     ///   * `faceid-sdxl`        — IP-Adapter-FaceID on SDXL (ArcFace)
-    /// FaceID strategies require PLAKAT_ARCFACE_WEIGHTS; centre-crop or
-    /// `--face-bbox` for alignment until Phase 4c.2 auto-detection lands.
+    /// FaceID strategies require ArcFace weights (PLAKAT_ARCFACE_WEIGHTS
+    /// or PLAKAT_ARCFACE_HF). Alignment: `--face-landmarks` > SCRFD-
+    /// detected landmarks (when configured) > `--face-bbox` > centre-crop.
     /// InstantID is roadmap.
     #[arg(long, default_value = "plus-face")]
     pub identity: IdentityKind,
@@ -46,8 +47,8 @@ pub struct PortraitArgs {
     /// to [0,1], origin top-left). When set, the photo is cropped to this
     /// region before identity encoding — meaningful for FaceID strategies
     /// where ArcFace was trained on tight face crops. CLIP-H strategies
-    /// (`plus-face`, `plus-face-sdxl`) ignore it. Phase 4c.4 will replace
-    /// this manual bbox with auto-detection via SCRFD.
+    /// (`plus-face`, `plus-face-sdxl`) ignore it. Optional SCRFD auto-
+    /// detection (PLAKAT_SCRFD_*) can fill this in from any photo.
     ///
     /// Example: `--face-bbox 0.2,0.1,0.8,0.7`.
     #[arg(long, value_name = "X0,Y0,X1,Y1", value_parser = parse_face_bbox)]
@@ -69,7 +70,8 @@ pub struct PortraitArgs {
     /// Example (eyes at y=0.40, nose at y=0.55, mouth corners at y=0.68):
     /// `--face-landmarks 0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68`
     ///
-    /// Phase 4c.4 (SCRFD) will auto-fill these from any photo.
+    /// Optional SCRFD auto-detection (PLAKAT_SCRFD_*) can auto-fill these
+    /// from any photo when no manual landmarks are passed.
     #[arg(long, value_name = "LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY", value_parser = parse_face_landmarks)]
     pub face_landmarks: Option<[[f32; 2]; 5]>,
 
