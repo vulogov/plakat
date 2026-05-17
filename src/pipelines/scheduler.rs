@@ -39,6 +39,17 @@ pub enum SchedulerKind {
     /// 4–8 steps. Pure F32 arithmetic, so works on Metal/CUDA/CPU. Requires
     /// `steps ≤ original_inference_steps` (50 by default).
     Lcm,
+    /// Deterministic Euler — Euler-Ancestral without the noise injection.
+    /// Reproducible across runs given a seed. Works on Metal/CUDA/CPU.
+    Euler,
+    /// Heun second-order predictor-corrector. Two UNet evaluations per
+    /// "effective" step. Higher quality at the same number of model calls;
+    /// approximately 2× wall time per `--steps` value vs Euler.
+    Heun,
+    /// DDPM — the original reference. Slow (typically `--steps` close to
+    /// the training schedule); mainly useful as a baseline. Works on
+    /// Metal/CUDA/CPU.
+    Ddpm,
 }
 
 impl std::str::FromStr for SchedulerKind {
@@ -47,17 +58,20 @@ impl std::str::FromStr for SchedulerKind {
         Ok(match s.to_lowercase().as_str() {
             "default" => Self::Default,
             "ddim" => Self::Ddim,
-            "euler-a" | "euler_a" | "eulera" | "euler-ancestral" | "euler" => Self::EulerA,
+            "euler-a" | "euler_a" | "eulera" | "euler-ancestral" => Self::EulerA,
             "unipc" | "uni-pc" => Self::UniPc,
             "dpm++" | "dpm-solver++" | "dpmpp" | "dpmpp-2m" | "dpm++2m" | "dpmpp-karras" => {
                 Self::DpmppKarras
             }
             "unipc-exp" | "unipc-exponential" => Self::UniPcExp,
             "lcm" | "lcm-scheduler" => Self::Lcm,
+            "euler" | "euler-discrete" | "euler-deterministic" => Self::Euler,
+            "heun" | "heun-discrete" => Self::Heun,
+            "ddpm" => Self::Ddpm,
             other => {
                 return Err(anyhow!(
-                    "unknown scheduler {other:?} (try: default | ddim | euler-a | unipc | \
-                     dpmpp-2m | unipc-exp | lcm)"
+                    "unknown scheduler {other:?} (try: default | ddim | euler-a | euler | \
+                     heun | unipc | dpmpp-2m | unipc-exp | lcm | ddpm)"
                 ));
             }
         })
@@ -130,6 +144,26 @@ pub fn build(
             prediction_type: PredictionType::Epsilon,
             ..Default::default()
         }
+        .build(steps)?,
+        // Deterministic Euler.
+        SchedulerKind::Euler => crate::pipelines::extra_schedulers::EulerSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+        .build(steps)?,
+        // Heun second-order predictor-corrector.
+        SchedulerKind::Heun => crate::pipelines::extra_schedulers::HeunSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+        .build(steps)?,
+        // DDPM — wrap candle's standalone implementation.
+        SchedulerKind::Ddpm => crate::pipelines::extra_schedulers::DdpmConfigWrap(
+            crate::pipelines::extra_schedulers::DdpmConfig {
+                prediction_type: PredictionType::Epsilon,
+                ..Default::default()
+            },
+        )
         .build(steps)?,
     })
 }
