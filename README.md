@@ -15,8 +15,9 @@ pulled from HuggingFace and cached locally.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
 - **LoRA** — kohya + diffusers/PEFT formats, local files or HF repos
   (auto-discovered), per-LoRA `:SCALE` and a global multiplier
-- **Schedulers** — DDIM, Euler-Ancestral, UniPC (predictor-corrector),
-  DPM++ 2M Karras, UniPC-exponential, LCM (for LCM-LoRA at 4–8 steps)
+- **Schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun
+  (predictor-corrector), UniPC, DPM++ 2M Karras, UniPC-exponential, LCM
+  (for LCM-LoRA at 4–8 steps), DDPM
 - **Polish pass** — extra denoising pass (`--refine N`) at low strength
   for sharper details (same model)
 - **SDXL refiner** — `--refiner` enables the official
@@ -379,9 +380,8 @@ then all `count` images share the enhanced prompt).
 <!-- per-task overrides landed in 0.4: size, aspect, count, steps,
      guidance, seed, negative, scheduler, refine, refine-strength,
      refiner-frac -->
-- Schedulers requiring net-new solver code: deterministic Euler, Heun,
-  DDPM. Currently shipping: DDIM, Euler-Ancestral, UniPC, DPM++ 2M Karras,
-  UniPC-exponential, LCM.
+<!-- Schedulers: all common ones are wired. Shipping: DDIM, Euler, Euler-A,
+     Heun, UniPC, DPM++ 2M Karras, UniPC-exponential, LCM, DDPM. -->
 
 ## License
 

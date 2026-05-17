@@ -151,15 +151,22 @@ Numerical solver for the reverse diffusion ODE.
 | `dpmpp-2m` | DPM-Solver++ 2M Karras — same UniPC class with corrector disabled. Crisper edges than `unipc` at the same step count; widely considered an A1111/ComfyUI "safe default". **CUDA / CPU only**. |
 | `unipc-exp` | UniPC with exponential sigma schedule (vs Karras). Different noise-step distribution; sometimes better at very low step counts. **CUDA / CPU only**. |
 | `lcm` | LCM consistency-function scheduler. **Pair with an LCM-LoRA** (e.g. `latent-consistency/lcm-lora-sdv1-5`) at 4–8 steps with `--guidance 1.0–2.0`. Pure F32 math — works on Metal/CUDA/CPU. `--steps` must be ≤ 50. |
+| `euler` | Deterministic Euler. Same algorithm as `euler-a` minus the per-step noise injection. Reproducible across runs given a seed. Pure F32 — works on Metal/CUDA/CPU. |
+| `heun` | Heun second-order predictor-corrector. **2× the UNet evaluations** per `--steps` value (interleaved predictor + corrector). Quality typically beats Euler at the same number of model calls. Pure F32 — works on Metal/CUDA/CPU. |
+| `ddpm` | The original DDPM. Slow (best at high step counts, since each step is a single Markov transition). Mainly useful as a reference. Pure F32 — works on Metal/CUDA/CPU. |
 
-If unsure on Metal: `euler-a`. On CUDA/CPU: `dpmpp-2m` is a strong
-all-purpose default. With LCM-LoRA at low step counts: `lcm` is the
-correct choice — pairing the LoRA with DDIM works but produces visibly
-muddier output than the LCM scheduler at the same step count.
+If unsure on Metal: `euler-a` (stochastic) or `euler` (deterministic).
+On CUDA/CPU: `dpmpp-2m` is a strong all-purpose default. With LCM-LoRA
+at low step counts: `lcm`. For maximum quality at moderate step count
+where 2× UNet evaluations is fine: `heun`.
 
-**Not yet ported**: deterministic Euler (no noise injection), Heun,
-DDPM (slow reference). Each is ~150–250 LoC of vendored Rust because
-they're separate scheduler classes.
+> Naming note: `--scheduler euler` now means **deterministic** Euler,
+> matching A1111/ComfyUI convention. Aliases `euler-a` / `eulera` /
+> `euler-ancestral` still hit Euler-Ancestral.
+
+All planned schedulers are now wired in. Future additions (DPM++ 2M
+SDE, KDPM2, DEIS, etc.) would each be ~150–250 LoC since they're
+separate solver classes.
 
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
