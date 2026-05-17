@@ -1,27 +1,27 @@
 //! Portrait generation pipeline.
 //!
-//! Phase 1: IP-Adapter-Plus-Face on Stable Diffusion 1.5.
-//!   * Optional reference photo → CLIP-H penultimate hidden state →
-//!     Perceiver resampler (16 image tokens, 768-d) → concat onto text
-//!     tokens → standard SD denoise from pure noise → VAE decode.
-//!   * Without a photo, behaves like a text-only portrait-tuned generate
-//!     (still benefits from portrait-specific defaults: 3:4 aspect, baked-in
-//!     anatomy negatives, face-friendly scheduler).
+//! Supports two SD variants:
+//!   * **SD 1.5** with `IdentityKind::PlusFace` — CLIP-H penultimate hidden
+//!     state → Perceiver resampler (16 tokens × 768-d) → concat onto
+//!     `(1, 77, 768)` text tokens → denoise from noise.
+//!   * **SDXL** with `IdentityKind::PlusFaceSdxl` — same CLIP-H encoder
+//!     (the `vit-h` SDXL Plus-Face variant), but the Resampler emits at
+//!     SDXL's 2048-d cross-attn dim; concat onto SDXL's dual-encoder
+//!     `(1, 77, 2048)` text tokens.
 //!
-//! Phase 2 (planned): plug in `FaceIdEncoder` (InsightFace ArcFace
-//! embedding) and `InstantIdEncoder` (ID + landmarks) via the
-//! `IdentityEncoder` trait without touching this module's pipeline loop.
+//! Without a photo, behaves like a text-only portrait-tuned generate
+//! (3:4 aspect default, face/anatomy negatives baked in at the CLI layer).
 //!
-//! Limitations carried over from our `stylize` IP-Adapter integration:
+//! Limitations carried over from `stylize`'s IP-Adapter integration:
 //!   * candle 0.8 has no UNet attention hooks, so the *decoupled* cross-
-//!     attention path (separate to_k_ip / to_v_ip in every block) is not
+//!     attention path (separate `to_k_ip` / `to_v_ip` per block) is not
 //!     wired up. Identity tokens travel via the same cross-attention as
 //!     text. Quality is recognisable but not pixel-perfect — typically
-//!     ~50–70% of diffusers' reference. Phase 2 (FaceID/InstantID) is
-//!     where we'd expect a meaningful jump.
-//!   * SD 1.5 only for now. SDXL Plus-Face uses different image-encoder
-//!     dims (CLIP-G) and a separate safetensors file; that's a Phase 1.5
-//!     follow-up.
+//!     ~50–70% of diffusers' reference. FaceID / InstantID (Phase-3+) are
+//!     the path to better identity preservation.
+//!   * SDXL micro-conditioning (`text_time` add-embedding from pooled
+//!     CLIP-G + size/crop time-ids) is not wired up — candle's UNet has
+//!     no `add_embedding` projection. Same gap as our base SDXL t2i path.
 //!   * No automatic face crop. Pass a reasonably tight head-and-shoulders
 //!     photo for best results.
 
@@ -39,10 +39,56 @@ use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::ui::progress;
 
-// Re-export so callers (CLI, future scenario integration) can keep using
+// Re-export so callers (CLI, scenario, future tools) can keep using
 // `portrait::IdentityKind` even though the enum lives next to its loaders
-// in `ip_adapter`. Phase-2 strategies are added there, not here.
+// in `ip_adapter`. New strategies are added there, not here.
 pub use crate::pipelines::ip_adapter::IdentityKind;
+
+/// SD variant the portrait pipeline routes through. Detected from the
+/// `model` alias / repo at load time. SD 1.5 is the default (alias `sd15`);
+/// SDXL is selected by any alias / repo containing `xl` (case-insensitive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    Sd15,
+    Sdxl,
+}
+
+impl Variant {
+    pub fn detect(model: &str) -> Self {
+        let m = model.to_lowercase();
+        if m.contains("flux") {
+            // Caller validates this earlier; treat as SD 1.5 to keep the
+            // type total. Flux portraits are not a thing.
+            return Self::Sd15;
+        }
+        if m.contains("xl") {
+            Self::Sdxl
+        } else {
+            Self::Sd15
+        }
+    }
+
+    pub fn cross_attn_dim(self) -> usize {
+        match self {
+            Self::Sd15 => 768,
+            Self::Sdxl => 2048,
+        }
+    }
+
+    pub fn vae_scale(self) -> f64 {
+        match self {
+            Self::Sd15 => 0.18215,
+            Self::Sdxl => 0.13025,
+        }
+    }
+
+    pub fn config(self, w: usize, h: usize) -> StableDiffusionConfig {
+        match self {
+            Self::Sd15 => StableDiffusionConfig::v1_5(None, Some(h), Some(w)),
+            Self::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
+        }
+    }
+}
 
 // =====================================================================
 // Request types.
@@ -109,9 +155,13 @@ pub struct GenRequest {
 // =====================================================================
 
 pub struct Pipeline {
+    variant: Variant,
     cfg: StableDiffusionConfig,
-    tokenizer: Tokenizer,
-    text_encoder: sdclip::ClipTextTransformer,
+    tokenizer_l: Tokenizer,
+    /// SDXL only — the CLIP-G tokenizer + encoder. `None` for SD 1.5.
+    tokenizer_g: Option<Tokenizer>,
+    text_encoder_l: sdclip::ClipTextTransformer,
+    text_encoder_g: Option<sdclip::ClipTextTransformer>,
     vae: AutoEncoderKL,
     unet: UNet2DConditionModel,
     identity_encoder: Option<Box<dyn IdentityEncoder>>,
@@ -127,8 +177,8 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Phase 1: SD 1.5 only. Errors out early on SDXL / Flux models so the
-    /// user sees a clear message rather than a mid-load shape mismatch.
+    /// Load weights for SD 1.5 or SDXL based on the model alias / repo.
+    /// Flux models are rejected (portrait is a SD-architecture feature).
     pub async fn load(req: LoadRequest) -> Result<Self> {
         let base_repo = if req.model.contains('/') {
             req.model.clone()
@@ -136,34 +186,76 @@ impl Pipeline {
             crate::hf::resolve_alias(&req.model).to_string()
         };
         let lc = base_repo.to_lowercase();
-        if lc.contains("xl") || lc.contains("flux") {
+        if lc.contains("flux") {
             bail!(
-                "portrait Phase 1 supports SD 1.5 only. Use --model sd15 \
-                 (or any HF SD-1.5 repo). SDXL Plus-Face is on the Phase 1.5 \
-                 roadmap; FaceID/InstantID are Phase 2."
+                "portrait does not support Flux. Use --model sd15 (default) \
+                 or --model sdxl. Flux portraits would need a separate \
+                 identity-adapter family — not yet ported."
             );
         }
+        let variant = Variant::detect(&base_repo);
 
-        let cfg = StableDiffusionConfig::v1_5(None, Some(512), Some(512));
+        // Sanity-check the identity strategy against the model variant.
+        // Catches `--model sdxl --identity plus-face` (or vice versa)
+        // before the model load eats seconds of download time.
+        if let Some(kind) = req.identity {
+            if kind.cross_attn_dim() != variant.cross_attn_dim() {
+                bail!(
+                    "identity strategy {:?} targets cross_attn_dim {} but \
+                     model {:?} ({:?}) expects {}. Pick an identity that \
+                     matches the model: SD 1.5 → `plus-face`, SDXL → \
+                     `plus-face-sdxl`.",
+                    kind,
+                    kind.cross_attn_dim(),
+                    base_repo,
+                    variant,
+                    variant.cross_attn_dim(),
+                );
+            }
+        }
+
+        let cfg = variant.config(512, 512);
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {
             DType::F16
         };
 
-        // -------- download base SD 1.5 weights --------
-        let dl = progress::spinner("Resolving SD 1.5 weights");
-        let tokenizer_path = crate::hf::download::get_first_of(&[
+        // -------- download base weights (variant-aware) --------
+        let dl = progress::spinner(&format!(
+            "Resolving {} weights",
+            match variant { Variant::Sd15 => "SD 1.5", Variant::Sdxl => "SDXL" }
+        ));
+        let tokenizer_l_path = crate::hf::download::get_first_of(&[
             (&base_repo, "tokenizer/tokenizer.json"),
             ("openai/clip-vit-large-patch14", "tokenizer.json"),
         ])
         .await
-        .with_context(|| format!("tokenizer for {base_repo}"))?;
-        let text_enc_path = crate::hf::download::get_first_of(&[
+        .with_context(|| format!("tokenizer (CLIP-L) for {base_repo}"))?;
+        let text_enc_l_path = crate::hf::download::get_first_of(&[
             (&base_repo, "text_encoder/model.fp16.safetensors"),
             (&base_repo, "text_encoder/model.safetensors"),
         ])
         .await?;
+        let (tokenizer_g_path, text_enc_g_path) = match variant {
+            Variant::Sd15 => (None, None),
+            Variant::Sdxl => {
+                let t = crate::hf::download::get_first_of(&[
+                    (&base_repo, "tokenizer_2/tokenizer.json"),
+                    ("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json"),
+                    ("openai/clip-vit-large-patch14", "tokenizer.json"),
+                ])
+                .await
+                .with_context(|| format!("tokenizer (CLIP-G) for {base_repo}"))?;
+                let e = crate::hf::download::get_first_of(&[
+                    (&base_repo, "text_encoder_2/model.fp16.safetensors"),
+                    (&base_repo, "text_encoder_2/model.safetensors"),
+                ])
+                .await
+                .with_context(|| format!("text_encoder_2 in {base_repo}"))?;
+                (Some(t), Some(e))
+            }
+        };
         let unet_path = crate::hf::download::get_first_of(&[
             (&base_repo, "unet/diffusion_pytorch_model.fp16.safetensors"),
             (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
@@ -174,7 +266,7 @@ impl Pipeline {
             (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
         ])
         .await?;
-        dl.finish_with_message("✓ SD 1.5 weights ready");
+        dl.finish_with_message("✓ base weights ready");
 
         // -------- resolve LoRA files (once) --------
         let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
@@ -192,8 +284,14 @@ impl Pipeline {
 
         // -------- build models --------
         let build = progress::spinner("Loading portrait models");
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| anyhow!("tokenizer: {e}"))?;
+        let tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
+            .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
+        let tokenizer_g = match tokenizer_g_path.as_ref() {
+            Some(p) => Some(
+                Tokenizer::from_file(p).map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?,
+            ),
+            None => None,
+        };
         let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
 
         // UNet (with optional LoRA merge).
@@ -222,55 +320,94 @@ impl Pipeline {
         };
         let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
 
-        // Text encoder (with optional LoRA merge).
-        let effective_te_path = if resolved_loras.is_empty() {
-            text_enc_path.clone()
+        // CLIP-L text encoder (with optional LoRA merge).
+        let te_l_target = match variant {
+            Variant::Sd15 => crate::pipelines::lora::MergeTarget::TE_SD15,
+            Variant::Sdxl => crate::pipelines::lora::MergeTarget::TE1_SDXL,
+        };
+        let effective_te_l_path = if resolved_loras.is_empty() {
+            text_enc_l_path.clone()
         } else {
-            let target = crate::pipelines::lora::MergeTarget::TE_SD15;
-            let spin = progress::spinner(&format!("Merging LoRA into {}", target.name));
+            let spin = progress::spinner(&format!("Merging LoRA into {}", te_l_target.name));
             let tmp = tempfile::Builder::new()
-                .prefix("plakat-portrait-te-")
+                .prefix("plakat-portrait-te-l-")
                 .suffix(".safetensors")
                 .tempfile()?;
             let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                &text_enc_path,
+                &text_enc_l_path,
                 tmp.path(),
                 &resolved_loras,
                 req.lora_scale,
                 &req.device,
-                target,
+                te_l_target,
             )?;
             spin.finish_with_message(format!(
                 "✓ merged {modified}/{targets} {} LoRA target(s)",
-                target.name
+                te_l_target.name
             ));
             let p = tmp.path().to_path_buf();
             lora_tmps.push(tmp);
             p
         };
-        let text_encoder = stable_diffusion::build_clip_transformer(
+        let text_encoder_l = stable_diffusion::build_clip_transformer(
             &cfg.clip,
-            &effective_te_path,
+            &effective_te_l_path,
             &req.device,
             dtype,
         )?;
+
+        // SDXL only: CLIP-G text encoder (with optional LoRA merge).
+        let text_encoder_g = match variant {
+            Variant::Sd15 => None,
+            Variant::Sdxl => {
+                let cfg_g = cfg
+                    .clip2
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("SDXL config is missing clip2"))?;
+                let p = text_enc_g_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
+                let effective_te_g_path = if resolved_loras.is_empty() {
+                    p.clone()
+                } else {
+                    let target = crate::pipelines::lora::MergeTarget::TE2_SDXL;
+                    let spin = progress::spinner(&format!("Merging LoRA into {}", target.name));
+                    let tmp = tempfile::Builder::new()
+                        .prefix("plakat-portrait-te-g-")
+                        .suffix(".safetensors")
+                        .tempfile()?;
+                    let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
+                        p,
+                        tmp.path(),
+                        &resolved_loras,
+                        req.lora_scale,
+                        &req.device,
+                        target,
+                    )?;
+                    spin.finish_with_message(format!(
+                        "✓ merged {modified}/{targets} {} LoRA target(s)",
+                        target.name
+                    ));
+                    let path = tmp.path().to_path_buf();
+                    lora_tmps.push(tmp);
+                    path
+                };
+                Some(stable_diffusion::build_clip_transformer(
+                    cfg_g,
+                    &effective_te_g_path,
+                    &req.device,
+                    dtype,
+                )?)
+            }
+        };
 
         build.finish_with_message("✓ portrait models loaded");
 
         // Identity encoder, if requested. The download + module construction
         // is fully contained in `IdentityKind::load_encoder`, so adding a new
-        // strategy (FaceID, InstantID, …) is a Phase-2 edit in `ip_adapter`
-        // that this function never has to learn about.
+        // strategy is an `ip_adapter` edit that this function never has to
+        // learn about.
         let (identity_encoder, identity_num_tokens) = if let Some(kind) = req.identity {
-            // Sanity: SD 1.5 UNet has cross_attn_dim 768. Refuse a strategy
-            // whose tokens won't fit, even though Phase 1 only ships one.
-            if kind.cross_attn_dim() != 768 {
-                bail!(
-                    "identity {:?} targets cross_attn_dim {} but SD 1.5 UNet expects 768",
-                    kind,
-                    kind.cross_attn_dim()
-                );
-            }
             let enc = kind.load_encoder(&req.device, dtype).await?;
             let n = enc.num_tokens();
             (Some(enc), n)
@@ -279,9 +416,12 @@ impl Pipeline {
         };
 
         Ok(Self {
+            variant,
             cfg,
-            tokenizer,
-            text_encoder,
+            tokenizer_l,
+            tokenizer_g,
+            text_encoder_l,
+            text_encoder_g,
             vae,
             unet,
             identity_encoder,
@@ -292,21 +432,44 @@ impl Pipeline {
         })
     }
 
-    /// Encode text → `(1, 77, 768)` at the pipeline's dtype.
+    /// Encode text into the form the UNet expects:
+    ///   * SD 1.5 — `(1, 77, 768)` from CLIP-L's final hidden state.
+    ///   * SDXL   — `(1, 77, 2048)` from `concat(CLIP-L penultimate,
+    ///              CLIP-G penultimate)` along the channel dim.
     fn encode_text(&self, text: &str) -> Result<Tensor> {
-        let pad_id = self
-            .tokenizer
-            .token_to_id("<|endoftext|>")
-            .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?;
-        let mut ids = self
-            .tokenizer
-            .encode(text, true)
-            .map_err(|e| anyhow!("encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        ids.resize(self.cfg.clip.max_position_embeddings, pad_id);
-        let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        Ok(self.text_encoder.forward(&ids_t)?.to_dtype(self.dtype)?)
+        match self.variant {
+            Variant::Sd15 => self.encode_text_sd15(text),
+            Variant::Sdxl => self.encode_text_sdxl(text),
+        }
+    }
+
+    fn encode_text_sd15(&self, text: &str) -> Result<Tensor> {
+        let ids = tokenize_padded(&self.tokenizer_l, &self.cfg.clip, text, &self.device)?;
+        Ok(self.text_encoder_l.forward(&ids)?.to_dtype(self.dtype)?)
+    }
+
+    fn encode_text_sdxl(&self, text: &str) -> Result<Tensor> {
+        let cfg_g = self
+            .cfg
+            .clip2
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL Pipeline missing clip2 config"))?;
+        let tok_g = self
+            .tokenizer_g
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL Pipeline missing tokenizer_g"))?;
+        let enc_g = self
+            .text_encoder_g
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL Pipeline missing text_encoder_g"))?;
+        let ids_l = tokenize_padded(&self.tokenizer_l, &self.cfg.clip, text, &self.device)?;
+        let ids_g = tokenize_padded(tok_g, cfg_g, text, &self.device)?;
+        let (_final_l, hidden_l) = self
+            .text_encoder_l
+            .forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
+        let (_final_g, hidden_g) =
+            enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
+        Ok(Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(self.dtype)?)
     }
 
     /// Run `req.count` portraits. Reuses loaded weights across calls.
@@ -329,7 +492,7 @@ impl Pipeline {
         let bsz: usize = 1;
         let latent_h = h / 8;
         let latent_w = w / 8;
-        let vae_scale: f64 = 0.18215;
+        let vae_scale: f64 = self.variant.vae_scale();
 
         for idx in 0..req.count {
             let seed = req
@@ -606,7 +769,7 @@ impl Pipeline {
         latents: &Tensor,
         out_path: &std::path::Path,
     ) -> Result<()> {
-        let vae_scale: f64 = 0.18215;
+        let vae_scale: f64 = self.variant.vae_scale();
         let image = self.vae.decode(&(latents / vae_scale)?)?;
         let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
         let image = (image * 255.0)?
@@ -702,4 +865,33 @@ pub async fn run(req: Request) -> Result<()> {
         refine_strength: req.refine_strength,
         face_strength: req.face_strength,
     })
+}
+
+// =====================================================================
+// Tokenisation helper — shared by SD 1.5 + SDXL encode paths.
+// Mirrors `t2i::tokenize_padded`. Lives here to avoid making t2i's helper
+// pub; both modules now have their own copy. Trivial duplication is
+// preferable to a third "shared" module just for this.
+// =====================================================================
+fn tokenize_padded(
+    tokenizer: &Tokenizer,
+    cfg: &sdclip::Config,
+    text: &str,
+    device: &Device,
+) -> Result<Tensor> {
+    let pad_id: u32 = match &cfg.pad_with {
+        Some(s) => tokenizer
+            .token_to_id(s)
+            .ok_or_else(|| anyhow!("tokenizer missing pad token {s:?}"))?,
+        None => tokenizer
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?,
+    };
+    let mut ids = tokenizer
+        .encode(text, true)
+        .map_err(|e| anyhow!("encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids.resize(cfg.max_position_embeddings, pad_id);
+    Ok(Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?)
 }

@@ -15,10 +15,11 @@ Models are pulled from HuggingFace and cached locally.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
   (SD 1.5 base).
 - **Portrait** — generate a portrait, optionally guided by a reference
-  photo (IP-Adapter-Plus-Face on SD 1.5). Portrait-tuned defaults: 3:4
-  aspect, face/anatomy negatives baked in. Scenarios can define named
-  **personas** and impose them per task — single-persona whole-image or
-  multi-persona region-masked compositing via per-persona bboxes.
+  photo. IP-Adapter-Plus-Face on SD 1.5 (`--identity plus-face`) or SDXL
+  (`--identity plus-face-sdxl`). Portrait-tuned defaults: 3:4 aspect,
+  face/anatomy negatives baked in. Scenarios can define named **personas**
+  and impose them per task — single-persona whole-image or multi-persona
+  region-masked compositing via per-persona bboxes.
 - **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
   Local files or HF repos (auto-discovered). UNet + both text encoders.
 - **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
@@ -304,21 +305,29 @@ pass per persona; each pass reuses the same loaded UNet + VAE + text
 encoder. Persona-only first-run cost: ~50 MB Plus-Face + ~2.5 GB CLIP-H
 (shared with `stylize`).
 
+**Two identity strategies ship:**
+- `plus-face` (default) — SD 1.5 portrait pipeline. ~6.5 GB first-run.
+- `plus-face-sdxl` — SDXL portrait pipeline, same Resampler at 2048-d
+  cross-attn. ~9.5 GB first-run (CLIP-H is shared). SDXL renders portraits
+  sharper than SD 1.5 with better composition.
+
+Pick one per scenario — every persona in a scenario must share the same
+strategy (the portrait pipeline loads one base model). Standalone CLI
+pairs `--model sdxl` with `--identity plus-face-sdxl`.
+
 **Limits:**
-- SD 1.5 only — the portrait pipeline is always SD 1.5 even if the scenario's
-  main `model` is SDXL or Flux. Non-persona tasks keep using the scenario's
-  main model.
+- SD 1.5 + SDXL only. Flux is not supported for portraits.
 - No automatic face crop or face detection. Curate the reference photo;
   place bboxes by hand.
 - No persona-level LoRAs. Stack a likeness LoRA at scenario level.
 - Identity quality is ~50–70% of the diffusers reference (no decoupled
-  cross-attention in candle 0.8). Phase 3 (FaceID / InstantID) is the
-  path to higher fidelity.
+  cross-attention in candle 0.8). FaceID / InstantID (Phase 4 roadmap)
+  are the path to higher identity fidelity.
 - Multi-persona wall time scales linearly: a 2-persona task runs 3
   denoise loops, a 3-persona task runs 4, etc.
 
 Full reference (every field, every interaction, bbox-placement tips,
-form-mixing rules, failure modes, Phase 3 roadmap): [PERSONA.md](PERSONA.md).
+form-mixing rules, failure modes, Phase 4 roadmap): [PERSONA.md](PERSONA.md).
 
 ### Output layout
 
