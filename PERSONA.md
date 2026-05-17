@@ -6,14 +6,17 @@ parameters; a task references a persona by name and routes through the
 SD 1.5 portrait pipeline (IP-Adapter-Plus-Face) instead of the scenario's
 main t2i or Flux pipeline.
 
+Tasks can use **one** persona over the whole image (Phase 1 form) or
+**several** personas with per-persona bounding boxes that get composited
+together via region-masked inpainting (Phase 2 form).
+
 This document is the full reference for the feature. For an example you
 can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
-> **Phase 1** of persona support. The schema is forward-compatible with
-> Phase 2 (region-masked multi-persona) and Phase 3 (FaceID / InstantID).
-> See [Phase 1 limits](#phase-1-limits) and [Phase 2 roadmap](#phase-2-roadmap).
+> **Phases 1 + 2 shipped.** Phase 3 (FaceID / InstantID for higher-fidelity
+> identity preservation) remains roadmap. See [Phase 3 roadmap](#phase-3-roadmap).
 
 ---
 
@@ -39,8 +42,8 @@ section in [GENERATE.md](GENERATE.md).
 - [Memory cost](#memory-cost)
 - [Testing a persona standalone](#testing-a-persona-standalone)
 - [Troubleshooting](#troubleshooting)
-- [Phase 1 limits](#phase-1-limits)
-- [Phase 2 roadmap](#phase-2-roadmap)
+- [Phase 1 + 2 limits](#phase-1--2-limits)
+- [Phase 3 roadmap](#phase-3-roadmap)
 
 ---
 
@@ -118,36 +121,66 @@ The full persona-related surface looks like this:
         {
             name:          alice                    # required, unique
             photo:         ./refs/alice.jpg         # required; PNG/JPEG/WebP
-            identity:      plus-face                # default; Phase-2: faceid / instantid
+            identity:      plus-face                # default; Phase-3: faceid / instantid
             face-strength: 0.85                     # default 0.8 (0..2)
             negative:      "smiling, mustache"      # optional; prepended to task negative
         }
         # … more personas
     ]
 
-    # ===== inside a task =====
+    # ===== inside a task: two accepted forms =====
     tasks:
     [
+        # --- Form 1: bare-name (Phase 1). One persona fills the whole image.
         {
             name:    alice_at_cafe
             scene:   cafe
             weather: morning
             prompt:  "having an espresso"
-
-            # Phase 1: 0 or 1 entries. The schema accepts a list because
-            # Phase 2 will allow region-masked multi-persona.
             personas:
             [
                 alice
+            ]
+        }
+
+        # --- Form 2: {name, bbox} (Phase 2). One or more personas, each
+        # composited into a region. `bbox: [x0, y0, x1, y1]` is normalised
+        # to [0, 1] in image space (0,0 = top-left).
+        {
+            name:    alice_and_bob_meeting
+            scene:   boardroom
+            weather: indoor
+            prompt:  "two colleagues discussing a document"
+            personas:
+            [
+                {
+                    name: alice
+                    bbox: [0.0, 0.1, 0.45, 0.9]
+                }
+                {
+                    name: bob
+                    bbox: [0.55, 0.1, 1.0, 0.9]
+                }
             ]
         }
     ]
 }
 ```
 
+**Form rules:**
+
+- Within one task you must pick one form — bare names OR `{name, bbox}`
+  objects. Mixing the two within a single task is rejected at load time.
+- Bare form is limited to **exactly 1 persona** (it has no way to place
+  multiple personas without bboxes).
+- Bbox form accepts 1 or more personas. A single-persona bbox task is
+  legal and useful when you want finer control over where the face lands
+  than "whole image".
+
 > ⚠️ HJSON inline-list-inside-inline-object (`{ personas: [alice] }` on
 > one line) fails to parse with deser-hjson. Always use the multi-line
-> form shown above. The same applies to any list field inside a task.
+> form shown above. The same applies to any list field inside a task,
+> including bbox lists.
 
 ---
 
@@ -259,7 +292,7 @@ Prepending also means that if the scenario has a baseline negative
 
 ## Task usage: `task.personas`
 
-A task pulls a persona in by listing its name:
+### Form 1 — bare name (single persona, whole image)
 
 ```hjson
 {
@@ -274,15 +307,88 @@ A task pulls a persona in by listing its name:
 }
 ```
 
-**Phase 1 rule:** exactly 0 or 1 entries. The schema is a list because
-Phase 2 will allow region-masked multi-persona; in Phase 1, `>1` errors
-at load time with a roadmap message:
+Used when a single persona fills the frame — portraits, character
+studies, single-subject scenes. The portrait pipeline runs with the
+persona's photo and tokens applied across the entire image, just like
+`plakat portrait --photo alice.jpg`.
+
+### Form 2 — `{name, bbox}` (multi-persona, region-masked compositing)
+
+```hjson
+{
+    name:    pair_at_table
+    scene:   bistro
+    weather: golden_hour
+    prompt:  "two friends sharing dessert"
+    personas:
+    [
+        {
+            name: alice
+            bbox: [0.0, 0.05, 0.5, 0.95]
+        }
+        {
+            name: bob
+            bbox: [0.5, 0.05, 1.0, 0.95]
+        }
+    ]
+}
+```
+
+Used when several persona identities should land in distinct image
+regions. Each persona supplies a `bbox` — `[x0, y0, x1, y1]` normalised
+to `[0, 1]` with `(0, 0)` at the top-left of the image — telling the
+pipeline where their face should go.
+
+#### How bbox compositing works
+
+1. A **text-only base image** is generated by the portrait pipeline
+   (no photo). This sets up the scene, lighting, and composition for
+   the prompt.
+2. For each persona, an **inpaint pass** runs: the masked region (the
+   persona's bbox) is re-denoised with that persona's image tokens
+   applied; the rest of the image stays pinned to the previous step's
+   output (the base, or the result of the previous persona's pass).
+3. The final composite is decoded and written as
+   `plakat-portrait-<seed>.png`.
+
+The technique is RePaint-style latent blending: at each denoise step
+inside the loop, the unmasked region is replaced with a freshly re-noised
+copy of the base latents, so the denoiser sees a coherent neighbour and
+the masked region transitions cleanly into the surrounding image.
+
+#### Bbox placement guidance
+
+- `[0.0, 0.05, 0.5, 0.95]` and `[0.5, 0.05, 1.0, 0.95]` — classic
+  two-person side-by-side. Leave ~5% padding top/bottom so the prompt
+  can render hands, props, surfaces.
+- `[0.0, 0.0, 0.33, 1.0]` / `[0.33, 0.0, 0.67, 1.0]` / `[0.67, 0.0, 1.0, 1.0]`
+  — three-person row.
+- `[0.25, 0.1, 0.75, 0.7]` — single centred persona with breathing room
+  for body / background. Same effect as bare-name form but more control.
+- Overlapping bboxes are legal but the **later persona wins** inside the
+  overlap (each inpaint pass treats the previous result as its base).
+  Use this intentionally for layered compositions; avoid it accidentally.
+- The validator requires `x0 < x1`, `y0 < y1`, and all four in
+  `[0.0, 1.0]`. Inverted or out-of-range bboxes fail at load time.
+
+#### Form-mixing rejection
+
+Mixing the two forms within a single task errors at load:
 
 ```
-task "boardroom" requests 3 personas (alice, bob, carol). Phase 1
-supports exactly 1 persona per task. Multi-persona compositing is on
-the Phase 2 roadmap (region-masked inpainting). Workaround: split into
-3 single-persona tasks.
+task "broken" cannot mix bare-name form (`[alice]`) with bbox form
+(`[{name:alice, bbox:[...]}]`) in the same task. Pick one. Use bbox
+for multi-persona compositing; use bare-name when the persona occupies
+the whole image.
+```
+
+Bare form is also restricted to exactly 1 entry — multi-persona requires
+bboxes:
+
+```
+task "boardroom" requests 3 personas (alice, bob, carol) in bare-name
+form. Multi-persona requires bboxes — convert to
+`[{name:..., bbox:[x0,y0,x1,y1]}, ...]` form.
 ```
 
 A task without a `personas` field, or with an empty list, runs through
@@ -297,14 +403,17 @@ For each image a task generates:
 1. **Generate**:
    - No persona → existing t2i/Flux pipeline →
      `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-   - One persona → **portrait pipeline** (SD 1.5, IP-Adapter-Plus-Face) →
+   - **Form-1 single persona** → portrait pipeline, one denoise pass,
+     persona tokens applied across the whole image →
      `plakat-portrait-<seed>.png`.
+   - **Form-2 multi-persona (bboxes)** → portrait pipeline, multi-pass
+     compositing (described below) → `plakat-portrait-<seed>.png`.
 2. **Stylize** (if `task.style` is set) → `<base>-styled.png`. Runs on
    whatever the previous step produced; portrait or not.
 3. **Upscale** (if `upscale.upscale: true`) → `<base>-styled-upscaled.png`
    if step 2 ran successfully, else `<base>-upscaled.png`.
 
-The portrait pipeline:
+### Single-persona pipeline (Form 1)
 
 1. Resolves the persona's photo, CLIP-H-encodes it, runs the Perceiver
    resampler → **16 image tokens** of dimension 768 (SD 1.5 cross-attn).
@@ -318,9 +427,39 @@ The portrait pipeline:
 5. Optionally a same-model `--refine` polish pass on the final latents.
 6. VAE decode + PNG save.
 
+### Multi-persona compositing pipeline (Form 2)
+
+1. **Base pass:** generate a text-only base from the prompt (no persona).
+   Same denoise loop as Form 1 but with `face_strength = 0` — establishes
+   the scene, lighting, composition.
+2. **Per-persona inpaint passes** (one per persona in declaration order):
+   - Build a mask from the persona's bbox at latent resolution
+     (`width / 8 × height / 8`). Mask is `1.0` inside the bbox, `0.0`
+     outside.
+   - CLIP-H-encode the persona's photo → 16 image tokens (scaled by
+     `face-strength`), concat onto the text tokens for this pass.
+   - Run **RePaint-style latent blending**: at each timestep `t`,
+     - re-noise the previous-pass latents at `t` and place them in the
+       unmasked region (preserves what's outside the bbox);
+     - run a standard denoise step on the combined latents (UNet drives
+       the masked region toward the persona's identity);
+     - at the final step, replace the unmasked region with the **clean**
+       previous-pass latents so the seam pins exactly.
+   - Output: a new set of latents with this persona's bbox filled in.
+3. **Decode + save** the final composite.
+
+The chaining is deliberate: pass 2 treats the result of pass 1 as its
+base, so personas already composited in don't get re-noised by later
+passes (except where bboxes overlap, in which case the later persona
+wins inside the overlap).
+
+### LoRA interaction
+
 LoRAs from `scenario.loras` are merged into both the UNet and the CLIP-L
 text encoder of the portrait pipeline at load time — exactly the same
-flow as the t2i pipeline.
+flow as the t2i pipeline. The merged UNet is reused across **all**
+persona passes (base + per-persona inpaints) within a multi-persona
+task.
 
 ---
 
@@ -570,6 +709,83 @@ Fully supported. The portrait pipeline loads only because at least one
 task uses a persona; non-persona tasks continue to use the scenario's
 main `model`. The downside is memory cost — see [Memory cost](#memory-cost).
 
+### Two-person scene with distinct identities (Form 2)
+
+```hjson
+personas:
+[
+    {
+        name: alice
+        photo: ./refs/alice.jpg
+        face-strength: 0.85
+    }
+    {
+        name: bob
+        photo: ./refs/bob.jpg
+        face-strength: 0.85
+    }
+]
+
+tasks:
+[
+    {
+        name: meeting
+        scene: boardroom
+        weather: indoor
+        prompt: "two colleagues reviewing a printed document, three-quarter angle"
+        personas:
+        [
+            {
+                name: alice
+                bbox: [0.05, 0.1, 0.48, 0.95]
+            }
+            {
+                name: bob
+                bbox: [0.52, 0.1, 0.95, 0.95]
+            }
+        ]
+    }
+]
+```
+
+Tips:
+
+- **Use wider aspect ratios for multi-persona** (16:9 or 3:2 rather than
+  1:1) — gives each bbox enough room for a recognisable face.
+- **Leave a small gap between bboxes** (e.g. `0.48` / `0.52` above) to
+  avoid the inpaint passes fighting over the same latents.
+- **5–10% padding from the edges** lets the prompt render arms, hands,
+  surfaces — without padding the bbox edges become hard image edges.
+- **First persona becomes the "anchor"**: their pass runs against a
+  text-only base, so their bbox gets the cleanest result. Later personas
+  composite onto the partially-composited image. For 3+ personas,
+  declare the most-important identity first.
+
+### Single-persona with explicit placement (Form 2)
+
+Useful when bare-form's "whole image" treatment puts the face too
+high / low / off-centre for your composition:
+
+```hjson
+{
+    name: alice_at_window
+    scene: kitchen
+    weather: morning
+    prompt: "looking out the window, holding a coffee mug"
+    personas:
+    [
+        {
+            name: alice
+            bbox: [0.55, 0.2, 0.95, 0.85]
+        }
+    ]
+}
+```
+
+Form 2 with a single persona costs the same as a Form-1 task (one base
+pass + one inpaint pass — actually slightly more wall-time than Form 1
+because Form 1 runs a single combined pass).
+
 ---
 
 ## Validation and error messages
@@ -583,21 +799,25 @@ downloads. Each of these is a fast-fail.
 | Persona photo path doesn't exist | `persona "alice": photo not found at /full/path/to/alice.jpg` |
 | Persona `identity` unknown | `persona "alice" identity: unknown identity kind "faceid" (try: plus-face). FaceID / InstantID are Phase 2 — not yet implemented.` |
 | Task refers to unknown persona name | `task "scene1" references unknown persona "ghost" (defined: [alice, bob])` |
-| Task lists more than 1 persona | `task "pair" requests 2 personas (alice, bob). Phase 1 supports exactly 1 persona per task. Multi-persona compositing is on the Phase 2 roadmap (region-masked inpainting). Workaround: split into 2 single-persona tasks.` |
+| Task mixes bare-name and bbox forms | `task "t": cannot mix bare-name form ("[alice]") with bbox form ("[{name:alice, bbox:[...]}]") in the same task. Pick one. Use bbox for multi-persona compositing; use bare-name when the persona occupies the whole image.` |
+| Bare form with `>1` persona | `task "bare2" requests 2 personas (alice, bob) in bare-name form. Multi-persona requires bboxes — convert to "[{name:..., bbox:[x0,y0,x1,y1]}, ...]" form.` |
+| bbox out of range or inverted | `task "bad": persona "alice" bbox [0.5, 0.5, 0.3, 0.7] is invalid (must be [x0,y0,x1,y1] with 0 ≤ x0 < x1 ≤ 1 and 0 ≤ y0 < y1 ≤ 1)` |
 
 These also surface in `--dry-run`, so you can iterate on the schema
 without paying any download or generation cost.
 
-In `--dry-run`, each persona task additionally prints a line summarising
-what would happen:
+In `--dry-run`, each persona task additionally prints a line per persona
+summarising what would happen:
 
 ```
   (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85, ok)
+  (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85 bbox=[0.00,0.10,0.45,0.90], ok)
+  (dry-run) would impose persona "bob"   via portrait pipeline (photo /refs/bob.jpg,   strength 0.80 bbox=[0.55,0.10,1.00,0.90], ok)
 ```
 
 The trailing `ok` or `MISSING` reflects a final-recheck against the
 filesystem — if the photo got deleted between load and the per-task
-log, you'd see `MISSING`.
+log, you'd see `MISSING`. Form-2 tasks log one line per persona pass.
 
 ---
 
@@ -724,62 +944,40 @@ Possible causes:
 
 ---
 
-## Phase 1 limits
+## Phase 1 + 2 limits
 
 These are honest, documented constraints — not bugs:
 
-1. **One persona per task.** `>1` errors at load with a roadmap message.
-2. **SD 1.5 only.** The portrait pipeline always uses SD 1.5 even if the
+1. **SD 1.5 only.** The portrait pipeline always uses SD 1.5 even if the
    scenario's main `model` is SDXL or Flux. SDXL Plus-Face exists upstream
-   and is a Phase 1.5 follow-up.
-3. **No automatic face crop.** You curate the reference photo.
-4. **No per-task override of persona parameters.** Define a second persona
+   and is on the Phase 3 roadmap.
+2. **No automatic face crop or face detection.** You curate the reference
+   photo. Bboxes are placed by hand.
+3. **No per-task override of persona parameters.** Define a second persona
    if you need a strength variant (e.g. `alice-soft` vs `alice-strong`).
-5. **No persona-level LoRAs.** Use scenario-level `loras` (each task uses
-   one persona anyway, so a scenario-level likeness LoRA is fine).
-6. **Identity quality is ~50–70% of diffusers reference.** candle 0.8's
-   UNet exposes no cross-attention hooks, so the *decoupled* IP-Adapter
-   path (separate `to_k_ip` / `to_v_ip` per block) is not wired up.
-   Identity tokens travel via the same cross-attention as text. Phase 2
-   (FaceID with InsightFace) is where this jumps.
+4. **No persona-level LoRAs.** Use scenario-level `loras`. The merged
+   UNet is reused across all persona passes within a task.
+5. **Identity quality is ~50–70% of diffusers reference** for the
+   `plus-face` strategy. candle 0.8's UNet exposes no cross-attention
+   hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` / `to_v_ip`
+   per block) is not wired up. Identity tokens travel via the same
+   cross-attention as text. Phase 3 (FaceID / InstantID) is the path
+   to better identity fidelity.
+6. **Multi-persona compositing has visible bbox seams** at high contrast.
+   The RePaint-style blend hides most transitions, but a face inpainted
+   onto a strongly-coloured background can show a faint rectangular
+   boundary. Workarounds: pad the bbox slightly so the face sits inside
+   it; pick a prompt where each persona's neighbourhood is visually
+   similar (same lighting, same surface).
+7. **Multi-persona wall time scales linearly with persona count.** A
+   2-persona task runs 3 denoise loops (base + 2 inpaints); a 3-persona
+   task runs 4. Each loop is full `--steps` long.
 
 ---
 
-## Phase 2 roadmap
+## Phase 3 roadmap
 
-The Phase 1 schema is designed so Phase 2 is a non-breaking extension.
-Two changes are anticipated:
-
-### Region-masked multi-persona
-
-`task.personas` extends from `[name]` to `[{name, bbox}]`:
-
-```hjson
-{
-    name: alice_and_bob_meeting
-    scene: boardroom
-    weather: indoor_neutral
-    prompt: "two colleagues discussing"
-    personas:
-    [
-        {
-            name: alice
-            bbox: [0.0, 0.1, 0.45, 0.9]   # x0, y0, x1, y1 (normalised)
-        }
-        {
-            name: bob
-            bbox: [0.55, 0.1, 1.0, 0.9]
-        }
-    ]
-}
-```
-
-Both the plain-string and object forms parse via a serde untagged enum;
-single-persona tasks keep writing `personas: [alice]`.
-
-Implementation requires an inpainting pipeline (img2img with a mask),
-which doesn't exist yet but is a small extension over the existing
-`stylize` img2img path.
+The schema is forward-compatible. Two extensions are anticipated:
 
 ### Better identity strategies
 
@@ -791,7 +989,7 @@ Three new values for `identity` will appear:
 | `instantid` | ID embedding + facial landmarks → ControlNet-style branch. Best likeness; works at higher prompt fidelity. | InsightFace + InstantID ControlNet (~2 GB). Heavy. |
 | `plus-face-sdxl` | SDXL variant of Plus-Face. Higher base resolution, better composition. | CLIP-G image encoder + SDXL Plus-Face weights. |
 
-All four would coexist — a Phase 2 scenario could mix:
+All would coexist — a Phase-3 scenario could mix strategies per persona:
 
 ```hjson
 personas:
@@ -810,6 +1008,35 @@ personas:
 ```
 
 The portrait pipeline already abstracts identity behind an `IdentityEncoder`
-trait, so adding a strategy means: one new enum variant, one new
-`IdentityEncoder` impl, one new match arm in `IdentityKind::load_encoder`.
-Zero changes to `portrait::Pipeline` or `scenario.rs`.
+trait, so adding a strategy means: one new enum variant in
+`ip_adapter::IdentityKind`, one new `IdentityEncoder` impl, one new arm
+in `IdentityKind::load_encoder`. Zero changes to `portrait::Pipeline` or
+`scenario.rs`.
+
+### Automatic face detection and bbox inference
+
+With InsightFace ported for FaceID, a face detector is available "for
+free". A future schema sugar could be:
+
+```hjson
+personas:
+[
+    { name: alice, photo: ./alice.jpg }
+]
+tasks:
+[
+    {
+        name: auto
+        personas:
+        [
+            {
+                name: alice
+                bbox: auto            # ← detector chooses where the face goes
+            }
+        ]
+    }
+]
+```
+
+with the detector running on a low-resolution preview pass to pick the
+bbox. Not a Phase-2 dependency — explicit bboxes work today.

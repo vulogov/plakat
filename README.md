@@ -17,7 +17,8 @@ Models are pulled from HuggingFace and cached locally.
 - **Portrait** — generate a portrait, optionally guided by a reference
   photo (IP-Adapter-Plus-Face on SD 1.5). Portrait-tuned defaults: 3:4
   aspect, face/anatomy negatives baked in. Scenarios can define named
-  **personas** and impose them per task.
+  **personas** and impose them per task — single-persona whole-image or
+  multi-persona region-masked compositing via per-persona bboxes.
 - **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
   Local files or HF repos (auto-discovered). UNet + both text encoders.
 - **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
@@ -228,7 +229,12 @@ The schema:
             # Optional per-task fields:
             # style: ./refs/watercolor.jpg     # IP-Adapter REF for this task only
             # style-strength: 0.65
-            # personas: [alice]                # exactly 0 or 1 (Phase 1)
+            # personas: [alice]                # Phase 1: single persona, whole image
+            # personas:                        # Phase 2: region-masked compositing
+            # [
+            #     { name: alice, bbox: [0.05, 0.10, 0.48, 0.95] }
+            #     { name: bob,   bbox: [0.52, 0.10, 0.95, 0.95] }
+            # ]
             # Per-task overrides for: size, aspect, count, steps, guidance,
             # seed, negative, scheduler, refine, refine-strength, refiner-frac
         }
@@ -244,8 +250,11 @@ For every image a task generates, the steps applied (in order) are:
 1. **Generate** with the loaded SD, Flux, OR portrait pipeline:
    - No `personas` → SD / Flux per the scenario's `model` →
      `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-   - One persona named → SD 1.5 portrait pipeline (IP-Adapter-Plus-Face)
-     regardless of `model` → `plakat-portrait-<seed>.png`.
+   - Bare-name persona (Phase 1) → SD 1.5 portrait pipeline,
+     one denoise pass → `plakat-portrait-<seed>.png`.
+   - `{name, bbox}` personas (Phase 2) → SD 1.5 portrait pipeline,
+     text-only base + one inpaint pass per persona, composited →
+     `plakat-portrait-<seed>.png`.
 2. **Stylize** (if the task has `style:`) → `<base>-styled.png`. Uses
    IP-Adapter on SD 1.5 regardless of the base model used in step 1.
 3. **Upscale** (if `upscale.upscale: true`) → `<base>-styled-upscaled.png`
@@ -258,9 +267,11 @@ scenario — the failure is logged and earlier outputs persist.
 
 ### Personas
 
-`personas` is a top-level list of named identities. Each persona supplies a
-reference photo and Plus-Face settings; a task pulls one in via
-`personas: [<name>]` and routes through the portrait pipeline:
+`personas` is a top-level list of named identities. Each persona supplies
+a reference photo and Plus-Face settings; tasks pull personas in either
+**bare-name** (single persona, whole image — Phase 1) or **`{name, bbox}`**
+(multi-persona, region-masked compositing — Phase 2) form. Either form
+routes through the portrait pipeline (IP-Adapter-Plus-Face on SD 1.5):
 
 ```hjson
 personas: [
@@ -269,34 +280,45 @@ personas: [
 ]
 
 tasks: [
-  { name: alice_cafe,    scene: cafe,   weather: morning, prompt: "espresso",  personas: [alice] }
-  { name: bob_studio,    scene: studio, weather: indoor,  prompt: "portrait",  personas: [bob]   }
-  { name: empty_streets, scene: town,   weather: rain,    prompt: "no one"                       }
+  # Phase 1 — single persona, whole image.
+  { name: alice_cafe, scene: cafe, weather: morning, prompt: "espresso",
+    personas: [alice] }
+
+  # Phase 2 — multi-persona compositing via region masks.
+  { name: pair_at_table, scene: bistro, weather: golden_hour,
+    prompt: "two friends sharing dessert",
+    personas: [
+      { name: alice, bbox: [0.05, 0.10, 0.48, 0.95] }
+      { name: bob,   bbox: [0.52, 0.10, 0.95, 0.95] }
+    ] }
+
+  # No persona — regular t2i / Flux dispatch, unchanged behaviour.
+  { name: empty_streets, scene: town, weather: rain, prompt: "no one" }
 ]
 ```
 
-The portrait pipeline loads once at scenario start (only if at least one task
-uses personas) and is shared across all persona tasks — model load happens
-exactly once regardless of how many personas / tasks need it. Persona-only
-costs: ~50 MB Plus-Face download + ~2.5 GB CLIP-H download (first run; shared
-with `stylize`).
+The portrait pipeline loads once at scenario start (only if at least one
+task uses personas) and is shared across all persona tasks. Multi-persona
+compositing runs one **base** denoise pass (text-only) plus one **inpaint**
+pass per persona; each pass reuses the same loaded UNet + VAE + text
+encoder. Persona-only first-run cost: ~50 MB Plus-Face + ~2.5 GB CLIP-H
+(shared with `stylize`).
 
-**Phase 1 limits:**
-- Exactly 0 or 1 persona per task. `>1` errors at load time with a roadmap
-  message — multi-persona compositing needs region masks (Phase 2) or
-  FaceID / face-detection (Phase 3).
-- SD 1.5 only. The portrait pipeline is always SD 1.5 even if the scenario's
+**Limits:**
+- SD 1.5 only — the portrait pipeline is always SD 1.5 even if the scenario's
   main `model` is SDXL or Flux. Non-persona tasks keep using the scenario's
   main model.
-- No automatic face crop. Pass a head-and-shoulders photo per persona.
-- No persona-level LoRAs in Phase 1. Stack a likeness LoRA at scenario level
-  (each task uses only one persona anyway).
-- `negative` on a persona is **prepended** to the task / scenario negative,
-  not replaced — so persona-specific negatives ("no glasses, no beard") stay
-  attached to the identity while scene-level cues still apply.
+- No automatic face crop or face detection. Curate the reference photo;
+  place bboxes by hand.
+- No persona-level LoRAs. Stack a likeness LoRA at scenario level.
+- Identity quality is ~50–70% of the diffusers reference (no decoupled
+  cross-attention in candle 0.8). Phase 3 (FaceID / InstantID) is the
+  path to higher fidelity.
+- Multi-persona wall time scales linearly: a 2-persona task runs 3
+  denoise loops, a 3-persona task runs 4, etc.
 
-Full reference (every field, every interaction, photo-prep guidance,
-tuning strategies, failure modes, Phase 2 roadmap): [PERSONA.md](PERSONA.md).
+Full reference (every field, every interaction, bbox-placement tips,
+form-mixing rules, failure modes, Phase 3 roadmap): [PERSONA.md](PERSONA.md).
 
 ### Output layout
 
