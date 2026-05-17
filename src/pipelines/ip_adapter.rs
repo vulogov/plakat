@@ -12,7 +12,7 @@
 //! unused here. Quality is lower than reference IP-Adapter; visible style
 //! transfer still occurs.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use candle_core::{D, DType, Device, Module, Tensor};
 use candle_nn::{LayerNorm, Linear, VarBuilder};
 use candle_transformers::models::clip::text_model::Activation;
@@ -20,6 +20,9 @@ use candle_transformers::models::clip::vision_model::{
     ClipVisionConfig, ClipVisionTransformer,
 };
 use std::path::Path;
+
+/// HF repo that hosts every IP-Adapter weight file plakat consumes.
+pub const IPA_REPO: &str = "h94/IP-Adapter";
 
 /// Config for the CLIP-H/14 image encoder shipped with IP-Adapter.
 /// Mirrors `models/image_encoder/config.json` in `h94/IP-Adapter`.
@@ -438,5 +441,98 @@ impl IdentityEncoder for PlusFaceEncoder {
         // pooled projection output. (1, 257, 1280) for CLIP-H/14 @ 224.
         let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
         self.image_proj.forward(&hidden)
+    }
+}
+
+// =====================================================================
+// IdentityKind — Phase-2 drop-in surface.
+//
+// Adding a new identity-preservation strategy (FaceID, InstantID, …) is
+// fully contained in this file:
+//   1. add a variant to `IdentityKind`
+//   2. add a parse arm to its `FromStr`
+//   3. add a load arm to `IdentityKind::load_encoder`
+//   4. write the `IdentityEncoder` impl
+// `portrait::Pipeline` doesn't change.
+// =====================================================================
+
+/// Which identity-preservation strategy `portrait` should wire up.
+#[derive(Clone, Copy, Debug)]
+pub enum IdentityKind {
+    /// IP-Adapter-Plus-Face on SD 1.5 (Phase 1).
+    /// Weights: `models/ip-adapter-plus-face_sd15.safetensors` (Plus
+    /// resampler) + `models/image_encoder/model.safetensors` (CLIP-H).
+    PlusFace,
+    // Phase 2 placeholders, NOT YET IMPLEMENTED:
+    //   FaceId    — InsightFace ArcFace ID embedding + ip-adapter-faceid_*
+    //   InstantId — ID + landmarks via a ControlNet-style branch
+    // When landing them, add a variant here and a `Self::FaceId => ...`
+    // arm to `load_encoder`. No portrait::Pipeline edits required.
+}
+
+impl IdentityKind {
+    /// Cross-attention dim this strategy targets. Used by `portrait` for
+    /// shape sanity (e.g. refusing an SD 1.5 strategy on an SDXL UNet).
+    pub fn cross_attn_dim(self) -> usize {
+        match self {
+            Self::PlusFace => 768,
+        }
+    }
+
+    /// Human-readable label for progress UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PlusFace => "IP-Adapter-Plus-Face (SD 1.5)",
+        }
+    }
+
+    /// Download + build the encoder. This is the only hook `portrait`
+    /// calls — adding a new strategy means adding a match arm here.
+    pub async fn load_encoder(
+        self,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Box<dyn IdentityEncoder>> {
+        let dl = crate::ui::progress::spinner(&format!(
+            "Resolving identity weights — {}",
+            self.label()
+        ));
+        let encoder: Box<dyn IdentityEncoder> = match self {
+            Self::PlusFace => {
+                let face_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/ip-adapter-plus-face_sd15.safetensors",
+                )
+                .await?;
+                let clip_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/image_encoder/model.safetensors",
+                )
+                .await?;
+                let enc = PlusFaceEncoder::load(
+                    &clip_weights,
+                    &face_weights,
+                    PlusConfig::sd15_face(),
+                    device,
+                    dtype,
+                )?;
+                Box::new(enc)
+            }
+        };
+        dl.finish_with_message(format!("✓ identity ready — {}", self.label()));
+        Ok(encoder)
+    }
+}
+
+impl std::str::FromStr for IdentityKind {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s.to_lowercase().as_str() {
+            "plus-face" | "plusface" | "plus_face" => Self::PlusFace,
+            other => bail!(
+                "unknown identity kind {other:?} (try: plus-face). \
+                 FaceID / InstantID are Phase 2 — not yet implemented."
+            ),
+        })
     }
 }
