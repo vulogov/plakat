@@ -60,7 +60,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             stylize::run(args, device).await
         }
         Command::Transparent(args) => transparent::run(args).await,
-        Command::Upscale(args) => upscale::run(args).await,
+        Command::Upscale(args) => {
+            let device = crate::device::select(&cli.device)?;
+            upscale::run(args, device).await
+        }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
     }

@@ -33,15 +33,24 @@
     # scheduler options: default | ddim | euler-a | unipc
     scheduler: euler-a
 
-    # extra polish denoise steps appended after the main loop
+    # extra polish denoise steps appended after the main loop (same model)
     refine: 6
     # polish strength 0..1; lower = subtler
     refine-strength: 0.3
 
+    # === optional real SDXL refiner (SDXL/SDXL-Turbo only) ===
+    # If true, runs the last (1 - refiner-frac) of the schedule on the
+    # stable-diffusion-xl-refiner-1.0 UNet. Adds ~6 GB download on first run.
+    # Independent of `refine` above — both can be enabled simultaneously.
+    refiner: false
+    refiner-frac: 0.8
+
     # === optional post-generate upscale ===
     # If `upscale: true` and a task has `style`, the styled image is upscaled.
     # If `upscale: true` and no `style`, the original generated image is upscaled.
-    # method options: nearest | bilinear | bicubic | lanczos
+    # method options:
+    #   classical (uses `scale`): nearest | bilinear | bicubic | lanczos
+    #   ML (ignores `scale`):     real-esrgan-x2 | real-esrgan-x4 | real-esrgan-anime-x4
     upscale:
     {
         upscale: false

@@ -147,10 +147,22 @@ Numerical solver for the reverse diffusion ODE.
 | `default` | Use the variant's built-in (DDIM for SD 1.5/2.1/SDXL, Euler-A for SDXL-Turbo). |
 | `ddim` | Deterministic baseline. Reproduces exactly given a seed. |
 | `euler-a` | Euler-Ancestral. **Often higher quality at the same step count** for SD 1.5 / SDXL. Mildly stochastic (varies even with the same seed across runs). |
-| `unipc` | DPM-Solver++ family. **CUDA / CPU only** — candle's UniPC uses F64 ops Metal doesn't implement. |
+| `unipc` | UniPC corrector with Karras sigmas — DPM-Solver++ family. Predictor-corrector tends to be smooth at low step counts. **CUDA / CPU only** (Metal-guarded). |
+| `dpmpp-2m` | DPM-Solver++ 2M Karras — same UniPC class with corrector disabled. Crisper edges than `unipc` at the same step count; widely considered an A1111/ComfyUI "safe default". **CUDA / CPU only**. |
+| `unipc-exp` | UniPC with exponential sigma schedule (vs Karras). Different noise-step distribution; sometimes better at very low step counts. **CUDA / CPU only**. |
+| `lcm` | LCM consistency-function scheduler. **Pair with an LCM-LoRA** (e.g. `latent-consistency/lcm-lora-sdv1-5`) at 4–8 steps with `--guidance 1.0–2.0`. Pure F32 math — works on Metal/CUDA/CPU. `--steps` must be ≤ 50. |
+| `euler` | Deterministic Euler. Same algorithm as `euler-a` minus the per-step noise injection. Reproducible across runs given a seed. Pure F32 — works on Metal/CUDA/CPU. |
+| `heun` | Heun second-order predictor-corrector. **2× the UNet evaluations** per `--steps` value (interleaved predictor + corrector). Quality typically beats Euler at the same number of model calls. Pure F32 — works on Metal/CUDA/CPU. |
+| `ddpm` | The original DDPM. Slow (best at high step counts, since each step is a single Markov transition). Mainly useful as a reference. Pure F32 — works on Metal/CUDA/CPU. |
 
-If unsure: try `euler-a`. It's almost always at least as good as DDIM
-for the same step count.
+If unsure on Metal: `euler-a` (stochastic) or `euler` (deterministic).
+On CUDA/CPU: `dpmpp-2m` is a strong all-purpose default. With LCM-LoRA
+at low step counts: `lcm`. For maximum quality at moderate step count
+where 2× UNet evaluations is fine: `heun`.
+
+> Naming note: `--scheduler euler` means **deterministic** Euler, matching
+> A1111/ComfyUI convention. The aliases `euler-a`, `eulera`, and
+> `euler-ancestral` all hit Euler-Ancestral.
 
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
@@ -165,10 +177,35 @@ the polish loop:
 - `0.2–0.4` → subtle sharpening, recommended.
 - `0.5+` → significant re-rendering, can change subject features.
 
-**This is NOT the official SDXL refiner.** Stability's refiner is a
-separate model that needs its own UNet + 6 GB of weights. `--refine` is a
-single-model polish pass. The gap matters most for SDXL output where the
-real refiner would do better.
+This is the **same-model polish pass** — distinct from the real refiner
+below. Useful for SD 1.5 / 2.1 (no separate refiner exists for those) or
+when you want extra detail without the 6 GB refiner download.
+
+#### `--refiner` + `--refiner-frac <FLOAT>` (defaults: off, 0.8)
+
+Use the **official SDXL refiner** (`stabilityai/stable-diffusion-xl-refiner-1.0`)
+for the last fraction of the schedule. The base SDXL UNet handles the
+first `frac×N` steps; the refiner UNet handles the remaining
+`(1−frac)×N` on the same latents.
+
+- **`--refiner-frac 0.8`** (default) — last 20% of steps run on refiner.
+  Diffusers reference uses this.
+- Lower values (0.6) give the refiner more responsibility — different
+  trade-off, sometimes better for portraits / fine textures.
+- Higher values (0.9) keep more of the base's composition.
+
+SDXL / SDXL-Turbo only — errors on SD 1.5/2.1 or Flux. Adds **~6 GB
+download** for the refiner UNet on first run.
+
+**Known limitation in plakat's refiner port** — candle 0.8's UNet has no
+`add_embedding` projection, so the refiner's pooled-CLIP-G + time_ids
+micro-conditioning is unused. The refiner still runs and produces
+recognizably better output than base alone, but the gap to the diffusers
+reference is real (~70–90% of reference quality). The same gap already
+applies to plakat's base SDXL.
+
+`--refiner` and `--refine` are independent — you can stack both (refiner
+for the last 20%, then a polish pass on top).
 
 ### LoRA
 
@@ -197,6 +234,47 @@ Append `:0.7` for per-LoRA scale: `--lora foo.safetensors:0.7`. Multiple
 
 **Memory**: peak ~3.4 GB on SD 1.5 during merge, ~10 GB on SDXL. Merge
 happens once per `generate` call.
+
+**Targets merged**: plakat runs the merge against each base-model
+component the LoRA touches:
+
+- **UNet** (always)
+- **CLIP-L text encoder** (when the file has `lora_te_*` or `lora_te1_*` keys, or PEFT `text_encoder.*` keys)
+- **CLIP-G text encoder** (SDXL only, when the file has `lora_te2_*` or PEFT `text_encoder_2.*` keys)
+
+Each pass reports a separate `merged X/Y targets` line — so a civitai
+LoRA with both UNet and text-encoder targets shows two lines,
+e.g.:
+
+```
+LoRA … → UNet: 192/192 targets merged
+LoRA … → text encoder: 72/72 targets merged
+```
+
+**Formats recognized**:
+
+| Format | Detection key(s) | Math |
+|---|---|---|
+| Standard LoRA / LoCon / DyLoRA | `lora_down` + `lora_up` (kohya), `lora_A` + `lora_B` (PEFT) | `W ← W + (α/rank) · (B · A) · scale` |
+| DoRA | LoRA keys + `dora_scale` (per-row magnitude vector) | `W ← scale · (W + ΔW) / rowwise_L2(W + ΔW)` |
+| LyCORIS LoHa | `hada_w1_a/b` + `hada_w2_a/b` | `W ← W + (W1_b·W1_a) ⊙ (W2_b·W2_a) · α/rank` |
+| LyCORIS LoHa (Tucker) | LoHa keys + `hada_t1` + `hada_t2` | `W ← W + tucker(t1,a1,b1) ⊙ tucker(t2,a2,b2) · α/rank` |
+| LyCORIS LoKr | `lokr_w1` (or `_a`+`_b`) + `lokr_w2` (or `_a`+`_b`) | `W ← W + kron(W1, W2) · α/dim` |
+
+DyLoRA stores as standard LoRA at inference time (its "dynamic rank" is a
+training-time feature), so it's covered by the standard arm with no
+extra detection.
+
+Conv weight shapes handled automatically: 2D Linear, 1×1 conv, and 3×3
+conv (LCM-LoRA exercises all three). LoKr w2 conv weights are flattened
+along trailing dims for the Kronecker reshape. `base_model.model.` /
+`diffusion_model.` prefixes are stripped before matching.
+
+Tucker LoHa uses two matmul contractions to evaluate the einsum
+`"r1 r2 kh kw, r2 in, out r1 -> out in kh kw"` (the two ranks `r1`/`r2`
+are both `lora_dim` in practice; the spatial dims pass through). Only
+emitted by LyCORIS when training on conv layers with non-1 kernels — 2D
+Linear targets don't ship a Tucker form.
 
 #### `--lora-scale <FLOAT>` (default `1.0`)
 
@@ -298,11 +376,12 @@ won't push IN very far.
 
 ## `plakat upscale`
 
-Classical image upscaling — no ML model, no weight download.
+Resize an image. Two families: classical filters (pure CPU resize, no
+weights) and Real-ESRGAN (RRDBNet ported to candle, ML).
 
 #### `--in <IN>` (required)
 
-Source image. Any common format.
+Source image. Any common format (PNG, JPEG, WebP).
 
 #### `--out <OUT>` (required)
 
@@ -310,23 +389,79 @@ Output path. Extension determines format (`.png`, `.jpg`, `.webp`).
 
 #### `--scale <FLOAT>` (default `2.0`)
 
-Scale factor. Non-integer values OK: `--scale 1.5`, `--scale 2.5`. The
-new dimensions are `round(orig × scale)`.
+Scale factor for **classical** methods. Non-integer values OK:
+`--scale 1.5`, `--scale 2.5`. New dimensions are `round(orig × scale)`.
+**Ignored for ML methods** — those have a fixed factor baked into the model.
 
-#### `--method <FILTER>` (default `lanczos`)
+#### `--method <METHOD>` (default `lanczos`)
 
-Resampling filter. Quality vs. speed tradeoff:
+**Classical** (fast, predictable, no weights):
 
-| Filter | Quality | Speed | Best for |
+| Filter | Quality | Best for |
+|---|---|---|
+| `nearest` | Lowest — pixelated | Pixel art, retro look |
+| `bilinear` | Blurry edges | Thumbnails |
+| `bicubic` | Decent, slight softening | General-purpose |
+| `lanczos` | Sharpest, slight ringing on hard edges | Photographic / detailed images |
+
+**ML** — Real-ESRGAN (downloads ~17 MB on first use):
+
+| Method | Scale | Variant | Use case |
 |---|---|---|---|
-| `nearest` | Lowest — pixelated | Fastest | Pixel art, retro look |
-| `bilinear` | Blurry edges | Fast | Thumbnails |
-| `bicubic` | Decent, slight softening | Medium | General-purpose |
-| `lanczos` | Sharpest detail preservation, slight ringing on hard edges | Slowest | Photographic / detailed images |
+| `real-esrgan-x2` | ×2 | xinntao x2plus | Subtle resolution boost, photographic |
+| `real-esrgan-x4` | ×4 | xinntao x4plus | Standard 4× upscale, recovers fine detail |
+| `real-esrgan-anime-x4` | ×4 | xinntao x4plus_anime_6B | Line art / anime / illustration |
 
-Plain upscaling won't recover detail that isn't there. For aggressive
-upscales (4×+) or hallucinated detail, an ML upscaler (Real-ESRGAN,
-SwinIR) is the right tool — not in plakat yet.
+ML methods run on the device chosen by `--device`. Memory scales with the
+**output** size — a 4× upscale of 1024² → 4096² requires room for that
+64 MB output tensor in F32 plus intermediates.
+
+For 8× or more, chain two calls (`real-esrgan-x4` → `real-esrgan-x2`).
+ESRGAN models weren't trained for cascaded use past 4–8×, so quality
+degrades.
+
+---
+
+## `plakat transparent`
+
+Make every pixel whose colour matches the **upper-left corner** transparent.
+Useful for stripping solid-colour backgrounds from generated images, logos,
+or screenshots.
+
+#### `--in <IN>` (required)
+
+Source image.
+
+#### `--out <OUT>` (required)
+
+Output. Must be a format that supports alpha (`.png` or `.webp`); `.jpg` is
+rejected with a clear error.
+
+#### `--tolerance <N>` (default `0`)
+
+Per-channel tolerance for the colour match (0–255). `0` is an exact match;
+~`10` absorbs JPEG noise on solid backgrounds; ~`30+` extends to anti-aliased
+edges and similar shades.
+
+```bash
+plakat transparent --in logo.png --out logo-alpha.png --tolerance 12
+# → ✓  key #ffffff  •  512×512  •  238921/262144 pixels transparent (91.1%)
+```
+
+---
+
+## `plakat models`
+
+Browse HuggingFace and manage the local cache.
+
+| Subcommand | Purpose |
+|---|---|
+| `models search <QUERY>` | Free-text HF search. |
+| `models recommend [--query Q] [--sort downloads\|likes\|trending\|recent] [--limit N]` | T2I-filtered recommendations. |
+| `models size <REPO>` | Total Hub size + the subset plakat would actually download. |
+| `models pull <REPO>` | Pre-download SD/Flux weight files for a repo. |
+| `models ls` | List cached models with disk usage. |
+| `models rm <REPO>... [--yes]` | Delete cached models (with size + confirmation by default). |
 
 ---
 
@@ -359,42 +494,78 @@ Where HF model weights are cached. Resolution order:
 
 ## Common workflows
 
-### Iterate on a prompt at fixed composition
+### Iterate on a prompt at a fixed composition
+
+Set `--seed` to anything, vary the prompt — same composition, different
+details.
 
 ```bash
-plakat generate "a tranquil koi pond" \
-    --model sdxl --size 1024x1024 \
-    --steps 30 --scheduler euler-a \
-    --seed 42 -n 1
-# tweak prompt, keep --seed 42 — same composition, different details
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+    --seed 42
+
+# Now tweak just the prompt:
+plakat generate "a tranquil koi pond, soft light, autumn leaves" \
+    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+    --seed 42
 ```
 
-### Find a good composition then refine
+### Sample many seeds, then refine the best
 
 ```bash
-# Step 1 — sample 4 seeds
-plakat generate "a tranquil koi pond" --model sdxl --size 1024x1024 \
-    --seed 0 -n 4
+# Step 1 — sample 4 candidates
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 --seed 0 -n 4
 
-# Step 2 — pick the best, refine it
-plakat generate "a tranquil koi pond" --model sdxl --size 1024x1024 \
-    --steps 35 --scheduler euler-a --refine 8 --refine-strength 0.25 \
+# Step 2 — pick seed=2 (say), refine with extra polish
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 \
+    --steps 35 --scheduler euler-a \
+    --refine 8 --refine-strength 0.25 \
     --seed 2
 ```
 
-### Style transfer at high fidelity to IN
+### Fast generation with LCM-LoRA
+
+LCM-LoRA + the matching LCM scheduler render usable output in 4 steps on
+any device.
+
+```bash
+plakat generate "a serene mountain landscape at sunset" \
+    --model sd15 --size 512x512 \
+    --steps 4 --guidance 1.5 \
+    --scheduler lcm \
+    --lora latent-consistency/lcm-lora-sdv1-5
+```
+
+### Style transfer that mostly preserves IN
+
+Lower strength keeps more of the input photo's content while picking up
+REF's style.
 
 ```bash
 plakat stylize \
     --in photo.jpg \
     --ref reference_painting.jpg \
     --out styled.png \
-    --strength 0.4 \
-    --steps 30
+    --strength 0.4 --steps 30
+```
+
+### Generate → 4× ML upscale
+
+```bash
+plakat generate "an isometric tiny diorama of a forest cabin" \
+    --model sd15 --size 512x512 --seed 7 --out ./out
+
+plakat upscale --in ./out/plakat-7.png --out ./out/plakat-7-4x.png \
+    --method real-esrgan-x4 --device metal
+# 512×512 → 2048×2048
 ```
 
 ### Generate → stylize → upscale (one pipeline via scenario)
 
-See [README.md](README.md#scenario-configuration) — the `scenario`
-subcommand runs this chain over many task definitions and shares the
-loaded model across all of them.
+For batch runs that chain all three steps with shared pipelines, see
+[README.md → Scenario configuration](README.md#scenario-configuration).
+The `scenario` subcommand assembles per-task prompts from a catalog of
+scenes and weather, runs the per-image pipeline, and reuses loaded
+weights across every task.

@@ -1,45 +1,50 @@
 # plakat
 
-Local text-to-image, style transfer, LoRA, scenario, upscale and color-key
-CLI built on [candle](https://github.com/huggingface/candle). Pure Rust
-inference — no Python, no PyTorch, no external T2I services. Models are
-pulled from HuggingFace and cached locally.
+Local text-to-image generation, style transfer, LoRA stacking, ML upscaling,
+and batch scenarios — all built on [candle](https://github.com/huggingface/candle).
+Pure Rust inference. No Python, no PyTorch, no external T2I services.
+Models are pulled from HuggingFace and cached locally.
 
 ## Features
 
-- **Text-to-image** — Stable Diffusion 1.5 / 2.1 / SDXL / SDXL-Turbo and
-  Flux (schnell / dev, BF16 on accelerators for numerical stability)
-- **Scenario** — batch-generate from an HJSON file: crosses scenes, weather,
-  per-task prompts; optionally restyles each output with a reference image
-  (IP-Adapter) and upscales the result. Loads SD models once across tasks.
+- **Text-to-image** — Stable Diffusion 1.5 / 2.1 / SDXL / SDXL-Turbo and Flux
+  (schnell / dev, BF16 on accelerators for numerical stability).
+- **Scenario** — batch generation from an HJSON file: crosses scenes, weather,
+  and per-task prompts; optionally restyles each output via IP-Adapter and
+  upscales the result. Pipelines load once and are shared across tasks.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
-- **LoRA** — kohya + diffusers/PEFT formats, local files or HF repos
-  (auto-discovered), per-LoRA `:SCALE` and a global multiplier
-- **Schedulers** — DDIM, Euler-Ancestral, UniPC / DPM-Solver++
-- **Polish pass** — extra denoising pass (`--refine N`) at low strength
-  for sharper details
+  (SD 1.5 base).
+- **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
+  Local files or HF repos (auto-discovered). UNet + both text encoders.
+- **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
+  UniPC, DPM++ 2M Karras, UniPC-exponential, LCM (for LCM-LoRA at 4–8 steps),
+  DDPM.
+- **Polish pass** — extra denoise pass (`--refine N`) on the final latents
+  for sharper details (same model).
+- **SDXL refiner** — `--refiner` enables the official
+  `stable-diffusion-xl-refiner-1.0` UNet for the last 20% of the schedule.
 - **Upscale** — classical resampling (Lanczos / bicubic / bilinear / nearest)
-- **Transparent** — chroma-key the upper-left pixel to alpha
-- **Model browser** — recommend trending T2I models, inspect repo sizes,
-  manage the local cache
-- **Prompt enhancement** — optional DeepSeek / Gemini rewrites for sharper
-  prompts before generation
+  and Real-ESRGAN (RRDBNet ported to candle: x2plus / x4plus / x4plus-anime-6B).
+- **Transparent** — chroma-key the upper-left pixel to alpha.
+- **Model browser** — search HF, recommend trending T2I models, inspect repo
+  sizes, manage the local cache.
+- **Prompt enhancement** — optional DeepSeek / Gemini rewrites before
+  generation.
 
 ## Install
 
-`plakat` runs on any platform that candle supports. Pick a backend at install
-time — the default is CPU and is slow at real generation sizes.
+`plakat` runs on every platform candle supports. Pick a backend at install
+time — the CPU-only default works everywhere but is slow at real sizes.
 
 ```bash
-# macOS (Apple Silicon GPU via Metal)
+# macOS — Apple Silicon GPU via Metal
 cargo install plakat --features metal
 
-# Linux + NVIDIA GPU
+# Linux — NVIDIA GPU via CUDA
 cargo install plakat --features cuda
-# or with cuDNN
-cargo install plakat --features cudnn
+cargo install plakat --features cudnn        # CUDA + cuDNN convolutions
 
-# Anywhere, CPU only (slow)
+# Anywhere — CPU only
 cargo install plakat
 ```
 
@@ -48,41 +53,48 @@ Requires Rust 1.85+ (edition 2024).
 ## Quick start
 
 ```bash
-# SD 1.5 baseline
+# 1. SD 1.5 baseline
 plakat generate "a brutalist poster of a whale, watercolor" \
     --size 512x512 --steps 28 --seed 42
 
-# SDXL with Euler-A scheduler and a polish pass
-plakat generate "a tranquil koi pond, cherry blossoms, soft light" \
+# 2. SDXL with Euler-A and a polish pass
+plakat generate "a tranquil koi pond, soft light, cherry blossoms" \
     --model sdxl --size 1024x1024 \
     --steps 25 --guidance 6.0 \
     --scheduler euler-a --refine 6
 
-# LoRA pulled straight from HuggingFace (file auto-discovered)
-plakat generate "watercolor town, period clothing, varied faces" \
-    --model sdxl --size 1024x1024 \
-    --lora ostris/watercolor_style_lora_sdxl
+# 3. LCM-LoRA at 4 steps with the matching scheduler
+plakat generate "watercolor town at dusk" --model sd15 \
+    --steps 4 --guidance 1.5 --scheduler lcm \
+    --lora latent-consistency/lcm-lora-sdv1-5
 
-# Flux schnell — 4-step rectified-flow transformer
-# (~31 GB download on first run)
-plakat generate "a cyberpunk samurai at dusk" \
+# 4. SDXL LoRA pulled straight from HF (file auto-discovered)
+plakat generate "ink sketch portrait of an astronaut" \
+    --model sdxl --size 1024x1024 \
+    --lora ostris/watercolor_style_lora_sdxl:0.8
+
+# 5. Flux schnell — 4-step rectified-flow transformer
+#    First run downloads ~31 GB of weights.
+plakat generate "a cyberpunk samurai at dusk, neon reflections" \
     --model flux-schnell --size 1024x1024
 
-# Batch generation from an HJSON scenario file
+# 6. Scenario — many prompts, models load once
 export DEEPSEEK_API_KEY=sk-...
 plakat scenario examples/scenario.hjson
 
-# Style transfer (IN + REF → OUT)
-plakat stylize --in photo.jpg --ref painting.jpg --out styled.png --strength 0.6
+# 7. Style transfer — recolour a photo in a painting's style
+plakat stylize --in photo.jpg --ref painting.jpg --out styled.png \
+    --strength 0.6
 
-# Upscale
-plakat upscale --in image.png --out image-2x.png --scale 2
+# 8. Real-ESRGAN upscale to 4×
+plakat upscale --in small.png --out big.png \
+    --method real-esrgan-x4 --device metal
 
-# Chroma-key the upper-left pixel to alpha
+# 9. Chroma-key the upper-left pixel to alpha
 plakat transparent --in logo.png --out logo-alpha.png --tolerance 10
 
-# Browse and manage models
-plakat models recommend --sort downloads
+# 10. Browse and manage models
+plakat models recommend --sort downloads --limit 10
 plakat models size sdxl
 plakat models ls
 plakat models rm sd15 --yes
@@ -93,11 +105,11 @@ plakat models rm sd15 --yes
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. All quality knobs (scheduler, refine, LoRA, enhancer) attach here. |
-| `scenario <FILE.hjson>` | Batch-generate from a config file; see below. |
-| `stylize` | IP-Adapter shared-cross-attention style transfer on SD 1.5. |
-| `transparent` | Make the upper-left pixel's colour fully transparent (with tolerance). |
-| `upscale` | Classical resize using Lanczos/bicubic/bilinear/nearest. |
-| `models {search,recommend,size,pull,ls,rm}` | Manage the local model cache and browse HF. |
+| `scenario <FILE>` | Batch-generate from an HJSON config. See [Scenario configuration](#scenario-configuration). |
+| `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
+| `upscale` | Resize an image, classical or Real-ESRGAN. |
+| `transparent` | Make every pixel matching the corner colour transparent. |
+| `models {search,recommend,size,pull,ls,rm}` | Browse HF and manage the local cache. |
 
 `plakat <CMD> --help` for full options on each. For a parameter-by-parameter
 reference with what each does, see [GENERATE.md](GENERATE.md).
@@ -107,9 +119,10 @@ reference with what each does, see [GENERATE.md](GENERATE.md).
 `plakat scenario <FILE>` runs many tasks from a single
 [HJSON](https://hjson.github.io/) file. HJSON is JSON minus the strict
 syntax — unquoted keys, no required commas, `#` and `//` comments, multi-line
-strings.
+triple-quoted strings.
 
-A working example lives at `examples/scenario.hjson`. The schema:
+A working example lives at [`examples/scenario.hjson`](examples/scenario.hjson).
+The schema:
 
 ```hjson
 {
@@ -117,26 +130,26 @@ A working example lives at `examples/scenario.hjson`. The schema:
     model:           sdxl                     # alias or HF repo id
     device:          metal                    # auto | cuda[:N] | metal | cpu
     size:            1024x1024
-    # aspect:        16:9                     # alternative to `size`
-    # base:          1024                     # base resolution used with `aspect`
+    # aspect:        16:9                     # alternative to size
+    # base:          1024                     # base resolution for aspect
     count:           2                        # images per task
     steps:           28
     guidance:        7.0
     seed:            42                       # base seed; +count per task
     out:             ./out/scenario
 
-    scheduler:       euler-a                  # default | ddim | euler-a | unipc
-    refine:          6                        # extra polish denoise steps
+    scheduler:       euler-a                  # see Schedulers below
+    refine:          6                        # extra same-model polish steps
     refine-strength: 0.3                      # 0..1
+    refiner:         false                    # official SDXL refiner UNet
+    refiner-frac:    0.8                      # 1−frac of schedule runs on refiner
 
     # ===== optional post-generate upscale =====
-    # See "Per-image pipeline" below for the styled-vs-original rule.
-    # method options: nearest | bilinear | bicubic | lanczos
     upscale:
     {
-        upscale: false
-        scale: 2.0
-        method: lanczos
+        upscale: false                        # enable flag
+        scale: 2.0                            # ignored for ML methods
+        method: lanczos                       # see Upscale below
     }
 
     # ===== LoRA stacking =====
@@ -148,17 +161,15 @@ A working example lives at `examples/scenario.hjson`. The schema:
     lora-scale: 1.0
 
     # ===== prompt assembly =====
-    # Final prompt for each image:
-    #     lora-header + ENHANCED(prompt-header + scene + weather + task + prompt-footer) + lora-footer
-    # Stray leading/trailing commas in each fragment are normalized.
-
-    lora-header:   "trigger tokens, that the enhancer shouldn't rewrite,"
+    # Final per-image prompt is built as:
+    #   lora-header + ENHANCED(prompt-header + scene + weather + task + prompt-footer) + lora-footer
+    # Stray leading/trailing commas in each fragment are normalised.
+    lora-header:   "trigger tokens that the enhancer shouldn't rewrite,"
     lora-footer:   ", masterpiece, high detail"
     prompt-header: "fantasy art,"
     prompt-footer: ", soft natural lighting"
-
-    enhancer: deepseek          # required: deepseek | gemini
-    negative: "blurry, deformed, watermark, text, jpeg artifacts"
+    enhancer:      deepseek                   # required: deepseek | gemini
+    negative:      "blurry, deformed, watermark, text"
 
     # ===== catalogs =====
     scene:
@@ -173,7 +184,6 @@ A working example lives at `examples/scenario.hjson`. The schema:
         }
         # … more scenes
     ]
-
     weather:
     [
         {
@@ -183,14 +193,7 @@ A working example lives at `examples/scenario.hjson`. The schema:
         # … more weathers
     ]
 
-    # ===== tasks: which (scene × weather) combinations to render =====
-    #
-    # Optional per-task fields:
-    #   style:          path to a reference image. If set, every image this
-    #                   task generates is also run through IP-Adapter
-    #                   stylize using this image as REF. Original + styled
-    #                   both persist.
-    #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
+    # ===== tasks =====
     tasks:
     [
         {
@@ -198,8 +201,12 @@ A working example lives at `examples/scenario.hjson`. The schema:
             scene: town
             weather: rain
             prompt: "merchants under awnings, children splashing"
-            # style: ./references/watercolor.jpg
+
+            # Optional per-task fields:
+            # style: ./refs/watercolor.jpg     # IP-Adapter REF for this task only
             # style-strength: 0.65
+            # Per-task overrides for: size, aspect, count, steps, guidance,
+            # seed, negative, scheduler, refine, refine-strength, refiner-frac
         }
         # … more tasks
     ]
@@ -210,66 +217,69 @@ A working example lives at `examples/scenario.hjson`. The schema:
 
 For every image a task generates, the steps applied (in order) are:
 
-1. **Generate** with the loaded SD/Flux pipeline → `plakat-<seed>.png` (or
-   `plakat-flux-<seed>.png` for Flux).
-2. **Stylize** (if the task has `style`) → `plakat-<seed>-styled.png`. Uses
-   IP-Adapter on SD 1.5 regardless of the base model used in step 1.
-3. **Upscale** (if `upscale.upscale: true`) → either
-   `plakat-<seed>-styled-upscaled.png` (when `style` was set and the styled
-   file exists) or `plakat-<seed>-upscaled.png` (otherwise). Classical
-   resampling via the existing `upscale` subcommand's filters.
+1. **Generate** with the loaded SD or Flux pipeline →
+   `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
+2. **Stylize** (if the task has `style:`) →
+   `plakat-<seed>-styled.png`. Uses IP-Adapter on SD 1.5 regardless of the
+   base model used in step 1.
+3. **Upscale** (if `upscale.upscale: true`) →
+   `plakat-<seed>-styled-upscaled.png` if step 2 ran successfully, else
+   `plakat-<seed>-upscaled.png`.
 
-Each step writes a new file — nothing is overwritten. A single task with
-`count: 2`, `style: ref.jpg`, and `upscale: true` produces six files per
-task (2 originals + 2 styled + 2 upscaled-of-styled).
-
-Failure in step 2 or 3 doesn't abort the scenario; the failure is logged
-and earlier outputs persist.
+Each step writes a new file — nothing is overwritten. A task with `count: 2`,
+`style: ref.jpg`, and `upscale: true` produces **six files**: 2 originals + 2
+styled + 2 upscaled-of-styled. Failure in step 2 or 3 doesn't abort the
+scenario — the failure is logged and earlier outputs persist.
 
 ### Output layout
 
-Outputs land in `<out>/<task_name>/plakat-<seed>.png` (plus `-styled` and
-`-upscaled` siblings when those steps run). Seeds across tasks are
-contiguous: task 1 uses `seed..seed+count-1`, task 2 uses
-`seed+count..`, etc., so a re-run with the same file produces identical
-compositions.
+Files land in `<out>/<task_name>/plakat-<seed>.png` (plus `-styled` and
+`-upscaled` siblings when those steps run). Seeds advance contiguously per
+the **global** `count`, so re-running a scenario produces identical
+compositions even if per-task overrides shift individual values.
 
 ### Dry-run
 
-`plakat scenario file.hjson --dry-run` validates the schema, lists every
-planned prompt, and shows what stylize/upscale steps would fire — without
-calling the enhancer or generating anything.
+```bash
+plakat scenario file.hjson --dry-run
+```
+
+Validates the schema, lists every task's assembled prompt + planned seeds,
+and shows what stylize/upscale steps would fire — without calling the
+enhancer, downloading anything, or generating images.
 
 ### Performance
 
-For SD-family scenarios, the UNet/VAE/CLIP/LoRA are loaded **once** and
-shared across all tasks (see `Pipeline` in `src/pipelines/t2i.rs`). For a
-5-task scenario this saves roughly 5× the model-load time on Metal.
+Every pipeline family loads once at scenario start and is shared across all
+tasks:
 
-Flux scenarios reload per task (Flux has its own pipeline module; a shared
-`FluxPipeline` is a future addition).
+| Pipeline | Weights kept resident | Saved per task |
+|---|---|---|
+| SD (`src/pipelines/t2i.rs`) | UNet, VAE, CLIP text encoder(s), merged LoRA(s) | ~10 s on Metal |
+| Flux (`src/pipelines/flux.rs`) | Transformer (24 GB), AE, T5-XXL (9 GB), CLIP-L | ~30 s |
+| Stylize (`src/pipelines/stylize.rs`, when any task has `style:`) | SD 1.5 base + IP-Adapter projection + CLIP-H (2.5 GB) | ~15 s |
+| Real-ESRGAN (`src/imaging/upscale.rs`, when method is ML) | RRDBNet (~17 MB) | ~4 s |
 
-**HJSON gotchas**
+### HJSON gotchas
 
-- *Don't put `#` comments at the end of unquoted string values.* HJSON
-  unquoted strings extend to end-of-line, so `enhancer: deepseek # foo`
-  becomes the literal string `"deepseek # foo"`. Comments above the line
-  are fine.
-- *Use multi-line array/object form for collections.* Inline `[ {a:1}, {b:2} ]`
-  trips up the parser; put each `{` on its own line.
+- *Don't put `#` comments after unquoted string values.* HJSON unquoted strings
+  extend to end-of-line, so `enhancer: deepseek # foo` becomes the literal
+  string `"deepseek # foo"`. Put comments above the line.
+- *Use multi-line array/object form for collections.* Inline
+  `[ {a:1}, {b:2} ]` trips the parser; put each `{` on its own line.
 
 ## LoRA
 
-The `--lora` flag accepts:
+The `--lora` flag (repeatable) accepts:
 
 | Form | Meaning |
 |---|---|
-| `./local/file.safetensors` | Local path |
-| `org/repo` | HF repo — file auto-discovered (canonical names first, then largest `.safetensors`) |
-| `org/repo#sub/path.safetensors` | HF repo, explicit file |
+| `./local/file.safetensors` | Local path. |
+| `org/repo` | HF repo — file auto-discovered (canonical names first, then largest `.safetensors`). |
+| `org/repo#sub/path.safetensors` | HF repo, explicit file. |
 
-Append `:0.7` for per-LoRA scale. Multiple `--lora` flags stack. A global
-`--lora-scale 0.9` multiplies every per-file scale.
+Append `:0.7` for per-LoRA scale: `--lora foo.safetensors:0.7`. `--lora-scale
+0.9` multiplies every per-file scale globally.
 
 ```bash
 plakat generate "..." --model sd15 \
@@ -278,61 +288,90 @@ plakat generate "..." --model sd15 \
     --lora-scale 0.9
 ```
 
-Formats recognized:
+**Formats recognised** — plakat detects and applies all of these (UNet AND
+both text encoders, where the LoRA targets them):
 
-- **kohya** — `lora_unet_*.lora_down/.lora_up/.alpha`
-- **diffusers / PEFT** — `*.lora_A/.lora_B[.default].weight`, with optional
-  `base_model.model.` / `diffusion_model.` prefix stripping
-- **Conv targets** — 2D Linear, 1×1 conv, and 3×3 conv (LCM-LoRA style)
+| Format | Detection key(s) |
+|---|---|
+| Standard LoRA / LoCon / DyLoRA | `lora_down` + `lora_up` (kohya), `lora_A` + `lora_B` (PEFT) |
+| DoRA | standard LoRA keys + per-row `dora_scale` |
+| LyCORIS LoHa | `hada_w1_a/b` + `hada_w2_a/b` |
+| LyCORIS LoHa (Tucker) | LoHa keys + `hada_t1` + `hada_t2` |
+| LyCORIS LoKr | `lokr_w1` (or `_a`+`_b`) + `lokr_w2` (or `_a`+`_b`) |
 
 If a LoRA's tensor shapes don't match the base UNet, plakat skips those
-targets and prints a diagnostic that guesses which model the LoRA was
-actually trained for (SD 1.5 / 2.1 / SDXL — by reading the cross-attention
-dim from the delta).
+targets and prints a diagnostic that infers which model the LoRA was actually
+trained for (SD 1.5 / 2.1 / SDXL — by reading the cross-attention dim from
+the delta).
 
 ## Schedulers
 
-`--scheduler default | ddim | euler-a | unipc`
+`--scheduler <KIND>` — default is the variant's built-in (DDIM for
+SD 1.5/2.1/SDXL, Euler-Ancestral for SDXL-Turbo).
 
-| Scheduler | When to use it |
+| Scheduler | Notes |
 |---|---|
-| `default` | The variant's built-in (DDIM for SD 1.5/2.1/SDXL, Euler-Ancestral for SDXL-Turbo). |
-| `ddim` | Stable baseline, deterministic given seed. |
-| `euler-a` | Often the quality sweet spot at the same step count. Recommended for SD/SDXL. |
-| `unipc` | DPM-Solver++ variant. **CUDA / CPU only** — candle's UniPC uses F64 ops Metal doesn't implement. |
+| `ddim` | Stable deterministic baseline. |
+| `euler` | Deterministic Euler. Reproducible across runs. Pure F32 — works on Metal. |
+| `euler-a` | Euler-Ancestral. Often higher quality than DDIM at the same step count; mildly stochastic. Metal-friendly. |
+| `heun` | Heun second-order predictor-corrector. **2× the model evaluations** per `--steps`. Higher quality for the cost. Metal-friendly. |
+| `unipc` | UniPC corrector with Karras sigmas (DPM-Solver++ family). **CUDA / CPU only** — candle's UniPC uses F64 ops Metal doesn't implement. |
+| `dpmpp-2m` | UniPC without corrector. Crisper than `unipc`; A1111-style "safe default". CUDA/CPU only. |
+| `unipc-exp` | UniPC with exponential sigma schedule. CUDA/CPU only. |
+| `lcm` | LCM consistency scheduler — pair with an LCM-LoRA at 4–8 steps and `--guidance 1.0–2.0`. Metal-friendly. |
+| `ddpm` | The original DDPM. Slow; mainly a reference. Metal-friendly. |
 
-## Polish pass (`--refine`)
+If unsure, on Metal: `euler-a` (stochastic) or `euler` (deterministic). On
+CUDA/CPU: `dpmpp-2m`. With LCM-LoRA: `lcm`.
+
+## Polish & refiner
 
 `--refine N --refine-strength F` runs an additional `N`-step img2img pass on
-the final latents using the **same** base model. Cheap way to sharpen details
-and reduce artifacts. Recommended strength: `0.2–0.4`.
+the final latents using the **same** base model. Cheap way to sharpen
+details. Recommended strength: `0.2–0.4`.
 
-This is **not** the official SDXL refiner — that needs a separate UNet config
-and ~6 GB of refiner weights. Plakat's pass uses the same model you just
-generated with.
+`--refiner --refiner-frac F` (SDXL only) switches to the **official SDXL
+refiner UNet** for the last `1−F` of the schedule. Adds a ~6 GB download on
+first run. Different mechanism from `--refine`; they can stack.
 
-## Model cache
+## Upscale
 
-By default models live in `~/.cache/huggingface/hub` (standard HF location).
-Override with:
+```
+plakat upscale --in IN --out OUT --method <METHOD> [--scale N] [--device DEV]
+```
+
+**Classical** filters (no model, instant): `nearest`, `bilinear`, `bicubic`,
+`lanczos` (default). `--scale` controls the factor.
+
+**Real-ESRGAN** (ML, RRDBNet ported to candle):
+
+| Method | Scale | Weights | Use case |
+|---|---|---|---|
+| `real-esrgan-x2` | ×2 | ~17 MB | Subtle resolution boost, photographic |
+| `real-esrgan-x4` | ×4 | ~17 MB | Standard 4× upscale, recovers fine detail |
+| `real-esrgan-anime-x4` | ×4 | ~9 MB | Line art / anime / illustration |
+
+ML methods ignore `--scale` (the model's architecture fixes the factor) and
+run on the device chosen by `--device`.
+
+## Model cache & HF auth
+
+Models live in `~/.cache/huggingface/hub` by default. Override with:
 
 ```bash
 plakat --cache-dir /mnt/big/hf-cache generate "..."
-# or via env
+# or
 PLAKAT_CACHE_DIR=/mnt/big/hf-cache plakat generate "..."
 ```
 
-For **gated repos** (e.g. `FLUX.1-dev`) set `HF_TOKEN` to a token from
-<https://huggingface.co/settings/tokens> and accept the repo's license on
-the HF web page first.
+For **gated repos** (e.g. `FLUX.1-dev`), set `HF_TOKEN` to a token from
+<https://huggingface.co/settings/tokens> and accept the licence on the HF web
+page first.
 
 `plakat models size <repo>` shows what plakat would actually download for a
 repo (with fp16 preference), separately from the repo's total Hub size.
 
 ## Prompt enhancement
-
-Pass a prompt through DeepSeek or Gemini to add concrete visual detail
-(subject, composition, lighting, medium, mood) before generation:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -342,25 +381,11 @@ export GEMINI_API_KEY=...
 plakat generate "knight" --enhance gemini
 ```
 
-The enhancer is **required** for scenarios (every task is enhanced once,
-then all `count` images share the enhanced prompt).
-
-## What's not in here yet
-
-- Real SDXL refiner (separate UNet + weights — `--refine` is an honest
-  single-model polish pass instead)
-- ML upscaling (Real-ESRGAN / SwinIR) — `upscale` is classical only
-- Text-encoder LoRA merging (UNet LoRA only)
-- LyCORIS / DoRA decompositions
-- Shared `FluxPipeline` across scenario tasks (SD is shared; Flux still
-  reloads per task)
-- Shared `StylizePipeline` (the IP-Adapter image encoder reloads per image
-  inside the stylize step)
-- Per-task overrides for things currently global (`scheduler`, `refine`,
-  `negative`, …)
-- Schedulers beyond DDIM / Euler-A / UniPC
+The enhancer rewrites the prompt with concrete visual detail (subject,
+composition, lighting, medium, mood). It's **required** for scenarios (every
+task is enhanced once; all `count` images share the enhanced prompt).
 
 ## License
 
-This is free and unencumbered software released into the public domain (the
-[Unlicense](https://unlicense.org/)).
+Free and unencumbered software released into the public domain
+([Unlicense](https://unlicense.org/)).
