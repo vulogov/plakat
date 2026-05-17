@@ -16,7 +16,7 @@ pulled from HuggingFace and cached locally.
 - **LoRA** — kohya + diffusers/PEFT formats, local files or HF repos
   (auto-discovered), per-LoRA `:SCALE` and a global multiplier
 - **Schedulers** — DDIM, Euler-Ancestral, UniPC (predictor-corrector),
-  DPM++ 2M Karras, UniPC-exponential
+  DPM++ 2M Karras, UniPC-exponential, LCM (for LCM-LoRA at 4–8 steps)
 - **Polish pass** — extra denoising pass (`--refine N`) at low strength
   for sharper details (same model)
 - **SDXL refiner** — `--refiner` enables the official
@@ -380,8 +380,8 @@ then all `count` images share the enhanced prompt).
      guidance, seed, negative, scheduler, refine, refine-strength,
      refiner-frac -->
 - Schedulers requiring net-new solver code: deterministic Euler, Heun,
-  LCM, DDPM. Currently shipping: DDIM, Euler-Ancestral, UniPC, DPM++ 2M
-  Karras, UniPC-exponential.
+  DDPM. Currently shipping: DDIM, Euler-Ancestral, UniPC, DPM++ 2M Karras,
+  UniPC-exponential, LCM.
 
 ## License
 

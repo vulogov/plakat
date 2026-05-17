@@ -35,6 +35,10 @@ pub enum SchedulerKind {
     /// UniPC with exponential sigma schedule instead of Karras. Different
     /// noise-step distribution; sometimes better for very low step counts.
     UniPcExp,
+    /// LCM — Latent Consistency Model scheduler. Designed for LCM-LoRAs at
+    /// 4–8 steps. Pure F32 arithmetic, so works on Metal/CUDA/CPU. Requires
+    /// `steps ≤ original_inference_steps` (50 by default).
+    Lcm,
 }
 
 impl std::str::FromStr for SchedulerKind {
@@ -49,10 +53,11 @@ impl std::str::FromStr for SchedulerKind {
                 Self::DpmppKarras
             }
             "unipc-exp" | "unipc-exponential" => Self::UniPcExp,
+            "lcm" | "lcm-scheduler" => Self::Lcm,
             other => {
                 return Err(anyhow!(
                     "unknown scheduler {other:?} (try: default | ddim | euler-a | unipc | \
-                     dpmpp-2m | unipc-exp)"
+                     dpmpp-2m | unipc-exp | lcm)"
                 ));
             }
         })
@@ -117,6 +122,12 @@ pub fn build(
         SchedulerKind::UniPcExp => UniPCSchedulerConfig {
             prediction_type: PredictionType::Epsilon,
             sigma_schedule: SigmaSchedule::Exponential(ExponentialSigmaSchedule::default()),
+            ..Default::default()
+        }
+        .build(steps)?,
+        // LCM — consistency-function sampling, designed for LCM-LoRAs.
+        SchedulerKind::Lcm => crate::pipelines::lcm_scheduler::LcmSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
             ..Default::default()
         }
         .build(steps)?,
