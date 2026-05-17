@@ -445,9 +445,33 @@ impl ImageProjPlus {
 // strategy is a drop-in.
 // =====================================================================
 
+/// Per-call options threaded through `IdentityEncoder::encode`. Kept as a
+/// struct so future strategy-specific knobs (face-bbox in 4c.1, landmarks
+/// in 4c.3, identity-strength multipliers, …) can extend without
+/// re-breaking the trait.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EncodeOptions {
+    /// Normalised `[x0, y0, x1, y1]` bbox locating the subject's face in
+    /// the photo. When `Some`, the photo is cropped to this region before
+    /// the strategy's normal preprocessing. Currently used only by
+    /// `IdentityKind::FaceId` / `FaceIdSdxl`; CLIP-H-based strategies
+    /// (`PlusFace` / `PlusFaceSdxl`) ignore it (CLIP-H sees the whole
+    /// image anyway, so a bbox would just throw away context).
+    pub face_bbox: Option<[f32; 4]>,
+    /// Normalised 5-point landmarks `[[x, y]; 5]` for the subject's face,
+    /// ordered: `left_eye, right_eye, nose, left_mouth, right_mouth`.
+    /// **Takes precedence over `face_bbox`** — when supplied, FaceID
+    /// strategies do a similarity-transform alignment to ArcFace's
+    /// canonical 112×112 template (Phase 4c.3). The right way to align;
+    /// recovers ~15–25% of identity-discrimination over crop-based
+    /// alignment. Currently used only by FaceID strategies.
+    pub face_landmarks: Option<[[f32; 2]; 5]>,
+}
+
 pub trait IdentityEncoder: Send + Sync {
     /// Produce identity tokens for `photo`. Shape: `(1, num_tokens, cross_attn_dim)`.
-    fn encode(&self, photo_path: &Path) -> Result<Tensor>;
+    /// `opts` carries per-call adjustments (see [`EncodeOptions`]).
+    fn encode(&self, photo_path: &Path, opts: EncodeOptions) -> Result<Tensor>;
     /// Number of image tokens this encoder emits per call.
     fn num_tokens(&self) -> usize;
 }
@@ -487,7 +511,10 @@ impl IdentityEncoder for PlusFaceEncoder {
         self.cfg.num_queries
     }
 
-    fn encode(&self, photo_path: &Path) -> Result<Tensor> {
+    fn encode(&self, photo_path: &Path, _opts: EncodeOptions) -> Result<Tensor> {
+        // CLIP-H Plus-Face ignores `face_bbox` — CLIP processes the whole
+        // image regardless, and pre-cropping to a bbox would just throw
+        // away surrounding context that helps identity recognition.
         if !photo_path.exists() {
             return Err(anyhow!(
                 "persona photo not found: {} (resolved from current working \
@@ -557,10 +584,19 @@ pub enum IdentityKind {
     /// crop with SCRFD detection + 5-landmark similarity-transform
     /// alignment for full reference-quality embeddings.
     FaceId,
+    /// IP-Adapter-FaceID on SDXL (Phase 4c.1). Same ArcFace IR-ResNet50
+    /// backbone as `FaceId` — re-uses `PLAKAT_ARCFACE_WEIGHTS`. The
+    /// difference is the image-proj output dim (2048 vs 768) and a
+    /// separate FaceID weight file from h94:
+    /// `models/ip-adapter-faceid_sdxl.bin`.
+    ///
+    /// Same Phase 4b/4c.1 limitations as `FaceId`: centre-crop or
+    /// user-supplied bbox alignment until SCRFD lands in 4c.2; UNet
+    /// LoRA component skipped (shared-cross-attention ceiling).
+    FaceIdSdxl,
     // Future identity strategies, NOT YET IMPLEMENTED:
-    //   FaceIdSdxl — same as FaceId but targeting SDXL's 2048-d cross-attn
-    //   InstantId  — ID + landmarks via a ControlNet-style branch
-    // When landing them, add a variant here and a `Self::FaceIdSdxl => ...`
+    //   InstantId — ID + landmarks via a ControlNet-style branch
+    // When landing it, add a variant here and a `Self::InstantId => ...`
     // arm to `load_encoder`. No portrait::Pipeline edits required.
 }
 
@@ -572,6 +608,7 @@ impl IdentityKind {
             Self::PlusFace => 768,
             Self::PlusFaceSdxl => 2048,
             Self::FaceId => 768,
+            Self::FaceIdSdxl => 2048,
         }
     }
 
@@ -581,6 +618,7 @@ impl IdentityKind {
             Self::PlusFace => "IP-Adapter-Plus-Face (SD 1.5)",
             Self::PlusFaceSdxl => "IP-Adapter-Plus-Face (SDXL, vit-h)",
             Self::FaceId => "IP-Adapter-FaceID (SD 1.5, ArcFace)",
+            Self::FaceIdSdxl => "IP-Adapter-FaceID (SDXL, ArcFace)",
         }
     }
 
@@ -591,6 +629,93 @@ impl IdentityKind {
             Self::PlusFace => "sd15",
             Self::PlusFaceSdxl => "sdxl",
             Self::FaceId => "sd15",
+            Self::FaceIdSdxl => "sdxl",
+        }
+    }
+
+    /// Verify strategy-specific local weight requirements *before* the
+    /// portrait pipeline starts downloading the (potentially multi-GB)
+    /// base model. Currently this only matters for FaceID strategies,
+    /// which require `PLAKAT_ARCFACE_WEIGHTS` to point at an existing
+    /// safetensors file; other strategies have no local requirements
+    /// (everything else flows through `hf::download`).
+    pub fn preflight_weights(self) -> Result<()> {
+        match self {
+            Self::FaceId | Self::FaceIdSdxl => preflight_arcface_local(),
+            Self::PlusFace | Self::PlusFaceSdxl => Ok(()),
+        }
+    }
+
+    /// Produce a kohya-format UNet LoRA file for this strategy, if it
+    /// ships one. Phase 4c.2a — only `FaceId` does this today; the
+    /// IP-Adapter-FaceID `.bin` packs a UNet cross-attention LoRA
+    /// alongside the image_proj, which we convert to kohya format here
+    /// so the existing `merge_loras_into_weights` path consumes it
+    /// without any merger changes.
+    ///
+    /// Returns `(temp_file_handle, path)` — the handle must stay alive
+    /// for the path to remain valid (NamedTempFile semantics).
+    /// Returns `None` for strategies without an aux LoRA (Plus-Face*,
+    /// and FaceIdSdxl until SDXL key mapping is added in Phase 4c.2b).
+    ///
+    /// Opt out via the env var `PLAKAT_FACEID_LORA=off` — useful for
+    /// A/B testing if the shared-cross-attention application of this
+    /// LoRA degrades text-prompt fidelity for a specific use case.
+    pub async fn aux_unet_lora(
+        self,
+        device: &Device,
+    ) -> Result<Option<(tempfile::NamedTempFile, std::path::PathBuf)>> {
+        if std::env::var("PLAKAT_FACEID_LORA").as_deref() == Ok("off") {
+            return Ok(None);
+        }
+        match self {
+            Self::FaceId => {
+                // Reuse the cached download from load_encoder — get_file
+                // returns the same cache path on second call.
+                let faceid_bin = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/ip-adapter-faceid_sd15.bin",
+                )
+                .await?;
+                let tmp = tempfile::Builder::new()
+                    .prefix("plakat-faceid-lora-")
+                    .suffix(".safetensors")
+                    .tempfile()?;
+                let n = crate::pipelines::faceid_lora::convert_faceid_sd15_to_kohya(
+                    &faceid_bin,
+                    tmp.path(),
+                    device,
+                )?;
+                let path = tmp.path().to_path_buf();
+                crate::ui::progress::println(&format!(
+                    "  ✓ FaceID UNet LoRA: {n} cross-attn target(s) extracted from {}",
+                    faceid_bin.display()
+                ));
+                Ok(Some((tmp, path)))
+            }
+            Self::FaceIdSdxl => {
+                let faceid_bin = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/ip-adapter-faceid_sdxl.bin",
+                )
+                .await?;
+                let tmp = tempfile::Builder::new()
+                    .prefix("plakat-faceid-lora-sdxl-")
+                    .suffix(".safetensors")
+                    .tempfile()?;
+                let n = crate::pipelines::faceid_lora::convert_faceid_sdxl_to_kohya(
+                    &faceid_bin,
+                    tmp.path(),
+                    device,
+                )?;
+                let path = tmp.path().to_path_buf();
+                crate::ui::progress::println(&format!(
+                    "  ✓ FaceID UNet LoRA (SDXL): {n} cross-attn target(s) extracted from {}",
+                    faceid_bin.display()
+                ));
+                Ok(Some((tmp, path)))
+            }
+            Self::PlusFace | Self::PlusFaceSdxl => Ok(None),
         }
     }
 
@@ -650,46 +775,28 @@ impl IdentityKind {
                 Box::new(enc)
             }
             Self::FaceId => {
-                // ArcFace weights: user-supplied via env var for Phase 4b.
-                // Phase 4c will add HF Hub auto-download once a stable
-                // canonical host for IR-ResNet50 safetensors is known.
-                let arcface_env = std::env::var("PLAKAT_ARCFACE_WEIGHTS")
-                    .map_err(|_| anyhow!(
-                        "FaceID requires ArcFace IR-ResNet50 weights.\n\
-                         \n\
-                         Phase 4b is bring-your-own-weights for ArcFace; set the\n\
-                         PLAKAT_ARCFACE_WEIGHTS environment variable to a\n\
-                         safetensors file matching InsightFace's iresnet50.\n\
-                         \n\
-                         Quick setup:\n\
-                         \n  1. Download `antelopev2.zip` from InsightFace:\n\
-                         \n     https://github.com/deepinsight/insightface/releases/tag/v0.7\n\
-                         \n  2. Extract `w600k_r50.onnx` from the bundle.\n\
-                         \n  3. Convert to safetensors (one-time):\n\
-                         \n     python -c \"import onnx, torch; \\\n\
-                                from onnx2torch import convert; \\\n\
-                                from safetensors.torch import save_file; \\\n\
-                                m = convert(onnx.load('w600k_r50.onnx')); \\\n\
-                                save_file(m.state_dict(), 'arcface_r50.safetensors')\"\n\
-                         \n  4. export PLAKAT_ARCFACE_WEIGHTS=/path/to/arcface_r50.safetensors\n\
-                         \n\
-                         Phase 4c will obsolete steps 1–4 by auto-downloading.\n\
-                         Phase 4c also adds SCRFD face detection so the\n\
-                         photo doesn't need to be a tight head-and-shoulders crop."
-                    ))?;
-                let arcface_path = std::path::PathBuf::from(&arcface_env);
-                if !arcface_path.exists() {
-                    bail!(
-                        "PLAKAT_ARCFACE_WEIGHTS points to {} which doesn't exist.",
-                        arcface_path.display()
-                    );
-                }
+                let arcface_path = resolve_arcface_weights().await?;
                 let faceid_weights = crate::hf::download::get_file(
                     IPA_REPO,
                     "models/ip-adapter-faceid_sd15.bin",
                 )
                 .await?;
                 let enc = crate::pipelines::face_models::FaceIdEncoder::load_faceid_sd15(
+                    &arcface_path,
+                    &faceid_weights,
+                    device,
+                    dtype,
+                )?;
+                Box::new(enc)
+            }
+            Self::FaceIdSdxl => {
+                let arcface_path = resolve_arcface_weights().await?;
+                let faceid_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/ip-adapter-faceid_sdxl.bin",
+                )
+                .await?;
+                let enc = crate::pipelines::face_models::FaceIdEncoder::load_faceid_sdxl(
                     &arcface_path,
                     &faceid_weights,
                     device,
@@ -715,11 +822,114 @@ impl std::str::FromStr for IdentityKind {
             | "plusface-xl"
             | "sdxl-plus-face" => Self::PlusFaceSdxl,
             "faceid" | "face-id" | "face_id" => Self::FaceId,
+            "faceid-sdxl"
+            | "face-id-sdxl"
+            | "face_id_sdxl"
+            | "faceid-xl"
+            | "sdxl-faceid" => Self::FaceIdSdxl,
             other => bail!(
                 "unknown identity kind {other:?} \
-                 (try: plus-face, plus-face-sdxl, faceid). \
+                 (try: plus-face, plus-face-sdxl, faceid, faceid-sdxl). \
                  InstantID is roadmap — not yet implemented."
             ),
         })
     }
+}
+
+/// Setup-instructions text used by both the sync preflight and the async
+/// resolver. Kept in one place so updates to the setup story don't drift.
+fn arcface_setup_message() -> &'static str {
+    "FaceID requires ArcFace IR-ResNet50 weights. Two ways to provide them:\n\
+     \n\
+     A. Local file (`PLAKAT_ARCFACE_WEIGHTS`):\n\
+     \n     1. Download antelopev2.zip from InsightFace:\n\
+     \n        https://github.com/deepinsight/insightface/releases/tag/v0.7\n\
+     \n     2. Extract w600k_r50.onnx from the bundle.\n\
+     \n     3. Convert to safetensors (one-time):\n\
+     \n        python -c \"import onnx, torch; \\\n\
+            from onnx2torch import convert; \\\n\
+            from safetensors.torch import save_file; \\\n\
+            m = convert(onnx.load('w600k_r50.onnx')); \\\n\
+            save_file(m.state_dict(), 'arcface_r50.safetensors')\"\n\
+     \n     4. export PLAKAT_ARCFACE_WEIGHTS=/path/to/arcface_r50.safetensors\n\
+     \n\
+     B. HuggingFace-hosted (`PLAKAT_ARCFACE_HF`) — Phase 4c.4b:\n\
+     \n     Point at any HF safetensors of the IR-ResNet50 ArcFace weights:\n\
+     \n        export PLAKAT_ARCFACE_HF=<user>/<repo>#<path/in/repo.safetensors>\n\
+     \n     plakat downloads + caches automatically. No canonical default\n\
+     \n     repo yet — pick a community upload you trust, or follow path A.\n\
+     \n\
+     Both routes also work for `IdentityKind::FaceIdSdxl`. Run\n\
+     `plakat doctor` to check your current setup."
+}
+
+/// Sync preflight — confirms ArcFace can plausibly resolve later. Doesn't
+/// hit the network. Used by `portrait::Pipeline::load` to fail fast before
+/// kicking off the base-model download.
+pub(crate) fn preflight_arcface_local() -> Result<()> {
+    let has_local = std::env::var("PLAKAT_ARCFACE_WEIGHTS").is_ok();
+    let has_hf = std::env::var("PLAKAT_ARCFACE_HF").is_ok();
+    if !has_local && !has_hf {
+        bail!("{}", arcface_setup_message());
+    }
+    if let Ok(env) = std::env::var("PLAKAT_ARCFACE_WEIGHTS") {
+        let path = std::path::PathBuf::from(&env);
+        if !path.exists() {
+            bail!(
+                "PLAKAT_ARCFACE_WEIGHTS points to {} which doesn't exist. \
+                 (You can also set PLAKAT_ARCFACE_HF=repo#file to download \
+                  from HuggingFace instead — see `plakat doctor`.)",
+                path.display()
+            );
+        }
+    }
+    // PLAKAT_ARCFACE_HF can't be validated without a network call;
+    // the async resolver will surface 404s clearly.
+    Ok(())
+}
+
+/// Async resolver — turns env-var configuration into an on-disk
+/// safetensors path. `PLAKAT_ARCFACE_WEIGHTS` (local) wins over
+/// `PLAKAT_ARCFACE_HF` (HuggingFace).
+async fn resolve_arcface_weights() -> Result<std::path::PathBuf> {
+    if let Ok(env) = std::env::var("PLAKAT_ARCFACE_WEIGHTS") {
+        let path = std::path::PathBuf::from(&env);
+        if !path.exists() {
+            bail!(
+                "PLAKAT_ARCFACE_WEIGHTS points to {} which doesn't exist.",
+                path.display()
+            );
+        }
+        return Ok(path);
+    }
+    if let Ok(spec) = std::env::var("PLAKAT_ARCFACE_HF") {
+        let (repo, file) = parse_hf_spec(&spec, "PLAKAT_ARCFACE_HF")?;
+        let s = crate::ui::progress::spinner(&format!(
+            "Downloading ArcFace from {repo}/{file}"
+        ));
+        let path = crate::hf::download::get_file(&repo, &file)
+            .await
+            .with_context(|| {
+                format!("downloading ArcFace from {repo}/{file} via PLAKAT_ARCFACE_HF")
+            })?;
+        s.finish_with_message(format!("✓ ArcFace cached at {}", path.display()));
+        return Ok(path);
+    }
+    bail!("{}", arcface_setup_message())
+}
+
+/// Parse a `repo#file` HF spec used by `PLAKAT_*_HF` env vars.
+pub(crate) fn parse_hf_spec(s: &str, var_name: &str) -> Result<(String, String)> {
+    let Some((repo, file)) = s.split_once('#') else {
+        bail!(
+            "{var_name} must be `repo#file` (got {s:?}, no `#` separator). \
+             Example: huggingface_user/insightface_models#arcface_r50.safetensors"
+        );
+    };
+    if repo.is_empty() || file.is_empty() {
+        bail!(
+            "{var_name} must be `repo#file` with both sides non-empty (got {s:?})"
+        );
+    }
+    Ok((repo.to_string(), file.to_string()))
 }

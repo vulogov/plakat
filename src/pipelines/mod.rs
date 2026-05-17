@@ -1,5 +1,6 @@
 pub mod extra_schedulers;
 pub mod face_models;
+pub mod faceid_lora;
 pub mod flux;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
@@ -7,5 +8,6 @@ pub mod lora;
 pub mod portrait;
 pub mod real_esrgan;
 pub mod scheduler;
+pub mod scrfd;
 pub mod stylize;
 pub mod t2i;

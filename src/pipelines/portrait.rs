@@ -114,6 +114,8 @@ pub struct Request {
     pub refine: Option<usize>,
     pub refine_strength: f32,
     pub face_strength: f32,
+    pub face_bbox: Option<[f32; 4]>,
+    pub face_landmarks: Option<[[f32; 2]; 5]>,
     /// Which identity strategy to wire up. `None` collapses portrait into a
     /// portrait-tuned text-only generate.
     pub identity: Option<IdentityKind>,
@@ -148,6 +150,16 @@ pub struct GenRequest {
     /// IP-Adapter `set_scale` equivalent — at 1.0 image tokens carry full
     /// weight, at 0.0 they vanish (= text-only).
     pub face_strength: f32,
+    /// Optional `[x0, y0, x1, y1]` (normalised in the photo's coordinate
+    /// system) marking where the subject's face is. Used by FaceID
+    /// strategies to crop the photo before ArcFace embedding. CLIP-H
+    /// strategies (PlusFace*) ignore it.
+    pub face_bbox: Option<[f32; 4]>,
+    /// Optional 5-point landmarks (Phase 4c.3). Takes precedence over
+    /// `face_bbox`. FaceID strategies do similarity-transform alignment
+    /// to ArcFace's canonical 112×112 template. Order: left_eye,
+    /// right_eye, nose, left_mouth, right_mouth. Normalised to `[0, 1]`.
+    pub face_landmarks: Option<[[f32; 2]; 5]>,
 }
 
 // =====================================================================
@@ -204,7 +216,7 @@ impl Pipeline {
                     "identity strategy {:?} targets cross_attn_dim {} but \
                      model {:?} ({:?}) expects {}. Pick an identity that \
                      matches the model: SD 1.5 → `plus-face` or `faceid`, \
-                     SDXL → `plus-face-sdxl`.",
+                     SDXL → `plus-face-sdxl` or `faceid-sdxl`.",
                     kind,
                     kind.cross_attn_dim(),
                     base_repo,
@@ -212,6 +224,11 @@ impl Pipeline {
                     variant.cross_attn_dim(),
                 );
             }
+            // Pre-flight FaceID strategies' weight requirements before the
+            // (potentially multi-GB) base model download. A user who set
+            // PLAKAT_ARCFACE_WEIGHTS to the wrong path shouldn't pay for
+            // SDXL's 7 GB download just to discover the typo.
+            kind.preflight_weights()?;
         }
 
         let cfg = variant.config(512, 512);
@@ -269,12 +286,35 @@ impl Pipeline {
         dl.finish_with_message("✓ base weights ready");
 
         // -------- resolve LoRA files (once) --------
+        // `lora_tmps` keeps temp-file handles alive for the pipeline's
+        // lifetime. Both LoRA merging (downstream) and FaceID's auto-
+        // converted UNet LoRA (here) drop files into it.
         let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
-        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
+
+        // FaceID strategies ship a UNet cross-attention LoRA bundled in
+        // their `.bin`. Convert it to kohya format and prepend to the
+        // user-supplied LoRAs so it gets merged through the same path.
+        // Opt out via `PLAKAT_FACEID_LORA=off`.
+        let mut auto_loras: Vec<crate::pipelines::lora::ResolvedLora> = Vec::new();
+        if let Some(kind) = req.identity {
+            if let Some((tmp, path)) = kind.aux_unet_lora(&req.device).await? {
+                auto_loras.push(crate::pipelines::lora::ResolvedLora {
+                    path,
+                    scale: 1.0,
+                    display: format!("{} (auto)", kind.label()),
+                });
+                lora_tmps.push(tmp);
+            }
+        }
+
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty()
+            && auto_loras.is_empty()
+        {
             Vec::new()
         } else {
             let s = progress::spinner("Resolving LoRA file(s)");
-            let mut v = Vec::with_capacity(req.loras.len());
+            let mut v = Vec::with_capacity(req.loras.len() + auto_loras.len());
+            v.extend(auto_loras);
             for spec in &req.loras {
                 v.push(spec.resolve().await?);
             }
@@ -486,6 +526,8 @@ impl Pipeline {
             &req.negative,
             req.photo.as_deref(),
             req.face_strength,
+            req.face_bbox,
+            req.face_landmarks,
             do_cfg,
         )?;
 
@@ -604,6 +646,8 @@ impl Pipeline {
         negative: &str,
         photo: Option<&std::path::Path>,
         face_strength: f32,
+        face_bbox: Option<[f32; 4]>,
+        face_landmarks: Option<[[f32; 2]; 5]>,
         do_cfg: bool,
     ) -> Result<(Tensor, bool)> {
         let text_cond = self.encode_text(prompt)?;
@@ -617,7 +661,11 @@ impl Pipeline {
         let identity_tokens = match (&self.identity_encoder, photo) {
             (Some(enc), Some(p)) => {
                 let s = progress::spinner("Encoding reference photo");
-                let tok = enc.encode(p)?;
+                let opts = crate::pipelines::ip_adapter::EncodeOptions {
+                    face_bbox,
+                    face_landmarks,
+                };
+                let tok = enc.encode(p, opts)?;
                 let tok = (tok * (face_strength as f64))?.to_dtype(self.dtype)?;
                 s.finish_with_message("✓ identity encoded");
                 Some(tok)
@@ -664,6 +712,8 @@ impl Pipeline {
             &req.negative,
             req.photo.as_deref(),
             req.face_strength,
+            req.face_bbox,
+            req.face_landmarks,
             do_cfg,
         )?;
 
@@ -714,6 +764,8 @@ impl Pipeline {
             &req.negative,
             req.photo.as_deref(),
             req.face_strength,
+            req.face_bbox,
+            req.face_landmarks,
             do_cfg,
         )?;
 
@@ -864,6 +916,8 @@ pub async fn run(req: Request) -> Result<()> {
         refine: req.refine,
         refine_strength: req.refine_strength,
         face_strength: req.face_strength,
+        face_bbox: req.face_bbox,
+        face_landmarks: req.face_landmarks,
     })
 }
 

@@ -28,10 +28,10 @@ pub struct PortraitArgs {
     /// Identity strategy:
     ///   * `plus-face` (default) — IP-Adapter-Plus-Face on SD 1.5
     ///   * `plus-face-sdxl`     — IP-Adapter-Plus-Face on SDXL (vit-h)
-    ///   * `faceid`             — IP-Adapter-FaceID on SD 1.5 (ArcFace);
-    ///                            Phase 4b — requires PLAKAT_ARCFACE_WEIGHTS
-    ///                            env var and centre-crop alignment
-    ///                            (Phase 4c adds SCRFD + auto-download).
+    ///   * `faceid`             — IP-Adapter-FaceID on SD 1.5 (ArcFace)
+    ///   * `faceid-sdxl`        — IP-Adapter-FaceID on SDXL (ArcFace)
+    /// FaceID strategies require PLAKAT_ARCFACE_WEIGHTS; centre-crop or
+    /// `--face-bbox` for alignment until Phase 4c.2 auto-detection lands.
     /// InstantID is roadmap.
     #[arg(long, default_value = "plus-face")]
     pub identity: IdentityKind,
@@ -41,6 +41,37 @@ pub struct PortraitArgs {
     /// the face at the cost of prompt adherence. Ignored without --photo.
     #[arg(long, default_value_t = 0.8)]
     pub face_strength: f32,
+
+    /// Optional face bbox in the photo, format `X0,Y0,X1,Y1` (normalised
+    /// to [0,1], origin top-left). When set, the photo is cropped to this
+    /// region before identity encoding — meaningful for FaceID strategies
+    /// where ArcFace was trained on tight face crops. CLIP-H strategies
+    /// (`plus-face`, `plus-face-sdxl`) ignore it. Phase 4c.4 will replace
+    /// this manual bbox with auto-detection via SCRFD.
+    ///
+    /// Example: `--face-bbox 0.2,0.1,0.8,0.7`.
+    #[arg(long, value_name = "X0,Y0,X1,Y1", value_parser = parse_face_bbox)]
+    pub face_bbox: Option<[f32; 4]>,
+
+    /// Optional 5-point face landmarks in the photo, format
+    /// `LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 floats normalised to
+    /// [0,1], origin top-left). Order is fixed: left_eye, right_eye,
+    /// nose, left_mouth_corner, right_mouth_corner (the same order
+    /// InsightFace publishes detector outputs in).
+    ///
+    /// **Takes precedence over `--face-bbox`** when both are passed.
+    /// FaceID strategies use this for a proper 5-point similarity-
+    /// transform alignment to ArcFace's canonical 112×112 template —
+    /// the closest we get to reference-quality identity preservation
+    /// today without face auto-detection. CLIP-H strategies
+    /// (`plus-face`, `plus-face-sdxl`) ignore it.
+    ///
+    /// Example (eyes at y=0.40, nose at y=0.55, mouth corners at y=0.68):
+    /// `--face-landmarks 0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68`
+    ///
+    /// Phase 4c.4 (SCRFD) will auto-fill these from any photo.
+    #[arg(long, value_name = "LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY", value_parser = parse_face_landmarks)]
+    pub face_landmarks: Option<[[f32; 2]; 5]>,
 
     /// Model: alias (`sd15`, `sdxl`) or any HF SD-1.5/SDXL repo id. The
     /// `--identity` strategy must target the matching cross_attn_dim
@@ -111,6 +142,69 @@ pub struct PortraitArgs {
     pub refine_strength: f32,
 }
 
+/// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
+/// and `x0 < x1`, `y0 < y1`.
+fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
+    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+    if parts.len() != 4 {
+        return Err(format!(
+            "expected 4 comma-separated floats `X0,Y0,X1,Y1`, got {} parts",
+            parts.len()
+        ));
+    }
+    let mut vals = [0f32; 4];
+    for (i, p) in parts.iter().enumerate() {
+        vals[i] = p
+            .parse::<f32>()
+            .map_err(|e| format!("component {i} {p:?}: {e}"))?;
+    }
+    let [x0, y0, x1, y1] = vals;
+    let in_unit = (0.0..=1.0).contains(&x0)
+        && (0.0..=1.0).contains(&y0)
+        && (0.0..=1.0).contains(&x1)
+        && (0.0..=1.0).contains(&y1);
+    if !in_unit || x0 >= x1 || y0 >= y1 {
+        return Err(format!(
+            "bbox [{x0},{y0},{x1},{y1}] must satisfy 0 ≤ x0 < x1 ≤ 1 \
+             and 0 ≤ y0 < y1 ≤ 1"
+        ));
+    }
+    Ok(vals)
+}
+
+/// Parse `LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 normalised floats) into
+/// the 5-point landmark array. Order matches `LANDMARK_ORDER`:
+/// left_eye, right_eye, nose, left_mouth, right_mouth.
+fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
+    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+    if parts.len() != 10 {
+        return Err(format!(
+            "expected 10 comma-separated floats \
+             `LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY`, got {} parts",
+            parts.len()
+        ));
+    }
+    let mut flat = [0f32; 10];
+    for (i, p) in parts.iter().enumerate() {
+        flat[i] = p
+            .parse::<f32>()
+            .map_err(|e| format!("component {i} {p:?}: {e}"))?;
+        if !(0.0..=1.0).contains(&flat[i]) {
+            return Err(format!(
+                "landmark component {i} = {} out of range [0, 1]",
+                flat[i]
+            ));
+        }
+    }
+    Ok([
+        [flat[0], flat[1]],
+        [flat[2], flat[3]],
+        [flat[4], flat[5]],
+        [flat[6], flat[7]],
+        [flat[8], flat[9]],
+    ])
+}
+
 pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     if let Some(provider) = args.enhance.clone() {
         let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
@@ -151,6 +245,8 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         refine: args.refine,
         refine_strength: args.refine_strength,
         face_strength: args.face_strength,
+        face_bbox: args.face_bbox,
+        face_landmarks: args.face_landmarks,
         identity,
     })
     .await
