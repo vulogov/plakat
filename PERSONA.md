@@ -15,8 +15,9 @@ can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
-> **Phases 1 + 2 shipped.** Phase 3 (FaceID / InstantID for higher-fidelity
-> identity preservation) remains roadmap. See [Phase 3 roadmap](#phase-3-roadmap).
+> **Phases 1 + 2 + 3 (SDXL Plus-Face) shipped.** FaceID / InstantID for
+> higher-fidelity identity preservation remain roadmap.
+> See [Phase 4 roadmap](#phase-4-roadmap).
 
 ---
 
@@ -42,8 +43,8 @@ section in [GENERATE.md](GENERATE.md).
 - [Memory cost](#memory-cost)
 - [Testing a persona standalone](#testing-a-persona-standalone)
 - [Troubleshooting](#troubleshooting)
-- [Phase 1 + 2 limits](#phase-1--2-limits)
-- [Phase 3 roadmap](#phase-3-roadmap)
+- [Limits](#limits)
+- [Phase 4 roadmap](#phase-4-roadmap)
 
 ---
 
@@ -222,20 +223,25 @@ reference photo.
 
 **Optional. String. Default: `plus-face`.**
 
-Which identity-preservation strategy to use for this persona.
+Which identity-preservation strategy to use for this persona. Every
+persona in a scenario must use a strategy that targets the **same model
+variant** — `plus-face` (SD 1.5) and `plus-face-sdxl` (SDXL) can't be
+mixed in one scenario because the portrait pipeline loads exactly one
+base model. Mixing produces a load-time error with the offending kinds
+listed.
 
-| Value | Status | What it does |
-|---|---|---|
-| `plus-face` | **Phase 1, shipping** | IP-Adapter-Plus-Face on SD 1.5: CLIP-H penultimate hidden state → Perceiver resampler → 16 image tokens → concat onto text tokens. |
-| `faceid` | **Phase 2 roadmap, not yet** | InsightFace ArcFace embedding → IP-Adapter-FaceID. Better identity preservation; needs an InsightFace port. |
-| `instantid` | **Phase 3 roadmap, not yet** | ID embedding + landmarks via a ControlNet-style branch. Best likeness; needs face detection + multi-pass orchestration. |
+| Value | Status | Base model | What it does |
+|---|---|---|---|
+| `plus-face` (default) | **Phase 1, shipping** | SD 1.5 (cross-attn dim 768) | IP-Adapter-Plus-Face: CLIP-H penultimate hidden state → Perceiver resampler → 16 image tokens → concat onto text tokens. |
+| `plus-face-sdxl` | **Phase 3, shipping** | SDXL (cross-attn dim 2048) | Same architecture as `plus-face` but at SDXL's wider cross-attn dim. Reuses the SD 1.5 CLIP-H encoder (the `vit-h` SDXL Plus-Face variant). Visible quality lift on every render — SDXL composes and renders portraits better than SD 1.5. |
+| `faceid` | **Roadmap, not yet** | SD 1.5 (planned) | InsightFace ArcFace embedding → IP-Adapter-FaceID MLP. Needs an InsightFace + face-detection port for proper alignment. |
+| `instantid` | **Roadmap, not yet** | SDXL (planned) | ID embedding + landmarks via a ControlNet-style branch. Best likeness; needs ControlNet + face detection + multi-pass orchestration. |
 
-In Phase 1 the only valid value is `plus-face` (omitting the field has the
-same effect). Other values error at load time with a clear message.
+Aliases for `plus-face-sdxl`: `plusface-sdxl`, `plus_face_sdxl`,
+`plus-face-xl`, `plusface-xl`, `sdxl-plus-face` — all parse identically.
 
-The field exists in Phase 1 so scenario files written today don't need
-schema changes when Phase 2 lands — you'll just be able to set
-`identity: faceid` on personas where it matters.
+The scenario derives its portrait base model from this field: if any
+persona uses `plus-face-sdxl`, the portrait pipeline loads SDXL.
 
 ### `face-strength`
 
@@ -797,11 +803,13 @@ downloads. Each of these is a fast-fail.
 |---|---|
 | Duplicate persona name | `duplicate persona name "alice"` |
 | Persona photo path doesn't exist | `persona "alice": photo not found at /full/path/to/alice.jpg` |
-| Persona `identity` unknown | `persona "alice" identity: unknown identity kind "faceid" (try: plus-face). FaceID / InstantID are Phase 2 — not yet implemented.` |
+| Persona `identity` unknown | `persona "alice" identity: unknown identity kind "faceid" (try: plus-face, plus-face-sdxl). FaceID / InstantID are roadmap — not yet implemented.` |
+| Scenario mixes identity strategies | `scenario mixes identity strategies across personas: PlusFaceSdxl (bob); PlusFace (alice). Pick one strategy per scenario — every persona must share the same model variant (all SD 1.5 \`plus-face\`, or all SDXL \`plus-face-sdxl\`).` |
 | Task refers to unknown persona name | `task "scene1" references unknown persona "ghost" (defined: [alice, bob])` |
 | Task mixes bare-name and bbox forms | `task "t": cannot mix bare-name form ("[alice]") with bbox form ("[{name:alice, bbox:[...]}]") in the same task. Pick one. Use bbox for multi-persona compositing; use bare-name when the persona occupies the whole image.` |
 | Bare form with `>1` persona | `task "bare2" requests 2 personas (alice, bob) in bare-name form. Multi-persona requires bboxes — convert to "[{name:..., bbox:[x0,y0,x1,y1]}, ...]" form.` |
 | bbox out of range or inverted | `task "bad": persona "alice" bbox [0.5, 0.5, 0.3, 0.7] is invalid (must be [x0,y0,x1,y1] with 0 ≤ x0 < x1 ≤ 1 and 0 ≤ y0 < y1 ≤ 1)` |
+| Standalone CLI: model / identity mismatch | `identity strategy PlusFaceSdxl targets cross_attn_dim 2048 but model "sd15" (Sd15) expects 768. Pick an identity that matches the model: SD 1.5 → \`plus-face\`, SDXL → \`plus-face-sdxl\`.` |
 
 These also surface in `--dry-run`, so you can iterate on the schema
 without paying any download or generation cost.
@@ -823,17 +831,33 @@ log, you'd see `MISSING`. Form-2 tasks log one line per persona pass.
 
 ## First-run downloads
 
-Persona tasks trigger downloads beyond the scenario's base model:
+Persona tasks trigger downloads beyond the scenario's base model. The
+exact set depends on the persona's `identity` strategy.
+
+### `identity: plus-face` (SD 1.5)
 
 | Weight | Size | Source | Notes |
 |---|---|---|---|
 | SD 1.5 base (UNet + VAE + CLIP-L) | ~4 GB | `stable-diffusion-v1-5/stable-diffusion-v1-5` | Shared with `plakat generate --model sd15`, `plakat stylize`, `plakat portrait`. Downloaded once. |
-| CLIP-H image encoder | ~2.5 GB | `h94/IP-Adapter/models/image_encoder/` | Shared with `plakat stylize`. Downloaded once. |
-| IP-Adapter-Plus-Face weights | ~50 MB | `h94/IP-Adapter/models/ip-adapter-plus-face_sd15.safetensors` | Persona-specific. Plus-Face only. |
+| CLIP-H image encoder | ~2.5 GB | `h94/IP-Adapter/models/image_encoder/` | Shared with `plakat stylize` and `plus-face-sdxl`. Downloaded once. |
+| IP-Adapter-Plus-Face weights | ~50 MB | `h94/IP-Adapter/models/ip-adapter-plus-face_sd15.safetensors` | Persona-specific. |
 
-Total first-run cost for a persona scenario: **~6.5 GB**. All weights
-live in `~/.cache/huggingface/hub` (or your `--cache-dir` override).
-Subsequent runs cost nothing on the download path.
+Total first-run cost: **~6.5 GB**.
+
+### `identity: plus-face-sdxl` (SDXL)
+
+| Weight | Size | Source | Notes |
+|---|---|---|---|
+| SDXL base (UNet + VAE + dual CLIP) | ~7 GB | `stabilityai/stable-diffusion-xl-base-1.0` | Shared with `plakat generate --model sdxl`. Downloaded once. |
+| CLIP-H image encoder | ~2.5 GB | `h94/IP-Adapter/models/image_encoder/` | Same file as `plus-face` (the `vit-h` SDXL Plus-Face reuses it). |
+| IP-Adapter-Plus-Face SDXL weights | ~50 MB | `h94/IP-Adapter/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors` | Persona-specific. |
+
+Total first-run cost: **~9.5 GB**. The shared CLIP-H means switching
+between SD 1.5 and SDXL personas across scenarios only re-downloads the
+strategy-specific (~50 MB) safetensors.
+
+All weights live in `~/.cache/huggingface/hub` (or your `--cache-dir`
+override). Subsequent runs cost nothing on the download path.
 
 ---
 
@@ -863,10 +887,24 @@ Before stuffing a new persona into a scenario, sanity-check the photo
 + strength combo with `plakat portrait`:
 
 ```bash
+# SD 1.5
 plakat portrait "studio portrait, neutral expression, soft lighting" \
     --photo ./refs/alice.jpg \
     --face-strength 0.85 \
     --size 768x1024 \
+    --steps 30 \
+    --seed 42 \
+    --out ./out/persona-test
+
+# SDXL — pair --model sdxl with --identity plus-face-sdxl. Use a wider
+# size (1024×1024 or 1024×1366) to let SDXL render the full detail it's
+# trained for.
+plakat portrait "studio portrait, neutral expression, soft lighting" \
+    --photo ./refs/alice.jpg \
+    --model sdxl \
+    --identity plus-face-sdxl \
+    --face-strength 0.85 \
+    --size 1024x1366 \
     --steps 30 \
     --seed 42 \
     --out ./out/persona-test
@@ -875,6 +913,10 @@ plakat portrait "studio portrait, neutral expression, soft lighting" \
 If the result looks like the person at one of `0.6 / 0.8 / 1.0 / 1.2`,
 copy that value into the persona's `face-strength`. If none of those
 work, the photo is the bottleneck — see [Photo preparation](#photo-preparation).
+
+`--model sdxl` paired with `--identity plus-face` (or `--model sd15` with
+`--identity plus-face-sdxl`) errors at load with a clear cross-attn-dim
+mismatch message, so you can't accidentally combine wrong pairs.
 
 The standalone `portrait` CLI is documented in detail in
 [GENERATE.md](GENERATE.md#plakat-portrait).
@@ -944,13 +986,14 @@ Possible causes:
 
 ---
 
-## Phase 1 + 2 limits
+## Limits
 
 These are honest, documented constraints — not bugs:
 
-1. **SD 1.5 only.** The portrait pipeline always uses SD 1.5 even if the
-   scenario's main `model` is SDXL or Flux. SDXL Plus-Face exists upstream
-   and is on the Phase 3 roadmap.
+1. **SD 1.5 or SDXL only.** Two shipping identity strategies — `plus-face`
+   (SD 1.5) and `plus-face-sdxl` (SDXL). A scenario must pick one; mixing
+   is rejected at load time because the portrait pipeline loads exactly
+   one base model.
 2. **No automatic face crop or face detection.** You curate the reference
    photo. Bboxes are placed by hand.
 3. **No per-task override of persona parameters.** Define a second persona
@@ -958,60 +1001,45 @@ These are honest, documented constraints — not bugs:
 4. **No persona-level LoRAs.** Use scenario-level `loras`. The merged
    UNet is reused across all persona passes within a task.
 5. **Identity quality is ~50–70% of diffusers reference** for the
-   `plus-face` strategy. candle 0.8's UNet exposes no cross-attention
+   `plus-face*` strategies. candle 0.8's UNet exposes no cross-attention
    hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` / `to_v_ip`
    per block) is not wired up. Identity tokens travel via the same
-   cross-attention as text. Phase 3 (FaceID / InstantID) is the path
+   cross-attention as text. FaceID / InstantID (Phase 4+) are the path
    to better identity fidelity.
-6. **Multi-persona compositing has visible bbox seams** at high contrast.
+6. **SDXL micro-conditioning is unused.** SDXL's `add_embedding` (pooled
+   CLIP-G + size/crop time-ids) is not wired up because candle 0.8's UNet
+   doesn't expose the projection. Same gap as our base SDXL t2i path —
+   the model loads and runs but doesn't benefit from size conditioning.
+7. **Multi-persona compositing has visible bbox seams** at high contrast.
    The RePaint-style blend hides most transitions, but a face inpainted
    onto a strongly-coloured background can show a faint rectangular
    boundary. Workarounds: pad the bbox slightly so the face sits inside
    it; pick a prompt where each persona's neighbourhood is visually
    similar (same lighting, same surface).
-7. **Multi-persona wall time scales linearly with persona count.** A
+8. **Multi-persona wall time scales linearly with persona count.** A
    2-persona task runs 3 denoise loops (base + 2 inpaints); a 3-persona
    task runs 4. Each loop is full `--steps` long.
 
 ---
 
-## Phase 3 roadmap
+## Phase 4 roadmap
 
 The schema is forward-compatible. Two extensions are anticipated:
 
 ### Better identity strategies
 
-Three new values for `identity` will appear:
+Two more values for `identity` are planned:
 
 | `identity` | What changes | New downloads |
 |---|---|---|
-| `faceid` | InsightFace ArcFace embedding → IP-Adapter-FaceID MLP → 4 tokens. Much better identity preservation. | InsightFace antelopev2 (~330 MB) + IP-Adapter-FaceID safetensors (~50 MB). Needs a ~200 LoC InsightFace port. |
-| `instantid` | ID embedding + facial landmarks → ControlNet-style branch. Best likeness; works at higher prompt fidelity. | InsightFace + InstantID ControlNet (~2 GB). Heavy. |
-| `plus-face-sdxl` | SDXL variant of Plus-Face. Higher base resolution, better composition. | CLIP-G image encoder + SDXL Plus-Face weights. |
+| `faceid` | InsightFace ArcFace embedding (with face detection + landmark alignment) → IP-Adapter-FaceID MLP → 4 tokens. Markedly better identity preservation than Plus-Face. | InsightFace antelopev2 (~330 MB) + IP-Adapter-FaceID safetensors (~50 MB). Needs SCRFD or RetinaFace + ArcFace ports (~600 LoC total). |
+| `instantid` | ID embedding + facial landmarks via a ControlNet-style branch. Near-photographic likeness when the photo is good. | InsightFace + InstantID ControlNet (~2 GB). Needs ControlNet integration in the portrait pipeline. |
 
-All would coexist — a Phase-3 scenario could mix strategies per persona:
-
-```hjson
-personas:
-[
-    {
-        name: alice
-        photo: ./alice.jpg
-        identity: faceid
-    }
-    {
-        name: bob
-        photo: ./bob.jpg
-        identity: plus-face       # still works
-    }
-]
-```
-
-The portrait pipeline already abstracts identity behind an `IdentityEncoder`
-trait, so adding a strategy means: one new enum variant in
-`ip_adapter::IdentityKind`, one new `IdentityEncoder` impl, one new arm
-in `IdentityKind::load_encoder`. Zero changes to `portrait::Pipeline` or
-`scenario.rs`.
+Each new strategy lands as: one new variant in `ip_adapter::IdentityKind`,
+one new `IdentityEncoder` impl, one new arm in `IdentityKind::load_encoder`.
+The portrait pipeline already abstracts identity behind the
+`IdentityEncoder` trait — zero changes to `portrait::Pipeline` or
+`scenario.rs` (other than the per-strategy `target_variant()`).
 
 ### Automatic face detection and bbox inference
 
@@ -1019,10 +1047,6 @@ With InsightFace ported for FaceID, a face detector is available "for
 free". A future schema sugar could be:
 
 ```hjson
-personas:
-[
-    { name: alice, photo: ./alice.jpg }
-]
 tasks:
 [
     {
@@ -1039,4 +1063,4 @@ tasks:
 ```
 
 with the detector running on a low-resolution preview pass to pick the
-bbox. Not a Phase-2 dependency — explicit bboxes work today.
+bbox. Explicit bboxes will keep working.

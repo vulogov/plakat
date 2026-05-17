@@ -339,11 +339,15 @@ is skipped entirely and no Plus-Face / CLIP-H weights are downloaded.
 
 #### `--identity <KIND>` (default `plus-face`)
 
-Identity strategy:
+Identity strategy. Must match the `--model` you pass (the validator
+refuses cross-attn-dim mismatches at load):
 
-- `plus-face` — IP-Adapter-Plus-Face, SD 1.5 (Phase 1).
-- Phase 2 placeholders (`faceid`, `instantid`) will land here; not yet
-  implemented.
+- `plus-face` — IP-Adapter-Plus-Face, SD 1.5. Use with `--model sd15`
+  (or any HF SD 1.5 repo).
+- `plus-face-sdxl` (aliases: `plusface-sdxl`, `plus-face-xl`,
+  `sdxl-plus-face`) — IP-Adapter-Plus-Face SDXL via the `vit-h` variant
+  (reuses the SD 1.5 CLIP-H image encoder). Use with `--model sdxl`.
+- `faceid`, `instantid` — roadmap; not yet implemented.
 
 #### `--face-strength <FLOAT>` (default `0.8`)
 
@@ -360,8 +364,9 @@ Ignored without `--photo`.
 
 #### `--model <ALIAS|REPO>` (default `sd15`)
 
-Currently **SD 1.5 only**. Errors out early on SDXL / Flux. Any HF SD-1.5
-repo id works in place of the `sd15` alias.
+Either `sd15` (Stable Diffusion 1.5, default) or `sdxl` (SDXL base 1.0).
+Any HF SD-1.5/SDXL repo id also works. Flux is not supported for
+portraits. Pair `--model sdxl` with `--identity plus-face-sdxl`.
 
 #### `--size <WxH>` / `--aspect <N:M>` + `--base <SIDE>`
 

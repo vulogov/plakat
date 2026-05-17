@@ -166,7 +166,10 @@
     # Per-persona fields:
     #   name:           required, unique within the file.
     #   photo:          reference photo path (head-and-shoulders crop works best).
-    #   identity:       optional, defaults to `plus-face`. Phase 3 adds faceid / instantid.
+    #   identity:       optional, defaults to `plus-face` (SD 1.5).
+    #                   `plus-face-sdxl` is also supported (SDXL portrait pipeline,
+    #                   reuses the same CLIP-H encoder). FaceID / InstantID are roadmap.
+    #                   All personas in one scenario must agree on the same strategy.
     #   face-strength:  0..2, default 0.8. Scales the image-token contribution.
     #   negative:       persona-only negative (e.g. "no glasses, no beard"); prepended.
     personas:

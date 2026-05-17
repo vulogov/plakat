@@ -384,6 +384,44 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
     }
 
+    // -------- personas: agree on a single identity strategy --------
+    // The portrait pipeline picks its base model (SD 1.5 / SDXL) from the
+    // identity strategy used by the personas referenced in this scenario.
+    // Mixed-variant scenarios would require loading two portrait pipelines
+    // simultaneously (~10 GB+ of resident weights) and aren't supported.
+    // Computed once here so the preload below can use it; also used to
+    // surface a clear error if the user accidentally mixes strategies.
+    let persona_kinds: HashMap<IdentityKind, Vec<&str>> = {
+        let mut m: HashMap<IdentityKind, Vec<&str>> = HashMap::new();
+        for p in &s.personas {
+            let kind: IdentityKind = p
+                .identity
+                .as_deref()
+                .unwrap_or("plus-face")
+                .parse()
+                .with_context(|| format!("persona {:?} identity", p.name))?;
+            m.entry(kind).or_default().push(p.name.as_str());
+        }
+        m
+    };
+    let portrait_identity: Option<IdentityKind> = match persona_kinds.len() {
+        0 => None,
+        1 => Some(*persona_kinds.keys().next().unwrap()),
+        _ => {
+            let mix: Vec<String> = persona_kinds
+                .iter()
+                .map(|(k, names)| format!("{k:?} ({})", names.join(", ")))
+                .collect();
+            bail!(
+                "scenario mixes identity strategies across personas: {}. \
+                 Pick one strategy per scenario — every persona must share the \
+                 same model variant (all SD 1.5 `plus-face`, or all SDXL \
+                 `plus-face-sdxl`).",
+                mix.join("; "),
+            );
+        }
+    };
+
     let enhancer = s
         .enhancer
         .clone()
@@ -466,11 +504,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .iter()
             .filter(|t| t.personas.as_deref().map(|p| !p.is_empty()).unwrap_or(false))
             .count();
+        let portrait_label = portrait_identity
+            .map(|k| k.label())
+            .unwrap_or("(unused — no persona tasks)");
         println!(
-            "  personas:  {} defined [{}], used by {} task(s) — portrait pipeline (SD 1.5)",
+            "  personas:  {} defined [{}], used by {} task(s) — {}",
             s.personas.len(),
             names.join(", "),
             persona_tasks,
+            portrait_label,
         );
     }
 
@@ -527,16 +569,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .iter()
         .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
     let portrait_pipeline: Option<portrait::Pipeline> = if !args.dry_run && any_persona {
-        // Always SD 1.5 for portrait (matches stylize's policy): Phase 1
-        // portrait targets the SD 1.5 cross-attn dim. Scenario LoRAs still
-        // apply — they're merged into the portrait UNet + text encoder.
+        // Portrait base model is derived from the scenario's persona
+        // identity kind (all personas must agree — validated above). The
+        // scenario's main `model` field stays separate: non-persona tasks
+        // use that; persona tasks use this portrait pipeline.
+        let kind = portrait_identity
+            .expect("any_persona implies at least one persona, validation ensures kind agreement");
+        let portrait_model = kind.target_variant().to_string();
         Some(
             portrait::Pipeline::load(portrait::LoadRequest {
-                model: "sd15".to_string(),
+                model: portrait_model,
                 device: device.clone(),
                 loras: loras.clone(),
                 lora_scale,
-                identity: Some(IdentityKind::PlusFace),
+                identity: Some(kind),
             })
             .await?,
         )

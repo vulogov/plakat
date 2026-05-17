@@ -184,11 +184,35 @@ pub struct PlusConfig {
 
 impl PlusConfig {
     /// Matches `h94/IP-Adapter/models/ip-adapter-plus-face_sd15.safetensors`.
+    ///
+    /// The published weights use `dim = 768` (matching SD 1.5's cross-attn
+    /// output, not CLIP-H's 1280-d input). `proj_in` projects 1280→768
+    /// up front; everything inside the resampler operates at 768. The
+    /// diffusers reference Plus (non-Face) uses `dim = 1280` — Plus-Face
+    /// was trained with the smaller resampler. Verified from
+    /// `proj_in.weight.shape == [768, 1280]` in the safetensors file.
     pub fn sd15_face() -> Self {
         Self {
             embedding_dim: 1280,
-            dim: 1280,
+            dim: 768,
             output_dim: 768,
+            depth: 4,
+            num_queries: 16,
+            heads: 12,
+            dim_head: 64,
+            ff_mult: 4,
+        }
+    }
+
+    /// Matches `h94/IP-Adapter/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors`.
+    /// The `vit-h` suffix is significant: this SDXL variant reuses the SD 1.5
+    /// CLIP-H image encoder rather than the SDXL CLIP-G encoder, so we
+    /// don't need a separate image-encoder download.
+    pub fn sdxl_face() -> Self {
+        Self {
+            embedding_dim: 1280,
+            dim: 1280,
+            output_dim: 2048,
             depth: 4,
             num_queries: 16,
             heads: 20,
@@ -457,13 +481,19 @@ impl IdentityEncoder for PlusFaceEncoder {
 // =====================================================================
 
 /// Which identity-preservation strategy `portrait` should wire up.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IdentityKind {
     /// IP-Adapter-Plus-Face on SD 1.5 (Phase 1).
     /// Weights: `models/ip-adapter-plus-face_sd15.safetensors` (Plus
     /// resampler) + `models/image_encoder/model.safetensors` (CLIP-H).
     PlusFace,
-    // Phase 2 placeholders, NOT YET IMPLEMENTED:
+    /// IP-Adapter-Plus-Face on SDXL via the `vit-h` variant (Phase 3).
+    /// Reuses the SD 1.5 CLIP-H image encoder. Resampler outputs at
+    /// SDXL's 2048-d cross-attention dim instead of 768.
+    /// Weights: `sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors`
+    /// + the same `models/image_encoder/model.safetensors` (CLIP-H).
+    PlusFaceSdxl,
+    // Future identity strategies, NOT YET IMPLEMENTED:
     //   FaceId    — InsightFace ArcFace ID embedding + ip-adapter-faceid_*
     //   InstantId — ID + landmarks via a ControlNet-style branch
     // When landing them, add a variant here and a `Self::FaceId => ...`
@@ -472,10 +502,11 @@ pub enum IdentityKind {
 
 impl IdentityKind {
     /// Cross-attention dim this strategy targets. Used by `portrait` for
-    /// shape sanity (e.g. refusing an SD 1.5 strategy on an SDXL UNet).
+    /// shape sanity (refusing an SD 1.5 strategy on an SDXL UNet etc.).
     pub fn cross_attn_dim(self) -> usize {
         match self {
             Self::PlusFace => 768,
+            Self::PlusFaceSdxl => 2048,
         }
     }
 
@@ -483,6 +514,16 @@ impl IdentityKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::PlusFace => "IP-Adapter-Plus-Face (SD 1.5)",
+            Self::PlusFaceSdxl => "IP-Adapter-Plus-Face (SDXL, vit-h)",
+        }
+    }
+
+    /// Which SD variant this strategy expects. Scenario / CLI use this
+    /// to validate or auto-pick the portrait pipeline's base model.
+    pub fn target_variant(self) -> &'static str {
+        match self {
+            Self::PlusFace => "sd15",
+            Self::PlusFaceSdxl => "sdxl",
         }
     }
 
@@ -518,6 +559,29 @@ impl IdentityKind {
                 )?;
                 Box::new(enc)
             }
+            Self::PlusFaceSdxl => {
+                let face_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                )
+                .await?;
+                // Same CLIP-H file as SD 1.5 — the `vit-h` SDXL variant
+                // reuses it, so the cache hit is free for users who've
+                // already run stylize / PlusFace portraits.
+                let clip_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/image_encoder/model.safetensors",
+                )
+                .await?;
+                let enc = PlusFaceEncoder::load(
+                    &clip_weights,
+                    &face_weights,
+                    PlusConfig::sdxl_face(),
+                    device,
+                    dtype,
+                )?;
+                Box::new(enc)
+            }
         };
         dl.finish_with_message(format!("✓ identity ready — {}", self.label()));
         Ok(encoder)
@@ -529,9 +593,15 @@ impl std::str::FromStr for IdentityKind {
     fn from_str(s: &str) -> Result<Self> {
         Ok(match s.to_lowercase().as_str() {
             "plus-face" | "plusface" | "plus_face" => Self::PlusFace,
+            "plus-face-sdxl"
+            | "plusface-sdxl"
+            | "plus_face_sdxl"
+            | "plus-face-xl"
+            | "plusface-xl"
+            | "sdxl-plus-face" => Self::PlusFaceSdxl,
             other => bail!(
-                "unknown identity kind {other:?} (try: plus-face). \
-                 FaceID / InstantID are Phase 2 — not yet implemented."
+                "unknown identity kind {other:?} (try: plus-face, plus-face-sdxl). \
+                 FaceID / InstantID are roadmap — not yet implemented."
             ),
         })
     }

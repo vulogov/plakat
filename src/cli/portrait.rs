@@ -25,8 +25,8 @@ pub struct PortraitArgs {
     #[arg(long, value_name = "PATH")]
     pub photo: Option<PathBuf>,
 
-    /// Identity strategy. Phase 1 supports `plus-face` (IP-Adapter-Plus-Face
-    /// on SD 1.5). Phase 2 will add FaceID and InstantID.
+    /// Identity strategy. `plus-face` for SD 1.5 (default), `plus-face-sdxl`
+    /// for SDXL. FaceID / InstantID are roadmap.
     #[arg(long, default_value = "plus-face")]
     pub identity: IdentityKind,
 
@@ -36,7 +36,9 @@ pub struct PortraitArgs {
     #[arg(long, default_value_t = 0.8)]
     pub face_strength: f32,
 
-    /// Model: alias (sd15) or any HF SD-1.5 repo id. Phase 1 is SD 1.5 only.
+    /// Model: alias (`sd15`, `sdxl`) or any HF SD-1.5/SDXL repo id. The
+    /// `--identity` strategy must target the matching cross_attn_dim
+    /// (`plus-face` for SD 1.5, `plus-face-sdxl` for SDXL).
     #[arg(long, default_value = "sd15")]
     pub model: String,
 
