@@ -197,8 +197,8 @@
     #
     #   personas:       list referencing the top-level `personas` catalog.
     #                   Two forms accepted (don't mix in one task):
-    #                     [alice]                                  ← Phase 1: whole image, exactly 1.
-    #                     [ {name:alice, bbox:[x0,y0,x1,y1]}, ... ] ← Phase 2: region-masked compositing.
+    #                     [alice]                                  ← single persona, whole image.
+    #                     [ {name:alice, bbox:[x0,y0,x1,y1]}, ... ] ← multi-persona, region-masked compositing.
     #                   Either form routes through the SD 1.5 portrait
     #                   pipeline; outputs land as plakat-portrait-<seed>.png.
     tasks:
@@ -224,7 +224,7 @@
             prompt: "a lone traveler in a hooded cloak with a lantern"
         }
         # {
-        #     # Phase 1: single persona, whole image.
+        #     # Single persona, whole image.
         #     name: alice_in_forest
         #     scene: forest
         #     weather: golden_hour
@@ -235,7 +235,7 @@
         #     ]
         # }
         # {
-        #     # Phase 2: multi-persona compositing via region masks.
+        #     # Multi-persona compositing via region masks.
         #     # 16:9 aspect helps each bbox fit a recognisable face.
         #     name: alice_and_bob_harbour
         #     scene: harbor

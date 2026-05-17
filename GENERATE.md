@@ -313,13 +313,15 @@ Directory for generated images. Created if absent. Files are named
 
 ## `plakat portrait`
 
-Portrait generation, optionally guided by a reference photo. Phase 1 uses
-**IP-Adapter-Plus-Face** on SD 1.5 — the photo flows through CLIP-H's
-penultimate hidden state, a 4-layer Perceiver resampler emits 16 image
-tokens, those concat onto the text token sequence, and the standard SD
-denoise loop runs from pure noise. Without `--photo`, the command degrades
-to a portrait-tuned text-only generate (3:4 aspect, face/anatomy negatives
-baked in) with no extra download.
+Portrait generation, optionally guided by a reference photo. The default
+strategy is **IP-Adapter-Plus-Face** on SD 1.5 — the photo flows through
+CLIP-H's penultimate hidden state, a 4-layer Perceiver resampler emits
+16 image tokens, those concat onto the text token sequence, and the
+standard SD denoise loop runs from pure noise. Other strategies
+(`plus-face-sdxl`, `faceid`, `faceid-sdxl`) follow the same pattern with
+different model variants and identity encoders. Without `--photo`, the
+command degrades to a portrait-tuned text-only generate (3:4 aspect,
+face/anatomy negatives baked in) with no extra download.
 
 ```bash
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
@@ -333,9 +335,11 @@ identity; the prompt shapes everything else.
 
 #### `--photo <PATH>` (optional)
 
-Reference photo. Provide a tight head-and-shoulders crop — there is no
-automatic face detection in Phase 1. With no `--photo`, the identity branch
-is skipped entirely and no Plus-Face / CLIP-H weights are downloaded.
+Reference photo. Provide a tight head-and-shoulders crop, or use
+`--face-bbox` to mark the face region. Optional SCRFD auto-detection
+(`PLAKAT_SCRFD_*` env vars) fills landmarks automatically — see
+PERSONA.md. With no `--photo`, the identity branch is skipped entirely
+and no Plus-Face / CLIP-H weights are downloaded.
 
 #### `--identity <KIND>` (default `plus-face`)
 
@@ -420,18 +424,21 @@ to distinguish them from `generate`'s `plakat-<seed>.png`.
 
 ### What portrait is and isn't
 
-candle 0.8's UNet exposes no cross-attention hooks, so the *decoupled* IP-
-Adapter path — separate `to_k_ip` / `to_v_ip` projections in every block —
-is not wired up. Identity tokens travel through the same cross-attention as
-text. Result: identity is recognisable but not pixel-perfect, on the order
-of 50–70% of the diffusers reference implementation. Phase 2 (FaceID with
-InsightFace ArcFace embeddings; InstantID with landmarks) is the path to
-"true likeness".
+For `plus-face` / `plus-face-sdxl` strategies: candle 0.8's UNet exposes
+no cross-attention hooks, so the *decoupled* IP-Adapter path — separate
+`to_k_ip` / `to_v_ip` projections in every block — is not wired up.
+Identity tokens travel through the same cross-attention as text. Result:
+identity is recognisable but not pixel-perfect, ~50–70% of the diffusers
+reference. The `faceid` / `faceid-sdxl` strategies bypass this ceiling
+using InsightFace ArcFace embeddings + an automatically-applied UNet
+LoRA, landing closer to ~80–90% of reference — at the cost of needing
+ArcFace weights set up (see PERSONA.md).
 
-Phase 1 also has no face detector or auto-crop. Garbage-in / garbage-out:
-a tight head-shot produces clean results; a wide group photo produces noise.
+Plus-Face strategies have no face detector — pass a head-and-shoulders
+crop, or use `--face-bbox`. FaceID strategies can optionally use SCRFD
+for automatic face detection (`PLAKAT_SCRFD_*` env vars).
 
-First run downloads:
+First-run downloads (`plus-face` / SD 1.5):
 
 - Plus-Face safetensors (~50 MB).
 - CLIP-H image encoder (~2.5 GB) — shared with `stylize`, cached once.

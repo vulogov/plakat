@@ -455,15 +455,18 @@ plakat portrait "studio portrait of an astronaut, dramatic lighting" \
 text-only, `0.8` (default) is a strong likeness, `>1.0` over-amplifies the
 face at the cost of prompt adherence. LoRAs and `--refine` stack normally.
 
-Quality caveat: candle 0.8's UNet exposes no cross-attention hooks, so the
-*decoupled* IP-Adapter path (separate `to_k_ip`/`to_v_ip` per block) is not
-wired up — identity tokens travel via the same cross-attention as text. The
-result is recognisable but not pixel-perfect (~50–70% of the diffusers
-reference). Phase 2 — FaceID / InstantID — is on the roadmap.
+Quality caveat for `plus-face*` strategies: candle 0.8's UNet exposes
+no cross-attention hooks, so the *decoupled* IP-Adapter path (separate
+`to_k_ip`/`to_v_ip` per block) is not wired up — identity tokens travel
+via the same cross-attention as text. The result is recognisable but
+not pixel-perfect (~50–70% of the diffusers reference). For higher
+identity fidelity, use `--identity faceid` (SD 1.5) or `faceid-sdxl` —
+those bypass this ceiling using ArcFace embeddings plus h94's UNet LoRA.
 
-Phase 1 limits: SD 1.5 only; no automatic face crop (pass a head-and-shoulders
-photo); first run adds ~50 MB for the Plus-Face safetensors plus ~2.5 GB for
-CLIP-H (shared with `stylize`).
+`plus-face` limits: no automatic face crop (pass a head-and-shoulders
+photo, or use `--face-bbox` to mark the region); first run adds ~50 MB
+for the Plus-Face safetensors plus ~2.5 GB for CLIP-H (shared with
+`stylize`).
 
 ## Polish & refiner
 
