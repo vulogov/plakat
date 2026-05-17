@@ -887,19 +887,60 @@ impl SCRFDDetector {
     }
 }
 
-/// Resolve PLAKAT_SCRFD_WEIGHTS, returning the local safetensors path
-/// or a `None` with no error if the env var is unset. Errors only if the
-/// env var is set but the file doesn't exist.
-pub fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
-    let Ok(env) = std::env::var("PLAKAT_SCRFD_WEIGHTS") else {
-        return Ok(None);
-    };
-    let path = std::path::PathBuf::from(&env);
-    if !path.exists() {
-        return Err(anyhow!(
-            "PLAKAT_SCRFD_WEIGHTS points to {} which doesn't exist.",
-            path.display()
-        ));
+/// Sync preflight — confirms SCRFD config is plausible without hitting
+/// the network. Used by callers that want to know "is SCRFD configured
+/// at all" without committing to a download. Returns `Ok(true)` when
+/// either env var is set (and the local-path variant points at an
+/// existing file); `Ok(false)` when nothing is configured (SCRFD is
+/// optional, so absence isn't an error).
+pub fn preflight_scrfd() -> Result<bool> {
+    let has_local = std::env::var("PLAKAT_SCRFD_WEIGHTS").is_ok();
+    let has_hf = std::env::var("PLAKAT_SCRFD_HF").is_ok();
+    if !has_local && !has_hf {
+        return Ok(false);
     }
-    Ok(Some(path))
+    if let Ok(env) = std::env::var("PLAKAT_SCRFD_WEIGHTS") {
+        let path = std::path::PathBuf::from(&env);
+        if !path.exists() {
+            return Err(anyhow!(
+                "PLAKAT_SCRFD_WEIGHTS points to {} which doesn't exist.",
+                path.display()
+            ));
+        }
+    }
+    // HF spec validated only at download time.
+    Ok(true)
+}
+
+/// Async resolver — turns env-var config into a local safetensors path.
+/// Returns `Ok(None)` if neither `PLAKAT_SCRFD_WEIGHTS` nor `PLAKAT_SCRFD_HF`
+/// is set (SCRFD is opt-in, so unset is fine).
+///
+/// Priority: local path wins over HF spec.
+pub async fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
+    if let Ok(env) = std::env::var("PLAKAT_SCRFD_WEIGHTS") {
+        let path = std::path::PathBuf::from(&env);
+        if !path.exists() {
+            return Err(anyhow!(
+                "PLAKAT_SCRFD_WEIGHTS points to {} which doesn't exist.",
+                path.display()
+            ));
+        }
+        return Ok(Some(path));
+    }
+    if let Ok(spec) = std::env::var("PLAKAT_SCRFD_HF") {
+        let (repo, file) =
+            crate::pipelines::ip_adapter::parse_hf_spec(&spec, "PLAKAT_SCRFD_HF")?;
+        let s = crate::ui::progress::spinner(&format!(
+            "Downloading SCRFD from {repo}/{file}"
+        ));
+        let path = crate::hf::download::get_file(&repo, &file)
+            .await
+            .with_context(|| {
+                format!("downloading SCRFD from {repo}/{file} via PLAKAT_SCRFD_HF")
+            })?;
+        s.finish_with_message(format!("✓ SCRFD cached at {}", path.display()));
+        return Ok(Some(path));
+    }
+    Ok(None)
 }

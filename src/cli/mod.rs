@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod doctor;
 pub mod generate;
+pub mod inspect;
 pub mod models;
 pub mod portrait;
 pub mod scenario;
@@ -52,6 +53,10 @@ pub enum Command {
     /// downloading or loading anything. Run before a long generation
     /// to verify setup.
     Doctor(doctor::DoctorArgs),
+    /// Inspect a .safetensors file — list every tensor name, dtype,
+    /// and shape. Useful when a weight load fails and you want to see
+    /// what's actually in the file vs what the model expected.
+    Inspect(inspect::InspectArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -79,5 +84,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Scenario(args) => scenario::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
+        Command::Inspect(args) => inspect::run(args).await,
     }
 }

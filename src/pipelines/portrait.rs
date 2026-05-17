@@ -297,13 +297,14 @@ impl Pipeline {
         // Opt out via `PLAKAT_FACEID_LORA=off`.
         let mut auto_loras: Vec<crate::pipelines::lora::ResolvedLora> = Vec::new();
         if let Some(kind) = req.identity {
-            if let Some((tmp, path)) = kind.aux_unet_lora(&req.device).await? {
+            if let Some(path) = kind.aux_unet_lora(&req.device).await? {
                 auto_loras.push(crate::pipelines::lora::ResolvedLora {
                     path,
                     scale: 1.0,
                     display: format!("{} (auto)", kind.label()),
                 });
-                lora_tmps.push(tmp);
+                // No tempfile to keep alive — the FaceID LoRA download
+                // lives in the HF cache, which persists naturally.
             }
         }
 

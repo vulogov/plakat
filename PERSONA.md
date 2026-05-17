@@ -15,19 +15,20 @@ can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
-> **Phases 1 + 2 + 3 + 4b + 4c.1 + 4c.2a + 4c.2b + 4c.3 + 4c.4 (architecture)
-> + 4c.4b (partial) shipped.** FaceID is usable today via `--identity faceid`
-> (SD 1.5) or `--identity faceid-sdxl` (SDXL); both apply h94's bundled UNet
-> cross-attention LoRA automatically (opt out via `PLAKAT_FACEID_LORA=off`),
-> and accept 5-point landmarks for proper ArcFace-canonical alignment via
-> Umeyama's similarity transform. ArcFace weights now resolve from either
-> `PLAKAT_ARCFACE_WEIGHTS` (local) **or** `PLAKAT_ARCFACE_HF=repo#file`
-> (HuggingFace). New `plakat doctor` subcommand inspects setup without
-> downloading. SCRFD detector architecture is in tree (opt-in via
-> `PLAKAT_SCRFD_WEIGHTS`), end-to-end verification depends on the user's
-> weight file matching this port's expected key layout. InstantID and
-> a canonical ArcFace HF default repo remain roadmap.
-> See [Phase 4 status](#phase-4-status).
+> **Phase 4 is feature-complete as of 4c.4d.** FaceID works end-to-end via
+> `--identity faceid` (SD 1.5) or `--identity faceid-sdxl` (SDXL); both
+> apply h94's UNet cross-attention LoRA automatically (opt out via
+> `PLAKAT_FACEID_LORA=off`), and accept 5-point landmarks for proper
+> ArcFace-canonical alignment via Umeyama's similarity transform. Both
+> ArcFace and SCRFD weights resolve from either local files
+> (`PLAKAT_*_WEIGHTS`) **or** HuggingFace specs (`PLAKAT_*_HF=repo#file`).
+> `plakat doctor [--verify]` inspects setup and probes downloads.
+> SCRFD architecture is in tree; end-to-end weight verification depends
+> on user-provided files matching this port's expected layout.
+> **What's not in Phase 4:** a hardcoded canonical default HF repo (blocked
+> on a durable community-hosted safetensors), and InstantID (a separate
+> ControlNet-shaped effort). See [Phase 4 status](#phase-4-status) for
+> the breakdown.
 
 ---
 
@@ -1138,8 +1139,10 @@ Plus-Face safetensors"):
 | **Phase 4c.2b** | Shipped | **SDXL** FaceID UNet LoRA, matching the SD 1.5 path. New `sdxl_cross_attn_paths()` generates the 70-entry path table programmatically (down_blocks.1 ×4 + down_blocks.2 ×20 + mid ×10 + up_blocks.0 ×30 + up_blocks.1 ×6). Same converter core, same opt-out env var. SDXL FaceID now has feature parity with SD 1.5. |
 | **Phase 4c.3** | **Shipped** | **5-point similarity-transform alignment** to ArcFace's canonical 112×112 template. `face_models::similarity_transform_2d` (Umeyama's method on 2×2 SVD), `bilinear_warp`, `align_to_arcface_template`. New `FaceAlignment` enum unifies CenterCrop / Bbox / Landmarks paths in `prepare_face_tensor`. `EncodeOptions.face_landmarks` plumbed through. CLI: `--face-landmarks LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 floats normalised). Scenario: `face-landmarks: [[x,y]; 5]` on `PersonaDef`. Landmarks take precedence over bbox when both supplied. Order: `left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner` — same as InsightFace's detection outputs (so any tool that exports those landmarks works as-is). |
 | **Phase 4c.4** | **Architecture shipped, verification pending** | SCRFD face detector ported (`src/pipelines/scrfd.rs`): SCRFDConfig, BasicBlock-based backbone, FPN, detection heads, anchor generation, distance-format bbox decoding, 5-point landmark decoding, NMS, letterbox preprocessing, `SCRFDDetector::detect()`. Wired into `FaceIdEncoder` — when `PLAKAT_SCRFD_WEIGHTS` is set, landmarks auto-detect; otherwise the existing manual paths apply unchanged. **Compiles cleanly but weight loading verification is the user-iteration step** — exact channel widths / key naming for SCRFD-500MF are best-guess from the InsightFace reference. ArcFace HF auto-download remains roadmap. |
-| **Phase 4c.4b** | **Partial shipped** | `PLAKAT_ARCFACE_HF=repo#file` env var — pull IR-ResNet50 safetensors from any HuggingFace repo of your choosing (downloaded + cached via the existing `hf::download` path). Two-route resolution: local `PLAKAT_ARCFACE_WEIGHTS` wins over `PLAKAT_ARCFACE_HF`. New `plakat doctor` subcommand inspects setup. SCRFD HF download still pending (needs the FaceIdEncoder constructor to go async). Canonical default repo still TBD — once a stable community-hosted safetensors emerges, can be hardcoded as a fallback. |
-| **Phase 4c.4c** | Roadmap | Hardcoded default ArcFace HF repo (drops both env vars for typical users); SCRFD HF download (`PLAKAT_SCRFD_HF`). |
+| **Phase 4c.4b** | Shipped (partial) | `PLAKAT_ARCFACE_HF=repo#file` env var — pull IR-ResNet50 safetensors from any HuggingFace repo. Two-route resolution: local wins over HF. New `plakat doctor` subcommand inspects setup. |
+| **Phase 4c.4c** | Shipped | `PLAKAT_SCRFD_HF=repo#file` — symmetric to the ArcFace path. Refactored: `scrfd::resolve_scrfd_weights()` is now async; SCRFD path is resolved at the `IdentityKind::load_encoder` (async) layer and threaded as `Option<&Path>` into the sync `FaceIdEncoder::load_faceid_*` constructors. **Phase 4 face-detector + identity loop is now config-driven end-to-end**. |
+| **Phase 4c.4d** | **Partial shipped** | `plakat doctor --verify` actively probes configured `PLAKAT_*_HF` specs by attempting the HF download — confirms remote-file resolution offline-of-generation, exposes auth-gated and 404 errors with hints. HF Hub discovery URLs added to setup error messages + the empty-doctor output. **Headline goal (hardcoded canonical HF default repo) deferred** — no durable community-hosted IR-ResNet50 safetensors host I'd commit to without verification. Phase 4 is feature-complete from a code standpoint; the missing piece is a community-trusted host emerging that we can hardcode in a single-line patch when it does. |
+| **Phase 5+** | Future | InstantID (ControlNet-shaped), weight-verification CI, possibly more identity strategies. Separate scope from Phase 4. |
 | **InstantID** | Roadmap (separate) | Needs ControlNet integration in the portrait pipeline (~500 LoC) — a substantially larger effort than the rest of Phase 4. |
 
 ### Phase 4b setup (FaceID)
@@ -1245,12 +1248,14 @@ plakat --device metal portrait \
 
 ### Phase 4c.4 setup (optional SCRFD auto-detection)
 
-`PLAKAT_SCRFD_WEIGHTS` enables automatic face detection — the SCRFD
-detector finds faces and fills in the 5-point landmarks the aligner
-already consumes, so `--face-bbox` / `--face-landmarks` flags become
-unnecessary for typical portrait photos.
+`PLAKAT_SCRFD_WEIGHTS` (or `PLAKAT_SCRFD_HF` from 4c.4c) enables
+automatic face detection — the SCRFD detector finds faces and fills in
+the 5-point landmarks the aligner already consumes, so `--face-bbox` /
+`--face-landmarks` flags become unnecessary for typical portrait photos.
 
-This is **optional and bring-your-own-weights**:
+Two routes — pick one:
+
+**Route A — local file (`PLAKAT_SCRFD_WEIGHTS`):**
 
 ```bash
 # Download SCRFD-500MF from InsightFace releases
@@ -1267,6 +1272,15 @@ save_file(m.state_dict(), 'scrfd_500m.safetensors')"
 # Point plakat at it
 export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 ```
+
+**Route B — HF-hosted (`PLAKAT_SCRFD_HF`):**
+
+```bash
+export PLAKAT_SCRFD_HF=<user>/<repo>#<path/in/repo.safetensors>
+# plakat downloads + caches via the existing HF infrastructure.
+```
+
+Local file wins if both are set. Verify with `plakat doctor`.
 
 > ⚠️ **Verification status (honest).** Phase 4c.4 ships the SCRFD
 > architecture, decoding, NMS, and pipeline integration. The exact
@@ -1338,8 +1352,10 @@ and obsolete `--face-bbox` for most cases via SCRFD auto-detection.
    effect: identity goes up, text-prompt fidelity may shift slightly.
    Opt out with `PLAKAT_FACEID_LORA=off` if a particular prompt suffers.
 
-3. **ArcFace weights are user-supplied.** No HF auto-download yet —
-   Phase 4c.2c.
+3. **ArcFace weights are user-supplied.** As of 4c.4b/c via either local
+   path or HF spec — see [Phase 4b setup](#phase-4b-setup-faceid). A
+   hardcoded canonical default repo is the only remaining Phase-4 gap
+   (see Phase 4c.4d in the status table).
 
 ### The drop-in promise held
 
@@ -1348,3 +1364,47 @@ needed to change. The portrait pipeline already abstracted identity behind
 the `IdentityEncoder` trait; `IdentityKind::load_encoder` was the only
 construction hook; scenario auto-pick used `target_variant()`. Everything
 established in Phases 1–3 absorbed FaceID without edits.
+
+### Phase 4 retrospective
+
+Across 11 sub-phases (4b → 4c.1 → 4c.2a/b → 4c.3 → 4c.4 → 4c.4b → 4c.4c
+→ 4c.4d), Phase 4 shipped the full FaceID identity-preservation stack
+on candle:
+
+| Capability | Sub-phase |
+|---|---|
+| ArcFace IR-ResNet50 backbone in candle | 4a/4b |
+| `IdentityKind::FaceId` (SD 1.5) end-to-end with centre-crop alignment | 4b |
+| `--face-bbox` manual bbox alignment | 4c.1 |
+| FaceID UNet LoRA application (SD 1.5) | 4c.2a |
+| FaceID UNet LoRA application (SDXL) | 4c.2b |
+| `IdentityKind::FaceIdSdxl` (SDXL FaceID feature parity) | 4c.1/4c.2b |
+| 5-point similarity-transform alignment (Umeyama + bilinear warp) | 4c.3 |
+| SCRFD face-detector architecture (compiles; verification pending) | 4c.4 |
+| `PLAKAT_ARCFACE_HF` env var (HuggingFace download) | 4c.4b |
+| `plakat doctor` subcommand | 4c.4b |
+| `PLAKAT_SCRFD_HF` env var + async SCRFD resolution | 4c.4c |
+| `plakat doctor --verify` active HF probing | 4c.4d |
+| HF Hub discovery hints in setup errors | 4c.4d |
+
+**File budget across Phase 4:** four new modules (`face_models.rs`,
+`faceid_lora.rs`, `scrfd.rs`, `cli/doctor.rs`) + targeted edits to
+`ip_adapter.rs`, `portrait.rs`, `cli/portrait.rs`, `cli/scenario.rs`,
+`cli/mod.rs`. The `IdentityEncoder` trait grew one field
+(`EncodeOptions.face_landmarks` in 4c.3); `IdentityKind` grew ~6
+helper methods. The portrait pipeline, scenario surfaces, and CLI
+all absorbed the full feature stack with no architectural changes
+beyond a single async cascade for SCRFD resolution (4c.4c).
+
+**What we'd do differently with hindsight:** start the SCRFD work
+earlier in Phase 4 (it's the largest verification risk and the
+architecture port took until 4c.4); design `EncodeOptions` as a
+struct from day-one of 4b so the 4c.3 trait extension wouldn't have
+needed touching every impl.
+
+**What stayed clean:** the `IdentityEncoder` trait is the same shape
+as in 4b plus one optional field. The scenario auto-pick logic
+(picks portrait base model from persona identity kind) absorbed
+SDXL FaceID in 4c.1 with no edits. The HJSON `face-bbox` /
+`face-landmarks` extensions for personas mirror the CLI flags, so
+the scenario UX scales naturally as more alignment modes ship.
