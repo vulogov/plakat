@@ -318,56 +318,13 @@ impl Pipeline {
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
 
-        // Encode text (and uncond text for CFG). (1, 77, 768) each.
-        let text_cond = self.encode_text(&req.prompt)?;
-        let text_uncond = if do_cfg {
-            Some(self.encode_text(&req.negative)?)
-        } else {
-            None
-        };
-
-        // Optionally encode identity tokens.
-        let face_strength = req.face_strength.clamp(0.0, 2.0);
-        let identity_tokens = match (&self.identity_encoder, req.photo.as_ref()) {
-            (Some(enc), Some(p)) => {
-                let s = progress::spinner("Encoding reference photo");
-                let tok = enc.encode(p)?;
-                let tok = (tok * (face_strength as f64))?.to_dtype(self.dtype)?;
-                s.finish_with_message("✓ identity encoded");
-                Some(tok)
-            }
-            (None, Some(_)) => {
-                bail!(
-                    "this Pipeline was loaded without an identity encoder \
-                     but a photo was provided. Reload with `identity: Some(IdentityKind::PlusFace)`."
-                );
-            }
-            (Some(_), None) => None, // identity loaded but caller chose text-only
-            (None, None) => None,
-        };
-
-        // Build the final encoder_hidden_states. With CFG that's
-        // (2, 77+K, 768): row 0 = uncond text + zero image tokens, row 1 =
-        // cond text + scaled image tokens. Without CFG just the cond row.
-        let cond_full = match &identity_tokens {
-            Some(img) => Tensor::cat(&[&text_cond, img], 1)?,
-            None => text_cond.clone(),
-        };
-        let encoder_hidden_states = if do_cfg {
-            let uncond_text = text_uncond.as_ref().unwrap();
-            let uncond_full = match &identity_tokens {
-                Some(img) => {
-                    // Zero image tokens for the uncond branch — standard
-                    // IP-Adapter CFG setup. Allocate at the right dtype.
-                    let zero = img.zeros_like()?;
-                    Tensor::cat(&[uncond_text, &zero], 1)?
-                }
-                None => uncond_text.clone(),
-            };
-            Tensor::cat(&[&uncond_full, &cond_full], 0)?
-        } else {
-            cond_full
-        };
+        let (encoder_hidden_states, has_face) = self.build_encoder_hidden_states(
+            &req.prompt,
+            &req.negative,
+            req.photo.as_deref(),
+            req.face_strength,
+            do_cfg,
+        )?;
 
         let bsz: usize = 1;
         let latent_h = h / 8;
@@ -393,7 +350,7 @@ impl Pipeline {
                     .to_dtype(self.dtype)?;
             latents = (latents * scheduler.init_noise_sigma())?;
 
-            let face_tag = if identity_tokens.is_some() { "+face" } else { "txt" };
+            let face_tag = if has_face { "+face" } else { "txt" };
             let bar = progress::step_bar(
                 timesteps.len() as u64,
                 &format!("portrait {}/{} {}", idx + 1, req.count, face_tag),
@@ -463,6 +420,211 @@ impl Pipeline {
         Ok(())
     }
 
+    // =================================================================
+    // Phase-2 multi-persona compositing primitives.
+    //
+    // The scenario runner orchestrates by calling these in sequence:
+    //   let mut latents = pipeline.generate_latents_one(&base_req, seed)?;
+    //   for (persona_req, mask) in passes {
+    //       latents = pipeline.inpaint_latents_one(&latents, &mask, &persona_req, seed)?;
+    //   }
+    //   pipeline.save_image(&latents, &out_path)?;
+    // =================================================================
+
+    /// Build the encoder-hidden-states tensor for one call. With CFG this
+    /// is `(2, 77 + K, 768)` where K = 0 (no face), 4 (plain), or 16
+    /// (Plus). Returns the tensor plus a flag indicating whether image
+    /// tokens were included (used for progress-bar labels).
+    fn build_encoder_hidden_states(
+        &self,
+        prompt: &str,
+        negative: &str,
+        photo: Option<&std::path::Path>,
+        face_strength: f32,
+        do_cfg: bool,
+    ) -> Result<(Tensor, bool)> {
+        let text_cond = self.encode_text(prompt)?;
+        let text_uncond = if do_cfg {
+            Some(self.encode_text(negative)?)
+        } else {
+            None
+        };
+
+        let face_strength = face_strength.clamp(0.0, 2.0);
+        let identity_tokens = match (&self.identity_encoder, photo) {
+            (Some(enc), Some(p)) => {
+                let s = progress::spinner("Encoding reference photo");
+                let tok = enc.encode(p)?;
+                let tok = (tok * (face_strength as f64))?.to_dtype(self.dtype)?;
+                s.finish_with_message("✓ identity encoded");
+                Some(tok)
+            }
+            (None, Some(_)) => {
+                bail!(
+                    "this Pipeline was loaded without an identity encoder \
+                     but a photo was provided. Reload with `identity: Some(IdentityKind::PlusFace)`."
+                );
+            }
+            (Some(_), None) => None,
+            (None, None) => None,
+        };
+
+        let cond_full = match &identity_tokens {
+            Some(img) => Tensor::cat(&[&text_cond, img], 1)?,
+            None => text_cond.clone(),
+        };
+        let ehs = if do_cfg {
+            let uncond_text = text_uncond.as_ref().unwrap();
+            let uncond_full = match &identity_tokens {
+                Some(img) => {
+                    let zero = img.zeros_like()?;
+                    Tensor::cat(&[uncond_text, &zero], 1)?
+                }
+                None => uncond_text.clone(),
+            };
+            Tensor::cat(&[&uncond_full, &cond_full], 0)?
+        } else {
+            cond_full
+        };
+        Ok((ehs, identity_tokens.is_some()))
+    }
+
+    /// Generate one sample of latents from text alone (no inpainting).
+    /// Used as the base for multi-persona compositing. Skips the polish
+    /// pass — orchestrator may run polish on the final composite.
+    pub fn generate_latents_one(&self, req: &GenRequest, seed: u64) -> Result<Tensor> {
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        let (w, h) = (req.width as usize, req.height as usize);
+        let do_cfg = req.guidance > 1.0;
+        let (ehs, has_face) = self.build_encoder_hidden_states(
+            &req.prompt,
+            &req.negative,
+            req.photo.as_deref(),
+            req.face_strength,
+            do_cfg,
+        )?;
+
+        if let Err(e) = self.device.set_seed(seed) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
+        let mut scheduler =
+            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+        let timesteps = scheduler.timesteps().to_vec();
+        let latent_h = h / 8;
+        let latent_w = w / 8;
+        let mut latents = Tensor::randn(0f32, 1f32, (1, 4, latent_h, latent_w), &self.device)?
+            .to_dtype(self.dtype)?;
+        latents = (latents * scheduler.init_noise_sigma())?;
+
+        let face_tag = if has_face { "+face" } else { "txt" };
+        let bar = progress::step_bar(
+            timesteps.len() as u64,
+            &format!("composite-base {face_tag}"),
+        );
+        for &t in &timesteps {
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t} seed={seed}"));
+        }
+        bar.finish_and_clear();
+        Ok(latents)
+    }
+
+    /// Inpaint one persona into `base_latents` inside `mask`. Uses
+    /// RePaint-style latent blending: at each timestep, the unmasked
+    /// region is replaced with a re-noised copy of `base_latents`, so
+    /// the denoiser only meaningfully drives the masked region.
+    ///
+    /// `mask` is `(1, 1, latent_h, latent_w)` at the pipeline's dtype,
+    /// values in `[0, 1]` (1 = inpaint here, 0 = preserve base).
+    pub fn inpaint_latents_one(
+        &self,
+        base_latents: &Tensor,
+        mask: &Tensor,
+        req: &GenRequest,
+        seed: u64,
+    ) -> Result<Tensor> {
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        let do_cfg = req.guidance > 1.0;
+        let (ehs, has_face) = self.build_encoder_hidden_states(
+            &req.prompt,
+            &req.negative,
+            req.photo.as_deref(),
+            req.face_strength,
+            do_cfg,
+        )?;
+
+        if let Err(e) = self.device.set_seed(seed) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
+        let mut scheduler =
+            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+        let timesteps = scheduler.timesteps().to_vec();
+        let first_t = *timesteps
+            .first()
+            .ok_or_else(|| anyhow!("inpaint scheduler produced 0 timesteps"))?;
+
+        // Start: re-noise the base at the first timestep. The masked region
+        // gets driven by the denoiser; the unmasked region gets re-noised
+        // again at each step so the masked region sees a coherent neighbour.
+        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
+            .to_dtype(self.dtype)?;
+        let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
+
+        let inv_mask = (mask.ones_like()? - mask)?;
+        let face_tag = if has_face { "+face" } else { "txt" };
+        let bar = progress::step_bar(
+            timesteps.len() as u64,
+            &format!("inpaint {face_tag}"),
+        );
+        for &t in &timesteps {
+            // RePaint: re-noise the BASE (not the running latents) outside
+            // the mask. This pins the unmasked region to the base image while
+            // letting the denoiser walk freely inside the mask.
+            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
+                .to_dtype(self.dtype)?;
+            let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
+            latents = (latents.broadcast_mul(mask)?
+                + base_noised.broadcast_mul(&inv_mask)?)?;
+
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t} seed={seed}"));
+        }
+        bar.finish_and_clear();
+
+        // Final blend: pin unmasked region to the *clean* base latents (no
+        // residual noise). The masked region keeps the denoiser's output.
+        let composited = (latents.broadcast_mul(mask)?
+            + base_latents.broadcast_mul(&inv_mask)?)?;
+        Ok(composited)
+    }
+
+    /// VAE-decode `latents` and save as PNG at `out_path`.
+    pub fn save_image(
+        &self,
+        latents: &Tensor,
+        out_path: &std::path::Path,
+    ) -> Result<()> {
+        let vae_scale: f64 = 0.18215;
+        let image = self.vae.decode(&(latents / vae_scale)?)?;
+        let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = (image * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = image.dims3()?;
+        let buf = image.flatten_all()?.to_vec1::<u8>()?;
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, out_path)?;
+        crate::ui::progress::println(&format!("→ {}", out_path.display()));
+        Ok(())
+    }
+
     fn denoise_step(
         &self,
         latents: &Tensor,
@@ -500,6 +662,13 @@ impl Pipeline {
     #[allow(dead_code)]
     pub fn identity_num_tokens(&self) -> usize {
         self.identity_num_tokens
+    }
+
+    /// The dtype the pipeline's tensors live at (F16 on accelerators,
+    /// F32 on CPU). Callers building masks for `inpaint_latents_one`
+    /// need this so the mask matches.
+    pub fn latent_dtype(&self) -> DType {
+        self.dtype
     }
 }
 
