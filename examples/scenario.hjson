@@ -156,6 +156,36 @@
         }
     ]
 
+    # === catalogs: personas ===
+    # Named identities a task can pull in via its own `personas: [name]`
+    # list. Each persona is a reference photo + identity-adapter settings;
+    # tasks that name a persona route through the SD 1.5 portrait pipeline
+    # (IP-Adapter-Plus-Face) instead of the scenario's main pipeline.
+    #
+    # Phase 1: at most ONE persona per task. The schema accepts a list so
+    # Phase 2 (region-masked multi-persona) is non-breaking.
+    #
+    # Per-persona fields:
+    #   name:           required, unique within the file.
+    #   photo:          reference photo path (head-and-shoulders crop works best).
+    #   identity:       optional, defaults to `plus-face`. Phase 2 adds faceid / instantid.
+    #   face-strength:  0..2, default 0.8. Scales the image-token contribution.
+    #   negative:       persona-only negative (e.g. "no glasses, no beard"); prepended.
+    personas:
+    [
+        # {
+        #     name: alice
+        #     photo: ./references/alice.jpg
+        #     face-strength: 0.85
+        #     negative: "smiling, mustache"
+        # }
+        # {
+        #     name: bob
+        #     photo: ./references/bob.jpg
+        #     face-strength: 0.7
+        # }
+    ]
+
     # === tasks: scene × weather combinations to render ===
     #
     # Optional per-task fields:
@@ -163,6 +193,10 @@
     #                   image is also run through IP-Adapter stylize using
     #                   this reference. Original AND styled both persist.
     #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
+    #   personas:       [name] referencing the top-level `personas` list.
+    #                   Phase 1: at most one. Task routes through the SD 1.5
+    #                   portrait pipeline; outputs land as
+    #                   plakat-portrait-<seed>.png.
     tasks:
     [
         {
@@ -185,5 +219,12 @@
             weather: snow
             prompt: "a lone traveler in a hooded cloak with a lantern"
         }
+        # {
+        #     name: alice_in_forest
+        #     scene: forest
+        #     weather: golden_hour
+        #     prompt: "walking along the mossy path, lantern in hand"
+        #     personas: [alice]
+        # }
     ]
 }

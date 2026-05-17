@@ -16,7 +16,8 @@ Models are pulled from HuggingFace and cached locally.
   (SD 1.5 base).
 - **Portrait** — generate a portrait, optionally guided by a reference
   photo (IP-Adapter-Plus-Face on SD 1.5). Portrait-tuned defaults: 3:4
-  aspect, face/anatomy negatives baked in.
+  aspect, face/anatomy negatives baked in. Scenarios can define named
+  **personas** and impose them per task.
 - **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
   Local files or HF repos (auto-discovered). UNet + both text encoders.
 - **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
@@ -201,6 +202,20 @@ The schema:
         # … more weathers
     ]
 
+    # ===== personas (optional) =====
+    # Named identities tasks can impose onto their output. Routes the task
+    # through the SD 1.5 portrait pipeline (IP-Adapter-Plus-Face).
+    personas:
+    [
+        {
+            name: alice
+            photo: ./refs/alice.jpg
+            face-strength: 0.85               # 0..2, default 0.8
+            # identity: plus-face             # default; Phase 2: faceid / instantid
+            # negative: "smiling, mustache"   # persona-specific, prepended
+        }
+    ]
+
     # ===== tasks =====
     tasks:
     [
@@ -213,6 +228,7 @@ The schema:
             # Optional per-task fields:
             # style: ./refs/watercolor.jpg     # IP-Adapter REF for this task only
             # style-strength: 0.65
+            # personas: [alice]                # exactly 0 or 1 (Phase 1)
             # Per-task overrides for: size, aspect, count, steps, guidance,
             # seed, negative, scheduler, refine, refine-strength, refiner-frac
         }
@@ -225,19 +241,59 @@ The schema:
 
 For every image a task generates, the steps applied (in order) are:
 
-1. **Generate** with the loaded SD or Flux pipeline →
-   `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-2. **Stylize** (if the task has `style:`) →
-   `plakat-<seed>-styled.png`. Uses IP-Adapter on SD 1.5 regardless of the
-   base model used in step 1.
-3. **Upscale** (if `upscale.upscale: true`) →
-   `plakat-<seed>-styled-upscaled.png` if step 2 ran successfully, else
-   `plakat-<seed>-upscaled.png`.
+1. **Generate** with the loaded SD, Flux, OR portrait pipeline:
+   - No `personas` → SD / Flux per the scenario's `model` →
+     `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
+   - One persona named → SD 1.5 portrait pipeline (IP-Adapter-Plus-Face)
+     regardless of `model` → `plakat-portrait-<seed>.png`.
+2. **Stylize** (if the task has `style:`) → `<base>-styled.png`. Uses
+   IP-Adapter on SD 1.5 regardless of the base model used in step 1.
+3. **Upscale** (if `upscale.upscale: true`) → `<base>-styled-upscaled.png`
+   if step 2 ran successfully, else `<base>-upscaled.png`.
 
 Each step writes a new file — nothing is overwritten. A task with `count: 2`,
 `style: ref.jpg`, and `upscale: true` produces **six files**: 2 originals + 2
 styled + 2 upscaled-of-styled. Failure in step 2 or 3 doesn't abort the
 scenario — the failure is logged and earlier outputs persist.
+
+### Personas
+
+`personas` is a top-level list of named identities. Each persona supplies a
+reference photo and Plus-Face settings; a task pulls one in via
+`personas: [<name>]` and routes through the portrait pipeline:
+
+```hjson
+personas: [
+  { name: alice, photo: ./refs/alice.jpg, face-strength: 0.85 }
+  { name: bob,   photo: ./refs/bob.jpg }
+]
+
+tasks: [
+  { name: alice_cafe,    scene: cafe,   weather: morning, prompt: "espresso",  personas: [alice] }
+  { name: bob_studio,    scene: studio, weather: indoor,  prompt: "portrait",  personas: [bob]   }
+  { name: empty_streets, scene: town,   weather: rain,    prompt: "no one"                       }
+]
+```
+
+The portrait pipeline loads once at scenario start (only if at least one task
+uses personas) and is shared across all persona tasks — model load happens
+exactly once regardless of how many personas / tasks need it. Persona-only
+costs: ~50 MB Plus-Face download + ~2.5 GB CLIP-H download (first run; shared
+with `stylize`).
+
+**Phase 1 limits:**
+- Exactly 0 or 1 persona per task. `>1` errors at load time with a roadmap
+  message — multi-persona compositing needs region masks (Phase 2) or
+  FaceID / face-detection (Phase 3).
+- SD 1.5 only. The portrait pipeline is always SD 1.5 even if the scenario's
+  main `model` is SDXL or Flux. Non-persona tasks keep using the scenario's
+  main model.
+- No automatic face crop. Pass a head-and-shoulders photo per persona.
+- No persona-level LoRAs in Phase 1. Stack a likeness LoRA at scenario level
+  (each task uses only one persona anyway).
+- `negative` on a persona is **prepended** to the task / scenario negative,
+  not replaced — so persona-specific negatives ("no glasses, no beard") stay
+  attached to the identity while scene-level cues still apply.
 
 ### Output layout
 

@@ -5,13 +5,15 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args as ClapArgs;
 use console::style;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
 use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
 use crate::pipelines::flux;
+use crate::pipelines::ip_adapter::IdentityKind;
 use crate::pipelines::lora::LoraSpec;
+use crate::pipelines::portrait;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::stylize;
 use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline, Variant};
@@ -84,8 +86,38 @@ struct ScenarioFile {
     scene: Vec<NamedPrompt>,
     #[serde(default)]
     weather: Vec<NamedPrompt>,
+    /// Named identities tasks can pull in via their own `personas: [name]`
+    /// list. Each persona is a reference photo + per-persona portrait
+    /// parameters; the task supplies scene/weather/prompt/size/sampler.
+    #[serde(default)]
+    personas: Vec<PersonaDef>,
     #[serde(default)]
     tasks: Vec<TaskDef>,
+}
+
+/// Top-level `personas: [ {...}, ... ]` entry. Identity-defining settings only
+/// — task-side concerns (scene, prompt, size) live on `TaskDef`.
+#[derive(Debug, Deserialize)]
+struct PersonaDef {
+    /// Referenced by `task.personas: [<name>]`. Must be unique within the file.
+    name: String,
+    /// Reference photo path. Resolved relative to the process's working
+    /// directory (same convention as `task.style`). Head-and-shoulders crops
+    /// work best — Phase 1 has no automatic face detection.
+    photo: PathBuf,
+    /// Which identity strategy. Defaults to `plus-face`. Phase 2 will add
+    /// `faceid` / `instantid`.
+    #[serde(default)]
+    identity: Option<String>,
+    /// IP-Adapter scale on the image tokens (0..). Defaults to 0.8.
+    #[serde(rename = "face-strength", default)]
+    face_strength: Option<f32>,
+    /// Optional persona-specific negative prompt (e.g. "no glasses, no beard").
+    /// Prepended to the task's effective negative when this persona is
+    /// imposed — kept with the persona because it describes the *who*, not
+    /// the scene.
+    #[serde(default)]
+    negative: Option<String>,
 }
 
 /// Top-level `upscale: { ... }` section.
@@ -172,6 +204,13 @@ struct TaskDef {
     refine_strength: Option<f32>,
     #[serde(rename = "refiner-frac", default)]
     refiner_frac: Option<f32>,
+
+    /// Names of personas (from the top-level `personas` list) to impose into
+    /// this task's output. Phase 1: exactly 0 or 1 — `>1` errors with a
+    /// roadmap message. When set, the task uses the SD 1.5 portrait pipeline
+    /// instead of the scenario's main t2i/flux pipeline.
+    #[serde(default)]
+    personas: Option<Vec<String>>,
 }
 
 pub async fn run(args: ScenarioArgs) -> Result<()> {
@@ -200,6 +239,66 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
         if !weathers.contains_key(t.weather.as_str()) {
             bail!("task {:?} references unknown weather {:?}", t.name, t.weather);
+        }
+    }
+
+    // -------- personas: validate + index by name --------
+    // Build a name → PersonaDef map and pre-flight every field that could
+    // fail later (identity-kind parse, photo existence) so the scenario
+    // fails before the model load.
+    let personas_map: BTreeMap<&str, &PersonaDef> = {
+        let mut map: BTreeMap<&str, &PersonaDef> = BTreeMap::new();
+        for p in &s.personas {
+            if map.contains_key(p.name.as_str()) {
+                bail!("duplicate persona name {:?}", p.name);
+            }
+            if !p.photo.exists() {
+                bail!(
+                    "persona {:?}: photo not found at {}",
+                    p.name,
+                    p.photo.display()
+                );
+            }
+            if let Some(id) = p.identity.as_deref() {
+                // Parse just to validate; the parsed value is recomputed at
+                // dispatch time so the persona record stays as written.
+                let _: IdentityKind = id
+                    .parse()
+                    .with_context(|| format!("persona {:?} identity", p.name))?;
+            }
+            map.insert(p.name.as_str(), p);
+        }
+        map
+    };
+
+    // Validate task → persona references and enforce Phase 1's "at most 1
+    // persona per task" rule.
+    for t in &s.tasks {
+        if let Some(refs) = &t.personas {
+            for name in refs {
+                if !personas_map.contains_key(name.as_str()) {
+                    let known: Vec<&str> = personas_map.keys().copied().collect();
+                    bail!(
+                        "task {:?} references unknown persona {:?} (defined: [{}])",
+                        t.name,
+                        name,
+                        known.join(", ")
+                    );
+                }
+            }
+            if refs.len() > 1 {
+                bail!(
+                    "task {:?} requests {} personas ({}). \
+                     Phase 1 supports exactly 1 persona per task. \
+                     Multi-persona compositing is on the Phase 2 roadmap \
+                     (region-masked inpainting). Workaround: split into \
+                     {} single-persona tasks.",
+                    t.name,
+                    refs.len(),
+                    refs.join(", "),
+                    refs.len(),
+                );
+            }
         }
     }
 
@@ -278,6 +377,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             shown, s.upscale.method
         );
     }
+    if !s.personas.is_empty() {
+        let names: Vec<&str> = s.personas.iter().map(|p| p.name.as_str()).collect();
+        let persona_tasks = s
+            .tasks
+            .iter()
+            .filter(|t| t.personas.as_deref().map(|p| !p.is_empty()).unwrap_or(false))
+            .count();
+        println!(
+            "  personas:  {} defined [{}], used by {} task(s) — portrait pipeline (SD 1.5)",
+            s.personas.len(),
+            names.join(", "),
+            persona_tasks,
+        );
+    }
 
     if !args.dry_run {
         std::fs::create_dir_all(&out_root)?;
@@ -319,6 +432,29 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             stylize::Pipeline::load(stylize::LoadRequest {
                 model: "sd15".to_string(),
                 device: device.clone(),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    // -------- preload the portrait pipeline if any task uses `personas` ----
+    let any_persona = s
+        .tasks
+        .iter()
+        .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
+    let portrait_pipeline: Option<portrait::Pipeline> = if !args.dry_run && any_persona {
+        // Always SD 1.5 for portrait (matches stylize's policy): Phase 1
+        // portrait targets the SD 1.5 cross-attn dim. Scenario LoRAs still
+        // apply — they're merged into the portrait UNet + text encoder.
+        Some(
+            portrait::Pipeline::load(portrait::LoadRequest {
+                model: "sd15".to_string(),
+                device: device.clone(),
+                loras: loras.clone(),
+                lora_scale,
+                identity: Some(IdentityKind::PlusFace),
             })
             .await?,
         )
@@ -412,6 +548,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     describe_overrides(task)
                 ));
             }
+            if let Some(refs) = &task.personas {
+                if let Some(name) = refs.first() {
+                    let p = personas_map[name.as_str()];
+                    let exists = if p.photo.exists() { "ok" } else { "MISSING" };
+                    let strength = p.face_strength.unwrap_or(0.8);
+                    crate::ui::progress::println(&format!(
+                        "  {} would impose persona {:?} via portrait pipeline \
+                         (photo {}, strength {:.2}, {})",
+                        style("(dry-run)").dim(),
+                        name,
+                        p.photo.display(),
+                        strength,
+                        exists,
+                    ));
+                }
+            }
             if let Some(style_ref) = &task.style {
                 let strength = task.style_strength.unwrap_or(0.6);
                 let exists = if style_ref.exists() { "ok" } else { "MISSING" };
@@ -476,48 +628,122 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let task_seed = task.seed.unwrap_or(seed + seed_offset);
 
         let task_out = out_root.join(safe_name(&task.name));
-        let gen_req = GenRequest {
-            prompt: final_prompt,
-            negative: eff_negative,
-            width: eff_w,
-            height: eff_h,
-            count: eff_count,
-            steps: eff_steps,
-            guidance: eff_guidance,
-            seed: Some(task_seed),
-            out_dir: task_out,
-            scheduler: eff_scheduler,
-            refine: eff_refine,
-            refine_strength: eff_refine_strength,
-            refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
+
+        // Phase-1 invariant: validation rejected `>1`, so at most one
+        // persona reference reaches this point.
+        let active_persona: Option<&PersonaDef> = task
+            .personas
+            .as_deref()
+            .unwrap_or(&[])
+            .first()
+            .and_then(|n| personas_map.get(n.as_str()).copied());
+
+        // Filename prefix used by downstream style / upscale passes to
+        // locate the right input. Must match what the active generator
+        // pipeline actually writes.
+        let prefix = if active_persona.is_some() {
+            "plakat-portrait"
+        } else if variant.is_flux() {
+            "plakat-flux"
+        } else {
+            "plakat"
         };
-        match (&pipeline, flux_pipeline.as_mut()) {
-            // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-            (Some(p), _) => p.generate(&gen_req)?,
-            // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
-            (_, Some(fp)) => {
-                // Pass `steps` / `guidance` through to Flux only if they
-                // diverge from plakat's generic defaults (28 / 7.5) so
-                // Flux's variant-specific defaults stay in play otherwise.
-                let flux_steps = if eff_steps == 28 { None } else { Some(eff_steps) };
-                let flux_guidance = if (eff_guidance - 7.5).abs() < f64::EPSILON {
-                    None
-                } else {
-                    Some(eff_guidance)
-                };
-                fp.generate(&flux::GenRequest {
-                    prompt: gen_req.prompt.clone(),
-                    width: gen_req.width,
-                    height: gen_req.height,
-                    count: gen_req.count,
-                    steps: flux_steps,
-                    guidance: flux_guidance,
-                    seed: gen_req.seed,
-                    out_dir: gen_req.out_dir.clone(),
-                })?;
+
+        if let Some(persona) = active_persona {
+            // -------- portrait dispatch --------
+            let pp = portrait_pipeline
+                .as_ref()
+                .expect("portrait pipeline preloaded when any task uses personas");
+            // Persona-negative is prepended to the task negative so the
+            // persona description ("no glasses, no beard") leads, and any
+            // task-or-scenario negative supplements rather than overrides.
+            let combined_negative = match persona.negative.as_deref() {
+                Some(p_neg) if !p_neg.trim().is_empty() => {
+                    if eff_negative.trim().is_empty() {
+                        p_neg.to_string()
+                    } else {
+                        format!("{p_neg}, {eff_negative}")
+                    }
+                }
+                _ => eff_negative.clone(),
+            };
+            let face_strength = persona.face_strength.unwrap_or(0.8);
+            // Always parse identity again so a future Phase-2 strategy mix
+            // (different personas, different strategies) needs nothing here.
+            let _id_kind: IdentityKind = persona
+                .identity
+                .as_deref()
+                .unwrap_or("plus-face")
+                .parse()
+                .expect("validated at scenario load");
+            crate::ui::progress::println(&format!(
+                "  {} persona {} (photo {}, face-strength {:.2})",
+                style("portrait").magenta().bold(),
+                style(&persona.name).bold(),
+                persona.photo.display(),
+                face_strength,
+            ));
+            pp.generate(&portrait::GenRequest {
+                prompt: final_prompt.clone(),
+                negative: combined_negative,
+                photo: Some(persona.photo.clone()),
+                width: eff_w,
+                height: eff_h,
+                count: eff_count,
+                steps: eff_steps,
+                guidance: eff_guidance,
+                seed: Some(task_seed),
+                out_dir: task_out.clone(),
+                scheduler: eff_scheduler,
+                refine: eff_refine,
+                refine_strength: eff_refine_strength,
+                face_strength,
+            })?;
+        } else {
+            // -------- regular t2i / flux dispatch (unchanged behaviour) --------
+            let gen_req = GenRequest {
+                prompt: final_prompt.clone(),
+                negative: eff_negative.clone(),
+                width: eff_w,
+                height: eff_h,
+                count: eff_count,
+                steps: eff_steps,
+                guidance: eff_guidance,
+                seed: Some(task_seed),
+                out_dir: task_out.clone(),
+                scheduler: eff_scheduler,
+                refine: eff_refine,
+                refine_strength: eff_refine_strength,
+                refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
+            };
+            match (&pipeline, flux_pipeline.as_mut()) {
+                // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
+                (Some(p), _) => p.generate(&gen_req)?,
+                // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
+                (_, Some(fp)) => {
+                    // Pass `steps` / `guidance` through to Flux only if they
+                    // diverge from plakat's generic defaults (28 / 7.5) so
+                    // Flux's variant-specific defaults stay in play otherwise.
+                    let flux_steps = if eff_steps == 28 { None } else { Some(eff_steps) };
+                    let flux_guidance = if (eff_guidance - 7.5).abs() < f64::EPSILON {
+                        None
+                    } else {
+                        Some(eff_guidance)
+                    };
+                    fp.generate(&flux::GenRequest {
+                        prompt: gen_req.prompt.clone(),
+                        width: gen_req.width,
+                        height: gen_req.height,
+                        count: gen_req.count,
+                        steps: flux_steps,
+                        guidance: flux_guidance,
+                        seed: gen_req.seed,
+                        out_dir: gen_req.out_dir.clone(),
+                    })?;
+                }
+                // Dry-run path doesn't reach here.
+                (None, None) => unreachable!("non-dry-run task without a pipeline"),
             }
-            // Dry-run path doesn't reach here.
-            (None, None) => unreachable!("non-dry-run task without a pipeline"),
         }
 
         // Optional post-generate style pass.
@@ -534,10 +760,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     sp,
                     style_ref,
                     task.style_strength.unwrap_or(0.6),
-                    &gen_req.out_dir,
+                    &task_out,
                     task_seed,
                     eff_count,
-                    Variant::detect(&model).is_flux(),
+                    prefix,
                 );
             }
         }
@@ -548,10 +774,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // file isn't on disk (e.g. stylize failed).
         if s.upscale.upscale {
             run_upscale_pass(
-                &gen_req.out_dir,
+                &task_out,
                 task_seed,
                 eff_count,
-                Variant::detect(&model).is_flux(),
+                prefix,
                 style_attempted,
                 s.upscale.scale,
                 upscale_method,
@@ -627,9 +853,8 @@ fn run_style_pass(
     out_dir: &std::path::Path,
     seed_start: u64,
     count: u32,
-    is_flux: bool,
+    prefix: &str,
 ) {
-    let prefix = if is_flux { "plakat-flux" } else { "plakat" };
     for i in 0..count {
         let seed = (seed_start + i as u64) & (u32::MAX as u64);
         let in_path = out_dir.join(format!("{prefix}-{seed}.png"));
@@ -680,14 +905,13 @@ async fn run_upscale_pass(
     out_dir: &std::path::Path,
     seed_start: u64,
     count: u32,
-    is_flux: bool,
+    prefix: &str,
     style_attempted: bool,
     scale: f32,
     method: UpscaleMethod,
     device: &candle_core::Device,
     esrgan: Option<&EsrganPipeline>,
 ) {
-    let prefix = if is_flux { "plakat-flux" } else { "plakat" };
     for i in 0..count {
         let seed = (seed_start + i as u64) & (u32::MAX as u64);
         let styled = out_dir.join(format!("{prefix}-{seed}-styled.png"));
