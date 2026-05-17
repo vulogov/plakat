@@ -1,7 +1,7 @@
-//! `plakat doctor` — Phase 4 health check.
+//! `plakat doctor` — identity-pipeline health check.
 //!
 //! Inspects the user's environment and prints a verdict for each
-//! configurable surface that Phase 4 exposes:
+//! configurable surface the identity pipelines depend on:
 //!
 //! * **ArcFace** weights — local file (`PLAKAT_ARCFACE_WEIGHTS`) or HF
 //!   spec (`PLAKAT_ARCFACE_HF`). Verifies the local file exists; for
@@ -154,10 +154,10 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
                     p.display()
                 ));
                 note(
-                    "Weight-loading verification is the user-iteration step \
-                     in Phase 4c.4 — the architecture is a best-guess from \
-                     the InsightFace reference. If load errors at a layer, \
-                     paste the error.",
+                    "The SCRFD architecture port is a best-guess from the \
+                     InsightFace reference; weight-loading is verified by \
+                     actually running an identity job. If load errors at \
+                     a layer, paste the error.",
                 );
             } else {
                 err(&format!(
@@ -179,10 +179,10 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
                         note("Pass --verify to actually download and confirm the file resolves.");
                     }
                     note(
-                        "Weight-loading verification is the user-iteration step \
-                         in Phase 4c.4 — the architecture is a best-guess from \
-                         the InsightFace reference. If load errors at a layer, \
-                         paste the error.",
+                        "The SCRFD architecture port is a best-guess from the \
+                         InsightFace reference; weight-loading is verified by \
+                         actually running an identity job. If load errors at \
+                         a layer, paste the error.",
                     );
                 }
                 Err(e) => err(&format!("PLAKAT_SCRFD_HF invalid: {e}")),

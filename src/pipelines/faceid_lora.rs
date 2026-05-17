@@ -1,28 +1,23 @@
 #![allow(dead_code)]
 
-//! FaceID UNet LoRA conversion — historical; **currently unused**.
+//! FaceID UNet LoRA conversion — currently unused for the standard
+//! `_sd15` / `_sdxl` variants.
 //!
-//! Originally shipped in Phase 4c.2a/b on the assumption that h94 packs
-//! the UNet LoRA inline in `ip-adapter-faceid_*.bin` (alongside
-//! `image_proj.*`). That assumption was wrong for the standard `_sd15`
-//! and `_sdxl` variants — h94 ships the LoRA as a *separate* kohya-
-//! format safetensors (`ip-adapter-faceid_sd15_lora.safetensors` etc.)
-//! which our existing LoRA merger consumes directly with no conversion.
+//! h94 ships the UNet LoRA for the standard FaceID variants as a
+//! *separate* kohya-format safetensors (`ip-adapter-faceid_sd15_lora.safetensors`
+//! etc.) which our existing LoRA merger consumes directly with no
+//! conversion. The converter below stays around because some FaceID
+//! variants (`*_plus_*`, `*_portrait_*`, …) may bundle the LoRA
+//! inline in `ip-adapter-faceid_*.bin` alongside `image_proj.*`. If we
+//! ever wire those, this module is the conversion entry-point.
 //!
-//! The converter below stays around because some FaceID *variants*
-//! (`*_plus_*`, `*_portrait_*`, …) may actually bundle the LoRA inline
-//! the way Phase 4c.2 anticipated. If we ever wire those, this module
-//! is the conversion entry-point.
+//! ## Inline-bundled `.bin` layout (when applicable)
 //!
-//! ## Original assumption (preserved for context)
-//!
-//! `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15.bin` ships two things:
+//! Such a `.bin` would ship two things:
 //!
 //!   1. `image_proj.*` — the small MLP that maps the 512-d ArcFace
-//!      embedding to 4 cross-attention tokens. Consumed by `FaceIdEncoder`
-//!      since Phase 4b.
-//!   2. `ip_adapter.<idx>.*` — a UNet cross-attention LoRA (Phases 4a/4b
-//!      skipped this; this module is where it lands).
+//!      embedding to 4 cross-attention tokens. Consumed by `FaceIdEncoder`.
+//!   2. `ip_adapter.<idx>.*` — a UNet cross-attention LoRA.
 //!
 //! h94 stores the LoRA in a non-standard layout: `ip_adapter.<idx>` for
 //! `idx ∈ [0, 16)` indexes diffusers' `unet.attn_processors.values()`
@@ -41,8 +36,8 @@
 //!
 //! * **No SDXL FaceID LoRA conversion.** SDXL UNet has ~70 cross-attn
 //!   layers (more transformer blocks per attention), in a different
-//!   order. A separate path table + conversion entry-point is needed.
-//!   Phase 4c.2 follow-up.
+//!   order. A separate path table + conversion entry-point is needed
+//!   if an inline-bundled SDXL variant ever needs to be supported.
 //! * **No verification of the diffusers iteration order against h94's
 //!   training**. The order below is taken from diffusers' source for
 //!   `UNet2DConditionModel.attn_processors`. If h94 used a different

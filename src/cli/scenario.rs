@@ -113,11 +113,12 @@ struct PersonaDef {
     face_strength: Option<f32>,
     /// Optional face bbox in the photo, `[x0, y0, x1, y1]` normalised to
     /// `[0, 1]` with origin top-left. Used by FaceID strategies to crop
-    /// the photo to the face region before ArcFace embedding (Phase 4c.1);
-    /// CLIP-H strategies ignore it. Phase 4c.4 will auto-fill via SCRFD.
+    /// the photo to the face region before ArcFace embedding; CLIP-H
+    /// strategies ignore it. Optional SCRFD auto-detection (PLAKAT_SCRFD_*)
+    /// can fill this in from any photo.
     #[serde(rename = "face-bbox", default)]
     face_bbox: Option<[f32; 4]>,
-    /// Optional 5-point landmarks in the photo (Phase 4c.3). When set,
+    /// Optional 5-point landmarks in the photo. When set,
     /// FaceID strategies perform a similarity-transform alignment to
     /// ArcFace's canonical 112×112 template — the proper alignment.
     /// Takes precedence over `face-bbox` when both are set.
@@ -223,10 +224,10 @@ struct TaskDef {
     /// Personas (from the top-level `personas` list) to impose into this
     /// task's output. Two accepted forms:
     ///
-    /// Phase 1 (single persona, whole image):
+    /// Single persona, whole image:
     ///     personas: [ alice ]
     ///
-    /// Phase 2 (multi-persona, region-masked inpainting):
+    /// Multi-persona, region-masked compositing:
     ///     personas: [
     ///         { name: alice, bbox: [0.0, 0.1, 0.45, 0.9] }
     ///         { name: bob,   bbox: [0.55, 0.1, 1.0, 0.9] }
@@ -873,7 +874,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
 
         match &task_persona_mode {
-            // -------- Phase 1: single-persona whole-image --------
+            // -------- single persona, whole image --------
             TaskPersonas::Single(persona) => {
                 let pp = portrait_pipeline
                     .as_ref()
@@ -906,7 +907,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 })?;
             }
 
-            // -------- Phase 2: multi-persona region-masked compositing --------
+            // -------- multi-persona, region-masked compositing --------
             TaskPersonas::Multi(passes) => {
                 let pp = portrait_pipeline
                     .as_ref()
