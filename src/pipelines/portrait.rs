@@ -203,8 +203,8 @@ impl Pipeline {
                 bail!(
                     "identity strategy {:?} targets cross_attn_dim {} but \
                      model {:?} ({:?}) expects {}. Pick an identity that \
-                     matches the model: SD 1.5 → `plus-face`, SDXL → \
-                     `plus-face-sdxl`.",
+                     matches the model: SD 1.5 → `plus-face` or `faceid`, \
+                     SDXL → `plus-face-sdxl`.",
                     kind,
                     kind.cross_attn_dim(),
                     base_repo,

@@ -135,6 +135,39 @@ impl ImageProj {
         })
     }
 
+    /// Load from a PyTorch `.bin` state dict, rooted at a sub-key. Used by
+    /// FaceID — `h94/IP-Adapter/models/ip-adapter-faceid_sd15.bin` packs
+    /// `image_proj.*` (this) plus `ip_adapter.*` (a UNet cross-attention
+    /// LoRA we don't yet consume) into one file.
+    ///
+    /// `from_pth_with_state` roots the `VarBuilder` at
+    /// `state_dict[state_key]`, so the inner keys read as `proj.weight`,
+    /// `norm.weight` etc. (no `image_proj.` prefix).
+    pub fn load_from_pth_subtree(
+        weights: &Path,
+        state_key: &str,
+        clip_embed_dim: usize,
+        cross_attn_dim: usize,
+        num_tokens: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let vb =
+            VarBuilder::from_pth_with_state(weights, dtype, state_key, device)?;
+        let proj = candle_nn::linear(
+            clip_embed_dim,
+            num_tokens * cross_attn_dim,
+            vb.pp("proj"),
+        )?;
+        let norm = candle_nn::layer_norm(cross_attn_dim, 1e-5, vb.pp("norm"))?;
+        Ok(Self {
+            proj,
+            norm,
+            num_tokens,
+            cross_attn_dim,
+        })
+    }
+
     /// (B, clip_embed_dim) → (B, num_tokens, cross_attn_dim)
     pub fn forward(&self, image_embeds: &Tensor) -> Result<Tensor> {
         let b = image_embeds.dim(0)?;
@@ -501,10 +534,33 @@ pub enum IdentityKind {
     /// Weights: `sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors`
     /// + the same `models/image_encoder/model.safetensors` (CLIP-H).
     PlusFaceSdxl,
+    /// IP-Adapter-FaceID on SD 1.5 (Phase 4).
+    ///
+    /// Identity is encoded by InsightFace's ArcFace (IR-ResNet50) — a
+    /// face-recognition embedding trained specifically to be identity-
+    /// discriminative. Markedly better identity preservation than the
+    /// general-purpose CLIP-H features Plus-Face uses, when the input
+    /// photo is well-aligned.
+    ///
+    /// Weights:
+    ///   * ArcFace IR-ResNet50 safetensors — **Phase 4b: user-supplied**
+    ///     via `PLAKAT_ARCFACE_WEIGHTS` env var. Phase 4c adds an HF
+    ///     auto-download once we identify a canonical host.
+    ///   * `models/ip-adapter-faceid_sd15.bin` from h94/IP-Adapter — the
+    ///     `image_proj.*` subtree is consumed; the bundled UNet LoRA in
+    ///     `ip_adapter.*` is Phase 4c polish.
+    ///
+    /// Phase 4b limitation: face alignment is approximated by centre-crop
+    /// of the input photo (see `face_models::prepare_face_tensor`). Works
+    /// well for tight head-and-shoulders photos; degrades on photos with
+    /// off-centre / tilted / partial faces. Phase 4c replaces the centre-
+    /// crop with SCRFD detection + 5-landmark similarity-transform
+    /// alignment for full reference-quality embeddings.
+    FaceId,
     // Future identity strategies, NOT YET IMPLEMENTED:
-    //   FaceId    — InsightFace ArcFace ID embedding + ip-adapter-faceid_*
-    //   InstantId — ID + landmarks via a ControlNet-style branch
-    // When landing them, add a variant here and a `Self::FaceId => ...`
+    //   FaceIdSdxl — same as FaceId but targeting SDXL's 2048-d cross-attn
+    //   InstantId  — ID + landmarks via a ControlNet-style branch
+    // When landing them, add a variant here and a `Self::FaceIdSdxl => ...`
     // arm to `load_encoder`. No portrait::Pipeline edits required.
 }
 
@@ -515,6 +571,7 @@ impl IdentityKind {
         match self {
             Self::PlusFace => 768,
             Self::PlusFaceSdxl => 2048,
+            Self::FaceId => 768,
         }
     }
 
@@ -523,6 +580,7 @@ impl IdentityKind {
         match self {
             Self::PlusFace => "IP-Adapter-Plus-Face (SD 1.5)",
             Self::PlusFaceSdxl => "IP-Adapter-Plus-Face (SDXL, vit-h)",
+            Self::FaceId => "IP-Adapter-FaceID (SD 1.5, ArcFace)",
         }
     }
 
@@ -532,6 +590,7 @@ impl IdentityKind {
         match self {
             Self::PlusFace => "sd15",
             Self::PlusFaceSdxl => "sdxl",
+            Self::FaceId => "sd15",
         }
     }
 
@@ -590,6 +649,54 @@ impl IdentityKind {
                 )?;
                 Box::new(enc)
             }
+            Self::FaceId => {
+                // ArcFace weights: user-supplied via env var for Phase 4b.
+                // Phase 4c will add HF Hub auto-download once a stable
+                // canonical host for IR-ResNet50 safetensors is known.
+                let arcface_env = std::env::var("PLAKAT_ARCFACE_WEIGHTS")
+                    .map_err(|_| anyhow!(
+                        "FaceID requires ArcFace IR-ResNet50 weights.\n\
+                         \n\
+                         Phase 4b is bring-your-own-weights for ArcFace; set the\n\
+                         PLAKAT_ARCFACE_WEIGHTS environment variable to a\n\
+                         safetensors file matching InsightFace's iresnet50.\n\
+                         \n\
+                         Quick setup:\n\
+                         \n  1. Download `antelopev2.zip` from InsightFace:\n\
+                         \n     https://github.com/deepinsight/insightface/releases/tag/v0.7\n\
+                         \n  2. Extract `w600k_r50.onnx` from the bundle.\n\
+                         \n  3. Convert to safetensors (one-time):\n\
+                         \n     python -c \"import onnx, torch; \\\n\
+                                from onnx2torch import convert; \\\n\
+                                from safetensors.torch import save_file; \\\n\
+                                m = convert(onnx.load('w600k_r50.onnx')); \\\n\
+                                save_file(m.state_dict(), 'arcface_r50.safetensors')\"\n\
+                         \n  4. export PLAKAT_ARCFACE_WEIGHTS=/path/to/arcface_r50.safetensors\n\
+                         \n\
+                         Phase 4c will obsolete steps 1–4 by auto-downloading.\n\
+                         Phase 4c also adds SCRFD face detection so the\n\
+                         photo doesn't need to be a tight head-and-shoulders crop."
+                    ))?;
+                let arcface_path = std::path::PathBuf::from(&arcface_env);
+                if !arcface_path.exists() {
+                    bail!(
+                        "PLAKAT_ARCFACE_WEIGHTS points to {} which doesn't exist.",
+                        arcface_path.display()
+                    );
+                }
+                let faceid_weights = crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/ip-adapter-faceid_sd15.bin",
+                )
+                .await?;
+                let enc = crate::pipelines::face_models::FaceIdEncoder::load_faceid_sd15(
+                    &arcface_path,
+                    &faceid_weights,
+                    device,
+                    dtype,
+                )?;
+                Box::new(enc)
+            }
         };
         dl.finish_with_message(format!("✓ identity ready — {}", self.label()));
         Ok(encoder)
@@ -607,9 +714,11 @@ impl std::str::FromStr for IdentityKind {
             | "plus-face-xl"
             | "plusface-xl"
             | "sdxl-plus-face" => Self::PlusFaceSdxl,
+            "faceid" | "face-id" | "face_id" => Self::FaceId,
             other => bail!(
-                "unknown identity kind {other:?} (try: plus-face, plus-face-sdxl). \
-                 FaceID / InstantID are roadmap — not yet implemented."
+                "unknown identity kind {other:?} \
+                 (try: plus-face, plus-face-sdxl, faceid). \
+                 InstantID is roadmap — not yet implemented."
             ),
         })
     }

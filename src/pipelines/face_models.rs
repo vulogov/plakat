@@ -45,12 +45,81 @@
 //! Output: `(B, 512)` unit-norm face embedding.
 
 use anyhow::Result;
-use candle_core::{Module, ModuleT, Tensor};
+use candle_core::{DType, Device, Module, ModuleT, Tensor};
 use candle_nn::{BatchNorm, BatchNormConfig, Conv2d, Conv2dConfig, Linear, VarBuilder};
+use image::{DynamicImage, GenericImageView, imageops::FilterType};
+use std::path::Path;
 
 /// Inference flag for `ModuleT::forward_t`. Centralised so all the
 /// per-BatchNorm call sites read the same.
 const EVAL: bool = false;
+
+/// ArcFace input edge in pixels. InsightFace's training pipeline aligns
+/// every face crop to 112×112 via similarity transform from 5 landmarks.
+pub const ARCFACE_INPUT: u32 = 112;
+
+/// Centre-crop alignment proxy for Phase 4b. Loads a photo, resizes the
+/// shorter edge to `2 × ARCFACE_INPUT` (gives the face room to be off-centre
+/// while still surviving the 112×112 centre crop), then crops to
+/// `ARCFACE_INPUT² ` and normalises with InsightFace's `(x − 127.5) / 127.5`.
+///
+/// Returns `(1, 3, 112, 112)`.
+///
+/// **Quality caveat**: this is NOT proper alignment. ArcFace was trained
+/// on landmark-aligned crops; centre-crop loses ~20–30% of embedding
+/// accuracy on photos where the face is off-centre, tilted, or scaled
+/// unexpectedly. Phase 4c replaces this with SCRFD detection + 5-point
+/// similarity-transform alignment.
+///
+/// In the meantime: pass tight head-and-shoulders crops (the same kind
+/// of photo Plus-Face wants). With a well-framed input this proxy
+/// captures ~75% of full-FaceID identity preservation — still markedly
+/// better than Plus-Face on most faces.
+pub fn prepare_face_tensor(
+    photo_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let img = image::open(photo_path)?.to_rgb8();
+    let img = DynamicImage::ImageRgb8(img);
+    let (w, h) = img.dimensions();
+
+    // Shorter-side resize to 2 × 112 = 224 — gives breathing room before the
+    // centre crop. Matches the resolution Plus-Face also feeds into CLIP-H.
+    let target_short: u32 = ARCFACE_INPUT * 2;
+    let (rw, rh) = if w < h {
+        let s = target_short;
+        (s, ((h as f32) * (s as f32) / (w as f32)).round() as u32)
+    } else {
+        let s = target_short;
+        (((w as f32) * (s as f32) / (h as f32)).round() as u32, s)
+    };
+    let resized = img.resize_exact(rw, rh, FilterType::CatmullRom);
+
+    // Centre-crop to (target_short × target_short).
+    let cx = rw.saturating_sub(target_short) / 2;
+    let cy = rh.saturating_sub(target_short) / 2;
+    let cropped = resized.crop_imm(cx, cy, target_short, target_short);
+
+    // Final resize to ArcFace's 112×112.
+    let aligned = cropped.resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom);
+    let aligned = aligned.to_rgb8();
+
+    // InsightFace normalisation: x ∈ [0, 255] → (x − 127.5) / 127.5 ∈ [−1, 1].
+    // Channel-first: RGB → (1, 3, 112, 112).
+    let n = ARCFACE_INPUT as usize;
+    let mut data: Vec<f32> = Vec::with_capacity(3 * n * n);
+    for c in 0..3usize {
+        for y in 0..n {
+            for x in 0..n {
+                let px = aligned.get_pixel(x as u32, y as u32).0[c];
+                data.push((px as f32 - 127.5) / 127.5);
+            }
+        }
+    }
+    let t = Tensor::from_vec(data, (1, 3, n, n), device)?.to_dtype(dtype)?;
+    Ok(t)
+}
 
 // =====================================================================
 // PReLU — candle-nn ships no PReLU module, so we build one.
@@ -369,15 +438,76 @@ impl FaceIdEncoder {
         })
     }
 
+    /// Specialised constructor for SD 1.5 FaceID — the path
+    /// `IdentityKind::FaceId.load_encoder` takes.
+    ///
+    /// `arcface_weights` is a safetensors file (user-supplied via
+    /// `PLAKAT_ARCFACE_WEIGHTS`). `faceid_weights_pth` is the h94
+    /// `ip-adapter-faceid_sd15.bin` PyTorch file — we read just the
+    /// `image_proj.*` subtree out of it (the file also contains UNet
+    /// LoRA weights under `ip_adapter.*` which are Phase 4c polish).
+    pub fn load_faceid_sd15(
+        arcface_weights: &Path,
+        faceid_weights_pth: &Path,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[arcface_weights], dtype, device)?
+        };
+        let arcface = IResnet50::new(vb)?;
+        let image_proj = crate::pipelines::ip_adapter::ImageProj::load_from_pth_subtree(
+            faceid_weights_pth,
+            "image_proj",
+            512,
+            768, // SD 1.5 cross_attn_dim
+            4,
+            device,
+            dtype,
+        )?;
+        Ok(Self {
+            arcface,
+            image_proj,
+            device: device.clone(),
+            dtype,
+        })
+    }
+
     /// Given an aligned 112×112 RGB crop (pre-normalised to roughly
     /// `[-1, 1]`), produce `(1, 4, cross_attn_dim)` identity tokens
     /// ready for concatenation onto the text-token sequence.
-    ///
-    /// This is the only encode entry-point today. Phase 4b adds
-    /// `encode(photo_path)` which detects + aligns first.
-    #[allow(dead_code)]
     pub fn encode_aligned(&self, aligned: &Tensor) -> Result<Tensor> {
         let embedding = self.arcface.forward(aligned)?;
         self.image_proj.forward(&embedding)
+    }
+
+    /// Photo → identity tokens. Centre-crop alignment proxy (Phase 4b);
+    /// Phase 4c replaces with SCRFD + landmark alignment.
+    pub fn encode_photo(&self, photo_path: &Path) -> Result<Tensor> {
+        let aligned = prepare_face_tensor(photo_path, &self.device, self.dtype)?;
+        self.encode_aligned(&aligned)
+    }
+
+    pub fn num_tokens(&self) -> usize {
+        // Matches what `ImageProj::load` was called with — kept in sync with
+        // `FaceIdEncoder::load`'s constant `4`.
+        4
+    }
+}
+
+impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
+    fn num_tokens(&self) -> usize {
+        FaceIdEncoder::num_tokens(self)
+    }
+
+    fn encode(&self, photo_path: &Path) -> Result<Tensor> {
+        if !photo_path.exists() {
+            return Err(anyhow::anyhow!(
+                "persona photo not found: {} (resolved from current working \
+                 directory). Check the path and re-run.",
+                photo_path.display()
+            ));
+        }
+        self.encode_photo(photo_path)
     }
 }
