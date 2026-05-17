@@ -12,7 +12,7 @@
 //! unused here. Quality is lower than reference IP-Adapter; visible style
 //! transfer still occurs.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{D, DType, Device, Module, Tensor};
 use candle_nn::{LayerNorm, Linear, VarBuilder};
 use candle_transformers::models::clip::text_model::Activation;
@@ -455,12 +455,20 @@ impl IdentityEncoder for PlusFaceEncoder {
     }
 
     fn encode(&self, photo_path: &Path) -> Result<Tensor> {
+        if !photo_path.exists() {
+            return Err(anyhow!(
+                "persona photo not found: {} (resolved from current working \
+                 directory). Check the path and re-run.",
+                photo_path.display()
+            ));
+        }
         let pixels = crate::imaging::preprocess::clip_image_tensor(
             photo_path,
             224,
             &self.device,
             self.dtype,
-        )?;
+        )
+        .with_context(|| format!("reading persona photo {}", photo_path.display()))?;
         // Plus uses CLIP-H's penultimate transformer hidden state, not the
         // pooled projection output. (1, 257, 1280) for CLIP-H/14 @ 224.
         let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
