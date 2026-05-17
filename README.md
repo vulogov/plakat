@@ -213,7 +213,7 @@ The schema:
             name: alice
             photo: ./refs/alice.jpg
             face-strength: 0.85               # 0..2, default 0.8
-            # identity: plus-face             # default; Phase 2: faceid / instantid
+            # identity: plus-face             # plus-face | plus-face-sdxl | faceid | faceid-sdxl
             # negative: "smiling, mustache"   # persona-specific, prepended
         }
     ]
@@ -230,8 +230,8 @@ The schema:
             # Optional per-task fields:
             # style: ./refs/watercolor.jpg     # IP-Adapter REF for this task only
             # style-strength: 0.65
-            # personas: [alice]                # Phase 1: single persona, whole image
-            # personas:                        # Phase 2: region-masked compositing
+            # personas: [alice]                # single persona, whole image
+            # personas:                        # multi-persona, region-masked compositing
             # [
             #     { name: alice, bbox: [0.05, 0.10, 0.48, 0.95] }
             #     { name: bob,   bbox: [0.52, 0.10, 0.95, 0.95] }
@@ -251,9 +251,9 @@ For every image a task generates, the steps applied (in order) are:
 1. **Generate** with the loaded SD, Flux, OR portrait pipeline:
    - No `personas` → SD / Flux per the scenario's `model` →
      `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-   - Bare-name persona (Phase 1) → SD 1.5 portrait pipeline,
+   - Single bare-name persona → SD 1.5 portrait pipeline,
      one denoise pass → `plakat-portrait-<seed>.png`.
-   - `{name, bbox}` personas (Phase 2) → SD 1.5 portrait pipeline,
+   - `{name, bbox}` personas (one or more) → SD 1.5 portrait pipeline,
      text-only base + one inpaint pass per persona, composited →
      `plakat-portrait-<seed>.png`.
 2. **Stylize** (if the task has `style:`) → `<base>-styled.png`. Uses
@@ -269,10 +269,10 @@ scenario — the failure is logged and earlier outputs persist.
 ### Personas
 
 `personas` is a top-level list of named identities. Each persona supplies
-a reference photo and Plus-Face settings; tasks pull personas in either
-**bare-name** (single persona, whole image — Phase 1) or **`{name, bbox}`**
-(multi-persona, region-masked compositing — Phase 2) form. Either form
-routes through the portrait pipeline (IP-Adapter-Plus-Face on SD 1.5):
+a reference photo and identity-strategy settings; tasks pull personas in
+either **bare-name** (single persona, whole image) or **`{name, bbox}`**
+(multi-persona, region-masked compositing) form. Either form routes
+through the portrait pipeline:
 
 ```hjson
 personas: [
@@ -281,11 +281,11 @@ personas: [
 ]
 
 tasks: [
-  # Phase 1 — single persona, whole image.
+  # Single persona, whole image.
   { name: alice_cafe, scene: cafe, weather: morning, prompt: "espresso",
     personas: [alice] }
 
-  # Phase 2 — multi-persona compositing via region masks.
+  # Multi-persona compositing via region masks.
   { name: pair_at_table, scene: bistro, weather: golden_hour,
     prompt: "two friends sharing dessert",
     personas: [
@@ -302,32 +302,40 @@ The portrait pipeline loads once at scenario start (only if at least one
 task uses personas) and is shared across all persona tasks. Multi-persona
 compositing runs one **base** denoise pass (text-only) plus one **inpaint**
 pass per persona; each pass reuses the same loaded UNet + VAE + text
-encoder. Persona-only first-run cost: ~50 MB Plus-Face + ~2.5 GB CLIP-H
-(shared with `stylize`).
+encoder.
 
-**Two identity strategies ship:**
-- `plus-face` (default) — SD 1.5 portrait pipeline. ~6.5 GB first-run.
-- `plus-face-sdxl` — SDXL portrait pipeline, same Resampler at 2048-d
-  cross-attn. ~9.5 GB first-run (CLIP-H is shared). SDXL renders portraits
-  sharper than SD 1.5 with better composition.
+**Four identity strategies ship:**
+
+| `identity` | Base | Notes |
+|---|---|---|
+| `plus-face` (default) | SD 1.5 | IP-Adapter-Plus-Face; ~6.5 GB first-run download. |
+| `plus-face-sdxl` | SDXL | SDXL portrait pipeline; ~9.5 GB first-run (CLIP-H shared with `plus-face`). |
+| `faceid` | SD 1.5 | InsightFace ArcFace + UNet LoRA. Best identity preservation. Needs user-supplied ArcFace weights. |
+| `faceid-sdxl` | SDXL | SDXL variant of `faceid`. |
 
 Pick one per scenario — every persona in a scenario must share the same
-strategy (the portrait pipeline loads one base model). Standalone CLI
-pairs `--model sdxl` with `--identity plus-face-sdxl`.
+strategy's base-model family. Standalone CLI pairs `--model sdxl` with
+`plus-face-sdxl` / `faceid-sdxl`.
+
+`faceid` / `faceid-sdxl` need either `PLAKAT_ARCFACE_WEIGHTS` (local) or
+`PLAKAT_ARCFACE_HF=repo#file` (HuggingFace). Optional SCRFD auto-detection
+via `PLAKAT_SCRFD_WEIGHTS` / `PLAKAT_SCRFD_HF` fills landmarks for proper
+ArcFace alignment without manual `--face-bbox` flags. Run `plakat doctor`
+to inspect setup; `plakat doctor --verify` to probe HF downloads.
 
 **Limits:**
 - SD 1.5 + SDXL only. Flux is not supported for portraits.
-- No automatic face crop or face detection. Curate the reference photo;
-  place bboxes by hand.
+- `plus-face*` strategies have no automatic face detection — curate the
+  reference photo, or use `--face-bbox` to mark the face manually.
 - No persona-level LoRAs. Stack a likeness LoRA at scenario level.
-- Identity quality is ~50–70% of the diffusers reference (no decoupled
-  cross-attention in candle 0.8). FaceID / InstantID (Phase 4 roadmap)
-  are the path to higher identity fidelity.
+- `plus-face*` identity quality is ~50–70% of the diffusers reference
+  (no decoupled cross-attention in candle 0.8). `faceid*` strategies
+  bypass this ceiling.
 - Multi-persona wall time scales linearly: a 2-persona task runs 3
   denoise loops, a 3-persona task runs 4, etc.
 
 Full reference (every field, every interaction, bbox-placement tips,
-form-mixing rules, failure modes, Phase 4 roadmap): [PERSONA.md](PERSONA.md).
+form-mixing rules, alignment priority, setup): [PERSONA.md](PERSONA.md).
 
 ### Output layout
 
