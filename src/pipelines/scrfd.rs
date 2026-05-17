@@ -1,26 +1,29 @@
-//! SCRFD face detector port — Phase 4c.4.
+//! SCRFD face detector port.
 //!
 //! "Sample and Computation Redistribution for Efficient Face Detection"
 //! (Guo et al. 2021, https://arxiv.org/abs/2105.04714). InsightFace's
 //! deployed face detector — produces bbox + 5-point landmarks per face.
 //!
 //! Once landmarks are available, `face_models::align_to_arcface_template`
-//! (Phase 4c.3) produces the ArcFace-canonical 112×112 crop and FaceID
-//! reaches reference-quality identity preservation **without** any
-//! user-supplied `--face-bbox` / `--face-landmarks` flag.
+//! produces the ArcFace-canonical 112×112 crop and FaceID reaches
+//! reference-quality identity preservation **without** any user-supplied
+//! `--face-bbox` / `--face-landmarks` flag.
 //!
-//! ## Phase 4c.4 status — architecture only, verification pending
+//! ## Verification status
 //!
 //! The model architecture, anchor generation, decoding, NMS, and
 //! preprocessing are all in this file. **What's not yet verified** is
 //! that the weight-key layout this port expects matches any
 //! publicly-available SCRFD safetensors. The exact channel widths /
 //! block counts for SCRFD-500MF are taken from the InsightFace
-//! reference; if h94-style converted weights use slightly different
-//! key naming (e.g. `bbone.stage1.0.conv1.weight` vs `backbone.stages.0.0.conv1.weight`),
-//! the load will fail at the first mismatched layer.
+//! reference; if converted weights use slightly different key naming
+//! (e.g. `bbone.stage1.0.conv1.weight` vs
+//! `backbone.stages.0.0.conv1.weight`), the load will fail at the
+//! first mismatched layer. `SCRFDConfig::scrfd_500mf()` exposes every
+//! channel width and block count for one-line tuning.
 //!
-//! Setup remains bring-your-own-weights for this session:
+//! Setup is bring-your-own-weights — see PERSONA.md "Optional SCRFD
+//! auto-detection":
 //!
 //! ```bash
 //! # Download the SCRFD bundle from InsightFace releases:
@@ -67,7 +70,7 @@
 //!   decode + NMS → Vec<Face>
 //! ```
 
-#![allow(dead_code)] // Phase 4c.4 — full integration into FaceIdEncoder is opt-in;
+#![allow(dead_code)] // SCRFD integration is opt-in via PLAKAT_SCRFD_*;
                      // many helpers are public for future / debugging use.
 
 use anyhow::{Context, Result, anyhow, bail};

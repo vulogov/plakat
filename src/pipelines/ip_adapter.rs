@@ -470,9 +470,9 @@ pub struct EncodeOptions {
     /// ordered: `left_eye, right_eye, nose, left_mouth, right_mouth`.
     /// **Takes precedence over `face_bbox`** — when supplied, FaceID
     /// strategies do a similarity-transform alignment to ArcFace's
-    /// canonical 112×112 template (Phase 4c.3). The right way to align;
-    /// recovers ~15–25% of identity-discrimination over crop-based
-    /// alignment. Currently used only by FaceID strategies.
+    /// canonical 112×112 template. The right way to align; recovers
+    /// ~15–25% of identity-discrimination over crop-based alignment.
+    /// Currently used only by FaceID strategies.
     pub face_landmarks: Option<[[f32; 2]; 5]>,
 }
 
@@ -559,17 +559,17 @@ impl IdentityEncoder for PlusFaceEncoder {
 /// Which identity-preservation strategy `portrait` should wire up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IdentityKind {
-    /// IP-Adapter-Plus-Face on SD 1.5 (Phase 1).
+    /// IP-Adapter-Plus-Face on SD 1.5.
     /// Weights: `models/ip-adapter-plus-face_sd15.safetensors` (Plus
     /// resampler) + `models/image_encoder/model.safetensors` (CLIP-H).
     PlusFace,
-    /// IP-Adapter-Plus-Face on SDXL via the `vit-h` variant (Phase 3).
-    /// Reuses the SD 1.5 CLIP-H image encoder. Resampler outputs at
-    /// SDXL's 2048-d cross-attention dim instead of 768.
+    /// IP-Adapter-Plus-Face on SDXL via the `vit-h` variant. Reuses
+    /// the SD 1.5 CLIP-H image encoder. Resampler outputs at SDXL's
+    /// 2048-d cross-attention dim instead of 768.
     /// Weights: `sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors`
     /// + the same `models/image_encoder/model.safetensors` (CLIP-H).
     PlusFaceSdxl,
-    /// IP-Adapter-FaceID on SD 1.5 (Phase 4).
+    /// IP-Adapter-FaceID on SD 1.5.
     ///
     /// Identity is encoded by InsightFace's ArcFace (IR-ResNet50) — a
     /// face-recognition embedding trained specifically to be identity-
@@ -578,29 +578,26 @@ pub enum IdentityKind {
     /// photo is well-aligned.
     ///
     /// Weights:
-    ///   * ArcFace IR-ResNet50 safetensors — **Phase 4b: user-supplied**
-    ///     via `PLAKAT_ARCFACE_WEIGHTS` env var. Phase 4c adds an HF
-    ///     auto-download once we identify a canonical host.
-    ///   * `ip-adapter-faceid_sd15.bin` from h94/IP-Adapter-FaceID — the
-    ///     `image_proj.*` subtree is consumed; the bundled UNet LoRA in
-    ///     `ip_adapter.*` is Phase 4c polish.
+    ///   * ArcFace IR-ResNet50 safetensors — user-supplied via
+    ///     `PLAKAT_ARCFACE_WEIGHTS` (local path) or `PLAKAT_ARCFACE_HF`
+    ///     (HuggingFace `repo#file`). See PERSONA.md "FaceID setup".
+    ///   * `ip-adapter-faceid_sd15.bin` from h94/IP-Adapter-FaceID —
+    ///     auto-downloaded; the `image_proj.*` subtree is consumed by
+    ///     the encoder, the separate `*_lora.safetensors` is merged
+    ///     into the UNet automatically.
     ///
-    /// Phase 4b limitation: face alignment is approximated by centre-crop
-    /// of the input photo (see `face_models::prepare_face_tensor`). Works
-    /// well for tight head-and-shoulders photos; degrades on photos with
-    /// off-centre / tilted / partial faces. Phase 4c replaces the centre-
-    /// crop with SCRFD detection + 5-landmark similarity-transform
-    /// alignment for full reference-quality embeddings.
+    /// Alignment fallbacks (richest first): user-supplied landmarks,
+    /// SCRFD-detected landmarks (when `PLAKAT_SCRFD_*` set), user-
+    /// supplied bbox, centre-crop. See `face_models::prepare_face_tensor`.
     FaceId,
-    /// IP-Adapter-FaceID on SDXL (Phase 4c.1). Same ArcFace IR-ResNet50
-    /// backbone as `FaceId` — re-uses `PLAKAT_ARCFACE_WEIGHTS`. The
-    /// difference is the image-proj output dim (2048 vs 768) and a
-    /// separate FaceID weight file from h94/IP-Adapter-FaceID:
+    /// IP-Adapter-FaceID on SDXL. Same ArcFace IR-ResNet50 backbone as
+    /// `FaceId` — re-uses the same ArcFace env vars. The difference is
+    /// the image-proj output dim (2048 vs 768) and a separate FaceID
+    /// weight file from h94/IP-Adapter-FaceID:
     /// `ip-adapter-faceid_sdxl.bin`.
     ///
-    /// Same Phase 4b/4c.1 limitations as `FaceId`: centre-crop or
-    /// user-supplied bbox alignment until SCRFD lands in 4c.2; UNet
-    /// LoRA component skipped (shared-cross-attention ceiling).
+    /// Same alignment options as `FaceId`. UNet LoRA component is
+    /// applied automatically.
     FaceIdSdxl,
     // Future identity strategies, NOT YET IMPLEMENTED:
     //   InstantId — ID + landmarks via a ControlNet-style branch
@@ -668,12 +665,10 @@ impl IdentityKind {
     /// A/B testing if the shared-cross-attention application of this
     /// LoRA degrades text-prompt fidelity for a specific use case.
     ///
-    /// History: Phase 4c.2a/b initially shipped a converter in
-    /// `faceid_lora.rs` assuming the LoRA was bundled inline in the
-    /// `.bin`. That assumption was wrong for the `_sd15` / `_sdxl`
-    /// variants — h94 separates `image_proj` and LoRA into two files.
-    /// The converter stays around in case other FaceID variants
-    /// (`*_plus_*`, etc.) do bundle the LoRA inline.
+    /// h94 ships the UNet LoRA as a separate kohya-format
+    /// `_lora.safetensors` next to the FaceID `.bin`; we download
+    /// it directly. A converter in `faceid_lora.rs` is retained for
+    /// FaceID variants that bundle the LoRA inline in the `.bin`.
     pub async fn aux_unet_lora(
         self,
         _device: &Device,
@@ -855,7 +850,7 @@ fn arcface_setup_message() -> &'static str {
             save_file(m.state_dict(), 'arcface_r50.safetensors')\"\n\
      \n     4. export PLAKAT_ARCFACE_WEIGHTS=/path/to/arcface_r50.safetensors\n\
      \n\
-     B. HuggingFace-hosted (`PLAKAT_ARCFACE_HF`) — Phase 4c.4b:\n\
+     B. HuggingFace-hosted (`PLAKAT_ARCFACE_HF`):\n\
      \n     Point at any HF safetensors of the IR-ResNet50 ArcFace weights:\n\
      \n        export PLAKAT_ARCFACE_HF=<user>/<repo>#<path/in/repo.safetensors>\n\
      \n     plakat downloads + caches automatically. No canonical default\n\
