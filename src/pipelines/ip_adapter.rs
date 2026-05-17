@@ -24,6 +24,11 @@ use std::path::Path;
 /// HF repo that hosts every IP-Adapter weight file plakat consumes.
 pub const IPA_REPO: &str = "h94/IP-Adapter";
 
+/// FaceID weights live in a separate h94 repo at the root path (not
+/// nested under `models/`). Splitting them out keeps the IP-Adapter
+/// repo from ballooning past LFS limits.
+pub const IPA_FACEID_REPO: &str = "h94/IP-Adapter-FaceID";
+
 /// Config for the CLIP-H/14 image encoder shipped with IP-Adapter.
 /// Mirrors `models/image_encoder/config.json` in `h94/IP-Adapter`.
 pub fn clip_h_vision_config() -> ClipVisionConfig {
@@ -136,7 +141,7 @@ impl ImageProj {
     }
 
     /// Load from a PyTorch `.bin` state dict, rooted at a sub-key. Used by
-    /// FaceID — `h94/IP-Adapter/models/ip-adapter-faceid_sd15.bin` packs
+    /// FaceID — `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15.bin` packs
     /// `image_proj.*` (this) plus `ip_adapter.*` (a UNet cross-attention
     /// LoRA we don't yet consume) into one file.
     ///
@@ -573,7 +578,7 @@ pub enum IdentityKind {
     ///   * ArcFace IR-ResNet50 safetensors — **Phase 4b: user-supplied**
     ///     via `PLAKAT_ARCFACE_WEIGHTS` env var. Phase 4c adds an HF
     ///     auto-download once we identify a canonical host.
-    ///   * `models/ip-adapter-faceid_sd15.bin` from h94/IP-Adapter — the
+    ///   * `ip-adapter-faceid_sd15.bin` from h94/IP-Adapter-FaceID — the
     ///     `image_proj.*` subtree is consumed; the bundled UNet LoRA in
     ///     `ip_adapter.*` is Phase 4c polish.
     ///
@@ -587,8 +592,8 @@ pub enum IdentityKind {
     /// IP-Adapter-FaceID on SDXL (Phase 4c.1). Same ArcFace IR-ResNet50
     /// backbone as `FaceId` — re-uses `PLAKAT_ARCFACE_WEIGHTS`. The
     /// difference is the image-proj output dim (2048 vs 768) and a
-    /// separate FaceID weight file from h94:
-    /// `models/ip-adapter-faceid_sdxl.bin`.
+    /// separate FaceID weight file from h94/IP-Adapter-FaceID:
+    /// `ip-adapter-faceid_sdxl.bin`.
     ///
     /// Same Phase 4b/4c.1 limitations as `FaceId`: centre-crop or
     /// user-supplied bbox alignment until SCRFD lands in 4c.2; UNet
@@ -646,74 +651,62 @@ impl IdentityKind {
         }
     }
 
-    /// Produce a kohya-format UNet LoRA file for this strategy, if it
-    /// ships one. Phase 4c.2a — only `FaceId` does this today; the
-    /// IP-Adapter-FaceID `.bin` packs a UNet cross-attention LoRA
-    /// alongside the image_proj, which we convert to kohya format here
-    /// so the existing `merge_loras_into_weights` path consumes it
-    /// without any merger changes.
+    /// Resolve this strategy's auxiliary UNet LoRA, if any. FaceID
+    /// strategies (SD 1.5 + SDXL) ship a UNet cross-attention LoRA as a
+    /// separate kohya-format safetensors next to the `image_proj.*`
+    /// `.bin` in `h94/IP-Adapter-FaceID`. We download the safetensors
+    /// directly — it's already in the format the existing
+    /// `merge_loras_into_weights` consumes, so no conversion needed.
     ///
-    /// Returns `(temp_file_handle, path)` — the handle must stay alive
-    /// for the path to remain valid (NamedTempFile semantics).
-    /// Returns `None` for strategies without an aux LoRA (Plus-Face*,
-    /// and FaceIdSdxl until SDXL key mapping is added in Phase 4c.2b).
+    /// Returns a path into the HF cache (persistent) or `None` for
+    /// strategies without an aux LoRA (`PlusFace*`).
     ///
     /// Opt out via the env var `PLAKAT_FACEID_LORA=off` — useful for
     /// A/B testing if the shared-cross-attention application of this
     /// LoRA degrades text-prompt fidelity for a specific use case.
+    ///
+    /// History: Phase 4c.2a/b initially shipped a converter in
+    /// `faceid_lora.rs` assuming the LoRA was bundled inline in the
+    /// `.bin`. That assumption was wrong for the `_sd15` / `_sdxl`
+    /// variants — h94 separates `image_proj` and LoRA into two files.
+    /// The converter stays around in case other FaceID variants
+    /// (`*_plus_*`, etc.) do bundle the LoRA inline.
     pub async fn aux_unet_lora(
         self,
-        device: &Device,
-    ) -> Result<Option<(tempfile::NamedTempFile, std::path::PathBuf)>> {
+        _device: &Device,
+    ) -> Result<Option<std::path::PathBuf>> {
         if std::env::var("PLAKAT_FACEID_LORA").as_deref() == Ok("off") {
             return Ok(None);
         }
         match self {
             Self::FaceId => {
-                // Reuse the cached download from load_encoder — get_file
-                // returns the same cache path on second call.
-                let faceid_bin = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/ip-adapter-faceid_sd15.bin",
+                // h94/IP-Adapter-FaceID ships the UNet LoRA in a *separate*
+                // kohya-format safetensors — the `.bin` next to it only
+                // contains the `image_proj.*` MLP. Download the LoRA file
+                // directly; no conversion needed (the existing merger
+                // consumes it as-is).
+                let lora_path = crate::hf::download::get_file(
+                    IPA_FACEID_REPO,
+                    "ip-adapter-faceid_sd15_lora.safetensors",
                 )
                 .await?;
-                let tmp = tempfile::Builder::new()
-                    .prefix("plakat-faceid-lora-")
-                    .suffix(".safetensors")
-                    .tempfile()?;
-                let n = crate::pipelines::faceid_lora::convert_faceid_sd15_to_kohya(
-                    &faceid_bin,
-                    tmp.path(),
-                    device,
-                )?;
-                let path = tmp.path().to_path_buf();
                 crate::ui::progress::println(&format!(
-                    "  ✓ FaceID UNet LoRA: {n} cross-attn target(s) extracted from {}",
-                    faceid_bin.display()
+                    "  ✓ FaceID UNet LoRA: {}",
+                    lora_path.display()
                 ));
-                Ok(Some((tmp, path)))
+                Ok(Some(lora_path))
             }
             Self::FaceIdSdxl => {
-                let faceid_bin = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/ip-adapter-faceid_sdxl.bin",
+                let lora_path = crate::hf::download::get_file(
+                    IPA_FACEID_REPO,
+                    "ip-adapter-faceid_sdxl_lora.safetensors",
                 )
                 .await?;
-                let tmp = tempfile::Builder::new()
-                    .prefix("plakat-faceid-lora-sdxl-")
-                    .suffix(".safetensors")
-                    .tempfile()?;
-                let n = crate::pipelines::faceid_lora::convert_faceid_sdxl_to_kohya(
-                    &faceid_bin,
-                    tmp.path(),
-                    device,
-                )?;
-                let path = tmp.path().to_path_buf();
                 crate::ui::progress::println(&format!(
-                    "  ✓ FaceID UNet LoRA (SDXL): {n} cross-attn target(s) extracted from {}",
-                    faceid_bin.display()
+                    "  ✓ FaceID UNet LoRA (SDXL): {}",
+                    lora_path.display()
                 ));
-                Ok(Some((tmp, path)))
+                Ok(Some(lora_path))
             }
             Self::PlusFace | Self::PlusFaceSdxl => Ok(None),
         }
@@ -777,13 +770,16 @@ impl IdentityKind {
             Self::FaceId => {
                 let arcface_path = resolve_arcface_weights().await?;
                 let faceid_weights = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/ip-adapter-faceid_sd15.bin",
+                    IPA_FACEID_REPO,
+                    "ip-adapter-faceid_sd15.bin",
                 )
                 .await?;
+                let scrfd_path =
+                    crate::pipelines::scrfd::resolve_scrfd_weights().await?;
                 let enc = crate::pipelines::face_models::FaceIdEncoder::load_faceid_sd15(
                     &arcface_path,
                     &faceid_weights,
+                    scrfd_path.as_deref(),
                     device,
                     dtype,
                 )?;
@@ -792,13 +788,16 @@ impl IdentityKind {
             Self::FaceIdSdxl => {
                 let arcface_path = resolve_arcface_weights().await?;
                 let faceid_weights = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/ip-adapter-faceid_sdxl.bin",
+                    IPA_FACEID_REPO,
+                    "ip-adapter-faceid_sdxl.bin",
                 )
                 .await?;
+                let scrfd_path =
+                    crate::pipelines::scrfd::resolve_scrfd_weights().await?;
                 let enc = crate::pipelines::face_models::FaceIdEncoder::load_faceid_sdxl(
                     &arcface_path,
                     &faceid_weights,
+                    scrfd_path.as_deref(),
                     device,
                     dtype,
                 )?;
@@ -857,10 +856,16 @@ fn arcface_setup_message() -> &'static str {
      \n     Point at any HF safetensors of the IR-ResNet50 ArcFace weights:\n\
      \n        export PLAKAT_ARCFACE_HF=<user>/<repo>#<path/in/repo.safetensors>\n\
      \n     plakat downloads + caches automatically. No canonical default\n\
-     \n     repo yet — pick a community upload you trust, or follow path A.\n\
+     \n     repo yet — discover candidates at:\n\
+     \n        https://huggingface.co/models?search=arcface+iresnet50\n\
+     \n     or:\n\
+     \n        https://huggingface.co/models?search=insightface+r50\n\
+     \n     (plakat doesn't endorse any specific community upload — check\n\
+     \n     the repo's README + license before depending on it.)\n\
      \n\
-     Both routes also work for `IdentityKind::FaceIdSdxl`. Run\n\
-     `plakat doctor` to check your current setup."
+     Both routes also work for `IdentityKind::FaceIdSdxl`.\n\
+     Run `plakat doctor` to check your current setup; add `--verify`\n\
+     to actively test the configured HF spec downloads."
 }
 
 /// Sync preflight — confirms ArcFace can plausibly resolve later. Doesn't

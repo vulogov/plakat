@@ -1,23 +1,21 @@
-// Phase 4 scaffolding — nothing in the crate calls these yet. The
-// `dead_code` allowance lifts when Phase 4b wires the encoder into
-// `IdentityKind::FaceId`.
+// Some helpers stay `pub` for `plakat doctor` and future toolage but
+// aren't all called from the main pipeline — silence the warnings.
 #![allow(dead_code)]
 
-//! Face-identity model porting for Phase 4 (FaceID).
+//! Face-identity models for Phase 4 (FaceID).
 //!
-//! Today's checkpoint: the **InsightFace IR-ResNet50** ArcFace backbone
-//! and the **IP-Adapter-FaceID image projection** ported to candle. Both
-//! compile and load from a `VarBuilder`. The end-to-end FaceID pipeline
-//! still needs:
-//!   1. **SCRFD face detector** — finds faces in an arbitrary photo.
-//!   2. **5-landmark similarity-transform alignment** — produces the
-//!      canonical 112×112 RGB crop ArcFace expects.
-//!   3. **`IdentityEncoder` wiring** — `IdentityKind::FaceId` variant,
-//!      `FromStr` arm, `load_encoder` arm, weight-download paths.
-//!
-//! Those three land in Phase 4b. Until then this module is **not invoked
-//! from anywhere** — it sits compiled-but-unreachable until the detector
-//! can feed it aligned crops.
+//! Three things live here:
+//!   1. **InsightFace IR-ResNet50** — the ArcFace backbone (image → 512-d
+//!      unit-norm embedding).
+//!   2. **`FaceAlignment` + `prepare_face_tensor`** — the bridge from a
+//!      photo on disk to the 112×112 RGB tensor ArcFace consumes. Three
+//!      alignment modes in priority order: 5-point landmarks (Phase
+//!      4c.3, proper similarity-transform alignment via Umeyama's
+//!      method); bbox crop (4c.1); centre-crop fallback (4b).
+//!   3. **`FaceIdEncoder`** — the `IdentityEncoder` impl that combines
+//!      the ArcFace backbone, the IP-Adapter-FaceID image-proj MLP, and
+//!      (optionally, Phase 4c.4) the SCRFD detector for auto landmark
+//!      detection.
 //!
 //! ## IR-ResNet50 architecture
 //!
@@ -38,9 +36,8 @@
 //! Input contract:
 //!   * shape `(B, 3, 112, 112)`, RGB
 //!   * normalised to roughly `[-1, 1]` (InsightFace uses `(x - 127.5) / 127.5`)
-//!   * **must be face-aligned** — ArcFace's training distribution is
-//!     5-point landmark-aligned crops; unaligned input drops embedding
-//!     quality ~30%. Phase 4b adds the aligner.
+//!   * landmark-aligned for best results (5-point similarity transform).
+//!     Centre-crop / bbox-crop also accepted at a quality cost.
 //!
 //! Output: `(B, 512)` unit-norm face embedding.
 
@@ -668,7 +665,7 @@ impl FaceIdEncoder {
     /// * `arcface_weights` — IR-ResNet50 safetensors. Most accessible
     ///   source: HF-hosted conversion of InsightFace's `w600k_r50.onnx`
     ///   (antelopev2 / buffalo_l bundle). Phase 4b wires the download.
-    /// * `faceid_weights` — `h94/IP-Adapter/models/ip-adapter-faceid_sd15`
+    /// * `faceid_weights` — `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15`
     ///   (the `image_proj.*` subtree). The same file also contains LoRA
     ///   weights for the UNet's cross-attention; those are NOT applied
     ///   here. Loading just the image_proj part is consistent with our
@@ -679,6 +676,7 @@ impl FaceIdEncoder {
         arcface_weights: &std::path::Path,
         faceid_weights: &std::path::Path,
         cross_attn_dim: usize,
+        scrfd_weights: Option<&std::path::Path>,
         device: &candle_core::Device,
         dtype: candle_core::DType,
     ) -> Result<Self> {
@@ -694,7 +692,7 @@ impl FaceIdEncoder {
             device,
             dtype,
         )?;
-        let detector = try_load_scrfd_detector(device, dtype)?;
+        let detector = load_scrfd_detector_opt(scrfd_weights, device, dtype)?;
         Ok(Self {
             arcface,
             image_proj,
@@ -708,17 +706,29 @@ impl FaceIdEncoder {
     /// `IdentityKind::FaceId.load_encoder` takes.
     ///
     /// `arcface_weights` is a safetensors file (user-supplied via
-    /// `PLAKAT_ARCFACE_WEIGHTS`). `faceid_weights_pth` is the h94
-    /// `ip-adapter-faceid_sd15.bin` PyTorch file — we read just the
-    /// `image_proj.*` subtree out of it (the file also contains UNet
-    /// LoRA weights under `ip_adapter.*` which are Phase 4c.2 polish).
+    /// `PLAKAT_ARCFACE_WEIGHTS` or `PLAKAT_ARCFACE_HF`).
+    /// `faceid_weights_pth` is the h94 `ip-adapter-faceid_sd15.bin`
+    /// PyTorch file — we read just the `image_proj.*` subtree out of it
+    /// (the file also contains UNet LoRA weights under `ip_adapter.*`
+    /// handled separately by the LoRA merger).
+    /// `scrfd_weights` is the pre-resolved SCRFD safetensors path
+    /// (already downloaded if `PLAKAT_SCRFD_HF` was used); `None`
+    /// means no auto-detection — falls back to manual alignment paths.
     pub fn load_faceid_sd15(
         arcface_weights: &Path,
         faceid_weights_pth: &Path,
+        scrfd_weights: Option<&Path>,
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
-        Self::load_faceid_with_dim(arcface_weights, faceid_weights_pth, 768, device, dtype)
+        Self::load_faceid_with_dim(
+            arcface_weights,
+            faceid_weights_pth,
+            768,
+            scrfd_weights,
+            device,
+            dtype,
+        )
     }
 
     /// Specialised constructor for SDXL FaceID — the path
@@ -729,16 +739,25 @@ impl FaceIdEncoder {
     pub fn load_faceid_sdxl(
         arcface_weights: &Path,
         faceid_weights_pth: &Path,
+        scrfd_weights: Option<&Path>,
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
-        Self::load_faceid_with_dim(arcface_weights, faceid_weights_pth, 2048, device, dtype)
+        Self::load_faceid_with_dim(
+            arcface_weights,
+            faceid_weights_pth,
+            2048,
+            scrfd_weights,
+            device,
+            dtype,
+        )
     }
 
     fn load_faceid_with_dim(
         arcface_weights: &Path,
         faceid_weights_pth: &Path,
         cross_attn_dim: usize,
+        scrfd_weights: Option<&Path>,
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
@@ -755,7 +774,7 @@ impl FaceIdEncoder {
             device,
             dtype,
         )?;
-        let detector = try_load_scrfd_detector(device, dtype)?;
+        let detector = load_scrfd_detector_opt(scrfd_weights, device, dtype)?;
         Ok(Self {
             arcface,
             image_proj,
@@ -847,20 +866,21 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
     }
 }
 
-/// Try to construct an SCRFD detector from `PLAKAT_SCRFD_WEIGHTS`.
-/// Returns `Ok(None)` if the env var is unset (the common case until
-/// Phase 4c.4 lands HF auto-download). Returns `Err` only if the env
-/// var is set but loading fails — fail loudly so the user knows.
-fn try_load_scrfd_detector(
+/// Construct an SCRFD detector from a pre-resolved safetensors path,
+/// or return `None` if no path was provided. Sync — the async download
+/// resolution happens at the `IdentityKind::load_encoder` layer; this
+/// helper only does the model construction.
+fn load_scrfd_detector_opt(
+    path: Option<&Path>,
     device: &Device,
     dtype: DType,
 ) -> Result<Option<crate::pipelines::scrfd::SCRFDDetector>> {
-    let Some(path) = crate::pipelines::scrfd::resolve_scrfd_weights()? else {
+    let Some(path) = path else {
         return Ok(None);
     };
     let s = crate::ui::progress::spinner("Loading SCRFD face detector");
     let det = crate::pipelines::scrfd::SCRFDDetector::load(
-        &path,
+        path,
         crate::pipelines::scrfd::SCRFDConfig::default(),
         device,
         dtype,
