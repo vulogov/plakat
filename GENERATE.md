@@ -160,13 +160,9 @@ On CUDA/CPU: `dpmpp-2m` is a strong all-purpose default. With LCM-LoRA
 at low step counts: `lcm`. For maximum quality at moderate step count
 where 2× UNet evaluations is fine: `heun`.
 
-> Naming note: `--scheduler euler` now means **deterministic** Euler,
-> matching A1111/ComfyUI convention. Aliases `euler-a` / `eulera` /
-> `euler-ancestral` still hit Euler-Ancestral.
-
-All planned schedulers are now wired in. Future additions (DPM++ 2M
-SDE, KDPM2, DEIS, etc.) would each be ~150–250 LoC since they're
-separate solver classes.
+> Naming note: `--scheduler euler` means **deterministic** Euler, matching
+> A1111/ComfyUI convention. The aliases `euler-a`, `eulera`, and
+> `euler-ancestral` all hit Euler-Ancestral.
 
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
@@ -380,11 +376,12 @@ won't push IN very far.
 
 ## `plakat upscale`
 
-Classical image upscaling — no ML model, no weight download.
+Resize an image. Two families: classical filters (pure CPU resize, no
+weights) and Real-ESRGAN (RRDBNet ported to candle, ML).
 
 #### `--in <IN>` (required)
 
-Source image. Any common format.
+Source image. Any common format (PNG, JPEG, WebP).
 
 #### `--out <OUT>` (required)
 
@@ -392,40 +389,79 @@ Output path. Extension determines format (`.png`, `.jpg`, `.webp`).
 
 #### `--scale <FLOAT>` (default `2.0`)
 
-Scale factor. Non-integer values OK: `--scale 1.5`, `--scale 2.5`. The
-new dimensions are `round(orig × scale)`.
+Scale factor for **classical** methods. Non-integer values OK:
+`--scale 1.5`, `--scale 2.5`. New dimensions are `round(orig × scale)`.
+**Ignored for ML methods** — those have a fixed factor baked into the model.
 
-#### `--method <FILTER>` (default `lanczos`)
+#### `--method <METHOD>` (default `lanczos`)
 
-Two families: **classical** filters (pure CPU resize) and **ML** models
-(RRDBNet / Real-ESRGAN).
-
-**Classical** — fast, predictable, no weights:
+**Classical** (fast, predictable, no weights):
 
 | Filter | Quality | Best for |
 |---|---|---|
 | `nearest` | Lowest — pixelated | Pixel art, retro look |
 | `bilinear` | Blurry edges | Thumbnails |
 | `bicubic` | Decent, slight softening | General-purpose |
-| `lanczos` | Sharpest detail preservation, slight ringing on hard edges | Photographic / detailed images |
+| `lanczos` | Sharpest, slight ringing on hard edges | Photographic / detailed images |
 
-**ML — Real-ESRGAN** (RRDBNet ported to candle):
+**ML** — Real-ESRGAN (downloads ~17 MB on first use):
 
-| Method | Scale | Variant | Weights | Use case |
-|---|---|---|---|---|
-| `real-esrgan-x2` | ×2 | xinntao x2plus | ~17 MB | Subtle resolution boost, photographic |
-| `real-esrgan-x4` | ×4 | xinntao x4plus | ~17 MB | Standard 4× upscale, recovers fine detail |
-| `real-esrgan-anime-x4` | ×4 | xinntao x4plus_anime_6B | ~9 MB | Line art / anime / illustration |
+| Method | Scale | Variant | Use case |
+|---|---|---|---|
+| `real-esrgan-x2` | ×2 | xinntao x2plus | Subtle resolution boost, photographic |
+| `real-esrgan-x4` | ×4 | xinntao x4plus | Standard 4× upscale, recovers fine detail |
+| `real-esrgan-anime-x4` | ×4 | xinntao x4plus_anime_6B | Line art / anime / illustration |
 
-ML methods:
-- **Ignore `--scale`** — the model's architecture fixes the factor.
-- Download weights from `hlky/RealESRGAN_*` on first use (small, ~17 MB max).
-- Run on the device chosen by `--device` (Metal/CUDA/CPU). Memory scales with the **output** size — a 4× upscale of 1024² = 4096² requires room for that 64 MB output tensor in F32 plus intermediates.
+ML methods run on the device chosen by `--device`. Memory scales with the
+**output** size — a 4× upscale of 1024² → 4096² requires room for that
+64 MB output tensor in F32 plus intermediates.
 
-For aggressive upscales beyond 4× (e.g. 8×), pipe through twice
-(`plakat upscale ... --method real-esrgan-x4 ... && plakat upscale ...
---method real-esrgan-x2 ...`). Diminishing returns past that — ESRGAN
-models weren't trained for cascaded use.
+For 8× or more, chain two calls (`real-esrgan-x4` → `real-esrgan-x2`).
+ESRGAN models weren't trained for cascaded use past 4–8×, so quality
+degrades.
+
+---
+
+## `plakat transparent`
+
+Make every pixel whose colour matches the **upper-left corner** transparent.
+Useful for stripping solid-colour backgrounds from generated images, logos,
+or screenshots.
+
+#### `--in <IN>` (required)
+
+Source image.
+
+#### `--out <OUT>` (required)
+
+Output. Must be a format that supports alpha (`.png` or `.webp`); `.jpg` is
+rejected with a clear error.
+
+#### `--tolerance <N>` (default `0`)
+
+Per-channel tolerance for the colour match (0–255). `0` is an exact match;
+~`10` absorbs JPEG noise on solid backgrounds; ~`30+` extends to anti-aliased
+edges and similar shades.
+
+```bash
+plakat transparent --in logo.png --out logo-alpha.png --tolerance 12
+# → ✓  key #ffffff  •  512×512  •  238921/262144 pixels transparent (91.1%)
+```
+
+---
+
+## `plakat models`
+
+Browse HuggingFace and manage the local cache.
+
+| Subcommand | Purpose |
+|---|---|
+| `models search <QUERY>` | Free-text HF search. |
+| `models recommend [--query Q] [--sort downloads\|likes\|trending\|recent] [--limit N]` | T2I-filtered recommendations. |
+| `models size <REPO>` | Total Hub size + the subset plakat would actually download. |
+| `models pull <REPO>` | Pre-download SD/Flux weight files for a repo. |
+| `models ls` | List cached models with disk usage. |
+| `models rm <REPO>... [--yes]` | Delete cached models (with size + confirmation by default). |
 
 ---
 
@@ -458,42 +494,78 @@ Where HF model weights are cached. Resolution order:
 
 ## Common workflows
 
-### Iterate on a prompt at fixed composition
+### Iterate on a prompt at a fixed composition
+
+Set `--seed` to anything, vary the prompt — same composition, different
+details.
 
 ```bash
-plakat generate "a tranquil koi pond" \
-    --model sdxl --size 1024x1024 \
-    --steps 30 --scheduler euler-a \
-    --seed 42 -n 1
-# tweak prompt, keep --seed 42 — same composition, different details
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+    --seed 42
+
+# Now tweak just the prompt:
+plakat generate "a tranquil koi pond, soft light, autumn leaves" \
+    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+    --seed 42
 ```
 
-### Find a good composition then refine
+### Sample many seeds, then refine the best
 
 ```bash
-# Step 1 — sample 4 seeds
-plakat generate "a tranquil koi pond" --model sdxl --size 1024x1024 \
-    --seed 0 -n 4
+# Step 1 — sample 4 candidates
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 --seed 0 -n 4
 
-# Step 2 — pick the best, refine it
-plakat generate "a tranquil koi pond" --model sdxl --size 1024x1024 \
-    --steps 35 --scheduler euler-a --refine 8 --refine-strength 0.25 \
+# Step 2 — pick seed=2 (say), refine with extra polish
+plakat generate "a tranquil koi pond, soft light" \
+    --model sdxl --size 1024x1024 \
+    --steps 35 --scheduler euler-a \
+    --refine 8 --refine-strength 0.25 \
     --seed 2
 ```
 
-### Style transfer at high fidelity to IN
+### Fast generation with LCM-LoRA
+
+LCM-LoRA + the matching LCM scheduler render usable output in 4 steps on
+any device.
+
+```bash
+plakat generate "a serene mountain landscape at sunset" \
+    --model sd15 --size 512x512 \
+    --steps 4 --guidance 1.5 \
+    --scheduler lcm \
+    --lora latent-consistency/lcm-lora-sdv1-5
+```
+
+### Style transfer that mostly preserves IN
+
+Lower strength keeps more of the input photo's content while picking up
+REF's style.
 
 ```bash
 plakat stylize \
     --in photo.jpg \
     --ref reference_painting.jpg \
     --out styled.png \
-    --strength 0.4 \
-    --steps 30
+    --strength 0.4 --steps 30
+```
+
+### Generate → 4× ML upscale
+
+```bash
+plakat generate "an isometric tiny diorama of a forest cabin" \
+    --model sd15 --size 512x512 --seed 7 --out ./out
+
+plakat upscale --in ./out/plakat-7.png --out ./out/plakat-7-4x.png \
+    --method real-esrgan-x4 --device metal
+# 512×512 → 2048×2048
 ```
 
 ### Generate → stylize → upscale (one pipeline via scenario)
 
-See [README.md](README.md#scenario-configuration) — the `scenario`
-subcommand runs this chain over many task definitions and shares the
-loaded model across all of them.
+For batch runs that chain all three steps with shared pipelines, see
+[README.md → Scenario configuration](README.md#scenario-configuration).
+The `scenario` subcommand assembles per-task prompts from a catalog of
+scenes and weather, runs the per-image pipeline, and reuses loaded
+weights across every task.
