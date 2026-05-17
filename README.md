@@ -295,6 +295,9 @@ with `stylize`).
   not replaced — so persona-specific negatives ("no glasses, no beard") stay
   attached to the identity while scene-level cues still apply.
 
+Full reference (every field, every interaction, photo-prep guidance,
+tuning strategies, failure modes, Phase 2 roadmap): [PERSONA.md](PERSONA.md).
+
 ### Output layout
 
 Files land in `<out>/<task_name>/plakat-<seed>.png` (plus `-styled` and
