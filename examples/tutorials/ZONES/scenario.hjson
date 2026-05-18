@@ -1,0 +1,181 @@
+{
+    # =====================================================================
+    # ZONES tutorial — batch demo of artefact placement.
+    #
+    # Run with:
+    #   ./scripts/07_scenario.sh
+    # or directly:
+    #   plakat scenario scenario.hjson
+    # =====================================================================
+
+    # ---- model + device ----
+    model: stable-diffusion-v1-5/stable-diffusion-v1-5
+
+    # macOS Metal → "metal"; NVIDIA CUDA → "cuda"; CPU only → "cpu"
+    device: auto
+
+    # ---- prompt enhancer ----
+    # Scenarios always run task prompts through an LLM enhancer. Set
+    # the corresponding env var before running:
+    #   export DEEPSEEK_API_KEY=sk-...    (for "deepseek")
+    #   export GEMINI_API_KEY=AIza...     (for "gemini")
+    enhancer: deepseek
+
+    # SD 1.5 trained at 512² — keep close to that for fidelity.
+    size: 512x512
+
+    # one image per task
+    count: 1
+
+    # plakat-{seed}.png — used both for the file name and as the
+    # deterministic seed for the task. Each task overrides if you want
+    # different seeds.
+    seed: 2000
+
+    # ---- artefact library override ----
+    # Point at the local library/ that scripts/00_setup.sh assembles.
+    artefact-library: ./library
+
+    # ---- v3: derive zones from each generated image ----
+    # Falls back to the rigid grid if Depth-Anything-V2 can't be loaded.
+    smart-zones: true
+
+    # ---- v2: smooth pasted edges with masked img2img ----
+    artefact-blend: true
+    artefact-blend-strength: 0.30
+
+    # ---- output ----
+    out: ./out/zones-tutorial/scenario
+
+    # ---- scenes / weather catalogs ----
+    # Empty footers + plain pass-through prompts keep this demo
+    # focused on artefact placement, not prompt engineering.
+    scene:
+    [
+        {
+            name: meadow
+            prompt: "a quiet green meadow with rolling hills"
+        }
+        {
+            name: harbor
+            prompt: "a fishing harbor with weathered wooden piers"
+        }
+        {
+            name: foothills
+            prompt: "alpine foothills with patchy grass and rocks"
+        }
+    ]
+    weather:
+    [
+        {
+            name: golden_hour
+            prompt: "golden hour light, long warm shadows"
+        }
+        {
+            name: blue_hour
+            prompt: "blue hour, soft twilight, fading sunset"
+        }
+        {
+            name: overcast
+            prompt: "overcast, soft diffused light"
+        }
+    ]
+
+    # ---- tasks ----
+    tasks:
+    [
+        # -----------------------------------------------------------
+        # 1. Simplest case: bare names, library defaults take over.
+        # -----------------------------------------------------------
+        {
+            name: bare_defaults
+            scene: meadow
+            weather: golden_hour
+            prompt: "tranquil pastoral scene"
+            artefacts:
+            [
+                "oak"
+                "sun"
+            ]
+        }
+
+        # -----------------------------------------------------------
+        # 2. Multi-artefact composition with explicit zones.
+        # -----------------------------------------------------------
+        {
+            name: layered_zones
+            scene: harbor
+            weather: blue_hour
+            prompt: "fishing village at the edge of the water"
+            artefacts:
+            [
+                "moon@sky/right"
+                "cloud@sky/left"
+                "pine@far_plan/left"
+                "cottage@close_plan/center"
+            ]
+        }
+
+        # -----------------------------------------------------------
+        # 3. Full per-artefact object form: offset, anchor, flip,
+        #    alpha — the overrides not available via CLI shorthand.
+        # -----------------------------------------------------------
+        {
+            name: full_object_form
+            scene: foothills
+            weather: overcast
+            prompt: "moody alpine landscape, drifting mist"
+            artefacts:
+            [
+                # Shorthand still works alongside full objects.
+                "cloud@sky/center"
+                {
+                    name: pine
+                    zone: middle_plan/left
+                    scale: 0.9
+                    # Shift slightly down so the tree base sinks past
+                    # the rigid middle_plan band's lower edge.
+                    offset: [0.0, 0.10]
+                    anchor: bottom_center
+                    flip: false
+                    alpha: 1.0
+                }
+                {
+                    name: pine
+                    zone: middle_plan/right
+                    scale: 0.7
+                    # Mirror the right-hand pine so the two trees
+                    # tilt symmetrically toward the centre.
+                    flip: true
+                    # Knock alpha down slightly so this background
+                    # pine reads as more distant.
+                    alpha: 0.85
+                }
+                {
+                    name: cottage
+                    zone: close_plan/center
+                    scale: 0.6
+                    offset: [0.0, 0.05]
+                    anchor: bottom_center
+                }
+            ]
+        }
+
+        # -----------------------------------------------------------
+        # 4. Per-task override: disable smart-zones for one task.
+        #    Useful when one scene is so tightly cropped that depth
+        #    estimates aren't meaningful.
+        # -----------------------------------------------------------
+        {
+            name: smart_zones_off
+            scene: meadow
+            weather: overcast
+            prompt: "a single oak in an empty field"
+            smart-zones: false
+            artefacts:
+            [
+                "oak@middle_plan/center"
+            ]
+        }
+    ]
+}
