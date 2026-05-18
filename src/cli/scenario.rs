@@ -5,8 +5,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args as ClapArgs;
 use console::style;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::imaging::sizes::Size;
 use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
@@ -747,6 +750,66 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         )
     };
 
+    // -------- enhance prompts up front, deduped + parallelized --------
+    // Each task's `pre_refine` string is enhancer-input; under sequential
+    // per-task calls this fires N times serially. Pre-loop we dedupe to the
+    // set of unique prompts and fire them concurrently (capped), so a 10-task
+    // scenario with one slow enhancer goes from ~10 * latency to
+    // ~ceil(unique / cap) * latency. Dry-run skips this entirely.
+    let enhanced_cache: HashMap<String, String> = if args.dry_run {
+        HashMap::new()
+    } else {
+        let pre_refines: Vec<String> = s
+            .tasks
+            .iter()
+            .map(|t| {
+                let scene = scenes[t.scene.as_str()];
+                let weather = weathers[t.weather.as_str()];
+                join_parts(&[
+                    &s.prompt_header,
+                    scene,
+                    weather,
+                    &t.prompt,
+                    &s.prompt_footer,
+                ])
+            })
+            .collect();
+        let unique: BTreeSet<String> = pre_refines.iter().cloned().collect();
+
+        crate::ui::progress::println(&format!(
+            "  {} enhancing {} unique prompt(s) (from {} task{}) via {}…",
+            style("→").cyan().bold(),
+            unique.len(),
+            s.tasks.len(),
+            if s.tasks.len() == 1 { "" } else { "s" },
+            enhancer,
+        ));
+
+        // Soft cap on concurrent requests to be polite to upstream APIs.
+        const MAX_CONCURRENT_ENHANCE: usize = 8;
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_ENHANCE));
+        let mut joinset: JoinSet<(String, Result<String>)> = JoinSet::new();
+        for pre in unique {
+            let enhancer_owned = enhancer.clone();
+            let pre_owned = pre.clone();
+            let sem = sem.clone();
+            joinset.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore not closed");
+                let result = crate::prompt::enhance(&enhancer_owned, &pre_owned).await;
+                (pre_owned, result)
+            });
+        }
+
+        let mut cache: HashMap<String, String> = HashMap::with_capacity(joinset.len());
+        while let Some(joined) = joinset.join_next().await {
+            let (pre, result) = joined.context("enhancer task panicked")?;
+            let enhanced = result
+                .with_context(|| format!("enhancing prompt {:?}", trim_preview(&pre, 80)))?;
+            cache.insert(pre, enhanced);
+        }
+        cache
+    };
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -830,9 +893,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
         } else {
-            crate::prompt::enhance(&enhancer, &pre_refine)
-                .await
-                .with_context(|| format!("enhancing prompt for task {:?}", task.name))?
+            enhanced_cache
+                .get(&pre_refine)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "task {:?}: enhanced prompt missing from cache (internal bug)",
+                        task.name
+                    )
+                })?
         };
         crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
@@ -1286,6 +1355,17 @@ fn same_lora_set(a: &[LoraSpec], b: &[LoraSpec]) -> bool {
     a_keys.sort();
     b_keys.sort();
     a_keys == b_keys
+}
+
+/// Truncate a string to `max` characters for inclusion in error messages.
+/// Appends `…` when truncated. Char-boundary safe.
+fn trim_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Strip leading/trailing whitespace and commas from each part so users can

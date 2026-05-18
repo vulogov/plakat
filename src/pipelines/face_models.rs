@@ -336,7 +336,7 @@ pub fn prepare_face_tensor(
             let bw = px1.saturating_sub(px0).max(1).min(w - px0);
             let bh = py1.saturating_sub(py0).max(1).min(h - py0);
             img.crop_imm(px0, py0, bw, bh)
-                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::Triangle)
                 .to_rgb8()
         }
         FaceAlignment::CenterCrop => {
@@ -350,27 +350,31 @@ pub fn prepare_face_tensor(
                 let s = target_short;
                 (((w as f32) * (s as f32) / (h as f32)).round() as u32, s)
             };
-            let resized = img.resize_exact(rw, rh, FilterType::CatmullRom);
+            let resized = img.resize_exact(rw, rh, FilterType::Triangle);
             let cx = rw.saturating_sub(target_short) / 2;
             let cy = rh.saturating_sub(target_short) / 2;
             resized
                 .crop_imm(cx, cy, target_short, target_short)
-                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::Triangle)
                 .to_rgb8()
         }
     };
 
     // InsightFace normalisation: x ∈ [0, 255] → (x − 127.5) / 127.5 ∈ [−1, 1].
-    // Channel-first: RGB → (1, 3, 112, 112).
+    // Channel-first: RGB → (1, 3, 112, 112). Single pass over packed-RGB
+    // bytes, scattered into channel-separated slices — avoids per-pixel
+    // `get_pixel` indirection.
     let n = ARCFACE_INPUT as usize;
-    let mut data: Vec<f32> = Vec::with_capacity(3 * n * n);
-    for c in 0..3usize {
-        for y in 0..n {
-            for x in 0..n {
-                let px = aligned_rgb.get_pixel(x as u32, y as u32).0[c];
-                data.push((px as f32 - 127.5) / 127.5);
-            }
-        }
+    let n_pixels = n * n;
+    let mut data: Vec<f32> = vec![0.0f32; 3 * n_pixels];
+    let raw = aligned_rgb.as_raw();
+    let (r_dst, rest) = data.split_at_mut(n_pixels);
+    let (g_dst, b_dst) = rest.split_at_mut(n_pixels);
+    let scale = 1.0 / 127.5;
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        r_dst[i] = chunk[0] as f32 * scale - 1.0;
+        g_dst[i] = chunk[1] as f32 * scale - 1.0;
+        b_dst[i] = chunk[2] as f32 * scale - 1.0;
     }
     let t = Tensor::from_vec(data, (1, 3, n, n), device)?.to_dtype(dtype)?;
     Ok(t)
