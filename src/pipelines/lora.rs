@@ -25,8 +25,14 @@ pub enum LoraSource {
     /// Path to a local `.safetensors`.
     Local(PathBuf),
     /// HuggingFace repo + optional explicit filename inside it. When
-    /// `file` is `None`, `discover_lora_file` picks one.
-    Hub { repo: String, file: Option<String> },
+    /// `file` is `None`, `discover_lora_file` picks one. `revision`
+    /// pins to a specific commit SHA / tag / branch; `None` means the
+    /// repo's `main` branch.
+    Hub {
+        repo: String,
+        file: Option<String>,
+        revision: Option<String>,
+    },
 }
 
 /// Unresolved LoRA spec from the CLI. `resolve()` turns it into a
@@ -86,6 +92,9 @@ impl FromStr for LoraSpec {
                 source: LoraSource::Hub {
                     repo: path_part.to_string(),
                     file,
+                    // The CLI/HJSON spec grammar doesn't carry a revision;
+                    // catalog-resolved LoRAs set it via `LoraSpec::hub_pinned`.
+                    revision: None,
                 },
                 scale,
             });
@@ -101,6 +110,25 @@ impl FromStr for LoraSpec {
 }
 
 impl LoraSpec {
+    /// Construct a hub-sourced LoRA spec with a pinned revision. Used by
+    /// the style runtime when forwarding catalog-resolved LoRAs whose
+    /// revision SHAs came from `catalog.json`.
+    pub fn hub_pinned(
+        repo: impl Into<String>,
+        file: Option<String>,
+        revision: Option<String>,
+        scale: f32,
+    ) -> Self {
+        Self {
+            source: LoraSource::Hub {
+                repo: repo.into(),
+                file,
+                revision,
+            },
+            scale,
+        }
+    }
+
     pub async fn resolve(&self) -> Result<ResolvedLora> {
         match &self.source {
             LoraSource::Local(p) => {
@@ -117,18 +145,29 @@ impl LoraSpec {
                     display: p.display().to_string(),
                 })
             }
-            LoraSource::Hub { repo, file } => {
+            LoraSource::Hub {
+                repo,
+                file,
+                revision,
+            } => {
+                let revision_str = revision.as_deref().unwrap_or("main");
                 let filename = match file {
                     Some(f) => f.clone(),
-                    None => discover_lora_file(repo).await?,
+                    None => discover_lora_file(repo, revision_str).await?,
                 };
-                let path = crate::hf::download::get_file(repo, &filename)
+                let path = crate::hf::download::get_file_at(repo, &filename, revision_str)
                     .await
-                    .with_context(|| format!("downloading LoRA {repo}/{filename}"))?;
+                    .with_context(|| {
+                        format!("downloading LoRA {repo}/{filename} @ {revision_str}")
+                    })?;
+                let rev_note = match revision.as_deref() {
+                    Some(r) if r != "main" => format!(" @ {}", &r[..r.len().min(8)]),
+                    _ => String::new(),
+                };
                 Ok(ResolvedLora {
                     path,
                     scale: self.scale,
-                    display: format!("{repo}/{filename}"),
+                    display: format!("{repo}/{filename}{rev_note}"),
                 })
             }
         }
@@ -144,13 +183,13 @@ struct TreeEntry {
     size: u64,
 }
 
-/// Pick a `.safetensors` file inside an HF repo. Prefers canonical names;
-/// falls back to the single .safetensors if there's only one, else the
-/// largest with a warning.
-async fn discover_lora_file(repo: &str) -> Result<String> {
+/// Pick a `.safetensors` file inside an HF repo at the given revision.
+/// Prefers canonical names; falls back to the single .safetensors if
+/// there's only one, else the largest with a warning.
+async fn discover_lora_file(repo: &str, revision: &str) -> Result<String> {
     let resolved = crate::hf::resolve_alias(repo);
     let url = reqwest::Url::parse_with_params(
-        &format!("https://huggingface.co/api/models/{resolved}/tree/main"),
+        &format!("https://huggingface.co/api/models/{resolved}/tree/{revision}"),
         &[("recursive", "true")],
     )?;
     let resp = reqwest::Client::builder()

@@ -22,7 +22,13 @@
         "photorealistic/03"
       ],
       "id": "photorealistic",
-      "models": {}
+      "models": {
+        "sd15": {
+          "loras": [],
+          "negative_extras": "painting, illustration, cartoon, 3d render, cgi, drawing",
+          "trigger": "photograph, photorealistic, 35mm film, natural lighting"
+        }
+      }
     },
     {
       "description": "Wet-on-wet pigment washes, ink lineart, visible paper texture.",
@@ -34,7 +40,20 @@
         "watercolor/03"
       ],
       "id": "watercolor",
-      "models": {}
+      "models": {
+        "sd15": {
+          "loras": [
+            {
+              "license": null,
+              "license_url": "https://huggingface.co/Arczisan/ink-watercolor",
+              "revision": "cd8b7d93ec0b6c0aa31a640f1287837583d702d0",
+              "spec": "Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8"
+            }
+          ],
+          "negative_extras": "3d render, photo, glossy, photorealistic",
+          "trigger": "colorful inkpainting"
+        }
+      }
     }
   ]
 }

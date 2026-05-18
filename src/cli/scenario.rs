@@ -17,6 +17,10 @@ use crate::pipelines::portrait;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::stylize;
 use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline, Variant};
+use crate::style::{
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
+    StylePrepRequest,
+};
 
 #[derive(ClapArgs, Debug)]
 pub struct ScenarioArgs {
@@ -76,6 +80,24 @@ struct ScenarioFile {
 
     #[serde(default)]
     negative: String,
+
+    // ---------- style detection / transfer ----------
+    /// Detect art style from this photo and load the matching LoRAs
+    /// from the catalog. Applied globally to every task. Conflicts
+    /// with `loras: [...]` — catalog LoRAs win with a warning.
+    #[serde(rename = "style-ref", default)]
+    style_ref: Option<PathBuf>,
+    /// Pick a style by id from the catalog. Bypasses detection when
+    /// used alone; overrides the detection result when combined with
+    /// `style-ref`.
+    #[serde(default)]
+    style: Option<String>,
+    /// Multiplier applied to every catalog LoRA's :scale. Defaults to 1.0.
+    #[serde(rename = "style-strength", default)]
+    style_strength: Option<f32>,
+    /// Override the bundled style catalog directory.
+    #[serde(rename = "style-catalog", default)]
+    style_catalog: Option<PathBuf>,
 
     // ---------- post-generate options ----------
     #[serde(default)]
@@ -502,11 +524,42 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     };
     let (width, height) = crate::imaging::sizes::resolve(size, s.aspect.as_deref(), base)?;
 
-    let loras: Vec<LoraSpec> = s
+    let mut loras: Vec<LoraSpec> = s
         .loras
         .iter()
         .map(|x| x.parse::<LoraSpec>())
         .collect::<Result<Vec<_>>>()?;
+
+    // -------- style detection / transfer (global) --------
+    // Runs once at scenario load — the catalog's LoRAs replace the user's
+    // `loras: [...]` (with a warning), the trigger phrase is prepended to
+    // `lora-header`, and `negative_extras` is appended to the global
+    // negative. All tasks inherit the result.
+    //
+    // Per-task style-ref overrides are not yet supported; if/when added,
+    // they'd run inside the task loop with a separate per-task `prepare_style`
+    // call. The CLIP-H encoder loaded here can be reused for that case.
+    let mut effective_lora_header = s.lora_header.clone();
+    let mut effective_negative = s.negative.clone();
+    if s.style_ref.is_some() || s.style.is_some() {
+        let n_user_loras = loras.len();
+        let prep = prepare_style(StylePrepRequest {
+            style_ref: s.style_ref.as_deref(),
+            style_override: s.style.as_deref(),
+            style_strength: s.style_strength.unwrap_or(1.0),
+            style_catalog: s.style_catalog.as_deref(),
+            model: &model,
+            user_loras_nonempty: !loras.is_empty(),
+            device: &device,
+        })
+        .await?;
+
+        log_style_prep(&prep, n_user_loras);
+
+        loras = parse_resolved_loras(&prep)?;
+        effective_lora_header = prepend_trigger(&prep.trigger, &effective_lora_header);
+        effective_negative = combine_negative(&effective_negative, &prep.negative_extras);
+    }
 
     // -------- execution plan summary --------
     let total_images = (s.tasks.len() as u32) * count;
@@ -699,7 +752,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
         crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
-        let final_prompt = join_parts(&[&s.lora_header, &enhanced, &s.lora_footer]);
+        let final_prompt = join_parts(&[&effective_lora_header, &enhanced, &s.lora_footer]);
         crate::ui::progress::println(&wrap_label("final", &final_prompt));
 
         if args.dry_run {
@@ -795,7 +848,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let eff_negative = task
             .negative
             .clone()
-            .unwrap_or_else(|| s.negative.clone());
+            .unwrap_or_else(|| effective_negative.clone());
         let eff_scheduler: SchedulerKind = match task.scheduler.as_deref() {
             Some(s) => s.parse().with_context(|| format!("task scheduler {s:?}"))?,
             None => scheduler,

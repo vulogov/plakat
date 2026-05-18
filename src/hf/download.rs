@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use hf_hub::api::tokio::{Api, ApiBuilder};
+use hf_hub::{Repo, RepoType};
 use std::path::PathBuf;
 
 fn api() -> Result<Api> {
@@ -88,27 +89,46 @@ pub async fn get_first_of(candidates: &[(&str, &str)]) -> Result<PathBuf> {
     Err(last_err.unwrap_or_else(|| anyhow!("no candidates given")))
 }
 
-/// Fetch a single file from `repo`, returning its local cache path.
-/// Shows a spinner; hf-hub handles the actual byte transfer internally.
-pub async fn get_file(repo: &str, file: &str) -> Result<PathBuf> {
+/// Fetch a single file from `repo` at `revision` (commit SHA, tag, or
+/// branch name), returning its local cache path. Cached separately
+/// from other revisions — the cache key is `(repo, revision, file)`.
+///
+/// Use [`get_file`] when no specific revision is required (defaults
+/// to `main`).
+pub async fn get_file_at(repo: &str, file: &str, revision: &str) -> Result<PathBuf> {
     let repo = crate::hf::resolve_alias(repo).to_string();
-    let api = api()?.model(repo.clone());
+    let api = api()?.repo(Repo::with_revision(
+        repo.clone(),
+        RepoType::Model,
+        revision.to_string(),
+    ));
 
-    let pb = crate::ui::progress::spinner(&format!("⤓ {repo}  {file}"));
+    // Show the revision short-prefix in the spinner only when it's not
+    // `main` — keeps the common case unchanged, and makes pinned-revision
+    // fetches visibly distinct in scenario logs.
+    let rev_note = if revision == "main" {
+        String::new()
+    } else {
+        format!(" @ {}", &revision[..revision.len().min(8)])
+    };
+
+    let pb = crate::ui::progress::spinner(&format!("⤓ {repo}  {file}{rev_note}"));
     match api.get(file).await {
         Ok(path) => {
-            // Successful downloads disappear once done — keeps the terminal
-            // clean across multi-task scenarios where the same files are
-            // re-fetched-from-cache for every task.
             pb.finish_and_clear();
             Ok(path)
         }
         Err(e) => {
-            // Failures stay visible so the user can see what didn't fetch.
-            pb.finish_with_message(format!("✗ {repo}  {file}"));
+            pb.finish_with_message(format!("✗ {repo}  {file}{rev_note}"));
             Err(friendly_error(&repo, file, e))
         }
     }
+}
+
+/// Fetch a single file from `repo`'s `main` revision. Thin wrapper over
+/// [`get_file_at`] for callers that don't pin a specific commit.
+pub async fn get_file(repo: &str, file: &str) -> Result<PathBuf> {
+    get_file_at(repo, file, "main").await
 }
 
 /// Fetch the canonical SD layout for a repo, reporting how many files landed.

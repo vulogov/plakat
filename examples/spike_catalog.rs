@@ -169,14 +169,48 @@ fn spike_style_metadata(
     style_id: &str,
     exemplar_keys: Vec<String>,
 ) -> Result<serde_json::Value> {
-    let (display_name, description) = match style_id {
+    let (display_name, description, models) = match style_id {
         "watercolor" => (
             "Watercolor",
             "Wet-on-wet pigment washes, ink lineart, visible paper texture.",
+            // SD 1.5: Arczisan/ink-watercolor — most-downloaded SD 1.5
+            // watercolor LoRA on HF as of the spike pass; ~22 downloads
+            // but no comparable alternatives with a documented trigger.
+            // Trigger derived from the repo's widget example.
+            // License: not declared by the author; the repo is public
+            // with the `text-to-image` pipeline tag, suggesting public
+            // use was intended. Plakat doesn't redistribute the weights
+            // — they're downloaded on demand from HF. Users should
+            // confirm acceptable use for their context before running.
+            json!({
+                "sd15": {
+                    "loras": [
+                        {
+                            "spec": "Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8",
+                            "revision": "cd8b7d93ec0b6c0aa31a640f1287837583d702d0",
+                            "license": null,
+                            "license_url": "https://huggingface.co/Arczisan/ink-watercolor"
+                        }
+                    ],
+                    "trigger": "colorful inkpainting",
+                    "negative_extras": "3d render, photo, glossy, photorealistic"
+                }
+            }),
         ),
         "photorealistic" => (
             "Photorealistic",
             "Photographic realism; lens characteristics; lighting physicality.",
+            // Trigger-only style: SD 1.5 produces photorealistic output
+            // natively, so no LoRA is needed. The trigger nudges the
+            // prompt toward photography vocabulary; negative_extras
+            // discourages painterly/illustrative drift.
+            json!({
+                "sd15": {
+                    "loras": [],
+                    "trigger": "photograph, photorealistic, 35mm film, natural lighting",
+                    "negative_extras": "painting, illustration, cartoon, 3d render, cgi, drawing"
+                }
+            }),
         ),
         other => bail!(
             "unknown spike style '{}' — extend spike_style_metadata() with its routing",
@@ -184,14 +218,11 @@ fn spike_style_metadata(
         ),
     };
 
-    // Spike: empty `models` section. The real catalog populates per-base
-    // LoRA refs + trigger phrases here; the spike only validates the
-    // detection path, so routing is left for a follow-up.
     Ok(json!({
         "id": style_id,
         "display_name": display_name,
         "description": description,
         "exemplar_keys": exemplar_keys,
-        "models": {},
+        "models": models,
     }))
 }

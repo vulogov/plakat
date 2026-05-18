@@ -27,6 +27,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 use serde::Deserialize;
 
+use crate::pipelines::t2i::Variant;
+
 // ---------------------------------------------------------------------------
 // Wire types — mirror catalog.json 1:1. Deserialize only.
 // ---------------------------------------------------------------------------
@@ -95,6 +97,32 @@ pub enum BaseModel {
     Sd15,
     Sdxl,
     Flux,
+}
+
+impl BaseModel {
+    /// Map plakat's fine-grained model `Variant` into the catalog's 3-slot
+    /// base-model family.
+    ///
+    /// SD 1.5 and SD 2.1 share the catalog's `sd15` slot because both use
+    /// CLIP-L text encoders with 768-d cross-attention; SD 1.5 LoRAs
+    /// generally work on 2.1 (and vice versa). The SDXL and SDXL-Turbo
+    /// UNets share architecture too — same `sdxl` slot.
+    pub fn from_variant(v: Variant) -> Self {
+        match v {
+            Variant::Sd15 | Variant::Sd21 => Self::Sd15,
+            Variant::Sdxl | Variant::SdxlTurbo => Self::Sdxl,
+            Variant::FluxSchnell | Variant::FluxDev => Self::Flux,
+        }
+    }
+
+    /// Human-readable slug for log/error messages. Matches `serde(rename_all = "lowercase")`.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Sd15 => "sd15",
+            Self::Sdxl => "sdxl",
+            Self::Flux => "flux",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +216,27 @@ pub struct DetectionResult {
     pub picked: Option<String>,
     /// `top[0].score - top[1].score < policy.margin_over_runner_up`.
     pub ambiguous: bool,
+}
+
+/// A LoRA reference, post-resolution, with the strength multiplier already
+/// folded into the spec's `:scale` suffix. Pass `spec` directly into
+/// plakat's existing `LoraSpec::from_str` grammar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedLoraRef {
+    pub spec: String,
+    pub revision: Option<String>,
+}
+
+/// Result of resolving a detected (or named) style against the active
+/// base model. The consumer feeds `loras` into the standard LoRA-stacking
+/// path, prepends `trigger` ahead of the existing `lora-header`, and
+/// appends `negative_extras` to the user's negative prompt.
+#[derive(Debug, Clone)]
+pub struct ResolvedStyle {
+    pub style_id: String,
+    pub loras: Vec<ResolvedLoraRef>,
+    pub trigger: String,
+    pub negative_extras: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -291,5 +340,125 @@ impl StyleCatalog {
             );
         }
         Ok(())
+    }
+
+    /// Resolve a detected (or named) style into the LoRAs + trigger phrase
+    /// the generation pipeline will apply.
+    ///
+    /// `strength_multiplier` scales every LoRA's `:scale` suffix. `1.0`
+    /// uses the catalog's authored scales verbatim. The resulting `spec`
+    /// strings are in plakat's existing `LoraSpec::from_str` grammar —
+    /// pass them straight into the LoRA-stacking path.
+    ///
+    /// Returns an empty `ResolvedStyle` when the style has no `models`
+    /// section at all (detection-only style; the caller should warn but
+    /// continue). Returns an error when the style has models for *other*
+    /// bases but not the requested one — that's a real cross-base
+    /// coverage gap, not an authoring choice.
+    pub fn resolve(
+        &self,
+        style_id: &str,
+        base: BaseModel,
+        strength_multiplier: f32,
+    ) -> Result<ResolvedStyle> {
+        let style = self
+            .styles
+            .get(style_id)
+            .ok_or_else(|| anyhow!("unknown style id '{}'", style_id))?;
+
+        if style.models.is_empty() {
+            return Ok(ResolvedStyle {
+                style_id: style_id.to_owned(),
+                loras: Vec::new(),
+                trigger: String::new(),
+                negative_extras: String::new(),
+            });
+        }
+
+        let model_entry = style.models.get(&base).ok_or_else(|| {
+            let mut supported: Vec<&'static str> = style.models.keys().map(|b| b.slug()).collect();
+            supported.sort();
+            anyhow!(
+                "style '{}' has no LoRA mapping for {}; supported bases for this style: [{}]",
+                style_id,
+                base.slug(),
+                supported.join(", ")
+            )
+        })?;
+
+        let loras = model_entry
+            .loras
+            .iter()
+            .map(|entry| ResolvedLoraRef {
+                spec: rewrite_scale(entry.spec(), strength_multiplier),
+                revision: entry.revision().map(str::to_owned),
+            })
+            .collect();
+
+        Ok(ResolvedStyle {
+            style_id: style_id.to_owned(),
+            loras,
+            trigger: model_entry.trigger.clone(),
+            negative_extras: model_entry.negative_extras.clone(),
+        })
+    }
+}
+
+impl ResolvedStyle {
+    /// True when this style has no LoRAs and no trigger phrase configured
+    /// — i.e. the catalog can detect this style but has no transfer
+    /// instructions. Callers should warn and proceed without injecting.
+    pub fn is_detection_only(&self) -> bool {
+        self.loras.is_empty() && self.trigger.is_empty() && self.negative_extras.is_empty()
+    }
+}
+
+/// Multiply the trailing `:scale` on a LoRA spec by `mult`. Re-emits the
+/// spec in the same grammar `LoraSpec::from_str` accepts.
+///
+/// Cases:
+/// - `"org/repo:0.8"`, `mult=0.5` → `"org/repo:0.4"`
+/// - `"org/repo"`, `mult=0.7` → `"org/repo:0.7"` (no prior scale; assume 1.0)
+/// - `"org/repo#f.safetensors:0.8"`, `mult=2.0` → `"org/repo#f.safetensors:1.6"`
+/// - `"/abs/path:0.6"`, `mult=1.0` → `"/abs/path:0.6"`
+fn rewrite_scale(spec: &str, mult: f32) -> String {
+    if let Some((head, tail)) = spec.rsplit_once(':') {
+        if let Ok(scale) = tail.parse::<f32>() {
+            return format!("{}:{}", head, scale * mult);
+        }
+    }
+    // No trailing `:float` — treat as implicit 1.0 and emit explicit scale.
+    format!("{}:{}", spec, mult)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_scale_preserves_grammar() {
+        // Standard HF spec with explicit scale.
+        assert_eq!(rewrite_scale("org/repo:0.8", 0.5), "org/repo:0.4");
+        // No prior scale — implicit 1.0.
+        assert_eq!(rewrite_scale("org/repo", 0.7), "org/repo:0.7");
+        // HF spec with explicit file path inside the repo.
+        assert_eq!(
+            rewrite_scale("org/repo#f.safetensors:0.8", 2.0),
+            "org/repo#f.safetensors:1.6"
+        );
+        // Local path.
+        assert_eq!(rewrite_scale("/abs/path:0.6", 1.0), "/abs/path:0.6");
+        // Identity: mult=1.0 leaves scaled specs unchanged.
+        assert_eq!(rewrite_scale("repo:0.8", 1.0), "repo:0.8");
+    }
+
+    #[test]
+    fn base_model_from_variant_collapses_to_3_slots() {
+        assert_eq!(BaseModel::from_variant(Variant::Sd15), BaseModel::Sd15);
+        assert_eq!(BaseModel::from_variant(Variant::Sd21), BaseModel::Sd15);
+        assert_eq!(BaseModel::from_variant(Variant::Sdxl), BaseModel::Sdxl);
+        assert_eq!(BaseModel::from_variant(Variant::SdxlTurbo), BaseModel::Sdxl);
+        assert_eq!(BaseModel::from_variant(Variant::FluxSchnell), BaseModel::Flux);
+        assert_eq!(BaseModel::from_variant(Variant::FluxDev), BaseModel::Flux);
     }
 }

@@ -1,12 +1,17 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use candle_core::Device;
 use clap::Args as ClapArgs;
-use std::path::PathBuf;
 
 use crate::imaging::sizes::Size;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::t2i;
+use crate::style::{
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
+    StylePrepRequest,
+};
 
 #[derive(ClapArgs, Debug)]
 pub struct GenerateArgs {
@@ -94,9 +99,38 @@ pub struct GenerateArgs {
     /// 0.8 = last 20% of steps run on the refiner.
     #[arg(long, default_value_t = 0.8)]
     pub refiner_frac: f32,
+
+    /// Detect art style from this photo and load the matching LoRAs from
+    /// the style catalog. Composes with --style to override the detected
+    /// result by name. Conflicts with --lora (catalog LoRAs win, with a
+    /// warning).
+    #[arg(long, value_name = "PATH")]
+    pub style_ref: Option<PathBuf>,
+
+    /// Pick a style by id from the catalog. Bypasses detection when used
+    /// alone; overrides the detection result when combined with
+    /// --style-ref. See `plakat style list` (when shipped).
+    #[arg(long, value_name = "ID")]
+    pub style: Option<String>,
+
+    /// Multiplier applied to every catalog LoRA's :scale. 1.0 uses the
+    /// catalog's authored scales verbatim. Above ~1.8 most LoRAs start
+    /// to degrade the prompt.
+    #[arg(long, default_value_t = 1.0)]
+    pub style_strength: f32,
+
+    /// Override the bundled style catalog directory.
+    #[arg(long, value_name = "DIR")]
+    pub style_catalog: Option<PathBuf>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    // Style detection / resolution runs BEFORE the enhancer so the
+    // trigger phrase carries the LoRA's training tokens unaltered.
+    if args.style_ref.is_some() || args.style.is_some() {
+        apply_style(&mut args, &device).await?;
+    }
+
     if let Some(provider) = args.enhance.clone() {
         let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
@@ -128,4 +162,26 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         refiner_frac: args.refiner_frac,
     })
     .await
+}
+
+async fn apply_style(args: &mut GenerateArgs, device: &Device) -> Result<()> {
+    let n_user_loras = args.loras.len();
+    let prep = prepare_style(StylePrepRequest {
+        style_ref: args.style_ref.as_deref(),
+        style_override: args.style.as_deref(),
+        style_strength: args.style_strength,
+        style_catalog: args.style_catalog.as_deref(),
+        model: &args.model,
+        user_loras_nonempty: !args.loras.is_empty(),
+        device,
+    })
+    .await?;
+
+    log_style_prep(&prep, n_user_loras);
+
+    args.loras = parse_resolved_loras(&prep)?;
+    args.prompt = prepend_trigger(&prep.trigger, &args.prompt);
+    args.negative = combine_negative(&args.negative, &prep.negative_extras);
+
+    Ok(())
 }
