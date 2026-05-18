@@ -1,7 +1,3 @@
-// Spike: this module's surface is unused until the `plakat style detect`
-// CLI lands in commit 4. Remove these allows once that commit lands.
-#![allow(dead_code, unused_imports)]
-
 //! Art-style detection and transfer.
 //!
 //! Two halves:
