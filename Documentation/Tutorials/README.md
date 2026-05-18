@@ -30,6 +30,22 @@ If you're new to plakat, work through these in order:
    end-to-end pipeline (organize → init → build → use) and adding
    LoRAs to make detection turn into real style transfer.
 
+## Specialized portrait techniques
+
+After the foundational portrait tutorial, these dive into specific
+creative applications of plakat's weighted multi-reference portrait
+feature:
+
+- [`PORTRAIT_HOW_TO_AGE.md`](PORTRAIT_HOW_TO_AGE.md) — interpolate a
+  person across ages using photos of the same person at different
+  ages and weighted merging. Render plausible portraits at any
+  intermediate age.
+
+- [`PORTRAIT_CHILD_PHOTO.md`](PORTRAIT_CHILD_PHOTO.md) — blend two
+  parent photos into a plausible child portrait. Combines identity-
+  space merging with age-appropriate prompt cues to produce "average
+  child" or "looks more like X" variants.
+
 ## What each tutorial assumes
 
 | Tutorial | Prerequisites |
@@ -38,6 +54,8 @@ If you're new to plakat, work through these in order:
 | `PORTRAIT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. |
 | `STYLES_TUTORIAL.md` | Above + finished `PORTRAIT_TUTORIAL.md` (helpful but not required). |
 | `HOW_TO_CREATE_MY_OWN_STYLE.md` | Above + finished `STYLES_TUTORIAL.md`. Plus a corpus of images you want to teach plakat. |
+| `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
+| `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
 
 ## When to use a reference manual instead
 
