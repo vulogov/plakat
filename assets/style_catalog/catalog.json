@@ -54,6 +54,74 @@
           "trigger": "photograph, photorealistic, 35mm film, natural lighting"
         }
       }
+    },
+    {
+      "description": "Classical oil painting; visible brushwork, rich palette, canvas texture.",
+      "display_name": "Oil Painting",
+      "exemplar_keys": [
+        "oil_painting/00",
+        "oil_painting/01",
+        "oil_painting/02",
+        "oil_painting/03"
+      ],
+      "id": "oil_painting",
+      "models": {
+        "sd15": {
+          "loras": [
+            {
+              "license": null,
+              "license_url": "https://huggingface.co/Jehugging/oilpaint_lora",
+              "revision": "957cbf5daea6684e96b6308cf57775ad00a695c4",
+              "spec": "Jehugging/oilpaint_lora#S_oilpainting-07.safetensors:0.8"
+            }
+          ],
+          "negative_extras": "photo, 3d render, digital, smooth, glossy",
+          "trigger": "oil painting, impressionism, brush touch style, warm light"
+        }
+      }
+    },
+    {
+      "description": "Edo-period Japanese woodblock print; flat color, fine ink lineart, traditional subjects.",
+      "display_name": "Ukiyo-e",
+      "exemplar_keys": [
+        "ukiyo_e/00",
+        "ukiyo_e/01",
+        "ukiyo_e/02",
+        "ukiyo_e/03"
+      ],
+      "id": "ukiyo_e",
+      "models": {
+        "sd15": {
+          "loras": [
+            {
+              "license": "creativeml-openrail-m",
+              "license_url": "https://huggingface.co/py-img-gen/lora-ukiyo-e-face-blip2-captions",
+              "revision": "64553e156e9e42569d5fb546b52f96390c55a056",
+              "spec": "py-img-gen/lora-ukiyo-e-face-blip2-captions:0.8"
+            }
+          ],
+          "negative_extras": "western art, oil painting, 3d render, photo",
+          "trigger": "ukiyo-e, edo period woodblock print, traditional japanese"
+        }
+      }
+    },
+    {
+      "description": "Flowing organic lines, decorative borders, Mucha-style portraiture.",
+      "display_name": "Art Nouveau",
+      "exemplar_keys": [
+        "art_nouveau/00",
+        "art_nouveau/01",
+        "art_nouveau/02",
+        "art_nouveau/03"
+      ],
+      "id": "art_nouveau",
+      "models": {
+        "sd15": {
+          "loras": [],
+          "negative_extras": "art deco, modern, 3d render, photo, harsh angles",
+          "trigger": "art nouveau, alphonse mucha style, decorative borders, flowing lines, ornamental"
+        }
+      }
     }
   ]
 }

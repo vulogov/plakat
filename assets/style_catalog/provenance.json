@@ -1,6 +1,30 @@
 {
   "encoder_id": "clip-h-laion2b",
   "exemplars": {
+    "art_nouveau/00": {
+      "source": "../../tests/fixtures/style_catalog/art_nouveau/01_mucha_dame_camelias.jpg"
+    },
+    "art_nouveau/01": {
+      "source": "../../tests/fixtures/style_catalog/art_nouveau/02_mucha_biscuits.jpg"
+    },
+    "art_nouveau/02": {
+      "source": "../../tests/fixtures/style_catalog/art_nouveau/03_mucha_salammbo.jpg"
+    },
+    "art_nouveau/03": {
+      "source": "../../tests/fixtures/style_catalog/art_nouveau/04_mucha_imprimerie.jpg"
+    },
+    "oil_painting/00": {
+      "source": "../../tests/fixtures/style_catalog/oil_painting/01_rembrandt_self_portrait.jpg"
+    },
+    "oil_painting/01": {
+      "source": "../../tests/fixtures/style_catalog/oil_painting/02_vermeer_pearl_earring.jpg"
+    },
+    "oil_painting/02": {
+      "source": "../../tests/fixtures/style_catalog/oil_painting/03_sargent_lady_agnew.jpg"
+    },
+    "oil_painting/03": {
+      "source": "../../tests/fixtures/style_catalog/oil_painting/04_waterhouse_lady_shalott.jpg"
+    },
     "photorealistic/00": {
       "source": "../../tests/fixtures/style_catalog/photorealistic/01_apollo11_step.jpg"
     },
@@ -12,6 +36,18 @@
     },
     "photorealistic/03": {
       "source": "../../tests/fixtures/style_catalog/photorealistic/04_buzz_flag.jpg"
+    },
+    "ukiyo_e/00": {
+      "source": "../../tests/fixtures/style_catalog/ukiyo_e/01_hokusai_great_wave.jpg"
+    },
+    "ukiyo_e/01": {
+      "source": "../../tests/fixtures/style_catalog/ukiyo_e/02_hiroshige_arashiyama.jpg"
+    },
+    "ukiyo_e/02": {
+      "source": "../../tests/fixtures/style_catalog/ukiyo_e/03_hiroshige_shellfish.jpg"
+    },
+    "ukiyo_e/03": {
+      "source": "../../tests/fixtures/style_catalog/ukiyo_e/04_hokusai_saigyo.jpg"
     },
     "watercolor/00": {
       "source": "../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg"
