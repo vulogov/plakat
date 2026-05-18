@@ -10,36 +10,6 @@ Style detection resolves to a *named, reusable* style → reproducible
 across runs, works on every base model with catalog coverage, and
 composes cleanly with the LoRA stack.
 
-## Implementation status
-
-| Surface | Status |
-|---|---|
-| Detection module (`src/style/`) | **shipped** |
-| `plakat style detect <PHOTO>` | **shipped** |
-| `plakat style list` | **shipped** |
-| `plakat style show <ID>` | **shipped** |
-| Catalog → LoRA resolution (`StyleCatalog::resolve`) | **shipped** |
-| `--style-ref` / `--style` / `--style-strength` / `--style-catalog` on `plakat generate` | **shipped** |
-| `--style-ref` / `--style` / `--style-strength` / `--style-catalog` on `plakat portrait` | **shipped** |
-| `style-ref` / `style` / `style-strength` / `style-catalog` in scenarios (global) | **shipped** |
-| Bundled catalog: 5 styles (`watercolor`, `photorealistic`, `oil_painting`, `ukiyo_e`, `art_nouveau`) | **shipped** |
-| Curated LoRA pins (3 functioning LoRAs across the 5 styles; 2 trigger-only) | **shipped** |
-| End-to-end style transfer through standard SD 1.5 pipeline | **shipped** |
-| Revision-SHA threading from catalog → HF download | **shipped** |
-| Per-task `style-ref` in scenarios (trigger + negative only) | **shipped** |
-| `plakat style probe` | **shipped** |
-| Catalog-build tool (`src/bin/build_catalog.rs`) | **shipped** |
-| `LICENSES.md` + `provenance.json` sidecars | **shipped** |
-| `plakat style init` — bootstrap a catalog HJSON from a corpus directory | **shipped** |
-| `style-ref` field in scenarios | designed, not implemented |
-| Catalog-build tool (`tools/build-style-catalog/`) | spike uses `examples/spike_catalog.rs` |
-| Expanded catalog (10 seed styles + LoRA pins) | not yet curated |
-
-Sections below covering not-yet-implemented surfaces describe the
-designed behavior. They are kept here so the documented end-state is
-visible while the rest is being built; each carries an inline
-**Status:** note.
-
 ## Quick start
 
 ```bash
@@ -56,11 +26,6 @@ Top 2:
   2. photorealistic       0.0977
 ```
 
-What works today: detection prints what style your reference photo looks
-most like. What's coming: passing `--style-ref` to `plakat generate`
-will resolve the detected style to a LoRA stack and run generation in
-that style.
-
 ## How it works
 
 1. **Encode** — the reference photo is resized to 224², CLIP-normalized,
@@ -76,13 +41,12 @@ that style.
    `min_confidence` (default 0.22). If the top-1 doesn't beat top-2 by
    `margin_over_runner_up` (default 0.02), the result is flagged
    ambiguous.
-5. **Resolve** — *(not yet implemented)* the matched style is looked up
-   in the catalog, which maps it to one or more LoRAs for your active
-   base model (SD 1.5, SDXL, or Flux) plus a trigger phrase.
-6. **Generate** — *(not yet implemented)* the LoRAs are downloaded
-   (cached after first use) and merged into the UNet. The trigger
-   phrase is prepended to your prompt. Generation proceeds through the
-   standard pipeline.
+5. **Resolve** — the matched style is looked up in the catalog,
+   which maps it to one or more LoRAs for your active base model
+   (SD 1.5, SDXL, or Flux) plus a trigger phrase.
+6. **Generate** — the LoRAs are downloaded (cached after first use)
+   and merged into the UNet. The trigger phrase is prepended to your
+   prompt. Generation proceeds through the standard pipeline.
 
 ## The catalog
 
@@ -129,9 +93,7 @@ exemplars, detection policy thresholds, and per-style routing
       "exemplar_keys": ["watercolor/00", "watercolor/01", "watercolor/02", "watercolor/03"],
 
       // Per-base-model routing. Missing slot means: style is detectable
-      // but not transferable onto that base. Status: schema is read by
-      // the loader today; the resolve API that consumes it is not yet
-      // implemented.
+      // but not transferable onto that base.
       "models": {
         "sd15": {
           "loras": [
@@ -262,13 +224,12 @@ Override with `--catalog <DIR>`:
 plakat style detect ./inspiration.jpg --catalog ./my_catalog/
 ```
 
-For installed binaries, the deployment story (system data dir vs.
-user-config dir vs. auto-download) is not yet decided. Use the explicit
-`--catalog` flag for now.
+For installed binaries, point `--catalog` (or `--style-catalog`) at
+the directory containing your built catalog files.
 
 ## CLI
 
-### `plakat style detect <PHOTO>` — shipped
+### `plakat style detect <PHOTO>`
 
 Detect art style from a photo. Prints top-K matches, doesn't generate.
 
@@ -321,7 +282,7 @@ States the output can take:
 `ambiguous` is `true` when the top two scores are within margin.
 Suitable for `jq`-style scripting or CI integration.
 
-### `plakat style list` — shipped
+### `plakat style list`
 
 Lists every style in the catalog with a one-line description.
 
@@ -350,7 +311,7 @@ The `Ex` column shows exemplar count; `Bases` lists every base-model
 slot with at least one LoRA configured. `(none)` means the style is
 detection-only.
 
-### `plakat style show <ID>` — shipped
+### `plakat style show <ID>`
 
 Full info for one style: description, exemplar count, per-base LoRA
 specs (with revision pins), trigger phrases, negative-prompt
@@ -391,7 +352,7 @@ Models:
     trigger:   "watercolor, painterly"
 ```
 
-### `plakat style init` — shipped
+### `plakat style init`
 
 Scan a directory of images and emit a starter catalog HJSON for the
 catalog-build tool to consume. Useful for bootstrapping a personal
@@ -484,7 +445,7 @@ edit the HJSON anyway.
   HuggingFace for matching LoRAs; that's the editorial work the
   curator has to do.
 
-### `plakat style probe` — shipped
+### `plakat style probe`
 
 Confirms every LoRA in the catalog still resolves on HuggingFace.
 HEAD-requests `https://huggingface.co/<repo>/resolve/<revision>/<file>`
@@ -654,9 +615,7 @@ emits a warning and uses catalog LoRAs only:
 ⚠ --style-ref overrides 2 user-specified LoRA(s); using catalog LoRAs only
 ```
 
-To stack user LoRAs *on top of* a named style, use `--style <id>` —
-that path is designed to compose with user LoRAs but is not yet
-implemented; today both `--style` and `--style-ref` replace user LoRAs.
+Both `--style` and `--style-ref` replace user LoRAs when set.
 
 ### Behavior when the detected style has no LoRA for the active base
 
@@ -664,8 +623,7 @@ Three cases:
 
 - **Style has no `models` section at all.** Treated as
   "detection-only" — generation proceeds with no LoRAs and no trigger
-  injection, with a one-line warning. This is what happens with the
-  spike catalog today (no LoRAs configured yet).
+  injection, with a one-line warning.
 - **Style has `models` for other bases but not the active one.**
   Hard error with an actionable message listing which bases the style
   does support:
@@ -679,10 +637,9 @@ Three cases:
 
 ## Integration with `plakat portrait`
 
-**Status:** shipped. Same four flags, same precedence with `--lora`,
-same warning behaviors as `plakat generate`.
-
-`plakat portrait` keeps two reference photos separate by design:
+Same four flags, same precedence with `--lora`, same warning
+behaviors as `plakat generate`. `plakat portrait` keeps two reference
+photos separate by design:
 
 - `--photo` → **identity** reference (who the portrait depicts).
   Used by FaceID / Plus-Face / similar identity adapters. See PERSONA.md.
@@ -732,10 +689,10 @@ away from competing rendering styles.
 
 ## Integration with scenarios
 
-**Status:** shipped at the global level (whole scenario inherits a
-single style). Per-task `style-ref` overrides are not yet supported.
-
-The scenario HJSON accepts four new top-level fields:
+Scenarios apply a style either globally (whole scenario inherits a
+single style) or per-task (each task can override the global with its
+own `style-ref:`). The scenario HJSON accepts four new top-level
+fields:
 
 ```hjson
 {
@@ -818,10 +775,7 @@ options:
 - Set a per-task `negative:` that literally includes the style's
   `negative_extras` text. Acceptable for one-off task tuning.
 
-A future iteration may auto-merge the style negatives into per-task
-overrides; today it's an explicit choice.
-
-### Per-task `style-ref` — shipped
+### Per-task `style-ref`
 
 A task can override the scenario's global style with its own
 `style-ref:`. The CLIP-H encoder is loaded once and shared via an
@@ -908,26 +862,24 @@ not with the global style's contribution. This symmetry mirrors how
 global style applies to user-authored values rather than to anything
 already modified.
 
-#### What's not yet shipped
+#### Constraints on per-task style fields
 
-- **Per-task `style:` (pick by id)** — the existing per-task `style:`
-  field already means "IP-Adapter REF stylize-pass photo" for
-  backwards compatibility. To pick a catalog style by id per-task,
-  use the scenario's global `style:` field and group same-style tasks
-  into one scenario.
-- **Per-task `style-strength:`** — same reasoning; the existing
-  per-task `style-strength:` controls the IP-Adapter pass. Catalog
-  strength is global-only for now.
-- **Per-task LoRA swaps** — out of scope; see "trigger + negative only"
-  above.
+- **Per-task `style:` (pick by id) is not available.** The existing
+  per-task `style:` field already means "IP-Adapter REF stylize-pass
+  photo." To pick a catalog style by id per-task, use the scenario's
+  global `style:` field and group same-style tasks into one scenario.
+- **Per-task `style-strength:` is not available.** Same reasoning;
+  the existing per-task `style-strength:` controls the IP-Adapter
+  pass. Catalog strength is global-only.
+- **Per-task LoRA swaps are not supported.** See "trigger + negative
+  only" above — scenarios share one pre-loaded pipeline.
 
 ## Building a custom catalog
 
-**Status:** shipped. The catalog-build tool is at
-`src/bin/build_catalog.rs` — built alongside the main `plakat` binary
-as a secondary executable. It reads a curator-authored HJSON config,
-encodes exemplar images through CLIP-H, and emits a complete catalog
-with sidecar files.
+The catalog-build tool is at `src/bin/build_catalog.rs` — built
+alongside the main `plakat` binary as a secondary executable. It reads
+a curator-authored HJSON config, encodes exemplar images through
+CLIP-H, and emits a complete catalog with sidecar files.
 
 ### Usage
 
@@ -1076,12 +1028,6 @@ from the same sources should produce the same `exemplars.safetensors`:
 }
 ```
 
-### Deprecated: `examples/spike_catalog.rs`
-
-The earlier spike builder is retained as a ~100-LoC minimal reference
-showing the encode-and-emit-safetensors flow without HJSON parsing,
-validation, or sidecar emission. Use `build_catalog` for any actual
-curation work.
 
 ## Tuning
 
@@ -1112,15 +1058,15 @@ curation work.
 
 ### `min_confidence` threshold
 
-The spike's `0.22` default works for the seed styles. Re-tune when:
+The default `0.22` works for the bundled styles. Re-tune when:
 
 - You expand the catalog and see false-positive picks → raise it.
 - You see correct picks getting rejected → lower it.
 
 CLIP-H pooled cosines on style-discrimination tasks typically land in
-the `[0.15, 0.55]` range; the spike's observed values (`0.10` for
-out-of-style, `0.50+` for in-style) span most of that range, giving
-plenty of headroom.
+the `[0.15, 0.55]` range; the bundled catalog's observed values
+(`0.10` for out-of-style, `0.50+` for in-style) span most of that
+range, giving plenty of headroom.
 
 ### `margin_over_runner_up`
 
@@ -1165,7 +1111,7 @@ LoRA downloads (per detected style) are deferred until the
   and download cannot diverge.
 - **LoRA availability isn't guaranteed.** Catalog LoRAs point at HF
   repos that can occasionally disappear or be renamed. `plakat style
-  probe` (when shipped) will catch this early.
+  probe` catches this early.
 - **Plakat doesn't redistribute LoRA weights.** The catalog stores
   references; users download on demand. Each LoRA's license is the
   user's responsibility — `plakat style show <ID>` displays the
@@ -1205,7 +1151,7 @@ JSON doesn't match what was actually written. Rebuild the catalog.
 
 **`Detected: (none above min_confidence)`**
 Reference photo doesn't match any catalog style strongly. Either:
-- Use `--style <id>` (once shipped) to force a specific style.
+- Use `--style <id>` to force a specific style.
 - Expand the catalog with more representative exemplars.
 - Lower `min_confidence` in `catalog.json`.
 
@@ -1216,8 +1162,8 @@ pick the better result.
 
 ## Testing
 
-The spike's smoke test lives at `tests/style_detect_smoke.rs`. It runs
-three checks against the bundled catalog:
+The smoke test lives at `tests/style_detect_smoke.rs`. It runs three
+checks against the bundled catalog:
 
 1. A held-out watercolor (`Sargent — Under the Willows`) picks the
    `watercolor` style with score above `min_confidence`.
@@ -1249,9 +1195,9 @@ holdout score:  0.5037 (watercolor)
 test result: ok. 3 passed; 0 failed
 ```
 
-The cosine numbers above are the spike's validation: CLIP-H pooled
-embeddings carry plenty of style signal to discriminate the two seed
-styles with a 0.3+ margin between right and wrong.
+The cosine numbers above demonstrate that CLIP-H pooled embeddings
+carry plenty of style signal to discriminate the bundled styles with
+a 0.3+ margin between right and wrong.
 
 ## See also
 
