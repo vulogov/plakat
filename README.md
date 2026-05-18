@@ -1,5 +1,7 @@
 # plakat
 
+![](examples/scenario/forest_snow/plakat-1004.png)
+
 Local text-to-image generation, style transfer, LoRA stacking, ML upscaling,
 and batch scenarios — all built on [candle](https://github.com/huggingface/candle).
 Pure Rust inference. No Python, no PyTorch, no external T2I services.
