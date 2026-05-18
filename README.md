@@ -37,6 +37,13 @@ plakat generate "a brutalist poster of a whale, watercolor" --seed 42
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
     --photo face.jpg --face-strength 0.8
 
+# Weighted multi-reference portrait: merge facial features
+# from several photos (averaging, aging, blending)
+plakat portrait "a portrait, soft window light" \
+    --photo person_age_25.jpg:0.6 \
+    --photo person_age_55.jpg:0.4 \
+    --face-strength 0.85
+
 # Apply a bundled art style by name
 plakat generate "a fox in tall grass" --style watercolor
 
@@ -58,7 +65,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux. |
-| `portrait <PROMPT>` | Portrait generation, optionally guided by a reference photo. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
+| `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
@@ -74,7 +81,10 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   step-by-step walkthroughs. Start here if you're new to plakat or
   text-to-image generation. See
   [Tutorials/README.md](Documentation/Tutorials/README.md) for the
-  recommended reading order.
+  recommended reading order. Specialized portrait recipes:
+  [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
+  and
+  [blending parents into a child portrait](Documentation/Tutorials/PORTRAIT_CHILD_PHOTO.md).
 - **[Reference manuals](Documentation/)** — exhaustive per-feature
   documentation:
   - [`GENERATE.md`](Documentation/GENERATE.md) — text-to-image,

@@ -474,6 +474,23 @@ personas:
 `photo:` (singular) and `photos:` (list) are mutually exclusive — set
 one or the other.
 
+### Going deeper
+
+Two specialized tutorials build on this section:
+
+- [`PORTRAIT_HOW_TO_AGE.md`](PORTRAIT_HOW_TO_AGE.md) — using
+  multi-reference merging to render a person at intermediate ages.
+  Same person, photos at different ages, weights walk you across age
+  space.
+
+- [`PORTRAIT_CHILD_PHOTO.md`](PORTRAIT_CHILD_PHOTO.md) — blending two
+  parent photos into a plausible-child portrait. Same merging
+  machinery applied across two different people, combined with
+  child-age prompt cues.
+
+Both tutorials assume you've finished this one and have the
+multi-reference basics down.
+
 ---
 
 ## 12. Common issues
