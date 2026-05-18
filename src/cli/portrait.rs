@@ -181,6 +181,29 @@ pub struct PortraitArgs {
     /// Override the bundled style catalog directory.
     #[arg(long, value_name = "DIR")]
     pub style_catalog: Option<PathBuf>,
+
+    /// Composite a named artefact (PNG cutout from the artefact library)
+    /// into the portrait. Repeatable. Grammar: `NAME[@ZONE[:SCALE]]` —
+    /// same as `plakat generate`. See `plakat artefact list`.
+    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
+
+    /// Override the bundled artefact library directory.
+    #[arg(long, value_name = "DIR")]
+    pub artefact_library: Option<PathBuf>,
+
+    /// After alpha-compositing artefacts, run a low-strength masked
+    /// img2img blending pass over the artefact zones. Smooths hard
+    /// edges and modest lighting mismatches at the cost of one extra
+    /// short denoise pass (~2–5 s per image on GPU). Default: off
+    /// (v1 alpha-only).
+    #[arg(long = "artefact-blend", default_value_t = false)]
+    pub artefact_blend: bool,
+
+    /// img2img strength for `--artefact-blend`. 0.0 = no-op,
+    /// 1.0 = full re-noise inside the mask. Sweet spot: 0.25–0.4.
+    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    pub artefact_blend_strength: f32,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -281,6 +304,26 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         Some(args.identity)
     };
 
+    let out_dir = args.out.clone();
+    let count = args.count;
+    // Pre-resolve the seed at the CLI boundary so the artefact compositor /
+    // blender know which output files to read back.
+    let seed = Some(args.seed.unwrap_or_else(rand::random));
+    let artefact_specs = args.artefacts.clone();
+    let artefact_library = args
+        .artefact_library
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+
+    let prompt = args.prompt.clone();
+    let negative_for_blend = negative.clone();
+    let model = args.model.clone();
+    let loras = args.loras.clone();
+    let lora_scale = args.lora_scale;
+    let scheduler = args.scheduler;
+    let steps = args.steps;
+    let guidance = args.guidance;
+
     portrait::run(portrait::Request {
         prompt: args.prompt,
         negative,
@@ -291,9 +334,9 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         count: args.count,
         steps: args.steps,
         guidance: args.guidance,
-        seed: args.seed,
+        seed,
         out_dir: args.out,
-        device,
+        device: device.clone(),
         loras: args.loras,
         lora_scale: args.lora_scale,
         scheduler: args.scheduler,
@@ -304,7 +347,55 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         face_landmarks: args.face_landmarks,
         identity,
     })
-    .await
+    .await?;
+
+    // Composite any --artefact onto the saved portrait file(s).
+    crate::artefacts::composite_onto_seed_range(
+        &artefact_specs,
+        &artefact_library,
+        &out_dir,
+        seed,
+        count,
+        "plakat-portrait",
+        width,
+        height,
+        &Default::default(),
+    )?;
+
+    // v2: optional masked img2img blend over the artefact zones.
+    if args.artefact_blend && !artefact_specs.is_empty() {
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-portrait-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        crate::pipelines::artefact_blend::blend_files(
+            crate::pipelines::artefact_blend::BlendConfig {
+                model,
+                device,
+                loras,
+                lora_scale,
+                prompt,
+                negative: negative_for_blend,
+                image_w: width,
+                image_h: height,
+                steps,
+                guidance,
+                scheduler,
+                strength: args.artefact_blend_strength,
+                feather_px: None,
+            },
+            &artefact_specs,
+            &artefact_library,
+            &files,
+            &Default::default(),
+            seed,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn apply_style(

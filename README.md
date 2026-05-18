@@ -44,6 +44,14 @@ plakat portrait "a portrait, soft window light" \
     --photo person_age_55.jpg:0.4 \
     --face-strength 0.85
 
+# Composite named cutout artefacts (trees, sky elements, houses, ...) 
+# into named zones of the generated image. Add --artefact-blend for a
+# short masked img2img pass that smooths the pasted edges.
+plakat generate "a green meadow under a blue sky" \
+    --artefact oak@middle_plan/left \
+    --artefact sun@sky/right \
+    --artefact-blend
+
 # Apply a bundled art style by name
 plakat generate "a fox in tall grass" --style watercolor
 
@@ -68,6 +76,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
+| `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
@@ -93,6 +102,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     preservation, ArcFace / SCRFD setup, multi-persona compositing.
   - [`STYLES.md`](Documentation/STYLES.md) — style catalogs, the
     `plakat style` subcommands, building your own catalog.
+  - [`ARTEFACTS.md`](Documentation/ARTEFACTS.md) — placing named PNG
+    cutouts into named zones of generated images.
 
 ## License
 

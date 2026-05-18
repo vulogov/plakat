@@ -102,6 +102,24 @@ struct ScenarioFile {
     #[serde(rename = "style-catalog", default)]
     style_catalog: Option<PathBuf>,
 
+    // ---------- artefact compositing ----------
+    /// Override the bundled artefact library directory. Per-task
+    /// `artefacts: [...]` references resolve against this library.
+    #[serde(rename = "artefact-library", default)]
+    artefact_library: Option<PathBuf>,
+    /// Override the default zone grid (normalized `[0, 1]` band
+    /// extents). Missing bands fall back to the default 4×3 grid.
+    #[serde(default)]
+    zones: crate::artefacts::ZoneOverrides,
+    /// v2: enable the masked img2img blending pass after alpha
+    /// compositing. Set per-task via `artefact-blend: true`, or
+    /// scenario-wide here. Default off (v1 alpha-only).
+    #[serde(rename = "artefact-blend", default)]
+    artefact_blend: bool,
+    /// img2img strength for the v2 blend pass. Sweet spot: 0.25–0.4.
+    #[serde(rename = "artefact-blend-strength", default)]
+    artefact_blend_strength: Option<f32>,
+
     // ---------- post-generate options ----------
     #[serde(default)]
     upscale: UpscaleConfig,
@@ -366,6 +384,26 @@ struct TaskDef {
     /// REF stylize pass) — different feature.
     #[serde(rename = "style-ref", default)]
     style_ref_catalog: Option<PathBuf>,
+
+    /// Composite named artefacts (PNG cutouts from the library) onto
+    /// this task's output. Accepts either CLI-grammar shorthand
+    /// strings (`"oak@middle_plan/left"`) or full objects with
+    /// per-artefact `offset`, `anchor`, `flip`, `alpha` overrides.
+    /// Compositing happens BEFORE any per-task stylize / upscale pass,
+    /// so the IP-Adapter stylize re-paints over the composited
+    /// artefacts (often a feature: it unifies the palette).
+    #[serde(default)]
+    artefacts: Vec<crate::artefacts::ArtefactSpecEntry>,
+
+    /// v2: per-task override for the masked img2img blend pass.
+    /// `None` inherits the scenario-level `artefact-blend:` field.
+    #[serde(rename = "artefact-blend", default)]
+    artefact_blend: Option<bool>,
+
+    /// v2: per-task override for blend strength. `None` inherits the
+    /// scenario-level `artefact-blend-strength:` (default 0.3).
+    #[serde(rename = "artefact-blend-strength", default)]
+    artefact_blend_strength: Option<f32>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -1369,6 +1407,76 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // Dry-run path doesn't reach here.
                 (None, None) => unreachable!("non-dry-run task without a pipeline"),
             }
+            }
+        }
+
+        // -------- artefact compositing (post-generate, pre-stylize) --------
+        // Stylize will re-paint over the composited artefacts via IP-Adapter,
+        // unifying their palette with the generated scene — that's the
+        // reason this step lands before stylize, not after.
+        if !task.artefacts.is_empty() {
+            let specs: Vec<crate::artefacts::ArtefactSpec> = task
+                .artefacts
+                .iter()
+                .map(crate::artefacts::ArtefactSpecEntry::to_spec)
+                .collect::<Result<_>>()
+                .with_context(|| format!("task {:?}: parsing artefact specs", task.name))?;
+            let library_dir = s
+                .artefact_library
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+            crate::artefacts::composite_onto_seed_range(
+                &specs,
+                &library_dir,
+                &task_out,
+                Some(task_seed),
+                eff_count,
+                prefix,
+                eff_w,
+                eff_h,
+                &s.zones,
+            )
+            .with_context(|| format!("task {:?}: compositing artefacts", task.name))?;
+
+            // v2: masked img2img blending pass — per-task override
+            // falls back to scenario-level toggle.
+            let blend_on = task.artefact_blend.unwrap_or(s.artefact_blend);
+            if blend_on {
+                let strength = task
+                    .artefact_blend_strength
+                    .or(s.artefact_blend_strength)
+                    .unwrap_or(0.3);
+                let files: Vec<PathBuf> = (0..eff_count)
+                    .map(|i| {
+                        let seed = task_seed.wrapping_add(i as u64);
+                        task_out.join(format!("{prefix}-{seed}.png"))
+                    })
+                    .filter(|p| p.exists())
+                    .collect();
+                crate::pipelines::artefact_blend::blend_files(
+                    crate::pipelines::artefact_blend::BlendConfig {
+                        model: model.clone(),
+                        device: device.clone(),
+                        loras: loras.clone(),
+                        lora_scale,
+                        prompt: final_prompt.clone(),
+                        negative: eff_negative.clone(),
+                        image_w: eff_w,
+                        image_h: eff_h,
+                        steps: eff_steps,
+                        guidance: eff_guidance,
+                        scheduler: eff_scheduler,
+                        strength,
+                        feather_px: None,
+                    },
+                    &specs,
+                    &library_dir,
+                    &files,
+                    &s.zones,
+                    Some(task_seed),
+                )
+                .await
+                .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
             }
         }
 

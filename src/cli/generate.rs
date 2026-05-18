@@ -122,6 +122,41 @@ pub struct GenerateArgs {
     /// Override the bundled style catalog directory.
     #[arg(long, value_name = "DIR")]
     pub style_catalog: Option<PathBuf>,
+
+    /// Composite a named artefact (PNG cutout) into the generated
+    /// image. Repeatable. Grammar: `NAME[@ZONE[:SCALE]]`. The artefact
+    /// is alpha-blended onto the generated image *after* generation
+    /// but *before* any optional stylize/upscale pass.
+    ///
+    /// Examples:
+    ///   --artefact oak                         (natural zone, default scale)
+    ///   --artefact oak@middle_plan/left        (override zone)
+    ///   --artefact sun@sky/right:0.8           (zone + scale)
+    ///
+    /// Multiple `--artefact` flags compose left-to-right (z-order
+    /// equals flag order). For per-artefact offset / anchor /
+    /// flip / alpha overrides, use the scenario `artefacts: [...]`
+    /// HJSON form.
+    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
+
+    /// Override the bundled artefact library directory.
+    #[arg(long, value_name = "DIR")]
+    pub artefact_library: Option<PathBuf>,
+
+    /// After alpha-compositing artefacts, run a low-strength masked
+    /// img2img blending pass over the artefact zones. Smooths hard
+    /// edges and modest lighting mismatches at the cost of one extra
+    /// short denoise pass (~2–5 s per image on GPU). Default: off
+    /// (v1 alpha-only).
+    #[arg(long = "artefact-blend", default_value_t = false)]
+    pub artefact_blend: bool,
+
+    /// img2img strength for `--artefact-blend`. 0.0 = no-op,
+    /// 1.0 = full re-noise inside the mask. Sweet spot: 0.25–0.4.
+    /// Higher values let the model redraw the artefact silhouette.
+    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    pub artefact_blend_strength: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -141,6 +176,23 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
     std::fs::create_dir_all(&args.out)?;
 
+    let out_dir = args.out.clone();
+    let count = args.count;
+    // Resolve the seed at the CLI boundary (rather than letting t2i pick a
+    // random one internally) so the artefact compositor knows which output
+    // files to read back. Behaviour is bit-equivalent — t2i picks the same
+    // seed if given vs. random it would otherwise pick.
+    let seed = Some(args.seed.unwrap_or_else(rand::random));
+
+    let prompt = args.prompt.clone();
+    let negative = args.negative.clone();
+    let model = args.model.clone();
+    let loras = args.loras.clone();
+    let lora_scale = args.lora_scale;
+    let scheduler = args.scheduler;
+    let steps = args.steps;
+    let guidance = args.guidance;
+
     t2i::run(t2i::Request {
         prompt: args.prompt,
         negative: args.negative,
@@ -150,9 +202,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         count: args.count,
         steps: args.steps,
         guidance: args.guidance,
-        seed: args.seed,
+        seed,
         out_dir: args.out,
-        device,
+        device: device.clone(),
         loras: args.loras,
         lora_scale: args.lora_scale,
         scheduler: args.scheduler,
@@ -161,7 +213,62 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         use_refiner: args.refiner,
         refiner_frac: args.refiner_frac,
     })
-    .await
+    .await?;
+
+    // Composite any --artefact flags onto the generated images. t2i
+    // writes `plakat-<seed>.png` files (one per image in `count`).
+    let library_dir = args
+        .artefact_library
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+    crate::artefacts::composite_onto_seed_range(
+        &args.artefacts,
+        &library_dir,
+        &out_dir,
+        seed,
+        count,
+        "plakat",
+        width,
+        height,
+        &Default::default(),
+    )?;
+
+    // v2: optional masked img2img blend over the artefact zones,
+    // smoothing the alpha-composited edges. Skipped when no
+    // artefacts were placed.
+    if args.artefact_blend && !args.artefacts.is_empty() {
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        crate::pipelines::artefact_blend::blend_files(
+            crate::pipelines::artefact_blend::BlendConfig {
+                model,
+                device,
+                loras,
+                lora_scale,
+                prompt,
+                negative,
+                image_w: width,
+                image_h: height,
+                steps,
+                guidance,
+                scheduler,
+                strength: args.artefact_blend_strength,
+                feather_px: None,
+            },
+            &args.artefacts,
+            &library_dir,
+            &files,
+            &Default::default(),
+            seed,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn apply_style(args: &mut GenerateArgs, device: &Device) -> Result<()> {

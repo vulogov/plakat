@@ -1,3 +1,4 @@
+pub mod artefact_blend;
 pub mod extra_schedulers;
 pub mod face_models;
 pub mod faceid_lora;

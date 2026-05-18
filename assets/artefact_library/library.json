@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "artefacts": [
+    {
+      "name": "sun",
+      "category": "celestial",
+      "path": "sky/sun.png",
+      "natural_zone": "sky",
+      "natural_size_pct": 0.7,
+      "anchor": "center",
+      "license": "CC0",
+      "tags": ["sky", "weather", "day"]
+    },
+    {
+      "name": "moon",
+      "category": "celestial",
+      "path": "sky/moon.png",
+      "natural_zone": "sky",
+      "natural_size_pct": 0.7,
+      "anchor": "center",
+      "license": "CC0",
+      "tags": ["sky", "weather", "night"]
+    },
+    {
+      "name": "cloud",
+      "category": "weather",
+      "path": "sky/cloud.png",
+      "natural_zone": "sky",
+      "natural_size_pct": 0.8,
+      "anchor": "center",
+      "license": "CC0",
+      "tags": ["sky", "weather"]
+    },
+    {
+      "name": "oak",
+      "category": "tree",
+      "path": "trees/oak.png",
+      "natural_zone": "middle_plan",
+      "natural_size_pct": 0.95,
+      "anchor": "bottom_center",
+      "license": "CC0",
+      "tags": ["nature", "vegetation"]
+    },
+    {
+      "name": "pine",
+      "category": "tree",
+      "path": "trees/pine.png",
+      "natural_zone": "middle_plan",
+      "natural_size_pct": 0.95,
+      "anchor": "bottom_center",
+      "license": "CC0",
+      "tags": ["nature", "vegetation", "conifer"]
+    },
+    {
+      "name": "cottage",
+      "category": "building",
+      "path": "houses/cottage.png",
+      "natural_zone": "close_plan",
+      "natural_size_pct": 0.8,
+      "anchor": "bottom_center",
+      "license": "CC0",
+      "tags": ["architecture", "rural"]
+    }
+  ]
+}
