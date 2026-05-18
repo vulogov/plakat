@@ -119,6 +119,13 @@ struct ScenarioFile {
     /// img2img strength for the v2 blend pass. Sweet spot: 0.25–0.4.
     #[serde(rename = "artefact-blend-strength", default)]
     artefact_blend_strength: Option<f32>,
+    /// v3: derive zone extents from the generated image's own depth +
+    /// luminance instead of the rigid 4×3 grid (with per-band
+    /// `zones:` overrides applied where smart resolution comes up
+    /// empty). Per-task `smart-zones: true/false` overrides. Default
+    /// off.
+    #[serde(rename = "smart-zones", default)]
+    smart_zones: bool,
 
     // ---------- post-generate options ----------
     #[serde(default)]
@@ -404,6 +411,11 @@ struct TaskDef {
     /// scenario-level `artefact-blend-strength:` (default 0.3).
     #[serde(rename = "artefact-blend-strength", default)]
     artefact_blend_strength: Option<f32>,
+
+    /// v3: per-task override for smart zones. `None` inherits the
+    /// scenario-level `smart-zones:` flag.
+    #[serde(rename = "smart-zones", default)]
+    smart_zones: Option<bool>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -940,6 +952,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         cache
     };
 
+    // -------- v3 smart-zones depth pipeline (lazy) --------
+    // Load once on first need across the run. Tasks share it so the
+    // ~99 MB Depth-Anything-V2 weights are mmap'd just once.
+    let mut smart_depth: Option<crate::pipelines::depth::DepthPipeline> = None;
+    let mut smart_depth_attempted = false;
+    let any_smart = s.smart_zones
+        || s.tasks
+            .iter()
+            .any(|t| t.smart_zones.unwrap_or(false));
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -1425,6 +1447,26 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 .artefact_library
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+
+            // v3: lazily load DepthPipeline on first task that wants it.
+            // Subsequent tasks reuse the loaded instance; load failure
+            // is sticky for the rest of the run (we don't retry).
+            let task_smart = task.smart_zones.unwrap_or(s.smart_zones);
+            if task_smart && smart_depth.is_none() && !smart_depth_attempted && any_smart {
+                smart_depth_attempted = true;
+                match crate::pipelines::depth::DepthPipeline::load(device.clone()).await {
+                    Ok(p) => smart_depth = Some(p),
+                    Err(e) => {
+                        crate::ui::progress::println(&format!(
+                            "  {} smart-zones depth load failed ({e}). Falling back \
+                             to rigid grid for this run.",
+                            style("warn:").yellow().bold(),
+                        ));
+                    }
+                }
+            }
+            let smart_ref = if task_smart { smart_depth.as_ref() } else { None };
+
             crate::artefacts::composite_onto_seed_range(
                 &specs,
                 &library_dir,
@@ -1435,6 +1477,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 eff_w,
                 eff_h,
                 &s.zones,
+                smart_ref,
             )
             .with_context(|| format!("task {:?}: compositing artefacts", task.name))?;
 
@@ -1474,6 +1517,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     &files,
                     &s.zones,
                     Some(task_seed),
+                    smart_ref,
                 )
                 .await
                 .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
