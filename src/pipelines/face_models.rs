@@ -908,28 +908,21 @@ impl FaceIdEncoder {
     }
 }
 
-impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
-    fn num_tokens(&self) -> usize {
-        FaceIdEncoder::num_tokens(self)
-    }
-
-    fn encode(
+impl FaceIdEncoder {
+    /// Resolve the alignment for one photo. Priority:
+    ///   1. Manual landmarks (caller-supplied — overrides everything)
+    ///   2. SCRFD-detected landmarks (auto-fill, if detector loaded)
+    ///   3. Manual bbox (caller-supplied)
+    ///   4. Centre-crop fallback
+    ///
+    /// In multi-photo mode this runs once per photo; SCRFD detects each
+    /// photo independently, while manual landmarks/bbox (if set) apply
+    /// uniformly to all photos.
+    fn resolve_alignment(
         &self,
         photo_path: &Path,
         opts: crate::pipelines::ip_adapter::EncodeOptions,
-    ) -> Result<Tensor> {
-        if !photo_path.exists() {
-            return Err(anyhow::anyhow!(
-                "persona photo not found: {} (resolved from current working \
-                 directory). Check the path and re-run.",
-                photo_path.display()
-            ));
-        }
-        // Alignment priority:
-        //   1. Manual landmarks (caller-supplied — overrides everything)
-        //   2. SCRFD-detected landmarks (auto-fill, if detector loaded)
-        //   3. Manual bbox (caller-supplied)
-        //   4. Centre-crop fallback
+    ) -> FaceAlignment {
         let detected_landmarks = match (&opts.face_landmarks, &self.detector) {
             (Some(_), _) => None, // user supplied; don't override
             (None, Some(det)) => {
@@ -956,8 +949,63 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
             _ => None,
         };
         let landmarks = opts.face_landmarks.or(detected_landmarks);
-        let alignment = FaceAlignment::from_options(opts.face_bbox, landmarks);
-        self.encode_photo(photo_path, alignment)
+        FaceAlignment::from_options(opts.face_bbox, landmarks)
+    }
+}
+
+impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
+    fn num_tokens(&self) -> usize {
+        FaceIdEncoder::num_tokens(self)
+    }
+
+    fn encode(
+        &self,
+        photos: &[crate::pipelines::ip_adapter::WeightedPhoto],
+        opts: crate::pipelines::ip_adapter::EncodeOptions,
+    ) -> Result<Tensor> {
+        if photos.is_empty() {
+            anyhow::bail!("FaceIdEncoder::encode called with no photos");
+        }
+        for p in photos {
+            if !p.path.exists() {
+                return Err(anyhow::anyhow!(
+                    "persona photo not found: {} (resolved from current working \
+                     directory). Check the path and re-run.",
+                    p.path.display()
+                ));
+            }
+        }
+
+        // Fast path: single photo — same flow as before, no merge overhead.
+        if photos.len() == 1 {
+            let alignment = self.resolve_alignment(&photos[0].path, opts);
+            return self.encode_photo(&photos[0].path, alignment);
+        }
+
+        // Merge path: weighted sum of per-photo ArcFace 512-d embeddings,
+        // renormalize to unit L2 (ArcFace lives on the unit sphere), then
+        // one image-proj MLP pass.
+        let mut merged: Option<Tensor> = None;
+        for p in photos {
+            let weight = p.weight.expect("normalize_photo_weights must run first");
+            let alignment = self.resolve_alignment(&p.path, opts);
+            let aligned = prepare_face_tensor(&p.path, alignment, &self.device, self.dtype)?;
+            let embedding = self.arcface.forward(&aligned)?;
+            let scaled = (embedding * weight as f64)?;
+            merged = Some(match merged {
+                Some(acc) => (acc + scaled)?,
+                None => scaled,
+            });
+        }
+        let merged = merged.expect("at least one photo");
+
+        // Renormalize: ArcFace embeddings are unit-L2 by design. A
+        // weighted sum of unit vectors generally isn't unit-norm — divide
+        // by L2 magnitude to restore the manifold the downstream MLP
+        // expects.
+        let norm = merged.sqr()?.sum_keepdim(1)?.sqrt()?; // (1, 1)
+        let renormalized = merged.broadcast_div(&norm)?;
+        self.image_proj.forward(&renormalized)
     }
 }
 

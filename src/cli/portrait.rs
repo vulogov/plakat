@@ -23,11 +23,23 @@ pub struct PortraitArgs {
     /// Text prompt describing the portrait (lighting, framing, style, etc.).
     pub prompt: String,
 
-    /// Optional reference photo. Provide a head-and-shoulders crop for
-    /// best results. Without a photo, runs as a portrait-tuned text-only
-    /// generate (3:4 aspect, face/anatomy negatives baked in).
-    #[arg(long, value_name = "PATH")]
-    pub photo: Option<PathBuf>,
+    /// Reference photo(s). Repeatable: pass `--photo` multiple times to
+    /// merge facial features from several reference photos at the
+    /// embedding-space level (not pixel-blending — useful for averaging
+    /// multiple photos of the same person, or weighted blending across
+    /// look-alikes). Each photo accepts an optional `:WEIGHT` suffix:
+    ///
+    ///   --photo alice.jpg                    (single, weight ignored)
+    ///   --photo alice.jpg --photo bob.jpg    (equal 50/50 merge)
+    ///   --photo alice.jpg:0.7 --photo bob.jpg:0.3   (weighted merge)
+    ///   --photo alice.jpg:0.8 --photo bob.jpg       (bob auto-fills 0.2)
+    ///
+    /// Weights are normalized to sum to 1.0. Total identity strength is
+    /// independently controlled by `--face-strength`. Without any
+    /// `--photo`, runs as a portrait-tuned text-only generate (3:4
+    /// aspect, face/anatomy negatives baked in).
+    #[arg(long, value_name = "PATH[:WEIGHT]")]
+    pub photo: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
 
     /// Identity strategy:
     ///   * `plus-face` (default) — IP-Adapter-Plus-Face on SD 1.5
@@ -259,15 +271,20 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     )?;
     std::fs::create_dir_all(&args.out)?;
 
-    // Identity is only wired when a photo is actually provided. Without one,
-    // skipping the identity load avoids a ~50 MB download for callers who
-    // just want a portrait-tuned generate.
-    let identity = args.photo.as_ref().map(|_| args.identity);
+    // Identity is only wired when at least one photo is actually provided.
+    // Without any, skipping the identity load avoids a ~50 MB download for
+    // callers who just want a portrait-tuned generate.
+    let photos = args.photo.clone();
+    let identity = if photos.is_empty() {
+        None
+    } else {
+        Some(args.identity)
+    };
 
     portrait::run(portrait::Request {
         prompt: args.prompt,
         negative,
-        photo: args.photo,
+        photos,
         model: args.model,
         width,
         height,

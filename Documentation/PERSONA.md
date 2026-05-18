@@ -208,11 +208,13 @@ Validation:
 - A task referring to a name that isn't defined errors with the list of
   valid names: `task "..." references unknown persona "ghost" (defined: [alice, bob])`.
 
-### `photo`
+### `photo` (single) or `photos` (multi-reference)
 
-**Required. Path string (HJSON unquoted or quoted).**
+**Required. Mutually exclusive — set exactly one.**
 
-Path to the reference photo. Resolved relative to your **current working
+#### `photo: <path>`
+
+Single reference photo. Path resolved relative to your **current working
 directory** when you run `plakat` — the same convention as `task.style`.
 Absolute paths work too.
 
@@ -220,8 +222,107 @@ Supported formats: PNG, JPEG, WebP, BMP, TIFF, anything the `image` crate
 opens. Internally rescaled to 224×224 and CLIP-normalised, so the photo's
 source resolution doesn't matter much — content does.
 
-Validation: load-time error if the path doesn't exist:
+#### `photos: [...]` — weighted merge of multiple references
+
+A list of reference photos whose facial features are merged at the
+encoder's embedding-space level (not pixel-blended). Use this when:
+
+- You have **multiple photos of the same person** — averaging across them
+  dampens single-photo noise (lighting, pose) and produces a more
+  representative identity embedding.
+- You want to **blend two people** for a fictional likeness or family-
+  resemblance look.
+- You want to **weight traits across look-alikes** (e.g. 70% one
+  reference + 30% another).
+
+Two HJSON forms accepted (mix freely within a list — both parse):
+
+```hjson
+# Shorthand strings: "path:weight" (CLI grammar). Weight optional.
+photos:
+[
+    "./refs/alice_smile.jpg:0.5"
+    "./refs/alice_neutral.jpg:0.3"
+    "./refs/alice_serious.jpg:0.2"
+]
+
+# Full-object form: explicit path + weight fields.
+photos:
+[
+    {
+        path: ./refs/alice_smile.jpg
+        weight: 0.5
+    }
+    {
+        path: ./refs/alice_neutral.jpg
+        weight: 0.3
+    }
+    {
+        path: ./refs/alice_serious.jpg
+        weight: 0.2
+    }
+]
+```
+
+**Weight semantics:**
+
+- Weights are **proportions**, normalized to sum to 1.0 internally. The
+  total identity influence is independently controlled by
+  `face-strength` (same as for single-photo).
+- **Missing weights split the remainder equally.** With three photos and
+  weights `[0.6, _, _]`, the unweighted entries each get `(1.0 − 0.6) / 2 = 0.2`.
+  With all weights missing, every photo gets `1/N`.
+- **All-explicit weights are renormalized** if they don't already sum to
+  1.0 — `[7, 3]` is treated the same as `[0.7, 0.3]`.
+- **Explicit overflow + auto-weights** errors at load time: if explicit
+  weights already exceed 1.0 and at least one entry is auto-weighted,
+  there's no room for the auto entries. The error message tells you to
+  rebalance or drop the auto entries.
+- Negative or NaN weights error at load time.
+
+**How merging works:**
+
+Plus-Face strategies (`plus-face`, `plus-face-sdxl`) weighted-sum the
+per-photo CLIP-H penultimate hidden states, then run one resampler pass.
+FaceID strategies (`faceid`, `faceid-sdxl`) weighted-sum the per-photo
+ArcFace 512-d embeddings, **renormalize to unit L2** (ArcFace lives on
+the unit sphere), then run one image-projection MLP pass. In both
+cases the merge happens *before* the projection module the encoder was
+trained on — the projection sees one coherent input, not a stack.
+
+This is fundamentally different from pixel-blending the input photos.
+Pixel-blending produces a ghosted/blurry composite that the encoder
+reads as a single bad photo; embedding-space merging composes coherent
+identity signals from each photo.
+
+**Alignment for multi-photo mode:**
+
+- Manual `face-bbox` / `face-landmarks` apply **uniformly to all
+  photos**. If you set them with `photos: [...]`, plakat applies the
+  same bbox/landmarks to every photo, which is rarely the right
+  alignment for multiple photos.
+- **SCRFD auto-detection is strongly recommended** for multi-photo
+  personas — it detects each photo's face independently. Configure via
+  `PLAKAT_SCRFD_WEIGHTS` / `PLAKAT_SCRFD_HF` (see "Optional SCRFD
+  auto-detection" below).
+- Without SCRFD and without manual alignment, each photo falls back to
+  per-photo centre-crop. Acceptable for tight head-shots, mediocre for
+  loose photos.
+
+**CLI equivalent:** The `--photo` flag on `plakat portrait` is
+repeatable with the same `PATH[:WEIGHT]` grammar:
+
+```bash
+plakat portrait "..." \
+    --photo alice_smile.jpg:0.5 \
+    --photo alice_neutral.jpg:0.3 \
+    --photo alice_serious.jpg:0.2
+```
+
+Validation: load-time error if any path doesn't exist:
 `persona "alice": photo not found at /full/path/to/alice.jpg`.
+Setting both `photo:` and `photos:` is rejected:
+`persona "alice": photo and photos are mutually exclusive — use one or the other`.
 
 See [Photo preparation](#photo-preparation) for what makes a good
 reference photo.

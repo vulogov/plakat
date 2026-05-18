@@ -122,13 +122,47 @@ struct ScenarioFile {
 
 /// Top-level `personas: [ {...}, ... ]` entry. Identity-defining settings only
 /// — task-side concerns (scene, prompt, size) live on `TaskDef`.
+/// HJSON shape for one entry in `PersonaDef.photos`. Untagged so HJSON
+/// authors can use either `"path:weight"` shorthand strings (matching the
+/// CLI `--photo` grammar) or `{ path: "...", weight: 0.7 }` objects.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PersonaPhoto {
+    Shorthand(String),
+    Full {
+        path: PathBuf,
+        #[serde(default)]
+        weight: Option<f32>,
+    },
+}
+
+impl PersonaPhoto {
+    fn to_weighted(&self) -> Result<crate::pipelines::ip_adapter::WeightedPhoto> {
+        match self {
+            Self::Shorthand(s) => s.parse::<crate::pipelines::ip_adapter::WeightedPhoto>(),
+            Self::Full { path, weight } => Ok(crate::pipelines::ip_adapter::WeightedPhoto {
+                path: path.clone(),
+                weight: *weight,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PersonaDef {
     /// Referenced by `task.personas: [<name>]`. Must be unique within the file.
     name: String,
-    /// Reference photo path. Resolved relative to the process's working
-    /// directory (same convention as `task.style`).
-    photo: PathBuf,
+    /// Single reference photo. Mutually exclusive with `photos`.
+    #[serde(default)]
+    photo: Option<PathBuf>,
+    /// Multiple weighted reference photos for embedding-space merging
+    /// (averaging facial features across photos). Mutually exclusive
+    /// with `photo`. Each entry accepts either a shorthand
+    /// `"path:weight"` string or a `{ path: "...", weight: 0.7 }`
+    /// object; weights are normalized to sum to 1.0. Same grammar as
+    /// the CLI's repeatable `--photo` flag.
+    #[serde(default)]
+    photos: Vec<PersonaPhoto>,
     /// Which identity strategy. Defaults to `plus-face`. Other options:
     /// `plus-face-sdxl`, `faceid`, `faceid-sdxl`.
     #[serde(default)]
@@ -159,6 +193,56 @@ struct PersonaDef {
     /// the scene.
     #[serde(default)]
     negative: Option<String>,
+}
+
+impl PersonaDef {
+    /// Resolve the persona's `photo` (legacy single-ref) and `photos`
+    /// (multi-ref) fields into a normalized list of weighted photos
+    /// suitable for the portrait pipeline. Validates mutual-exclusion
+    /// and that at least one is set.
+    fn resolve_photos(&self) -> Result<Vec<crate::pipelines::ip_adapter::WeightedPhoto>> {
+        let mut out: Vec<crate::pipelines::ip_adapter::WeightedPhoto> =
+            match (&self.photo, self.photos.is_empty()) {
+                (Some(_), false) => bail!(
+                    "persona {:?}: `photo` and `photos` are mutually exclusive — \
+                     use one or the other",
+                    self.name
+                ),
+                (None, true) => bail!(
+                    "persona {:?}: missing reference photo (set `photo: <path>` or \
+                     `photos: [...]`)",
+                    self.name
+                ),
+                (Some(p), true) => vec![
+                    crate::pipelines::ip_adapter::WeightedPhoto::single(p.clone()),
+                ],
+                (None, false) => self
+                    .photos
+                    .iter()
+                    .map(PersonaPhoto::to_weighted)
+                    .collect::<Result<_>>()
+                    .with_context(|| format!("parsing persona {:?} photos", self.name))?,
+            };
+        crate::pipelines::ip_adapter::normalize_photo_weights(&mut out)
+            .with_context(|| format!("normalizing persona {:?} photos", self.name))?;
+        Ok(out)
+    }
+
+    /// Convenience: the first photo path, for log messages / existence
+    /// checks. With multi-photo personas we still need to point users
+    /// at a representative location; the first one is fine for that.
+    fn primary_photo_path(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.photo {
+            return Some(p.clone());
+        }
+        self.photos.first().and_then(|pp| match pp {
+            PersonaPhoto::Shorthand(s) => s
+                .parse::<crate::pipelines::ip_adapter::WeightedPhoto>()
+                .ok()
+                .map(|w| w.path),
+            PersonaPhoto::Full { path, .. } => Some(path.clone()),
+        })
+    }
 }
 
 /// Top-level `upscale: { ... }` section.
@@ -362,12 +446,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             if map.contains_key(p.name.as_str()) {
                 bail!("duplicate persona name {:?}", p.name);
             }
-            if !p.photo.exists() {
-                bail!(
-                    "persona {:?}: photo not found at {}",
-                    p.name,
-                    p.photo.display()
-                );
+            // Resolve photo / photos → normalized weighted list. This
+            // also enforces mutual-exclusion + "at least one photo set".
+            let resolved = p.resolve_photos()?;
+            // Verify every referenced photo exists. For multi-photo
+            // personas this lets us surface a missing path before the
+            // long model load.
+            for wp in &resolved {
+                if !wp.path.exists() {
+                    bail!(
+                        "persona {:?}: photo not found at {}",
+                        p.name,
+                        wp.path.display()
+                    );
+                }
             }
             if let Some(id) = p.identity.as_deref() {
                 // Parse just to validate; the parsed value is recomputed at
@@ -930,7 +1022,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             if let Some(refs) = &task.personas {
                 for r in refs {
                     let p = personas_map[r.name()];
-                    let exists = if p.photo.exists() { "ok" } else { "MISSING" };
+                    let primary = p.primary_photo_path();
+                    let exists = match &primary {
+                        Some(path) if path.exists() => "ok",
+                        Some(_) => "MISSING",
+                        None => "(no photo set)",
+                    };
+                    let photo_desc = match &primary {
+                        Some(path) => {
+                            let multi = if !p.photos.is_empty() && p.photos.len() > 1 {
+                                format!(" +{} more", p.photos.len() - 1)
+                            } else {
+                                String::new()
+                            };
+                            format!("{}{multi}", path.display())
+                        }
+                        None => String::from("(none)"),
+                    };
                     let strength = p.face_strength.unwrap_or(0.8);
                     let bbox_str = match r.bbox() {
                         Some([x0, y0, x1, y1]) => {
@@ -943,7 +1051,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                          (photo {}, strength {:.2}{}, {})",
                         style("(dry-run)").dim(),
                         p.name,
-                        p.photo.display(),
+                        photo_desc,
                         strength,
                         bbox_str,
                         exists,
@@ -1086,17 +1194,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     .as_ref()
                     .expect("portrait pipeline preloaded when any task uses personas");
                 let (combined_negative, face_strength) = persona_request_for(persona);
+                let photos = persona.resolve_photos()?;
+                let photo_desc = match (photos.first(), photos.len()) {
+                    (Some(first), 1) => first.path.display().to_string(),
+                    (Some(first), n) => {
+                        format!("{} (+{} more, weighted merge)", first.path.display(), n - 1)
+                    }
+                    _ => String::from("(none)"),
+                };
                 crate::ui::progress::println(&format!(
                     "  {} persona {} (photo {}, face-strength {:.2})",
                     style("portrait").magenta().bold(),
                     style(&persona.name).bold(),
-                    persona.photo.display(),
+                    photo_desc,
                     face_strength,
                 ));
                 pp.generate(&portrait::GenRequest {
                     prompt: final_prompt.clone(),
                     negative: combined_negative,
-                    photo: Some(persona.photo.clone()),
+                    photos,
                     width: eff_w,
                     height: eff_h,
                     count: eff_count,
@@ -1145,7 +1261,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     let base_req = portrait::GenRequest {
                         prompt: final_prompt.clone(),
                         negative: eff_negative.clone(),
-                        photo: None,
+                        photos: Vec::new(),
                         width: eff_w,
                         height: eff_h,
                         count: 1,
@@ -1177,10 +1293,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             &device,
                             pp.latent_dtype(),
                         )?;
+                        let pass_photos = persona.resolve_photos()?;
                         let pass_req = portrait::GenRequest {
                             prompt: final_prompt.clone(),
                             negative: combined_negative,
-                            photo: Some(persona.photo.clone()),
+                            photos: pass_photos,
                             width: eff_w,
                             height: eff_h,
                             count: 1,

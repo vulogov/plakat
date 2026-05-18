@@ -19,7 +19,8 @@ use candle_transformers::models::clip::text_model::Activation;
 use candle_transformers::models::clip::vision_model::{
     ClipVisionConfig, ClipVisionTransformer,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// HF repo that hosts every IP-Adapter weight file plakat consumes.
 pub const IPA_REPO: &str = "h94/IP-Adapter";
@@ -457,6 +458,132 @@ impl ImageProjPlus {
 /// struct so future strategy-specific knobs (face-bbox in 4c.1, landmarks
 /// in 4c.3, identity-strength multipliers, …) can extend without
 /// re-breaking the trait.
+/// One weighted reference photo for identity encoding. Multiple of these
+/// can be merged at the encoder's embedding-space level (before the
+/// projection module) to produce a portrait that combines facial features
+/// from several photos — useful for averaging multiple photos of the same
+/// person, blending look-alikes, or weighted look-alike compositing.
+///
+/// `weight` is a proportion in the merge, normalized to sum to 1.0
+/// across the photo list. `None` means "auto" — fill an equal share of
+/// the remainder left over by explicit weights. See
+/// [`normalize_photo_weights`].
+#[derive(Debug, Clone)]
+pub struct WeightedPhoto {
+    pub path: PathBuf,
+    pub weight: Option<f32>,
+}
+
+impl WeightedPhoto {
+    /// Construct a single-photo entry with no explicit weight (auto-fills
+    /// to 1.0 on normalization).
+    pub fn single<P: Into<PathBuf>>(path: P) -> Self {
+        Self {
+            path: path.into(),
+            weight: None,
+        }
+    }
+}
+
+impl FromStr for WeightedPhoto {
+    type Err = anyhow::Error;
+    /// Parse `<path>` or `<path>:<weight>`. Splits on the last `:` and
+    /// tries to parse the tail as a float; if that fails (path contains
+    /// no `:`, or the tail isn't numeric), treats the whole input as the
+    /// path with auto-weight. Weights must be non-negative and finite.
+    fn from_str(s: &str) -> Result<Self> {
+        if let Some((head, tail)) = s.rsplit_once(':') {
+            if let Ok(w) = tail.parse::<f32>() {
+                if !w.is_finite() || w < 0.0 {
+                    bail!("invalid photo weight {tail:?}: must be finite, non-negative");
+                }
+                return Ok(Self {
+                    path: PathBuf::from(head),
+                    weight: Some(w),
+                });
+            }
+        }
+        Ok(Self {
+            path: PathBuf::from(s),
+            weight: None,
+        })
+    }
+}
+
+/// Normalize a slice of weighted photos so the weights sum to 1.0 and
+/// every entry has an explicit `Some(weight)` after this call returns.
+///
+/// Rules:
+/// * Single photo: weight is set to 1.0 regardless. If the user supplied
+///   a `:weight` other than 1.0 on a single photo, a warning is printed
+///   (use `--face-strength` for absolute strength).
+/// * Mix of explicit + auto: explicit weights are kept; the auto entries
+///   split `(1.0 − sum_of_explicit)` equally. Errors if explicit
+///   weights already sum to more than 1.0.
+/// * All explicit: weights are divided by their sum (renormalized).
+///   Errors if the sum is zero.
+/// * Empty list: error.
+pub fn normalize_photo_weights(photos: &mut [WeightedPhoto]) -> Result<()> {
+    if photos.is_empty() {
+        bail!("empty photo list");
+    }
+    // Validate the explicit weights up front.
+    for p in photos.iter() {
+        if let Some(w) = p.weight {
+            if !w.is_finite() || w < 0.0 {
+                bail!("invalid photo weight {}: must be finite, non-negative", w);
+            }
+        }
+    }
+
+    if photos.len() == 1 {
+        if let Some(w) = photos[0].weight {
+            if (w - 1.0).abs() > 1e-6 {
+                crate::ui::progress::println(
+                    "  ⚠ single-photo `:weight` ignored; use `--face-strength` for identity strength",
+                );
+            }
+        }
+        photos[0].weight = Some(1.0);
+        return Ok(());
+    }
+
+    let explicit_sum: f32 = photos.iter().filter_map(|p| p.weight).sum();
+    let auto_count = photos.iter().filter(|p| p.weight.is_none()).count();
+
+    if auto_count > 0 {
+        if explicit_sum > 1.0 + 1e-6 {
+            bail!(
+                "photo weights overflow: explicit weights sum to {:.4} > 1.0; \
+                 leave room for auto-weighted entries or omit explicit weights to renormalize",
+                explicit_sum
+            );
+        }
+        let remainder = (1.0 - explicit_sum).max(0.0);
+        let each = remainder / (auto_count as f32);
+        for p in photos.iter_mut() {
+            if p.weight.is_none() {
+                p.weight = Some(each);
+            }
+        }
+    } else {
+        // All explicit. Renormalize against their sum.
+        if explicit_sum <= 0.0 {
+            bail!(
+                "photo weights all zero — at least one photo must have positive weight"
+            );
+        }
+        if (explicit_sum - 1.0).abs() > 1e-6 {
+            for p in photos.iter_mut() {
+                if let Some(w) = p.weight.as_mut() {
+                    *w /= explicit_sum;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EncodeOptions {
     /// Normalised `[x0, y0, x1, y1]` bbox locating the subject's face in
@@ -477,9 +604,22 @@ pub struct EncodeOptions {
 }
 
 pub trait IdentityEncoder: Send + Sync {
-    /// Produce identity tokens for `photo`. Shape: `(1, num_tokens, cross_attn_dim)`.
-    /// `opts` carries per-call adjustments (see [`EncodeOptions`]).
-    fn encode(&self, photo_path: &Path, opts: EncodeOptions) -> Result<Tensor>;
+    /// Produce identity tokens from one or more weighted reference photos.
+    /// Shape: `(1, num_tokens, cross_attn_dim)`.
+    ///
+    /// `photos` must be non-empty with weights normalized via
+    /// [`normalize_photo_weights`] (every `weight` is `Some(w)` and the
+    /// weights sum to ~1.0). Single-photo case is a fast path; multi-
+    /// photo merges in the encoder's natural embedding space (CLIP-H
+    /// penultimate hidden state for Plus-Face, ArcFace 512-d vector for
+    /// FaceID) before the projection module.
+    ///
+    /// `opts` carries alignment hints (bbox / landmarks). For multi-
+    /// photo mode, the same alignment hints apply uniformly to every
+    /// photo — if you need per-photo manual alignment, pre-crop the
+    /// photos to be face-centered. SCRFD auto-detection (when
+    /// configured) runs per-photo.
+    fn encode(&self, photos: &[WeightedPhoto], opts: EncodeOptions) -> Result<Tensor>;
     /// Number of image tokens this encoder emits per call.
     fn num_tokens(&self) -> usize;
 }
@@ -519,28 +659,62 @@ impl IdentityEncoder for PlusFaceEncoder {
         self.cfg.num_queries
     }
 
-    fn encode(&self, photo_path: &Path, _opts: EncodeOptions) -> Result<Tensor> {
+    fn encode(&self, photos: &[WeightedPhoto], _opts: EncodeOptions) -> Result<Tensor> {
         // CLIP-H Plus-Face ignores `face_bbox` — CLIP processes the whole
         // image regardless, and pre-cropping to a bbox would just throw
         // away surrounding context that helps identity recognition.
-        if !photo_path.exists() {
-            return Err(anyhow!(
-                "persona photo not found: {} (resolved from current working \
-                 directory). Check the path and re-run.",
-                photo_path.display()
-            ));
+        if photos.is_empty() {
+            bail!("PlusFaceEncoder::encode called with no photos");
         }
-        let pixels = crate::imaging::preprocess::clip_image_tensor(
-            photo_path,
-            224,
-            &self.device,
-            self.dtype,
-        )
-        .with_context(|| format!("reading persona photo {}", photo_path.display()))?;
-        // Plus uses CLIP-H's penultimate transformer hidden state, not the
-        // pooled projection output. (1, 257, 1280) for CLIP-H/14 @ 224.
-        let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
-        self.image_proj.forward(&hidden)
+        for p in photos {
+            if !p.path.exists() {
+                return Err(anyhow!(
+                    "persona photo not found: {} (resolved from current working \
+                     directory). Check the path and re-run.",
+                    p.path.display()
+                ));
+            }
+        }
+
+        // Fast path: one photo. Same exact code as before — keeps
+        // single-photo encoding bit-equivalent.
+        if photos.len() == 1 {
+            let pixels = crate::imaging::preprocess::clip_image_tensor(
+                &photos[0].path,
+                224,
+                &self.device,
+                self.dtype,
+            )
+            .with_context(|| {
+                format!("reading persona photo {}", photos[0].path.display())
+            })?;
+            let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
+            return self.image_proj.forward(&hidden);
+        }
+
+        // Merge path: weighted sum of per-photo CLIP-H penultimate hidden
+        // states, then one resampler pass. The penultimate layer is
+        // reasonably feature-disentangled and the resampler was trained
+        // on linear-combination-friendly inputs.
+        let mut merged: Option<Tensor> = None;
+        for p in photos {
+            let weight = p.weight.expect("normalize_photo_weights must run first");
+            let pixels = crate::imaging::preprocess::clip_image_tensor(
+                &p.path,
+                224,
+                &self.device,
+                self.dtype,
+            )
+            .with_context(|| format!("reading persona photo {}", p.path.display()))?;
+            let hidden = self.clip_vision.hidden_state_from_end(&pixels, 2)?;
+            let scaled = (hidden * weight as f64)?;
+            merged = Some(match merged {
+                Some(acc) => (acc + scaled)?,
+                None => scaled,
+            });
+        }
+        let merged = merged.expect("at least one photo");
+        self.image_proj.forward(&merged)
     }
 }
 
@@ -935,4 +1109,137 @@ pub(crate) fn parse_hf_spec(s: &str, var_name: &str) -> Result<(String, String)>
         );
     }
     Ok((repo.to_string(), file.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pb(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn weighted_photo_from_str_parses_grammar() {
+        let p: WeightedPhoto = "alice.jpg".parse().unwrap();
+        assert_eq!(p.path, pb("alice.jpg"));
+        assert_eq!(p.weight, None);
+
+        let p: WeightedPhoto = "alice.jpg:0.7".parse().unwrap();
+        assert_eq!(p.path, pb("alice.jpg"));
+        assert_eq!(p.weight, Some(0.7));
+
+        // Path with embedded ':' that isn't a numeric weight (e.g. Windows
+        // drive letter): falls through to treating the whole string as path.
+        let p: WeightedPhoto = "C:/users/me/face.jpg".parse().unwrap();
+        assert_eq!(p.path, pb("C:/users/me/face.jpg"));
+        assert_eq!(p.weight, None);
+
+        // Path with trailing ':<float>' takes the float as weight.
+        let p: WeightedPhoto = "C:/users/me/face.jpg:0.5".parse().unwrap();
+        assert_eq!(p.path, pb("C:/users/me/face.jpg"));
+        assert_eq!(p.weight, Some(0.5));
+    }
+
+    #[test]
+    fn weighted_photo_rejects_negative_or_nan_weight() {
+        let bad: Result<WeightedPhoto> = "alice.jpg:-0.5".parse();
+        assert!(bad.is_err(), "negative weight should error");
+        let bad: Result<WeightedPhoto> = "alice.jpg:NaN".parse();
+        assert!(bad.is_err(), "NaN weight should error");
+    }
+
+    #[test]
+    fn normalize_single_photo_forces_weight_one() {
+        let mut p = vec![WeightedPhoto::single("alice.jpg")];
+        normalize_photo_weights(&mut p).unwrap();
+        assert_eq!(p[0].weight, Some(1.0));
+    }
+
+    #[test]
+    fn normalize_all_auto_splits_equally() {
+        let mut p = vec![
+            WeightedPhoto::single("a.jpg"),
+            WeightedPhoto::single("b.jpg"),
+            WeightedPhoto::single("c.jpg"),
+        ];
+        normalize_photo_weights(&mut p).unwrap();
+        for entry in &p {
+            assert!(approx_eq(entry.weight.unwrap(), 1.0 / 3.0));
+        }
+    }
+
+    #[test]
+    fn normalize_mix_auto_fills_remainder() {
+        // [0.8, _] → [0.8, 0.2]
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(0.8) },
+            WeightedPhoto { path: pb("b.jpg"), weight: None },
+        ];
+        normalize_photo_weights(&mut p).unwrap();
+        assert!(approx_eq(p[0].weight.unwrap(), 0.8));
+        assert!(approx_eq(p[1].weight.unwrap(), 0.2));
+
+        // [0.5, _, _] → [0.5, 0.25, 0.25]
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(0.5) },
+            WeightedPhoto { path: pb("b.jpg"), weight: None },
+            WeightedPhoto { path: pb("c.jpg"), weight: None },
+        ];
+        normalize_photo_weights(&mut p).unwrap();
+        assert!(approx_eq(p[0].weight.unwrap(), 0.5));
+        assert!(approx_eq(p[1].weight.unwrap(), 0.25));
+        assert!(approx_eq(p[2].weight.unwrap(), 0.25));
+    }
+
+    #[test]
+    fn normalize_explicit_overflow_errors_when_mixed_with_auto() {
+        // [0.8, 0.5, _] → explicit_sum=1.3 > 1.0, with auto → error
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(0.8) },
+            WeightedPhoto { path: pb("b.jpg"), weight: Some(0.5) },
+            WeightedPhoto { path: pb("c.jpg"), weight: None },
+        ];
+        assert!(normalize_photo_weights(&mut p).is_err());
+    }
+
+    #[test]
+    fn normalize_all_explicit_renormalizes() {
+        // [7, 3] → [0.7, 0.3]
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(7.0) },
+            WeightedPhoto { path: pb("b.jpg"), weight: Some(3.0) },
+        ];
+        normalize_photo_weights(&mut p).unwrap();
+        assert!(approx_eq(p[0].weight.unwrap(), 0.7));
+        assert!(approx_eq(p[1].weight.unwrap(), 0.3));
+
+        // Already sums to 1.0 — unchanged.
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(0.6) },
+            WeightedPhoto { path: pb("b.jpg"), weight: Some(0.4) },
+        ];
+        normalize_photo_weights(&mut p).unwrap();
+        assert!(approx_eq(p[0].weight.unwrap(), 0.6));
+        assert!(approx_eq(p[1].weight.unwrap(), 0.4));
+    }
+
+    #[test]
+    fn normalize_all_zero_explicit_errors() {
+        let mut p = vec![
+            WeightedPhoto { path: pb("a.jpg"), weight: Some(0.0) },
+            WeightedPhoto { path: pb("b.jpg"), weight: Some(0.0) },
+        ];
+        assert!(normalize_photo_weights(&mut p).is_err());
+    }
+
+    #[test]
+    fn normalize_empty_errors() {
+        let mut p: Vec<WeightedPhoto> = vec![];
+        assert!(normalize_photo_weights(&mut p).is_err());
+    }
 }
