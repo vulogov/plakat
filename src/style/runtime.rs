@@ -16,7 +16,7 @@ use crate::pipelines::ip_adapter::{ImageEncoder, IPA_REPO};
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::t2i::Variant;
 
-use super::catalog::{BaseModel, DetectionResult, ResolvedStyle, StyleCatalog};
+use super::catalog::{BaseModel, DetectionResult, ResolvedLoraRef, ResolvedStyle, StyleCatalog};
 use super::detect::detect_style;
 use super::encode::encode_reference_photo;
 
@@ -44,9 +44,11 @@ pub struct StylePrepRequest<'a> {
 
 /// Output of [`prepare_style`]. Plumbed into the existing generation flow.
 pub struct StylePrep {
-    /// LoRA spec strings in plakat's existing `LoraSpec::from_str`
-    /// grammar. Caller `.parse::<LoraSpec>()`s them.
-    pub lora_specs: Vec<String>,
+    /// LoRAs the catalog resolved for this style. Each carries the spec
+    /// string (in plakat's `LoraSpec::from_str` grammar) plus an optional
+    /// pinned revision SHA. Use [`parse_resolved_loras`] to turn this
+    /// into a `Vec<LoraSpec>` for the existing pipeline.
+    pub loras: Vec<ResolvedLoraRef>,
     /// Prepended ahead of the bare prompt (generate/portrait) or
     /// `lora-header` (scenario).
     pub trigger: String,
@@ -69,81 +71,146 @@ pub struct StylePrep {
 const CATALOG_DEFAULT: &str = "assets/style_catalog";
 const RUNTIME_ENCODER_ID: &str = "clip-h-laion2b";
 
-/// End-to-end: load catalog, encode photo if needed, detect or pick,
-/// resolve, return everything the generation pipeline needs to inject.
-pub async fn prepare_style(req: StylePrepRequest<'_>) -> Result<StylePrep> {
-    if req.style_ref.is_none() && req.style_override.is_none() {
-        return Err(anyhow!(
-            "prepare_style called with neither style_ref nor style_override"
-        ));
-    }
-
-    // 1. Locate + load the catalog.
-    let catalog_dir: PathBuf = req
-        .style_catalog
-        .map(|p| p.to_owned())
-        .unwrap_or_else(|| PathBuf::from(CATALOG_DEFAULT));
-    let catalog = StyleCatalog::load(&catalog_dir, req.device)?;
-    catalog.assert_encoder(RUNTIME_ENCODER_ID)?;
-
-    // 2. Detection (only if --style-ref is set).
-    let detection = if let Some(photo) = req.style_ref {
-        let weights =
-            crate::hf::download::get_file(IPA_REPO, "models/image_encoder/model.safetensors")
-                .await?;
-        let encoder = ImageEncoder::load(&weights, req.device, DType::F32)?;
-        let emb = encode_reference_photo(&encoder, photo, req.device)?;
-        Some(detect_style(&catalog, &emb, 5)?)
-    } else {
-        None
-    };
-
-    // 3. Pick a style. --style overrides detection when both are set.
-    let picked_style_id: String = match (req.style_override, detection.as_ref()) {
-        (Some(id), _) => id.to_owned(),
-        (None, Some(det)) => det.picked.clone().ok_or_else(|| {
-            let closest = det
-                .top
-                .first()
-                .map(|m| format!("{} ({:.4})", m.style_id, m.score))
-                .unwrap_or_else(|| "<empty>".to_string());
-            anyhow!(
-                "no style above min_confidence={}; closest: {}. \
-                 Pass --style <id> to force a specific style, or lower the \
-                 threshold in catalog.json.",
-                catalog.policy.min_confidence,
-                closest
-            )
-        })?,
-        (None, None) => unreachable!("guarded above"),
-    };
-
-    // 4. Resolve against the active base model.
-    let base = BaseModel::from_variant(Variant::detect(req.model));
-    let resolved: ResolvedStyle = catalog.resolve(&picked_style_id, base, req.style_strength)?;
-
-    let warn_detection_only = resolved.is_detection_only();
-
-    Ok(StylePrep {
-        lora_specs: resolved.loras.into_iter().map(|l| l.spec).collect(),
-        trigger: resolved.trigger,
-        negative_extras: resolved.negative_extras,
-        warn_user_loras_overridden: req.user_loras_nonempty,
-        warn_detection_only,
-        picked_style_id,
-        detection,
-    })
+/// Shared state for style-resolution work that may happen multiple times
+/// in one process — e.g., a scenario with per-task `style-ref` overrides
+/// where the same CLIP-H encoder serves many photos.
+///
+/// Loads the catalog eagerly (cheap), the CLIP-H encoder lazily on first
+/// `prepare()` that needs it. Subsequent calls reuse the same encoder
+/// rather than re-loading 2.5 GB of weights.
+pub struct StyleSession {
+    catalog: StyleCatalog,
+    encoder: Option<ImageEncoder>,
+    device: Device,
 }
 
-/// Parse the resolved LoRA spec strings into plakat's `LoraSpec` type.
-/// Splits parsing out from `prepare_style` so the style module doesn't
-/// have to surface a LoRA type, and callers can plug the result
-/// directly into their existing `Vec<LoraSpec>` field.
+impl StyleSession {
+    /// Construct a session — catalog loaded immediately, encoder
+    /// deferred until needed.
+    pub fn load(catalog_dir: Option<&Path>, device: Device) -> Result<Self> {
+        let catalog_dir: PathBuf = catalog_dir
+            .map(|p| p.to_owned())
+            .unwrap_or_else(|| PathBuf::from(CATALOG_DEFAULT));
+        let catalog = StyleCatalog::load(&catalog_dir, &device)?;
+        catalog.assert_encoder(RUNTIME_ENCODER_ID)?;
+        Ok(Self {
+            catalog,
+            encoder: None,
+            device,
+        })
+    }
+
+    /// Side-effecting: ensures `self.encoder` is `Some` after returning.
+    /// Returns `()` rather than `&ImageEncoder` so the caller can hold
+    /// both `&self.encoder` and `&self.device` simultaneously without
+    /// the borrow checker objecting (an `&mut self -> &T` chain locks
+    /// `self` for the lifetime of the returned reference).
+    async fn ensure_encoder_loaded(&mut self) -> Result<()> {
+        if self.encoder.is_none() {
+            let weights = crate::hf::download::get_file(
+                IPA_REPO,
+                "models/image_encoder/model.safetensors",
+            )
+            .await?;
+            self.encoder = Some(ImageEncoder::load(&weights, &self.device, DType::F32)?);
+        }
+        Ok(())
+    }
+
+    /// Detect (if photo set) and resolve a style against the catalog.
+    /// `req.style_catalog` is ignored — the catalog was locked in at
+    /// session-load time.
+    pub async fn prepare(&mut self, req: StylePrepRequest<'_>) -> Result<StylePrep> {
+        if req.style_ref.is_none() && req.style_override.is_none() {
+            return Err(anyhow!(
+                "StyleSession::prepare called with neither style_ref nor style_override"
+            ));
+        }
+
+        let detection = if let Some(photo) = req.style_ref {
+            self.ensure_encoder_loaded().await?;
+            let encoder = self.encoder.as_ref().expect("ensure_encoder_loaded sets this");
+            let emb = encode_reference_photo(encoder, photo, &self.device)?;
+            Some(detect_style(&self.catalog, &emb, 5)?)
+        } else {
+            None
+        };
+
+        let picked_style_id: String = match (req.style_override, detection.as_ref()) {
+            (Some(id), _) => id.to_owned(),
+            (None, Some(det)) => det.picked.clone().ok_or_else(|| {
+                let closest = det
+                    .top
+                    .first()
+                    .map(|m| format!("{} ({:.4})", m.style_id, m.score))
+                    .unwrap_or_else(|| "<empty>".to_string());
+                anyhow!(
+                    "no style above min_confidence={}; closest: {}. \
+                     Pass --style <id> to force a specific style, or lower the \
+                     threshold in catalog.json.",
+                    self.catalog.policy.min_confidence,
+                    closest
+                )
+            })?,
+            (None, None) => unreachable!("guarded above"),
+        };
+
+        let base = BaseModel::from_variant(Variant::detect(req.model));
+        let resolved: ResolvedStyle =
+            self.catalog.resolve(&picked_style_id, base, req.style_strength)?;
+        let warn_detection_only = resolved.is_detection_only();
+
+        Ok(StylePrep {
+            loras: resolved.loras,
+            trigger: resolved.trigger,
+            negative_extras: resolved.negative_extras,
+            warn_user_loras_overridden: req.user_loras_nonempty,
+            warn_detection_only,
+            picked_style_id,
+            detection,
+        })
+    }
+}
+
+/// Convenience: load a fresh session, run one prepare call, return the
+/// result. Equivalent to `StyleSession::load(...)?.prepare(req).await`
+/// for callers that only need a single resolve.
+///
+/// Generate / portrait use this — they only call prepare once per
+/// invocation, so amortizing the catalog/encoder across calls isn't
+/// needed. Scenarios with per-task style-ref use the session API
+/// directly to share the encoder across tasks.
+pub async fn prepare_style(req: StylePrepRequest<'_>) -> Result<StylePrep> {
+    let mut session = StyleSession::load(req.style_catalog, req.device.clone())?;
+    session.prepare(req).await
+}
+
+/// Parse resolved LoRA refs into plakat's `LoraSpec` type. When the
+/// catalog pinned a `revision` for a hub-sourced LoRA, swap in a
+/// pinned-revision spec so the downloader hits the exact commit SHA
+/// rather than the repo's current `main`.
+///
+/// Splits parsing out from `prepare_style` so the style module
+/// doesn't have to surface a `LoraSpec` type from this function,
+/// and callers can plug the result directly into their existing
+/// `Vec<LoraSpec>` field.
 pub fn parse_resolved_loras(prep: &StylePrep) -> Result<Vec<LoraSpec>> {
-    prep.lora_specs
+    prep.loras
         .iter()
-        .map(|s| {
-            LoraSpec::from_str(s).with_context(|| format!("parsing catalog LoRA spec '{}'", s))
+        .map(|r| {
+            let parsed = LoraSpec::from_str(&r.spec)
+                .with_context(|| format!("parsing catalog LoRA spec '{}'", r.spec))?;
+            // Only hub specs honor revision pinning. Local-path specs
+            // keep their path as-is — revision is meaningless there.
+            match (parsed.source, r.revision.as_ref()) {
+                (crate::pipelines::lora::LoraSource::Hub { repo, file, .. }, Some(rev)) => {
+                    Ok(LoraSpec::hub_pinned(repo, file, Some(rev.clone()), parsed.scale))
+                }
+                (source, _) => Ok(LoraSpec {
+                    source,
+                    scale: parsed.scale,
+                }),
+            }
         })
         .collect()
 }

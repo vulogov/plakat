@@ -1,0 +1,31 @@
+{
+  "encoder_id": "clip-h-laion2b",
+  "exemplars": {
+    "photorealistic/00": {
+      "source": "../../tests/fixtures/style_catalog/photorealistic/01_apollo11_step.jpg"
+    },
+    "photorealistic/01": {
+      "source": "../../tests/fixtures/style_catalog/photorealistic/02_apollo8_earthrise.jpg"
+    },
+    "photorealistic/02": {
+      "source": "../../tests/fixtures/style_catalog/photorealistic/03_pillars_creation.jpg"
+    },
+    "photorealistic/03": {
+      "source": "../../tests/fixtures/style_catalog/photorealistic/04_buzz_flag.jpg"
+    },
+    "watercolor/00": {
+      "source": "../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg"
+    },
+    "watercolor/01": {
+      "source": "../../tests/fixtures/style_catalog/watercolor/02_sargent_alligators.jpg"
+    },
+    "watercolor/02": {
+      "source": "../../tests/fixtures/style_catalog/watercolor/03_sargent_fountain.jpg"
+    },
+    "watercolor/03": {
+      "source": "../../tests/fixtures/style_catalog/watercolor/04_homer_northwoods.jpg"
+    }
+  },
+  "note": "Records which source image produced each exemplar embedding. Re-running build_catalog against the same sources should produce the same `exemplars.safetensors`, modulo encoder version.",
+  "schema_version": 1
+}

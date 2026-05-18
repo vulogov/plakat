@@ -1,8 +1,8 @@
 {
   "detection": {
     "aggregation": "top3-mean",
-    "margin_over_runner_up": 0.02,
-    "min_confidence": 0.22
+    "margin_over_runner_up": 0.019999999552965164,
+    "min_confidence": 0.2199999988079071
   },
   "encoder": {
     "embed_dim": 1024,
@@ -12,24 +12,6 @@
   },
   "schema_version": 1,
   "styles": [
-    {
-      "description": "Photographic realism; lens characteristics; lighting physicality.",
-      "display_name": "Photorealistic",
-      "exemplar_keys": [
-        "photorealistic/00",
-        "photorealistic/01",
-        "photorealistic/02",
-        "photorealistic/03"
-      ],
-      "id": "photorealistic",
-      "models": {
-        "sd15": {
-          "loras": [],
-          "negative_extras": "painting, illustration, cartoon, 3d render, cgi, drawing",
-          "trigger": "photograph, photorealistic, 35mm film, natural lighting"
-        }
-      }
-    },
     {
       "description": "Wet-on-wet pigment washes, ink lineart, visible paper texture.",
       "display_name": "Watercolor",
@@ -52,6 +34,24 @@
           ],
           "negative_extras": "3d render, photo, glossy, photorealistic",
           "trigger": "colorful inkpainting"
+        }
+      }
+    },
+    {
+      "description": "Photographic realism; lens characteristics; lighting physicality.",
+      "display_name": "Photorealistic",
+      "exemplar_keys": [
+        "photorealistic/00",
+        "photorealistic/01",
+        "photorealistic/02",
+        "photorealistic/03"
+      ],
+      "id": "photorealistic",
+      "models": {
+        "sd15": {
+          "loras": [],
+          "negative_extras": "painting, illustration, cartoon, 3d render, cgi, drawing",
+          "trigger": "photograph, photorealistic, 35mm film, natural lighting"
         }
       }
     }

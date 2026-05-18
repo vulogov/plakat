@@ -1,0 +1,104 @@
+{
+    # ---------- plakat style catalog: curator source ----------
+    # Authoritative input for the catalog-build tool. Builds
+    # assets/style_catalog/{catalog.json, exemplars.safetensors, ...}
+    # via:
+    #
+    #     cargo run --release --example build_catalog -- \
+    #         --sources tools/style_sources/catalog.hjson \
+    #         --out     assets/style_catalog
+    #
+    # Optional: pass --probe-hf to HEAD-check every LoRA URL on
+    # HuggingFace before emitting the catalog. Recommended in CI.
+    # ----------------------------------------------------------
+
+    schema_version: 1
+
+    encoder:
+    {
+        # Fingerprint of the CLIP encoder. The runtime asserts this
+        # matches the encoder it's about to use; if you change encoders,
+        # bump this id AND re-build (existing embeddings become invalid).
+        id: clip-h-laion2b
+        embed_dim: 1024
+    }
+
+    detection:
+    {
+        # How to collapse per-exemplar similarities into one per-style
+        # score. Options: max | mean | top3-mean. top3-mean is robust
+        # to one weak exemplar without averaging across all.
+        aggregation: top3-mean
+
+        # Below this cosine, detection returns "no pick".
+        min_confidence: 0.22
+
+        # top-1 must beat top-2 by this much; otherwise ambiguous.
+        margin_over_runner_up: 0.02
+    }
+
+    styles:
+    [
+        {
+            id: watercolor
+            display_name: Watercolor
+            description: "Wet-on-wet pigment washes, ink lineart, visible paper texture."
+
+            # Paths resolved relative to THIS hjson file's directory.
+            # Vendor exemplars under tests/fixtures/style_catalog/ so
+            # the smoke test sees the same images. 4+ exemplars
+            # recommended; builder warns on <3.
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg
+                ../../tests/fixtures/style_catalog/watercolor/02_sargent_alligators.jpg
+                ../../tests/fixtures/style_catalog/watercolor/03_sargent_fountain.jpg
+                ../../tests/fixtures/style_catalog/watercolor/04_homer_northwoods.jpg
+            ]
+
+            models:
+            {
+                sd15:
+                {
+                    loras:
+                    [
+                        {
+                            spec: "Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8"
+                            revision: cd8b7d93ec0b6c0aa31a640f1287837583d702d0
+                            license_url: "https://huggingface.co/Arczisan/ink-watercolor"
+                        }
+                    ]
+                    trigger: "colorful inkpainting"
+                    negative_extras: "3d render, photo, glossy, photorealistic"
+                }
+            }
+        }
+
+        {
+            id: photorealistic
+            display_name: Photorealistic
+            description: "Photographic realism; lens characteristics; lighting physicality."
+
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/photorealistic/01_apollo11_step.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/02_apollo8_earthrise.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/03_pillars_creation.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/04_buzz_flag.jpg
+            ]
+
+            # Trigger-only: SD 1.5 produces photorealistic output natively.
+            # The trigger nudges the prompt toward photography vocabulary;
+            # negative_extras discourages painterly/illustrative drift.
+            models:
+            {
+                sd15:
+                {
+                    loras: []
+                    trigger: "photograph, photorealistic, 35mm film, natural lighting"
+                    negative_extras: "painting, illustration, cartoon, 3d render, cgi, drawing"
+                }
+            }
+        }
+    ]
+}
