@@ -23,10 +23,15 @@
 pub mod catalog;
 pub mod detect;
 pub mod encode;
+pub mod runtime;
 
 pub use catalog::{
     Aggregation, BaseModel, DetectionPolicy, DetectionResult, LoadedStyle, LoraEntry, ModelEntry,
-    StyleCatalog, StyleMatch,
+    ResolvedLoraRef, ResolvedStyle, StyleCatalog, StyleMatch,
 };
 pub use detect::detect_style;
 pub use encode::encode_reference_photo;
+pub use runtime::{
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
+    StylePrep, StylePrepRequest,
+};
