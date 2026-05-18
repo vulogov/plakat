@@ -1,0 +1,40 @@
+{
+  "detection": {
+    "aggregation": "top3-mean",
+    "margin_over_runner_up": 0.02,
+    "min_confidence": 0.22
+  },
+  "encoder": {
+    "embed_dim": 1024,
+    "exemplars_file": "exemplars.safetensors",
+    "id": "clip-h-laion2b",
+    "preprocess": "clip-standard-224"
+  },
+  "schema_version": 1,
+  "styles": [
+    {
+      "description": "Photographic realism; lens characteristics; lighting physicality.",
+      "display_name": "Photorealistic",
+      "exemplar_keys": [
+        "photorealistic/00",
+        "photorealistic/01",
+        "photorealistic/02",
+        "photorealistic/03"
+      ],
+      "id": "photorealistic",
+      "models": {}
+    },
+    {
+      "description": "Wet-on-wet pigment washes, ink lineart, visible paper texture.",
+      "display_name": "Watercolor",
+      "exemplar_keys": [
+        "watercolor/00",
+        "watercolor/01",
+        "watercolor/02",
+        "watercolor/03"
+      ],
+      "id": "watercolor",
+      "models": {}
+    }
+  ]
+}
