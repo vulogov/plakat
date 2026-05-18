@@ -98,7 +98,11 @@ impl Variant {
 pub struct Request {
     pub prompt: String,
     pub negative: String,
-    pub photo: Option<PathBuf>,
+    /// Reference photos with merge weights. Empty = no identity
+    /// encoding (text-only portrait). One = single-photo identity.
+    /// Multiple = weighted merge in the encoder's embedding space.
+    /// Weights normalized to sum to 1.0 by [`Pipeline::generate`].
+    pub photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
     pub model: String,
     pub width: u32,
     pub height: u32,
@@ -135,7 +139,9 @@ pub struct LoadRequest {
 pub struct GenRequest {
     pub prompt: String,
     pub negative: String,
-    pub photo: Option<PathBuf>,
+    /// Reference photos with merge weights. Same shape as
+    /// [`Request::photos`]; see that field for semantics.
+    pub photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
     pub width: u32,
     pub height: u32,
     pub count: u32,
@@ -525,7 +531,7 @@ impl Pipeline {
         let (encoder_hidden_states, has_face) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
-            req.photo.as_deref(),
+            &req.photos,
             req.face_strength,
             req.face_bbox,
             req.face_landmarks,
@@ -645,7 +651,7 @@ impl Pipeline {
         &self,
         prompt: &str,
         negative: &str,
-        photo: Option<&std::path::Path>,
+        photos: &[crate::pipelines::ip_adapter::WeightedPhoto],
         face_strength: f32,
         face_bbox: Option<[f32; 4]>,
         face_landmarks: Option<[[f32; 2]; 5]>,
@@ -659,26 +665,33 @@ impl Pipeline {
         };
 
         let face_strength = face_strength.clamp(0.0, 2.0);
-        let identity_tokens = match (&self.identity_encoder, photo) {
-            (Some(enc), Some(p)) => {
-                let s = progress::spinner("Encoding reference photo");
+        let identity_tokens = match (&self.identity_encoder, photos.is_empty()) {
+            (Some(enc), false) => {
+                let s = if photos.len() == 1 {
+                    progress::spinner("Encoding reference photo")
+                } else {
+                    progress::spinner(&format!(
+                        "Encoding {} reference photos (weighted merge)",
+                        photos.len()
+                    ))
+                };
                 let opts = crate::pipelines::ip_adapter::EncodeOptions {
                     face_bbox,
                     face_landmarks,
                 };
-                let tok = enc.encode(p, opts)?;
+                let tok = enc.encode(photos, opts)?;
                 let tok = (tok * (face_strength as f64))?.to_dtype(self.dtype)?;
                 s.finish_with_message("✓ identity encoded");
                 Some(tok)
             }
-            (None, Some(_)) => {
+            (None, false) => {
                 bail!(
                     "this Pipeline was loaded without an identity encoder \
                      but a photo was provided. Reload with `identity: Some(IdentityKind::PlusFace)`."
                 );
             }
-            (Some(_), None) => None,
-            (None, None) => None,
+            (Some(_), true) => None,
+            (None, true) => None,
         };
 
         let cond_full = match &identity_tokens {
@@ -711,7 +724,7 @@ impl Pipeline {
         let (ehs, has_face) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
-            req.photo.as_deref(),
+            &req.photos,
             req.face_strength,
             req.face_bbox,
             req.face_landmarks,
@@ -763,7 +776,7 @@ impl Pipeline {
         let (ehs, has_face) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
-            req.photo.as_deref(),
+            &req.photos,
             req.face_strength,
             req.face_bbox,
             req.face_landmarks,
@@ -902,10 +915,18 @@ pub async fn run(req: Request) -> Result<()> {
     })
     .await?;
 
+    // Normalize weights before handing off to the encoder. Done at the
+    // top-level boundary so internal GenRequest invariant (every photo's
+    // weight is Some) holds end-to-end.
+    let mut photos = req.photos;
+    if !photos.is_empty() {
+        crate::pipelines::ip_adapter::normalize_photo_weights(&mut photos)?;
+    }
+
     pipeline.generate(&GenRequest {
         prompt: req.prompt,
         negative: req.negative,
-        photo: req.photo,
+        photos,
         width: req.width,
         height: req.height,
         count: req.count,
