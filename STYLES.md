@@ -24,9 +24,11 @@ composes cleanly with the LoRA stack.
 | `style-ref` / `style` / `style-strength` / `style-catalog` in scenarios (global) | **shipped** |
 | Bundled catalog (`watercolor` with real LoRA, `photorealistic` trigger-only) | **shipped** |
 | End-to-end style transfer through standard SD 1.5 pipeline | **shipped** |
-| Revision-SHA threading from catalog → HF download | catalog records the SHA, downloader uses `main` (see Limits) |
-| Per-task style-ref in scenarios | not yet implemented (global only) |
+| Revision-SHA threading from catalog → HF download | **shipped** |
+| Per-task `style-ref` in scenarios (trigger + negative only) | **shipped** |
 | `plakat style probe` | **shipped** |
+| Catalog-build tool (`examples/build_catalog.rs`) | **shipped** |
+| `LICENSES.md` + `provenance.json` sidecars | **shipped** |
 | `style-ref` field in scenarios | designed, not implemented |
 | Catalog-build tool (`tools/build-style-catalog/`) | spike uses `examples/spike_catalog.rs` |
 | Expanded catalog (10 seed styles + LoRA pins) | not yet curated |
@@ -476,10 +478,16 @@ and runs generation through the standard pipeline.
 
 ```
   → style: watercolor
- INFO LoRA Arczisan/ink-watercolor/inkwatercolor.safetensors → UNet: 192/192 targets merged (scale 0.80)
- INFO LoRA Arczisan/ink-watercolor/inkwatercolor.safetensors → text encoder: 72/72 targets merged (scale 0.80)
+ INFO LoRA Arczisan/ink-watercolor/inkwatercolor.safetensors @ cd8b7d93 → UNet: 192/192 targets merged (scale 0.80)
+ INFO LoRA Arczisan/ink-watercolor/inkwatercolor.safetensors @ cd8b7d93 → text encoder: 72/72 targets merged (scale 0.80)
 → ./out/plakat-690272596.png
 ```
+
+The `@ cd8b7d93` suffix is the catalog's pinned revision SHA (8-char
+prefix) — it appears when the catalog declared a `revision` for the
+LoRA. Without a pin, plakat downloads from the repo's current `main`
+and no suffix is shown. The cache is keyed by `(repo, revision, file)`
+so different revisions don't collide.
 
 The catalog-resolved LoRA is downloaded once (cached after first use),
 merged into both the UNet and the text encoder at the catalog's
@@ -676,87 +684,258 @@ options:
 A future iteration may auto-merge the style negatives into per-task
 overrides; today it's an explicit choice.
 
-### Per-task style-ref — designed, not implemented
+### Per-task `style-ref` — shipped
 
-A later iteration may allow per-task `style-ref:` overriding the
-global. Costs one CLIP-H encode per task that uses it; the encoder
-loads once and is reused. Not in scope today — every task inherits
-the scenario's single global style.
+A task can override the scenario's global style with its own
+`style-ref:`. The CLIP-H encoder is loaded once and shared via an
+internal `StyleSession`, so a scenario with N per-task style refs
+pays for the ~2.5 GB encoder load exactly once.
+
+```hjson
+{
+    # No global style — every task picks its own.
+    enhancer: deepseek
+    scene: [ ... ]
+    weather: [ ... ]
+    tasks:
+    [
+        {
+            name: forest_natural
+            scene: forest
+            weather: dawn
+            prompt: "a fox in tall grass"
+            style-ref: ./inspiration/fox_photo.jpg     # detects photorealistic
+        }
+        {
+            name: forest_painted
+            scene: forest
+            weather: dawn
+            prompt: "the same scene, painted"
+            style-ref: ./inspiration/turner_watercolor.jpg  # detects watercolor
+        }
+    ]
+}
+```
+
+Per-task style detection runs inside the task loop, just after the
+task header is printed. The catalog's trigger phrase + `negative_extras`
+for the picked style apply **for that task only** — the next task
+without a `style-ref:` falls back to the scenario's global style (or no
+style if none was set globally).
+
+#### Important: trigger + negative only, not LoRAs
+
+Plakat scenarios pre-load **one** generation pipeline at scenario start
+with the global LoRAs baked into the UNet. Swapping LoRAs per task
+would require reloading that pipeline (multi-GB UNet re-merge), which
+is too expensive for a typical multi-task batch.
+
+So per-task style overrides change the **trigger phrase** and the
+**negative_extras** but NOT the LoRAs. When a per-task style resolves
+to a different LoRA set than the global one, plakat warns:
+
+```
+▶ [2/3] t2_per_task_watercolor (scene=forest, weather=dawn)
+  pre-enhance: a forest, dawn light, a deer
+  → style: watercolor
+  ⚠ per-task style 'watercolor' wants 1 LoRA(s); scenarios share one
+    pipeline so only trigger + negative apply (global LoRAs stay loaded)
+  ...
+  final: colorful inkpainting, ...
+```
+
+This is useful when:
+- Per-task style is **trigger-only** (e.g., `photorealistic`) — the
+  warning doesn't fire, the trigger fully applies.
+- Per-task style **happens to use the same LoRAs** as global (e.g.,
+  `same_lora_set` matches) — no warning, full behavior.
+
+It's less useful when:
+- Per-task style needs **different LoRAs** than global. The trigger
+  phrase will pull the prompt in the right direction, but without the
+  LoRA's visual contribution the output won't fully take on the style.
+  Restructure into separate scenarios per LoRA set for cases like this.
+
+#### How per-task interacts with global
+
+Per-task style **fully replaces** the global style for that task:
+- The catalog trigger from the per-task style replaces the global one.
+- The catalog `negative_extras` from the per-task style replaces the
+  global one.
+- (LoRAs unchanged from global — see above.)
+
+The per-task trigger is prepended to the scenario's **bare**
+`lora-header` (not to the global-trigger-modified one). Same for
+`negative_extras` — combined with `negative:` from the scenario root,
+not with the global style's contribution. This symmetry mirrors how
+global style applies to user-authored values rather than to anything
+already modified.
+
+#### What's not yet shipped
+
+- **Per-task `style:` (pick by id)** — the existing per-task `style:`
+  field already means "IP-Adapter REF stylize-pass photo" for
+  backwards compatibility. To pick a catalog style by id per-task,
+  use the scenario's global `style:` field and group same-style tasks
+  into one scenario.
+- **Per-task `style-strength:`** — same reasoning; the existing
+  per-task `style-strength:` controls the IP-Adapter pass. Catalog
+  strength is global-only for now.
+- **Per-task LoRA swaps** — out of scope; see "trigger + negative only"
+  above.
 
 ## Building a custom catalog
 
-**Status:** today, only the spike builder exists at
-`examples/spike_catalog.rs`. The full curation tool is designed but
-not yet implemented.
+**Status:** shipped. The catalog-build tool is at
+`examples/build_catalog.rs`. It reads a curator-authored HJSON config,
+encodes exemplar images through CLIP-H, and emits a complete catalog
+with sidecar files.
 
-### Spike builder
+### Usage
 
 ```bash
-cargo run --release --example spike_catalog -- \
-    --fixtures tests/fixtures/style_catalog \
-    --out      assets/style_catalog \
-    --device   cpu
+cargo run --release --example build_catalog -- \
+    --sources tools/style_sources/catalog.hjson \
+    --out     assets/style_catalog
 ```
 
-Layout it expects:
+| Flag | Default | Description |
+|---|---|---|
+| `--sources` | required | Path to the curator's HJSON config. Exemplar paths are resolved relative to this file's directory. |
+| `--out` | required | Output directory; created if missing. Existing files are overwritten. |
+| `--device` | `auto` | Encoder device (`auto` / `cuda[:N]` / `metal` / `cpu`). |
+| `--probe-hf` | (off) | HEAD-check every catalog LoRA on HuggingFace before encoding. Fails the build on any non-200. Recommended in CI. |
+
+### Curator HJSON schema
+
+The shipped tools/style_sources/catalog.hjson is the live source for
+the bundled catalog. It looks like:
+
+```hjson
+{
+    schema_version: 1
+    encoder: { id: clip-h-laion2b, embed_dim: 1024 }
+    detection:
+    {
+        aggregation: top3-mean
+        min_confidence: 0.22
+        margin_over_runner_up: 0.02
+    }
+    styles:
+    [
+        {
+            id: watercolor
+            display_name: Watercolor
+            description: "Wet-on-wet pigment washes, ink lineart, paper texture."
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg
+                ../../tests/fixtures/style_catalog/watercolor/02_sargent_alligators.jpg
+                # ... 3-5 exemplars per style is typical
+            ]
+            models:
+            {
+                sd15:
+                {
+                    loras:
+                    [
+                        {
+                            spec: "Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8"
+                            revision: cd8b7d93ec0b6c0aa31a640f1287837583d702d0
+                            license_url: "https://huggingface.co/Arczisan/ink-watercolor"
+                        }
+                    ]
+                    trigger: "colorful inkpainting"
+                    negative_extras: "3d render, photo, glossy"
+                }
+            }
+        }
+    ]
+}
+```
+
+LoRA entries accept either a shorthand string (`"org/repo:0.8"`) or
+a full object with `spec`, `revision`, `license`, `license_url`. The
+builder normalizes both to the full-object form in the emitted
+`catalog.json`.
+
+### What the builder does
+
+1. **Parse + validate** — HJSON parse, schema_version check, duplicate
+   style ids, missing exemplar paths, unknown base-model slot names
+   (`sd15` / `sdxl` / `flux` only), unparseable LoRA specs.
+2. **Soft warnings** — styles with <3 exemplars (sparse, detection may
+   be unreliable); per-base entries that have neither LoRAs nor a
+   trigger (declaring them does nothing).
+3. **Optional HF probe** — when `--probe-hf` is set, every LoRA's
+   URL is HEAD-requested before encoding starts (so curators don't sit
+   through a 60-second encode pass just to find their LoRA reference
+   is broken).
+4. **Encode exemplars** — every exemplar image is loaded, CLIP-preprocessed,
+   passed through CLIP-H, L2-normalized, downcast to f16 and stored at
+   key `<style_id>/<idx>` in `exemplars.safetensors`.
+5. **Emit outputs**:
+   - `catalog.json` — runtime-format catalog
+   - `exemplars.safetensors` — embeddings
+   - `LICENSES.md` — markdown table of every LoRA's license + url
+   - `provenance.json` — exemplar_key → source path mapping, for
+     reproducible rebuilds
+
+### Sample output
 
 ```
-<fixtures>/
-├── <style_id_1>/    # any image files (.jpg/.jpeg/.png); each becomes an exemplar
-├── <style_id_2>/
-└── holdout/         # skipped by the builder; used by the smoke test
+$ cargo run --release --example build_catalog -- \
+      --sources tools/style_sources/catalog.hjson \
+      --out assets/style_catalog --probe-hf
+
+==> probing 1 LoRA reference(s) on HuggingFace
+  ✓ Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8 (sd15 @ cd8b7d93)
+==> loading CLIP-H image encoder
+==> watercolor (4 exemplars)
+    watercolor/00 ← ../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg
+    ...
+==> wrote assets/style_catalog/exemplars.safetensors (8 tensors)
+==> wrote assets/style_catalog/catalog.json
+==> wrote assets/style_catalog/LICENSES.md
+==> wrote assets/style_catalog/provenance.json
+
+✓ built catalog: 2 style(s), 8 exemplar embedding(s), 1 LoRA reference(s)
 ```
 
-The spike builder hardcodes routing metadata for the two spike styles
-(`watercolor`, `photorealistic`). Extend it by editing
-`spike_style_metadata()` in `examples/spike_catalog.rs`, or wait for
-the full catalog-build tool.
+### Sidecars
 
-### Designed full builder
+**`LICENSES.md`** — markdown table per style, per base-model:
 
-The post-spike tool will read a curator-authored YAML and an
-exemplar-images directory, and emit `catalog.json` +
-`exemplars.safetensors` plus sidecar `LICENSES.md` and `provenance.json`
-files. The YAML lives at `tools/style_sources/catalog.yaml` and looks
-like:
+```markdown
+## Watercolor (`watercolor`)
 
-```yaml
-schema_version: 1
-encoder:
-  id: clip-h-laion2b
-  embed_dim: 1024
-detection:
-  aggregation: top3-mean
-  min_confidence: 0.22
-  margin_over_runner_up: 0.02
-styles:
-  - id: watercolor
-    display_name: Watercolor
-    description: Wet-on-wet pigment washes, ink lineart, paper texture.
-    exemplars:
-      - watercolor/01.jpg
-      - watercolor/02.jpg
-      - watercolor/03.jpg
-      - watercolor/04.jpg
-    models:
-      sd15:
-        loras:
-          - spec: Arczisan/ink-watercolor:0.8
-            revision: main
-            license: creativeml-openrail-m
-            license_url: https://huggingface.co/Arczisan/ink-watercolor
-        trigger: "watercolor painting, soft washes, ink lineart"
-        negative_extras: "3d render, photo, glossy"
-      sdxl:
-        loras:
-          - ostris/watercolor-style-lora-sdxl:0.75
-        trigger: "watercolor, painterly"
+### `sd15` base
+
+| Spec | Revision | License | URL |
+|---|---|---|---|
+| `Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8` | `cd8b7d93` | (not declared) | https://... |
 ```
 
-The builder validates that every referenced exemplar image loads, every
-`spec` parses through `LoraSpec::from_str`, and (with `--probe-hf`) that
-every `repo+revision` resolves on HuggingFace. Sidecars track licenses
-and per-exemplar SHA-256 hashes for reproducible rebuilds.
+**`provenance.json`** — exemplar key → source image path, so rebuilds
+from the same sources should produce the same `exemplars.safetensors`:
+
+```json
+{
+  "schema_version": 1,
+  "encoder_id": "clip-h-laion2b",
+  "exemplars": {
+    "watercolor/00": { "source": "../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg" },
+    ...
+  }
+}
+```
+
+### Deprecated: `examples/spike_catalog.rs`
+
+The earlier spike builder is retained as a ~100-LoC minimal reference
+showing the encode-and-emit-safetensors flow without HJSON parsing,
+validation, or sidecar emission. Use `build_catalog` for any actual
+curation work.
 
 ## Tuning
 
@@ -828,13 +1007,13 @@ LoRA downloads (per detected style) are deferred until the
   cannot be detected. The shipping catalog covers 2 styles today
   (`watercolor` with a real SD 1.5 LoRA, `photorealistic` trigger-only);
   will grow to ~10 in the MVP curation pass.
-- **Revision pinning is recorded but not yet enforced at download.**
-  The catalog stores a revision SHA per LoRA and `plakat style show`
-  displays it, but the underlying HF downloader currently uses `main`.
-  In practice this means catalog LoRA references aren't perfectly
-  reproducible against upstream force-pushes. A future fix threads
-  `ResolvedLoraRef.revision` through the download call. Until then,
-  prefer LoRAs from authors known not to rewrite history.
+- **Revision pinning is honored end-to-end.** When the catalog records
+  a `revision` SHA / tag for a LoRA, `plakat generate --style-ref` and
+  `plakat portrait --style-ref` request that exact revision from
+  HuggingFace. The download log displays the short SHA when present
+  (`Arczisan/ink-watercolor/inkwatercolor.safetensors @ cd8b7d93`).
+  `plakat style probe` also checks the pinned revision URL, so probe
+  and download cannot diverge.
 - **LoRA availability isn't guaranteed.** Catalog LoRAs point at HF
   repos that can occasionally disappear or be renamed. `plakat style
   probe` (when shipped) will catch this early.

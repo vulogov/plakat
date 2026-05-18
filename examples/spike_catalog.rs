@@ -1,5 +1,22 @@
 //! Spike: build the style catalog from a fixture directory.
 //!
+//! **Deprecated.** Use `examples/build_catalog.rs` instead — it accepts a
+//! curator-authored HJSON config, supports multi-style catalogs, emits
+//! `LICENSES.md` + `provenance.json` sidecars, and validates LoRA specs.
+//! Run with:
+//!
+//! ```sh
+//! cargo run --release --example build_catalog -- \
+//!     --sources tools/style_sources/catalog.hjson \
+//!     --out     assets/style_catalog
+//! ```
+//!
+//! This spike binary is retained only as a minimal reference: a ~100-LoC
+//! example of the encode-and-emit-safetensors flow without the schema
+//! validation, HF probing, or sidecar emission of the full builder.
+//!
+//! Original spike docstring follows.
+//!
 //! Reads a fixtures directory laid out as:
 //!
 //! ```text

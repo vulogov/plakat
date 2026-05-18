@@ -558,7 +558,7 @@ async fn probe_one(client: &reqwest::Client, entry: &LoraEntry) -> ProbeOutcome 
                 ProbeOutcome::LocalMissing { path }
             }
         }
-        LoraSource::Hub { repo, file } => {
+        LoraSource::Hub { repo, file, .. } => {
             let repo_resolved = crate::hf::resolve_alias(&repo).to_string();
             let url = match file {
                 Some(f) => format!(
