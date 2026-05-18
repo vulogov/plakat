@@ -1,0 +1,207 @@
+{
+    # ---------- plakat style catalog: curator source ----------
+    # Authoritative input for the catalog-build tool. Builds
+    # assets/style_catalog/{catalog.json, exemplars.safetensors, ...}
+    # via:
+    #
+    #     cargo run --release --bin build_catalog -- \
+    #         --sources tools/style_sources/catalog.hjson \
+    #         --out     assets/style_catalog
+    #
+    # Optional: pass --probe-hf to HEAD-check every LoRA URL on
+    # HuggingFace before emitting the catalog. Recommended in CI.
+    # ----------------------------------------------------------
+
+    schema_version: 1
+
+    encoder:
+    {
+        # Fingerprint of the CLIP encoder. The runtime asserts this
+        # matches the encoder it's about to use; if you change encoders,
+        # bump this id AND re-build (existing embeddings become invalid).
+        id: clip-h-laion2b
+        embed_dim: 1024
+    }
+
+    detection:
+    {
+        # How to collapse per-exemplar similarities into one per-style
+        # score. Options: max | mean | top3-mean. top3-mean is robust
+        # to one weak exemplar without averaging across all.
+        aggregation: top3-mean
+
+        # Below this cosine, detection returns "no pick".
+        min_confidence: 0.22
+
+        # top-1 must beat top-2 by this much; otherwise ambiguous.
+        margin_over_runner_up: 0.02
+    }
+
+    styles:
+    [
+        {
+            id: watercolor
+            display_name: Watercolor
+            description: "Wet-on-wet pigment washes, ink lineart, visible paper texture."
+
+            # Paths resolved relative to THIS hjson file's directory.
+            # Vendor exemplars under tests/fixtures/style_catalog/ so
+            # the smoke test sees the same images. 4+ exemplars
+            # recommended; builder warns on <3.
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/watercolor/01_durer_hare.jpg
+                ../../tests/fixtures/style_catalog/watercolor/02_sargent_alligators.jpg
+                ../../tests/fixtures/style_catalog/watercolor/03_sargent_fountain.jpg
+                ../../tests/fixtures/style_catalog/watercolor/04_homer_northwoods.jpg
+            ]
+
+            models:
+            {
+                sd15:
+                {
+                    loras:
+                    [
+                        {
+                            spec: "Arczisan/ink-watercolor#inkwatercolor.safetensors:0.8"
+                            revision: cd8b7d93ec0b6c0aa31a640f1287837583d702d0
+                            license_url: "https://huggingface.co/Arczisan/ink-watercolor"
+                        }
+                    ]
+                    trigger: "colorful inkpainting"
+                    negative_extras: "3d render, photo, glossy, photorealistic"
+                }
+            }
+        }
+
+        {
+            id: photorealistic
+            display_name: Photorealistic
+            description: "Photographic realism; lens characteristics; lighting physicality."
+
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/photorealistic/01_apollo11_step.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/02_apollo8_earthrise.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/03_pillars_creation.jpg
+                ../../tests/fixtures/style_catalog/photorealistic/04_buzz_flag.jpg
+            ]
+
+            # Trigger-only: SD 1.5 produces photorealistic output natively.
+            # The trigger nudges the prompt toward photography vocabulary;
+            # negative_extras discourages painterly/illustrative drift.
+            models:
+            {
+                sd15:
+                {
+                    loras: []
+                    trigger: "photograph, photorealistic, 35mm film, natural lighting"
+                    negative_extras: "painting, illustration, cartoon, 3d render, cgi, drawing"
+                }
+            }
+        }
+
+        {
+            id: oil_painting
+            display_name: "Oil Painting"
+            description: "Classical oil painting; visible brushwork, rich palette, canvas texture."
+
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/oil_painting/01_rembrandt_self_portrait.jpg
+                ../../tests/fixtures/style_catalog/oil_painting/02_vermeer_pearl_earring.jpg
+                ../../tests/fixtures/style_catalog/oil_painting/03_sargent_lady_agnew.jpg
+                ../../tests/fixtures/style_catalog/oil_painting/04_waterhouse_lady_shalott.jpg
+            ]
+
+            models:
+            {
+                sd15:
+                {
+                    # Jehugging/oilpaint_lora — community SD 1.5 oil-paint LoRA.
+                    # ~27 downloads. License not declared by the author but the
+                    # repo is public with `text-to-image` tag. Plakat doesn't
+                    # redistribute weights; users download on demand. Trigger
+                    # phrase derived from the repo's widget examples.
+                    loras:
+                    [
+                        {
+                            spec: "Jehugging/oilpaint_lora#S_oilpainting-07.safetensors:0.8"
+                            revision: "957cbf5daea6684e96b6308cf57775ad00a695c4"
+                            license_url: "https://huggingface.co/Jehugging/oilpaint_lora"
+                        }
+                    ]
+                    trigger: "oil painting, impressionism, brush touch style, warm light"
+                    negative_extras: "photo, 3d render, digital, smooth, glossy"
+                }
+            }
+        }
+
+        {
+            id: ukiyo_e
+            display_name: "Ukiyo-e"
+            description: "Edo-period Japanese woodblock print; flat color, fine ink lineart, traditional subjects."
+
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/ukiyo_e/01_hokusai_great_wave.jpg
+                ../../tests/fixtures/style_catalog/ukiyo_e/02_hiroshige_arashiyama.jpg
+                ../../tests/fixtures/style_catalog/ukiyo_e/03_hiroshige_shellfish.jpg
+                ../../tests/fixtures/style_catalog/ukiyo_e/04_hokusai_saigyo.jpg
+            ]
+
+            models:
+            {
+                sd15:
+                {
+                    # py-img-gen/lora-ukiyo-e-face-blip2-captions — trained on
+                    # BLIP2-captioned ukiyo-e face images, so it skews toward
+                    # portrait output. Still useful for ukiyo-e styling broadly.
+                    # CreativeML OpenRAIL-M license.
+                    loras:
+                    [
+                        {
+                            spec: "py-img-gen/lora-ukiyo-e-face-blip2-captions:0.8"
+                            revision: "64553e156e9e42569d5fb546b52f96390c55a056"
+                            license: "creativeml-openrail-m"
+                            license_url: "https://huggingface.co/py-img-gen/lora-ukiyo-e-face-blip2-captions"
+                        }
+                    ]
+                    trigger: "ukiyo-e, edo period woodblock print, traditional japanese"
+                    negative_extras: "western art, oil painting, 3d render, photo"
+                }
+            }
+        }
+
+        {
+            id: art_nouveau
+            display_name: "Art Nouveau"
+            description: "Flowing organic lines, decorative borders, Mucha-style portraiture."
+
+            exemplars:
+            [
+                ../../tests/fixtures/style_catalog/art_nouveau/01_mucha_dame_camelias.jpg
+                ../../tests/fixtures/style_catalog/art_nouveau/02_mucha_biscuits.jpg
+                ../../tests/fixtures/style_catalog/art_nouveau/03_mucha_salammbo.jpg
+                ../../tests/fixtures/style_catalog/art_nouveau/04_mucha_imprimerie.jpg
+            ]
+
+            # Trigger-only: no SD 1.5 LoRA available that's compatible
+            # with plakat's kohya-format merger. `SidXXD/Art_Nouveau_modern`
+            # exists but uses DreamBooth-style layer naming that merges
+            # 0/191 targets. SDXL alternatives exist but are out of scope
+            # for the SD 1.5 catalog slot. The trigger alone still pushes
+            # SD 1.5 toward Mucha-adjacent output — less specific than a
+            # trained LoRA would, but better than nothing.
+            models:
+            {
+                sd15:
+                {
+                    loras: []
+                    trigger: "art nouveau, alphonse mucha style, decorative borders, flowing lines, ornamental"
+                    negative_extras: "art deco, modern, 3d render, photo, harsh angles"
+                }
+            }
+        }
+    ]
+}

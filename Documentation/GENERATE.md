@@ -351,7 +351,14 @@ refuses cross-attn-dim mismatches at load):
 - `plus-face-sdxl` (aliases: `plusface-sdxl`, `plus-face-xl`,
   `sdxl-plus-face`) — IP-Adapter-Plus-Face SDXL via the `vit-h` variant
   (reuses the SD 1.5 CLIP-H image encoder). Use with `--model sdxl`.
-- `faceid`, `instantid` — roadmap; not yet implemented.
+- `faceid` — IP-Adapter-FaceID, SD 1.5. Uses the InsightFace ArcFace
+  IR-ResNet50 embedding for stronger identity preservation than
+  CLIP-H-based strategies. Requires ArcFace weights (set via
+  `PLAKAT_ARCFACE_WEIGHTS` or `PLAKAT_ARCFACE_HF`). See PERSONA.md
+  "FaceID setup".
+- `faceid-sdxl` — IP-Adapter-FaceID on SDXL. Same ArcFace backbone;
+  SDXL UNet target. Use with `--model sdxl`.
+- `instantid` — roadmap; not yet implemented.
 
 #### `--face-strength <FLOAT>` (default `0.8`)
 

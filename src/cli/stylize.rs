@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// Curated `--strength` values for common stylize use cases. Each preset
 /// is what we'd actually recommend after experience with the
 /// shared-cross-attention IP-Adapter implementation we ship — see
-/// [GENERATE.md] for the full strength → behaviour map.
+/// [Documentation/GENERATE.md] for the full strength → behaviour map.
 #[derive(Clone, Copy, Debug)]
 pub enum StylizePreset {
     /// Face-preserving restyling. `0.35` — keeps identity intact while

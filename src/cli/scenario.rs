@@ -17,6 +17,10 @@ use crate::pipelines::portrait;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::stylize;
 use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline, Variant};
+use crate::style::{
+    combine_negative, log_style_prep, parse_resolved_loras, prepend_trigger, StylePrepRequest,
+    StyleSession,
+};
 
 #[derive(ClapArgs, Debug)]
 pub struct ScenarioArgs {
@@ -76,6 +80,24 @@ struct ScenarioFile {
 
     #[serde(default)]
     negative: String,
+
+    // ---------- style detection / transfer ----------
+    /// Detect art style from this photo and load the matching LoRAs
+    /// from the catalog. Applied globally to every task. Conflicts
+    /// with `loras: [...]` — catalog LoRAs win with a warning.
+    #[serde(rename = "style-ref", default)]
+    style_ref: Option<PathBuf>,
+    /// Pick a style by id from the catalog. Bypasses detection when
+    /// used alone; overrides the detection result when combined with
+    /// `style-ref`.
+    #[serde(default)]
+    style: Option<String>,
+    /// Multiplier applied to every catalog LoRA's :scale. Defaults to 1.0.
+    #[serde(rename = "style-strength", default)]
+    style_strength: Option<f32>,
+    /// Override the bundled style catalog directory.
+    #[serde(rename = "style-catalog", default)]
+    style_catalog: Option<PathBuf>,
 
     // ---------- post-generate options ----------
     #[serde(default)]
@@ -237,6 +259,26 @@ struct TaskDef {
     /// within one task is rejected at load time.
     #[serde(default)]
     personas: Option<Vec<PersonaRef>>,
+
+    // ---------- per-task catalog-style override ----------
+    /// Detect art style from this photo. Fully overrides the scenario's
+    /// global `style-ref` / `style` for this task only; the catalog
+    /// trigger phrase and `negative_extras` are recomputed against the
+    /// scenario's bare `lora-header` and `negative` (NOT against the
+    /// global style's effective values).
+    ///
+    /// Per-task catalog style applies **trigger and negative only** —
+    /// LoRAs cannot be swapped per-task because scenarios share a
+    /// pre-loaded pipeline. If the resolved style would have required
+    /// different LoRAs than the scenario's global set, plakat warns and
+    /// proceeds (trigger + negative may still help, but the LoRA's
+    /// visual contribution is missing). For per-task LoRA swaps,
+    /// split into separate scenarios.
+    ///
+    /// **Note on naming:** distinct from per-task `style:` (IP-Adapter
+    /// REF stylize pass) — different feature.
+    #[serde(rename = "style-ref", default)]
+    style_ref_catalog: Option<PathBuf>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -502,11 +544,51 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     };
     let (width, height) = crate::imaging::sizes::resolve(size, s.aspect.as_deref(), base)?;
 
-    let loras: Vec<LoraSpec> = s
+    let mut loras: Vec<LoraSpec> = s
         .loras
         .iter()
         .map(|x| x.parse::<LoraSpec>())
         .collect::<Result<Vec<_>>>()?;
+
+    // -------- style detection / transfer --------
+    // A single `StyleSession` is constructed when any task (or the
+    // scenario globally) uses style detection. The session shares one
+    // CLIP-H encoder load across global + every per-task style-ref;
+    // a 5-task scenario where every task has its own style-ref pays
+    // for the ~2.5 GB encoder weights exactly once.
+    let any_task_style = s.tasks.iter().any(|t| t.style_ref_catalog.is_some());
+    let scenario_uses_style = s.style_ref.is_some() || s.style.is_some() || any_task_style;
+    let mut style_session: Option<StyleSession> = if scenario_uses_style {
+        Some(StyleSession::load(s.style_catalog.as_deref(), device.clone())?)
+    } else {
+        None
+    };
+
+    // Global style block — applied to all tasks that don't have their
+    // own per-task style override.
+    let mut effective_lora_header = s.lora_header.clone();
+    let mut effective_negative = s.negative.clone();
+    if s.style_ref.is_some() || s.style.is_some() {
+        let n_user_loras = loras.len();
+        let session = style_session.as_mut().expect("session created when any style is set");
+        let prep = session
+            .prepare(StylePrepRequest {
+                style_ref: s.style_ref.as_deref(),
+                style_override: s.style.as_deref(),
+                style_strength: s.style_strength.unwrap_or(1.0),
+                style_catalog: None, // session already locked the catalog in
+                model: &model,
+                user_loras_nonempty: !loras.is_empty(),
+                device: &device,
+            })
+            .await?;
+
+        log_style_prep(&prep, n_user_loras);
+
+        loras = parse_resolved_loras(&prep)?;
+        effective_lora_header = prepend_trigger(&prep.trigger, &effective_lora_header);
+        effective_negative = combine_negative(&effective_negative, &prep.negative_extras);
+    }
 
     // -------- execution plan summary --------
     let total_images = (s.tasks.len() as u32) * count;
@@ -690,6 +772,61 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         ));
         crate::ui::progress::println(&wrap_label("pre-enhance", &pre_refine));
 
+        // -------- per-task style override --------
+        // Trigger + negative_extras only — the pipeline pre-loaded its
+        // LoRAs at scenario start and can't swap them per task without
+        // a full reload. If the per-task style would have wanted
+        // different LoRAs, warn loudly so the user knows the LoRAs
+        // aren't being applied (trigger phrase alone won't fully
+        // produce a style that needs a LoRA).
+        let task_overrides_style = task.style_ref_catalog.is_some();
+        let task_lora_header: String;
+        let task_negative_base: String;
+        if task_overrides_style {
+            let session = style_session
+                .as_mut()
+                .expect("session created when any style is set");
+            let prep = session
+                .prepare(StylePrepRequest {
+                    style_ref: task.style_ref_catalog.as_deref(),
+                    style_override: None,
+                    style_strength: s.style_strength.unwrap_or(1.0),
+                    style_catalog: None, // session already locked the catalog in
+                    model: &model,
+                    // For per-task, the warning's "N user LoRAs overridden"
+                    // count is meaningless (global LoRAs are NEVER overridden
+                    // per-task) — suppress by passing false.
+                    user_loras_nonempty: false,
+                    device: &device,
+                })
+                .await?;
+
+            log_style_prep(&prep, 0);
+
+            // Warn when per-task style would have wanted LoRAs that differ
+            // from the global ones currently loaded.
+            let task_resolved = parse_resolved_loras(&prep)?;
+            if !same_lora_set(&task_resolved, &loras) {
+                crate::ui::progress::println(&format!(
+                    "  {} per-task style '{}' wants {} LoRA(s); scenarios share \
+                     one pipeline so only trigger + negative apply (global LoRAs \
+                     stay loaded)",
+                    style("⚠").yellow(),
+                    prep.picked_style_id,
+                    task_resolved.len()
+                ));
+            }
+
+            // Per-task style applies against the SCENARIO BASE values, not
+            // against the global-style-modified ones. Symmetrical with how
+            // global style applies against user-authored values.
+            task_lora_header = prepend_trigger(&prep.trigger, &s.lora_header);
+            task_negative_base = combine_negative(&s.negative, &prep.negative_extras);
+        } else {
+            task_lora_header = effective_lora_header.clone();
+            task_negative_base = effective_negative.clone();
+        }
+
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
         } else {
@@ -699,7 +836,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
         crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
-        let final_prompt = join_parts(&[&s.lora_header, &enhanced, &s.lora_footer]);
+        let final_prompt = join_parts(&[&task_lora_header, &enhanced, &s.lora_footer]);
         crate::ui::progress::println(&wrap_label("final", &final_prompt));
 
         if args.dry_run {
@@ -795,7 +932,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let eff_negative = task
             .negative
             .clone()
-            .unwrap_or_else(|| s.negative.clone());
+            .unwrap_or_else(|| task_negative_base.clone());
         let eff_scheduler: SchedulerKind = match task.scheduler.as_deref() {
             Some(s) => s.parse().with_context(|| format!("task scheduler {s:?}"))?,
             None => scheduler,
@@ -1128,6 +1265,27 @@ fn validate_enhancer_keys(enhancer: &str) -> Result<()> {
         other => bail!("unknown enhancer {other:?} (expected: deepseek | gemini)"),
     }
     Ok(())
+}
+
+/// Compare two LoRA spec lists for equivalence under the per-task
+/// style override constraint: scenarios share a pre-loaded pipeline,
+/// so we can't swap LoRAs per task. If a per-task style's resolved
+/// LoRAs match the currently-loaded set (typically both empty for
+/// trigger-only styles), the override is safe; otherwise we warn.
+///
+/// Compared by spec-string + scale, which is what the user-facing
+/// catalog encodes — bit-for-bit `LoraSpec` equality isn't useful
+/// because the type doesn't implement `PartialEq`.
+fn same_lora_set(a: &[LoraSpec], b: &[LoraSpec]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let key = |s: &LoraSpec| format!("{:?}|{}", s.source, s.scale);
+    let mut a_keys: Vec<String> = a.iter().map(key).collect();
+    let mut b_keys: Vec<String> = b.iter().map(key).collect();
+    a_keys.sort();
+    b_keys.sort();
+    a_keys == b_keys
 }
 
 /// Strip leading/trailing whitespace and commas from each part so users can
