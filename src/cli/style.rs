@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use candle_core::{DType, Device};
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 use console::style;
@@ -39,6 +39,11 @@ pub enum StyleOp {
     /// periodic CI to catch upstream repo deletions or renames before
     /// users hit them.
     Probe(ProbeArgs),
+    /// Scan a directory of images and emit a starter catalog HJSON.
+    /// One subdirectory per style; the subdir name becomes the style id
+    /// (slugified). Doesn't build the catalog itself — the next step is
+    /// `cargo run --example build_catalog -- --sources <HJSON> --out <DIR>`.
+    Init(InitArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -76,6 +81,28 @@ pub struct ShowArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct InitArgs {
+    /// Directory containing one subdirectory per style. Each subdirectory's
+    /// .jpg / .jpeg / .png files become that style's exemplars; the
+    /// subdir name becomes the style id (slugified — lowercased,
+    /// non-alphanumerics replaced with `_`).
+    ///
+    /// `holdout/` and hidden directories (starting with `.`) are skipped.
+    #[arg(long, value_name = "DIR")]
+    pub from_dir: PathBuf,
+
+    /// Output HJSON path. Defaults to `<from-dir>/catalog.hjson`.
+    /// Exemplar paths in the emitted HJSON are resolved relative to
+    /// this file's directory.
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+
+    /// Overwrite the output file if it already exists.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -127,6 +154,7 @@ pub async fn run(args: StyleArgs, device: Device) -> Result<()> {
         StyleOp::List(a) => list_cmd(a, &catalog_dir, &device),
         StyleOp::Show(a) => show_cmd(a, &catalog_dir, &device),
         StyleOp::Probe(a) => probe_cmd(a, &catalog_dir, &device).await,
+        StyleOp::Init(a) => init_cmd(a),
     }
 }
 
@@ -691,4 +719,298 @@ fn print_probe_json(rows: &[ProbeRow]) -> Result<()> {
     });
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+// =========================================================================
+// init — scan a corpus directory and emit a starter catalog HJSON
+// =========================================================================
+
+fn init_cmd(args: InitArgs) -> Result<()> {
+    if !args.from_dir.is_dir() {
+        return Err(anyhow!(
+            "--from-dir is not a directory: {}",
+            args.from_dir.display()
+        ));
+    }
+
+    let out_path = args
+        .out
+        .clone()
+        .unwrap_or_else(|| args.from_dir.join("catalog.hjson"));
+
+    if out_path.exists() && !args.force {
+        return Err(anyhow!(
+            "{} already exists. Pass --force to overwrite, or --out <PATH> to write elsewhere.",
+            out_path.display()
+        ));
+    }
+
+    let out_parent = out_path.parent().unwrap_or(Path::new("."));
+    let scanned = scan_corpus(&args.from_dir)?;
+
+    if scanned.is_empty() {
+        return Err(anyhow!(
+            "no usable style subdirectories found under {}. Expected layout: \
+             <from-dir>/<style-name>/*.jpg (and similar for png). \
+             `holdout/` and hidden directories are skipped.",
+            args.from_dir.display()
+        ));
+    }
+
+    // ----- Emit summary BEFORE writing — so the user sees the scan
+    // result whether or not the write succeeds.
+    println!("==> scanning {}", args.from_dir.display());
+    for s in &scanned {
+        let warn = if s.exemplars.len() < 3 {
+            format!("  {}", style(format!("⚠ <3 exemplars")).yellow())
+        } else {
+            String::new()
+        };
+        println!(
+            "    {:<20} {:>3} images{}",
+            s.id,
+            s.exemplars.len(),
+            warn
+        );
+    }
+    println!();
+
+    let hjson = render_hjson(&scanned, out_parent);
+    std::fs::write(&out_path, hjson)
+        .with_context(|| format!("writing {}", out_path.display()))?;
+
+    println!(
+        "{} wrote {} with {} style(s)",
+        style("✓").green().bold(),
+        out_path.display(),
+        scanned.len()
+    );
+    println!();
+    println!("Next steps:");
+    println!(
+        "  1. Edit {} to fill in descriptions, triggers, and LoRA pins.",
+        out_path.display()
+    );
+    println!("  2. Build the catalog:");
+    println!(
+        "       cargo run --release --example build_catalog -- \\\n         --sources {} \\\n         --out     {}/built",
+        out_path.display(),
+        out_parent.display()
+    );
+    println!("  3. Use it:");
+    println!(
+        "       plakat style detect <PHOTO> --catalog {}/built",
+        out_parent.display()
+    );
+
+    Ok(())
+}
+
+struct ScannedStyle {
+    id: String,
+    display_name: String,
+    /// Paths RELATIVE TO `out_parent`. The HJSON's exemplars: [...] list
+    /// resolves paths from the HJSON's directory, so we strip the
+    /// common prefix here.
+    exemplars: Vec<PathBuf>,
+}
+
+fn scan_corpus(from_dir: &Path) -> Result<Vec<ScannedStyle>> {
+    let mut out = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(from_dir)
+        .with_context(|| format!("reading {}", from_dir.display()))?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Skip hidden + reserved.
+        if name.starts_with('.') || name == "holdout" {
+            continue;
+        }
+
+        let mut images: Vec<PathBuf> = std::fs::read_dir(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                let ext = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase());
+                matches!(ext.as_deref(), Some("jpg" | "jpeg" | "png"))
+            })
+            .collect();
+        images.sort();
+
+        if images.is_empty() {
+            eprintln!(
+                "{} skipping {}: no .jpg/.jpeg/.png files inside",
+                style("⚠").yellow(),
+                path.display()
+            );
+            continue;
+        }
+
+        out.push(ScannedStyle {
+            id: slugify(name),
+            display_name: humanize(name),
+            exemplars: images,
+        });
+    }
+    Ok(out)
+}
+
+/// Lowercased, non-alphanumerics → `_`, no leading/trailing/repeated `_`.
+fn slugify(s: &str) -> String {
+    let mut acc = String::with_capacity(s.len());
+    let mut prev_underscore = true;
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            acc.push(ch.to_ascii_lowercase());
+            prev_underscore = false;
+        } else if !prev_underscore {
+            acc.push('_');
+            prev_underscore = true;
+        }
+    }
+    while acc.ends_with('_') {
+        acc.pop();
+    }
+    if acc.is_empty() {
+        acc.push_str("style");
+    }
+    acc
+}
+
+/// Title-case-ish display name derived from a directory name. Best-effort —
+/// the user is expected to edit the emitted HJSON anyway.
+fn humanize(s: &str) -> String {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect::<String>()
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn render_hjson(styles: &[ScannedStyle], hjson_parent: &Path) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "{\n    # Auto-generated by `plakat style init`. Edit to fill in\n    \
+         # descriptions, trigger phrases, and LoRA references. See STYLES.md\n    \
+         # for the schema and `tools/style_sources/catalog.hjson` for an\n    \
+         # example with LoRAs configured.\n    \
+         #\n    \
+         # Build the catalog with:\n    \
+         #     cargo run --release --example build_catalog -- \\\n    \
+         #         --sources <this-file> --out <output-dir>\n\n",
+    );
+    out.push_str("    schema_version: 1\n\n");
+    out.push_str("    encoder:\n    {\n        id: clip-h-laion2b\n        embed_dim: 1024\n    }\n\n");
+    out.push_str(
+        "    detection:\n    {\n        aggregation: top3-mean\n        \
+         min_confidence: 0.22\n        margin_over_runner_up: 0.02\n    }\n\n",
+    );
+    out.push_str("    styles:\n    [\n");
+
+    for (i, s) in styles.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("        {\n");
+        out.push_str(&format!("            id: {}\n", s.id));
+        out.push_str(&format!("            display_name: \"{}\"\n", s.display_name));
+        out.push_str("            description: \"\"\n\n");
+        out.push_str("            exemplars:\n            [\n");
+        for img in &s.exemplars {
+            let rel = relpath(img, hjson_parent);
+            out.push_str(&format!("                {}\n", rel.display()));
+        }
+        out.push_str("            ]\n\n");
+        out.push_str(
+            "            # Add per-base-model LoRA references + trigger phrases below.\n            \
+             # Leave `models: {}` for a detection-only style (no transfer).\n",
+        );
+        out.push_str("            models: {}\n");
+        out.push_str("        }\n");
+    }
+
+    out.push_str("    ]\n}\n");
+    out
+}
+
+/// Compute a relative path from `base` to `target`. Falls back to the
+/// absolute target path if they don't share a usable prefix — keeps the
+/// emitted HJSON portable when the user moves it later.
+fn relpath(target: &Path, base: &Path) -> PathBuf {
+    let target = target.canonicalize().unwrap_or_else(|_| target.to_owned());
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_owned());
+
+    let mut t_components: Vec<_> = target.components().collect();
+    let mut b_components: Vec<_> = base.components().collect();
+
+    // Drop the common prefix.
+    let mut common = 0;
+    while common < t_components.len()
+        && common < b_components.len()
+        && t_components[common] == b_components[common]
+    {
+        common += 1;
+    }
+    if common == 0 {
+        // No shared prefix (different roots) — fall back to absolute.
+        return target;
+    }
+    t_components.drain(..common);
+    b_components.drain(..common);
+
+    let mut rel = PathBuf::new();
+    for _ in &b_components {
+        rel.push("..");
+    }
+    for c in &t_components {
+        rel.push(c.as_os_str());
+    }
+    if rel.as_os_str().is_empty() {
+        rel.push(".");
+    }
+    rel
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_normalizes_corpus_names() {
+        assert_eq!(slugify("Watercolor"), "watercolor");
+        assert_eq!(slugify("Oil Painting"), "oil_painting");
+        assert_eq!(slugify("art-nouveau"), "art_nouveau");
+        assert_eq!(slugify("__leading"), "leading");
+        assert_eq!(slugify("trailing__"), "trailing");
+        assert_eq!(slugify("Mucha 1896!"), "mucha_1896");
+        assert_eq!(slugify("!!!"), "style"); // fallback for empty result
+    }
+
+    #[test]
+    fn humanize_titlecases_words() {
+        assert_eq!(humanize("oil_painting"), "Oil Painting");
+        assert_eq!(humanize("art-nouveau"), "Art Nouveau");
+        assert_eq!(humanize("ukiyo_e"), "Ukiyo E");
+    }
 }

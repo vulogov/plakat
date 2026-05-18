@@ -22,13 +22,15 @@ composes cleanly with the LoRA stack.
 | `--style-ref` / `--style` / `--style-strength` / `--style-catalog` on `plakat generate` | **shipped** |
 | `--style-ref` / `--style` / `--style-strength` / `--style-catalog` on `plakat portrait` | **shipped** |
 | `style-ref` / `style` / `style-strength` / `style-catalog` in scenarios (global) | **shipped** |
-| Bundled catalog (`watercolor` with real LoRA, `photorealistic` trigger-only) | **shipped** |
+| Bundled catalog: 5 styles (`watercolor`, `photorealistic`, `oil_painting`, `ukiyo_e`, `art_nouveau`) | **shipped** |
+| Curated LoRA pins (3 functioning LoRAs across the 5 styles; 2 trigger-only) | **shipped** |
 | End-to-end style transfer through standard SD 1.5 pipeline | **shipped** |
 | Revision-SHA threading from catalog → HF download | **shipped** |
 | Per-task `style-ref` in scenarios (trigger + negative only) | **shipped** |
 | `plakat style probe` | **shipped** |
 | Catalog-build tool (`examples/build_catalog.rs`) | **shipped** |
 | `LICENSES.md` + `provenance.json` sidecars | **shipped** |
+| `plakat style init` — bootstrap a catalog HJSON from a corpus directory | **shipped** |
 | `style-ref` field in scenarios | designed, not implemented |
 | Catalog-build tool (`tools/build-style-catalog/`) | spike uses `examples/spike_catalog.rs` |
 | Expanded catalog (10 seed styles + LoRA pins) | not yet curated |
@@ -208,6 +210,48 @@ exemplars, detection policy thresholds, and per-style routing
   LoRAs often have different trigger words.
 - `negative_extras` — appended to the user's negative prompt.
 
+### Bundled catalog
+
+The bundled catalog ships 5 styles:
+
+| Id | Display name | Status | LoRA | Trigger |
+|---|---|---|---|---|
+| `watercolor` | Watercolor | full | `Arczisan/ink-watercolor` @ `cd8b7d93` | `"colorful inkpainting"` |
+| `photorealistic` | Photorealistic | trigger-only | — | `"photograph, photorealistic, 35mm film, natural lighting"` |
+| `oil_painting` | Oil Painting | full | `Jehugging/oilpaint_lora` @ `957cbf5d` | `"oil painting, impressionism, brush touch style, warm light"` |
+| `ukiyo_e` | Ukiyo-e | full | `py-img-gen/lora-ukiyo-e-face-blip2-captions` @ `64553e15` | `"ukiyo-e, edo period woodblock print, traditional japanese"` |
+| `art_nouveau` | Art Nouveau | trigger-only | — | `"art nouveau, alphonse mucha style, decorative borders, flowing lines, ornamental"` |
+
+Each style ships with 4 public-domain exemplar images. See
+`tests/fixtures/style_catalog/ATTRIBUTION.md` for sources — all
+pre-1928 paintings/prints or NASA-PD photographs.
+
+Per-style notes:
+
+- **`photorealistic`** is intentionally trigger-only. SD 1.5 produces
+  photographic output natively; no LoRA needed. The trigger nudges
+  vocabulary toward photography, the `negative_extras` pushes away
+  from painterly drift.
+- **`oil_painting`** uses `Jehugging/oilpaint_lora` — community SD 1.5
+  oil-paint LoRA with no declared license. Public on HF with the
+  `text-to-image` tag, plakat doesn't redistribute. Trigger is broad
+  ("oil painting, impressionism, brush touch style, warm light") so
+  the LoRA's impressionist bias doesn't lock out cleaner classical
+  output.
+- **`ukiyo_e`** uses `py-img-gen/lora-ukiyo-e-face-blip2-captions` —
+  CreativeML OpenRAIL-M, trained on BLIP2-captioned ukiyo-e face
+  images, so output skews toward portraits. Still recognizably
+  ukiyo-e for landscapes and other subjects, just with portrait bias.
+  Only UNet targets merge (128/128); the LoRA wasn't trained with
+  text-encoder LoRAs.
+- **`art_nouveau`** is trigger-only because the only available SD 1.5
+  art_nouveau LoRA (`SidXXD/Art_Nouveau_modern`) uses DreamBooth-style
+  layer naming that doesn't merge against plakat's kohya-format
+  merger (0/191 targets). SDXL alternatives exist but don't apply to
+  the SD 1.5 slot. The trigger still pushes SD 1.5 toward
+  Mucha-adjacent decorative output — meaningfully less specific than
+  a trained LoRA would be, but recognizable.
+
 ### Where the catalog lives
 
 The bundled catalog is at `assets/style_catalog/` relative to the
@@ -346,6 +390,99 @@ Models:
       - ostris/watercolor-style-lora-sdxl:0.75
     trigger:   "watercolor, painterly"
 ```
+
+### `plakat style init` — shipped
+
+Scan a directory of images and emit a starter catalog HJSON for the
+catalog-build tool to consume. Useful for bootstrapping a personal
+catalog from a corpus you've already organized by style.
+
+```bash
+plakat style init --from-dir <DIR> [--out <PATH>] [--force]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from-dir` | required | Corpus directory. Each subdirectory becomes a style; the subdir name becomes the slugified style id; `.jpg`/`.jpeg`/`.png` files inside become exemplars. |
+| `--out` | `<from-dir>/catalog.hjson` | Where to write the emitted HJSON. Exemplar paths in the file are resolved relative to this path's parent. |
+| `--force` | (off) | Overwrite the output file if it already exists. |
+
+What gets skipped: subdirectories named `holdout` (reserved for
+smoke-test queries), subdirectories starting with `.` (hidden), and
+subdirectories with no images (warning printed).
+
+#### Example workflow
+
+Given a corpus laid out as:
+
+```
+~/my_styles/
+├── Moody Landscapes/    # 3 images
+├── bright-portraits/    # 2 images
+└── sketches/            # 1 image
+```
+
+Run init:
+
+```
+$ plakat style init --from-dir ~/my_styles
+==> scanning /Users/.../my_styles
+    moody_landscapes       3 images
+    bright_portraits       2 images  ⚠ <3 exemplars
+    sketches               1 images  ⚠ <3 exemplars
+
+✓ wrote /Users/.../my_styles/catalog.hjson with 3 style(s)
+
+Next steps:
+  1. Edit /Users/.../my_styles/catalog.hjson to fill in descriptions,
+     triggers, and LoRA pins.
+  2. Build the catalog:
+       cargo run --release --example build_catalog -- \
+         --sources /Users/.../my_styles/catalog.hjson \
+         --out     /Users/.../my_styles/built
+  3. Use it:
+       plakat style detect <PHOTO> --catalog /Users/.../my_styles/built
+```
+
+The emitted HJSON is a valid `build_catalog` input out of the box —
+every style has `models: {}` (detection-only) and an empty
+`description`. The user edits the file to add transfer information
+(LoRA references, trigger phrases, negative_extras) before building.
+
+#### Slug rules
+
+Directory names are normalized to style ids by lowercasing, replacing
+runs of non-alphanumeric characters with `_`, and trimming
+leading/trailing `_`. Examples:
+
+| Directory name | Style id | Display name |
+|---|---|---|
+| `Moody Landscapes` | `moody_landscapes` | `Moody Landscapes` |
+| `bright-portraits` | `bright_portraits` | `Bright Portraits` |
+| `Mucha 1896!` | `mucha_1896` | `Mucha 1896` |
+
+The display name is title-cased best-effort; the user is expected to
+edit the HJSON anyway.
+
+#### When `init` is the right tool
+
+- **Bootstrapping a detection-only catalog** from a folder of images
+  you've already grouped by style. Skip the manual HJSON authoring;
+  edit the emitted file to add descriptions.
+- **Bootstrapping a transfer catalog** when you know which LoRAs you
+  want — init gets the exemplar layout in place, then you fill in the
+  `models: {}` blocks per style.
+
+#### When init is the *wrong* tool
+
+- **You only have one style.** A single-style catalog isn't useful;
+  detection always picks the one entry. init errors with a hint if
+  zero usable subdirectories are found.
+- **Your corpus is a flat folder, not subdirectories.** init expects
+  one subdir per style. Reorganize first.
+- **You want fully-automatic LoRA suggestions.** init doesn't search
+  HuggingFace for matching LoRAs; that's the editorial work the
+  curator has to do.
 
 ### `plakat style probe` — shipped
 
@@ -1004,9 +1141,12 @@ LoRA downloads (per detected style) are deferred until the
   easy. Art nouveau vs art deco is harder. Use `plakat style detect`
   to confirm the pick before committing to a long generation.
 - **Style coverage = catalog coverage.** A style not in the catalog
-  cannot be detected. The shipping catalog covers 2 styles today
-  (`watercolor` with a real SD 1.5 LoRA, `photorealistic` trigger-only);
-  will grow to ~10 in the MVP curation pass.
+  cannot be detected. The shipping catalog covers 5 styles:
+  `watercolor`, `photorealistic`, `oil_painting`, `ukiyo_e`,
+  `art_nouveau`. Three carry working SD 1.5 LoRAs; two are
+  trigger-only (`photorealistic` because SD 1.5 does it natively,
+  `art_nouveau` because no usable SD 1.5 LoRA was findable as of the
+  curator pass — see "Bundled catalog" below).
 - **Revision pinning is honored end-to-end.** When the catalog records
   a `revision` SHA / tag for a LoRA, `plakat generate --style-ref` and
   `plakat portrait --style-ref` request that exact revision from
