@@ -34,7 +34,9 @@ If you're new to plakat, work through these in order:
    PNG cutouts (trees, sky elements, houses) into named zones of
    your generated images. Useful when you need specific objects in
    specific places, or for consistent visual elements across many
-   scenes.
+   scenes. The hands-on runnable companion lives at
+   [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
+   (seven shell scripts + an HJSON scenario, end-to-end).
 
 ## Specialized portrait techniques
 
