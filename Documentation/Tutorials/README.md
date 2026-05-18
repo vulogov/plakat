@@ -30,6 +30,12 @@ If you're new to plakat, work through these in order:
    end-to-end pipeline (organize → init → build → use) and adding
    LoRAs to make detection turn into real style transfer.
 
+5. [`ARTEFACTS_TUTORIAL.md`](ARTEFACTS_TUTORIAL.md) — composite named
+   PNG cutouts (trees, sky elements, houses) into named zones of
+   your generated images. Useful when you need specific objects in
+   specific places, or for consistent visual elements across many
+   scenes.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -56,6 +62,7 @@ feature:
 | `HOW_TO_CREATE_MY_OWN_STYLE.md` | Above + finished `STYLES_TUTORIAL.md`. Plus a corpus of images you want to teach plakat. |
 | `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
 | `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
+| `ARTEFACTS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. (No external assets required — uses the bundled placeholder set.) |
 
 ## When to use a reference manual instead
 

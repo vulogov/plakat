@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+pub mod artefact;
 pub mod doctor;
 pub mod generate;
 pub mod inspect;
@@ -61,6 +62,10 @@ pub enum Command {
     /// Art-style detection from a reference photo.
     #[command(subcommand_value_name = "OP")]
     Style(style::StyleArgs),
+    /// Artefact library: cutout PNGs that can be composited into
+    /// named zones of a generated image.
+    #[command(subcommand_value_name = "OP")]
+    Artefact(artefact::ArtefactArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -93,5 +98,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             style::run(args, device).await
         }
+        Command::Artefact(args) => artefact::run(args).await,
     }
 }

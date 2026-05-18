@@ -829,6 +829,116 @@ impl Pipeline {
         Ok(composited)
     }
 
+    /// VAE-encode an existing image file into the pipeline's latent
+    /// space. The image is rescaled to `(w, h)` (the generation
+    /// dimensions); the result is `(1, 4, h/8, w/8)` in the pipeline's
+    /// dtype.
+    ///
+    /// Used by [`crate::pipelines::artefact_blend`] to seed a masked
+    /// denoise pass from an already-composited PNG.
+    pub fn vae_encode_image_file(
+        &self,
+        path: &std::path::Path,
+        w: u32,
+        h: u32,
+    ) -> Result<Tensor> {
+        let pixels = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.device, self.dtype)
+            .with_context(|| format!("VAE-encoding {}", path.display()))?;
+        let vae_scale: f64 = self.variant.vae_scale();
+        let dist = self.vae.encode(&pixels)?;
+        // The diffusers convention: take the dist.mean and multiply by
+        // vae_scale to land in the latent space the UNet operates on.
+        let latents = (dist.sample()? * vae_scale)?;
+        Ok(latents)
+    }
+
+    /// Masked partial-strength denoise — the v2 artefact-blend primitive.
+    ///
+    /// Same RePaint-style mask blending as [`Self::inpaint_latents_one`],
+    /// but starts denoising at `(1 − strength) * len(timesteps)` instead
+    /// of from full noise. That gives standard img2img "strength"
+    /// semantics:
+    ///
+    /// * `strength = 0.0` → no denoising, returns base_latents unchanged
+    ///   (apart from a final clean blend).
+    /// * `strength = 0.25` → light touch; smooths the masked region
+    ///   without redrawing it.
+    /// * `strength = 0.5` → mid-strength repaint.
+    /// * `strength = 1.0` → equivalent to `inpaint_latents_one`
+    ///   (re-noise to max, full denoise).
+    ///
+    /// `mask` is `(1, 1, latent_h, latent_w)`: `1.0` = inpaint here,
+    /// `0.0` = preserve.
+    pub fn blend_latents_one(
+        &self,
+        base_latents: &Tensor,
+        mask: &Tensor,
+        req: &GenRequest,
+        strength: f32,
+        seed: u64,
+    ) -> Result<Tensor> {
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        let strength = strength.clamp(0.0, 1.0);
+        let do_cfg = req.guidance > 1.0;
+        let (ehs, _has_face) = self.build_encoder_hidden_states(
+            &req.prompt,
+            &req.negative,
+            &req.photos,
+            req.face_strength,
+            req.face_bbox,
+            req.face_landmarks,
+            do_cfg,
+        )?;
+
+        if let Err(e) = self.device.set_seed(seed) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
+        let mut scheduler =
+            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+        let timesteps = scheduler.timesteps().to_vec();
+
+        // start_idx selects where on the noise schedule we begin. At
+        // strength=0 we'd start at the very end (no denoising); at
+        // strength=1 we'd start at index 0 (max noise). Clamp to at
+        // least 1 step so we still run one denoise iteration.
+        let total = timesteps.len();
+        let start_idx = (((1.0 - strength) * total as f32).round() as usize).min(total.saturating_sub(1));
+        let active = &timesteps[start_idx..];
+        if active.is_empty() {
+            // strength == 0 with degenerate scheduler — return base
+            // unchanged (apart from the clean-blend semantics).
+            return Ok(base_latents.clone());
+        }
+
+        let first_t = active[0];
+
+        // Re-noise the base latents at the partial-noise level.
+        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
+            .to_dtype(self.dtype)?;
+        let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
+
+        let inv_mask = (mask.ones_like()? - mask)?;
+        let bar = progress::step_bar(active.len() as u64, "blend");
+        for &t in active {
+            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
+                .to_dtype(self.dtype)?;
+            let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
+            latents = (latents.broadcast_mul(mask)?
+                + base_noised.broadcast_mul(&inv_mask)?)?;
+
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t}"));
+        }
+        bar.finish_and_clear();
+
+        // Final clean blend: pin unmasked region to base, keep
+        // denoised in masked region.
+        let composited = (latents.broadcast_mul(mask)?
+            + base_latents.broadcast_mul(&inv_mask)?)?;
+        Ok(composited)
+    }
+
     /// VAE-decode `latents` and save as PNG at `out_path`.
     pub fn save_image(
         &self,
@@ -898,6 +1008,13 @@ impl Pipeline {
     /// need this so the mask matches.
     pub fn latent_dtype(&self) -> DType {
         self.dtype
+    }
+
+    /// The device backing this pipeline's tensors. Needed by callers
+    /// that build mask tensors outside the pipeline (e.g. v2 artefact
+    /// blending).
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 }
 
