@@ -899,7 +899,7 @@ downloads. Each of these is a fast-fail.
 |---|---|
 | Duplicate persona name | `duplicate persona name "alice"` |
 | Persona photo path doesn't exist | `persona "alice": photo not found at /full/path/to/alice.jpg` |
-| Persona `identity` unknown | `persona "alice" identity: unknown identity kind "faceid" (try: plus-face, plus-face-sdxl). FaceID / InstantID are roadmap — not yet implemented.` |
+| Persona `identity` unknown | `persona "alice" identity: unknown identity kind "instantid" (try: plus-face, plus-face-sdxl, faceid, faceid-sdxl). InstantID is roadmap — not yet implemented.` |
 | Scenario mixes identity strategies | `scenario mixes identity strategies across personas: PlusFaceSdxl (bob); PlusFace (alice). Pick one strategy per scenario — every persona must share the same model variant (all SD 1.5 \`plus-face\`, or all SDXL \`plus-face-sdxl\`).` |
 | Task refers to unknown persona name | `task "scene1" references unknown persona "ghost" (defined: [alice, bob])` |
 | Task mixes bare-name and bbox forms | `task "t": cannot mix bare-name form ("[alice]") with bbox form ("[{name:alice, bbox:[...]}]") in the same task. Pick one. Use bbox for multi-persona compositing; use bare-name when the persona occupies the whole image.` |

@@ -7,6 +7,10 @@ use crate::imaging::sizes::Size;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::portrait::{self, IdentityKind};
 use crate::pipelines::scheduler::SchedulerKind;
+use crate::style::{
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
+    StylePrepRequest,
+};
 
 /// Portrait-tuned defaults — overrideable via flags.
 const DEFAULT_NEGATIVE: &str = "deformed face, asymmetric eyes, extra fingers, \
@@ -142,6 +146,29 @@ pub struct PortraitArgs {
     /// Strength of the --refine polish (0.0 = none, 1.0 = full re-noise).
     #[arg(long, default_value_t = 0.3)]
     pub refine_strength: f32,
+
+    /// Detect art style from this photo and load the matching LoRAs from
+    /// the style catalog. The style reference is *separate* from `--photo`
+    /// — `--photo` controls identity (who), `--style-ref` controls visual
+    /// style (how). Conflicts with --lora (catalog LoRAs win, with a
+    /// warning).
+    #[arg(long, value_name = "PATH")]
+    pub style_ref: Option<PathBuf>,
+
+    /// Pick a style by id from the catalog. Bypasses detection when used
+    /// alone; overrides the detection result when combined with
+    /// --style-ref.
+    #[arg(long, value_name = "ID")]
+    pub style: Option<String>,
+
+    /// Multiplier applied to every catalog LoRA's :scale. 1.0 uses the
+    /// catalog's authored scales verbatim.
+    #[arg(long, default_value_t = 1.0)]
+    pub style_strength: f32,
+
+    /// Override the bundled style catalog directory.
+    #[arg(long, value_name = "DIR")]
+    pub style_catalog: Option<PathBuf>,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -208,6 +235,17 @@ fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
 }
 
 pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
+    // Resolve the effective negative prompt up front. Style detection
+    // may augment it via the catalog's negative_extras, which means
+    // we need a concrete String to merge into — not Option<String>.
+    let mut negative = args.negative.clone().unwrap_or_else(|| DEFAULT_NEGATIVE.to_string());
+
+    // Style detection / resolution runs BEFORE the enhancer so the
+    // trigger phrase carries the LoRA's training tokens unaltered.
+    if args.style_ref.is_some() || args.style.is_some() {
+        apply_style(&mut args, &mut negative, &device).await?;
+    }
+
     if let Some(provider) = args.enhance.clone() {
         let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
@@ -220,8 +258,6 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         args.base,
     )?;
     std::fs::create_dir_all(&args.out)?;
-
-    let negative = args.negative.unwrap_or_else(|| DEFAULT_NEGATIVE.to_string());
 
     // Identity is only wired when a photo is actually provided. Without one,
     // skipping the identity load avoids a ~50 MB download for callers who
@@ -252,4 +288,30 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         identity,
     })
     .await
+}
+
+async fn apply_style(
+    args: &mut PortraitArgs,
+    negative: &mut String,
+    device: &Device,
+) -> Result<()> {
+    let n_user_loras = args.loras.len();
+    let prep = prepare_style(StylePrepRequest {
+        style_ref: args.style_ref.as_deref(),
+        style_override: args.style.as_deref(),
+        style_strength: args.style_strength,
+        style_catalog: args.style_catalog.as_deref(),
+        model: &args.model,
+        user_loras_nonempty: !args.loras.is_empty(),
+        device,
+    })
+    .await?;
+
+    log_style_prep(&prep, n_user_loras);
+
+    args.loras = parse_resolved_loras(&prep)?;
+    args.prompt = prepend_trigger(&prep.trigger, &args.prompt);
+    *negative = combine_negative(negative, &prep.negative_extras);
+
+    Ok(())
 }

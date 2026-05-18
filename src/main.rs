@@ -1,14 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-mod cli;
-mod config;
-mod device;
-mod hf;
-mod imaging;
-mod pipelines;
-mod prompt;
-mod ui;
+use plakat::{cli, ui};
 
 fn main() -> Result<()> {
     let cli = cli::Cli::parse();

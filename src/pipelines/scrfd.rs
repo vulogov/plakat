@@ -22,7 +22,7 @@
 //! first mismatched layer. `SCRFDConfig::scrfd_500mf()` exposes every
 //! channel width and block count for one-line tuning.
 //!
-//! Setup is bring-your-own-weights — see PERSONA.md "Optional SCRFD
+//! Setup is bring-your-own-weights — see Documentation/PERSONA.md "Optional SCRFD
 //! auto-detection":
 //!
 //! ```bash

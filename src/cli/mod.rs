@@ -8,6 +8,7 @@ pub mod inspect;
 pub mod models;
 pub mod portrait;
 pub mod scenario;
+pub mod style;
 pub mod stylize;
 pub mod transparent;
 pub mod upscale;
@@ -57,6 +58,9 @@ pub enum Command {
     /// and shape. Useful when a weight load fails and you want to see
     /// what's actually in the file vs what the model expected.
     Inspect(inspect::InspectArgs),
+    /// Art-style detection from a reference photo.
+    #[command(subcommand_value_name = "OP")]
+    Style(style::StyleArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -85,5 +89,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
+        Command::Style(args) => {
+            let device = crate::device::select(&cli.device)?;
+            style::run(args, device).await
+        }
     }
 }
