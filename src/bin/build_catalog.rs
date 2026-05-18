@@ -6,7 +6,7 @@
 //! Usage:
 //!
 //! ```sh
-//! cargo run --release --example build_catalog -- \
+//! cargo run --release --bin build_catalog -- \
 //!     --sources tools/style_sources/catalog.hjson \
 //!     --out     assets/style_catalog
 //! ```

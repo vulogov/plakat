@@ -421,8 +421,8 @@ impl PRelu {
 //   out = out + identity
 //
 // Verified against the `arcface_r50.safetensors` produced by the
-// `onnx2torch` + `safetensors.torch` conversion path in PERSONA.md
-// (see PERSONA.md, FaceID setup Route A). 263 tensors total, 16 per first-stage
+// `onnx2torch` + `safetensors.torch` conversion path in Documentation/PERSONA.md
+// (see Documentation/PERSONA.md, FaceID setup Route A). 263 tensors total, 16 per first-stage
 // block + 14 per subsequent.
 // =====================================================================
 
@@ -752,7 +752,7 @@ impl FaceIdEncoder {
     ///
     /// * `arcface_weights` — IR-ResNet50 safetensors. Most accessible
     ///   source: HF-hosted conversion of InsightFace's `w600k_r50.onnx`
-    ///   (antelopev2 / buffalo_l bundle). See PERSONA.md FaceID setup.
+    ///   (antelopev2 / buffalo_l bundle). See Documentation/PERSONA.md FaceID setup.
     /// * `faceid_weights` — `h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15`
     ///   (the `image_proj.*` subtree). The same file also contains LoRA
     ///   weights for the UNet's cross-attention; those are NOT applied

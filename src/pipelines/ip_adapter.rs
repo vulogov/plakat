@@ -580,7 +580,7 @@ pub enum IdentityKind {
     /// Weights:
     ///   * ArcFace IR-ResNet50 safetensors — user-supplied via
     ///     `PLAKAT_ARCFACE_WEIGHTS` (local path) or `PLAKAT_ARCFACE_HF`
-    ///     (HuggingFace `repo#file`). See PERSONA.md "FaceID setup".
+    ///     (HuggingFace `repo#file`). See Documentation/PERSONA.md "FaceID setup".
     ///   * `ip-adapter-faceid_sd15.bin` from h94/IP-Adapter-FaceID —
     ///     auto-downloaded; the `image_proj.*` subtree is consumed by
     ///     the encoder, the separate `*_lora.safetensors` is merged

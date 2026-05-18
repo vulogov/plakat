@@ -125,7 +125,7 @@ plakat models rm sd15 --yes
 | `models {search,recommend,size,pull,ls,rm}` | Browse HF and manage the local cache. |
 
 `plakat <CMD> --help` for full options on each. For a parameter-by-parameter
-reference with what each does, see [GENERATE.md](GENERATE.md).
+reference with what each does, see [GENERATE.md](Documentation/GENERATE.md).
 
 ## Scenario configuration
 
@@ -337,7 +337,7 @@ to inspect setup; `plakat doctor --verify` to probe HF downloads.
   denoise loops, a 3-persona task runs 4, etc.
 
 Full reference (every field, every interaction, bbox-placement tips,
-form-mixing rules, alignment priority, setup): [PERSONA.md](PERSONA.md).
+form-mixing rules, alignment priority, setup): [PERSONA.md](Documentation/PERSONA.md).
 
 ### Output layout
 

@@ -28,7 +28,7 @@ composes cleanly with the LoRA stack.
 | Revision-SHA threading from catalog → HF download | **shipped** |
 | Per-task `style-ref` in scenarios (trigger + negative only) | **shipped** |
 | `plakat style probe` | **shipped** |
-| Catalog-build tool (`examples/build_catalog.rs`) | **shipped** |
+| Catalog-build tool (`src/bin/build_catalog.rs`) | **shipped** |
 | `LICENSES.md` + `provenance.json` sidecars | **shipped** |
 | `plakat style init` — bootstrap a catalog HJSON from a corpus directory | **shipped** |
 | `style-ref` field in scenarios | designed, not implemented |
@@ -437,7 +437,7 @@ Next steps:
   1. Edit /Users/.../my_styles/catalog.hjson to fill in descriptions,
      triggers, and LoRA pins.
   2. Build the catalog:
-       cargo run --release --example build_catalog -- \
+       cargo run --release --bin build_catalog -- \
          --sources /Users/.../my_styles/catalog.hjson \
          --out     /Users/.../my_styles/built
   3. Use it:
@@ -924,14 +924,23 @@ already modified.
 ## Building a custom catalog
 
 **Status:** shipped. The catalog-build tool is at
-`examples/build_catalog.rs`. It reads a curator-authored HJSON config,
+`src/bin/build_catalog.rs` — built alongside the main `plakat` binary
+as a secondary executable. It reads a curator-authored HJSON config,
 encodes exemplar images through CLIP-H, and emits a complete catalog
 with sidecar files.
 
 ### Usage
 
 ```bash
-cargo run --release --example build_catalog -- \
+cargo run --release --bin build_catalog -- \
+    --sources tools/style_sources/catalog.hjson \
+    --out     assets/style_catalog
+```
+
+Or, after a `cargo build --release`, run the cached binary directly:
+
+```bash
+./target/release/build_catalog \
     --sources tools/style_sources/catalog.hjson \
     --out     assets/style_catalog
 ```
@@ -1021,7 +1030,7 @@ builder normalizes both to the full-object form in the emitted
 ### Sample output
 
 ```
-$ cargo run --release --example build_catalog -- \
+$ cargo run --release --bin build_catalog -- \
       --sources tools/style_sources/catalog.hjson \
       --out assets/style_catalog --probe-hf
 
