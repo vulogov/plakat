@@ -2,8 +2,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+pub mod doctor;
 pub mod generate;
+pub mod inspect;
 pub mod models;
+pub mod portrait;
 pub mod scenario;
 pub mod stylize;
 pub mod transparent;
@@ -33,6 +36,8 @@ pub struct Cli {
 pub enum Command {
     /// Generate images from a text prompt.
     Generate(generate::GenerateArgs),
+    /// Generate a portrait, optionally from a reference photo.
+    Portrait(portrait::PortraitArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
@@ -44,6 +49,14 @@ pub enum Command {
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
+    /// Health-check the FaceID / SCRFD / cache configuration without
+    /// downloading or loading anything. Run before a long generation
+    /// to verify setup.
+    Doctor(doctor::DoctorArgs),
+    /// Inspect a .safetensors file — list every tensor name, dtype,
+    /// and shape. Useful when a weight load fails and you want to see
+    /// what's actually in the file vs what the model expected.
+    Inspect(inspect::InspectArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -54,6 +67,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Generate(args) => {
             let device = crate::device::select(&cli.device)?;
             generate::run(args, device).await
+        }
+        Command::Portrait(args) => {
+            let device = crate::device::select(&cli.device)?;
+            portrait::run(args, device).await
         }
         Command::Stylize(args) => {
             let device = crate::device::select(&cli.device)?;
@@ -66,5 +83,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
+        Command::Doctor(args) => doctor::run(args).await,
+        Command::Inspect(args) => inspect::run(args).await,
     }
 }

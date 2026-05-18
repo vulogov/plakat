@@ -311,6 +311,141 @@ Directory for generated images. Created if absent. Files are named
 
 ---
 
+## `plakat portrait`
+
+Portrait generation, optionally guided by a reference photo. The default
+strategy is **IP-Adapter-Plus-Face** on SD 1.5 — the photo flows through
+CLIP-H's penultimate hidden state, a 4-layer Perceiver resampler emits
+16 image tokens, those concat onto the text token sequence, and the
+standard SD denoise loop runs from pure noise. Other strategies
+(`plus-face-sdxl`, `faceid`, `faceid-sdxl`) follow the same pattern with
+different model variants and identity encoders. Without `--photo`, the
+command degrades to a portrait-tuned text-only generate (3:4 aspect,
+face/anatomy negatives baked in) with no extra download.
+
+```bash
+plakat portrait "cinematic close-up, soft Rembrandt lighting" \
+    --photo face.jpg --face-strength 0.8
+```
+
+#### `<PROMPT>` (positional, required)
+
+Describes the portrait: pose, lighting, framing, style. The photo seeds
+identity; the prompt shapes everything else.
+
+#### `--photo <PATH>` (optional)
+
+Reference photo. Provide a tight head-and-shoulders crop, or use
+`--face-bbox` to mark the face region. Optional SCRFD auto-detection
+(`PLAKAT_SCRFD_*` env vars) fills landmarks automatically — see
+PERSONA.md. With no `--photo`, the identity branch is skipped entirely
+and no Plus-Face / CLIP-H weights are downloaded.
+
+#### `--identity <KIND>` (default `plus-face`)
+
+Identity strategy. Must match the `--model` you pass (the validator
+refuses cross-attn-dim mismatches at load):
+
+- `plus-face` — IP-Adapter-Plus-Face, SD 1.5. Use with `--model sd15`
+  (or any HF SD 1.5 repo).
+- `plus-face-sdxl` (aliases: `plusface-sdxl`, `plus-face-xl`,
+  `sdxl-plus-face`) — IP-Adapter-Plus-Face SDXL via the `vit-h` variant
+  (reuses the SD 1.5 CLIP-H image encoder). Use with `--model sdxl`.
+- `faceid`, `instantid` — roadmap; not yet implemented.
+
+#### `--face-strength <FLOAT>` (default `0.8`)
+
+Scales the image-token contribution before concatenation. Standard
+IP-Adapter `scale` parameter equivalent.
+
+- `0.0` — image tokens vanish; equivalent to running without `--photo`.
+- `0.5` — light influence, prompt dominates.
+- `0.8` — default; strong likeness while keeping prompt steering.
+- `1.0+` — over-amplifies the face; useful for tough photos but the prompt
+  can start losing control.
+
+Ignored without `--photo`.
+
+#### `--model <ALIAS|REPO>` (default `sd15`)
+
+Either `sd15` (Stable Diffusion 1.5, default) or `sdxl` (SDXL base 1.0).
+Any HF SD-1.5/SDXL repo id also works. Flux is not supported for
+portraits. Pair `--model sdxl` with `--identity plus-face-sdxl`.
+
+#### `--size <WxH>` / `--aspect <N:M>` + `--base <SIDE>`
+
+Same semantics as `generate`. Defaults to `--aspect 3:4 --base 768`
+(`768×1024`).
+
+#### `--count <N>` / `-n <N>` (default `1`)
+
+Number of portraits per invocation. Each gets `seed + i` if `--seed` is set.
+
+#### `--steps <N>` (default `30`)
+
+Slightly higher than `generate`'s `28` because faces benefit from a few
+extra refinement steps. With `--scheduler lcm` + an LCM-LoRA you can drop
+to 4–8.
+
+#### `--guidance <FLOAT>` (default `7.0`)
+
+Tuned a touch below `generate`'s `7.5` — IP-Adapter conditioning already
+pulls strongly toward the reference, so very high CFG tends to over-saturate.
+
+#### `--negative <TEXT>` (default: face-and-anatomy fixers)
+
+The baseline negative covers `deformed face, asymmetric eyes, extra fingers,
+cross-eyed, low quality, blurry, watermark, jpeg artifacts, bad anatomy,
+cropped head, disfigured, extra limbs, low resolution`. Pass an explicit
+`--negative ""` to disable, or a custom string to fully replace it.
+
+#### `--scheduler <KIND>` (default `euler-a`)
+
+Defaults to Euler-Ancestral — its stochasticity helps skin-tone gradients
+look less plasticky than deterministic samplers on SD 1.5. All schedulers
+from `generate` are available.
+
+#### `--lora <SPEC>` / `--lora-scale <FLOAT>`
+
+Same syntax as `generate`. A realistic-portrait LoRA stacks cleanly on top
+of the Plus-Face conditioning — the LoRA controls aesthetic, the photo
+controls identity.
+
+#### `--refine <N>` / `--refine-strength <FLOAT>` (defaults: off, `0.3`)
+
+Same-model polish pass on the final latents. Identity conditioning persists
+through the polish loop, so refining usually sharpens without losing the
+likeness.
+
+#### `--seed <U64>` / `--enhance <PROVIDER>` / `--out <DIR>`
+
+Identical to `generate`. Output files are named `plakat-portrait-<seed>.png`
+to distinguish them from `generate`'s `plakat-<seed>.png`.
+
+### What portrait is and isn't
+
+For `plus-face` / `plus-face-sdxl` strategies: candle 0.8's UNet exposes
+no cross-attention hooks, so the *decoupled* IP-Adapter path — separate
+`to_k_ip` / `to_v_ip` projections in every block — is not wired up.
+Identity tokens travel through the same cross-attention as text. Result:
+identity is recognisable but not pixel-perfect, ~50–70% of the diffusers
+reference. The `faceid` / `faceid-sdxl` strategies bypass this ceiling
+using InsightFace ArcFace embeddings + an automatically-applied UNet
+LoRA, landing closer to ~80–90% of reference — at the cost of needing
+ArcFace weights set up (see PERSONA.md).
+
+Plus-Face strategies have no face detector — pass a head-and-shoulders
+crop, or use `--face-bbox`. FaceID strategies can optionally use SCRFD
+for automatic face detection (`PLAKAT_SCRFD_*` env vars).
+
+First-run downloads (`plus-face` / SD 1.5):
+
+- Plus-Face safetensors (~50 MB).
+- CLIP-H image encoder (~2.5 GB) — shared with `stylize`, cached once.
+- SD 1.5 base (~4 GB) — shared with `generate` / `stylize`.
+
+---
+
 ## `plakat stylize`
 
 IP-Adapter style transfer: take an input image and a reference image,
@@ -334,12 +469,48 @@ Output PNG path. Created (with parent dirs) if absent.
 
 #### `--strength <FLOAT>` (default `0.7`)
 
-How much to redraw IN. Higher = more like REF, less like IN.
+How much to redraw IN. Higher = more like REF, less like IN. This is the
+single most important knob — pick it based on **what IN is**, not what
+you want REF to do.
 
-- `0.0` → no change to IN (output ≈ input).
-- `0.3` → subtle restyling, IN mostly preserved.
-- `0.6` → balanced — recognizable IN with REF's style.
-- `0.9` → heavy restyling, IN may lose recognizable detail.
+| Strength | Face input | Non-face input |
+|---|---|---|
+| `0.2` | reference barely visible, face exact | barely visible, photo unchanged |
+| `0.3 – 0.4` | subtle restyling, face preserved | mild palette shift |
+| `0.5` | clear style shift, mild face drift | balanced restyling |
+| `0.6` | strong style shift, face starts to drift | recognisable IN, distinctive REF |
+| `0.7` (default) | heavy restyle, identity wobble — **too much for faces** | balanced→heavy restyle |
+| `0.8 +` | IN is essentially a composition hint; identity gone | heavy redraw |
+
+The default `0.7` is tuned for scenes/landscapes. For face inputs use
+`0.35` (or `--for portrait`, below).
+
+#### `--for <PRESET>` (default off)
+
+Strength preset shortcut — picks a documented `--strength` for a use
+case. Explicit `--strength` always wins if both are passed.
+
+| Preset | Strength | Use for |
+|---|---|---|
+| `portrait` (aliases: `face`, `person`) | `0.35` | Face inputs — preserves identity while picking up REF's palette/brushwork. |
+| `scene` (aliases: `landscape`, `balanced`) | `0.55` | Landscapes, architecture, objects. Clear style shift, structure preserved. |
+| `grading` (aliases: `grade`, `tonal`, `color`) | `0.25` | Tonal/colour grading — adds REF's character without redrawing anything. Safest preset for photos you want to keep recognisable. |
+
+Examples:
+
+```bash
+# Face-preserving style transfer.
+plakat stylize --in face.jpg --ref painting.jpg --out styled.png --for portrait
+
+# Landscape restyling.
+plakat stylize --in landscape.jpg --ref ukiyoe.jpg --out styled.png --for scene
+
+# Just borrow the reference's colour palette.
+plakat stylize --in photo.jpg --ref gradient.jpg --out graded.png --for grading
+
+# Preset + explicit override → explicit wins (warns about the conflict).
+plakat stylize ... --for portrait --strength 0.45   # uses 0.45
+```
 
 #### `--steps <N>` (default `30`)
 

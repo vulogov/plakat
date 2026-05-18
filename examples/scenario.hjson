@@ -156,6 +156,37 @@
         }
     ]
 
+    # === catalogs: personas ===
+    # Named identities a task can pull in via its own `personas` list.
+    # Each persona is a reference photo + identity-adapter settings;
+    # tasks that name a persona route through the SD 1.5 portrait
+    # pipeline (IP-Adapter-Plus-Face) instead of the scenario's main
+    # pipeline.
+    #
+    # Per-persona fields:
+    #   name:           required, unique within the file.
+    #   photo:          reference photo path (head-and-shoulders crop works best).
+    #   identity:       optional, defaults to `plus-face` (SD 1.5).
+    #                   `plus-face-sdxl` is also supported (SDXL portrait pipeline,
+    #                   reuses the same CLIP-H encoder). FaceID / InstantID are roadmap.
+    #                   All personas in one scenario must agree on the same strategy.
+    #   face-strength:  0..2, default 0.8. Scales the image-token contribution.
+    #   negative:       persona-only negative (e.g. "no glasses, no beard"); prepended.
+    personas:
+    [
+        # {
+        #     name: alice
+        #     photo: ./references/alice.jpg
+        #     face-strength: 0.85
+        #     negative: "smiling, mustache"
+        # }
+        # {
+        #     name: bob
+        #     photo: ./references/bob.jpg
+        #     face-strength: 0.7
+        # }
+    ]
+
     # === tasks: scene × weather combinations to render ===
     #
     # Optional per-task fields:
@@ -163,6 +194,13 @@
     #                   image is also run through IP-Adapter stylize using
     #                   this reference. Original AND styled both persist.
     #   style-strength: 0..1 (default 0.6) — higher = closer to REF.
+    #
+    #   personas:       list referencing the top-level `personas` catalog.
+    #                   Two forms accepted (don't mix in one task):
+    #                     [alice]                                  ← single persona, whole image.
+    #                     [ {name:alice, bbox:[x0,y0,x1,y1]}, ... ] ← multi-persona, region-masked compositing.
+    #                   Either form routes through the SD 1.5 portrait
+    #                   pipeline; outputs land as plakat-portrait-<seed>.png.
     tasks:
     [
         {
@@ -185,5 +223,36 @@
             weather: snow
             prompt: "a lone traveler in a hooded cloak with a lantern"
         }
+        # {
+        #     # Single persona, whole image.
+        #     name: alice_in_forest
+        #     scene: forest
+        #     weather: golden_hour
+        #     prompt: "walking along the mossy path, lantern in hand"
+        #     personas:
+        #     [
+        #         alice
+        #     ]
+        # }
+        # {
+        #     # Multi-persona compositing via region masks.
+        #     # 16:9 aspect helps each bbox fit a recognisable face.
+        #     name: alice_and_bob_harbour
+        #     scene: harbor
+        #     weather: golden_hour
+        #     prompt: "two friends watching the boats come in, three-quarter angle"
+        #     size: 1024x576
+        #     personas:
+        #     [
+        #         {
+        #             name: alice
+        #             bbox: [0.05, 0.10, 0.48, 0.95]
+        #         }
+        #         {
+        #             name: bob
+        #             bbox: [0.52, 0.10, 0.95, 0.95]
+        #         }
+        #     ]
+        # }
     ]
 }
