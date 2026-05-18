@@ -1,7 +1,58 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use candle_core::Device;
 use clap::Args as ClapArgs;
 use std::path::PathBuf;
+
+/// Curated `--strength` values for common stylize use cases. Each preset
+/// is what we'd actually recommend after experience with the
+/// shared-cross-attention IP-Adapter implementation we ship — see
+/// [GENERATE.md] for the full strength → behaviour map.
+#[derive(Clone, Copy, Debug)]
+pub enum StylizePreset {
+    /// Face-preserving restyling. `0.35` — keeps identity intact while
+    /// picking up REF's palette/brushwork.
+    Portrait,
+    /// Balanced restyling for non-face scenes (landscapes, objects,
+    /// architecture). `0.55` — clear style shift; coarse structure preserved.
+    Scene,
+    /// Tonal/colour grading. `0.25` — adds REF's character without
+    /// redrawing anything; safest preset for photos you want to keep
+    /// recognisable.
+    Grading,
+}
+
+impl StylizePreset {
+    pub fn strength(self) -> f32 {
+        match self {
+            Self::Portrait => 0.35,
+            Self::Scene => 0.55,
+            Self::Grading => 0.25,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Portrait => "portrait (0.35, face-preserving)",
+            Self::Scene => "scene (0.55, balanced)",
+            Self::Grading => "grading (0.25, tonal only)",
+        }
+    }
+}
+
+impl std::str::FromStr for StylizePreset {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s.to_lowercase().as_str() {
+            "portrait" | "face" | "person" => Self::Portrait,
+            "scene" | "landscape" | "balanced" => Self::Scene,
+            "grading" | "grade" | "tonal" | "color" | "colour" => Self::Grading,
+            other => bail!(
+                "unknown stylize preset {other:?} \
+                 (valid: portrait, scene, grading)"
+            ),
+        })
+    }
+}
 
 #[derive(ClapArgs, Debug)]
 pub struct StylizeArgs {
@@ -18,8 +69,20 @@ pub struct StylizeArgs {
     pub out: PathBuf,
 
     /// Strength of style transfer in [0.0, 1.0]. Higher = closer to REF.
+    /// Default 0.7 is "heavy restyle" — drop to 0.35 for face inputs,
+    /// or use `--for portrait` (which does this automatically).
+    /// Explicit `--strength` always wins over `--for`.
     #[arg(long, default_value_t = 0.7)]
     pub strength: f32,
+
+    /// Strength preset shortcut: pick a documented strength for a use case.
+    /// Overridden by an explicit `--strength`.
+    ///
+    ///   portrait → 0.35 (face-preserving)
+    ///   scene    → 0.55 (balanced; landscapes/objects)
+    ///   grading  → 0.25 (tonal/colour only)
+    #[arg(long = "for", value_name = "PRESET")]
+    pub preset: Option<StylizePreset>,
 
     /// Base diffusion model (alias or HF repo id). Currently SD 1.5 only.
     #[arg(long, default_value = "sd15")]
@@ -34,12 +97,47 @@ pub struct StylizeArgs {
     pub seed: Option<u64>,
 }
 
+/// Sentinel matching `StylizeArgs::strength`'s `default_value_t`. Used to
+/// detect "user didn't pass --strength" so a preset can take effect.
+const DEFAULT_STRENGTH: f32 = 0.7;
+
 pub async fn run(args: StylizeArgs, device: Device) -> Result<()> {
+    // Resolve effective strength:
+    //   * explicit --strength (anything ≠ default) wins;
+    //   * else, preset value if given;
+    //   * else, default.
+    let user_set_strength = (args.strength - DEFAULT_STRENGTH).abs() > f32::EPSILON;
+    let effective_strength = if user_set_strength {
+        args.strength
+    } else if let Some(preset) = args.preset {
+        let s = preset.strength();
+        crate::ui::progress::println(&format!(
+            "stylize preset: {} → --strength {:.2}",
+            preset.label(),
+            s
+        ));
+        s
+    } else {
+        args.strength
+    };
+
+    // Warn if both were given and they disagree (explicit wins, but the
+    // user probably wanted only one).
+    if user_set_strength && args.preset.is_some() {
+        let preset = args.preset.unwrap();
+        crate::ui::progress::println(&format!(
+            "note: both --strength {:.2} and --for {} were given; \
+             using --strength (explicit override).",
+            args.strength,
+            preset.label(),
+        ));
+    }
+
     crate::pipelines::stylize::run(crate::pipelines::stylize::Request {
         input: args.input,
         reference: args.reference,
         out: args.out,
-        strength: args.strength,
+        strength: effective_strength,
         model: args.model,
         steps: args.steps,
         seed: args.seed,

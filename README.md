@@ -1,5 +1,7 @@
 # plakat
 
+![](examples/scenario/forest_snow/plakat-1004.png)
+
 Local text-to-image generation, style transfer, LoRA stacking, ML upscaling,
 and batch scenarios — all built on [candle](https://github.com/huggingface/candle).
 Pure Rust inference. No Python, no PyTorch, no external T2I services.
@@ -14,6 +16,12 @@ Models are pulled from HuggingFace and cached locally.
   upscales the result. Pipelines load once and are shared across tasks.
 - **Style transfer** — IN + REF → OUT using IP-Adapter image projection
   (SD 1.5 base).
+- **Portrait** — generate a portrait, optionally guided by a reference
+  photo. IP-Adapter-Plus-Face on SD 1.5 (`--identity plus-face`) or SDXL
+  (`--identity plus-face-sdxl`). Portrait-tuned defaults: 3:4 aspect,
+  face/anatomy negatives baked in. Scenarios can define named **personas**
+  and impose them per task — single-persona whole-image or multi-persona
+  region-masked compositing via per-persona bboxes.
 - **LoRA** — kohya, PEFT/diffusers, DoRA, LyCORIS LoHa (plain + Tucker), LoKr.
   Local files or HF repos (auto-discovered). UNet + both text encoders.
 - **Nine schedulers** — DDIM, Euler (deterministic), Euler-Ancestral, Heun,
@@ -86,6 +94,10 @@ plakat scenario examples/scenario.hjson
 plakat stylize --in photo.jpg --ref painting.jpg --out styled.png \
     --strength 0.6
 
+# 7b. Portrait from a reference photo (IP-Adapter-Plus-Face)
+plakat portrait "cinematic close-up, soft Rembrandt lighting" \
+    --photo face.jpg --face-strength 0.8 --size 768x1024
+
 # 8. Real-ESRGAN upscale to 4×
 plakat upscale --in small.png --out big.png \
     --method real-esrgan-x4 --device metal
@@ -105,6 +117,7 @@ plakat models rm sd15 --yes
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. All quality knobs (scheduler, refine, LoRA, enhancer) attach here. |
+| `portrait <PROMPT>` | Portrait generation, optionally guided by a reference photo (IP-Adapter-Plus-Face on SD 1.5). |
 | `scenario <FILE>` | Batch-generate from an HJSON config. See [Scenario configuration](#scenario-configuration). |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize an image, classical or Real-ESRGAN. |
@@ -193,6 +206,20 @@ The schema:
         # … more weathers
     ]
 
+    # ===== personas (optional) =====
+    # Named identities tasks can impose onto their output. Routes the task
+    # through the SD 1.5 portrait pipeline (IP-Adapter-Plus-Face).
+    personas:
+    [
+        {
+            name: alice
+            photo: ./refs/alice.jpg
+            face-strength: 0.85               # 0..2, default 0.8
+            # identity: plus-face             # plus-face | plus-face-sdxl | faceid | faceid-sdxl
+            # negative: "smiling, mustache"   # persona-specific, prepended
+        }
+    ]
+
     # ===== tasks =====
     tasks:
     [
@@ -205,6 +232,12 @@ The schema:
             # Optional per-task fields:
             # style: ./refs/watercolor.jpg     # IP-Adapter REF for this task only
             # style-strength: 0.65
+            # personas: [alice]                # single persona, whole image
+            # personas:                        # multi-persona, region-masked compositing
+            # [
+            #     { name: alice, bbox: [0.05, 0.10, 0.48, 0.95] }
+            #     { name: bob,   bbox: [0.52, 0.10, 0.95, 0.95] }
+            # ]
             # Per-task overrides for: size, aspect, count, steps, guidance,
             # seed, negative, scheduler, refine, refine-strength, refiner-frac
         }
@@ -217,19 +250,94 @@ The schema:
 
 For every image a task generates, the steps applied (in order) are:
 
-1. **Generate** with the loaded SD or Flux pipeline →
-   `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-2. **Stylize** (if the task has `style:`) →
-   `plakat-<seed>-styled.png`. Uses IP-Adapter on SD 1.5 regardless of the
-   base model used in step 1.
-3. **Upscale** (if `upscale.upscale: true`) →
-   `plakat-<seed>-styled-upscaled.png` if step 2 ran successfully, else
-   `plakat-<seed>-upscaled.png`.
+1. **Generate** with the loaded SD, Flux, OR portrait pipeline:
+   - No `personas` → SD / Flux per the scenario's `model` →
+     `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
+   - Single bare-name persona → SD 1.5 portrait pipeline,
+     one denoise pass → `plakat-portrait-<seed>.png`.
+   - `{name, bbox}` personas (one or more) → SD 1.5 portrait pipeline,
+     text-only base + one inpaint pass per persona, composited →
+     `plakat-portrait-<seed>.png`.
+2. **Stylize** (if the task has `style:`) → `<base>-styled.png`. Uses
+   IP-Adapter on SD 1.5 regardless of the base model used in step 1.
+3. **Upscale** (if `upscale.upscale: true`) → `<base>-styled-upscaled.png`
+   if step 2 ran successfully, else `<base>-upscaled.png`.
 
 Each step writes a new file — nothing is overwritten. A task with `count: 2`,
 `style: ref.jpg`, and `upscale: true` produces **six files**: 2 originals + 2
 styled + 2 upscaled-of-styled. Failure in step 2 or 3 doesn't abort the
 scenario — the failure is logged and earlier outputs persist.
+
+### Personas
+
+`personas` is a top-level list of named identities. Each persona supplies
+a reference photo and identity-strategy settings; tasks pull personas in
+either **bare-name** (single persona, whole image) or **`{name, bbox}`**
+(multi-persona, region-masked compositing) form. Either form routes
+through the portrait pipeline:
+
+```hjson
+personas: [
+  { name: alice, photo: ./refs/alice.jpg, face-strength: 0.85 }
+  { name: bob,   photo: ./refs/bob.jpg }
+]
+
+tasks: [
+  # Single persona, whole image.
+  { name: alice_cafe, scene: cafe, weather: morning, prompt: "espresso",
+    personas: [alice] }
+
+  # Multi-persona compositing via region masks.
+  { name: pair_at_table, scene: bistro, weather: golden_hour,
+    prompt: "two friends sharing dessert",
+    personas: [
+      { name: alice, bbox: [0.05, 0.10, 0.48, 0.95] }
+      { name: bob,   bbox: [0.52, 0.10, 0.95, 0.95] }
+    ] }
+
+  # No persona — regular t2i / Flux dispatch, unchanged behaviour.
+  { name: empty_streets, scene: town, weather: rain, prompt: "no one" }
+]
+```
+
+The portrait pipeline loads once at scenario start (only if at least one
+task uses personas) and is shared across all persona tasks. Multi-persona
+compositing runs one **base** denoise pass (text-only) plus one **inpaint**
+pass per persona; each pass reuses the same loaded UNet + VAE + text
+encoder.
+
+**Four identity strategies ship:**
+
+| `identity` | Base | Notes |
+|---|---|---|
+| `plus-face` (default) | SD 1.5 | IP-Adapter-Plus-Face; ~6.5 GB first-run download. |
+| `plus-face-sdxl` | SDXL | SDXL portrait pipeline; ~9.5 GB first-run (CLIP-H shared with `plus-face`). |
+| `faceid` | SD 1.5 | InsightFace ArcFace + UNet LoRA. Best identity preservation. Needs user-supplied ArcFace weights. |
+| `faceid-sdxl` | SDXL | SDXL variant of `faceid`. |
+
+Pick one per scenario — every persona in a scenario must share the same
+strategy's base-model family. Standalone CLI pairs `--model sdxl` with
+`plus-face-sdxl` / `faceid-sdxl`.
+
+`faceid` / `faceid-sdxl` need either `PLAKAT_ARCFACE_WEIGHTS` (local) or
+`PLAKAT_ARCFACE_HF=repo#file` (HuggingFace). Optional SCRFD auto-detection
+via `PLAKAT_SCRFD_WEIGHTS` / `PLAKAT_SCRFD_HF` fills landmarks for proper
+ArcFace alignment without manual `--face-bbox` flags. Run `plakat doctor`
+to inspect setup; `plakat doctor --verify` to probe HF downloads.
+
+**Limits:**
+- SD 1.5 + SDXL only. Flux is not supported for portraits.
+- `plus-face*` strategies have no automatic face detection — curate the
+  reference photo, or use `--face-bbox` to mark the face manually.
+- No persona-level LoRAs. Stack a likeness LoRA at scenario level.
+- `plus-face*` identity quality is ~50–70% of the diffusers reference
+  (no decoupled cross-attention in candle 0.8). `faceid*` strategies
+  bypass this ceiling.
+- Multi-persona wall time scales linearly: a 2-persona task runs 3
+  denoise loops, a 3-persona task runs 4, etc.
+
+Full reference (every field, every interaction, bbox-placement tips,
+form-mixing rules, alignment priority, setup): [PERSONA.md](PERSONA.md).
 
 ### Output layout
 
@@ -323,6 +431,44 @@ SD 1.5/2.1/SDXL, Euler-Ancestral for SDXL-Turbo).
 
 If unsure, on Metal: `euler-a` (stochastic) or `euler` (deterministic). On
 CUDA/CPU: `dpmpp-2m`. With LCM-LoRA: `lcm`.
+
+## Portrait
+
+```
+plakat portrait <PROMPT> [--photo PATH] [--face-strength F] [...]
+```
+
+Portrait-tuned text-to-image. With `--photo`, uses **IP-Adapter-Plus-Face**
+on SD 1.5: the reference photo's CLIP-H penultimate hidden state is run
+through a Perceiver resampler into 16 image tokens, which are concatenated
+onto the text tokens and consumed by the UNet's cross-attention.
+
+```bash
+# Photo-guided (recommended use)
+plakat portrait "cinematic close-up, golden hour, shallow depth of field" \
+    --photo face.jpg --face-strength 0.8
+
+# Text-only with portrait-tuned defaults (no photo, no extra download)
+plakat portrait "studio portrait of an astronaut, dramatic lighting" \
+    --size 768x1024 --steps 30 --scheduler euler-a
+```
+
+`--face-strength` scales the image-token contribution: `0.0` falls back to
+text-only, `0.8` (default) is a strong likeness, `>1.0` over-amplifies the
+face at the cost of prompt adherence. LoRAs and `--refine` stack normally.
+
+Quality caveat for `plus-face*` strategies: candle 0.8's UNet exposes
+no cross-attention hooks, so the *decoupled* IP-Adapter path (separate
+`to_k_ip`/`to_v_ip` per block) is not wired up — identity tokens travel
+via the same cross-attention as text. The result is recognisable but
+not pixel-perfect (~50–70% of the diffusers reference). For higher
+identity fidelity, use `--identity faceid` (SD 1.5) or `faceid-sdxl` —
+those bypass this ceiling using ArcFace embeddings plus h94's UNet LoRA.
+
+`plus-face` limits: no automatic face crop (pass a head-and-shoulders
+photo, or use `--face-bbox` to mark the region); first run adds ~50 MB
+for the Plus-Face safetensors plus ~2.5 GB for CLIP-H (shared with
+`stylize`).
 
 ## Polish & refiner
 
