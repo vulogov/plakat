@@ -8,6 +8,7 @@ mod hf;
 mod imaging;
 mod pipelines;
 mod prompt;
+mod style;
 mod ui;
 
 fn main() -> Result<()> {
