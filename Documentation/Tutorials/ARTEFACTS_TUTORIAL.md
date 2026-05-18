@@ -474,17 +474,77 @@ skip blend entirely, see
 
 ---
 
-## 12. Limits and honest tradeoffs
+## 12. Following the painted horizon with `--smart-zones`
+
+The rigid grid says "sky = top 25 %". But the diffusion model doesn't
+read your grid. A 16:9 panoramic generation often paints sky into
+the top 40–50 %; a low-horizon meadow generation puts ground into
+the top half. The grid misplaces artefacts when the painted scene
+disagrees with it.
+
+`--smart-zones` reads the actual image: depth tells it where sky and
+foreground actually sit, and luminance tells it where the "centre of
+content" is horizontally. The zone references stay the same, but
+their pixel extents track what the model painted.
+
+```bash
+plakat generate "a low-horizon meadow at sunset, golden light" \
+    --aspect 16:9 \
+    --artefact sun@sky/right \
+    --artefact oak@middle_plan/left \
+    --smart-zones
+```
+
+Without `--smart-zones`, `sun@sky/right` lands in the top 25 %
+of the canvas — which, on a low-horizon sunset, might be mid-air
+above the actual sky line. With it, sun lands in whatever rows the
+depth model identified as actual sky.
+
+**First-run cost.** The depth model is Depth-Anything-V2-small
+(~99 MB). Downloaded once and cached. Inference is ~0.5–1.5 s per
+image on a GPU. The model loads once per `plakat generate` /
+scenario run and is shared across every image in the batch.
+
+**Fallback.** If the model can't download (network out, mirror
+unreachable), plakat falls back to the rigid grid with a warning.
+The flag never blocks a generation.
+
+**Stacking with `--artefact-blend`.** Fully compatible — recommended,
+even. The blend mask is rebuilt per image using the smart-resolved
+zone, so blending tracks the painted horizon too:
+
+```bash
+plakat generate "moody nordic fjord at dusk" \
+    --aspect 16:9 \
+    --artefact pine@middle_plan/left \
+    --artefact pine@middle_plan/right \
+    --artefact-blend --smart-zones
+```
+
+**When to skip smart zones.**
+
+- *Tight portraits.* No meaningful sky / ground — depth quantiles
+  end up mapping to face features. Use the rigid grid + manual
+  `zones:` overrides.
+- *Big CPU-only batches.* The depth pass adds seconds per image.
+- *Identical framings.* If every image hits the rigid grid OK, the
+  extra inference is wasted.
+
+For the full strength dial, fallback details, and mask construction,
+see [`ARTEFACTS.md` § Smart zones (v3)](../ARTEFACTS.md#smart-zones-v3).
+
+---
+
+## 13. Limits and honest tradeoffs
 
 **It can still look collaged.** `--artefact-blend` softens edges but
 doesn't fully match palettes. The most aggressive fix is still a
 stylize pass that re-paints the whole canvas.
 
-**Zone grid is rigid.** "Sky" is the top quarter of the canvas
-regardless of what was painted there. If the generated meadow has a
-low horizon and most of the canvas is grass, calling the top quarter
-"sky" misses most of the actual sky. Override `zones:` per scenario
-when this bites — or wait for v3 (semantic / depth-aware zones).
+**Zone grid is rigid by default.** "Sky" is the top quarter of the
+canvas unless you turn it off. Enable `--smart-zones` to derive zones
+from the actual painted scene's depth, or override `zones:` per
+scenario when the layout is predictable.
 
 **No artefact generation.** Plakat composites cutouts; it doesn't
 draw them. You provide the PNGs (or replace the bundled placeholders).

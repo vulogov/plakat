@@ -157,6 +157,14 @@ pub struct GenerateArgs {
     /// Higher values let the model redraw the artefact silhouette.
     #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
     pub artefact_blend_strength: f32,
+
+    /// v3: derive artefact zones from the generated image's own
+    /// depth + luminance instead of the rigid 4×3 grid. Requires the
+    /// Depth-Anything-V2 small checkpoint (~99 MB, downloaded once
+    /// and cached). Falls back to the grid with a warning if the
+    /// model can't be loaded. Default: off.
+    #[arg(long = "smart-zones", default_value_t = false)]
+    pub smart_zones: bool,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -221,6 +229,24 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         .artefact_library
         .clone()
         .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+
+    // v3: lazily load the depth pipeline if --smart-zones is on.
+    // On load failure, warn and continue with the rigid grid.
+    let smart_depth = if args.smart_zones && !args.artefacts.is_empty() {
+        match crate::pipelines::depth::DepthPipeline::load(device.clone()).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                crate::ui::progress::println(&format!(
+                    "  warn: --smart-zones requested but depth model load failed ({e}). \
+                     Falling back to rigid 4×3 grid.",
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     crate::artefacts::composite_onto_seed_range(
         &args.artefacts,
         &library_dir,
@@ -231,6 +257,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         width,
         height,
         &Default::default(),
+        smart_depth.as_ref(),
     )?;
 
     // v2: optional masked img2img blend over the artefact zones,
@@ -265,6 +292,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             &files,
             &Default::default(),
             seed,
+            smart_depth.as_ref(),
         )
         .await?;
     }

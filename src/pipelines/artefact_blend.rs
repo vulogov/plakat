@@ -75,6 +75,10 @@ pub struct BlendConfig {
 
 /// Run the blend pass on every file in `files` in-place. Empty
 /// `specs` or empty `files` is a no-op (no model load).
+///
+/// When `smart` is supplied, the artefact zone rects (and therefore
+/// the blend mask) are recomputed per file from each image's own
+/// depth + luminance — same behaviour as the v3 compositor.
 pub async fn blend_files(
     cfg: BlendConfig,
     specs: &[ArtefactSpec],
@@ -82,18 +86,19 @@ pub async fn blend_files(
     files: &[PathBuf],
     zone_overrides: &ZoneOverrides,
     base_seed: Option<u64>,
+    smart: Option<&crate::pipelines::depth::DepthPipeline>,
 ) -> Result<()> {
     if specs.is_empty() || files.is_empty() {
         return Ok(());
     }
     let lib = ArtefactLibrary::load(library_dir)
         .with_context(|| format!("loading artefact library {}", library_dir.display()))?;
-    let resolved = resolve_specs(specs, &lib, cfg.image_w, cfg.image_h, zone_overrides)?;
 
+    let smart_tag = if smart.is_some() { " (smart zones)" } else { "" };
     crate::ui::progress::println(&format!(
-        "  {} blending {} artefact(s) into {} image(s) (strength={:.2})",
+        "  {} blending {} artefact(s) into {} image(s) (strength={:.2}){smart_tag}",
         console::style("◆").cyan().bold(),
-        resolved.len(),
+        specs.len(),
         files.len(),
         cfg.strength,
     ));
@@ -109,18 +114,32 @@ pub async fn blend_files(
     .context("loading SD pipeline for artefact blend")?;
 
     let feather_px = cfg.feather_px.unwrap_or(DEFAULT_FEATHER_PX);
-    let mask = build_artefact_mask(
-        &resolved,
-        cfg.image_w,
-        cfg.image_h,
-        feather_px,
-        pipeline.device(),
-        pipeline.latent_dtype(),
-    )?;
 
     let start = base_seed.unwrap_or(0);
     for (i, path) in files.iter().enumerate() {
         let seed = start.wrapping_add(i as u64);
+
+        // Per-file zone resolution. With smart=None this just clones
+        // the base overrides, so resolve_specs / build_artefact_mask
+        // run with consistent inputs across files — identical to
+        // pre-v3 behaviour byte-for-byte.
+        let effective = crate::artefacts::resolve_overrides_for(
+            path,
+            cfg.image_w,
+            cfg.image_h,
+            zone_overrides,
+            smart,
+        );
+        let resolved = resolve_specs(specs, &lib, cfg.image_w, cfg.image_h, &effective)?;
+        let mask = build_artefact_mask(
+            &resolved,
+            cfg.image_w,
+            cfg.image_h,
+            feather_px,
+            pipeline.device(),
+            pipeline.latent_dtype(),
+        )?;
+
         let base_latents = pipeline
             .vae_encode_image_file(path, cfg.image_w, cfg.image_h)
             .with_context(|| format!("VAE-encoding {}", path.display()))?;

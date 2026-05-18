@@ -46,11 +46,12 @@ plakat portrait "a portrait, soft window light" \
 
 # Composite named cutout artefacts (trees, sky elements, houses, ...) 
 # into named zones of the generated image. Add --artefact-blend for a
-# short masked img2img pass that smooths the pasted edges.
+# masked img2img pass that smooths the pasted edges; --smart-zones
+# derives zones from the image's own depth + luminance.
 plakat generate "a green meadow under a blue sky" \
     --artefact oak@middle_plan/left \
     --artefact sun@sky/right \
-    --artefact-blend
+    --artefact-blend --smart-zones
 
 # Apply a bundled art style by name
 plakat generate "a fox in tall grass" --style watercolor

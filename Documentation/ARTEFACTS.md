@@ -9,11 +9,13 @@ final image more naturally than a strict alpha overlay would.
 
 This is **alpha-compositing**, not generative inpainting. The artefact
 PNG is alpha-blended onto the generated image at the specified zone +
-scale + anchor. An optional v2 `--artefact-blend` flag adds a masked
-img2img pass on top to smooth the pasted edges (see the
-[Blend pass (v2)](#blend-pass-v2) section). v3 plans replace the rigid
-4×3 zone grid with depth/segmentation-aware zones derived from the
-actual generated image.
+scale + anchor. Two optional passes refine the result:
+
+- `--artefact-blend` (v2) — masked img2img to smooth the pasted edges
+  (see [Blend pass (v2)](#blend-pass-v2)).
+- `--smart-zones` (v3) — derive zones from the generated image's own
+  depth + luminance instead of the rigid 4×3 grid (see
+  [Smart zones (v3)](#smart-zones-v3)).
 
 ## Quick start
 
@@ -148,6 +150,7 @@ default grid. Horizontal bands accept the same format under `left:`,
 --artefact-library <DIR>         # override bundled library
 --artefact-blend                 # v2: masked img2img blend after composite
 --artefact-blend-strength F      # default 0.3 (range 0..1)
+--smart-zones                    # v3: derive zones from depth + luminance
 ```
 
 Shorthand grammar:
@@ -182,6 +185,9 @@ A task can attach artefacts via the `artefacts:` field:
     # `artefact-blend: true/false` overrides this.
     artefact-blend: true
     artefact-blend-strength: 0.3
+    # v3: derive zones from each image's own depth + luminance.
+    # Per-task `smart-zones: true/false` overrides.
+    smart-zones: true
 
     # ... model, scenes, weather, tasks ...
 
@@ -408,12 +414,11 @@ Both commands accept `--library <DIR>` to override the bundled set.
   with `--artefact-blend` (v2 masked img2img, see above), or chain a
   stylize pass that re-paints the whole canvas through IP-Adapter
   (unifying the palette aggressively).
-- **Rigid grid is approximate.** A "sky" zone is the top 25% of the
-  canvas regardless of what the diffusion model actually painted
-  there. If the generated image has a low horizon (sky takes 60%),
-  calling the top 25% "sky" misses most of the actual sky. Use
-  `zones:` overrides per scenario, or wait for v3 (semantic
-  segmentation).
+- **Rigid grid is approximate** (by default). A "sky" zone is the top
+  25 % of the canvas regardless of what the diffusion model actually
+  painted there. Enable `--smart-zones` (v3) to derive zones from the
+  image's depth + luminance instead, or override `zones:` per
+  scenario when the layout is predictable.
 - **No artefact generation.** Plakat composites, doesn't paint
   artefacts. Users prepare PNGs themselves (Photoshop, GIMP,
   rembg/AI cutout tools).
@@ -429,16 +434,96 @@ Both commands accept `--library <DIR>` to override the bundled set.
   plakat's SD 1.5 / SDXL pipeline. Using `--artefact-blend` with
   `--model flux-*` errors at the blend pipeline's load step.
 
+## Smart zones (v3)
+
+The v1 grid (`sky` = top 25 %, `close_plan` = bottom 25 %, etc.)
+assumes the diffusion model painted the scene exactly as the grid
+expects. It doesn't. A meadow with a low horizon has most of its
+canvas as ground; calling the top quarter "sky" misses the actual sky.
+
+`--smart-zones` derives zones from the generated image itself. Two
+cheap signals:
+
+- **Depth** (Depth-Anything-V2 small, ~99 MB) — per-row mean depth is
+  bucketed by quantile (q25 / q50 / q75). The lowest-depth rows
+  become `sky`, highest become `close_plan`. The actual painted
+  horizon lands at the `sky`↔`far_plan` boundary regardless of where
+  the rigid grid would have put it.
+- **Luminance** — per-column vertical variance ("how busy is this
+  column?") gives a variance-weighted centroid. The `center` band
+  shifts so it's actually over the busy part of the image; `left`
+  and `right` fill the remainder.
+
+```bash
+plakat generate "a low-horizon meadow at sunset" \
+    --artefact sun@sky/right \
+    --artefact oak@middle_plan/left \
+    --smart-zones
+```
+
+The `sun@sky/right` placement now lands wherever the model actually
+painted sky (top 60 % if the horizon is low), not whichever pixels
+happen to be in the top quarter.
+
+### Cost
+
+- One-time model download (~99 MB) on first use; cached afterwards.
+- Per-image: ~0.5–1.5 s on Apple Silicon / RTX 4090, ~3–10 s on CPU.
+- The depth model loads once per `plakat generate` invocation /
+  scenario run and is reused for every image.
+
+### Fallback
+
+If the depth model can't be downloaded or fails to load (network out,
+HuggingFace mirror unreachable), plakat logs a warning and falls back
+to the rigid grid. The flag is non-fatal — a generation with
+`--smart-zones` never errors out just because the depth signal is
+unavailable.
+
+If `--smart-zones` produces a degenerate signal on a particular image
+(flat depth field, monochrome canvas), only the affected bands fall
+back to the grid. Other bands still use the smart values. User-
+supplied `zones:` overrides fill the gap for fallback bands.
+
+### When `--smart-zones` helps
+
+- **Wide aspect ratios.** A 16:9 panorama with a 30 %-tall sky strip
+  shouldn't have artefacts pinned to "top 25 %". Smart zones tracks
+  the actual horizon.
+- **Compositional asymmetry.** If the generated scene has its
+  centre of interest off-centre (subject on the right, sky on the
+  left), the centroid-centred horizontal split places artefacts more
+  naturally.
+- **Variable scene geometry across `--count`.** Each image in a batch
+  gets its own zone resolution. Different framings get different
+  placements automatically.
+
+### When to skip
+
+- **Identical, predictable framings.** If you're batching 50 images
+  of the same composition and they all hit the rigid grid acceptably,
+  the depth pass is wasted overhead.
+- **CPU-only runs at high `--count`.** ~3–10 s per image adds up.
+  Disable smart zones for batches.
+- **Tightly-cropped subjects.** A portrait headshot has no
+  meaningful "sky" or "ground" — the depth quantiles end up mapping
+  to face features, which isn't what you want.
+
+### Interaction with other flags
+
+- **`--artefact-blend`** — fully compatible. The blend mask is
+  rebuilt per-image using smart zones, so the blended region tracks
+  the smart-resolved rect rather than the rigid grid.
+- **`zones:` overrides in scenarios** — kept as fallback for any band
+  the smart signal can't resolve. Smart values win where present.
+- **`--style-ref` / `--style`** — orthogonal. Style pass runs after
+  compositing as before.
+
 ## Roadmap
 
-### v3: semantic zones
-
-Replace the rigid 4×3 grid with zones derived from the actual
-generated image — depth estimation (e.g. MiDaS) to find the real
-horizon, or semantic segmentation (e.g. SAM) to find the actual
-"sky" / "ground" regions. The runtime API (`ZoneRef::resolve` →
-`Rect`) is the abstraction boundary v3 will plug into; the CLI /
-HJSON surface won't change.
+(No v4 currently scoped — `--smart-zones` and `--artefact-blend`
+cover the v3 + v2 plans on the original roadmap. Open issues for
+feature requests.)
 
 ## See also
 
