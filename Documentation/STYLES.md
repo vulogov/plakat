@@ -141,8 +141,8 @@ exemplars, detection policy thresholds, and per-style routing
   surfaced.
 
 **Per style**
-- `id` — slug; the value `--style <id>` will accept (when that flag
-  ships). Also used as the prefix for exemplar tensor keys.
+- `id` — slug; the value `--style <id>` accepts on `plakat generate` /
+  `plakat portrait`. Also used as the prefix for exemplar tensor keys.
 - `display_name` — for `plakat style detect` / `plakat style list`
   output and human-facing docs.
 - `description` — one-line summary.
@@ -260,7 +260,7 @@ States the output can take:
   `margin_over_runner_up`. Confident detection.
 - `[ambiguous]` — top score cleared `min_confidence` but runner-up was
   within margin. Runner-up is also shown explicitly; consider re-running
-  with each candidate via `--style <id>` (once that flag ships).
+  with each candidate via `--style <id>`.
 - `(none above min_confidence)` — no style matched well enough. The
   closest is still shown for context; either expand the catalog, pick a
   style by name, or lower the threshold in the catalog JSON.
@@ -1087,8 +1087,9 @@ If you've already used `plakat portrait --identity faceid`, `plakat
 stylize`, or any IP-Adapter-based path, CLIP-H is already cached and
 `plakat style detect` reuses it.
 
-LoRA downloads (per detected style) are deferred until the
-`generate`/`portrait` integration ships.
+LoRA downloads (per detected or selected style) happen lazily on
+first use via `plakat generate --style <id>` / `--style-ref ...` or
+`plakat portrait --style ...` — see the **CLI usage** section above.
 
 ## Limits
 
@@ -1157,8 +1158,8 @@ Reference photo doesn't match any catalog style strongly. Either:
 
 **`Detected: <style> [ambiguous]`**
 Top-1 is within `margin_over_runner_up` of top-2. Both candidates are
-shown. Run generation against each (once `--style <id>` ships) and
-pick the better result.
+shown. Run generation against each via `--style <id>` and pick the
+better result.
 
 ## Testing
 
