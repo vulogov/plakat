@@ -25,7 +25,10 @@ cargo install plakat --features cudnn        # CUDA + cuDNN convolutions
 cargo install plakat
 ```
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.85+ (edition 2024). On Apple hardware, see
+[`Documentation/APPLE_REQUIREMENTS.md`](Documentation/APPLE_REQUIREMENTS.md)
+for the minimum / recommended chip + memory tiers and expected
+per-image speeds.
 
 ## Quick start
 

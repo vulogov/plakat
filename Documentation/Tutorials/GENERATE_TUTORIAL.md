@@ -431,7 +431,9 @@ gets 1002-1003, and so on.
 SD 1.5 needs ~6 GB of RAM. SDXL needs ~10-14 GB. On a Mac with Apple
 Silicon, plakat auto-detects Metal. On a machine without enough
 memory, drop to a smaller model (`--model sd15`), a smaller size
-(`--size 256x256`), and fewer steps (`--steps 12`).
+(`--size 256x256`), and fewer steps (`--steps 12`). For the full
+per-chip + per-model breakdown, see
+[`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md).
 
 **Output is blurry / over-smooth.**
 Try increasing `--guidance` (e.g., 9.0) and `--steps` (e.g., 40).

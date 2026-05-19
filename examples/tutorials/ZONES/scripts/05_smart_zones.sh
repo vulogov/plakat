@@ -26,7 +26,8 @@ OUT=out/zones-tutorial/05_smart_zones
 mkdir -p "$OUT"
 
 "$PLAKAT" generate "a wide panoramic meadow with low horizon under a vast cloudy sky" \
-    --aspect 16:9 --base 768 \
+    --aspect 16:9 --base 512 \
+    --steps 20 --scheduler euler-a \
     --artefact sun@sky/right \
     --artefact cloud@sky/left \
     --artefact oak@middle_plan/center \

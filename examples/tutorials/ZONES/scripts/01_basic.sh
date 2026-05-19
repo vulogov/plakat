@@ -19,6 +19,7 @@ mkdir -p "$OUT"
 "$PLAKAT" generate "a quiet green meadow under a wide blue sky" \
     --artefact oak \
     --artefact-library library \
+    --size 512x512 --steps 20 --scheduler euler-a \
     --seed 1001 \
     --out "$OUT"
 

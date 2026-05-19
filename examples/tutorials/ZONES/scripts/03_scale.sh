@@ -24,6 +24,7 @@ mkdir -p "$OUT"
     --artefact oak@middle_plan/center:0.8 \
     --artefact oak@close_plan/center:1.2 \
     --artefact-library library \
+    --size 512x512 --steps 20 --scheduler euler-a \
     --seed 1003 \
     --out "$OUT"
 

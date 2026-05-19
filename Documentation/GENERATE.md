@@ -659,6 +659,9 @@ trace.
 | `metal` | Apple Silicon GPU. Requires `--features metal`. |
 | `cpu` | CPU. Works everywhere. Slow on full-size generations. |
 
+For Apple hardware (chip tiers, expected speeds, memory headroom),
+see [`APPLE_REQUIREMENTS.md`](APPLE_REQUIREMENTS.md).
+
 #### `--cache-dir <PATH>` (env: `PLAKAT_CACHE_DIR`)
 
 Where HF model weights are cached. Resolution order:
