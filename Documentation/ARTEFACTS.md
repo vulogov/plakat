@@ -519,18 +519,18 @@ supplied `zones:` overrides fill the gap for fallback bands.
 - **`--style-ref` / `--style`** — orthogonal. Style pass runs after
   compositing as before.
 
-## Roadmap
-
-(No v4 currently scoped — `--smart-zones` and `--artefact-blend`
-cover the v3 + v2 plans on the original roadmap. Open issues for
-feature requests.)
-
 ## See also
 
 - [Tutorial walkthrough](Tutorials/ARTEFACTS_TUTORIAL.md) — start
   here if you've never used the feature.
+- [Runnable hands-on tutorial](../examples/tutorials/ZONES/) — seven
+  shell scripts + an HJSON scenario demonstrating v1 + v2 + v3
+  end-to-end. The canonical "show me, don't tell me" reference.
 - [PORTRAIT_TUTORIAL.md](Tutorials/PORTRAIT_TUTORIAL.md) — for
   identity-preserving portraits, which compose orthogonally with
   artefact compositing.
 - [STYLES.md](STYLES.md) — for art-style transfer, which can run
   after compositing to unify palettes.
+- [APPLE_REQUIREMENTS.md](APPLE_REQUIREMENTS.md) — for Apple chip +
+  memory implications of stacking `--artefact-blend` and
+  `--smart-zones` on top of generation.

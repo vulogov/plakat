@@ -109,8 +109,9 @@ Real-ESRGAN upscaling at 2× or 4×.
 
 **What runs:**
 
-- Flux (`--model flux-schnell` ~24 GB; `--model flux-dev` ~24 GB).
-  Flux requires the most memory of any model plakat supports.
+- Flux (`--model flux-schnell` and `--model flux-dev`, ~30 GB on
+  disk, ~17 GB resident). Flux requires the most memory of any
+  model plakat supports.
 - SDXL with a refiner pass.
 - Stacked LoRAs (5–10 simultaneous).
 - Long scenarios (hundreds of tasks) without restarting between
@@ -165,11 +166,11 @@ disk-only.
 | SD 1.5 | ~4 GB | f16 UNet + VAE + CLIP-L |
 | SD 2.1 | ~5 GB | Slightly larger UNet |
 | SDXL | ~7 GB | Includes both CLIP-L and CLIP-G |
-| Flux-schnell | ~24 GB | Transformer + T5-XXL + dual CLIP |
-| Flux-dev | ~24 GB | Same architecture, different fine-tune |
-| IP-Adapter-Plus-Face (SD 1.5) | ~700 MB | CLIP-H image encoder + adapter |
-| FaceID + ArcFace (SD 1.5) | ~1 GB | ArcFace 112×112 face embedding |
-| Plus-Face-SDXL | ~1.2 GB | CLIP-H for SDXL |
+| Flux-schnell | ~30 GB | Transformer + T5-XXL + dual CLIP. ~17 GB resident after load. |
+| Flux-dev | ~30 GB | Same architecture, different fine-tune. ~17 GB resident. |
+| IP-Adapter-Plus-Face (SD 1.5) | ~2.5 GB | CLIP-H image encoder shared across IP-Adapter paths; ~50 MB adapter on top. |
+| FaceID / ArcFace (SD 1.5) | ~250 MB | Converted ArcFace IR-ResNet50 safetensors. SCRFD detector adds ~10 MB. |
+| Plus-Face-SDXL | ~2.5 GB | Same CLIP-H, different ~50 MB adapter for SDXL. |
 | Depth-Anything-V2-small | ~99 MB | For `--smart-zones` (v3) |
 | Real-ESRGAN x4 | ~64 MB | For ML upscaling |
 | Bundled style catalog | ~5 MB | Catalog file only — LoRAs separate |

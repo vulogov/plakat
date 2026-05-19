@@ -76,3 +76,5 @@ manuals in [`Documentation/`](..):
 - Looking up a specific `plakat generate` flag → [`GENERATE.md`](../GENERATE.md)
 - Identity strategies and ArcFace setup → [`PERSONA.md`](../PERSONA.md)
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
+- Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
+- Apple chip + memory tiers, expected speeds → [`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md)

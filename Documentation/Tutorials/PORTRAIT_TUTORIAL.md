@@ -140,7 +140,7 @@ There are two main approaches, controlled by `--identity`:
 | Strategy | What it does | When to use |
 |---|---|---|
 | `plus-face` (default) | Uses CLIP-H image features. Robust, fast, no extra setup. | Most cases. Good identity preservation, no setup hassle. |
-| `faceid` | Uses InsightFace's ArcFace embedding — purpose-built for face recognition. Much better identity fidelity. | When you need the *strongest* possible likeness and you're willing to download ~150 MB of ArcFace weights. |
+| `faceid` | Uses InsightFace's ArcFace embedding — purpose-built for face recognition. Much better identity fidelity. | When you need the *strongest* possible likeness and you're willing to convert + cache ~250 MB of ArcFace weights. |
 
 `plus-face` works out of the box. `faceid` requires a one-time setup:
 

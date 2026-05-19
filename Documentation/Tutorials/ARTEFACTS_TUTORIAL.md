@@ -232,9 +232,12 @@ against the generated content.
 ## 7. Combining with a style pass
 
 Alpha-composited artefacts can look "collaged" against a
-photorealistic generated background. The fix that lands in v1 today:
-add a stylize pass that re-paints the whole canvas through IP-Adapter,
-unifying everything in one stylistic voice.
+photorealistic generated background. v2's `--artefact-blend` and
+v3's `--smart-zones` (sections 11 and 12 below) each help in
+different ways. The most aggressive fix is still a stylize pass
+that re-paints the whole canvas through IP-Adapter, unifying
+everything in one stylistic voice — and it composes cleanly with
+the v2/v3 features.
 
 In a scenario you'd write:
 
@@ -567,6 +570,10 @@ seconds. Don't worry about cost.
 
 ## Where to next
 
+- **Runnable companion** — seven self-contained shell scripts +
+  an HJSON scenario that demonstrate every tier (v1 alpha
+  composite, v2 blend, v3 smart zones) end-to-end:
+  [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/).
 - **Full reference** — every field, every override, every limit:
   [`Documentation/ARTEFACTS.md`](../ARTEFACTS.md)
 - **Combining with style transfer** to unify the palette:

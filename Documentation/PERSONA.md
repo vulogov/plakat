@@ -11,7 +11,7 @@ personas with per-persona bounding boxes that get composited together
 via region-masked inpainting.
 
 This document is the full reference for the feature. For an example you
-can copy from, see [`examples/scenario.hjson`](examples/scenario.hjson).
+can copy from, see [`examples/scenario.hjson`](../examples/scenario.hjson).
 For the standalone CLI (without a scenario), see the **`plakat portrait`**
 section in [GENERATE.md](GENERATE.md).
 
@@ -1075,6 +1075,9 @@ is a future optimisation; today the duplication is tolerated.
 If memory is tight: stick to SD 1.5 as your scenario `model`. The
 portrait pipeline then sits next to a single ~5 GB t2i pipeline, total
 ~10 GB.
+
+For Apple Silicon chip + memory tiers and unified-memory headroom
+guidance, see [`APPLE_REQUIREMENTS.md`](APPLE_REQUIREMENTS.md).
 
 ---
 
