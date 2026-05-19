@@ -21,7 +21,8 @@ OUT=out/zones-tutorial/06_full_stack
 mkdir -p "$OUT"
 
 "$PLAKAT" generate "a moody nordic fjord at dusk, dramatic clouds" \
-    --aspect 16:9 --base 768 \
+    --aspect 16:9 --base 512 \
+    --steps 20 --scheduler euler-a \
     --artefact moon@sky/right \
     --artefact cloud@sky/center:0.6 \
     --artefact pine@middle_plan/left \

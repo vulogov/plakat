@@ -21,8 +21,13 @@
     #   export GEMINI_API_KEY=AIza...     (for "gemini")
     enhancer: deepseek
 
-    # SD 1.5 trained at 512² — keep close to that for fidelity.
+    # SD 1.5 trained at 512² — keep close to that for fidelity and speed.
     size: 512x512
+
+    # 20 steps with euler-a is the fastest stable setting on Metal.
+    # Default (28 / Default) ~ 40% slower for marginal quality gain.
+    steps: 20
+    scheduler: euler-a
 
     # one image per task
     count: 1

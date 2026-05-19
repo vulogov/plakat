@@ -32,6 +32,7 @@ mkdir -p "$OUT"
     --artefact-library library \
     --artefact-blend \
     --artefact-blend-strength 0.30 \
+    --size 512x512 --steps 20 --scheduler euler-a \
     --seed 1002 \
     --out "$OUT"
 

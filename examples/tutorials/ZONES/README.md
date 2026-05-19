@@ -39,6 +39,35 @@ ZONES/
 
 Outputs land under `out/zones-tutorial/<script-name>/`.
 
+## Why the scripts use lighter generation settings
+
+Every script passes `--size 512x512 --steps 20 --scheduler euler-a`
+(or the equivalent 16:9 form for the panoramic scripts). These are
+*tutorial defaults*, not plakat defaults — chosen for:
+
+- **Speed.** SD 1.5 at 512² is ~2.25× faster than at the CLI default
+  768², and `euler-a` at 20 steps is the fastest Metal-friendly
+  setting that still produces clean output.
+- **Quality.** SD 1.5 was *trained* at 512² — running at native
+  resolution yields better images than upscaling to 768², not worse.
+- **Memory headroom.** Smaller activations keep the working set well
+  inside even an 8 GB unified-memory Mac. On the first run, candle
+  JIT-compiles its Metal kernels (one-time cost); smaller kernel
+  shapes compile faster too.
+
+Expected wall time on an M-series Mac with Metal compiled in
+(`cargo build --release --features metal`):
+
+| Run | `01_basic.sh` | `05_smart_zones.sh` | `06_full_stack.sh` |
+|---|---|---|---|
+| First (kernel JIT) | 60–90 s | 90–120 s | 120–180 s |
+| Subsequent | 5–10 s | 8–15 s | 15–25 s |
+
+If you see *minutes* on the second run, something is wrong —
+likely memory pressure (other apps using a lot of unified memory,
+or a CPU-only build silently falling back). Check Activity Monitor
+during the run.
+
 ## Prerequisites
 
 - A `plakat` binary, found in any of:
