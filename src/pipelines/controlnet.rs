@@ -61,6 +61,51 @@ use candle_transformers::models::stable_diffusion::unet_2d_blocks::{
     UNetMidBlock2DCrossAttn, UNetMidBlock2DCrossAttnConfig,
 };
 
+/// SD 1.5 UNet configuration — same as candle's
+/// `StableDiffusionConfig::v1_5(...)` produces internally for its
+/// (private) `unet` field. We reconstruct it here so the ControlNet
+/// can be built with shapes that match the paired UNet exactly.
+///
+/// Differences from `UNet2DConditionModelConfig::default()`:
+/// only `cross_attention_dim: 768` (default is 1280).
+pub fn sd15_unet_config() -> UNet2DConditionModelConfig {
+    UNet2DConditionModelConfig {
+        blocks: vec![
+            BlockConfig {
+                out_channels: 320,
+                use_cross_attn: Some(1),
+                attention_head_dim: 8,
+            },
+            BlockConfig {
+                out_channels: 640,
+                use_cross_attn: Some(1),
+                attention_head_dim: 8,
+            },
+            BlockConfig {
+                out_channels: 1280,
+                use_cross_attn: Some(1),
+                attention_head_dim: 8,
+            },
+            BlockConfig {
+                out_channels: 1280,
+                use_cross_attn: None,
+                attention_head_dim: 8,
+            },
+        ],
+        center_input_sample: false,
+        cross_attention_dim: 768,
+        downsample_padding: 1,
+        flip_sin_to_cos: true,
+        freq_shift: 0.,
+        layers_per_block: 2,
+        mid_block_scale_factor: 1.,
+        norm_eps: 1e-5,
+        norm_num_groups: 32,
+        sliced_attention_size: None,
+        use_linear_projection: false,
+    }
+}
+
 /// Default ControlNet hint encoder channel layout (matches the
 /// diffusers reference implementation). Takes a 3-channel image and
 /// downsamples to the latent grid via four strided convs.
@@ -359,6 +404,98 @@ impl ControlNet {
     pub fn config(&self) -> &UNet2DConditionModelConfig {
         &self.config
     }
+
+    /// Download safetensors weights for `kind` from HuggingFace and
+    /// construct the network. Tries a primary repo + two fallback
+    /// mirrors; the first one that downloads cleanly wins.
+    ///
+    /// v0.9 ships SD 1.5 ControlNets only — `kind = Depth` is the
+    /// only accepted variant. The paired UNet must also be SD 1.5;
+    /// the loader uses [`sd15_unet_config`] for the architecture.
+    pub async fn load(device: Device, dtype: DType, kind: ControlKind) -> Result<Self> {
+        let candidates = candidates_for(kind);
+        let weights_path = crate::hf::download::get_first_of(&candidates)
+            .await
+            .with_context(|| {
+                format!(
+                    "downloading ControlNet weights for kind={:?}. Tried {} mirror(s).",
+                    kind,
+                    candidates.len(),
+                )
+            })?;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)?
+        };
+        let cfg = sd15_unet_config();
+        // SD 1.5 latent has 4 channels.
+        Self::new(vb, 4, cfg).context("building ControlNet from downloaded weights")
+    }
+}
+
+/// Load a user-supplied conditioning image from disk and convert it
+/// into the `(1, 3, H, W)` tensor [`ControlNet::forward`] expects.
+///
+/// * RGB / RGBA inputs use their RGB channels directly.
+/// * Grayscale inputs are replicated across all three channels —
+///   correct for depth maps and other single-channel conditioners.
+/// * Values are normalised to `[0, 1]`.
+///
+/// The image is resized (triangle filter) to `(w, h)` to match the
+/// generation working resolution. The caller's `(w, h)` must be a
+/// multiple of 8 (VAE constraint) — the loader doesn't enforce that
+/// since it's already validated at the CLI / pipeline boundary.
+pub fn prepare_conditioning(
+    path: &std::path::Path,
+    w: u32,
+    h: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let img = image::open(path)
+        .with_context(|| format!("opening control image {}", path.display()))?;
+    let resized = img.resize_exact(w, h, image::imageops::FilterType::Triangle);
+    let rgb = resized.to_rgb8();
+    let raw = rgb.as_raw();
+    let total = (w as usize) * (h as usize);
+    let mut buf: Vec<f32> = vec![0.0; 3 * total];
+    let (r_dst, rest) = buf.split_at_mut(total);
+    let (g_dst, b_dst) = rest.split_at_mut(total);
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        r_dst[i] = chunk[0] as f32 / 255.0;
+        g_dst[i] = chunk[1] as f32 / 255.0;
+        b_dst[i] = chunk[2] as f32 / 255.0;
+    }
+    let t = Tensor::from_vec(buf, (1, 3, h as usize, w as usize), device)?
+        .to_dtype(dtype)?;
+    Ok(t)
+}
+
+/// HuggingFace (repo, file) candidates for `kind`. Returned in
+/// download-preference order: primary first, then fallbacks. All
+/// returned candidates are expected to ship **diffusers-format**
+/// state dicts — keys like `down_blocks.0.attentions.0.…` rather
+/// than the webui `control_model.input_blocks.0.0.…` convention,
+/// which has a different naming scheme we don't currently translate.
+fn candidates_for(kind: ControlKind) -> Vec<(&'static str, &'static str)> {
+    match kind {
+        ControlKind::Depth => vec![
+            // Primary: lllyasviel's original SD 1.5 ControlNet-Depth.
+            (
+                "lllyasviel/sd-controlnet-depth",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 1: same repo, fp16 variant (~half the bandwidth).
+            (
+                "lllyasviel/sd-controlnet-depth",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 2: lllyasviel's v1.1 ControlNet-Depth update.
+            (
+                "lllyasviel/control_v11f1p_sd15_depth",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
+    }
 }
 
 /// 3-channel conditioning image → latent-grid feature map. Four
@@ -509,6 +646,88 @@ mod tests {
             let s = k.slug();
             assert_eq!(s.parse::<ControlKind>().unwrap(), k);
         }
+    }
+
+    #[test]
+    fn candidates_for_depth_has_three_diffusers_mirrors() {
+        let c = candidates_for(ControlKind::Depth);
+        assert_eq!(c.len(), 3, "expected primary + 2 fallback mirrors");
+        for (repo, file) in &c {
+            assert!(!repo.is_empty(), "empty repo in candidates");
+            assert!(
+                file.ends_with(".safetensors"),
+                "expected safetensors file, got {file:?}",
+            );
+        }
+        // Primary should be the canonical SD 1.5 ControlNet-Depth.
+        assert_eq!(c[0].0, "lllyasviel/sd-controlnet-depth");
+    }
+
+    #[test]
+    fn prepare_conditioning_normalises_rgb_to_unit_range() {
+        use image::{Rgb, RgbImage};
+        // 4x4 image: half black, half white columns.
+        let mut img = RgbImage::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                let v = if x < 2 { 0u8 } else { 255u8 };
+                img.put_pixel(x, y, Rgb([v, v, v]));
+            }
+        }
+        let tmp = std::env::temp_dir().join("plakat_controlnet_hint_test.png");
+        img.save(&tmp).unwrap();
+        let t = prepare_conditioning(&tmp, 4, 4, &Device::Cpu, DType::F32).unwrap();
+        assert_eq!(t.dims(), &[1, 3, 4, 4]);
+        let v: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
+        // R, G, B all match the source.
+        // First two columns of first row are black (0.0).
+        assert!(v[0] < 0.01);
+        // Last two columns of first row are white (1.0).
+        assert!((v[3] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn prepare_conditioning_replicates_grayscale_to_three_channels() {
+        use image::{GrayImage, Luma};
+        let mut img = GrayImage::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                let v = if x < 2 { 0u8 } else { 200u8 };
+                img.put_pixel(x, y, Luma([v]));
+            }
+        }
+        let tmp = std::env::temp_dir().join("plakat_controlnet_hint_gray_test.png");
+        img.save(&tmp).unwrap();
+        let t = prepare_conditioning(&tmp, 4, 4, &Device::Cpu, DType::F32).unwrap();
+        assert_eq!(t.dims(), &[1, 3, 4, 4]);
+        let total = 4 * 4;
+        let v: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
+        // R, G, B channels should match (single channel was replicated).
+        for i in 0..total {
+            let r = v[i];
+            let g = v[total + i];
+            let b = v[2 * total + i];
+            assert!(
+                (r - g).abs() < 1e-5 && (g - b).abs() < 1e-5,
+                "grayscale should be R==G==B at idx {i} (got {r}/{g}/{b})",
+            );
+        }
+        // Right-half pixel value approx 200/255.
+        let expected = 200.0 / 255.0;
+        assert!((v[2] - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn sd15_unet_config_matches_v1_5() {
+        let cfg = sd15_unet_config();
+        // Differences from default: cross_attention_dim 768 vs 1280.
+        assert_eq!(cfg.cross_attention_dim, 768);
+        // Everything else matches the default.
+        assert_eq!(cfg.blocks.len(), 4);
+        assert_eq!(cfg.layers_per_block, 2);
+        assert_eq!(cfg.blocks[0].out_channels, 320);
+        assert_eq!(cfg.blocks[3].out_channels, 1280);
+        assert_eq!(cfg.blocks[3].use_cross_attn, None);
     }
 
     /// Construct a ControlNet against fresh random weights (no real
