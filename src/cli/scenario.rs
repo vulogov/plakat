@@ -1003,6 +1003,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     } else {
         candle_core::DType::F16
     };
+    // v0.10: scenarios run a single model architecture for all
+    // tasks, so the ControlNet variant is scenario-wide too.
+    let cn_variant = crate::pipelines::controlnet::ControlNetVariant::detect(&model);
 
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
@@ -1306,10 +1309,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     device.clone(),
                     cn_dtype,
                     kind,
+                    cn_variant,
                 )
                 .await
                 .with_context(|| {
-                    format!("task {:?}: loading ControlNet for {:?}", task.name, kind)
+                    format!(
+                        "task {:?}: loading ControlNet for {:?} ({:?})",
+                        task.name, kind, cn_variant,
+                    )
                 })?;
                 controlnets.insert(kind, net);
             }

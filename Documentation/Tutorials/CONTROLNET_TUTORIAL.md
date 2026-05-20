@@ -5,10 +5,10 @@ prompt still controls what appears in the image; the ControlNet
 conditioning controls **where** it appears and **how** it's
 arranged.
 
-This tutorial walks through plakat's v0.9 depth-conditioning
-feature: what it is, when to use it, the strength dial, and how it
-composes with the other plakat features. For the runnable
-companion, see [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/).
+This tutorial walks through plakat's depth-conditioning feature
+(SD 1.5 + SDXL): what it is, when to use it, the strength dial,
+and how it composes with the other plakat features. For the
+runnable companion, see [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/).
 
 ## Prerequisites
 
@@ -227,18 +227,20 @@ angle.
 
 ## 9. Limits
 
-- **SD 1.5 only in v0.9.** SDXL has its own ControlNet
-  ecosystem; we'll wire those weights in v0.10.
+- **SD 1.5 + SDXL supported.** v0.10 added SDXL ControlNet
+  weights; the architecture is auto-detected from `--model`.
+  Flux is still unsupported (different architecture entirely).
 - **Flux not supported.** ControlNet's residual-addition contract
   is SD-architecture-specific.
-- **Depth conditioner only in v0.9.** Canny edges, scribble, MLSD
-  lines, OpenPose, normals, segmentation, InstantID face — all on
-  the roadmap, none in this release.
+- **Depth conditioner only in v0.10.** Canny edges land in
+  v0.10 phase 3; scribble, MLSD lines, OpenPose, normals,
+  segmentation, InstantID face — all on the roadmap.
 - **No timestep windowing.** Diffusers'
   `control_guidance_start`/`control_guidance_end` (apply control
   to a window of the schedule) is on the v0.10 list.
 - **No multi-controlnet.** Stacking multiple conditioners
-  (depth + pose, for example) isn't exposed via the v0.9 CLI.
+  (depth + pose, for example) isn't exposed via the CLI; v0.11
+  candidate.
 
 ## Where to next
 

@@ -61,6 +61,40 @@ use candle_transformers::models::stable_diffusion::unet_2d_blocks::{
     UNetMidBlock2DCrossAttn, UNetMidBlock2DCrossAttnConfig,
 };
 
+/// Which SD architecture the paired UNet uses. Drives the
+/// ControlNet construction (block count + shapes) and the matching
+/// HuggingFace weight repos. Mirrors `portrait::Variant` but is
+/// independent so ControlNet doesn't pull a dependency on portrait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ControlNetVariant {
+    /// SD 1.5 (and SD 2.1 — same UNet shape up to cross_attn_dim).
+    /// 4 down blocks (3 CrossAttn + 1 Basic). cross_attention_dim 768.
+    Sd15,
+    /// SDXL. 3 down blocks (1 Basic + 2 CrossAttn).
+    /// cross_attention_dim 2048, use_linear_projection true.
+    Sdxl,
+}
+
+impl ControlNetVariant {
+    /// Same heuristic as `portrait::Variant::detect`: anything with
+    /// "xl" in the name is SDXL, otherwise SD 1.5.
+    pub fn detect(model: &str) -> Self {
+        let m = model.to_lowercase();
+        if m.contains("xl") {
+            Self::Sdxl
+        } else {
+            Self::Sd15
+        }
+    }
+
+    pub fn unet_config(self) -> UNet2DConditionModelConfig {
+        match self {
+            Self::Sd15 => sd15_unet_config(),
+            Self::Sdxl => sdxl_unet_config(),
+        }
+    }
+}
+
 /// SD 1.5 UNet configuration — same as candle's
 /// `StableDiffusionConfig::v1_5(...)` produces internally for its
 /// (private) `unet` field. We reconstruct it here so the ControlNet
@@ -103,6 +137,50 @@ pub fn sd15_unet_config() -> UNet2DConditionModelConfig {
         norm_num_groups: 32,
         sliced_attention_size: None,
         use_linear_projection: false,
+    }
+}
+
+/// SDXL UNet configuration — same as candle's
+/// `StableDiffusionConfig::sdxl(...)` produces internally. SDXL has
+/// only 3 down blocks (vs SD 1.5's 4); the first block is Basic
+/// (no cross-attn), the next two are CrossAttn with
+/// `transformer_layers_per_block` 2 and 10 respectively.
+/// Key differences vs SD 1.5:
+/// * 3 blocks not 4
+/// * `cross_attention_dim: 2048` (vs 768)
+/// * `use_linear_projection: true` (vs false)
+/// * Block 0 has no cross-attn
+/// * Per-block transformer layer counts vary (1 / 2 / 10)
+pub fn sdxl_unet_config() -> UNet2DConditionModelConfig {
+    UNet2DConditionModelConfig {
+        blocks: vec![
+            BlockConfig {
+                out_channels: 320,
+                use_cross_attn: None,
+                attention_head_dim: 5,
+            },
+            BlockConfig {
+                out_channels: 640,
+                use_cross_attn: Some(2),
+                attention_head_dim: 10,
+            },
+            BlockConfig {
+                out_channels: 1280,
+                use_cross_attn: Some(10),
+                attention_head_dim: 20,
+            },
+        ],
+        center_input_sample: false,
+        cross_attention_dim: 2048,
+        downsample_padding: 1,
+        flip_sin_to_cos: true,
+        freq_shift: 0.,
+        layers_per_block: 2,
+        mid_block_scale_factor: 1.,
+        norm_eps: 1e-5,
+        norm_num_groups: 32,
+        sliced_attention_size: None,
+        use_linear_projection: true,
     }
 }
 
@@ -406,29 +484,40 @@ impl ControlNet {
     }
 
     /// Download safetensors weights for `kind` from HuggingFace and
-    /// construct the network. Tries a primary repo + two fallback
-    /// mirrors; the first one that downloads cleanly wins.
+    /// construct the network. Tries a primary repo + fallback
+    /// mirrors per `variant`; the first one that downloads cleanly
+    /// wins.
     ///
-    /// v0.9 ships SD 1.5 ControlNets only — `kind = Depth` is the
-    /// only accepted variant. The paired UNet must also be SD 1.5;
-    /// the loader uses [`sd15_unet_config`] for the architecture.
-    pub async fn load(device: Device, dtype: DType, kind: ControlKind) -> Result<Self> {
-        let candidates = candidates_for(kind);
+    /// `variant` selects both the architecture config (SD 1.5 vs
+    /// SDXL block counts/shapes) and the matching weight repos.
+    /// SDXL ControlNets are larger (~5 GB vs ~1.4 GB) but follow
+    /// the same diffusers state-dict naming convention.
+    pub async fn load(
+        device: Device,
+        dtype: DType,
+        kind: ControlKind,
+        variant: ControlNetVariant,
+    ) -> Result<Self> {
+        let candidates = candidates_for(kind, variant);
         let weights_path = crate::hf::download::get_first_of(&candidates)
             .await
             .with_context(|| {
                 format!(
-                    "downloading ControlNet weights for kind={:?}. Tried {} mirror(s).",
+                    "downloading ControlNet weights for kind={:?} variant={:?}. \
+                     Tried {} mirror(s).",
                     kind,
+                    variant,
                     candidates.len(),
                 )
             })?;
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)?
         };
-        let cfg = sd15_unet_config();
-        // SD 1.5 latent has 4 channels.
-        Self::new(vb, 4, cfg).context("building ControlNet from downloaded weights")
+        // Both SD 1.5 and SDXL use 4-channel latents — only the
+        // UNet architecture (block count, channel depths,
+        // cross_attn_dim) differs.
+        Self::new(vb, 4, variant.unet_config())
+            .with_context(|| format!("building ControlNet ({variant:?}) from weights"))
     }
 }
 
@@ -470,15 +559,18 @@ pub fn prepare_conditioning(
     Ok(t)
 }
 
-/// HuggingFace (repo, file) candidates for `kind`. Returned in
-/// download-preference order: primary first, then fallbacks. All
-/// returned candidates are expected to ship **diffusers-format**
-/// state dicts — keys like `down_blocks.0.attentions.0.…` rather
-/// than the webui `control_model.input_blocks.0.0.…` convention,
-/// which has a different naming scheme we don't currently translate.
-fn candidates_for(kind: ControlKind) -> Vec<(&'static str, &'static str)> {
-    match kind {
-        ControlKind::Depth => vec![
+/// HuggingFace (repo, file) candidates for `kind` + `variant`.
+/// Returned in download-preference order: primary first, then
+/// fallbacks. All candidates ship **diffusers-format** state dicts
+/// — keys like `down_blocks.0.attentions.0.…` rather than the
+/// webui `control_model.input_blocks.0.0.…` convention, which has
+/// a different naming scheme we don't currently translate.
+fn candidates_for(
+    kind: ControlKind,
+    variant: ControlNetVariant,
+) -> Vec<(&'static str, &'static str)> {
+    match (kind, variant) {
+        (ControlKind::Depth, ControlNetVariant::Sd15) => vec![
             // Primary: lllyasviel's original SD 1.5 ControlNet-Depth.
             (
                 "lllyasviel/sd-controlnet-depth",
@@ -493,6 +585,26 @@ fn candidates_for(kind: ControlKind) -> Vec<(&'static str, &'static str)> {
             (
                 "lllyasviel/control_v11f1p_sd15_depth",
                 "diffusion_pytorch_model.safetensors",
+            ),
+        ],
+        (ControlKind::Depth, ControlNetVariant::Sdxl) => vec![
+            // Primary: diffusers' official SDXL ControlNet-Depth (small,
+            // 600M parameters — the recommended SDXL ControlNet).
+            (
+                "diffusers/controlnet-depth-sdxl-1.0-small",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 1: same repo, fp16 variant.
+            (
+                "diffusers/controlnet-depth-sdxl-1.0-small",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 2: the full-size SDXL ControlNet-Depth (~5 GB).
+            // Higher quality, much heavier; only used if -small mirrors
+            // are unreachable.
+            (
+                "diffusers/controlnet-depth-sdxl-1.0",
+                "diffusion_pytorch_model.fp16.safetensors",
             ),
         ],
     }
@@ -649,8 +761,8 @@ mod tests {
     }
 
     #[test]
-    fn candidates_for_depth_has_three_diffusers_mirrors() {
-        let c = candidates_for(ControlKind::Depth);
+    fn candidates_for_depth_sd15_has_three_diffusers_mirrors() {
+        let c = candidates_for(ControlKind::Depth, ControlNetVariant::Sd15);
         assert_eq!(c.len(), 3, "expected primary + 2 fallback mirrors");
         for (repo, file) in &c {
             assert!(!repo.is_empty(), "empty repo in candidates");
@@ -661,6 +773,51 @@ mod tests {
         }
         // Primary should be the canonical SD 1.5 ControlNet-Depth.
         assert_eq!(c[0].0, "lllyasviel/sd-controlnet-depth");
+    }
+
+    #[test]
+    fn candidates_for_depth_sdxl_has_three_diffusers_mirrors() {
+        let c = candidates_for(ControlKind::Depth, ControlNetVariant::Sdxl);
+        assert_eq!(c.len(), 3, "expected primary + 2 fallback mirrors");
+        for (repo, file) in &c {
+            assert!(!repo.is_empty(), "empty repo in candidates");
+            assert!(
+                file.ends_with(".safetensors"),
+                "expected safetensors file, got {file:?}",
+            );
+        }
+        // Primary should be the recommended -small SDXL ControlNet.
+        assert_eq!(c[0].0, "diffusers/controlnet-depth-sdxl-1.0-small");
+    }
+
+    #[test]
+    fn controlnet_variant_detect() {
+        assert_eq!(ControlNetVariant::detect("sd15"), ControlNetVariant::Sd15);
+        assert_eq!(
+            ControlNetVariant::detect("stable-diffusion-v1-5/stable-diffusion-v1-5"),
+            ControlNetVariant::Sd15,
+        );
+        assert_eq!(ControlNetVariant::detect("sdxl"), ControlNetVariant::Sdxl);
+        assert_eq!(
+            ControlNetVariant::detect("stabilityai/stable-diffusion-xl-base-1.0"),
+            ControlNetVariant::Sdxl,
+        );
+        assert_eq!(
+            ControlNetVariant::detect("sdxl-turbo"),
+            ControlNetVariant::Sdxl,
+        );
+    }
+
+    #[test]
+    fn sdxl_unet_config_matches_sdxl() {
+        let cfg = sdxl_unet_config();
+        assert_eq!(cfg.blocks.len(), 3, "SDXL has 3 blocks (vs SD 1.5's 4)");
+        assert_eq!(cfg.cross_attention_dim, 2048);
+        assert!(cfg.use_linear_projection);
+        // First block is Basic (no cross-attn).
+        assert_eq!(cfg.blocks[0].use_cross_attn, None);
+        assert_eq!(cfg.blocks[1].use_cross_attn, Some(2));
+        assert_eq!(cfg.blocks[2].use_cross_attn, Some(10));
     }
 
     #[test]

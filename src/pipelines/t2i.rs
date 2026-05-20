@@ -980,10 +980,16 @@ pub async fn run(req: Request) -> Result<()> {
         //  * --control-from  PATH (auto-annotate via the matching annotator)
         // Exactly one must be set; the CLI enforces mutual exclusion
         // via `conflicts_with`, but we also error here defensively.
-        let net =
-            crate::pipelines::controlnet::ControlNet::load(req.device.clone(), dtype, kind)
-                .await
-                .context("loading ControlNet weights")?;
+        let cn_variant =
+            crate::pipelines::controlnet::ControlNetVariant::detect(&req.model);
+        let net = crate::pipelines::controlnet::ControlNet::load(
+            req.device.clone(),
+            dtype,
+            kind,
+            cn_variant,
+        )
+        .await
+        .context("loading ControlNet weights")?;
         let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
             (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
                 path,

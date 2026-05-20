@@ -1091,10 +1091,13 @@ pub async fn run(req: Request) -> Result<()> {
         crate::pipelines::controlnet::ControlNet,
         candle_core::Tensor,
     )> = if let Some(kind) = req.control_kind {
+        let cn_variant =
+            crate::pipelines::controlnet::ControlNetVariant::detect(&req.model);
         let net = crate::pipelines::controlnet::ControlNet::load(
             req.device.clone(),
             dtype,
             kind,
+            cn_variant,
         )
         .await
         .context("loading ControlNet weights")?;
