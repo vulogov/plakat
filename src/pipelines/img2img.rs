@@ -54,12 +54,52 @@ pub struct Request {
     pub strength: f32,
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
+
+    // ---------- v0.9 ControlNet ----------
+    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
+    pub control_image: Option<PathBuf>,
+    pub control_strength: f32,
 }
 
 /// Run the pipeline. Loads the SD model once and iterates over
 /// `count` seeds, writing `plakat-img2img-<seed>.png` (or
 /// `plakat-inpaint-<seed>.png` when a mask is supplied) for each.
 pub async fn run(req: Request) -> Result<()> {
+    // Pre-load ControlNet + conditioning before the SD pipeline.
+    // The owned tuple lives on this frame; the ControlRequest below
+    // borrows from it.
+    let cn_dtype = if matches!(req.device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    let control_owned: Option<(
+        crate::pipelines::controlnet::ControlNet,
+        candle_core::Tensor,
+    )> = if let Some(kind) = req.control_kind {
+        let image_path = req.control_image.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--control={kind:?} requires --control-image PATH")
+        })?;
+        let net = crate::pipelines::controlnet::ControlNet::load(
+            req.device.clone(),
+            cn_dtype,
+            kind,
+        )
+        .await
+        .context("loading ControlNet weights")?;
+        let cond = crate::pipelines::controlnet::prepare_conditioning(
+            image_path,
+            req.width,
+            req.height,
+            &req.device,
+            cn_dtype,
+        )
+        .context("preparing ControlNet conditioning image")?;
+        Some((net, cond))
+    } else {
+        None
+    };
+
     let pipeline = portrait::Pipeline::load(LoadRequest {
         model: req.model.clone(),
         device: req.device.clone(),
@@ -129,6 +169,14 @@ pub async fn run(req: Request) -> Result<()> {
             face_landmarks: None,
         };
 
+        let control_req = control_owned.as_ref().map(|(net, cond)| {
+            crate::pipelines::controlnet::ControlRequest {
+                net,
+                conditioning: cond.clone(),
+                strength: req.control_strength,
+            }
+        });
+
         let new_latents = pipeline
             .blend_latents_one(
                 &base_latents,
@@ -136,8 +184,7 @@ pub async fn run(req: Request) -> Result<()> {
                 &gen_req,
                 req.strength,
                 seed,
-                // TODO(v0.9 CLI): thread --control through img2img too.
-                None,
+                control_req.as_ref(),
             )
             .with_context(|| format!("denoise (seed {seed})"))?;
 

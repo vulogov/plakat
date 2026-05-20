@@ -56,6 +56,17 @@ pub struct Request {
     pub use_refiner: bool,
     /// Fraction of the schedule where the refiner takes over (default 0.8).
     pub refiner_frac: f32,
+
+    // ---------- v0.9 ControlNet ----------
+    /// Optional conditioner kind. `None` disables ControlNet entirely
+    /// — preserves byte-identical pre-v0.9 behaviour. When `Some`,
+    /// `control_image` must also be supplied.
+    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
+    /// Conditioning image (depth map, etc.) read once per generation.
+    pub control_image: Option<PathBuf>,
+    /// Multiplier applied to ControlNet residuals before adding to
+    /// the UNet's. Ignored when `control_kind` is `None`. Default 1.0.
+    pub control_strength: f32,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -946,6 +957,38 @@ pub async fn run(req: Request) -> Result<()> {
         .await;
     }
 
+    // -- ControlNet preload (v0.9). Owned data lives on this stack
+    //    frame; the `ControlRequest` is built from references to it
+    //    just before `generate` is called.
+    let dtype = if matches!(req.device, Device::Cpu) {
+        DType::F32
+    } else {
+        DType::F16
+    };
+    let control_owned: Option<(
+        crate::pipelines::controlnet::ControlNet,
+        candle_core::Tensor,
+    )> = if let Some(kind) = req.control_kind {
+        let image_path = req.control_image.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("--control={kind:?} requires --control-image PATH")
+        })?;
+        let net =
+            crate::pipelines::controlnet::ControlNet::load(req.device.clone(), dtype, kind)
+                .await
+                .context("loading ControlNet weights")?;
+        let cond = crate::pipelines::controlnet::prepare_conditioning(
+            image_path,
+            req.width,
+            req.height,
+            &req.device,
+            dtype,
+        )
+        .context("preparing ControlNet conditioning image")?;
+        Some((net, cond))
+    } else {
+        None
+    };
+
     let pipeline = Pipeline::load(LoadRequest {
         model: req.model,
         device: req.device,
@@ -954,6 +997,14 @@ pub async fn run(req: Request) -> Result<()> {
         use_refiner: req.use_refiner,
     })
     .await?;
+
+    let control_req = control_owned.as_ref().map(|(net, cond)| {
+        crate::pipelines::controlnet::ControlRequest {
+            net,
+            conditioning: cond.clone(),
+            strength: req.control_strength,
+        }
+    });
 
     pipeline.generate(
         &GenRequest {
@@ -975,7 +1026,6 @@ pub async fn run(req: Request) -> Result<()> {
                 None
             },
         },
-        // TODO(v0.9 CLI): thread the user's --control flags through here.
-        None,
+        control_req.as_ref(),
     )
 }

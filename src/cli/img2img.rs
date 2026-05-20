@@ -90,6 +90,20 @@ pub struct Img2ImgArgs {
     /// `plakat-img2img-<seed>.png` or `plakat-inpaint-<seed>.png`.
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
+
+    /// v0.9: ControlNet conditioner kind (currently `depth`).
+    /// Composes with the img2img / inpaint path — the conditioner
+    /// guides every denoise step. Requires `--control-image PATH`.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<crate::pipelines::controlnet::ControlKind>,
+
+    /// Conditioning image for `--control`.
+    #[arg(long = "control-image", value_name = "PATH")]
+    pub control_image: Option<PathBuf>,
+
+    /// ControlNet residual scale. Default 1.0.
+    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    pub control_strength: f32,
 }
 
 pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
@@ -133,6 +147,9 @@ pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
         strength,
         seed: args.seed,
         out_dir: args.out,
+        control_kind: args.control,
+        control_image: args.control_image,
+        control_strength: args.control_strength,
     };
 
     img2img::run(req).await

@@ -416,6 +416,28 @@ struct TaskDef {
     /// scenario-level `smart-zones:` flag.
     #[serde(rename = "smart-zones", default)]
     smart_zones: Option<bool>,
+
+    /// v0.9: ControlNet block. When set, the named conditioner
+    /// guides every denoise step for this task. `strength` defaults
+    /// to 1.0 if omitted.
+    ///
+    /// ```hjson
+    /// control: { kind: depth, image: ./hint.png, strength: 0.85 }
+    /// ```
+    #[serde(default)]
+    control: Option<ControlSpec>,
+}
+
+/// Per-task ControlNet configuration. Deliberately small surface for
+/// v0.9 — `kind` is a string parsed via the same `FromStr` impl as
+/// the CLI `--control`, `image` is the conditioning image path, and
+/// `strength` is the residual multiplier (default 1.0 when omitted).
+#[derive(Debug, Clone, Deserialize)]
+struct ControlSpec {
+    kind: String,
+    image: PathBuf,
+    #[serde(default)]
+    strength: Option<f32>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -962,6 +984,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .iter()
             .any(|t| t.smart_zones.unwrap_or(false));
 
+    // -------- v0.9 ControlNet cache (lazy, keyed by kind) --------
+    // Same lazy pattern as smart_depth. The first task that needs a
+    // given ControlKind triggers a download; subsequent tasks reuse
+    // the loaded network.
+    let mut controlnets: std::collections::HashMap<
+        crate::pipelines::controlnet::ControlKind,
+        crate::pipelines::controlnet::ControlNet,
+    > = std::collections::HashMap::new();
+    let cn_dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -1247,6 +1283,67 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             (combined, persona.face_strength.unwrap_or(0.8))
         };
 
+        // -------- v0.9 per-task ControlNet plumbing --------
+        // Lazy-load the ControlNet for this kind (cached across tasks)
+        // and prepare the conditioning tensor at the task's working
+        // resolution.
+        let task_control_kind: Option<crate::pipelines::controlnet::ControlKind> =
+            match task.control.as_ref() {
+                None => None,
+                Some(spec) => Some(spec.kind.parse().with_context(|| {
+                    format!("task {:?}: parsing control.kind {:?}", task.name, spec.kind)
+                })?),
+            };
+        if let Some(kind) = task_control_kind {
+            if !controlnets.contains_key(&kind) {
+                let net = crate::pipelines::controlnet::ControlNet::load(
+                    device.clone(),
+                    cn_dtype,
+                    kind,
+                )
+                .await
+                .with_context(|| {
+                    format!("task {:?}: loading ControlNet for {:?}", task.name, kind)
+                })?;
+                controlnets.insert(kind, net);
+            }
+        }
+        let task_control_conditioning: Option<candle_core::Tensor> = match (
+            task.control.as_ref(),
+            task_control_kind,
+        ) {
+            (Some(spec), Some(_)) => Some(
+                crate::pipelines::controlnet::prepare_conditioning(
+                    &spec.image,
+                    eff_w,
+                    eff_h,
+                    &device,
+                    cn_dtype,
+                )
+                .with_context(|| {
+                    format!("task {:?}: preparing ControlNet conditioning", task.name)
+                })?,
+            ),
+            _ => None,
+        };
+        let task_control_strength = task
+            .control
+            .as_ref()
+            .and_then(|c| c.strength)
+            .unwrap_or(1.0);
+        let make_control_req = || -> Option<crate::pipelines::controlnet::ControlRequest> {
+            match (task_control_kind, task_control_conditioning.as_ref()) {
+                (Some(kind), Some(cond)) => {
+                    Some(crate::pipelines::controlnet::ControlRequest {
+                        net: controlnets.get(&kind).expect("loaded above"),
+                        conditioning: cond.clone(),
+                        strength: task_control_strength,
+                    })
+                }
+                _ => None,
+            }
+        };
+
         match &task_persona_mode {
             // -------- single persona, whole image --------
             TaskPersonas::Single(persona) => {
@@ -1286,7 +1383,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     face_strength,
                     face_bbox: persona.face_bbox,
                     face_landmarks: persona.face_landmarks,
-                }, None)?;
+                }, make_control_req().as_ref())?;
             }
 
             // -------- multi-persona, region-masked compositing --------
@@ -1337,7 +1434,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         face_landmarks: None,
                     };
 
-                    let mut latents = pp.generate_latents_one(&base_req, img_seed, None)?;
+                    // Multi-persona: control applies to the base layout pass
+                    // only. Each per-persona inpaint pass below skips control
+                    // (the persona reference itself drives the local region).
+                    let mut latents =
+                        pp.generate_latents_one(&base_req, img_seed, make_control_req().as_ref())?;
 
                     // Chain one inpaint pass per persona. Each pass uses
                     // a per-persona seed offset so re-running with the same
@@ -1403,7 +1504,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req, None)?,
+                (Some(p), _) => p.generate(&gen_req, make_control_req().as_ref())?,
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they
