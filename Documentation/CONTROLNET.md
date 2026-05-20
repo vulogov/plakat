@@ -1,6 +1,7 @@
 # `--control` — ControlNet conditioning
 
-Reference for plakat's ControlNet integration (v0.9). For a runnable
+Reference for plakat's ControlNet integration (introduced v0.9, SDXL
+added v0.10, auto-annotation added v0.10). For a runnable
 walkthrough, see [`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
 
 ControlNet adds an extra layer of **structural guidance** to a
@@ -10,9 +11,9 @@ intermediate features. The result: the generated image follows the
 *shape* specified by a conditioning image, while the prompt drives
 the *content*.
 
-In v0.9 plakat ships **depth** conditioning. Other conditioners
-(canny edges, scribble, pose, normal, MLSD lines, segmentation) are
-on the roadmap.
+Plakat ships **depth** conditioning on both SD 1.5 and SDXL.
+Other conditioners (canny edges, scribble, pose, normal, MLSD
+lines, segmentation) are on the roadmap.
 
 ## What `--control depth` does
 
@@ -55,7 +56,7 @@ plakat img2img sketch.png --prompt "polished oil painting" \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` only. Triggers ControlNet activation. |
+| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` only. Triggers ControlNet activation. Works on both SD 1.5 and SDXL; the architecture is auto-detected from `--model`. |
 | `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
 | `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
@@ -142,11 +143,11 @@ plakat feature:
 | `--loras` | Additive — both run in the same denoise. |
 | `--artefact` / `--artefact-blend` | Orthogonal. ControlNet shapes the generated image first; artefacts get composited / blended on top. |
 | `--smart-zones` | Orthogonal. Both feature paths still apply. |
-| `--refiner` (SDXL) | Currently SD 1.5 only, so refiner isn't relevant in v0.9. v0.10 will extend control to SDXL where this matters. |
+| `--refiner` (SDXL) | Compatible — control runs through both base + refiner UNet passes when refiner is enabled, with the same ControlNet residuals. |
 | `--photo` (portrait) | Composes — portrait IP-Adapter and ControlNet operate at different attention layers. |
 | `--mask` (img2img inpaint) | Composes — control applies inside the mask only (since the mask gates where denoise actually runs). |
 | Multi-persona scenarios | Control applies to the base layout pass only; per-persona inpaint passes skip it to avoid double-conditioning. |
-| Flux | **Not supported.** ControlNet is SD-family only in v0.9. Flux scenes can't use `--control`. |
+| Flux | **Not supported.** ControlNet is SD-family only (SD 1.5 + SDXL). Flux uses a different architecture and isn't on the roadmap. |
 
 ## Scenarios
 
@@ -211,32 +212,44 @@ tiers.
 
 ## Weight mirrors (HuggingFace)
 
-In download-preference order:
+Plakat auto-detects the architecture from `--model` and downloads
+the matching weight repo. **SD 1.5** mirrors (in download-preference
+order):
 
 1. `lllyasviel/sd-controlnet-depth` / `diffusion_pytorch_model.safetensors` (~1.4 GB)
-2. `lllyasviel/sd-controlnet-depth` / `diffusion_pytorch_model.fp16.safetensors` (~700 MB, halved)
+2. `lllyasviel/sd-controlnet-depth` / `diffusion_pytorch_model.fp16.safetensors` (~700 MB)
 3. `lllyasviel/control_v11f1p_sd15_depth` / `diffusion_pytorch_model.safetensors` (~1.4 GB)
 
-All three are diffusers-format. WebUI-format ControlNet checkpoints
-(with `control_model.input_blocks.…` key naming) are not currently
+**SDXL** mirrors:
+
+1. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.safetensors` (~600 MB; the recommended SDXL ControlNet — small + competitive quality)
+2. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.fp16.safetensors` (~300 MB)
+3. `diffusers/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size, higher quality, much heavier)
+
+All are diffusers-format. WebUI-format ControlNet checkpoints (with
+`control_model.input_blocks.…` key naming) are not currently
 supported — they'd need a key remapping layer we don't ship.
 
 ## Limits
 
-- **SD 1.5 only.** SDXL ControlNet weights have a different
-  architecture; v0.9 doesn't wire them. v0.10 will.
+- **SDXL ControlNet uses a smaller-by-default checkpoint.** Plakat
+  loads `diffusers/controlnet-depth-sdxl-1.0-small` as the primary
+  SDXL mirror because it's competitive with the full-size variant
+  at ~600 MB vs ~2.5 GB. Force the full-size by clearing the cache
+  or pre-downloading the alt repo if you need top quality.
 - **Flux: not supported.** ControlNet's residual-addition contract
   is SD-UNet-specific.
-- **Depth only.** Canny, scribble, pose, MLSD, normal, openpose,
-  segmentation, and InstantID-style face conditioners are all
-  on the roadmap but not in v0.9.
+- **Depth only.** Canny lands in v0.10 phase 3 via `imageproc`;
+  scribble, pose, MLSD, normal, openpose, segmentation, and
+  InstantID-style face conditioners are all on the roadmap but
+  not in v0.10.
 - **No timestep windowing.** Diffusers' `control_guidance_start`
   and `control_guidance_end` (which let you apply control to a
-  subset of the timestep schedule) are not exposed in v0.9. Either
-  the conditioner is active for every step or for none.
+  subset of the timestep schedule) land in v0.10 phase 4.
 - **No multi-controlnet.** Diffusers supports stacking multiple
   ControlNets (e.g. depth + pose) by summing their residuals.
-  Plakat's v0.9 CLI grammar doesn't expose this.
+  Plakat's current CLI grammar doesn't expose this; v0.11
+  candidate.
 - **Multi-persona scenarios** apply control only to the base layout
   pass, not the per-persona inpaint passes. That's the safer
   default; the inverse (control on each persona) is on the

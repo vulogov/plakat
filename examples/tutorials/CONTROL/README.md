@@ -17,10 +17,11 @@ CONTROL/
 ├── inputs/
 │   └── scene_depth.png       ← procedurally drawn depth map
 └── scripts/
-    ├── 01_basic.sh                ← plain --control depth
+    ├── 01_basic.sh                ← plain --control depth (SD 1.5)
     ├── 02_strength_sweep.sh       ← --control-strength dial sweep
     ├── 03_with_img2img.sh         ← compose control with img2img
-    └── 04_auto_depth.sh           ← v0.10: --control-from auto-annotates
+    ├── 04_auto_depth.sh           ← v0.10: --control-from auto-annotates
+    └── 05_sdxl.sh                 ← v0.10: SDXL ControlNet at 1024²
 ```
 
 Regenerate `inputs/scene_depth.png` at any time with:
@@ -40,8 +41,10 @@ cargo run --release --example draw_control_sample
   - SD 1.5 (~4 GB)
   - ControlNet-Depth SD 1.5 (~1.4 GB)
   - Both cached in `~/.cache/huggingface/` after the first fetch.
-- `--control` is SD 1.5 only in v0.9. SDXL ControlNet weights are
-  on the v0.10 roadmap; Flux ControlNet is not currently planned.
+- `--control` works on both SD 1.5 and SDXL (v0.10+). Plakat
+  auto-detects the architecture from `--model` and downloads the
+  matching ControlNet checkpoint. Flux ControlNet is not currently
+  planned.
 
 The scripts source `scripts/_plakat.sh`, which finds the binary in
 `$PATH` or `target/{release,debug}/`. Run them from anywhere.
