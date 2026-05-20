@@ -25,7 +25,10 @@ cargo install plakat --features cudnn        # CUDA + cuDNN convolutions
 cargo install plakat
 ```
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.85+ (edition 2024). On Apple hardware, see
+[`Documentation/APPLE_REQUIREMENTS.md`](Documentation/APPLE_REQUIREMENTS.md)
+for the minimum / recommended chip + memory tiers and expected
+per-image speeds.
 
 ## Quick start
 
@@ -36,6 +39,22 @@ plakat generate "a brutalist poster of a whale, watercolor" --seed 42
 # Photo-guided portrait (IP-Adapter-Plus-Face)
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
     --photo face.jpg --face-strength 0.8
+
+# Weighted multi-reference portrait: merge facial features
+# from several photos (averaging, aging, blending)
+plakat portrait "a portrait, soft window light" \
+    --photo person_age_25.jpg:0.6 \
+    --photo person_age_55.jpg:0.4 \
+    --face-strength 0.85
+
+# Composite named cutout artefacts (trees, sky elements, houses, ...) 
+# into named zones of the generated image. Add --artefact-blend for a
+# masked img2img pass that smooths the pasted edges; --smart-zones
+# derives zones from the image's own depth + luminance.
+plakat generate "a green meadow under a blue sky" \
+    --artefact oak@middle_plan/left \
+    --artefact sun@sky/right \
+    --artefact-blend --smart-zones
 
 # Apply a bundled art style by name
 plakat generate "a fox in tall grass" --style watercolor
@@ -58,9 +77,10 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux. |
-| `portrait <PROMPT>` | Portrait generation, optionally guided by a reference photo. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
+| `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
+| `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
@@ -74,7 +94,10 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   step-by-step walkthroughs. Start here if you're new to plakat or
   text-to-image generation. See
   [Tutorials/README.md](Documentation/Tutorials/README.md) for the
-  recommended reading order.
+  recommended reading order. Specialized portrait recipes:
+  [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
+  and
+  [blending parents into a child portrait](Documentation/Tutorials/PORTRAIT_CHILD_PHOTO.md).
 - **[Reference manuals](Documentation/)** — exhaustive per-feature
   documentation:
   - [`GENERATE.md`](Documentation/GENERATE.md) — text-to-image,
@@ -83,6 +106,31 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     preservation, ArcFace / SCRFD setup, multi-persona compositing.
   - [`STYLES.md`](Documentation/STYLES.md) — style catalogs, the
     `plakat style` subcommands, building your own catalog.
+  - [`ARTEFACTS.md`](Documentation/ARTEFACTS.md) — placing named PNG
+    cutouts into named zones of generated images.
+
+## Releases
+
+Pre-built binaries for the 0.7+ tags are attached to each
+[GitHub release](https://github.com/vulogov/plakat/releases). The
+release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
+builds five targets on every `v*` tag push:
+
+| Target | Backend |
+|---|---|
+| `aarch64-apple-darwin`   | Metal (Apple Silicon GPU) |
+| `x86_64-apple-darwin`    | CPU only |
+| `x86_64-unknown-linux-gnu` | CPU only |
+| `aarch64-unknown-linux-gnu` | CPU only |
+| `x86_64-pc-windows-msvc` | CPU only |
+
+Each archive contains the `plakat` binary, `LICENSE`, `README.md`, and
+the bundled `assets/` (artefact library + style catalog). A
+`SHA256SUMS` file is attached to the same release for verification:
+`shasum -a 256 -c SHA256SUMS`.
+
+CUDA-enabled Linux binaries are not pre-built; install with
+`cargo install plakat --features cuda` when you need them.
 
 ## License
 

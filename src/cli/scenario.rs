@@ -5,8 +5,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args as ClapArgs;
 use console::style;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::imaging::sizes::Size;
 use crate::imaging::upscale::{EsrganPipeline, Method as UpscaleMethod};
@@ -99,6 +102,31 @@ struct ScenarioFile {
     #[serde(rename = "style-catalog", default)]
     style_catalog: Option<PathBuf>,
 
+    // ---------- artefact compositing ----------
+    /// Override the bundled artefact library directory. Per-task
+    /// `artefacts: [...]` references resolve against this library.
+    #[serde(rename = "artefact-library", default)]
+    artefact_library: Option<PathBuf>,
+    /// Override the default zone grid (normalized `[0, 1]` band
+    /// extents). Missing bands fall back to the default 4×3 grid.
+    #[serde(default)]
+    zones: crate::artefacts::ZoneOverrides,
+    /// v2: enable the masked img2img blending pass after alpha
+    /// compositing. Set per-task via `artefact-blend: true`, or
+    /// scenario-wide here. Default off (v1 alpha-only).
+    #[serde(rename = "artefact-blend", default)]
+    artefact_blend: bool,
+    /// img2img strength for the v2 blend pass. Sweet spot: 0.25–0.4.
+    #[serde(rename = "artefact-blend-strength", default)]
+    artefact_blend_strength: Option<f32>,
+    /// v3: derive zone extents from the generated image's own depth +
+    /// luminance instead of the rigid 4×3 grid (with per-band
+    /// `zones:` overrides applied where smart resolution comes up
+    /// empty). Per-task `smart-zones: true/false` overrides. Default
+    /// off.
+    #[serde(rename = "smart-zones", default)]
+    smart_zones: bool,
+
     // ---------- post-generate options ----------
     #[serde(default)]
     upscale: UpscaleConfig,
@@ -119,13 +147,47 @@ struct ScenarioFile {
 
 /// Top-level `personas: [ {...}, ... ]` entry. Identity-defining settings only
 /// — task-side concerns (scene, prompt, size) live on `TaskDef`.
+/// HJSON shape for one entry in `PersonaDef.photos`. Untagged so HJSON
+/// authors can use either `"path:weight"` shorthand strings (matching the
+/// CLI `--photo` grammar) or `{ path: "...", weight: 0.7 }` objects.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PersonaPhoto {
+    Shorthand(String),
+    Full {
+        path: PathBuf,
+        #[serde(default)]
+        weight: Option<f32>,
+    },
+}
+
+impl PersonaPhoto {
+    fn to_weighted(&self) -> Result<crate::pipelines::ip_adapter::WeightedPhoto> {
+        match self {
+            Self::Shorthand(s) => s.parse::<crate::pipelines::ip_adapter::WeightedPhoto>(),
+            Self::Full { path, weight } => Ok(crate::pipelines::ip_adapter::WeightedPhoto {
+                path: path.clone(),
+                weight: *weight,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PersonaDef {
     /// Referenced by `task.personas: [<name>]`. Must be unique within the file.
     name: String,
-    /// Reference photo path. Resolved relative to the process's working
-    /// directory (same convention as `task.style`).
-    photo: PathBuf,
+    /// Single reference photo. Mutually exclusive with `photos`.
+    #[serde(default)]
+    photo: Option<PathBuf>,
+    /// Multiple weighted reference photos for embedding-space merging
+    /// (averaging facial features across photos). Mutually exclusive
+    /// with `photo`. Each entry accepts either a shorthand
+    /// `"path:weight"` string or a `{ path: "...", weight: 0.7 }`
+    /// object; weights are normalized to sum to 1.0. Same grammar as
+    /// the CLI's repeatable `--photo` flag.
+    #[serde(default)]
+    photos: Vec<PersonaPhoto>,
     /// Which identity strategy. Defaults to `plus-face`. Other options:
     /// `plus-face-sdxl`, `faceid`, `faceid-sdxl`.
     #[serde(default)]
@@ -156,6 +218,56 @@ struct PersonaDef {
     /// the scene.
     #[serde(default)]
     negative: Option<String>,
+}
+
+impl PersonaDef {
+    /// Resolve the persona's `photo` (legacy single-ref) and `photos`
+    /// (multi-ref) fields into a normalized list of weighted photos
+    /// suitable for the portrait pipeline. Validates mutual-exclusion
+    /// and that at least one is set.
+    fn resolve_photos(&self) -> Result<Vec<crate::pipelines::ip_adapter::WeightedPhoto>> {
+        let mut out: Vec<crate::pipelines::ip_adapter::WeightedPhoto> =
+            match (&self.photo, self.photos.is_empty()) {
+                (Some(_), false) => bail!(
+                    "persona {:?}: `photo` and `photos` are mutually exclusive — \
+                     use one or the other",
+                    self.name
+                ),
+                (None, true) => bail!(
+                    "persona {:?}: missing reference photo (set `photo: <path>` or \
+                     `photos: [...]`)",
+                    self.name
+                ),
+                (Some(p), true) => vec![
+                    crate::pipelines::ip_adapter::WeightedPhoto::single(p.clone()),
+                ],
+                (None, false) => self
+                    .photos
+                    .iter()
+                    .map(PersonaPhoto::to_weighted)
+                    .collect::<Result<_>>()
+                    .with_context(|| format!("parsing persona {:?} photos", self.name))?,
+            };
+        crate::pipelines::ip_adapter::normalize_photo_weights(&mut out)
+            .with_context(|| format!("normalizing persona {:?} photos", self.name))?;
+        Ok(out)
+    }
+
+    /// Convenience: the first photo path, for log messages / existence
+    /// checks. With multi-photo personas we still need to point users
+    /// at a representative location; the first one is fine for that.
+    fn primary_photo_path(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.photo {
+            return Some(p.clone());
+        }
+        self.photos.first().and_then(|pp| match pp {
+            PersonaPhoto::Shorthand(s) => s
+                .parse::<crate::pipelines::ip_adapter::WeightedPhoto>()
+                .ok()
+                .map(|w| w.path),
+            PersonaPhoto::Full { path, .. } => Some(path.clone()),
+        })
+    }
 }
 
 /// Top-level `upscale: { ... }` section.
@@ -279,6 +391,31 @@ struct TaskDef {
     /// REF stylize pass) — different feature.
     #[serde(rename = "style-ref", default)]
     style_ref_catalog: Option<PathBuf>,
+
+    /// Composite named artefacts (PNG cutouts from the library) onto
+    /// this task's output. Accepts either CLI-grammar shorthand
+    /// strings (`"oak@middle_plan/left"`) or full objects with
+    /// per-artefact `offset`, `anchor`, `flip`, `alpha` overrides.
+    /// Compositing happens BEFORE any per-task stylize / upscale pass,
+    /// so the IP-Adapter stylize re-paints over the composited
+    /// artefacts (often a feature: it unifies the palette).
+    #[serde(default)]
+    artefacts: Vec<crate::artefacts::ArtefactSpecEntry>,
+
+    /// v2: per-task override for the masked img2img blend pass.
+    /// `None` inherits the scenario-level `artefact-blend:` field.
+    #[serde(rename = "artefact-blend", default)]
+    artefact_blend: Option<bool>,
+
+    /// v2: per-task override for blend strength. `None` inherits the
+    /// scenario-level `artefact-blend-strength:` (default 0.3).
+    #[serde(rename = "artefact-blend-strength", default)]
+    artefact_blend_strength: Option<f32>,
+
+    /// v3: per-task override for smart zones. `None` inherits the
+    /// scenario-level `smart-zones:` flag.
+    #[serde(rename = "smart-zones", default)]
+    smart_zones: Option<bool>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -359,12 +496,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             if map.contains_key(p.name.as_str()) {
                 bail!("duplicate persona name {:?}", p.name);
             }
-            if !p.photo.exists() {
-                bail!(
-                    "persona {:?}: photo not found at {}",
-                    p.name,
-                    p.photo.display()
-                );
+            // Resolve photo / photos → normalized weighted list. This
+            // also enforces mutual-exclusion + "at least one photo set".
+            let resolved = p.resolve_photos()?;
+            // Verify every referenced photo exists. For multi-photo
+            // personas this lets us surface a missing path before the
+            // long model load.
+            for wp in &resolved {
+                if !wp.path.exists() {
+                    bail!(
+                        "persona {:?}: photo not found at {}",
+                        p.name,
+                        wp.path.display()
+                    );
+                }
             }
             if let Some(id) = p.identity.as_deref() {
                 // Parse just to validate; the parsed value is recomputed at
@@ -747,6 +892,76 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         )
     };
 
+    // -------- enhance prompts up front, deduped + parallelized --------
+    // Each task's `pre_refine` string is enhancer-input; under sequential
+    // per-task calls this fires N times serially. Pre-loop we dedupe to the
+    // set of unique prompts and fire them concurrently (capped), so a 10-task
+    // scenario with one slow enhancer goes from ~10 * latency to
+    // ~ceil(unique / cap) * latency. Dry-run skips this entirely.
+    let enhanced_cache: HashMap<String, String> = if args.dry_run {
+        HashMap::new()
+    } else {
+        let pre_refines: Vec<String> = s
+            .tasks
+            .iter()
+            .map(|t| {
+                let scene = scenes[t.scene.as_str()];
+                let weather = weathers[t.weather.as_str()];
+                join_parts(&[
+                    &s.prompt_header,
+                    scene,
+                    weather,
+                    &t.prompt,
+                    &s.prompt_footer,
+                ])
+            })
+            .collect();
+        let unique: BTreeSet<String> = pre_refines.iter().cloned().collect();
+
+        crate::ui::progress::println(&format!(
+            "  {} enhancing {} unique prompt(s) (from {} task{}) via {}…",
+            style("→").cyan().bold(),
+            unique.len(),
+            s.tasks.len(),
+            if s.tasks.len() == 1 { "" } else { "s" },
+            enhancer,
+        ));
+
+        // Soft cap on concurrent requests to be polite to upstream APIs.
+        const MAX_CONCURRENT_ENHANCE: usize = 8;
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_ENHANCE));
+        let mut joinset: JoinSet<(String, Result<String>)> = JoinSet::new();
+        for pre in unique {
+            let enhancer_owned = enhancer.clone();
+            let pre_owned = pre.clone();
+            let sem = sem.clone();
+            joinset.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore not closed");
+                let result = crate::prompt::enhance(&enhancer_owned, &pre_owned).await;
+                (pre_owned, result)
+            });
+        }
+
+        let mut cache: HashMap<String, String> = HashMap::with_capacity(joinset.len());
+        while let Some(joined) = joinset.join_next().await {
+            let (pre, result) = joined.context("enhancer task panicked")?;
+            let enhanced = result
+                .with_context(|| format!("enhancing prompt {:?}", trim_preview(&pre, 80)))?;
+            cache.insert(pre, enhanced);
+        }
+        cache
+    };
+
+    // -------- v3 smart-zones depth pipeline (lazy) --------
+    // Load once on first need across the run. Tasks share it so the
+    // ~99 MB Depth-Anything-V2 weights are mmap'd just once.
+    let mut smart_depth: Option<crate::pipelines::depth::DepthPipeline> = None;
+    let mut smart_depth_attempted = false;
+    let any_smart = s.smart_zones
+        || s.tasks
+            .iter()
+            .any(|t| t.smart_zones.unwrap_or(false));
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -830,9 +1045,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
         } else {
-            crate::prompt::enhance(&enhancer, &pre_refine)
-                .await
-                .with_context(|| format!("enhancing prompt for task {:?}", task.name))?
+            enhanced_cache
+                .get(&pre_refine)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "task {:?}: enhanced prompt missing from cache (internal bug)",
+                        task.name
+                    )
+                })?
         };
         crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
@@ -861,7 +1082,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             if let Some(refs) = &task.personas {
                 for r in refs {
                     let p = personas_map[r.name()];
-                    let exists = if p.photo.exists() { "ok" } else { "MISSING" };
+                    let primary = p.primary_photo_path();
+                    let exists = match &primary {
+                        Some(path) if path.exists() => "ok",
+                        Some(_) => "MISSING",
+                        None => "(no photo set)",
+                    };
+                    let photo_desc = match &primary {
+                        Some(path) => {
+                            let multi = if !p.photos.is_empty() && p.photos.len() > 1 {
+                                format!(" +{} more", p.photos.len() - 1)
+                            } else {
+                                String::new()
+                            };
+                            format!("{}{multi}", path.display())
+                        }
+                        None => String::from("(none)"),
+                    };
                     let strength = p.face_strength.unwrap_or(0.8);
                     let bbox_str = match r.bbox() {
                         Some([x0, y0, x1, y1]) => {
@@ -874,7 +1111,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                          (photo {}, strength {:.2}{}, {})",
                         style("(dry-run)").dim(),
                         p.name,
-                        p.photo.display(),
+                        photo_desc,
                         strength,
                         bbox_str,
                         exists,
@@ -1017,17 +1254,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     .as_ref()
                     .expect("portrait pipeline preloaded when any task uses personas");
                 let (combined_negative, face_strength) = persona_request_for(persona);
+                let photos = persona.resolve_photos()?;
+                let photo_desc = match (photos.first(), photos.len()) {
+                    (Some(first), 1) => first.path.display().to_string(),
+                    (Some(first), n) => {
+                        format!("{} (+{} more, weighted merge)", first.path.display(), n - 1)
+                    }
+                    _ => String::from("(none)"),
+                };
                 crate::ui::progress::println(&format!(
                     "  {} persona {} (photo {}, face-strength {:.2})",
                     style("portrait").magenta().bold(),
                     style(&persona.name).bold(),
-                    persona.photo.display(),
+                    photo_desc,
                     face_strength,
                 ));
                 pp.generate(&portrait::GenRequest {
                     prompt: final_prompt.clone(),
                     negative: combined_negative,
-                    photo: Some(persona.photo.clone()),
+                    photos,
                     width: eff_w,
                     height: eff_h,
                     count: eff_count,
@@ -1076,7 +1321,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     let base_req = portrait::GenRequest {
                         prompt: final_prompt.clone(),
                         negative: eff_negative.clone(),
-                        photo: None,
+                        photos: Vec::new(),
                         width: eff_w,
                         height: eff_h,
                         count: 1,
@@ -1108,10 +1353,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             &device,
                             pp.latent_dtype(),
                         )?;
+                        let pass_photos = persona.resolve_photos()?;
                         let pass_req = portrait::GenRequest {
                             prompt: final_prompt.clone(),
                             negative: combined_negative,
-                            photo: Some(persona.photo.clone()),
+                            photos: pass_photos,
                             width: eff_w,
                             height: eff_h,
                             count: 1,
@@ -1183,6 +1429,98 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // Dry-run path doesn't reach here.
                 (None, None) => unreachable!("non-dry-run task without a pipeline"),
             }
+            }
+        }
+
+        // -------- artefact compositing (post-generate, pre-stylize) --------
+        // Stylize will re-paint over the composited artefacts via IP-Adapter,
+        // unifying their palette with the generated scene — that's the
+        // reason this step lands before stylize, not after.
+        if !task.artefacts.is_empty() {
+            let specs: Vec<crate::artefacts::ArtefactSpec> = task
+                .artefacts
+                .iter()
+                .map(crate::artefacts::ArtefactSpecEntry::to_spec)
+                .collect::<Result<_>>()
+                .with_context(|| format!("task {:?}: parsing artefact specs", task.name))?;
+            let library_dir = s
+                .artefact_library
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+
+            // v3: lazily load DepthPipeline on first task that wants it.
+            // Subsequent tasks reuse the loaded instance; load failure
+            // is sticky for the rest of the run (we don't retry).
+            let task_smart = task.smart_zones.unwrap_or(s.smart_zones);
+            if task_smart && smart_depth.is_none() && !smart_depth_attempted && any_smart {
+                smart_depth_attempted = true;
+                match crate::pipelines::depth::DepthPipeline::load(device.clone()).await {
+                    Ok(p) => smart_depth = Some(p),
+                    Err(e) => {
+                        crate::ui::progress::println(&format!(
+                            "  {} smart-zones depth load failed ({e}). Falling back \
+                             to rigid grid for this run.",
+                            style("warn:").yellow().bold(),
+                        ));
+                    }
+                }
+            }
+            let smart_ref = if task_smart { smart_depth.as_ref() } else { None };
+
+            crate::artefacts::composite_onto_seed_range(
+                &specs,
+                &library_dir,
+                &task_out,
+                Some(task_seed),
+                eff_count,
+                prefix,
+                eff_w,
+                eff_h,
+                &s.zones,
+                smart_ref,
+            )
+            .with_context(|| format!("task {:?}: compositing artefacts", task.name))?;
+
+            // v2: masked img2img blending pass — per-task override
+            // falls back to scenario-level toggle.
+            let blend_on = task.artefact_blend.unwrap_or(s.artefact_blend);
+            if blend_on {
+                let strength = task
+                    .artefact_blend_strength
+                    .or(s.artefact_blend_strength)
+                    .unwrap_or(0.3);
+                let files: Vec<PathBuf> = (0..eff_count)
+                    .map(|i| {
+                        let seed = task_seed.wrapping_add(i as u64);
+                        task_out.join(format!("{prefix}-{seed}.png"))
+                    })
+                    .filter(|p| p.exists())
+                    .collect();
+                crate::pipelines::artefact_blend::blend_files(
+                    crate::pipelines::artefact_blend::BlendConfig {
+                        model: model.clone(),
+                        device: device.clone(),
+                        loras: loras.clone(),
+                        lora_scale,
+                        prompt: final_prompt.clone(),
+                        negative: eff_negative.clone(),
+                        image_w: eff_w,
+                        image_h: eff_h,
+                        steps: eff_steps,
+                        guidance: eff_guidance,
+                        scheduler: eff_scheduler,
+                        strength,
+                        feather_px: None,
+                    },
+                    &specs,
+                    &library_dir,
+                    &files,
+                    &s.zones,
+                    Some(task_seed),
+                    smart_ref,
+                )
+                .await
+                .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
             }
         }
 
@@ -1286,6 +1624,17 @@ fn same_lora_set(a: &[LoraSpec], b: &[LoraSpec]) -> bool {
     a_keys.sort();
     b_keys.sort();
     a_keys == b_keys
+}
+
+/// Truncate a string to `max` characters for inclusion in error messages.
+/// Appends `…` when truncated. Char-boundary safe.
+fn trim_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Strip leading/trailing whitespace and commas from each part so users can

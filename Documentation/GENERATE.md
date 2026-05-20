@@ -8,7 +8,10 @@ For batch generation via `scenario`, the same parameters are accepted as
 top-level fields in the HJSON file (with `kebab-case` instead of CLI
 `kebab-case` — the names match). The scenario-only fields (`scene`,
 `weather`, `tasks`, prompt-assembly headers/footers, `upscale` block) are
-documented in [README.md](README.md#scenario-configuration).
+documented inline in the annotated example
+[`examples/scenario.hjson`](../examples/scenario.hjson). A runnable
+batch demo with artefact placement also lives under
+[`examples/tutorials/ZONES/scenario.hjson`](../examples/tutorials/ZONES/scenario.hjson).
 
 ---
 
@@ -309,6 +312,21 @@ particular).
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
 
+### Artefact compositing
+
+`plakat generate` (and `plakat portrait`) accept three related flags
+for placing named PNG cutouts into the generated image:
+
+| Flag | Purpose |
+|---|---|
+| `--artefact NAME[@ZONE[:SCALE]]` (repeatable) | Alpha-composite a named cutout from the library. |
+| `--artefact-library <DIR>` | Override the bundled library path. |
+| `--artefact-blend` / `--artefact-blend-strength F` | v2 — masked low-strength img2img pass to soften edges (~2–5 s on GPU). |
+| `--smart-zones` | v3 — derive zones from each image's depth + luminance instead of the rigid 4×3 grid. Requires Depth-Anything-V2 (~99 MB, downloaded on first use). |
+
+Full reference: [`ARTEFACTS.md`](ARTEFACTS.md). Runnable end-to-end
+walkthrough: [`examples/tutorials/ZONES/`](../examples/tutorials/ZONES/).
+
 ---
 
 ## `plakat portrait`
@@ -582,7 +600,7 @@ Scale factor for **classical** methods. Non-integer values OK:
 | `bicubic` | Decent, slight softening | General-purpose |
 | `lanczos` | Sharpest, slight ringing on hard edges | Photographic / detailed images |
 
-**ML** — Real-ESRGAN (downloads ~17 MB on first use):
+**ML** — Real-ESRGAN (downloads ~64 MB on first use):
 
 | Method | Scale | Variant | Use case |
 |---|---|---|---|
@@ -658,6 +676,9 @@ trace.
 | `cuda` / `cuda:N` | NVIDIA GPU N. Requires building with `--features cuda`. |
 | `metal` | Apple Silicon GPU. Requires `--features metal`. |
 | `cpu` | CPU. Works everywhere. Slow on full-size generations. |
+
+For Apple hardware (chip tiers, expected speeds, memory headroom),
+see [`APPLE_REQUIREMENTS.md`](APPLE_REQUIREMENTS.md).
 
 #### `--cache-dir <PATH>` (env: `PLAKAT_CACHE_DIR`)
 
@@ -743,7 +764,8 @@ plakat upscale --in ./out/plakat-7.png --out ./out/plakat-7-4x.png \
 ### Generate → stylize → upscale (one pipeline via scenario)
 
 For batch runs that chain all three steps with shared pipelines, see
-[README.md → Scenario configuration](README.md#scenario-configuration).
-The `scenario` subcommand assembles per-task prompts from a catalog of
-scenes and weather, runs the per-image pipeline, and reuses loaded
-weights across every task.
+the annotated example at
+[`examples/scenario.hjson`](../examples/scenario.hjson). The `scenario`
+subcommand assembles per-task prompts from a catalog of scenes and
+weather, runs the per-image pipeline, and reuses loaded weights across
+every task.

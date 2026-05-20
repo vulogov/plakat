@@ -50,10 +50,10 @@ $ plakat style list
 ID              Display name     Ex  Bases       Description
 ──────────────  ──────────────  ───  ──────────  ────────────────────
 watercolor      Watercolor        4  sd15        Wet-on-wet pigment washes, ink lineart, visible paper texture.
-photorealistic  Photorealistic    4  sd15        Photographic realism; lens characteristics; lighting physicality.
+photorealistic  Photorealistic    4  (none)      Photographic realism; lens characteristics; lighting physicality.
 oil_painting    Oil Painting      4  sd15        Classical oil painting; visible brushwork, rich palette, canvas texture.
 ukiyo_e         Ukiyo-e           4  sd15        Edo-period Japanese woodblock print; flat color, fine ink lineart, traditional subjects.
-art_nouveau     Art Nouveau       4  sd15        Flowing organic lines, decorative borders, Mucha-style portraiture.
+art_nouveau     Art Nouveau       4  (none)      Flowing organic lines, decorative borders, Mucha-style portraiture.
 
 5 styles.
 ```

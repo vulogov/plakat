@@ -140,7 +140,7 @@ There are two main approaches, controlled by `--identity`:
 | Strategy | What it does | When to use |
 |---|---|---|
 | `plus-face` (default) | Uses CLIP-H image features. Robust, fast, no extra setup. | Most cases. Good identity preservation, no setup hassle. |
-| `faceid` | Uses InsightFace's ArcFace embedding — purpose-built for face recognition. Much better identity fidelity. | When you need the *strongest* possible likeness and you're willing to download ~150 MB of ArcFace weights. |
+| `faceid` | Uses InsightFace's ArcFace embedding — purpose-built for face recognition. Much better identity fidelity. | When you need the *strongest* possible likeness and you're willing to convert + cache ~250 MB of ArcFace weights. |
 
 `plus-face` works out of the box. `faceid` requires a one-time setup:
 
@@ -407,7 +407,93 @@ describes the *who*, not the *scene*.
 
 ---
 
-## 11. Common issues
+## 11. Merging multiple reference photos
+
+Pass `--photo` more than once to merge facial features across several
+reference photos — useful when you have multiple photos of the same
+person, or want to blend two people for a fictional likeness.
+
+The merge happens **at the encoder's embedding level**, not by
+pixel-averaging the inputs. Each photo is encoded independently into
+the identity adapter's natural feature space (CLIP-H hidden state for
+`plus-face`, ArcFace 512-d vector for `faceid`), the encodings are
+weighted-summed, and the merged identity drives generation.
+
+```bash
+# Two photos, equal weight — averages identity across them.
+# Useful for smoothing single-photo noise (lighting, pose).
+plakat portrait "..." \
+    --photo alice_smile.jpg \
+    --photo alice_neutral.jpg
+
+# Two photos, weighted — 70% of one, 30% of the other.
+plakat portrait "..." \
+    --photo alice.jpg:0.7 \
+    --photo bob.jpg:0.3
+
+# Three photos with auto-fill — alice gets 0.6 explicitly,
+# the other two each auto-fill to 0.2.
+plakat portrait "..." \
+    --photo alice_a.jpg:0.6 \
+    --photo alice_b.jpg \
+    --photo alice_c.jpg
+```
+
+Weight rules:
+
+- Weights are **proportions**, internally normalized to sum to 1.0.
+- Missing weights split the remainder equally among the unweighted
+  photos.
+- `--face-strength` is independent — it controls the *total* identity
+  influence on the output. Weights only control the *mix among photos*.
+
+Tip: for the best results with multiple photos, configure SCRFD
+auto-detection (see `Documentation/PERSONA.md` "Optional SCRFD
+auto-detection"). It runs per-photo so each face is aligned correctly
+before the embedding step.
+
+In scenarios, the persona definition takes a `photos:` list instead of
+a single `photo:`:
+
+```hjson
+personas:
+[
+    {
+        name: alice_averaged
+        photos:
+        [
+            { path: ./refs/alice_smile.jpg,   weight: 0.5 }
+            { path: ./refs/alice_neutral.jpg, weight: 0.3 }
+            { path: ./refs/alice_serious.jpg, weight: 0.2 }
+        ]
+        face-strength: 0.85
+    }
+]
+```
+
+`photo:` (singular) and `photos:` (list) are mutually exclusive — set
+one or the other.
+
+### Going deeper
+
+Two specialized tutorials build on this section:
+
+- [`PORTRAIT_HOW_TO_AGE.md`](PORTRAIT_HOW_TO_AGE.md) — using
+  multi-reference merging to render a person at intermediate ages.
+  Same person, photos at different ages, weights walk you across age
+  space.
+
+- [`PORTRAIT_CHILD_PHOTO.md`](PORTRAIT_CHILD_PHOTO.md) — blending two
+  parent photos into a plausible-child portrait. Same merging
+  machinery applied across two different people, combined with
+  child-age prompt cues.
+
+Both tutorials assume you've finished this one and have the
+multi-reference basics down.
+
+---
+
+## 12. Common issues
 
 **Output doesn't look like the photo.**
 Try `--face-strength 1.0` or higher. If still not matching, switch

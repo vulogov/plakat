@@ -336,7 +336,7 @@ pub fn prepare_face_tensor(
             let bw = px1.saturating_sub(px0).max(1).min(w - px0);
             let bh = py1.saturating_sub(py0).max(1).min(h - py0);
             img.crop_imm(px0, py0, bw, bh)
-                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::Triangle)
                 .to_rgb8()
         }
         FaceAlignment::CenterCrop => {
@@ -350,27 +350,31 @@ pub fn prepare_face_tensor(
                 let s = target_short;
                 (((w as f32) * (s as f32) / (h as f32)).round() as u32, s)
             };
-            let resized = img.resize_exact(rw, rh, FilterType::CatmullRom);
+            let resized = img.resize_exact(rw, rh, FilterType::Triangle);
             let cx = rw.saturating_sub(target_short) / 2;
             let cy = rh.saturating_sub(target_short) / 2;
             resized
                 .crop_imm(cx, cy, target_short, target_short)
-                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::CatmullRom)
+                .resize_exact(ARCFACE_INPUT, ARCFACE_INPUT, FilterType::Triangle)
                 .to_rgb8()
         }
     };
 
     // InsightFace normalisation: x ∈ [0, 255] → (x − 127.5) / 127.5 ∈ [−1, 1].
-    // Channel-first: RGB → (1, 3, 112, 112).
+    // Channel-first: RGB → (1, 3, 112, 112). Single pass over packed-RGB
+    // bytes, scattered into channel-separated slices — avoids per-pixel
+    // `get_pixel` indirection.
     let n = ARCFACE_INPUT as usize;
-    let mut data: Vec<f32> = Vec::with_capacity(3 * n * n);
-    for c in 0..3usize {
-        for y in 0..n {
-            for x in 0..n {
-                let px = aligned_rgb.get_pixel(x as u32, y as u32).0[c];
-                data.push((px as f32 - 127.5) / 127.5);
-            }
-        }
+    let n_pixels = n * n;
+    let mut data: Vec<f32> = vec![0.0f32; 3 * n_pixels];
+    let raw = aligned_rgb.as_raw();
+    let (r_dst, rest) = data.split_at_mut(n_pixels);
+    let (g_dst, b_dst) = rest.split_at_mut(n_pixels);
+    let scale = 1.0 / 127.5;
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        r_dst[i] = chunk[0] as f32 * scale - 1.0;
+        g_dst[i] = chunk[1] as f32 * scale - 1.0;
+        b_dst[i] = chunk[2] as f32 * scale - 1.0;
     }
     let t = Tensor::from_vec(data, (1, 3, n, n), device)?.to_dtype(dtype)?;
     Ok(t)
@@ -904,28 +908,21 @@ impl FaceIdEncoder {
     }
 }
 
-impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
-    fn num_tokens(&self) -> usize {
-        FaceIdEncoder::num_tokens(self)
-    }
-
-    fn encode(
+impl FaceIdEncoder {
+    /// Resolve the alignment for one photo. Priority:
+    ///   1. Manual landmarks (caller-supplied — overrides everything)
+    ///   2. SCRFD-detected landmarks (auto-fill, if detector loaded)
+    ///   3. Manual bbox (caller-supplied)
+    ///   4. Centre-crop fallback
+    ///
+    /// In multi-photo mode this runs once per photo; SCRFD detects each
+    /// photo independently, while manual landmarks/bbox (if set) apply
+    /// uniformly to all photos.
+    fn resolve_alignment(
         &self,
         photo_path: &Path,
         opts: crate::pipelines::ip_adapter::EncodeOptions,
-    ) -> Result<Tensor> {
-        if !photo_path.exists() {
-            return Err(anyhow::anyhow!(
-                "persona photo not found: {} (resolved from current working \
-                 directory). Check the path and re-run.",
-                photo_path.display()
-            ));
-        }
-        // Alignment priority:
-        //   1. Manual landmarks (caller-supplied — overrides everything)
-        //   2. SCRFD-detected landmarks (auto-fill, if detector loaded)
-        //   3. Manual bbox (caller-supplied)
-        //   4. Centre-crop fallback
+    ) -> FaceAlignment {
         let detected_landmarks = match (&opts.face_landmarks, &self.detector) {
             (Some(_), _) => None, // user supplied; don't override
             (None, Some(det)) => {
@@ -952,8 +949,63 @@ impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
             _ => None,
         };
         let landmarks = opts.face_landmarks.or(detected_landmarks);
-        let alignment = FaceAlignment::from_options(opts.face_bbox, landmarks);
-        self.encode_photo(photo_path, alignment)
+        FaceAlignment::from_options(opts.face_bbox, landmarks)
+    }
+}
+
+impl crate::pipelines::ip_adapter::IdentityEncoder for FaceIdEncoder {
+    fn num_tokens(&self) -> usize {
+        FaceIdEncoder::num_tokens(self)
+    }
+
+    fn encode(
+        &self,
+        photos: &[crate::pipelines::ip_adapter::WeightedPhoto],
+        opts: crate::pipelines::ip_adapter::EncodeOptions,
+    ) -> Result<Tensor> {
+        if photos.is_empty() {
+            anyhow::bail!("FaceIdEncoder::encode called with no photos");
+        }
+        for p in photos {
+            if !p.path.exists() {
+                return Err(anyhow::anyhow!(
+                    "persona photo not found: {} (resolved from current working \
+                     directory). Check the path and re-run.",
+                    p.path.display()
+                ));
+            }
+        }
+
+        // Fast path: single photo — same flow as before, no merge overhead.
+        if photos.len() == 1 {
+            let alignment = self.resolve_alignment(&photos[0].path, opts);
+            return self.encode_photo(&photos[0].path, alignment);
+        }
+
+        // Merge path: weighted sum of per-photo ArcFace 512-d embeddings,
+        // renormalize to unit L2 (ArcFace lives on the unit sphere), then
+        // one image-proj MLP pass.
+        let mut merged: Option<Tensor> = None;
+        for p in photos {
+            let weight = p.weight.expect("normalize_photo_weights must run first");
+            let alignment = self.resolve_alignment(&p.path, opts);
+            let aligned = prepare_face_tensor(&p.path, alignment, &self.device, self.dtype)?;
+            let embedding = self.arcface.forward(&aligned)?;
+            let scaled = (embedding * weight as f64)?;
+            merged = Some(match merged {
+                Some(acc) => (acc + scaled)?,
+                None => scaled,
+            });
+        }
+        let merged = merged.expect("at least one photo");
+
+        // Renormalize: ArcFace embeddings are unit-L2 by design. A
+        // weighted sum of unit vectors generally isn't unit-norm — divide
+        // by L2 magnitude to restore the manifold the downstream MLP
+        // expects.
+        let norm = merged.sqr()?.sum_keepdim(1)?.sqrt()?; // (1, 1)
+        let renormalized = merged.broadcast_div(&norm)?;
+        self.image_proj.forward(&renormalized)
     }
 }
 
