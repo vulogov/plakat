@@ -40,6 +40,13 @@ plakat generate "a brutalist poster of a whale, watercolor" --seed 42
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
     --photo face.jpg --face-strength 0.8
 
+# Image-to-image: restyle an existing image
+plakat img2img photo.jpg --prompt "watercolor painting of the same scene"
+
+# Inpaint: replace just the masked region (white = inpaint here)
+plakat img2img photo.jpg --mask sky.png \
+    --prompt "dramatic stormy sky, lightning"
+
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
 plakat portrait "a portrait, soft window light" \
@@ -77,6 +84,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux. |
+| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
@@ -108,6 +116,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     `plakat style` subcommands, building your own catalog.
   - [`ARTEFACTS.md`](Documentation/ARTEFACTS.md) — placing named PNG
     cutouts into named zones of generated images.
+  - [`IMG2IMG.md`](Documentation/IMG2IMG.md) — image-to-image and
+    inpaint via `plakat img2img`.
 
 ## Releases
 

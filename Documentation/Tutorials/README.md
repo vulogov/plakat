@@ -38,6 +38,14 @@ If you're new to plakat, work through these in order:
    [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
    (seven shell scripts + an HJSON scenario, end-to-end).
 
+6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
+   image with a prompt (img2img), or repaint just a masked region
+   (inpaint). Same `plakat img2img` subcommand drives both modes —
+   adding `--mask PATH` flips img2img into inpaint. The hands-on
+   companion lives at
+   [`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)
+   (four shell scripts + a procedurally-drawn sample input + mask).
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -77,4 +85,5 @@ manuals in [`Documentation/`](..):
 - Identity strategies and ArcFace setup → [`PERSONA.md`](../PERSONA.md)
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
 - Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
+- Image-to-image and inpaint flags → [`IMG2IMG.md`](../IMG2IMG.md)
 - Apple chip + memory tiers, expected speeds → [`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md)

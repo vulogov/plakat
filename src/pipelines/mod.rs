@@ -1,6 +1,7 @@
 pub mod artefact_blend;
 pub mod depth;
 pub mod extra_schedulers;
+pub mod img2img;
 pub mod face_models;
 pub mod faceid_lora;
 pub mod flux;
