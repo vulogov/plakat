@@ -68,11 +68,11 @@ jobs:
             # Cross-compile via the system gcc-aarch64-linux-gnu toolchain.
             cross_linux: true
 
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            features: ""
-            archive: tar.gz
-            bin_suffix: ""
+          # x86_64-apple-darwin (Intel Mac) is intentionally not built.
+          # GitHub-hosted macos-13 runners are scarce and Apple Silicon
+          # is the supported target for plakat (Metal backend, the only
+          # GPU path on macOS). Users on Intel Macs can still build from
+          # source with `cargo install plakat`.
 
           - target: aarch64-apple-darwin
             runner: macos-14
