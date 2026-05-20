@@ -130,7 +130,15 @@ pub async fn run(req: Request) -> Result<()> {
         };
 
         let new_latents = pipeline
-            .blend_latents_one(&base_latents, &mask_tensor, &gen_req, req.strength, seed)
+            .blend_latents_one(
+                &base_latents,
+                &mask_tensor,
+                &gen_req,
+                req.strength,
+                seed,
+                // TODO(v0.9 CLI): thread --control through img2img too.
+                None,
+            )
             .with_context(|| format!("denoise (seed {seed})"))?;
 
         let out_path = output_path(&req.out_dir, mode_tag, seed);
