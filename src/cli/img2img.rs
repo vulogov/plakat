@@ -91,15 +91,26 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
 
-    /// v0.9: ControlNet conditioner kind (currently `depth`).
-    /// Composes with the img2img / inpaint path — the conditioner
-    /// guides every denoise step. Requires `--control-image PATH`.
+    /// ControlNet conditioner kind (currently `depth`). Composes
+    /// with the img2img / inpaint path — the conditioner guides
+    /// every denoise step. Conditioning source: `--control-image PATH`
+    /// (pre-rendered), `--control-from PATH` (auto-annotate any
+    /// image), or **default**: auto-annotate `<INPUT>`.
     #[arg(long = "control", value_name = "KIND")]
     pub control: Option<crate::pipelines::controlnet::ControlKind>,
 
-    /// Conditioning image for `--control`.
-    #[arg(long = "control-image", value_name = "PATH")]
+    /// Pre-rendered conditioning image for `--control`. Mutually
+    /// exclusive with `--control-from`. If neither is set on
+    /// `img2img`, the `<INPUT>` image is auto-annotated.
+    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
     pub control_image: Option<PathBuf>,
+
+    /// **v0.10**: source image to auto-annotate. Runs the matching
+    /// annotator for `--control` and uses the result as the
+    /// conditioning. Default for `img2img` when neither
+    /// `--control-image` nor this flag is set: use `<INPUT>`.
+    #[arg(long = "control-from", value_name = "PATH")]
+    pub control_from: Option<PathBuf>,
 
     /// ControlNet residual scale. Default 1.0.
     #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
@@ -149,6 +160,7 @@ pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
         out_dir: args.out,
         control_kind: args.control,
         control_image: args.control_image,
+        control_from: args.control_from,
         control_strength: args.control_strength,
     };
 

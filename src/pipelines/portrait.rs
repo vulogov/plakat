@@ -127,6 +127,9 @@ pub struct Request {
     // ---------- v0.9 ControlNet ----------
     pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
     pub control_image: Option<PathBuf>,
+    /// v0.10: source image for auto-annotation (mutually exclusive
+    /// with `control_image`).
+    pub control_from: Option<PathBuf>,
     pub control_strength: f32,
 }
 
@@ -1088,9 +1091,6 @@ pub async fn run(req: Request) -> Result<()> {
         crate::pipelines::controlnet::ControlNet,
         candle_core::Tensor,
     )> = if let Some(kind) = req.control_kind {
-        let image_path = req.control_image.as_ref().ok_or_else(|| {
-            anyhow!("--control={kind:?} requires --control-image PATH")
-        })?;
         let net = crate::pipelines::controlnet::ControlNet::load(
             req.device.clone(),
             dtype,
@@ -1098,14 +1098,32 @@ pub async fn run(req: Request) -> Result<()> {
         )
         .await
         .context("loading ControlNet weights")?;
-        let cond = crate::pipelines::controlnet::prepare_conditioning(
-            image_path,
-            req.width,
-            req.height,
-            &req.device,
-            dtype,
-        )
-        .context("preparing ControlNet conditioning image")?;
+        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
+            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                dtype,
+            )
+            .context("preparing ControlNet conditioning image")?,
+            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
+                kind,
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                dtype,
+            )
+            .await
+            .context("running --control-from annotator")?,
+            (Some(_), Some(_)) => bail!(
+                "--control={kind:?}: pass either --control-image or --control-from, not both"
+            ),
+            (None, None) => bail!(
+                "--control={kind:?}: requires --control-image PATH or --control-from PATH"
+            ),
+        };
         Some((net, cond))
     } else {
         None

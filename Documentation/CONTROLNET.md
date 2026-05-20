@@ -55,13 +55,21 @@ plakat img2img sketch.png --prompt "polished oil painting" \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--control <KIND>` | (off) | Conditioner kind. v0.9: `depth` only. Triggers ControlNet activation. |
-| `--control-image <PATH>` | — | Path to the conditioning image. Required when `--control` is set. |
+| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` only. Triggers ControlNet activation. |
+| `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
+| `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
 
-All three flags work on `plakat generate`, `plakat portrait`, and
+All four flags work on `plakat generate`, `plakat portrait`, and
 `plakat img2img`. They also have a scenario-level equivalent (see
 [Scenarios](#scenarios) below).
+
+**`plakat img2img` defaults**: when `--control` is set but neither
+`--control-image` nor `--control-from` is supplied, the `<INPUT>`
+image is auto-annotated. This makes the common case (`plakat
+img2img photo.png --prompt "..." --control depth`) work out of
+the box without an extra flag — the prompt-driven repaint preserves
+the depth structure of the source.
 
 ## The conditioning image
 
@@ -78,19 +86,32 @@ For `--control depth`, the conditioning image is a depth map:
 
 ### Where to get a depth map
 
-1. **Run a depth estimator on a reference photo.** [Depth-Anything-V2
-   online](https://huggingface.co/spaces/LiheYoung/Depth-Anything-V2)
-   or any MiDaS/DPT tool.
-2. **Use a rendering engine's depth pass.** Blender, Unreal, etc.
-   often expose a depth-buffer output. Save as PNG.
+The simplest path, new in v0.10: **don't generate one manually**.
+Use `--control-from PATH` and plakat runs Depth-Anything-V2 on
+the source image for you, then feeds the result to ControlNet.
+
+```bash
+# Auto-annotate a reference photo:
+plakat generate "a fox in tall grass" \
+    --control depth --control-from photo_with_layout.jpg
+```
+
+When you need a pre-rendered map (more control, repeatable
+output), the manual options:
+
+1. **Run a depth estimator yourself.** [Depth-Anything-V2 online](https://huggingface.co/spaces/LiheYoung/Depth-Anything-V2)
+   or any MiDaS/DPT tool. Save the depth output as PNG; pass via
+   `--control-image`.
+2. **Use a rendering engine's depth pass.** Blender, Unreal,
+   etc. expose a depth-buffer output. Save as PNG; pass via
+   `--control-image`.
 3. **Paint one by hand.** A grayscale painter's interpretation of
-   "stuff in front" vs "stuff in back" works surprisingly well.
+   "near = white, far = black" works surprisingly well.
 4. **Generate one procedurally.** The runnable tutorial does this
    in 80 lines of Rust — see `examples/draw_control_sample.rs`.
 
-ControlNet-Depth is trained on proper depth maps, but it tolerates
-fairly rough approximations. Don't worry about pixel-perfect depth
-estimation.
+ControlNet-Depth is trained on proper depth maps but tolerates
+fairly rough approximations.
 
 ## The strength dial
 
@@ -129,13 +150,15 @@ plakat feature:
 
 ## Scenarios
 
-A scenario task accepts a `control` block:
+A scenario task accepts a `control` block. The conditioning
+source is either `image:` (pre-rendered map) or `auto-from:`
+(image to auto-annotate). Exactly one must be set.
 
 ```hjson
 tasks:
 [
     {
-        name: depth_guided_meadow
+        name: depth_guided_meadow_prerendered
         scene: meadow
         weather: golden_hour
         prompt: "a fox in tall grass"
@@ -143,6 +166,20 @@ tasks:
             kind: depth
             image: ./hints/meadow_depth.png
             strength: 0.85       # optional, defaults to 1.0
+        }
+    }
+
+    {
+        # v0.10: auto-annotate any image — depth is estimated by
+        # Depth-Anything-V2-small at task time.
+        name: depth_guided_from_photo
+        scene: meadow
+        weather: golden_hour
+        prompt: "a fox in tall grass"
+        control: {
+            kind: depth
+            auto-from: ./references/composition.jpg
+            strength: 0.9
         }
     }
 ]
