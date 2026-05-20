@@ -750,6 +750,13 @@ plakat stylize \
     --strength 0.4 --steps 30
 ```
 
+### Img2img / inpaint
+
+For prompt-driven transforms of an existing image (with or without a
+region mask), use the dedicated `plakat img2img` subcommand. Full
+reference: [`IMG2IMG.md`](IMG2IMG.md). Runnable walkthrough:
+[`examples/tutorials/IMG2IMG/`](../examples/tutorials/IMG2IMG/).
+
 ### Generate → 4× ML upscale
 
 ```bash
