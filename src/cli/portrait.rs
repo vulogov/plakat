@@ -23,11 +23,23 @@ pub struct PortraitArgs {
     /// Text prompt describing the portrait (lighting, framing, style, etc.).
     pub prompt: String,
 
-    /// Optional reference photo. Provide a head-and-shoulders crop for
-    /// best results. Without a photo, runs as a portrait-tuned text-only
-    /// generate (3:4 aspect, face/anatomy negatives baked in).
-    #[arg(long, value_name = "PATH")]
-    pub photo: Option<PathBuf>,
+    /// Reference photo(s). Repeatable: pass `--photo` multiple times to
+    /// merge facial features from several reference photos at the
+    /// embedding-space level (not pixel-blending — useful for averaging
+    /// multiple photos of the same person, or weighted blending across
+    /// look-alikes). Each photo accepts an optional `:WEIGHT` suffix:
+    ///
+    ///   --photo alice.jpg                    (single, weight ignored)
+    ///   --photo alice.jpg --photo bob.jpg    (equal 50/50 merge)
+    ///   --photo alice.jpg:0.7 --photo bob.jpg:0.3   (weighted merge)
+    ///   --photo alice.jpg:0.8 --photo bob.jpg       (bob auto-fills 0.2)
+    ///
+    /// Weights are normalized to sum to 1.0. Total identity strength is
+    /// independently controlled by `--face-strength`. Without any
+    /// `--photo`, runs as a portrait-tuned text-only generate (3:4
+    /// aspect, face/anatomy negatives baked in).
+    #[arg(long, value_name = "PATH[:WEIGHT]")]
+    pub photo: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
 
     /// Identity strategy:
     ///   * `plus-face` (default) — IP-Adapter-Plus-Face on SD 1.5
@@ -169,6 +181,36 @@ pub struct PortraitArgs {
     /// Override the bundled style catalog directory.
     #[arg(long, value_name = "DIR")]
     pub style_catalog: Option<PathBuf>,
+
+    /// Composite a named artefact (PNG cutout from the artefact library)
+    /// into the portrait. Repeatable. Grammar: `NAME[@ZONE[:SCALE]]` —
+    /// same as `plakat generate`. See `plakat artefact list`.
+    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
+
+    /// Override the bundled artefact library directory.
+    #[arg(long, value_name = "DIR")]
+    pub artefact_library: Option<PathBuf>,
+
+    /// After alpha-compositing artefacts, run a low-strength masked
+    /// img2img blending pass over the artefact zones. Smooths hard
+    /// edges and modest lighting mismatches at the cost of one extra
+    /// short denoise pass (~2–5 s per image on GPU). Default: off
+    /// (v1 alpha-only).
+    #[arg(long = "artefact-blend", default_value_t = false)]
+    pub artefact_blend: bool,
+
+    /// img2img strength for `--artefact-blend`. 0.0 = no-op,
+    /// 1.0 = full re-noise inside the mask. Sweet spot: 0.25–0.4.
+    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    pub artefact_blend_strength: f32,
+
+    /// v3: derive artefact zones from the generated image's own
+    /// depth + luminance instead of the rigid 4×3 grid. See
+    /// `Documentation/ARTEFACTS.md` § Smart zones (v3) for cost +
+    /// fallback behaviour.
+    #[arg(long = "smart-zones", default_value_t = false)]
+    pub smart_zones: bool,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -259,24 +301,49 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     )?;
     std::fs::create_dir_all(&args.out)?;
 
-    // Identity is only wired when a photo is actually provided. Without one,
-    // skipping the identity load avoids a ~50 MB download for callers who
-    // just want a portrait-tuned generate.
-    let identity = args.photo.as_ref().map(|_| args.identity);
+    // Identity is only wired when at least one photo is actually provided.
+    // Without any, skipping the identity load avoids a ~50 MB download for
+    // callers who just want a portrait-tuned generate.
+    let photos = args.photo.clone();
+    let identity = if photos.is_empty() {
+        None
+    } else {
+        Some(args.identity)
+    };
+
+    let out_dir = args.out.clone();
+    let count = args.count;
+    // Pre-resolve the seed at the CLI boundary so the artefact compositor /
+    // blender know which output files to read back.
+    let seed = Some(args.seed.unwrap_or_else(rand::random));
+    let artefact_specs = args.artefacts.clone();
+    let artefact_library = args
+        .artefact_library
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("assets/artefact_library"));
+
+    let prompt = args.prompt.clone();
+    let negative_for_blend = negative.clone();
+    let model = args.model.clone();
+    let loras = args.loras.clone();
+    let lora_scale = args.lora_scale;
+    let scheduler = args.scheduler;
+    let steps = args.steps;
+    let guidance = args.guidance;
 
     portrait::run(portrait::Request {
         prompt: args.prompt,
         negative,
-        photo: args.photo,
+        photos,
         model: args.model,
         width,
         height,
         count: args.count,
         steps: args.steps,
         guidance: args.guidance,
-        seed: args.seed,
+        seed,
         out_dir: args.out,
-        device,
+        device: device.clone(),
         loras: args.loras,
         lora_scale: args.lora_scale,
         scheduler: args.scheduler,
@@ -287,7 +354,73 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         face_landmarks: args.face_landmarks,
         identity,
     })
-    .await
+    .await?;
+
+    // v3: lazily load the depth pipeline if --smart-zones is on.
+    let smart_depth = if args.smart_zones && !artefact_specs.is_empty() {
+        match crate::pipelines::depth::DepthPipeline::load(device.clone()).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                crate::ui::progress::println(&format!(
+                    "  warn: --smart-zones requested but depth model load failed ({e}). \
+                     Falling back to rigid 4×3 grid.",
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Composite any --artefact onto the saved portrait file(s).
+    crate::artefacts::composite_onto_seed_range(
+        &artefact_specs,
+        &artefact_library,
+        &out_dir,
+        seed,
+        count,
+        "plakat-portrait",
+        width,
+        height,
+        &Default::default(),
+        smart_depth.as_ref(),
+    )?;
+
+    // v2: optional masked img2img blend over the artefact zones.
+    if args.artefact_blend && !artefact_specs.is_empty() {
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-portrait-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        crate::pipelines::artefact_blend::blend_files(
+            crate::pipelines::artefact_blend::BlendConfig {
+                model,
+                device,
+                loras,
+                lora_scale,
+                prompt,
+                negative: negative_for_blend,
+                image_w: width,
+                image_h: height,
+                steps,
+                guidance,
+                scheduler,
+                strength: args.artefact_blend_strength,
+                feather_px: None,
+            },
+            &artefact_specs,
+            &artefact_library,
+            &files,
+            &Default::default(),
+            seed,
+            smart_depth.as_ref(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn apply_style(

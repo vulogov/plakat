@@ -36,6 +36,38 @@ pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Resul
         return Err(anyhow!("empty image: {}", in_path.display()));
     }
 
+    let (out, hit, key_rgb) = chroma_key_image(img, tolerance);
+    let (kr, kg, kb) = (key_rgb[0], key_rgb[1], key_rgb[2]);
+
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    out.save(out_path)?;
+
+    Ok(Report {
+        width: w,
+        height: h,
+        key_rgb: [kr, kg, kb],
+        transparent_pixels: hit,
+        total_pixels: (w as u64) * (h as u64),
+    })
+}
+
+/// In-memory variant of [`make_transparent`]: chroma-key the upper-
+/// left pixel of `img` to alpha=0 using `tolerance` per-channel diff.
+/// Returns the modified image, the number of pixels that matched, and
+/// the keyed RGB.
+///
+/// Reused by `artefacts::compositing` as the auto-fallback when a
+/// user-supplied artefact PNG has no alpha channel.
+pub fn chroma_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 3]) {
+    let w = img.width();
+    let h = img.height();
+    if w == 0 || h == 0 {
+        return (img, 0, [0, 0, 0]);
+    }
     let key = img.get_pixel(0, 0).0;
     let (kr, kg, kb) = (key[0], key[1], key[2]);
     let tol = tolerance as i16;
@@ -54,19 +86,5 @@ pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Resul
             out.put_pixel(x, y, Rgba([r, g, b, a]));
         }
     }
-
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    out.save(out_path)?;
-
-    Ok(Report {
-        width: w,
-        height: h,
-        key_rgb: [kr, kg, kb],
-        transparent_pixels: hit,
-        total_pixels: (w as u64) * (h as u64),
-    })
+    (out, hit, [kr, kg, kb])
 }

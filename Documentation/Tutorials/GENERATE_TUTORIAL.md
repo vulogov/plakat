@@ -428,10 +428,12 @@ gets 1002-1003, and so on.
 ## 12. Common issues
 
 **Image takes forever / runs out of memory.**
-SD 1.5 needs ~6 GB of RAM. SDXL needs ~10-14 GB. On a Mac with Apple
-Silicon, plakat auto-detects Metal. On a machine without enough
-memory, drop to a smaller model (`--model sd15`), a smaller size
-(`--size 256x256`), and fewer steps (`--steps 12`).
+SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
+at 1024² needs ~10 GB. On Apple Silicon, plakat auto-detects Metal.
+On a memory-tight machine, drop to a smaller model (`--model sd15`),
+SD 1.5's native size (`--size 512x512`), and fewer steps
+(`--steps 20`). For the full per-chip + per-model breakdown, see
+[`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md).
 
 **Output is blurry / over-smooth.**
 Try increasing `--guidance` (e.g., 9.0) and `--steps` (e.g., 40).
