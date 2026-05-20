@@ -1,4 +1,5 @@
 pub mod artefact_blend;
+pub mod controlnet;
 pub mod depth;
 pub mod extra_schedulers;
 pub mod img2img;
