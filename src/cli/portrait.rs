@@ -211,6 +211,20 @@ pub struct PortraitArgs {
     /// fallback behaviour.
     #[arg(long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
+
+    /// v0.9: ControlNet conditioner kind (currently `depth`). Requires
+    /// `--control-image PATH`. SD 1.5 only. See `Documentation/CONTROLNET.md`.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<crate::pipelines::controlnet::ControlKind>,
+
+    /// Path to the conditioning image (depth map, pose skeleton, ...).
+    /// Required when `--control` is set.
+    #[arg(long = "control-image", value_name = "PATH")]
+    pub control_image: Option<PathBuf>,
+
+    /// Multiplier applied to ControlNet residuals. Sweet spot 0.6–1.0.
+    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    pub control_strength: f32,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -353,6 +367,9 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         face_bbox: args.face_bbox,
         face_landmarks: args.face_landmarks,
         identity,
+        control_kind: args.control,
+        control_image: args.control_image,
+        control_strength: args.control_strength,
     })
     .await?;
 

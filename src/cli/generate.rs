@@ -165,6 +165,23 @@ pub struct GenerateArgs {
     /// model can't be loaded. Default: off.
     #[arg(long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
+
+    /// v0.9: ControlNet conditioner kind. Currently supports
+    /// `depth`. Requires `--control-image PATH`. SD 1.5 only;
+    /// Flux is unsupported.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<crate::pipelines::controlnet::ControlKind>,
+
+    /// Path to the conditioning image (a depth map, edge image,
+    /// pose skeleton, etc.). Required when `--control` is set.
+    #[arg(long = "control-image", value_name = "PATH")]
+    pub control_image: Option<PathBuf>,
+
+    /// Multiplier applied to ControlNet residuals. 0.0 = ignore the
+    /// conditioner; 1.0 = full diffusers default; >1.0 over-emphasises
+    /// the structure at the cost of prompt adherence. Sweet spot 0.6–1.0.
+    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    pub control_strength: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -220,6 +237,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         refine_strength: args.refine_strength,
         use_refiner: args.refiner,
         refiner_frac: args.refiner_frac,
+        control_kind: args.control,
+        control_image: args.control_image,
+        control_strength: args.control_strength,
     })
     .await?;
 

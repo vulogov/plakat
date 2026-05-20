@@ -123,6 +123,11 @@ pub struct Request {
     /// Which identity strategy to wire up. `None` collapses portrait into a
     /// portrait-tuned text-only generate.
     pub identity: Option<IdentityKind>,
+
+    // ---------- v0.9 ControlNet ----------
+    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
+    pub control_image: Option<PathBuf>,
+    pub control_strength: f32,
 }
 
 pub struct LoadRequest {
@@ -1072,6 +1077,40 @@ impl Pipeline {
 // =====================================================================
 
 pub async fn run(req: Request) -> Result<()> {
+    // Preload ControlNet + conditioning before the pipeline (same
+    // ordering as `t2i::run`). Owned data lives on this stack frame.
+    let dtype = if matches!(req.device, Device::Cpu) {
+        DType::F32
+    } else {
+        DType::F16
+    };
+    let control_owned: Option<(
+        crate::pipelines::controlnet::ControlNet,
+        candle_core::Tensor,
+    )> = if let Some(kind) = req.control_kind {
+        let image_path = req.control_image.as_ref().ok_or_else(|| {
+            anyhow!("--control={kind:?} requires --control-image PATH")
+        })?;
+        let net = crate::pipelines::controlnet::ControlNet::load(
+            req.device.clone(),
+            dtype,
+            kind,
+        )
+        .await
+        .context("loading ControlNet weights")?;
+        let cond = crate::pipelines::controlnet::prepare_conditioning(
+            image_path,
+            req.width,
+            req.height,
+            &req.device,
+            dtype,
+        )
+        .context("preparing ControlNet conditioning image")?;
+        Some((net, cond))
+    } else {
+        None
+    };
+
     let pipeline = Pipeline::load(LoadRequest {
         model: req.model,
         device: req.device,
@@ -1088,6 +1127,14 @@ pub async fn run(req: Request) -> Result<()> {
     if !photos.is_empty() {
         crate::pipelines::ip_adapter::normalize_photo_weights(&mut photos)?;
     }
+
+    let control_req = control_owned.as_ref().map(|(net, cond)| {
+        crate::pipelines::controlnet::ControlRequest {
+            net,
+            conditioning: cond.clone(),
+            strength: req.control_strength,
+        }
+    });
 
     pipeline.generate(
         &GenRequest {
@@ -1108,8 +1155,7 @@ pub async fn run(req: Request) -> Result<()> {
             face_bbox: req.face_bbox,
             face_landmarks: req.face_landmarks,
         },
-        // TODO(v0.9 CLI): thread --control through portrait::run too.
-        None,
+        control_req.as_ref(),
     )
 }
 
