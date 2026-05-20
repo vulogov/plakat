@@ -607,6 +607,40 @@ fn candidates_for(
                 "diffusion_pytorch_model.fp16.safetensors",
             ),
         ],
+        (ControlKind::Canny, ControlNetVariant::Sd15) => vec![
+            // Primary: lllyasviel's original SD 1.5 ControlNet-Canny.
+            (
+                "lllyasviel/sd-controlnet-canny",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 1: same repo, fp16 variant.
+            (
+                "lllyasviel/sd-controlnet-canny",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 2: lllyasviel's v1.1 ControlNet-Canny update.
+            (
+                "lllyasviel/control_v11p_sd15_canny",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
+        (ControlKind::Canny, ControlNetVariant::Sdxl) => vec![
+            // Primary: diffusers' SDXL ControlNet-Canny (small).
+            (
+                "diffusers/controlnet-canny-sdxl-1.0-small",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 1: same repo, fp16 variant.
+            (
+                "diffusers/controlnet-canny-sdxl-1.0-small",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 2: full-size SDXL ControlNet-Canny.
+            (
+                "diffusers/controlnet-canny-sdxl-1.0",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+        ],
     }
 }
 
@@ -710,17 +744,21 @@ pub struct ControlRequest<'a> {
     pub strength: f32,
 }
 
-/// What kind of conditioning signal the user requested. v0.9 ships
-/// only `Depth`; subsequent releases add Canny, Scribble, etc.
+/// What kind of conditioning signal the user requested. v0.10 ships
+/// `Depth` (Depth-Anything-V2 annotator) and `Canny` (imageproc
+/// canny annotator). Other conditioners (scribble, MLSD, pose, ...)
+/// land in later releases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlKind {
     Depth,
+    Canny,
 }
 
 impl ControlKind {
     pub fn slug(self) -> &'static str {
         match self {
             Self::Depth => "depth",
+            Self::Canny => "canny",
         }
     }
 }
@@ -730,8 +768,9 @@ impl std::str::FromStr for ControlKind {
     fn from_str(s: &str) -> Result<Self> {
         match s.to_ascii_lowercase().as_str() {
             "depth" => Ok(Self::Depth),
+            "canny" => Ok(Self::Canny),
             other => anyhow::bail!(
-                "unknown control kind {other:?} (v0.9 supports: depth)"
+                "unknown control kind {other:?} (v0.10 supports: depth, canny)"
             ),
         }
     }
@@ -748,15 +787,31 @@ mod tests {
             ControlKind::Depth
         );
         assert_eq!("DEPTH".parse::<ControlKind>().unwrap(), ControlKind::Depth);
-        assert!("canny".parse::<ControlKind>().is_err());
+        assert_eq!("canny".parse::<ControlKind>().unwrap(), ControlKind::Canny);
+        assert_eq!("Canny".parse::<ControlKind>().unwrap(), ControlKind::Canny);
+        assert!("scribble".parse::<ControlKind>().is_err());
         assert!("".parse::<ControlKind>().is_err());
     }
 
     #[test]
     fn control_kind_slug_roundtrips() {
-        for k in [ControlKind::Depth] {
+        for k in [ControlKind::Depth, ControlKind::Canny] {
             let s = k.slug();
             assert_eq!(s.parse::<ControlKind>().unwrap(), k);
+        }
+    }
+
+    #[test]
+    fn candidates_for_canny_sd15_and_sdxl_each_have_three_mirrors() {
+        for variant in [ControlNetVariant::Sd15, ControlNetVariant::Sdxl] {
+            let c = candidates_for(ControlKind::Canny, variant);
+            assert_eq!(c.len(), 3, "expected 3 canny mirrors for {variant:?}");
+            for (_repo, file) in &c {
+                assert!(
+                    file.ends_with(".safetensors"),
+                    "expected safetensors file, got {file:?}",
+                );
+            }
         }
     }
 

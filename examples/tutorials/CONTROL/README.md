@@ -21,7 +21,8 @@ CONTROL/
     ├── 02_strength_sweep.sh       ← --control-strength dial sweep
     ├── 03_with_img2img.sh         ← compose control with img2img
     ├── 04_auto_depth.sh           ← v0.10: --control-from auto-annotates
-    └── 05_sdxl.sh                 ← v0.10: SDXL ControlNet at 1024²
+    ├── 05_sdxl.sh                 ← v0.10: SDXL ControlNet at 1024²
+    └── 06_canny.sh                ← v0.10: --control canny (edge conditioning)
 ```
 
 Regenerate `inputs/scene_depth.png` at any time with:

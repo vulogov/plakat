@@ -70,6 +70,10 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "webp",
 ] }
+# imageproc: ControlNet Canny + future canny/sobel/HED annotators.
+# default-features off to skip the optional rusttype/dynimage frills
+# we don't need.
+imageproc = { version = "0.25", default-features = false }
 
 # RNG (only for cases where we want a host-side seed)
 rand = "0.8"

@@ -11,8 +11,8 @@ intermediate features. The result: the generated image follows the
 *shape* specified by a conditioning image, while the prompt drives
 the *content*.
 
-Plakat ships **depth** conditioning on both SD 1.5 and SDXL.
-Other conditioners (canny edges, scribble, pose, normal, MLSD
+Plakat ships **depth** and **canny** conditioners on both
+SD 1.5 and SDXL. Other conditioners (scribble, pose, normal, MLSD
 lines, segmentation) are on the roadmap.
 
 ## What `--control depth` does
@@ -56,7 +56,7 @@ plakat img2img sketch.png --prompt "polished oil painting" \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` only. Triggers ControlNet activation. Works on both SD 1.5 and SDXL; the architecture is auto-detected from `--model`. |
+| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` or `canny`. Triggers ControlNet activation. Works on both SD 1.5 and SDXL; the architecture is auto-detected from `--model`. |
 | `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
 | `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
@@ -113,6 +113,40 @@ output), the manual options:
 
 ControlNet-Depth is trained on proper depth maps but tolerates
 fairly rough approximations.
+
+### Where to get a Canny edge map
+
+Easiest path: just use `--control-from PATH`. Plakat runs Canny
+edge detection on the source image (Sobel + non-maximum
+suppression + hysteresis thresholding via the `imageproc` crate)
+and uses the binary edge map as the conditioner.
+
+```bash
+plakat generate "an oil painting of a stylised landscape" \
+    --control canny --control-from photo.jpg
+```
+
+When you need a pre-rendered edge map (e.g. for repeatable
+identical edges across many prompts):
+
+- **Run Canny in any image editor.** GIMP: Filters → Edge-Detect
+  → Edge. Photoshop: Filter → Stylize → Find Edges. Output should
+  be black background with white edges (invert if your tool emits
+  the opposite).
+- **Sketch by hand.** Line art works directly — black lines on
+  white background, then invert in your editor.
+- **Use a 3D engine's edge pass.** Blender's Freestyle render,
+  Unreal's stylized post-process.
+
+ControlNet-Canny is far more literal than Depth — it pins the
+output's structural lines very tightly to the input edges. Loose,
+sketchy inputs give the model more creative latitude than clean
+photographic edges.
+
+Default Canny thresholds: low=100, high=200 (8-bit luminance).
+These match diffusers' defaults and aren't currently exposed as
+flags — adjust on the source image side if you need different
+edge sensitivity.
 
 ## The strength dial
 
@@ -220,11 +254,23 @@ order):
 2. `lllyasviel/sd-controlnet-depth` / `diffusion_pytorch_model.fp16.safetensors` (~700 MB)
 3. `lllyasviel/control_v11f1p_sd15_depth` / `diffusion_pytorch_model.safetensors` (~1.4 GB)
 
-**SDXL** mirrors:
+**SDXL Depth** mirrors:
 
 1. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.safetensors` (~600 MB; the recommended SDXL ControlNet — small + competitive quality)
 2. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.fp16.safetensors` (~300 MB)
 3. `diffusers/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size, higher quality, much heavier)
+
+**SD 1.5 Canny** mirrors:
+
+1. `lllyasviel/sd-controlnet-canny` / `diffusion_pytorch_model.safetensors` (~1.4 GB)
+2. `lllyasviel/sd-controlnet-canny` / `diffusion_pytorch_model.fp16.safetensors` (~700 MB)
+3. `lllyasviel/control_v11p_sd15_canny` / `diffusion_pytorch_model.safetensors` (~1.4 GB; v1.1 update)
+
+**SDXL Canny** mirrors:
+
+1. `diffusers/controlnet-canny-sdxl-1.0-small` / `diffusion_pytorch_model.safetensors` (~600 MB)
+2. `diffusers/controlnet-canny-sdxl-1.0-small` / `diffusion_pytorch_model.fp16.safetensors` (~300 MB)
+3. `diffusers/controlnet-canny-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size)
 
 All are diffusers-format. WebUI-format ControlNet checkpoints (with
 `control_model.input_blocks.…` key naming) are not currently
@@ -239,10 +285,9 @@ supported — they'd need a key remapping layer we don't ship.
   or pre-downloading the alt repo if you need top quality.
 - **Flux: not supported.** ControlNet's residual-addition contract
   is SD-UNet-specific.
-- **Depth only.** Canny lands in v0.10 phase 3 via `imageproc`;
-  scribble, pose, MLSD, normal, openpose, segmentation, and
-  InstantID-style face conditioners are all on the roadmap but
-  not in v0.10.
+- **Depth and Canny.** v0.10 ships both. Scribble, pose, MLSD,
+  normal, openpose, segmentation, and InstantID-style face
+  conditioners are on the roadmap but not in v0.10.
 - **No timestep windowing.** Diffusers' `control_guidance_start`
   and `control_guidance_end` (which let you apply control to a
   subset of the timestep schedule) land in v0.10 phase 4.
