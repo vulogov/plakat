@@ -109,6 +109,29 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   - [`ARTEFACTS.md`](Documentation/ARTEFACTS.md) — placing named PNG
     cutouts into named zones of generated images.
 
+## Releases
+
+Pre-built binaries for the 0.7+ tags are attached to each
+[GitHub release](https://github.com/vulogov/plakat/releases). The
+release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
+builds five targets on every `v*` tag push:
+
+| Target | Backend |
+|---|---|
+| `aarch64-apple-darwin`   | Metal (Apple Silicon GPU) |
+| `x86_64-apple-darwin`    | CPU only |
+| `x86_64-unknown-linux-gnu` | CPU only |
+| `aarch64-unknown-linux-gnu` | CPU only |
+| `x86_64-pc-windows-msvc` | CPU only |
+
+Each archive contains the `plakat` binary, `LICENSE`, `README.md`, and
+the bundled `assets/` (artefact library + style catalog). A
+`SHA256SUMS` file is attached to the same release for verification:
+`shasum -a 256 -c SHA256SUMS`.
+
+CUDA-enabled Linux binaries are not pre-built; install with
+`cargo install plakat --features cuda` when you need them.
+
 ## License
 
 Free and unencumbered software released into the public domain
