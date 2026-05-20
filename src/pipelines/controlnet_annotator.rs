@@ -30,6 +30,12 @@ use std::path::Path;
 use crate::pipelines::controlnet::ControlKind;
 use crate::pipelines::depth::DepthPipeline;
 
+/// Default Canny low-threshold (8-bit luminance). Same as diffusers'
+/// CannyDetector default.
+const CANNY_LOW: f32 = 100.0;
+/// Default Canny high-threshold.
+const CANNY_HIGH: f32 = 200.0;
+
 /// Run the matching annotator for `kind` on the source image, then
 /// pack the result into a `(1, 3, H, W)` conditioning tensor at
 /// `dtype`. The result is drop-in compatible with what
@@ -49,6 +55,7 @@ pub async fn annotate(
 ) -> Result<Tensor> {
     match kind {
         ControlKind::Depth => annotate_depth(src_path, out_w, out_h, device, dtype).await,
+        ControlKind::Canny => annotate_canny(src_path, out_w, out_h, device, dtype),
     }
 }
 
@@ -83,6 +90,50 @@ async fn annotate_depth(
             depth.len(),
         );
     }
+    depth_to_rgb_tensor(&depth, out_w, out_h, device, dtype)
+}
+
+/// Run Canny edge detection on `src_path` and produce a
+/// `(1, 3, H, W)` tensor with the binary edge image replicated
+/// across each channel.
+///
+/// Output convention matches ControlNet-Canny training data: white
+/// pixels = edges, black = background.
+///
+/// Synchronous (no model download — pure CPU image processing via
+/// the `imageproc` crate). Resize happens *after* edge detection so
+/// the edges are computed at the source resolution and then sampled
+/// down, preserving thin-line sharpness better than the reverse.
+fn annotate_canny(
+    src_path: &Path,
+    out_w: u32,
+    out_h: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let src = image::open(src_path)
+        .with_context(|| format!("opening Canny source {}", src_path.display()))?;
+    let gray = src.to_luma8();
+    let edges = imageproc::edges::canny(&gray, CANNY_LOW, CANNY_HIGH);
+    // Resize edge map to the generation resolution. Nearest-neighbour
+    // would preserve hard edges best, but triangle is what every other
+    // plakat path uses (consistency wins over a marginal sharpness
+    // gain).
+    let resized = image::imageops::resize(
+        &edges,
+        out_w,
+        out_h,
+        image::imageops::FilterType::Triangle,
+    );
+    let total = (out_w as usize) * (out_h as usize);
+    if resized.as_raw().len() != total {
+        anyhow::bail!(
+            "canny edge map size mismatch: expected {} pixels, got {}",
+            total,
+            resized.as_raw().len()
+        );
+    }
+    let depth: Vec<f32> = resized.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
     depth_to_rgb_tensor(&depth, out_w, out_h, device, dtype)
 }
 
@@ -135,5 +186,40 @@ mod tests {
         let t = depth_to_rgb_tensor(&depth, 8, 8, &Device::Cpu, DType::F32).unwrap();
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.dims(), &[1, 3, 8, 8]);
+    }
+
+    /// Canny on a black image with a single white square should
+    /// produce edge pixels along the square's border, zero
+    /// elsewhere. Verifies imageproc integration + dispatch.
+    #[test]
+    fn annotate_canny_detects_square_edges() {
+        use image::{Luma, Rgb, RgbImage};
+        // 32×32 black image with a 12×12 white square in the centre.
+        let mut img = RgbImage::from_pixel(32, 32, Rgb([0u8, 0, 0]));
+        for y in 10..22 {
+            for x in 10..22 {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        let tmp = std::env::temp_dir().join("plakat_canny_test.png");
+        img.save(&tmp).unwrap();
+
+        let t = annotate_canny(&tmp, 32, 32, &Device::Cpu, DType::F32).unwrap();
+        assert_eq!(t.dims(), &[1, 3, 32, 32]);
+        let v: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
+        let total = 32 * 32;
+        let r_channel = &v[..total];
+        // There should be at least a few edge pixels (>= 4 sides ×
+        // ~12 pixels / sampling = dozens) where R is bright.
+        let bright_count = r_channel.iter().filter(|&&x| x > 0.5).count();
+        assert!(
+            bright_count > 20,
+            "expected canny to find edges, got {bright_count} bright pixels"
+        );
+        // Far corners (0,0) and (31,31) should be black (no edge).
+        assert!(v[0] < 0.05);
+        assert!(v[total - 1] < 0.05);
+        // Also: ignore unused import warning for Luma if it warns.
+        let _ = Luma::<u8>([0]);
     }
 }
