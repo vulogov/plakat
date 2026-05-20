@@ -428,14 +428,20 @@ struct TaskDef {
     control: Option<ControlSpec>,
 }
 
-/// Per-task ControlNet configuration. Deliberately small surface for
-/// v0.9 — `kind` is a string parsed via the same `FromStr` impl as
-/// the CLI `--control`, `image` is the conditioning image path, and
-/// `strength` is the residual multiplier (default 1.0 when omitted).
+/// Per-task ControlNet configuration. `kind` is a string parsed via
+/// the same `FromStr` impl as the CLI `--control`. Conditioning
+/// source is either `image` (pre-rendered map) or `auto-from`
+/// (image to auto-annotate via the matching annotator). Exactly
+/// one must be set. `strength` defaults to 1.0 when omitted.
 #[derive(Debug, Clone, Deserialize)]
 struct ControlSpec {
     kind: String,
-    image: PathBuf,
+    /// Pre-rendered conditioning image. Mutually exclusive with `auto-from`.
+    #[serde(default)]
+    image: Option<PathBuf>,
+    /// **v0.10**: source image to auto-annotate. Mutually exclusive with `image`.
+    #[serde(default, rename = "auto-from")]
+    auto_from: Option<PathBuf>,
     #[serde(default)]
     strength: Option<f32>,
 }
@@ -1312,18 +1318,56 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             task.control.as_ref(),
             task_control_kind,
         ) {
-            (Some(spec), Some(_)) => Some(
-                crate::pipelines::controlnet::prepare_conditioning(
-                    &spec.image,
-                    eff_w,
-                    eff_h,
-                    &device,
-                    cn_dtype,
-                )
-                .with_context(|| {
-                    format!("task {:?}: preparing ControlNet conditioning", task.name)
-                })?,
-            ),
+            (Some(spec), Some(kind)) => {
+                // v0.10: support `image:` (pre-rendered) OR `auto-from:`
+                // (annotate via the matching annotator). Exactly one
+                // must be set.
+                let cond = match (spec.image.as_ref(), spec.auto_from.as_ref()) {
+                    (Some(path), None) => {
+                        crate::pipelines::controlnet::prepare_conditioning(
+                            path,
+                            eff_w,
+                            eff_h,
+                            &device,
+                            cn_dtype,
+                        )
+                        .with_context(|| {
+                            format!("task {:?}: preparing ControlNet conditioning", task.name)
+                        })?
+                    }
+                    (None, Some(path)) => {
+                        crate::pipelines::controlnet_annotator::annotate(
+                            kind,
+                            path,
+                            eff_w,
+                            eff_h,
+                            &device,
+                            cn_dtype,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "task {:?}: running --control auto-annotator on {}",
+                                task.name,
+                                path.display()
+                            )
+                        })?
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!(
+                            "task {:?}: control:{{...}} block must set either `image:` or `auto-from:`, not both",
+                            task.name
+                        );
+                    }
+                    (None, None) => {
+                        anyhow::bail!(
+                            "task {:?}: control:{{...}} block requires either `image:` or `auto-from:`",
+                            task.name
+                        );
+                    }
+                };
+                Some(cond)
+            }
             _ => None,
         };
         let task_control_strength = task

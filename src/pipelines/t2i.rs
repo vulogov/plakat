@@ -60,10 +60,16 @@ pub struct Request {
     // ---------- v0.9 ControlNet ----------
     /// Optional conditioner kind. `None` disables ControlNet entirely
     /// — preserves byte-identical pre-v0.9 behaviour. When `Some`,
-    /// `control_image` must also be supplied.
+    /// exactly one of `control_image` or `control_from` must be set.
     pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
-    /// Conditioning image (depth map, etc.) read once per generation.
+    /// Pre-rendered conditioning image (depth map, edge map, etc.).
+    /// Mutually exclusive with `control_from`.
     pub control_image: Option<PathBuf>,
+    /// **v0.10**: source image to auto-annotate. Runs the matching
+    /// annotator for `control_kind` (e.g. Depth-Anything-V2 for
+    /// `Depth`) and uses the result as the conditioning tensor.
+    /// Mutually exclusive with `control_image`.
+    pub control_from: Option<PathBuf>,
     /// Multiplier applied to ControlNet residuals before adding to
     /// the UNet's. Ignored when `control_kind` is `None`. Default 1.0.
     pub control_strength: f32,
@@ -969,21 +975,41 @@ pub async fn run(req: Request) -> Result<()> {
         crate::pipelines::controlnet::ControlNet,
         candle_core::Tensor,
     )> = if let Some(kind) = req.control_kind {
-        let image_path = req.control_image.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("--control={kind:?} requires --control-image PATH")
-        })?;
+        // v0.10: two ways to supply the conditioning image —
+        //  * --control-image PATH (use as-is, v0.9 behaviour)
+        //  * --control-from  PATH (auto-annotate via the matching annotator)
+        // Exactly one must be set; the CLI enforces mutual exclusion
+        // via `conflicts_with`, but we also error here defensively.
         let net =
             crate::pipelines::controlnet::ControlNet::load(req.device.clone(), dtype, kind)
                 .await
                 .context("loading ControlNet weights")?;
-        let cond = crate::pipelines::controlnet::prepare_conditioning(
-            image_path,
-            req.width,
-            req.height,
-            &req.device,
-            dtype,
-        )
-        .context("preparing ControlNet conditioning image")?;
+        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
+            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                dtype,
+            )
+            .context("preparing ControlNet conditioning image")?,
+            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
+                kind,
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                dtype,
+            )
+            .await
+            .context("running --control-from annotator")?,
+            (Some(_), Some(_)) => anyhow::bail!(
+                "--control={kind:?}: pass either --control-image PATH or --control-from PATH, not both"
+            ),
+            (None, None) => anyhow::bail!(
+                "--control={kind:?}: requires --control-image PATH or --control-from PATH"
+            ),
+        };
         Some((net, cond))
     } else {
         None

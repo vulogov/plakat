@@ -19,7 +19,8 @@ CONTROL/
 └── scripts/
     ├── 01_basic.sh                ← plain --control depth
     ├── 02_strength_sweep.sh       ← --control-strength dial sweep
-    └── 03_with_img2img.sh         ← compose control with img2img
+    ├── 03_with_img2img.sh         ← compose control with img2img
+    └── 04_auto_depth.sh           ← v0.10: --control-from auto-annotates
 ```
 
 Regenerate `inputs/scene_depth.png` at any time with:
@@ -99,6 +100,27 @@ This script uses the depth map twice:
 Without the control flag, img2img alone at `--strength 0.85`
 would let the model rewrite most of the composition. Adding
 control locks it back to the depth map's structure.
+
+### 4. `04_auto_depth.sh` — auto-annotate any image (v0.10)
+
+```bash
+./scripts/04_auto_depth.sh
+```
+
+Demonstrates the v0.10 ergonomic improvement: you don't need a
+pre-rendered depth map. `--control-from PATH` tells plakat to
+run Depth-Anything-V2 on `PATH` and use the result as the
+ControlNet conditioning.
+
+Two output files:
+- `from_flag.png` — `plakat generate` with `--control-from <photo>`.
+- `from_input_default.png` — `plakat img2img <photo>` with
+  `--control depth` and **no `--control-image` or
+  `--control-from`** — the input is auto-annotated by default.
+
+First run downloads Depth-Anything-V2-small (~99 MB) once. The
+weight is shared across smart-zones and ControlNet annotation; if
+you've already used `--smart-zones`, no extra download.
 
 ## Modifications to try
 

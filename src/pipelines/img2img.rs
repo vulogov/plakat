@@ -58,6 +58,12 @@ pub struct Request {
     // ---------- v0.9 ControlNet ----------
     pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
     pub control_image: Option<PathBuf>,
+    /// v0.10: source image for auto-annotation. For `plakat img2img`,
+    /// when both `control_image` and `control_from` are `None` but
+    /// `control_kind` is set, the pipeline defaults `control_from`
+    /// to `input` — i.e. annotates the source image you're
+    /// transforming. Set explicitly to override.
+    pub control_from: Option<PathBuf>,
     pub control_strength: f32,
 }
 
@@ -77,9 +83,6 @@ pub async fn run(req: Request) -> Result<()> {
         crate::pipelines::controlnet::ControlNet,
         candle_core::Tensor,
     )> = if let Some(kind) = req.control_kind {
-        let image_path = req.control_image.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("--control={kind:?} requires --control-image PATH")
-        })?;
         let net = crate::pipelines::controlnet::ControlNet::load(
             req.device.clone(),
             cn_dtype,
@@ -87,14 +90,48 @@ pub async fn run(req: Request) -> Result<()> {
         )
         .await
         .context("loading ControlNet weights")?;
-        let cond = crate::pipelines::controlnet::prepare_conditioning(
-            image_path,
-            req.width,
-            req.height,
-            &req.device,
-            cn_dtype,
-        )
-        .context("preparing ControlNet conditioning image")?;
+        // img2img-specific fallback: when neither --control-image nor
+        // --control-from is set, use the input image as the
+        // annotator source. Standard "I want the depth of *this*
+        // image, and I'm reusing it as the source" pattern.
+        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
+            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                cn_dtype,
+            )
+            .context("preparing ControlNet conditioning image")?,
+            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
+                kind,
+                path,
+                req.width,
+                req.height,
+                &req.device,
+                cn_dtype,
+            )
+            .await
+            .context("running --control-from annotator")?,
+            (Some(_), Some(_)) => anyhow::bail!(
+                "--control={kind:?}: pass either --control-image or --control-from, not both"
+            ),
+            (None, None) => {
+                // img2img default: annotate the input image.
+                crate::pipelines::controlnet_annotator::annotate(
+                    kind,
+                    &req.input,
+                    req.width,
+                    req.height,
+                    &req.device,
+                    cn_dtype,
+                )
+                .await
+                .context(
+                    "running --control auto-annotator on the input image (img2img default)",
+                )?
+            }
+        };
         Some((net, cond))
     } else {
         None

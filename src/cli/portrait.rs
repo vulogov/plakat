@@ -212,15 +212,22 @@ pub struct PortraitArgs {
     #[arg(long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
 
-    /// v0.9: ControlNet conditioner kind (currently `depth`). Requires
-    /// `--control-image PATH`. SD 1.5 only. See `Documentation/CONTROLNET.md`.
+    /// ControlNet conditioner kind (currently `depth`). Requires
+    /// `--control-image PATH` (pre-rendered) or `--control-from PATH`
+    /// (auto-annotate). SD 1.5 only. See `Documentation/CONTROLNET.md`.
     #[arg(long = "control", value_name = "KIND")]
     pub control: Option<crate::pipelines::controlnet::ControlKind>,
 
-    /// Path to the conditioning image (depth map, pose skeleton, ...).
-    /// Required when `--control` is set.
-    #[arg(long = "control-image", value_name = "PATH")]
+    /// Pre-rendered conditioning image (depth map, pose skeleton, ...).
+    /// Mutually exclusive with `--control-from`.
+    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
     pub control_image: Option<PathBuf>,
+
+    /// **v0.10**: source image to auto-annotate. Runs the matching
+    /// annotator for `--control` and uses the result as the
+    /// conditioning. Mutually exclusive with `--control-image`.
+    #[arg(long = "control-from", value_name = "PATH")]
+    pub control_from: Option<PathBuf>,
 
     /// Multiplier applied to ControlNet residuals. Sweet spot 0.6–1.0.
     #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
@@ -369,6 +376,7 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         identity,
         control_kind: args.control,
         control_image: args.control_image,
+        control_from: args.control_from,
         control_strength: args.control_strength,
     })
     .await?;
