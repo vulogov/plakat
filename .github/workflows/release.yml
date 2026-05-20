@@ -251,7 +251,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          draft: true   # leave as draft for review; flip to false to auto-publish
+          draft: false   # auto-publish on tag push
           generate_release_notes: true
           files: |
             dist/*.tar.gz
