@@ -757,6 +757,15 @@ region mask), use the dedicated `plakat img2img` subcommand. Full
 reference: [`IMG2IMG.md`](IMG2IMG.md). Runnable walkthrough:
 [`examples/tutorials/IMG2IMG/`](../examples/tutorials/IMG2IMG/).
 
+### ControlNet (layout conditioning)
+
+For structural guidance from a depth map (or, in future releases,
+canny/scribble/pose), every SD-family subcommand accepts
+`--control <KIND> --control-image PATH [--control-strength F]`.
+v0.9 ships `depth` conditioning. Full reference:
+[`CONTROLNET.md`](CONTROLNET.md). Runnable walkthrough:
+[`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
+
 ### Generate → 4× ML upscale
 
 ```bash

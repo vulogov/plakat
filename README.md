@@ -47,6 +47,10 @@ plakat img2img photo.jpg --prompt "watercolor painting of the same scene"
 plakat img2img photo.jpg --mask sky.png \
     --prompt "dramatic stormy sky, lightning"
 
+# ControlNet: layout-guided generation from a depth map
+plakat generate "a fox in tall grass" \
+    --control depth --control-image scene_depth.png
+
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
 plakat portrait "a portrait, soft window light" \
@@ -118,6 +122,9 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     cutouts into named zones of generated images.
   - [`IMG2IMG.md`](Documentation/IMG2IMG.md) — image-to-image and
     inpaint via `plakat img2img`.
+  - [`CONTROLNET.md`](Documentation/CONTROLNET.md) — ControlNet
+    conditioning (`--control depth --control-image PATH`) for
+    layout-guided generation.
 
 ## Releases
 

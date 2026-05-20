@@ -46,6 +46,15 @@ If you're new to plakat, work through these in order:
    [`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)
    (four shell scripts + a procedurally-drawn sample input + mask).
 
+7. [`CONTROLNET_TUTORIAL.md`](CONTROLNET_TUTORIAL.md) — add
+   structural guidance to any generation with `--control depth
+   --control-image PATH`. The conditioning image shapes the
+   composition (where the subject sits, what the depth is) while
+   the prompt drives content. Composes cleanly with generate /
+   portrait / img2img / scenarios. The hands-on companion lives at
+   [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
+   (three shell scripts + a procedurally-drawn sample depth map).
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -86,4 +95,5 @@ manuals in [`Documentation/`](..):
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
 - Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
 - Image-to-image and inpaint flags → [`IMG2IMG.md`](../IMG2IMG.md)
+- ControlNet conditioning flags → [`CONTROLNET.md`](../CONTROLNET.md)
 - Apple chip + memory tiers, expected speeds → [`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md)
