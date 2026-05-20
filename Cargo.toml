@@ -75,7 +75,14 @@ image = { version = "0.25", default-features = false, features = [
 rand = "0.8"
 
 # Hugging Face Hub
-hf-hub = { version = "0.4", features = ["tokio"] }
+# default-features disabled so hf-hub doesn't pull in openssl via
+# `native-tls`. Rustls keeps the dep graph C-free, which matters
+# for cross-compiles (notably aarch64-unknown-linux-gnu) where a
+# host-only OpenSSL install can't satisfy openssl-sys.
+hf-hub = { version = "0.4", default-features = false, features = [
+  "tokio",
+  "rustls-tls",
+] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 
 # Candle (inference)
