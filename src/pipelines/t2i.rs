@@ -639,7 +639,17 @@ impl Pipeline {
 
     /// Generate `req.count` images for one prompt. Reuses the loaded
     /// UNet/VAE/text encoder.
-    pub fn generate(&self, req: &GenRequest) -> Result<()> {
+    ///
+    /// `control` is the v0.9 ControlNet hook. When `Some`, every
+    /// denoise step (including the refiner pass) feeds the network
+    /// the same conditioning + strength via
+    /// [`UNet2DConditionModel::forward_with_additional_residuals`].
+    /// `None` preserves byte-identical pre-v0.9 behaviour.
+    pub fn generate(
+        &self,
+        req: &GenRequest,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+    ) -> Result<()> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
@@ -719,6 +729,7 @@ impl Pipeline {
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
+                    control,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
@@ -755,6 +766,7 @@ impl Pipeline {
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
+                                control,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -789,6 +801,7 @@ impl Pipeline {
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
         let latent_in = if do_cfg {
             Tensor::cat(&[latents, latents], 0)?
@@ -796,7 +809,30 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-        let noise_pred = unet.forward(&latent_in, timestep as f64, text_embeddings)?;
+        let noise_pred = match control {
+            None => unet.forward(&latent_in, timestep as f64, text_embeddings)?,
+            Some(cr) => {
+                let cond_in = if do_cfg {
+                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                } else {
+                    cr.conditioning.clone()
+                };
+                let (down, mid) = cr.net.forward(
+                    &latent_in,
+                    timestep as f64,
+                    text_embeddings,
+                    &cond_in,
+                    cr.strength,
+                )?;
+                unet.forward_with_additional_residuals(
+                    &latent_in,
+                    timestep as f64,
+                    text_embeddings,
+                    Some(&down),
+                    Some(&mid),
+                )?
+            }
+        };
         let noise_pred = if do_cfg {
             let chunks = noise_pred.chunk(2, 0)?;
             let uncond = &chunks[0];
@@ -919,23 +955,27 @@ pub async fn run(req: Request) -> Result<()> {
     })
     .await?;
 
-    pipeline.generate(&GenRequest {
-        prompt: req.prompt,
-        negative: req.negative,
-        width: req.width,
-        height: req.height,
-        count: req.count,
-        steps: req.steps,
-        guidance: req.guidance,
-        seed: req.seed,
-        out_dir: req.out_dir,
-        scheduler: req.scheduler,
-        refine: req.refine,
-        refine_strength: req.refine_strength,
-        refiner_frac: if req.use_refiner {
-            Some(req.refiner_frac)
-        } else {
-            None
+    pipeline.generate(
+        &GenRequest {
+            prompt: req.prompt,
+            negative: req.negative,
+            width: req.width,
+            height: req.height,
+            count: req.count,
+            steps: req.steps,
+            guidance: req.guidance,
+            seed: req.seed,
+            out_dir: req.out_dir,
+            scheduler: req.scheduler,
+            refine: req.refine,
+            refine_strength: req.refine_strength,
+            refiner_frac: if req.use_refiner {
+                Some(req.refiner_frac)
+            } else {
+                None
+            },
         },
-    })
+        // TODO(v0.9 CLI): thread the user's --control flags through here.
+        None,
+    )
 }

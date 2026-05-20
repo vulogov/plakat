@@ -520,7 +520,16 @@ impl Pipeline {
     }
 
     /// Run `req.count` portraits. Reuses loaded weights across calls.
-    pub fn generate(&self, req: &GenRequest) -> Result<()> {
+    ///
+    /// `control` is the v0.9 ControlNet hook — when `Some`, the
+    /// supplied conditioning is applied at every denoise step via
+    /// [`UNet2DConditionModel::forward_with_additional_residuals`].
+    /// `None` preserves byte-identical pre-v0.9 behaviour.
+    pub fn generate(
+        &self,
+        req: &GenRequest,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+    ) -> Result<()> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
@@ -575,6 +584,7 @@ impl Pipeline {
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
+                    control,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
@@ -607,6 +617,7 @@ impl Pipeline {
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
+                                control,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -717,7 +728,14 @@ impl Pipeline {
     /// Generate one sample of latents from text alone (no inpainting).
     /// Used as the base for multi-persona compositing. Skips the polish
     /// pass — orchestrator may run polish on the final composite.
-    pub fn generate_latents_one(&self, req: &GenRequest, seed: u64) -> Result<Tensor> {
+    ///
+    /// `control` — same v0.9 ControlNet hook as [`Self::generate`].
+    pub fn generate_latents_one(
+        &self,
+        req: &GenRequest,
+        seed: u64,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+    ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
@@ -749,7 +767,7 @@ impl Pipeline {
             &format!("composite-base {face_tag}"),
         );
         for &t in &timesteps {
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -770,6 +788,7 @@ impl Pipeline {
         mask: &Tensor,
         req: &GenRequest,
         seed: u64,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
         let do_cfg = req.guidance > 1.0;
@@ -816,7 +835,7 @@ impl Pipeline {
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -876,6 +895,7 @@ impl Pipeline {
         req: &GenRequest,
         strength: f32,
         seed: u64,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
         let strength = strength.clamp(0.0, 1.0);
@@ -926,7 +946,7 @@ impl Pipeline {
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg)?;
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
         }
@@ -972,6 +992,7 @@ impl Pipeline {
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
+        control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
         let latent_in = if do_cfg {
             Tensor::cat(&[latents, latents], 0)?
@@ -979,9 +1000,37 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-        let noise_pred = self
-            .unet
-            .forward(&latent_in, timestep as f64, encoder_hidden_states)?;
+        let noise_pred = match control {
+            None => self.unet.forward(
+                &latent_in,
+                timestep as f64,
+                encoder_hidden_states,
+            )?,
+            Some(cr) => {
+                // Match latent_in's batch dim — duplicate the conditioning
+                // when CFG doubles up uncond + cond. Same convention as
+                // diffusers' StableDiffusionControlNetPipeline.
+                let cond_in = if do_cfg {
+                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                } else {
+                    cr.conditioning.clone()
+                };
+                let (down, mid) = cr.net.forward(
+                    &latent_in,
+                    timestep as f64,
+                    encoder_hidden_states,
+                    &cond_in,
+                    cr.strength,
+                )?;
+                self.unet.forward_with_additional_residuals(
+                    &latent_in,
+                    timestep as f64,
+                    encoder_hidden_states,
+                    Some(&down),
+                    Some(&mid),
+                )?
+            }
+        };
         let noise_pred = if do_cfg {
             let chunks = noise_pred.chunk(2, 0)?;
             let uncond = &chunks[0];
@@ -1040,24 +1089,28 @@ pub async fn run(req: Request) -> Result<()> {
         crate::pipelines::ip_adapter::normalize_photo_weights(&mut photos)?;
     }
 
-    pipeline.generate(&GenRequest {
-        prompt: req.prompt,
-        negative: req.negative,
-        photos,
-        width: req.width,
-        height: req.height,
-        count: req.count,
-        steps: req.steps,
-        guidance: req.guidance,
-        seed: req.seed,
-        out_dir: req.out_dir,
-        scheduler: req.scheduler,
-        refine: req.refine,
-        refine_strength: req.refine_strength,
-        face_strength: req.face_strength,
-        face_bbox: req.face_bbox,
-        face_landmarks: req.face_landmarks,
-    })
+    pipeline.generate(
+        &GenRequest {
+            prompt: req.prompt,
+            negative: req.negative,
+            photos,
+            width: req.width,
+            height: req.height,
+            count: req.count,
+            steps: req.steps,
+            guidance: req.guidance,
+            seed: req.seed,
+            out_dir: req.out_dir,
+            scheduler: req.scheduler,
+            refine: req.refine,
+            refine_strength: req.refine_strength,
+            face_strength: req.face_strength,
+            face_bbox: req.face_bbox,
+            face_landmarks: req.face_landmarks,
+        },
+        // TODO(v0.9 CLI): thread --control through portrait::run too.
+        None,
+    )
 }
 
 // =====================================================================

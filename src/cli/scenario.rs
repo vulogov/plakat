@@ -1286,7 +1286,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     face_strength,
                     face_bbox: persona.face_bbox,
                     face_landmarks: persona.face_landmarks,
-                })?;
+                }, None)?;
             }
 
             // -------- multi-persona, region-masked compositing --------
@@ -1337,7 +1337,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         face_landmarks: None,
                     };
 
-                    let mut latents = pp.generate_latents_one(&base_req, img_seed)?;
+                    let mut latents = pp.generate_latents_one(&base_req, img_seed, None)?;
 
                     // Chain one inpaint pass per persona. Each pass uses
                     // a per-persona seed offset so re-running with the same
@@ -1376,7 +1376,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed)?;
+                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, None)?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
@@ -1403,7 +1403,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req)?,
+                (Some(p), _) => p.generate(&gen_req, None)?,
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they
