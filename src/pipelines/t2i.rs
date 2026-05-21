@@ -64,6 +64,19 @@ pub struct Request {
     /// each active conditioner are summed before being fed to the UNet.
     /// All conditioners share the SD/SDXL variant (determined by `model`).
     pub controls: Vec<crate::pipelines::controlnet::ControlSpec>,
+
+    // ---------- v0.12 tiled hi-res ----------
+    /// When `Some`, run MultiDiffusion-style tiled denoise on a
+    /// canvas of `(width, height)`. The UNet only ever sees
+    /// `tile_size × tile_size` crops; overlapping tiles are blended
+    /// per step via a 2D Hann window. Lets SDXL produce 4K+ outputs
+    /// without exceeding its trained working resolution.
+    ///
+    /// Currently SDXL only — mixing with ControlNet or the SDXL
+    /// refiner is rejected (the per-tile residual concat + the
+    /// scheduler-switch mid-stream don't compose with MultiDiffusion).
+    /// Both restrictions are tracked for a follow-up.
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -147,6 +160,58 @@ fn resolve_repo(model: &str) -> String {
     } else {
         crate::hf::resolve_alias(model).to_string()
     }
+}
+
+/// v0.12 phase 2b: pick a community Flux ControlNet for the user's
+/// requested conditioning kind. Routes to Shakker-Labs/Union-Pro-v2
+/// for the multi-mode conditioners (canny, softedge, openpose, depth,
+/// lineart) and falls back to specialised CNs where Union doesn't
+/// cover a kind.
+///
+/// Shakker-Labs Union Pro v2 mode mapping (per the model card):
+///   0: canny       (also covers `lineart` in practice)
+///   1: softedge    (HED-style)
+///   2: openpose
+///   3: depth
+///   4: gray
+fn flux_controlnet_load_for(
+    kind: crate::pipelines::controlnet::ControlKind,
+    fvar: crate::pipelines::flux::Variant,
+    strength: f32,
+) -> Result<crate::pipelines::flux::FluxControlNetLoad> {
+    use crate::pipelines::controlnet::ControlKind;
+    use crate::pipelines::flux;
+    use crate::pipelines::flux_controlnet;
+    if !matches!(fvar, flux::Variant::Dev) {
+        anyhow::bail!(
+            "Flux ControlNet is only wired for --model flux-dev in v0.12. \
+             FLUX.1-schnell ControlNets exist but aren't yet validated."
+        );
+    }
+    // Default route: Shakker-Labs Union Pro v2. Covers canny / softedge
+    // / openpose / depth / lineart with one checkpoint via mode index.
+    let union_pro_v2_repo = "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0";
+    let union_pro_v2_file = "diffusion_pytorch_model.safetensors";
+    let union_mode = match kind {
+        ControlKind::Canny => Some(0u32),
+        ControlKind::SoftEdge => Some(1u32),
+        ControlKind::OpenPose => Some(2u32),
+        ControlKind::Depth => Some(3u32),
+        // Lineart isn't a separate Union Pro v2 mode but produces
+        // close-enough results via the canny channel (canny is
+        // strict edge detection; lineart is softer pen-style).
+        ControlKind::Lineart => Some(0u32),
+    };
+    Ok(flux::FluxControlNetLoad {
+        repo: union_pro_v2_repo.to_string(),
+        file: union_pro_v2_file.to_string(),
+        cfg: flux_controlnet::Config::shakker_union_pro_v2(),
+        scale: strength,
+        mode: union_mode,
+        // Caller fills in the conditioning path after this returns —
+        // we don't have access to the per-spec image= path here.
+        conditioning: None,
+    })
 }
 
 async fn fetch_first(repo: &str, candidates: &[&str]) -> Result<PathBuf> {
@@ -727,6 +792,250 @@ impl Pipeline {
         Ok(())
     }
 
+    /// v0.12 tiled hi-res — MultiDiffusion-style SDXL generation at
+    /// arbitrary target sizes. The UNet only ever sees
+    /// `cfg.tile_size × cfg.tile_size` crops; per-step noise
+    /// predictions from overlapping tiles blend via a 2D Hann window.
+    /// See `pipelines::tiled` for the windowing math and tile-position
+    /// generator.
+    ///
+    /// Restrictions enforced upstream in `run()`:
+    ///   * SDXL only — SD 1.5 / 2.1 tiled mode is a follow-up.
+    ///   * No ControlNet, no SDXL refiner.
+    ///
+    /// `controls` parameter from `generate` is omitted entirely here —
+    /// the validation in `run()` guarantees an empty stack when tiled
+    /// is engaged.
+    pub fn generate_tiled(
+        &self,
+        req: &GenRequest,
+        cfg: crate::pipelines::tiled::TiledConfig,
+    ) -> Result<()> {
+        use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
+
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
+        std::fs::create_dir_all(&req.out_dir)
+            .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
+
+        // Dim sanity. The pipeline guarantees `req.width / req.height`
+        // are positive multiples of 8 (CLI enforces this); we add a
+        // tile-vs-canvas sanity check here.
+        if req.width < cfg.tile_size || req.height < cfg.tile_size {
+            anyhow::bail!(
+                "--tiled: canvas {}x{} smaller than --tile-size {} — use regular \
+                 generate instead of --tiled",
+                req.width,
+                req.height,
+                cfg.tile_size,
+            );
+        }
+        if cfg.tile_size % 8 != 0 || cfg.stride % 8 != 0 {
+            anyhow::bail!(
+                "--tile-size ({}) and --stride ({}) must be multiples of 8",
+                cfg.tile_size,
+                cfg.stride
+            );
+        }
+
+        let (w, h) = (req.width as usize, req.height as usize);
+        let latent_h = h / 8;
+        let latent_w = w / 8;
+        let tile_latent = (cfg.tile_size as usize) / 8;
+        let stride_latent = (cfg.stride as usize) / 8;
+
+        let do_cfg = req.guidance > 1.0;
+        let (text_embeddings, pooled_text_sdxl) =
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+        let pooled_text = pooled_text_sdxl
+            .ok_or_else(|| anyhow!("generate_tiled requires SDXL pooled text embeds"))?;
+
+        // 2D Hann window for blending per-tile noise predictions.
+        // Same dims as a per-tile noise tensor's spatial axes; one
+        // window reused for every tile, every step.
+        let window = hann_window_2d(tile_latent, &self.core.device, self.core.dtype)?;
+        // Spatial broadcast helper for the weight buffer — needs a
+        // single-channel (1, 1, tile, tile) shape, which `window`
+        // already has.
+        let positions = tile_positions(latent_h, latent_w, tile_latent, stride_latent);
+        crate::ui::progress::println(&format!(
+            "  {} tiled SDXL: {} × {} ({}×{} latent), {} tile(s) at {}px stride {}px",
+            console::style("◆").cyan().bold(),
+            w,
+            h,
+            latent_w,
+            latent_h,
+            positions.len(),
+            cfg.tile_size,
+            cfg.stride,
+        ));
+
+        let vae_scale: f64 = self.core.variant.vae_scale();
+
+        for idx in 0..req.count {
+            let seed = req
+                .seed
+                .map(|s| s + idx as u64)
+                .unwrap_or_else(rand::random)
+                & (u32::MAX as u64);
+            if let Err(e) = self.core.device.set_seed(seed) {
+                tracing::debug!(
+                    target: "plakat",
+                    "set_seed not supported ({e}); using global RNG"
+                );
+            }
+
+            let mut scheduler =
+                crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
+            let timesteps = scheduler.timesteps().to_vec();
+
+            // Full-size latent, scaled by init_noise_sigma to match
+            // the scheduler's first step expectation.
+            let mut latents = Tensor::randn(
+                0f32,
+                1f32,
+                (1usize, 4usize, latent_h, latent_w),
+                &self.core.device,
+            )?
+            .to_dtype(self.core.dtype)?;
+            latents = (latents * scheduler.init_noise_sigma())?;
+
+            let bar = crate::ui::progress::step_bar(
+                timesteps.len() as u64,
+                &format!("tiled img {}/{}", idx + 1, req.count),
+            );
+
+            for &timestep in &timesteps {
+                // Accumulator + weight buffers, full-latent-sized.
+                // `acc` holds Σ window·noise_pred, `weights` holds Σ window.
+                let mut acc = Tensor::zeros(
+                    (1, 4, latent_h, latent_w),
+                    self.core.dtype,
+                    &self.core.device,
+                )?;
+                let mut weights = Tensor::zeros(
+                    (1, 1, latent_h, latent_w),
+                    self.core.dtype,
+                    &self.core.device,
+                )?;
+
+                for TilePos { y, x, size } in positions.iter().copied() {
+                    let tile_latents = latents.narrow(2, y, size)?.narrow(3, x, size)?;
+
+                    // Per-tile micro-conditioning. `original_size` and
+                    // `target_size` stay at the FULL canvas — that's
+                    // what the model thinks the target output is.
+                    // `crops_coords_top_left` tells SDXL where this
+                    // tile sits within that target. Diffusers'
+                    // DemoFusion / Tiled-SDXL takes this approach.
+                    let tile_y_px = (y * 8) as u32;
+                    let tile_x_px = (x * 8) as u32;
+                    let tile_add_time_ids =
+                        crate::pipelines::sdxl_unet::build_tile_add_time_ids(
+                            req.height,
+                            req.width,
+                            tile_y_px,
+                            tile_x_px,
+                            &self.core.device,
+                            self.core.dtype,
+                        )?;
+                    let tile_add_time_ids = if do_cfg {
+                        Tensor::cat(&[&tile_add_time_ids, &tile_add_time_ids], 0)?
+                    } else {
+                        tile_add_time_ids
+                    };
+
+                    let latent_in = if do_cfg {
+                        Tensor::cat(&[&tile_latents, &tile_latents], 0)?
+                    } else {
+                        tile_latents.clone()
+                    };
+                    let latent_in =
+                        scheduler.scale_model_input(latent_in, timestep)?;
+
+                    let tile_noise_pred = self.core.unet.forward(
+                        &latent_in,
+                        timestep as f64,
+                        &text_embeddings,
+                        Some(&pooled_text),
+                        Some(&tile_add_time_ids),
+                    )?;
+                    // Merge CFG inside the tile so the accumulator
+                    // sees one batch row, not two.
+                    let tile_noise_pred = if do_cfg {
+                        let chunks = tile_noise_pred.chunk(2, 0)?;
+                        let uncond = &chunks[0];
+                        let text = &chunks[1];
+                        (uncond + ((text - uncond)? * req.guidance)?)?
+                    } else {
+                        tile_noise_pred
+                    };
+
+                    // Weight by the Hann window (broadcasts (1, 1, t, t)
+                    // across the (1, 4, t, t) noise pred).
+                    let weighted = tile_noise_pred.broadcast_mul(&window)?;
+
+                    // Accumulate into the full-size buffers via
+                    // slice_assign. We narrow the current acc region,
+                    // add the weighted contribution, then write back.
+                    let acc_region = acc.narrow(2, y, size)?.narrow(3, x, size)?;
+                    let acc_updated = (acc_region + &weighted)?;
+                    acc = acc.slice_assign(&[0..1, 0..4, y..y + size, x..x + size], &acc_updated)?;
+
+                    let w_region = weights.narrow(2, y, size)?.narrow(3, x, size)?;
+                    let w_updated = w_region.broadcast_add(&window)?;
+                    weights = weights.slice_assign(
+                        &[0..1, 0..1, y..y + size, x..x + size],
+                        &w_updated,
+                    )?;
+                }
+
+                // Average: noise_pred_full = acc / weights (broadcast
+                // across the 4 channels).
+                let noise_pred = acc.broadcast_div(&weights)?;
+                latents = scheduler.step(&noise_pred, timestep, &latents)?;
+
+                bar.inc(1);
+                bar.set_message(format!("t={timestep} seed={seed}"));
+            }
+            bar.finish_and_clear();
+
+            // VAE decode + save. At 4K the whole-canvas decode is the
+            // memory-tightest step in the pipeline — use the tiled
+            // VAE decoder (same MultiDiffusion Hann-blend math, just
+            // applied at pixel resolution).
+            let pre_decode = (&latents / vae_scale)?;
+            // Use the same tile_latent size as the denoise tiles so
+            // each VAE-decode tile matches the receptive field the
+            // UNet operated on. Stride too matches.
+            let vae_spin = crate::ui::progress::spinner(&format!(
+                "Tiled VAE decode ({}×{} px)",
+                w, h
+            ));
+            let image = {
+                let vae = &self.core.vae;
+                crate::pipelines::tiled::tile_decode_2d(
+                    &pre_decode,
+                    tile_latent,
+                    stride_latent,
+                    8, // SDXL VAE downsample factor
+                    |tile| Ok(vae.decode(tile)?),
+                )?
+            };
+            vae_spin.finish_with_message("✓ VAE decoded");
+            let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+            let image = (image * 255.0)?
+                .to_dtype(DType::U8)?
+                .i(0)?
+                .permute((1, 2, 0))?;
+            let (oh, ow, _) = image.dims3()?;
+            let buf = image.flatten_all()?.to_vec1::<u8>()?;
+            let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
+            crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
+            crate::ui::progress::println(&format!("→ {}", out_path.display()));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn denoise_step(
         &self,
@@ -770,6 +1079,10 @@ impl Pipeline {
                 timestep,
                 text_embeddings,
                 do_cfg,
+                // v0.12: SDXL ControlNet now consumes the same
+                // text_time micro-conditioning as the UNet.
+                add_text_embeds,
+                add_time_ids,
             )?;
             unet.forward_with_additional_residuals(
                 &latent_in,
@@ -870,20 +1183,63 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
-    // Flux routes to its own pipeline; LoRAs are not supported there yet.
+    // Flux routes to its own pipeline. v0.12: LoRAs ARE supported via
+    // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
-        if !req.loras.is_empty() {
-            tracing::warn!(target: "plakat",
-                "ignoring {} LoRA file(s): kohya SD LoRAs don't apply to Flux's transformer",
-                req.loras.len()
-            );
-        }
         use crate::pipelines::flux;
         let fvar = if matches!(variant, Variant::FluxDev) {
             flux::Variant::Dev
         } else {
             flux::Variant::Schnell
         };
+        // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
+        // early if any LoRA file can't be fetched / opened.
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+            if req.loras.is_empty() {
+                Vec::new()
+            } else {
+                let s = progress::spinner("Resolving Flux LoRA file(s)");
+                let mut v = Vec::with_capacity(req.loras.len());
+                for spec in &req.loras {
+                    v.push(spec.resolve().await?);
+                }
+                s.finish_with_message(format!("✓ resolved {} Flux LoRA file(s)", v.len()));
+                v
+            };
+        // v0.12 phase 2b: Flux ControlNet routing. At most one
+        // --control-spec for Flux; multi-CN is a follow-up. The
+        // spec's `image=PATH` is the conditioning image (pre-rendered
+        // canny / depth / etc.); `from=PATH` is rejected for Flux for
+        // now because we don't ship Flux auto-annotators yet —
+        // pre-rendered is the supported workflow.
+        // v0.12 multi: every `--control-spec` becomes one entry in
+        // the Flux ControlNet stack. Each loads its own weights and
+        // contributes residuals that sum at denoise time.
+        let mut flux_controlnets: Vec<flux::FluxControlNetLoad> = Vec::new();
+        for spec in &req.controls {
+            let cond_path = match (spec.image.as_ref(), spec.from.as_ref()) {
+                (Some(p), None) => p.clone(),
+                (None, Some(_)) => anyhow::bail!(
+                    "--control-spec '{}:from=PATH' isn't supported on Flux yet — \
+                     auto-annotators for Flux aren't wired up. Pre-render the \
+                     conditioning map (canny / depth / etc.) and pass via \
+                     `image=PATH` instead.",
+                    spec.kind.slug()
+                ),
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                    spec.kind
+                ),
+                (None, None) => anyhow::bail!(
+                    "--control-spec for kind={:?}: requires image=PATH on Flux",
+                    spec.kind
+                ),
+            };
+            let mut cn_load = flux_controlnet_load_for(spec.kind, fvar, spec.strength)?;
+            cn_load.conditioning = Some(cond_path);
+            flux_controlnets.push(cn_load);
+        }
+
         flux::run(flux::Request {
             prompt: req.prompt,
             variant: fvar,
@@ -900,9 +1256,43 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             seed: req.seed,
             out_dir: req.out_dir,
             device: req.device,
+            loras: resolved_loras,
+            lora_scale: req.lora_scale,
+            controlnets: flux_controlnets,
+            // Per-CN conditioning lives on each FluxControlNetLoad now.
+            conditioning: None,
         })
         .await?;
         return Ok(None);
+    }
+
+    // v0.12 tiled hi-res: validate combinations early. MultiDiffusion
+    // currently doesn't compose with ControlNet (we'd need to crop
+    // the conditioning per tile and re-run each ControlNet inside the
+    // tile loop) or the SDXL refiner (the per-step refiner switch
+    // crosses the tile-blend boundary). Both are reachable follow-ups.
+    if req.tiled.is_some() {
+        if variant != Variant::Sdxl && variant != Variant::SdxlTurbo {
+            anyhow::bail!(
+                "--tiled is currently SDXL-only (got variant {:?}). Tiled \
+                 hi-res for SD 1.5 / SD 2.1 lands in a follow-up.",
+                variant
+            );
+        }
+        if !req.controls.is_empty() {
+            anyhow::bail!(
+                "--tiled does not yet compose with --control-spec. The \
+                 conditioning would need to be cropped per tile and each \
+                 ControlNet re-run inside the tile loop; tracked as a \
+                 follow-up."
+            );
+        }
+        if req.use_refiner {
+            anyhow::bail!(
+                "--tiled does not compose with --refiner. The refiner UNet \
+                 switch mid-schedule crosses the tile-blend boundary."
+            );
+        }
     }
 
     // -- ControlNet preload (v0.9 / v0.11 multi). Owned data lives on
@@ -944,27 +1334,28 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         })
         .collect();
 
-    pipeline.generate(
-        &GenRequest {
-            prompt: req.prompt,
-            negative: req.negative,
-            width: req.width,
-            height: req.height,
-            count: req.count,
-            steps: req.steps,
-            guidance: req.guidance,
-            seed: req.seed,
-            out_dir: req.out_dir,
-            scheduler: req.scheduler,
-            refine: req.refine,
-            refine_strength: req.refine_strength,
-            refiner_frac: if req.use_refiner {
-                Some(req.refiner_frac)
-            } else {
-                None
-            },
+    let gen_req = GenRequest {
+        prompt: req.prompt,
+        negative: req.negative,
+        width: req.width,
+        height: req.height,
+        count: req.count,
+        steps: req.steps,
+        guidance: req.guidance,
+        seed: req.seed,
+        out_dir: req.out_dir,
+        scheduler: req.scheduler,
+        refine: req.refine,
+        refine_strength: req.refine_strength,
+        refiner_frac: if req.use_refiner {
+            Some(req.refiner_frac)
+        } else {
+            None
         },
-        &control_reqs,
-    )?;
+    };
+    match req.tiled {
+        None => pipeline.generate(&gen_req, &control_reqs)?,
+        Some(cfg) => pipeline.generate_tiled(&gen_req, cfg)?,
+    }
     Ok(Some(pipeline.core()))
 }
