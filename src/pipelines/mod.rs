@@ -3,6 +3,7 @@ pub mod controlnet;
 pub mod controlnet_annotator;
 pub mod depth;
 pub mod hed;
+pub mod lineart;
 pub mod sd_core;
 pub mod sdxl_clip;
 pub mod sdxl_unet;
