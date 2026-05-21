@@ -77,6 +77,18 @@ pub struct Request {
     /// scheduler-switch mid-stream don't compose with MultiDiffusion).
     /// Both restrictions are tracked for a follow-up.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+
+    /// v0.13 phase 1b: quantize T5-XXL when running Flux GGUF.
+    /// Only meaningful with `--model flux-*-gguf`; bails loud on
+    /// BF16 Flux. Ignored entirely on SD-family models.
+    pub quantize_t5: bool,
+    /// v0.13 phase 5: GGUF quant level for the Flux transformer. `None`
+    /// → `"Q4_K_S"`. Validated against city96's published levels.
+    /// Ignored on BF16 Flux and SD-family models.
+    pub flux_quant_level: Option<String>,
+    /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
+    /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
+    pub t5_quant_level: Option<String>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -124,13 +136,17 @@ pub enum Variant {
     SdxlTurbo,
     FluxSchnell,
     FluxDev,
+    /// v0.13 phase 2: Flux.1-Fill-dev. 384-channel `img_in`, inpaint-only.
+    FluxFillDev,
 }
 
 impl Variant {
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
         if m.contains("flux") {
-            if m.contains("dev") {
+            if m.contains("fill") {
+                Self::FluxFillDev
+            } else if m.contains("dev") {
                 Self::FluxDev
             } else {
                 Self::FluxSchnell
@@ -150,7 +166,7 @@ impl Variant {
         matches!(self, Self::Sdxl | Self::SdxlTurbo)
     }
     pub fn is_flux(self) -> bool {
-        matches!(self, Self::FluxSchnell | Self::FluxDev)
+        matches!(self, Self::FluxSchnell | Self::FluxDev | Self::FluxFillDev)
     }
 }
 
@@ -208,10 +224,38 @@ fn flux_controlnet_load_for(
         cfg: flux_controlnet::Config::shakker_union_pro_v2(),
         scale: strength,
         mode: union_mode,
-        // Caller fills in the conditioning path after this returns —
-        // we don't have access to the per-spec image= path here.
+        // Caller fills in the conditioning path + start/end after this
+        // returns — we don't have access to the per-spec data here.
         conditioning: None,
+        // Sane defaults: active the entire schedule. The caller
+        // overwrites from `ControlSpec.start` / `.end`.
+        start: 0.0,
+        end: 1.0,
     })
+}
+
+/// v0.13 phase 8: take the `(1, 3, H, W)` `[0, 1]` tensor a
+/// ControlNet auto-annotator produces and write it as an 8-bit RGB
+/// PNG. The Flux ControlNet path consumes its conditioning via a path
+/// (`encode_conditioning` reads + VAE-encodes), so this is the bridge
+/// from "annotator output in tensor land" to "path the Flux pipeline
+/// loads".
+fn write_annotator_tensor_as_png(anno: &Tensor, out_path: &std::path::Path) -> Result<()> {
+    // Annotator emits (1, 3, H, W) in [0, 1]. Convert to (H, W, 3) u8.
+    let (b, c, h, w) = anno.dims4()?;
+    if b != 1 || c != 3 {
+        anyhow::bail!(
+            "annotator output expected shape (1, 3, H, W), got ({b}, {c}, {h}, {w})"
+        );
+    }
+    let scaled = (anno * 255.0)?
+        .clamp(0f32, 255f32)?
+        .to_dtype(DType::U8)?
+        .i(0)?
+        .permute((1, 2, 0))?;
+    let buf = scaled.flatten_all()?.to_vec1::<u8>()?;
+    crate::imaging::io::save_rgb_u8(&buf, w as u32, h as u32, out_path)?;
+    Ok(())
 }
 
 async fn fetch_first(repo: &str, candidates: &[&str]) -> Result<PathBuf> {
@@ -1187,10 +1231,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
         use crate::pipelines::flux;
-        let fvar = if matches!(variant, Variant::FluxDev) {
-            flux::Variant::Dev
-        } else {
-            flux::Variant::Schnell
+        let fvar = match variant {
+            Variant::FluxDev => flux::Variant::Dev,
+            Variant::FluxFillDev => flux::Variant::FillDev,
+            _ => flux::Variant::Schnell,
         };
         // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
         // early if any LoRA file can't be fetched / opened.
@@ -1215,28 +1259,90 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         // v0.12 multi: every `--control-spec` becomes one entry in
         // the Flux ControlNet stack. Each loads its own weights and
         // contributes residuals that sum at denoise time.
+        //
+        // v0.13 phase 8: `--control-spec depth:from=photo.jpg` runs
+        // the matching auto-annotator (canny / depth / hed / lineart /
+        // openpose) and writes the result to a temp PNG that the Flux
+        // pipeline then VAE-encodes as standard conditioning. The
+        // tempdir holds those PNGs alive across the awaited
+        // `flux::run` below — dropping it after `.await?` lets the OS
+        // clean up.
+        let flux_anno_dtype = if matches!(req.device, Device::Cpu) {
+            DType::F32
+        } else {
+            DType::BF16
+        };
+        let flux_anno_tmp = tempfile::Builder::new()
+            .prefix("plakat-flux-anno-")
+            .tempdir()
+            .context("creating tempdir for Flux ControlNet auto-annotator output")?;
         let mut flux_controlnets: Vec<flux::FluxControlNetLoad> = Vec::new();
-        for spec in &req.controls {
-            let cond_path = match (spec.image.as_ref(), spec.from.as_ref()) {
+        for (cn_idx, spec) in req.controls.iter().enumerate() {
+            let cond_path: PathBuf = match (spec.image.as_ref(), spec.from.as_ref()) {
                 (Some(p), None) => p.clone(),
-                (None, Some(_)) => anyhow::bail!(
-                    "--control-spec '{}:from=PATH' isn't supported on Flux yet — \
-                     auto-annotators for Flux aren't wired up. Pre-render the \
-                     conditioning map (canny / depth / etc.) and pass via \
-                     `image=PATH` instead.",
-                    spec.kind.slug()
-                ),
+                (None, Some(from_path)) => {
+                    // Auto-annotate at the requested generation size so
+                    // the conditioning matches the canvas dims exactly
+                    // — VAE encode then needs no resize.
+                    let spin = progress::spinner(&format!(
+                        "Auto-annotating Flux ControlNet #{} ({})",
+                        cn_idx + 1,
+                        spec.kind.slug()
+                    ));
+                    let anno = crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind,
+                        from_path,
+                        req.width,
+                        req.height,
+                        &req.device,
+                        flux_anno_dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "auto-annotating {} for Flux ControlNet (--control-spec {}:from={})",
+                            spec.kind.slug(),
+                            spec.kind.slug(),
+                            from_path.display()
+                        )
+                    })?;
+                    let out_path = flux_anno_tmp.path().join(format!(
+                        "cn{}-{}.png",
+                        cn_idx,
+                        spec.kind.slug()
+                    ));
+                    write_annotator_tensor_as_png(&anno, &out_path).with_context(|| {
+                        format!(
+                            "writing auto-annotated {} → {}",
+                            spec.kind.slug(),
+                            out_path.display()
+                        )
+                    })?;
+                    spin.finish_with_message(format!(
+                        "✓ auto-annotated {} → {}",
+                        spec.kind.slug(),
+                        out_path.display()
+                    ));
+                    out_path
+                }
                 (Some(_), Some(_)) => anyhow::bail!(
                     "--control-spec for kind={:?}: image= and from= are mutually exclusive",
                     spec.kind
                 ),
                 (None, None) => anyhow::bail!(
-                    "--control-spec for kind={:?}: requires image=PATH on Flux",
+                    "--control-spec for kind={:?}: requires image=PATH or from=PATH on Flux",
                     spec.kind
                 ),
             };
             let mut cn_load = flux_controlnet_load_for(spec.kind, fvar, spec.strength)?;
             cn_load.conditioning = Some(cond_path);
+            // v0.13 phase 6: thread the `--control-spec start=…:end=…`
+            // gating window (or the legacy `--control-start/-end`
+            // flags) into the Flux CN. Gates the CN to only contribute
+            // residuals during a slice of the schedule — useful for
+            // structure-only-early or structure-only-late workflows.
+            cn_load.start = spec.start;
+            cn_load.end = spec.end;
             flux_controlnets.push(cn_load);
         }
 
@@ -1261,8 +1367,28 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             controlnets: flux_controlnets,
             // Per-CN conditioning lives on each FluxControlNetLoad now.
             conditioning: None,
+            quantize_t5: req.quantize_t5,
+            flux_quant_level: req.flux_quant_level.clone(),
+            t5_quant_level: req.t5_quant_level.clone(),
+            // `plakat generate` doesn't take inpaint / img2img inputs
+            // — those flow in via `plakat img2img --model flux-…`.
+            // If the user picks Fill via `generate` we'll bail loud in
+            // `Pipeline::generate`.
+            init_image: None,
+            mask: None,
+            strength: None,
+            // v0.13 phase 4: route `plakat generate --tiled` to the
+            // Flux pipeline. The pipeline itself bails loud if --tiled
+            // is combined with ControlNet or Fill in this phase.
+            tiled: req.tiled,
         })
         .await?;
+        // Tempdir survives until here so the auto-annotated PNGs are
+        // alive across `flux::run` (the Flux pipeline reads them inside
+        // `Pipeline::generate`). Now safe to drop — the conditioning
+        // tensors are already VAE-encoded and resident in the loaded
+        // pipeline.
+        drop(flux_anno_tmp);
         return Ok(None);
     }
 
@@ -1271,11 +1397,18 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // the conditioning per tile and re-run each ControlNet inside the
     // tile loop) or the SDXL refiner (the per-step refiner switch
     // crosses the tile-blend boundary). Both are reachable follow-ups.
+    //
+    // v0.13 phase 4: Flux variants get tiled support via their own
+    // pipeline (handled before this guard via the early `is_flux()`
+    // dispatch). SD 1.5 / SD 2.1 tiled is still the lone gap.
     if req.tiled.is_some() {
-        if variant != Variant::Sdxl && variant != Variant::SdxlTurbo {
+        if variant != Variant::Sdxl
+            && variant != Variant::SdxlTurbo
+            && !variant.is_flux()
+        {
             anyhow::bail!(
-                "--tiled is currently SDXL-only (got variant {:?}). Tiled \
-                 hi-res for SD 1.5 / SD 2.1 lands in a follow-up.",
+                "--tiled is currently SDXL- and Flux-only (got variant {:?}). \
+                 Tiled hi-res for SD 1.5 / SD 2.1 lands in a follow-up.",
                 variant
             );
         }
@@ -1358,4 +1491,38 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         Some(cfg) => pipeline.generate_tiled(&gen_req, cfg)?,
     }
     Ok(Some(pipeline.core()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v0.13 phase 8 — annotator → PNG bridge.
+
+    #[test]
+    fn annotator_png_rejects_wrong_shape() {
+        // (1, 1, H, W) is the depth pipeline's raw output before the
+        // grayscale-to-RGB replicate — the bridge expects post-replicate.
+        let bad = Tensor::zeros((1, 1, 8, 8), DType::F32, &Device::Cpu).unwrap();
+        let tmp = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        let err = write_annotator_tensor_as_png(&bad, tmp.path()).unwrap_err();
+        assert!(format!("{err}").contains("(1, 3, H, W)"));
+    }
+
+    #[test]
+    fn annotator_png_writes_rgb_pixels() {
+        // Solid red (1.0, 0.0, 0.0) → 255-0-0 PNG. Tests that the
+        // 0..1 → 0..255 scaling + channel ordering are right.
+        let r = Tensor::ones((1, 1, 4, 4), DType::F32, &Device::Cpu).unwrap();
+        let g = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu).unwrap();
+        let b = Tensor::zeros((1, 1, 4, 4), DType::F32, &Device::Cpu).unwrap();
+        let rgb = Tensor::cat(&[&r, &g, &b], 1).unwrap();
+        // `.png` suffix so `image::save` picks the right encoder.
+        let tmp = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        write_annotator_tensor_as_png(&rgb, tmp.path()).unwrap();
+        let read = image::open(tmp.path()).unwrap().to_rgb8();
+        assert_eq!(read.dimensions(), (4, 4));
+        assert_eq!(read.get_pixel(0, 0).0, [255, 0, 0]);
+        assert_eq!(read.get_pixel(3, 3).0, [255, 0, 0]);
+    }
 }

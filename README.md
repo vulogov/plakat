@@ -8,6 +8,33 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.13 — the Flux modernization release
+
+- **Quantized Flux (GGUF)**. Run FLUX.1-dev on 16 GB GPUs.
+  `--model flux-dev-gguf` loads the 4-bit transformer (~7 GB vs ~24 GB BF16).
+  `--quantize-t5` drops T5-XXL to ~3 GB. `--quant-level Q5_K_M` picks a
+  different precision (Q2_K..F16 supported); same for `--t5-quant-level`.
+- **Flux LoRA on quantized**. Diffusers PEFT and AI-Toolkit / kohya
+  formats both compose with the GGUF backbone — affected Linears are
+  dequantized once at load, rest of the model stays 4-bit.
+- **Flux Inpainting**. `--model flux-fill-dev` + `--mask` runs BFL's
+  dedicated 384-channel inpaint checkpoint via `plakat img2img`.
+- **Flux Img2Img**. Rectified-flow init: `plakat img2img init.png
+  --model flux-dev --strength 0.7 --prompt "..."`.
+- **Tiled Flux denoise**. MultiDiffusion-style 2K–4K outputs on any
+  Flux variant: `--tiled --tile-size 1024 --tile-stride 768`. Composes
+  with ControlNet (per-tile residuals) and the tiled VAE decode.
+- **Flux ControlNet polish**. Auto-annotators wire through to Flux
+  (`--control-spec depth:from=photo.jpg` is now a one-liner). Step gating
+  via `start=…:end=…`. Multi-Flux-CN with summed residuals.
+- **Outpainting**. New `plakat outpaint` subcommand expands a canvas
+  and hands off to the inpaint pipeline (SDXL-Inpaint, SD15-Inpaint, or
+  Flux.1-Fill-dev).
+- **Scenarios**. Every v0.13 feature above is now expressible in
+  scenario HJSON: `quant-level:`, `t5-quant-level:`, `tiled:`,
+  per-task `init-image:` / `mask:` / `strength:` / `outpaint:`, plus
+  multi-CN via `controls: [...]`.
+
 ## Install
 
 `plakat` runs on every platform candle supports. Pick a backend at install
@@ -46,6 +73,23 @@ plakat img2img photo.jpg --prompt "watercolor painting of the same scene"
 # Inpaint: replace just the masked region (white = inpaint here)
 plakat img2img photo.jpg --mask sky.png \
     --prompt "dramatic stormy sky, lightning"
+
+# Outpaint: extend a photo past its borders
+plakat outpaint photo.jpg --prompt "wide mountain valley, panorama" \
+    --left 512 --right 512 --model sdxl-inpaint
+
+# FLUX.1-dev quantized — runs on 16 GB consumer GPUs
+plakat generate "..." --model flux-dev-gguf --quant-level Q5_K_M \
+    --quantize-t5 --size 1024x1024
+
+# Flux Inpainting via Flux.1-Fill-dev
+plakat img2img init.png --mask region.png --model flux-fill-dev \
+    --prompt "stained glass window in the wall"
+
+# Tiled hi-res Flux (4K outputs without OOM)
+plakat generate "ultra-detailed architectural diagram" \
+    --model flux-dev --size 3072x2048 \
+    --tiled --tile-size 1024 --tile-stride 768
 
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each
@@ -101,7 +145,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | Command | What it does |
 |---|---|
 | `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux. |
-| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL. |
+| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL / Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint). |
+| `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |

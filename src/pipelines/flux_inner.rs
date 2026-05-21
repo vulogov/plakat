@@ -89,6 +89,32 @@ impl Config {
             guidance_embed: false,
         }
     }
+
+    /// v0.13 phase 2: Flux.1-Fill-dev. Structurally identical to
+    /// `dev()` except `img_in` takes 384 input channels instead of 64.
+    /// The 384 channels are laid out per Flux token as:
+    ///
+    /// ```text
+    ///   [ noise_latent: 64 |  masked_image_latent: 64  |  mask: 256 ]
+    /// ```
+    ///
+    /// * `noise_latent` is the standard Flux 2x2-patched noisy latent
+    ///   (16 channels × 2×2 = 64) — same shape as Flux.1-dev's input.
+    /// * `masked_image_latent` is the VAE-encoded init image with the
+    ///   mask=1 (to-be-inpainted) region zeroed out, then 2x2-patched
+    ///   the same way (64 channels per token).
+    /// * `mask` is the **image-space** mask (1ch × H × W) reshaped
+    ///   into 16×16 patches (each Flux token spans a 16-pixel patch
+    ///   on the original image — 8× VAE downsample × 2× Flux patching)
+    ///   → 256 channels per token.
+    ///
+    /// Everything else (DoubleStream/SingleStream blocks, AE, text
+    /// encoders, guidance schedule) is identical to Flux.1-dev.
+    pub fn fill_dev() -> Self {
+        let mut cfg = Self::dev();
+        cfg.in_channels = 384;
+        cfg
+    }
 }
 
 // ---------------------------------------------------------------------

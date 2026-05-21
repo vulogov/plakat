@@ -8,6 +8,7 @@ pub mod generate;
 pub mod img2img;
 pub mod inspect;
 pub mod models;
+pub mod outpaint;
 pub mod portrait;
 pub mod scenario;
 pub mod style;
@@ -44,6 +45,10 @@ pub enum Command {
     /// Image-to-image: transform an existing image with a prompt.
     /// Supply `--mask` to restrict changes to a region (inpaint).
     Img2img(img2img::Img2ImgArgs),
+    /// Outpaint: extend an image past its borders. Pads the canvas,
+    /// builds a mask of the new region, hands off to the inpaint
+    /// pipeline.
+    Outpaint(outpaint::OutpaintArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
@@ -88,6 +93,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Img2img(args) => {
             let device = crate::device::select(&cli.device)?;
             img2img::run(args, device).await
+        }
+        Command::Outpaint(args) => {
+            let device = crate::device::select(&cli.device)?;
+            outpaint::run(args, device).await
         }
         Command::Stylize(args) => {
             let device = crate::device::select(&cli.device)?;
