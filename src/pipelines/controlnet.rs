@@ -649,6 +649,76 @@ fn candidates_for(
                 "diffusion_pytorch_model.safetensors",
             ),
         ],
+        // ---------- v0.11 conditioners ----------
+        (ControlKind::OpenPose, ControlNetVariant::Sd15) => vec![
+            // Primary: lllyasviel's v1.1 OpenPose ControlNet.
+            (
+                "lllyasviel/control_v11p_sd15_openpose",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback: lllyasviel's original (older) OpenPose ControlNet.
+            (
+                "lllyasviel/sd-controlnet-openpose",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            (
+                "lllyasviel/sd-controlnet-openpose",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+        ],
+        (ControlKind::OpenPose, ControlNetVariant::Sdxl) => vec![
+            // Primary: thibaud's community SDXL OpenPose (full-size diffusers state dict).
+            (
+                "thibaud/controlnet-openpose-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback: xinsir's community SDXL OpenPose.
+            (
+                "xinsir/controlnet-openpose-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
+        (ControlKind::Lineart, ControlNetVariant::Sd15) => vec![
+            (
+                "lllyasviel/control_v11p_sd15_lineart",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            (
+                "lllyasviel/control_v11p_sd15_lineart",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+        ],
+        (ControlKind::Lineart, ControlNetVariant::Sdxl) => vec![
+            // Community SDXL lineart (full-size architecture, diffusers
+            // state-dict shape). xinsir hosts both base + "anime" variants
+            // — we pick the base; users wanting anime style supply
+            // pre-rendered lineart anyway.
+            (
+                "xinsir/anime-painter-diffusers-anime-lineart-sdxl",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
+        (ControlKind::SoftEdge, ControlNetVariant::Sd15) => vec![
+            (
+                "lllyasviel/control_v11p_sd15_softedge",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            (
+                "lllyasviel/control_v11p_sd15_softedge",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+        ],
+        (ControlKind::SoftEdge, ControlNetVariant::Sdxl) => vec![
+            // No widely-mirrored "softedge" SDXL ControlNet exists yet.
+            // xinsir's "scribble" SDXL is the closest analog and accepts
+            // HED-style soft edges as input. Users wanting strict SDXL
+            // softedge should supply pre-rendered + matching weights via
+            // --model with their own repo.
+            (
+                "xinsir/controlnet-scribble-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
     }
 }
 
@@ -920,14 +990,27 @@ pub async fn load_control_stack(
     Ok(out)
 }
 
-/// What kind of conditioning signal the user requested. v0.10 ships
-/// `Depth` (Depth-Anything-V2 annotator) and `Canny` (imageproc
-/// canny annotator). Other conditioners (scribble, MLSD, pose, ...)
-/// land in later releases.
+/// What kind of conditioning signal the user requested.
+///
+/// * v0.10: `Depth` (Depth-Anything-V2 annotator), `Canny`
+///   (imageproc canny annotator).
+/// * v0.11: `OpenPose` (CMU body-pose), `Lineart` (lllyasviel sk_model),
+///   `SoftEdge` (HED).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlKind {
     Depth,
     Canny,
+    /// Skeleton keypoint conditioning. Auto-annotator runs CMU's
+    /// OpenPose body model (lllyasviel/Annotators `body_pose_model.pth`).
+    OpenPose,
+    /// Clean line-drawing conditioning. Auto-annotator runs
+    /// lllyasviel's `sk_model.pth` (anime lineart). Pairs with
+    /// `control_v11p_sd15_lineart` / SDXL equivalents.
+    Lineart,
+    /// HED-style soft edge map. Auto-annotator runs lllyasviel's
+    /// `ControlNetHED.pth` (VGG-16 + side outputs + fuse layer).
+    /// Pairs with `control_v11p_sd15_softedge` / SDXL equivalents.
+    SoftEdge,
 }
 
 impl ControlKind {
@@ -935,6 +1018,9 @@ impl ControlKind {
         match self {
             Self::Depth => "depth",
             Self::Canny => "canny",
+            Self::OpenPose => "openpose",
+            Self::Lineart => "lineart",
+            Self::SoftEdge => "softedge",
         }
     }
 }
@@ -945,8 +1031,12 @@ impl std::str::FromStr for ControlKind {
         match s.to_ascii_lowercase().as_str() {
             "depth" => Ok(Self::Depth),
             "canny" => Ok(Self::Canny),
+            "openpose" | "pose" => Ok(Self::OpenPose),
+            "lineart" => Ok(Self::Lineart),
+            "softedge" | "hed" => Ok(Self::SoftEdge),
             other => anyhow::bail!(
-                "unknown control kind {other:?} (v0.10 supports: depth, canny)"
+                "unknown control kind {other:?} \
+                 (v0.11 supports: depth, canny, openpose, lineart, softedge)"
             ),
         }
     }
@@ -1172,13 +1262,39 @@ mod tests {
         assert_eq!("DEPTH".parse::<ControlKind>().unwrap(), ControlKind::Depth);
         assert_eq!("canny".parse::<ControlKind>().unwrap(), ControlKind::Canny);
         assert_eq!("Canny".parse::<ControlKind>().unwrap(), ControlKind::Canny);
+        // v0.11 conditioners.
+        assert_eq!(
+            "openpose".parse::<ControlKind>().unwrap(),
+            ControlKind::OpenPose
+        );
+        // `pose` is an alias for openpose.
+        assert_eq!(
+            "pose".parse::<ControlKind>().unwrap(),
+            ControlKind::OpenPose
+        );
+        assert_eq!(
+            "lineart".parse::<ControlKind>().unwrap(),
+            ControlKind::Lineart
+        );
+        assert_eq!(
+            "softedge".parse::<ControlKind>().unwrap(),
+            ControlKind::SoftEdge
+        );
+        // `hed` is the historical alias for softedge.
+        assert_eq!("hed".parse::<ControlKind>().unwrap(), ControlKind::SoftEdge);
         assert!("scribble".parse::<ControlKind>().is_err());
         assert!("".parse::<ControlKind>().is_err());
     }
 
     #[test]
     fn control_kind_slug_roundtrips() {
-        for k in [ControlKind::Depth, ControlKind::Canny] {
+        for k in [
+            ControlKind::Depth,
+            ControlKind::Canny,
+            ControlKind::OpenPose,
+            ControlKind::Lineart,
+            ControlKind::SoftEdge,
+        ] {
             let s = k.slug();
             assert_eq!(s.parse::<ControlKind>().unwrap(), k);
         }
