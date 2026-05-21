@@ -80,7 +80,9 @@ impl SdVariant {
     /// for Flux separately before calling SdCore::load).
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
-        // SDXL Turbo / SDXL → Sdxl (same architecture).
+        // SDXL Turbo / SDXL / SDXL-Inpaint → Sdxl (same architecture
+        // apart from the inpaint UNet's conv_in channel count, which
+        // SdCore handles via the `is_inpaint` flag).
         if m.contains("xl") {
             return Self::Sdxl;
         }
@@ -155,12 +157,34 @@ pub struct SdCore {
     /// `text_time` micro-conditioning that diffusers' SDXL relies on
     /// for full-quality outputs).
     pub unet: SdUNet,
+    /// v0.12: 9-channel inpainting UNet (
+    /// `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` for SDXL,
+    /// `stable-diffusion-v1-5/stable-diffusion-inpainting` for SD 1.5,
+    /// or any SD 2.x inpainting mirror that follows the same naming).
+    /// When set, the loaded UNet expects a 9-channel input
+    /// `[noisy_latents(4), mask(1), masked_image_latents(4)]`. The
+    /// img2img/portrait masked paths skip RePaint-style mask blending
+    /// and instead concat the mask + masked-image latents along the
+    /// channel dim at every denoise step. `false` for everything else
+    /// (regular 4-channel UNets — RePaint blending stays in play).
+    pub is_inpaint: bool,
     pub device: Device,
     pub dtype: DType,
     /// Kept alive so merged-LoRA safetensors mmaps stay valid for
     /// the core's lifetime. Don't drop unless you also drop every
     /// pipeline holding an `Arc<SdCore>`.
     pub _lora_tmp: Vec<tempfile::NamedTempFile>,
+}
+
+/// v0.12: does this resolved repo id name a 9-channel inpainting
+/// UNet? Determines `SdCore.is_inpaint`. The check is intentionally
+/// loose — any SD-architecture repo whose id contains "inpaint" /
+/// "inpainting" gets the 9-channel UNet build path. Covers stock
+/// SDXL-Inpaint, SD 1.5 inpaint mirrors, and community SD 2.x
+/// inpainting checkpoints that follow the same naming.
+pub fn detect_inpaint(base_repo: &str) -> bool {
+    let m = base_repo.to_lowercase();
+    m.contains("inpaint") || m.contains("inpainting")
 }
 
 impl SdCore {
@@ -185,6 +209,7 @@ impl SdCore {
             );
         }
         let variant = SdVariant::detect(&base_repo);
+        let is_inpaint = detect_inpaint(&base_repo);
         let cfg = variant.config(512, 512);
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
@@ -286,10 +311,20 @@ impl SdCore {
             lora_tmps.push(tmp);
             p
         };
+        // v0.12: inpainting checkpoints (SD 1.5 / SD 2.1 / SDXL) carry
+        // 9 input channels instead of 4 — same UNet architecture
+        // otherwise, only `conv_in` changes shape.
+        let unet_in_channels = if is_inpaint { 9 } else { 4 };
         let unet = match variant {
             // SD 1.5 / SD 2.1 — candle's stock UNet (no add_embedding).
             SdVariant::Sd15 | SdVariant::Sd21 => SdUNet::Sd(
-                cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?,
+                cfg.build_unet(
+                    &effective_unet_path,
+                    &req.device,
+                    unet_in_channels,
+                    false,
+                    dtype,
+                )?,
             ),
             // SDXL — vendored UNet with `text_time` add_embedding.
             // Reuses controlnet::sdxl_unet_config() so the SDXL UNet
@@ -305,7 +340,7 @@ impl SdCore {
                 };
                 let sdxl_unet = SdxlUNet2DConditionModel::new(
                     vs_unet,
-                    4,
+                    unet_in_channels,
                     4,
                     false,
                     crate::pipelines::controlnet::sdxl_unet_config(),
@@ -416,6 +451,7 @@ impl SdCore {
             text_encoder_g,
             vae,
             unet,
+            is_inpaint,
             device: req.device,
             dtype,
             _lora_tmp: lora_tmps,

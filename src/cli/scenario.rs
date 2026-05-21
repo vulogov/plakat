@@ -952,11 +952,29 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         } else {
             crate::hf::resolve_alias(&model).to_string()
         };
+        // v0.12: Flux LoRAs (PEFT-format) are now supported via
+        // flux_lora::merge_flux_loras_into_weights. Resolve the
+        // scenario's `loras` here so the merge runs at load time.
+        let resolved_flux_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+            if loras.is_empty() {
+                Vec::new()
+            } else {
+                let mut v = Vec::with_capacity(loras.len());
+                for spec in &loras {
+                    v.push(spec.resolve().await?);
+                }
+                v
+            };
         Some(
             flux::Pipeline::load(flux::LoadRequest {
                 variant: fvar,
                 repo: resolved_repo,
                 device: device.clone(),
+                loras: resolved_flux_loras,
+                lora_scale,
+                // v0.12: scenarios don't carry Flux ControlNet
+                // config yet — schema extension is a follow-up.
+                controlnets: Vec::new(),
             })
             .await?,
         )
@@ -1585,7 +1603,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, &[])?;
+                        latents = pp.inpaint_latents_one(
+                            &latents,
+                            &mask,
+                            &pass_req,
+                            pass_seed,
+                            &[],
+                            // Scenario inpaint uses the portrait pipeline's
+                            // SD UNet (RePaint blending) — not SDXL-Inpaint.
+                            None,
+                        )?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
@@ -1633,6 +1660,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         guidance: flux_guidance,
                         seed: gen_req.seed,
                         out_dir: gen_req.out_dir.clone(),
+                        conditioning: None,
                     })?;
                 }
                 // Dry-run path doesn't reach here.

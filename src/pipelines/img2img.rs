@@ -127,6 +127,30 @@ pub async fn run(
         .to_latent_tensor(pipeline.device(), pipeline.latent_dtype())
         .context("encoding mask into latent space")?;
 
+    // v0.12 Inpaint UNet (9-channel): prepare the VAE-encoded
+    // `input × (1 - mask)` pixel image once. The inpaint UNet concats
+    // it (plus the mask) onto the latent input at every denoise step,
+    // so we only need to produce it once per img2img run rather than
+    // per step. Covers both SD 1.5 inpaint and SDXL-Inpaint.
+    let inpaint_masked_latents = if pipeline.core().is_inpaint && req.mask.is_some() {
+        let masked_pixels = build_masked_pixels_tensor(
+            &req.input,
+            &mask,
+            req.width,
+            req.height,
+            pipeline.device(),
+            pipeline.latent_dtype(),
+        )
+        .context("preparing Inpaint UNet masked-image pixels")?;
+        Some(
+            pipeline
+                .vae_encode_pixels(&masked_pixels)
+                .context("VAE-encoding Inpaint UNet masked image")?,
+        )
+    } else {
+        None
+    };
+
     std::fs::create_dir_all(&req.out_dir)?;
 
     let start = req.seed.unwrap_or_else(rand::random);
@@ -185,6 +209,7 @@ pub async fn run(
                 req.strength,
                 seed,
                 &control_reqs,
+                inpaint_masked_latents.as_ref(),
             )
             .with_context(|| format!("denoise (seed {seed})"))?;
 
@@ -193,6 +218,60 @@ pub async fn run(
     }
 
     Ok(pipeline.core())
+}
+
+/// Build the `(1, 3, H, W)` masked-image tensor a 9-channel inpaint
+/// UNet expects (SD 1.5 inpaint and SDXL-Inpaint use the same shape).
+/// Loads `input`, resizes to `(w, h)`, multiplies each RGB channel by
+/// `(1 - mask)` so masked pixels become 0 (the diffusers convention
+/// for `masked_image`), then packs into f32 normalised to `[-1, 1]`.
+fn build_masked_pixels_tensor(
+    input: &Path,
+    mask: &Mask,
+    w: u32,
+    h: u32,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<candle_core::Tensor> {
+    let img = image::open(input)
+        .with_context(|| format!("opening {} for Inpaint UNet masked image", input.display()))?
+        .to_rgb8();
+    let resized = image::imageops::resize(
+        &img,
+        w,
+        h,
+        image::imageops::FilterType::CatmullRom,
+    );
+    if mask.pixels.len() != (w as usize) * (h as usize) {
+        anyhow::bail!(
+            "mask resolution {}×{} ({} pixels) doesn't match working size {w}×{h} \
+             ({} pixels). The mask must be resized to the working size before \
+             building masked-image latents.",
+            mask.width,
+            mask.height,
+            mask.pixels.len(),
+            (w as usize) * (h as usize)
+        );
+    }
+    let total = (w as usize) * (h as usize);
+    let mut data: Vec<f32> = vec![0.0; 3 * total];
+    let (r_dst, rest) = data.split_at_mut(total);
+    let (g_dst, b_dst) = rest.split_at_mut(total);
+    let scale = 1.0 / 127.5;
+    let raw = resized.as_raw();
+    // Diffusers masked-image convention: mask=1 → zero out, mask=0 →
+    // keep. After multiplying raw pixels by (1 - mask) in [0, 255]
+    // space, we apply the standard SD VAE normalisation (`x/127.5 - 1`)
+    // to land in [-1, 1]. Masked (zeroed) pixels land at -1 (black).
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        let inv_m = 1.0 - mask.pixels[i].clamp(0.0, 1.0);
+        r_dst[i] = (chunk[0] as f32 * inv_m) * scale - 1.0;
+        g_dst[i] = (chunk[1] as f32 * inv_m) * scale - 1.0;
+        b_dst[i] = (chunk[2] as f32 * inv_m) * scale - 1.0;
+    }
+    let t = candle_core::Tensor::from_vec(data, (1, 3, h as usize, w as usize), device)?
+        .to_dtype(dtype)?;
+    Ok(t)
 }
 
 fn output_path(out_dir: &Path, mode_tag: &str, seed: u64) -> PathBuf {

@@ -46,7 +46,13 @@ pub struct Img2ImgArgs {
     #[arg(long, value_name = "F")]
     pub strength: Option<f32>,
 
-    /// Model: alias (sd15, sd21, sdxl, sdxl-turbo) or any HF repo id.
+    /// Model: alias or any HF repo id. Aliases:
+    ///   `sd15` / `sd21` / `sdxl` / `sdxl-turbo` — regular text-to-image
+    ///   UNets. Use with `--mask` for RePaint-style masked img2img.
+    ///   `sd15-inpaint` / `sdxl-inpaint` — dedicated 9-channel
+    ///   inpainting checkpoints. Trained for inpainting, so they
+    ///   preserve the unmasked region natively (no RePaint blending).
+    ///   `--mask` is required when picking these.
     /// Flux is not supported by img2img.
     #[arg(long, default_value = "sd15")]
     pub model: String,

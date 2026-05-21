@@ -229,6 +229,27 @@ pub struct GenerateArgs {
         ],
     )]
     pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
+
+    /// **v0.12**: tiled hi-res generation. Enables MultiDiffusion-style
+    /// overlapping SDXL passes — the UNet only ever sees tiles of
+    /// `--tile-size` × `--tile-size`, blended per-step via a 2D Hann
+    /// window. Lets SDXL produce 4K+ outputs without exceeding its
+    /// trained working resolution. Currently SDXL only; doesn't
+    /// compose with `--control*` or the SDXL refiner.
+    #[arg(long = "tiled", default_value_t = false)]
+    pub tiled: bool,
+
+    /// Tile side length in pixels. Default 1024 — SDXL's native
+    /// working resolution. Must be a multiple of 8 (VAE constraint).
+    #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
+    pub tile_size: u32,
+
+    /// Stride between tile origins in pixels. Default 768 — gives a
+    /// 256 px overlap between adjacent tiles (~25 %). Smaller stride
+    /// = more overlap = smoother seams = more compute. Must be a
+    /// multiple of 8 and ≤ `--tile-size`.
+    #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
+    pub tile_stride: u32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -299,6 +320,14 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             args.control_start,
             args.control_end,
         ),
+        tiled: if args.tiled {
+            Some(crate::pipelines::tiled::TiledConfig {
+                tile_size: args.tile_size,
+                stride: args.tile_stride,
+            })
+        } else {
+            None
+        },
     })
     .await?;
 
