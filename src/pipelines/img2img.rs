@@ -127,11 +127,12 @@ pub async fn run(
         .to_latent_tensor(pipeline.device(), pipeline.latent_dtype())
         .context("encoding mask into latent space")?;
 
-    // v0.12 SDXL-Inpaint: prepare the VAE-encoded `input × (1 - mask)`
-    // pixel image once. The 9-channel UNet concats it (plus the mask)
-    // onto the latent input at every denoise step, so we only need to
-    // produce it once per img2img run rather than per step.
-    let sdxl_masked_latents = if pipeline.core().is_sdxl_inpaint && req.mask.is_some() {
+    // v0.12 Inpaint UNet (9-channel): prepare the VAE-encoded
+    // `input × (1 - mask)` pixel image once. The inpaint UNet concats
+    // it (plus the mask) onto the latent input at every denoise step,
+    // so we only need to produce it once per img2img run rather than
+    // per step. Covers both SD 1.5 inpaint and SDXL-Inpaint.
+    let inpaint_masked_latents = if pipeline.core().is_inpaint && req.mask.is_some() {
         let masked_pixels = build_masked_pixels_tensor(
             &req.input,
             &mask,
@@ -140,11 +141,11 @@ pub async fn run(
             pipeline.device(),
             pipeline.latent_dtype(),
         )
-        .context("preparing SDXL-Inpaint masked-image pixels")?;
+        .context("preparing Inpaint UNet masked-image pixels")?;
         Some(
             pipeline
                 .vae_encode_pixels(&masked_pixels)
-                .context("VAE-encoding SDXL-Inpaint masked image")?,
+                .context("VAE-encoding Inpaint UNet masked image")?,
         )
     } else {
         None
@@ -208,7 +209,7 @@ pub async fn run(
                 req.strength,
                 seed,
                 &control_reqs,
-                sdxl_masked_latents.as_ref(),
+                inpaint_masked_latents.as_ref(),
             )
             .with_context(|| format!("denoise (seed {seed})"))?;
 
@@ -219,7 +220,8 @@ pub async fn run(
     Ok(pipeline.core())
 }
 
-/// Build the `(1, 3, H, W)` masked-image tensor SDXL-Inpaint expects.
+/// Build the `(1, 3, H, W)` masked-image tensor a 9-channel inpaint
+/// UNet expects (SD 1.5 inpaint and SDXL-Inpaint use the same shape).
 /// Loads `input`, resizes to `(w, h)`, multiplies each RGB channel by
 /// `(1 - mask)` so masked pixels become 0 (the diffusers convention
 /// for `masked_image`), then packs into f32 normalised to `[-1, 1]`.
@@ -232,7 +234,7 @@ fn build_masked_pixels_tensor(
     dtype: candle_core::DType,
 ) -> Result<candle_core::Tensor> {
     let img = image::open(input)
-        .with_context(|| format!("opening {} for SDXL-Inpaint masked image", input.display()))?
+        .with_context(|| format!("opening {} for Inpaint UNet masked image", input.display()))?
         .to_rgb8();
     let resized = image::imageops::resize(
         &img,
