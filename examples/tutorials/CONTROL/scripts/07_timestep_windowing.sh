@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 07_timestep_windowing.sh — v0.10 phase 4: --control-start /
-# --control-end timestep windowing.
+# 07_timestep_windowing.sh — --control-start / --control-end:
+# limit ControlNet to part of the denoise schedule.
 #
 # Diffusion runs from high noise (step 0) to clean image (step
 # N-1). By default ControlNet is active at every step. With

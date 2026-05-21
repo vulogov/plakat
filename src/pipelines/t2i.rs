@@ -73,11 +73,10 @@ pub struct Request {
     /// Multiplier applied to ControlNet residuals before adding to
     /// the UNet's. Ignored when `control_kind` is `None`. Default 1.0.
     pub control_strength: f32,
-    /// **v0.10 phase 4**: timestep window during which the
-    /// conditioner is active. `[start, end)` as fractions of the
-    /// full schedule (`[0, 1]`). Outside the window, denoise steps
-    /// take the no-control path. Defaults: 0.0 / 1.0 (always
-    /// active — same as pre-phase-4).
+    /// Timestep window during which the conditioner is active.
+    /// `[start, end)` as fractions of the full schedule (`[0, 1]`).
+    /// Outside the window, denoise steps take the no-control path.
+    /// Defaults: 0.0 / 1.0 (always active).
     pub control_start: f32,
     pub control_end: f32,
 }

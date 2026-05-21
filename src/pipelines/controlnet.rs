@@ -742,10 +742,10 @@ impl HintEncoder {
 /// `start` / `end` define the **timestep window** (as fractions of
 /// the full schedule, `[0, 1]`) during which the conditioner is
 /// active. Outside the window, the denoise step takes the
-/// no-control path. Defaults are `0.0` / `1.0` (always active —
-/// matching pre-v0.10 phase-4 behaviour). Diffusers convention:
-/// progress is measured against the **full** schedule, even for
-/// partial-schedule passes like img2img / inpaint / blend.
+/// no-control path. Defaults are `0.0` / `1.0` (always active).
+/// Diffusers convention: progress is measured against the **full**
+/// schedule, even for partial-schedule passes like img2img /
+/// inpaint / blend.
 pub struct ControlRequest<'a> {
     pub net: &'a ControlNet,
     pub conditioning: Tensor,

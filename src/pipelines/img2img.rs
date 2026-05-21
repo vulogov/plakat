@@ -65,7 +65,7 @@ pub struct Request {
     /// transforming. Set explicitly to override.
     pub control_from: Option<PathBuf>,
     pub control_strength: f32,
-    /// v0.10 phase 4: timestep window in `[0, 1]`. Defaults 0.0 / 1.0.
+    /// Timestep window for the conditioner, `[0, 1]`. Defaults 0.0 / 1.0.
     pub control_start: f32,
     pub control_end: f32,
 }
