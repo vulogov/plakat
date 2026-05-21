@@ -233,12 +233,12 @@ pub struct PortraitArgs {
     #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
 
-    /// v0.10 phase 4: timestep window start [0, 1]. Default 0.0.
+    /// Timestep window start in `[0, 1]`. Default 0.0.
     #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
     pub control_start: f32,
 
-    /// v0.10 phase 4: timestep window end [0, 1]. Default 1.0. Use
-    /// `0.5` to disable ControlNet for the back half of the schedule.
+    /// Timestep window end in `[0, 1]`. Default 1.0. Use `0.5` to
+    /// disable ControlNet for the back half of the schedule.
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 }

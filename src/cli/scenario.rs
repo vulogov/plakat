@@ -444,10 +444,10 @@ struct ControlSpec {
     auto_from: Option<PathBuf>,
     #[serde(default)]
     strength: Option<f32>,
-    /// **v0.10 phase 4**: timestep window. `start` defaults to 0.0
-    /// when omitted; `end` defaults to 1.0. Set `end: 0.5` to lock
-    /// composition early then release the prompt to drive late
-    /// texture/atmosphere refinement.
+    /// Timestep window. `start` defaults to 0.0 when omitted; `end`
+    /// defaults to 1.0. Set `end: 0.5` to lock composition early
+    /// then release the prompt to drive late texture / atmosphere
+    /// refinement.
     #[serde(default)]
     start: Option<f32>,
     #[serde(default)]

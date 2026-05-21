@@ -192,16 +192,16 @@ pub struct GenerateArgs {
     #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
 
-    /// **v0.10 phase 4**: fractional timestep at which ControlNet
-    /// becomes active. Default 0.0 (active from the start). Set e.g.
-    /// 0.3 to skip control on the early high-noise steps.
+    /// Fractional timestep at which ControlNet becomes active.
+    /// Default 0.0 (active from the start). Set e.g. 0.3 to skip
+    /// control on the early high-noise steps.
     #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
     pub control_start: f32,
 
-    /// **v0.10 phase 4**: fractional timestep at which ControlNet
-    /// stops applying. Default 1.0 (active through to the end). Set
-    /// e.g. 0.5 to lock composition early then let the prompt drive
-    /// the late texture/atmosphere passes.
+    /// Fractional timestep at which ControlNet stops applying.
+    /// Default 1.0 (active through to the end). Set e.g. 0.5 to
+    /// lock composition early then let the prompt drive the late
+    /// texture/atmosphere passes.
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 }

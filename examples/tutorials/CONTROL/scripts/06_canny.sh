@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 06_canny.sh — v0.10 phase 3: Canny edge conditioning.
+# 06_canny.sh — Canny edge conditioning.
 #
 # Canny is the second ControlNet conditioner shipped in v0.10.
 # Unlike depth, canny doesn't need a separate annotator model —
