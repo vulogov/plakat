@@ -8,8 +8,8 @@ use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::portrait::{self, IdentityKind};
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::style::{
-    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
-    StylePrepRequest,
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style_with_session,
+    prepend_trigger, StylePrepRequest,
 };
 
 /// Portrait-tuned defaults — overrideable via flags.
@@ -241,6 +241,19 @@ pub struct PortraitArgs {
     /// disable ControlNet for the back half of the schedule.
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
+
+    /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet.
+    /// See `plakat generate --control-spec` for grammar. Mutually
+    /// exclusive with the legacy single-conditioner flags.
+    #[arg(
+        long = "control-spec",
+        value_name = "SPEC",
+        conflicts_with_all = [
+            "control", "control_image", "control_from",
+            "control_strength", "control_start", "control_end",
+        ],
+    )]
+    pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -312,10 +325,18 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     // we need a concrete String to merge into — not Option<String>.
     let mut negative = args.negative.clone().unwrap_or_else(|| DEFAULT_NEGATIVE.to_string());
 
+    // Phase 7f: capture the CLIP-H encoder the style runtime may have
+    // lazy-loaded so we can hand it to portrait::Pipeline below — when
+    // identity is PlusFace / PlusFaceSdxl, that saves a second ~2.5 GB
+    // load. None when style isn't active.
+    let mut shared_clip_h: Option<
+        std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>,
+    > = None;
+
     // Style detection / resolution runs BEFORE the enhancer so the
     // trigger phrase carries the LoRA's training tokens unaltered.
     if args.style_ref.is_some() || args.style.is_some() {
-        apply_style(&mut args, &mut negative, &device).await?;
+        shared_clip_h = apply_style(&mut args, &mut negative, &device).await?;
     }
 
     if let Some(provider) = args.enhance.clone() {
@@ -386,12 +407,21 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         face_bbox: args.face_bbox,
         face_landmarks: args.face_landmarks,
         identity,
-        control_kind: args.control,
-        control_image: args.control_image,
-        control_from: args.control_from,
-        control_strength: args.control_strength,
-        control_start: args.control_start,
-        control_end: args.control_end,
+        // Phase 7f: hand the style runtime's lazy-loaded CLIP-H to the
+        // portrait pipeline so a PlusFace identity reuses the same
+        // weights instead of mmapping them a second time. FaceID
+        // identities ignore this; the cost when style is inactive is a
+        // single Option clone.
+        shared_clip_h,
+        controls: crate::pipelines::controlnet::resolve_control_specs(
+            args.control_specs,
+            args.control,
+            args.control_image,
+            args.control_from,
+            args.control_strength,
+            args.control_start,
+            args.control_end,
+        ),
     })
     .await?;
 
@@ -466,13 +496,17 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     Ok(())
 }
 
+/// Returns the CLIP-H encoder the style runtime loaded (if any) so the
+/// caller can feed it into a downstream portrait pipeline build via
+/// `LoadRequest::shared_clip_h`. `None` when the prep didn't need an
+/// encoder (e.g. `--style ID` without a `--style-ref` photo).
 async fn apply_style(
     args: &mut PortraitArgs,
     negative: &mut String,
     device: &Device,
-) -> Result<()> {
+) -> Result<Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>>> {
     let n_user_loras = args.loras.len();
-    let prep = prepare_style(StylePrepRequest {
+    let (prep, shared_clip_h) = prepare_style_with_session(StylePrepRequest {
         style_ref: args.style_ref.as_deref(),
         style_override: args.style.as_deref(),
         style_strength: args.style_strength,
@@ -489,5 +523,5 @@ async fn apply_style(
     args.prompt = prepend_trigger(&prep.trigger, &args.prompt);
     *negative = combine_negative(negative, &prep.negative_extras);
 
-    Ok(())
+    Ok(shared_clip_h)
 }

@@ -856,6 +856,41 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     };
     // -------- preload the stylize pipeline if any task uses `style` --------
     let any_style = s.tasks.iter().any(|t| t.style.is_some());
+
+    // -------- preload the portrait pipeline if any task uses `personas` ----
+    let any_persona = s
+        .tasks
+        .iter()
+        .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
+
+    // Phase 7f: pre-load a single CLIP-H image encoder when both
+    // stylize and a Plus-Face portrait identity are going to run.
+    // FaceID strategies don't touch CLIP-H, so they don't trigger the
+    // share. The shared Arc is then fed into both pipelines' load
+    // requests so each skips its own download / mmap.
+    let plusface_portrait = any_persona
+        && matches!(
+            portrait_identity,
+            Some(IdentityKind::PlusFace) | Some(IdentityKind::PlusFaceSdxl)
+        );
+    let shared_clip_h: Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>> =
+        if !args.dry_run && any_style && plusface_portrait {
+            let spinner = crate::ui::progress::spinner(
+                "Pre-loading shared CLIP-H image encoder",
+            );
+            // F32 matches stylize's standalone choice and the portrait
+            // identity encoder casts down at encode-time as needed.
+            let arc = crate::pipelines::ip_adapter::load_shared_clip_vision(
+                &device,
+                candle_core::DType::F32,
+            )
+            .await?;
+            spinner.finish_with_message("✓ shared CLIP-H loaded");
+            Some(arc)
+        } else {
+            None
+        };
+
     let stylize_pipeline: Option<stylize::Pipeline> = if !args.dry_run && any_style {
         // stylize is SD 1.5 only — the IP-Adapter projection targets the SD 1.5
         // cross-attention dim (768). The scenario's main `model` can still be
@@ -864,6 +899,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             stylize::Pipeline::load(stylize::LoadRequest {
                 model: "sd15".to_string(),
                 device: device.clone(),
+                shared_clip_h: shared_clip_h.clone(),
             })
             .await?,
         )
@@ -871,11 +907,6 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         None
     };
 
-    // -------- preload the portrait pipeline if any task uses `personas` ----
-    let any_persona = s
-        .tasks
-        .iter()
-        .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
     let portrait_pipeline: Option<portrait::Pipeline> = if !args.dry_run && any_persona {
         // Portrait base model is derived from the scenario's persona
         // identity kind (all personas must agree — validated above). The
@@ -891,6 +922,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras: loras.clone(),
                 lora_scale,
                 identity: Some(kind),
+                // Only Plus-Face identity strategies consume CLIP-H;
+                // FaceID strategies ignore this even when set.
+                shared_clip_h: shared_clip_h.clone(),
             })
             .await?,
         )
@@ -1400,18 +1434,21 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .as_ref()
             .and_then(|c| c.end)
             .unwrap_or(1.0);
-        let make_control_req = || -> Option<crate::pipelines::controlnet::ControlRequest> {
+        // v0.11 multi-ControlNet shape: scenarios still only express a
+        // single conditioner per task at the schema level, but the
+        // pipeline API takes a stack. Wrap into a Vec of length 0 or 1.
+        let make_control_reqs = || -> Vec<crate::pipelines::controlnet::ControlRequest> {
             match (task_control_kind, task_control_conditioning.as_ref()) {
                 (Some(kind), Some(cond)) => {
-                    Some(crate::pipelines::controlnet::ControlRequest {
+                    vec![crate::pipelines::controlnet::ControlRequest {
                         net: controlnets.get(&kind).expect("loaded above"),
                         conditioning: cond.clone(),
                         strength: task_control_strength,
                         start: task_control_start,
                         end: task_control_end,
-                    })
+                    }]
                 }
-                _ => None,
+                _ => Vec::new(),
             }
         };
 
@@ -1454,7 +1491,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     face_strength,
                     face_bbox: persona.face_bbox,
                     face_landmarks: persona.face_landmarks,
-                }, make_control_req().as_ref())?;
+                }, &make_control_reqs())?;
             }
 
             // -------- multi-persona, region-masked compositing --------
@@ -1509,7 +1546,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // only. Each per-persona inpaint pass below skips control
                     // (the persona reference itself drives the local region).
                     let mut latents =
-                        pp.generate_latents_one(&base_req, img_seed, make_control_req().as_ref())?;
+                        pp.generate_latents_one(&base_req, img_seed, &make_control_reqs())?;
 
                     // Chain one inpaint pass per persona. Each pass uses
                     // a per-persona seed offset so re-running with the same
@@ -1548,7 +1585,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, None)?;
+                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, &[])?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
@@ -1575,7 +1612,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req, make_control_req().as_ref())?,
+                (Some(p), _) => p.generate(&gen_req, &make_control_reqs())?,
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they
