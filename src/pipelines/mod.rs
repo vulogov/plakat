@@ -9,6 +9,7 @@ pub mod openpose_post;
 pub mod sd_core;
 pub mod sdxl_clip;
 pub mod sdxl_unet;
+pub mod tiled;
 pub mod extra_schedulers;
 pub mod img2img;
 pub mod face_models;

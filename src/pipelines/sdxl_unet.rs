@@ -82,6 +82,30 @@ pub fn build_add_time_ids_base(
     Tensor::from_slice(&vals, (1, 6), device)?.to_dtype(dtype)
 }
 
+/// v0.12 tiled hi-res variant: same 6-id layout but
+/// `crops_coords_top_left = (crop_top, crop_left)` reflects where
+/// this tile sits within the larger target canvas. `target_size`
+/// stays at the full canvas so SDXL keeps "this is a target_h × target_w
+/// image" as its conditioning context. Used by `generate_tiled`.
+pub fn build_tile_add_time_ids(
+    target_h: u32,
+    target_w: u32,
+    crop_top: u32,
+    crop_left: u32,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<Tensor> {
+    let vals: [f32; 6] = [
+        target_h as f32,
+        target_w as f32,
+        crop_top as f32,
+        crop_left as f32,
+        target_h as f32,
+        target_w as f32,
+    ];
+    Tensor::from_slice(&vals, (1, 6), device)?.to_dtype(dtype)
+}
+
 /// Build the refiner's `add_time_ids` for one branch. Shape: `(1, 5)`.
 /// Order: `[orig_h, orig_w, crop_top, crop_left, aesthetic_score]`.
 /// `aesthetic_score` should be [`REFINER_AESTHETIC_SCORE_POS`] for the
