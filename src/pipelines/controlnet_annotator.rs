@@ -57,9 +57,10 @@ pub async fn annotate(
         ControlKind::Depth => annotate_depth(src_path, out_w, out_h, device, dtype).await,
         ControlKind::Canny => annotate_canny(src_path, out_w, out_h, device, dtype),
         ControlKind::SoftEdge => annotate_softedge(src_path, out_w, out_h, device, dtype).await,
-        // Lineart and OpenPose ship with weight-loading + pre-rendered
-        // support; their auto-annotators land in follow-up commits.
-        ControlKind::Lineart | ControlKind::OpenPose => {
+        ControlKind::Lineart => annotate_lineart(src_path, out_w, out_h, device, dtype).await,
+        // OpenPose ships with weight-loading + pre-rendered support;
+        // the auto-annotator port (Phase D) lands in a follow-up commit.
+        ControlKind::OpenPose => {
             anyhow::bail!(
                 "{:?} auto-annotation is not yet implemented in plakat. \
                  Supply a pre-rendered conditioning map via \
@@ -245,6 +246,105 @@ async fn annotate_softedge(
         .to_vec1()?;
     let mut gray = image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::new(det_w, det_h);
     for (i, p) in edge_vals.iter().enumerate() {
+        let y = (i / w) as u32;
+        let xp = (i % w) as u32;
+        let v = (p.clamp(0.0, 1.0) * 255.0).round() as u8;
+        gray.put_pixel(xp, y, image::Luma([v]));
+    }
+    let resized_out = image::imageops::resize(
+        &gray,
+        out_w,
+        out_h,
+        image::imageops::FilterType::Triangle,
+    );
+    let final_buf: Vec<f32> = resized_out
+        .as_raw()
+        .iter()
+        .map(|&v| v as f32 / 255.0)
+        .collect();
+    depth_to_rgb_tensor(&final_buf, out_w, out_h, device, dtype)
+}
+
+// =====================================================================
+// Lineart annotator (v0.11)
+// =====================================================================
+
+const LINEART_REPO: &str = "lllyasviel/Annotators";
+const LINEART_FILE: &str = "sk_model.pth";
+
+/// Lineart runs at 512 px long-edge to match lllyasviel's reference
+/// annotator default.
+const LINEART_DETECT_RES: u32 = 512;
+
+/// Run the lineart generator on `src_path` and pack the result into
+/// a `(1, 3, H, W)` ControlNet conditioning tensor.
+///
+/// First-run cost: downloads `lllyasviel/Annotators/sk_model.pth`
+/// (~110 MB) into the HF cache.
+///
+/// ControlNet input convention for lineart is "bright lines on a dark
+/// background" — same orientation the model emits via its sigmoid head
+/// (model probability map → bright pixel = line). We do NOT invert
+/// the output. (lllyasviel's reference inverts in some pipelines but
+/// the `control_v11p_sd15_lineart` ControlNet expects the non-inverted
+/// orientation.)
+async fn annotate_lineart(
+    src_path: &Path,
+    out_w: u32,
+    out_h: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    use candle_nn::VarBuilder;
+
+    let weights = crate::hf::download::get_file(LINEART_REPO, LINEART_FILE)
+        .await
+        .with_context(|| {
+            format!("downloading Lineart weights ({LINEART_REPO}/{LINEART_FILE})")
+        })?;
+    let vb = VarBuilder::from_pth(&weights, DType::F32, device)?;
+    let model = crate::pipelines::lineart::LineartModel::new(vb)
+        .context("loading Lineart weights")?;
+
+    let src = image::open(src_path)
+        .with_context(|| format!("opening lineart source {}", src_path.display()))?;
+    let rgb = src.to_rgb8();
+    let (src_w, src_h) = (rgb.width(), rgb.height());
+    let scale = LINEART_DETECT_RES as f32 / src_w.max(src_h) as f32;
+    // Snap to a multiple of 8 — the down→up structure rounds spatial
+    // dims; staying on a /8 grid keeps the output exact.
+    let det_w = ((src_w as f32 * scale).round() as u32).max(64) & !7;
+    let det_h = ((src_h as f32 * scale).round() as u32).max(64) & !7;
+    let resized_in = image::imageops::resize(
+        &rgb,
+        det_w,
+        det_h,
+        image::imageops::FilterType::Triangle,
+    );
+
+    // (1, 3, H, W) f32 in [0, 1] — the lineart reference divides by 255.
+    let h = det_h as usize;
+    let w = det_w as usize;
+    let mut buf: Vec<f32> = Vec::with_capacity(3 * h * w);
+    for c in 0..3 {
+        for y in 0..det_h {
+            for x in 0..det_w {
+                let px = resized_in.get_pixel(x, y);
+                buf.push(px[c] as f32 / 255.0);
+            }
+        }
+    }
+    let x = Tensor::from_vec(buf, (1, 3, h, w), device)?;
+
+    let line = model.forward(&x).context("Lineart forward")?;
+    // line: (1, 1, H, W) in [0, 1]. Pull to host.
+    let line_vals: Vec<f32> = line
+        .squeeze(0)?
+        .squeeze(0)?
+        .flatten_all()?
+        .to_vec1()?;
+    let mut gray = image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::new(det_w, det_h);
+    for (i, p) in line_vals.iter().enumerate() {
         let y = (i / w) as u32;
         let xp = (i % w) as u32;
         let v = (p.clamp(0.0, 1.0) * 255.0).round() as u8;
