@@ -55,19 +55,13 @@ pub struct Request {
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
 
-    // ---------- v0.9 ControlNet ----------
-    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
-    pub control_image: Option<PathBuf>,
-    /// v0.10: source image for auto-annotation. For `plakat img2img`,
-    /// when both `control_image` and `control_from` are `None` but
-    /// `control_kind` is set, the pipeline defaults `control_from`
-    /// to `input` — i.e. annotates the source image you're
-    /// transforming. Set explicitly to override.
-    pub control_from: Option<PathBuf>,
-    pub control_strength: f32,
-    /// Timestep window for the conditioner, `[0, 1]`. Defaults 0.0 / 1.0.
-    pub control_start: f32,
-    pub control_end: f32,
+    // ---------- v0.9 ControlNet (v0.11: multi) ----------
+    /// Stack of ControlNet conditioners. See `t2i::Request::controls`.
+    /// For `plakat img2img`, when a spec has neither `image=` nor
+    /// `from=`, the input image is auto-annotated (img2img-specific
+    /// default — t2i errors out instead because it has no canonical
+    /// source image).
+    pub controls: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 /// Run the pipeline. Loads the SD model once and iterates over
@@ -80,74 +74,26 @@ pub struct Request {
 pub async fn run(
     req: Request,
 ) -> Result<std::sync::Arc<crate::pipelines::sd_core::SdCore>> {
-    // Pre-load ControlNet + conditioning before the SD pipeline.
-    // The owned tuple lives on this frame; the ControlRequest below
-    // borrows from it.
+    // Pre-load the ControlNet stack + conditioning(s) before the SD
+    // pipeline. The owned data lives on this frame; ControlRequest
+    // borrows from it below. img2img's distinguishing feature is the
+    // "auto-annotate the input image" fallback when a spec has neither
+    // image= nor from= — surface that as `fallback_input = &req.input`.
     let cn_dtype = if matches!(req.device, candle_core::Device::Cpu) {
         candle_core::DType::F32
     } else {
         candle_core::DType::F16
     };
-    let control_owned: Option<(
-        crate::pipelines::controlnet::ControlNet,
-        candle_core::Tensor,
-    )> = if let Some(kind) = req.control_kind {
-        let cn_variant =
-            crate::pipelines::controlnet::ControlNetVariant::detect(&req.model);
-        let net = crate::pipelines::controlnet::ControlNet::load(
-            req.device.clone(),
-            cn_dtype,
-            kind,
-            cn_variant,
-        )
-        .await
-        .context("loading ControlNet weights")?;
-        // img2img-specific fallback: when neither --control-image nor
-        // --control-from is set, use the input image as the
-        // annotator source. Standard "I want the depth of *this*
-        // image, and I'm reusing it as the source" pattern.
-        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
-            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                cn_dtype,
-            )
-            .context("preparing ControlNet conditioning image")?,
-            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
-                kind,
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                cn_dtype,
-            )
-            .await
-            .context("running --control-from annotator")?,
-            (Some(_), Some(_)) => anyhow::bail!(
-                "--control={kind:?}: pass either --control-image or --control-from, not both"
-            ),
-            (None, None) => {
-                // img2img default: annotate the input image.
-                crate::pipelines::controlnet_annotator::annotate(
-                    kind,
-                    &req.input,
-                    req.width,
-                    req.height,
-                    &req.device,
-                    cn_dtype,
-                )
-                .await
-                .context(
-                    "running --control auto-annotator on the input image (img2img default)",
-                )?
-            }
-        };
-        Some((net, cond))
-    } else {
-        None
-    };
+    let control_owned = crate::pipelines::controlnet::load_control_stack(
+        &req.controls,
+        &req.model,
+        req.width,
+        req.height,
+        &req.device,
+        cn_dtype,
+        Some(&req.input),
+    )
+    .await?;
 
     let pipeline = portrait::Pipeline::load(LoadRequest {
         model: req.model.clone(),
@@ -220,15 +166,16 @@ pub async fn run(
             face_landmarks: None,
         };
 
-        let control_req = control_owned.as_ref().map(|(net, cond)| {
-            crate::pipelines::controlnet::ControlRequest {
-                net,
-                conditioning: cond.clone(),
-                strength: req.control_strength,
-                start: req.control_start,
-                end: req.control_end,
-            }
-        });
+        let control_reqs: Vec<crate::pipelines::controlnet::ControlRequest> = control_owned
+            .iter()
+            .map(|owned| crate::pipelines::controlnet::ControlRequest {
+                net: &owned.net,
+                conditioning: owned.conditioning.clone(),
+                strength: owned.strength,
+                start: owned.start,
+                end: owned.end,
+            })
+            .collect();
 
         let new_latents = pipeline
             .blend_latents_one(
@@ -237,7 +184,7 @@ pub async fn run(
                 &gen_req,
                 req.strength,
                 seed,
-                control_req.as_ref(),
+                &control_reqs,
             )
             .with_context(|| format!("denoise (seed {seed})"))?;
 

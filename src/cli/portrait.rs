@@ -241,6 +241,19 @@ pub struct PortraitArgs {
     /// disable ControlNet for the back half of the schedule.
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
+
+    /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet.
+    /// See `plakat generate --control-spec` for grammar. Mutually
+    /// exclusive with the legacy single-conditioner flags.
+    #[arg(
+        long = "control-spec",
+        value_name = "SPEC",
+        conflicts_with_all = [
+            "control", "control_image", "control_from",
+            "control_strength", "control_start", "control_end",
+        ],
+    )]
+    pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -400,12 +413,15 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         // identities ignore this; the cost when style is inactive is a
         // single Option clone.
         shared_clip_h,
-        control_kind: args.control,
-        control_image: args.control_image,
-        control_from: args.control_from,
-        control_strength: args.control_strength,
-        control_start: args.control_start,
-        control_end: args.control_end,
+        controls: crate::pipelines::controlnet::resolve_control_specs(
+            args.control_specs,
+            args.control,
+            args.control_image,
+            args.control_from,
+            args.control_strength,
+            args.control_start,
+            args.control_end,
+        ),
     })
     .await?;
 

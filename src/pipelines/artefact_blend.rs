@@ -184,7 +184,7 @@ pub async fn blend_files(
         let new_latents = pipeline
             // Artefact-blend doesn't expose --control; the conditioner
             // here is the artefact mask itself, not a ControlNet guide.
-            .blend_latents_one(&base_latents, &mask, &req, cfg.strength, seed, None)
+            .blend_latents_one(&base_latents, &mask, &req, cfg.strength, seed, &[])
             .with_context(|| format!("blend denoise on {}", path.display()))?;
         pipeline
             .save_image(&new_latents, path)

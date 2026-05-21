@@ -125,6 +125,21 @@ pub struct Img2ImgArgs {
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 
+    /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet.
+    /// See `plakat generate --control-spec` for grammar. Mutually
+    /// exclusive with the legacy single-conditioner flags. When a spec
+    /// has neither `image=` nor `from=`, the input image is
+    /// auto-annotated (img2img-specific default).
+    #[arg(
+        long = "control-spec",
+        value_name = "SPEC",
+        conflicts_with_all = [
+            "control", "control_image", "control_from",
+            "control_strength", "control_start", "control_end",
+        ],
+    )]
+    pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
+
     // -------- artefact compositing (mirrors `plakat generate`) --------
     /// Composite a named artefact (PNG cutout) into each output image.
     /// Repeatable. Grammar: `NAME[@ZONE[:SCALE]]`. Same as
@@ -219,12 +234,15 @@ pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
         strength,
         seed,
         out_dir: args.out,
-        control_kind: args.control,
-        control_image: args.control_image,
-        control_from: args.control_from,
-        control_strength: args.control_strength,
-        control_start: args.control_start,
-        control_end: args.control_end,
+        controls: crate::pipelines::controlnet::resolve_control_specs(
+            args.control_specs,
+            args.control,
+            args.control_image,
+            args.control_from,
+            args.control_strength,
+            args.control_start,
+            args.control_end,
+        ),
     };
 
     // Phase 7d/7e pattern: capture the SD backbone img2img loaded so

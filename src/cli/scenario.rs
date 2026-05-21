@@ -1434,18 +1434,21 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .as_ref()
             .and_then(|c| c.end)
             .unwrap_or(1.0);
-        let make_control_req = || -> Option<crate::pipelines::controlnet::ControlRequest> {
+        // v0.11 multi-ControlNet shape: scenarios still only express a
+        // single conditioner per task at the schema level, but the
+        // pipeline API takes a stack. Wrap into a Vec of length 0 or 1.
+        let make_control_reqs = || -> Vec<crate::pipelines::controlnet::ControlRequest> {
             match (task_control_kind, task_control_conditioning.as_ref()) {
                 (Some(kind), Some(cond)) => {
-                    Some(crate::pipelines::controlnet::ControlRequest {
+                    vec![crate::pipelines::controlnet::ControlRequest {
                         net: controlnets.get(&kind).expect("loaded above"),
                         conditioning: cond.clone(),
                         strength: task_control_strength,
                         start: task_control_start,
                         end: task_control_end,
-                    })
+                    }]
                 }
-                _ => None,
+                _ => Vec::new(),
             }
         };
 
@@ -1488,7 +1491,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     face_strength,
                     face_bbox: persona.face_bbox,
                     face_landmarks: persona.face_landmarks,
-                }, make_control_req().as_ref())?;
+                }, &make_control_reqs())?;
             }
 
             // -------- multi-persona, region-masked compositing --------
@@ -1543,7 +1546,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // only. Each per-persona inpaint pass below skips control
                     // (the persona reference itself drives the local region).
                     let mut latents =
-                        pp.generate_latents_one(&base_req, img_seed, make_control_req().as_ref())?;
+                        pp.generate_latents_one(&base_req, img_seed, &make_control_reqs())?;
 
                     // Chain one inpaint pass per persona. Each pass uses
                     // a per-persona seed offset so re-running with the same
@@ -1582,7 +1585,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, None)?;
+                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, &[])?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
@@ -1609,7 +1612,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req, make_control_req().as_ref())?,
+                (Some(p), _) => p.generate(&gen_req, &make_control_reqs())?,
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they

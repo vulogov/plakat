@@ -771,6 +771,155 @@ impl<'a> ControlRequest<'a> {
     }
 }
 
+/// Diffusers-style multi-ControlNet residual sum. Runs every active
+/// ControlNet in `active`, then sums their `(down, mid)` outputs
+/// per-block-index. All nets must agree on `down.len()` (which they
+/// will, since they're built from the same UNet config block layout).
+///
+/// `latent_in` is the already-CFG-doubled input matching the UNet's
+/// upcoming forward call; `do_cfg` controls whether each
+/// conditioning Tensor gets cat'd along the batch dim.
+///
+/// Used by every pipeline's `denoise_step`; lives here next to
+/// `ControlRequest` so the multi-net contract has one definition.
+pub fn sum_controlnet_residuals(
+    active: &[&ControlRequest<'_>],
+    latent_in: &Tensor,
+    timestep: usize,
+    text_embeddings: &Tensor,
+    do_cfg: bool,
+) -> Result<(Vec<Tensor>, Tensor)> {
+    assert!(!active.is_empty(), "sum_controlnet_residuals called with empty slice");
+    let mut iter = active.iter();
+    let first = iter.next().expect("checked above");
+    let (mut down, mut mid) =
+        run_one(first, latent_in, timestep, text_embeddings, do_cfg)?;
+    for cr in iter {
+        let (d, m) = run_one(cr, latent_in, timestep, text_embeddings, do_cfg)?;
+        if d.len() != down.len() {
+            anyhow::bail!(
+                "multi-ControlNet residual count mismatch: {} vs {}. \
+                 All conditioners must target the same UNet variant.",
+                d.len(),
+                down.len()
+            );
+        }
+        for i in 0..down.len() {
+            down[i] = (&down[i] + &d[i])?;
+        }
+        mid = (&mid + &m)?;
+    }
+    Ok((down, mid))
+}
+
+fn run_one(
+    cr: &ControlRequest<'_>,
+    latent_in: &Tensor,
+    timestep: usize,
+    text_embeddings: &Tensor,
+    do_cfg: bool,
+) -> Result<(Vec<Tensor>, Tensor)> {
+    let cond_in = if do_cfg {
+        Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+    } else {
+        cr.conditioning.clone()
+    };
+    cr.net.forward(
+        latent_in,
+        timestep as f64,
+        text_embeddings,
+        &cond_in,
+        cr.strength,
+    )
+}
+
+/// One element of a loaded ControlNet stack: the network, its
+/// prepared conditioning Tensor, and the per-conditioner runtime
+/// parameters (strength + timestep window). `ControlRequest`s used by
+/// the denoise loop borrow from these.
+pub struct OwnedControl {
+    pub net: ControlNet,
+    pub conditioning: Tensor,
+    pub strength: f32,
+    pub start: f32,
+    pub end: f32,
+}
+
+/// Resolve a stack of `ControlSpec`s into loaded `ControlNet`s and
+/// prepared conditioning tensors. Used by every pipeline that supports
+/// ControlNet. `fallback_input` is the source image to auto-annotate
+/// when a spec has neither `image=` nor `from=` set — pipelines like
+/// `img2img` pass `Some(&req.input)`; `t2i` passes `None` (which causes
+/// the spec to error out, matching the pre-v0.11 behaviour).
+pub async fn load_control_stack(
+    specs: &[ControlSpec],
+    model: &str,
+    width: u32,
+    height: u32,
+    device: &Device,
+    dtype: DType,
+    fallback_input: Option<&std::path::Path>,
+) -> Result<Vec<OwnedControl>> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cn_variant = ControlNetVariant::detect(model);
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let net = ControlNet::load(device.clone(), dtype, spec.kind, cn_variant)
+            .await
+            .with_context(|| {
+                format!("loading ControlNet weights for kind={:?}", spec.kind)
+            })?;
+        let cond = match (spec.image.as_ref(), spec.from.as_ref(), fallback_input) {
+            (Some(path), None, _) => prepare_conditioning(path, width, height, device, dtype)
+                .with_context(|| {
+                    format!(
+                        "preparing ControlNet conditioning image for kind={:?}",
+                        spec.kind
+                    )
+                })?,
+            (None, Some(path), _) => {
+                crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, path, width, height, device, dtype,
+                )
+                .await
+                .with_context(|| {
+                    format!("running --control-from annotator for kind={:?}", spec.kind)
+                })?
+            }
+            (None, None, Some(fallback)) => {
+                crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, fallback, width, height, device, dtype,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "auto-annotating fallback input for kind={:?} (img2img default)",
+                        spec.kind
+                    )
+                })?
+            }
+            (Some(_), Some(_), _) => anyhow::bail!(
+                "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                spec.kind
+            ),
+            (None, None, None) => anyhow::bail!(
+                "--control-spec for kind={:?}: requires image=PATH or from=PATH",
+                spec.kind
+            ),
+        };
+        out.push(OwnedControl {
+            net,
+            conditioning: cond,
+            strength: spec.strength,
+            start: spec.start,
+            end: spec.end,
+        });
+    }
+    Ok(out)
+}
+
 /// What kind of conditioning signal the user requested. v0.10 ships
 /// `Depth` (Depth-Anything-V2 annotator) and `Canny` (imageproc
 /// canny annotator). Other conditioners (scribble, MLSD, pose, ...)
@@ -803,9 +952,216 @@ impl std::str::FromStr for ControlKind {
     }
 }
 
+/// One conditioner in a multi-ControlNet stack. Parsed from the
+/// repeatable `--control-spec` flag and threaded through the pipeline
+/// Request types as `Vec<ControlSpec>`. A single ControlSpec is
+/// resolved into a `ControlNet` + conditioning Tensor inside the
+/// pipeline; the resulting [`ControlRequest`]s flow into the denoise
+/// loop where their residuals are summed across all active controls.
+///
+/// Grammar (parsed by `FromStr`):
+///
+///   `KIND[:option=value]*`
+///
+/// `KIND` is one of `depth` / `canny`. Options (each may appear at
+/// most once):
+///
+///   * `image=PATH`   — pre-rendered conditioning image
+///   * `from=PATH`    — auto-annotate this image (mutually exclusive
+///                       with `image=`)
+///   * `strength=F`   — residual scale (default 1.0)
+///   * `start=F`      — timestep window start in `[0, 1]` (default 0.0)
+///   * `end=F`        — timestep window end   in `[0, 1]` (default 1.0)
+///
+/// Examples:
+///
+///   `depth`
+///   `depth:from=in.jpg`
+///   `canny:image=edges.png:strength=0.5:start=0.2:end=0.7`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlSpec {
+    pub kind: ControlKind,
+    pub image: Option<std::path::PathBuf>,
+    pub from: Option<std::path::PathBuf>,
+    pub strength: f32,
+    pub start: f32,
+    pub end: f32,
+}
+
+impl ControlSpec {
+    /// Build from the legacy split flags (`--control` + `--control-image`
+    /// / `--control-from` + `--control-strength` + `--control-start` /
+    /// `--control-end`). Returns `None` when `kind` is `None` —
+    /// i.e. the user didn't pass `--control`.
+    pub fn from_legacy_flags(
+        kind: Option<ControlKind>,
+        image: Option<std::path::PathBuf>,
+        from: Option<std::path::PathBuf>,
+        strength: f32,
+        start: f32,
+        end: f32,
+    ) -> Option<Self> {
+        kind.map(|k| Self {
+            kind: k,
+            image,
+            from,
+            strength,
+            start,
+            end,
+        })
+    }
+}
+
+/// CLI helper: collapse the two ways the user can spell a ControlNet
+/// stack (`--control-spec` repeatable OR the legacy
+/// `--control` / `--control-image` / `--control-from` /
+/// `--control-strength` / `--control-start` / `--control-end`) into
+/// one `Vec<ControlSpec>`. Clap's `conflicts_with_all` on
+/// `--control-spec` guarantees the legacy flags can't be combined with
+/// the new repeatable form — so at most one branch contributes.
+pub fn resolve_control_specs(
+    specs: Vec<ControlSpec>,
+    legacy_kind: Option<ControlKind>,
+    legacy_image: Option<std::path::PathBuf>,
+    legacy_from: Option<std::path::PathBuf>,
+    legacy_strength: f32,
+    legacy_start: f32,
+    legacy_end: f32,
+) -> Vec<ControlSpec> {
+    if !specs.is_empty() {
+        return specs;
+    }
+    ControlSpec::from_legacy_flags(
+        legacy_kind,
+        legacy_image,
+        legacy_from,
+        legacy_strength,
+        legacy_start,
+        legacy_end,
+    )
+    .map(|s| vec![s])
+    .unwrap_or_default()
+}
+
+impl std::str::FromStr for ControlSpec {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let mut parts = s.split(':');
+        let kind_str = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty --control-spec"))?;
+        let kind: ControlKind = kind_str
+            .parse()
+            .with_context(|| format!("parsing kind in --control-spec {s:?}"))?;
+        let mut image = None;
+        let mut from = None;
+        let mut strength: f32 = 1.0;
+        let mut start: f32 = 0.0;
+        let mut end: f32 = 1.0;
+        for opt in parts {
+            let (k, v) = opt.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--control-spec option {opt:?} must be `key=value` (in {s:?})"
+                )
+            })?;
+            match k {
+                "image" => {
+                    if image.is_some() {
+                        anyhow::bail!("--control-spec {s:?}: duplicate image=");
+                    }
+                    image = Some(std::path::PathBuf::from(v));
+                }
+                "from" => {
+                    if from.is_some() {
+                        anyhow::bail!("--control-spec {s:?}: duplicate from=");
+                    }
+                    from = Some(std::path::PathBuf::from(v));
+                }
+                "strength" => {
+                    strength = v.parse::<f32>().with_context(|| {
+                        format!("--control-spec {s:?}: strength={v:?} must be a float")
+                    })?;
+                }
+                "start" => {
+                    start = v.parse::<f32>().with_context(|| {
+                        format!("--control-spec {s:?}: start={v:?} must be a float")
+                    })?;
+                }
+                "end" => {
+                    end = v.parse::<f32>().with_context(|| {
+                        format!("--control-spec {s:?}: end={v:?} must be a float")
+                    })?;
+                }
+                other => anyhow::bail!(
+                    "--control-spec {s:?}: unknown option {other:?} \
+                     (supported: image, from, strength, start, end)"
+                ),
+            }
+        }
+        if image.is_some() && from.is_some() {
+            anyhow::bail!("--control-spec {s:?}: pass image= OR from=, not both");
+        }
+        if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) || start > end {
+            anyhow::bail!(
+                "--control-spec {s:?}: start ({start}) and end ({end}) must satisfy \
+                 0 <= start <= end <= 1"
+            );
+        }
+        Ok(Self {
+            kind,
+            image,
+            from,
+            strength,
+            start,
+            end,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_spec_parses_bare_kind() {
+        let s: ControlSpec = "depth".parse().unwrap();
+        assert_eq!(s.kind, ControlKind::Depth);
+        assert!(s.image.is_none() && s.from.is_none());
+        assert_eq!(s.strength, 1.0);
+        assert_eq!(s.start, 0.0);
+        assert_eq!(s.end, 1.0);
+    }
+
+    #[test]
+    fn control_spec_parses_full() {
+        let s: ControlSpec =
+            "canny:image=edges.png:strength=0.5:start=0.2:end=0.7".parse().unwrap();
+        assert_eq!(s.kind, ControlKind::Canny);
+        assert_eq!(s.image.as_ref().unwrap().to_str(), Some("edges.png"));
+        assert!(s.from.is_none());
+        assert_eq!(s.strength, 0.5);
+        assert_eq!(s.start, 0.2);
+        assert_eq!(s.end, 0.7);
+    }
+
+    #[test]
+    fn control_spec_rejects_image_and_from() {
+        assert!(
+            "depth:image=a.png:from=b.jpg".parse::<ControlSpec>().is_err()
+        );
+    }
+
+    #[test]
+    fn control_spec_rejects_bad_window() {
+        assert!("depth:start=0.8:end=0.2".parse::<ControlSpec>().is_err());
+        assert!("depth:start=-0.1".parse::<ControlSpec>().is_err());
+        assert!("depth:end=1.5".parse::<ControlSpec>().is_err());
+    }
+
+    #[test]
+    fn control_spec_rejects_unknown_option() {
+        assert!("depth:strenth=1.0".parse::<ControlSpec>().is_err()); // typo
+    }
 
     #[test]
     fn control_kind_parses() {
