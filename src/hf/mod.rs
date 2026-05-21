@@ -15,6 +15,9 @@ pub fn resolve_alias(name: &str) -> &str {
         "sd21" | "sd-2.1" => "stabilityai/stable-diffusion-2-1",
         "sdxl" => "stabilityai/stable-diffusion-xl-base-1.0",
         "sdxl-turbo" => "stabilityai/sdxl-turbo",
+        // v0.12: SDXL Inpainting. 9-channel UNet (4 latent + 1 mask + 4
+        // masked_image_latents). Loaded by SdCore with in_channels=9.
+        "sdxl-inpaint" | "sdxl-inpainting" => "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
         "flux-schnell" | "FLUX.1-schnell" | "flux1-schnell" => {
             "black-forest-labs/FLUX.1-schnell"
         }

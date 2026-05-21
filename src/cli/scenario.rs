@@ -1585,7 +1585,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, &[])?;
+                        latents = pp.inpaint_latents_one(
+                            &latents,
+                            &mask,
+                            &pass_req,
+                            pass_seed,
+                            &[],
+                            // Scenario inpaint uses the portrait pipeline's
+                            // SD UNet (RePaint blending) — not SDXL-Inpaint.
+                            None,
+                        )?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
