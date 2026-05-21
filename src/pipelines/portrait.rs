@@ -87,16 +87,9 @@ pub struct Request {
     /// identity strategies.
     pub shared_clip_h: Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>>,
 
-    // ---------- v0.9 ControlNet ----------
-    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
-    pub control_image: Option<PathBuf>,
-    /// v0.10: source image for auto-annotation (mutually exclusive
-    /// with `control_image`).
-    pub control_from: Option<PathBuf>,
-    pub control_strength: f32,
-    /// Timestep window for the conditioner, `[0, 1]`. Defaults 0.0 / 1.0.
-    pub control_start: f32,
-    pub control_end: f32,
+    // ---------- v0.9 ControlNet (v0.11: multi) ----------
+    /// Stack of ControlNet conditioners. See `t2i::Request::controls`.
+    pub controls: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 pub struct LoadRequest {
@@ -374,7 +367,7 @@ impl Pipeline {
     pub fn generate(
         &self,
         req: &GenRequest,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<()> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         std::fs::create_dir_all(&req.out_dir)
@@ -439,7 +432,8 @@ impl Pipeline {
             let total_steps = timesteps.len();
             for (step_idx, &timestep) in timesteps.iter().enumerate() {
                 let progress = step_idx as f32 / total_steps as f32;
-                let step_control = control.filter(|cr| cr.active_at(progress));
+                let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                controls.iter().filter(|c| c.active_at(progress)).collect();
                 latents = self.denoise_step(
                     &latents,
                     timestep,
@@ -449,7 +443,7 @@ impl Pipeline {
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
-                    step_control,
+                    &active_controls,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
@@ -477,7 +471,8 @@ impl Pipeline {
                         let total_polish = active.len();
                         for (step_idx, &timestep) in active.iter().enumerate() {
                             let progress = step_idx as f32 / total_polish as f32;
-                            let step_control = control.filter(|cr| cr.active_at(progress));
+                            let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                controls.iter().filter(|c| c.active_at(progress)).collect();
                             latents = self.denoise_step(
                                 &latents,
                                 timestep,
@@ -487,7 +482,7 @@ impl Pipeline {
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
-                                step_control,
+                                &active_controls,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -622,7 +617,7 @@ impl Pipeline {
         &self,
         req: &GenRequest,
         seed: u64,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let (w, h) = (req.width as usize, req.height as usize);
@@ -666,7 +661,8 @@ impl Pipeline {
         let total_steps = timesteps.len();
         for (step_idx, &t) in timesteps.iter().enumerate() {
             let progress = step_idx as f32 / total_steps as f32;
-            let step_control = control.filter(|cr| cr.active_at(progress));
+            let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                controls.iter().filter(|c| c.active_at(progress)).collect();
             latents = self.denoise_step(
                 &latents,
                 t,
@@ -676,7 +672,7 @@ impl Pipeline {
                 &mut scheduler,
                 req.guidance,
                 do_cfg,
-                step_control,
+                &active_controls,
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
@@ -698,7 +694,7 @@ impl Pipeline {
         mask: &Tensor,
         req: &GenRequest,
         seed: u64,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let do_cfg = req.guidance > 1.0;
@@ -747,7 +743,8 @@ impl Pipeline {
         let total_steps = timesteps.len();
         for (step_idx, &t) in timesteps.iter().enumerate() {
             let progress = step_idx as f32 / total_steps as f32;
-            let step_control = control.filter(|cr| cr.active_at(progress));
+            let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                controls.iter().filter(|c| c.active_at(progress)).collect();
             // RePaint: re-noise the BASE (not the running latents) outside
             // the mask. This pins the unmasked region to the base image while
             // letting the denoiser walk freely inside the mask.
@@ -766,7 +763,7 @@ impl Pipeline {
                 &mut scheduler,
                 req.guidance,
                 do_cfg,
-                step_control,
+                &active_controls,
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
@@ -827,7 +824,7 @@ impl Pipeline {
         req: &GenRequest,
         strength: f32,
         seed: u64,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let strength = strength.clamp(0.0, 1.0);
@@ -885,7 +882,8 @@ impl Pipeline {
         // step_idx counts from `start_idx`, not from 0.
         for (i, &t) in active.iter().enumerate() {
             let progress = (start_idx + i) as f32 / total as f32;
-            let step_control = control.filter(|cr| cr.active_at(progress));
+            let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                controls.iter().filter(|c| c.active_at(progress)).collect();
             let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
                 .to_dtype(self.core.dtype)?;
             let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
@@ -901,7 +899,7 @@ impl Pipeline {
                 &mut scheduler,
                 req.guidance,
                 do_cfg,
-                step_control,
+                &active_controls,
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
@@ -954,7 +952,8 @@ impl Pipeline {
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        // v0.11 multi-ControlNet: caller pre-filters to active controls.
+        active_controls: &[&crate::pipelines::controlnet::ControlRequest],
     ) -> Result<Tensor> {
         let latent_in = if do_cfg {
             Tensor::cat(&[latents, latents], 0)?
@@ -962,40 +961,31 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-        let noise_pred = match control {
-            None => self.core.unet.forward(
+        let noise_pred = if active_controls.is_empty() {
+            self.core.unet.forward(
                 &latent_in,
                 timestep as f64,
                 encoder_hidden_states,
                 add_text_embeds,
                 add_time_ids,
-            )?,
-            Some(cr) => {
-                // Match latent_in's batch dim — duplicate the conditioning
-                // when CFG doubles up uncond + cond. Same convention as
-                // diffusers' StableDiffusionControlNetPipeline.
-                let cond_in = if do_cfg {
-                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
-                } else {
-                    cr.conditioning.clone()
-                };
-                let (down, mid) = cr.net.forward(
-                    &latent_in,
-                    timestep as f64,
-                    encoder_hidden_states,
-                    &cond_in,
-                    cr.strength,
-                )?;
-                self.core.unet.forward_with_additional_residuals(
-                    &latent_in,
-                    timestep as f64,
-                    encoder_hidden_states,
-                    add_text_embeds,
-                    add_time_ids,
-                    Some(&down),
-                    Some(&mid),
-                )?
-            }
+            )?
+        } else {
+            let (down, mid) = crate::pipelines::controlnet::sum_controlnet_residuals(
+                active_controls,
+                &latent_in,
+                timestep,
+                encoder_hidden_states,
+                do_cfg,
+            )?;
+            self.core.unet.forward_with_additional_residuals(
+                &latent_in,
+                timestep as f64,
+                encoder_hidden_states,
+                add_text_embeds,
+                add_time_ids,
+                Some(&down),
+                Some(&mid),
+            )?
         };
         let noise_pred = if do_cfg {
             let chunks = noise_pred.chunk(2, 0)?;
@@ -1043,57 +1033,24 @@ impl Pipeline {
 /// Portrait does not route through Flux (Flux portraits are rejected
 /// inside `Pipeline::load`), so the return is unconditional. Phase 7e.
 pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_core::SdCore>> {
-    // Preload ControlNet + conditioning before the pipeline (same
-    // ordering as `t2i::run`). Owned data lives on this stack frame.
+    // Preload ControlNet stack + conditioning(s) before the pipeline
+    // (same ordering as `t2i::run`). Owned data lives on this stack
+    // frame; `ControlRequest`s borrow from it just before generate().
     let dtype = if matches!(req.device, Device::Cpu) {
         DType::F32
     } else {
         DType::F16
     };
-    let control_owned: Option<(
-        crate::pipelines::controlnet::ControlNet,
-        candle_core::Tensor,
-    )> = if let Some(kind) = req.control_kind {
-        let cn_variant =
-            crate::pipelines::controlnet::ControlNetVariant::detect(&req.model);
-        let net = crate::pipelines::controlnet::ControlNet::load(
-            req.device.clone(),
-            dtype,
-            kind,
-            cn_variant,
-        )
-        .await
-        .context("loading ControlNet weights")?;
-        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
-            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                dtype,
-            )
-            .context("preparing ControlNet conditioning image")?,
-            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
-                kind,
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                dtype,
-            )
-            .await
-            .context("running --control-from annotator")?,
-            (Some(_), Some(_)) => bail!(
-                "--control={kind:?}: pass either --control-image or --control-from, not both"
-            ),
-            (None, None) => bail!(
-                "--control={kind:?}: requires --control-image PATH or --control-from PATH"
-            ),
-        };
-        Some((net, cond))
-    } else {
-        None
-    };
+    let control_owned = crate::pipelines::controlnet::load_control_stack(
+        &req.controls,
+        &req.model,
+        req.width,
+        req.height,
+        &req.device,
+        dtype,
+        None,
+    )
+    .await?;
 
     let pipeline = Pipeline::load(LoadRequest {
         model: req.model,
@@ -1113,15 +1070,16 @@ pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_cor
         crate::pipelines::ip_adapter::normalize_photo_weights(&mut photos)?;
     }
 
-    let control_req = control_owned.as_ref().map(|(net, cond)| {
-        crate::pipelines::controlnet::ControlRequest {
-            net,
-            conditioning: cond.clone(),
-            strength: req.control_strength,
-            start: req.control_start,
-            end: req.control_end,
-        }
-    });
+    let control_reqs: Vec<crate::pipelines::controlnet::ControlRequest> = control_owned
+        .iter()
+        .map(|owned| crate::pipelines::controlnet::ControlRequest {
+            net: &owned.net,
+            conditioning: owned.conditioning.clone(),
+            strength: owned.strength,
+            start: owned.start,
+            end: owned.end,
+        })
+        .collect();
 
     pipeline.generate(
         &GenRequest {
@@ -1142,7 +1100,7 @@ pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_cor
             face_bbox: req.face_bbox,
             face_landmarks: req.face_landmarks,
         },
-        control_req.as_ref(),
+        &control_reqs,
     )?;
     Ok(pipeline.core())
 }

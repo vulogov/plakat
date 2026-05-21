@@ -204,6 +204,31 @@ pub struct GenerateArgs {
     /// texture/atmosphere passes.
     #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
+
+    /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet
+    /// (depth + canny stacked etc.). Each occurrence stacks one
+    /// conditioner; residuals from every active conditioner are summed.
+    ///
+    /// Grammar: `KIND[:option=value]*` where KIND ∈ {depth, canny} and
+    /// options are `image=PATH`, `from=PATH`, `strength=F`, `start=F`,
+    /// `end=F`. Examples:
+    ///
+    ///   --control-spec 'depth:from=in.jpg'
+    ///   --control-spec 'canny:image=edges.png:strength=0.5:start=0.2:end=0.7'
+    ///
+    /// Mutually exclusive with the legacy single-conditioner flags
+    /// (`--control`, `--control-image`, etc.). All conditioners in the
+    /// stack share the model variant — mixing SD 1.5 / SDXL is not
+    /// supported.
+    #[arg(
+        long = "control-spec",
+        value_name = "SPEC",
+        conflicts_with_all = [
+            "control", "control_image", "control_from",
+            "control_strength", "control_start", "control_end",
+        ],
+    )]
+    pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -265,12 +290,15 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         refine_strength: args.refine_strength,
         use_refiner: args.refiner,
         refiner_frac: args.refiner_frac,
-        control_kind: args.control,
-        control_image: args.control_image,
-        control_from: args.control_from,
-        control_strength: args.control_strength,
-        control_start: args.control_start,
-        control_end: args.control_end,
+        controls: crate::pipelines::controlnet::resolve_control_specs(
+            args.control_specs,
+            args.control,
+            args.control_image,
+            args.control_from,
+            args.control_strength,
+            args.control_start,
+            args.control_end,
+        ),
     })
     .await?;
 
