@@ -975,6 +975,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // v0.12: scenarios don't carry Flux ControlNet
                 // config yet — schema extension is a follow-up.
                 controlnets: Vec::new(),
+                // v0.13 phase 1b: scenario doesn't surface
+                // --quantize-t5 yet; schema extension is a follow-up.
+                quantize_t5: false,
             })
             .await?,
         )

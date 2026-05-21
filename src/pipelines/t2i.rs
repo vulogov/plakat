@@ -77,6 +77,11 @@ pub struct Request {
     /// scheduler-switch mid-stream don't compose with MultiDiffusion).
     /// Both restrictions are tracked for a follow-up.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+
+    /// v0.13 phase 1b: quantize T5-XXL when running Flux GGUF.
+    /// Only meaningful with `--model flux-*-gguf`; bails loud on
+    /// BF16 Flux. Ignored entirely on SD-family models.
+    pub quantize_t5: bool,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -1261,6 +1266,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             controlnets: flux_controlnets,
             // Per-CN conditioning lives on each FluxControlNetLoad now.
             conditioning: None,
+            quantize_t5: req.quantize_t5,
         })
         .await?;
         return Ok(None);

@@ -250,6 +250,15 @@ pub struct GenerateArgs {
     /// multiple of 8 and ≤ `--tile-size`.
     #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
     pub tile_stride: u32,
+
+    /// **v0.13 phase 1b**: also quantize the T5-XXL text encoder via
+    /// city96's GGUF mirror (Q4_K_M, ~3 GB instead of ~10 GB BF16).
+    /// Combined with `--model flux-*-gguf` the total Flux footprint
+    /// drops to ~10 GB — fits 12 GB consumer GPUs. Requires a GGUF
+    /// transformer (bails loud on BF16 Flux). Ignored for SD-family
+    /// models.
+    #[arg(long = "quantize-t5", default_value_t = false)]
+    pub quantize_t5: bool,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -328,6 +337,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         } else {
             None
         },
+        quantize_t5: args.quantize_t5,
     })
     .await?;
 
