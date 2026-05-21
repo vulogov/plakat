@@ -147,6 +147,9 @@ pub struct FluxControlNetLoad {
     pub cfg: crate::pipelines::flux_controlnet::Config,
     /// `controlnet_conditioning_scale` (diffusers default 1.0).
     pub scale: f32,
+    /// Union ControlNet mode index. Required when `cfg.num_mode` is
+    /// `Some`; ignored otherwise. Specialised CNs leave this `None`.
+    pub mode: Option<u32>,
 }
 
 pub struct GenRequest {
@@ -188,6 +191,9 @@ pub struct Pipeline {
     /// `controlnet_scale` is diffusers `controlnet_conditioning_scale`.
     controlnet: Option<crate::pipelines::flux_controlnet::FluxControlNet>,
     controlnet_scale: f32,
+    /// Union ControlNet mode index. Set alongside `controlnet` when
+    /// the load request was for a Union variant; `None` otherwise.
+    controlnet_mode: Option<u32>,
 }
 
 impl Pipeline {
@@ -312,7 +318,7 @@ impl Pipeline {
         load.finish_with_message("✓ models loaded");
 
         // ---------- Flux ControlNet (v0.12 phase 2b) ----------
-        let (controlnet, controlnet_scale) = match req.controlnet {
+        let (controlnet, controlnet_scale, controlnet_mode) = match req.controlnet {
             Some(cn) => {
                 let spin = progress::spinner(&format!(
                     "Downloading + remapping Flux ControlNet {}/{}",
@@ -327,9 +333,9 @@ impl Pipeline {
                 )
                 .await?;
                 spin.finish_with_message("✓ Flux ControlNet ready");
-                (Some(net), cn.scale)
+                (Some(net), cn.scale, cn.mode)
             }
-            None => (None, 1.0),
+            None => (None, 1.0, None),
         };
 
         Ok(Self {
@@ -346,6 +352,7 @@ impl Pipeline {
             ae_model,
             controlnet,
             controlnet_scale,
+            controlnet_mode,
         })
     }
 
@@ -559,8 +566,11 @@ impl Pipeline {
                 _ => continue,
             };
             let t_vec = Tensor::full(*t_curr as f32, b_sz, dev)?;
-            // ControlNet residuals (DoubleStream only in this phase).
-            let residuals: Option<Vec<Tensor>> = match (
+            // ControlNet residuals (DoubleStream + SingleStream for
+            // Union variants). Both vecs come back; the main Flux's
+            // `forward_with_residuals` accepts them via separate
+            // `Option<&[Tensor]>` slots from phase 2a.
+            let residuals: Option<(Vec<Tensor>, Vec<Tensor>)> = match (
                 self.controlnet.as_ref(),
                 conditioning_packed,
             ) {
@@ -573,9 +583,17 @@ impl Pipeline {
                     &t_vec,
                     &state.vec,
                     Some(&guidance_t),
+                    self.controlnet_mode,
                     self.controlnet_scale,
                 )?),
                 _ => None,
+            };
+            let (double_r, single_r) = match residuals.as_ref() {
+                Some((d, s)) => (
+                    Some(d.as_slice()),
+                    if s.is_empty() { None } else { Some(s.as_slice()) },
+                ),
+                None => (None, None),
             };
             let pred = self.flux_model.forward_with_residuals(
                 &img,
@@ -585,8 +603,8 @@ impl Pipeline {
                 &t_vec,
                 &state.vec,
                 Some(&guidance_t),
-                residuals.as_deref(),
-                None,
+                double_r,
+                single_r,
             )?;
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);

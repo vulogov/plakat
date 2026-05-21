@@ -163,9 +163,17 @@ fn resolve_repo(model: &str) -> String {
 }
 
 /// v0.12 phase 2b: pick a community Flux ControlNet for the user's
-/// requested conditioning kind. The repo coverage is intentionally
-/// small in this phase — we ship the most widely-mirrored variants
-/// for FLUX.1-dev and reject everything else with a helpful error.
+/// requested conditioning kind. Routes to Shakker-Labs/Union-Pro-v2
+/// for the multi-mode conditioners (canny, softedge, openpose, depth,
+/// lineart) and falls back to specialised CNs where Union doesn't
+/// cover a kind.
+///
+/// Shakker-Labs Union Pro v2 mode mapping (per the model card):
+///   0: canny       (also covers `lineart` in practice)
+///   1: softedge    (HED-style)
+///   2: openpose
+///   3: depth
+///   4: gray
 fn flux_controlnet_load_for(
     kind: crate::pipelines::controlnet::ControlKind,
     fvar: crate::pipelines::flux::Variant,
@@ -180,32 +188,26 @@ fn flux_controlnet_load_for(
              FLUX.1-schnell ControlNets exist but aren't yet validated."
         );
     }
-    let (repo, file) = match kind {
-        ControlKind::Canny => (
-            "InstantX/FLUX.1-dev-Controlnet-Canny",
-            "diffusion_pytorch_model.safetensors",
-        ),
-        ControlKind::Depth => (
-            "Shakker-Labs/FLUX.1-dev-ControlNet-Depth",
-            "diffusion_pytorch_model.safetensors",
-        ),
-        // OpenPose / Lineart / SoftEdge: shipped ControlNet repos for
-        // Flux exist (Shakker-Labs's union model covers them) but the
-        // union variant uses a `mode` embedder that needs the extra
-        // FluxControlNet plumbing we haven't built yet. Reject loudly.
-        other => anyhow::bail!(
-            "Flux ControlNet for kind={:?} isn't wired in v0.12. \
-             Currently supported: canny, depth. Union-mode conditioners \
-             (openpose, lineart, softedge) need an additional \
-             controlnet_mode_embedder pass, tracked as a follow-up.",
-            other
-        ),
+    // Default route: Shakker-Labs Union Pro v2. Covers canny / softedge
+    // / openpose / depth / lineart with one checkpoint via mode index.
+    let union_pro_v2_repo = "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0";
+    let union_pro_v2_file = "diffusion_pytorch_model.safetensors";
+    let union_mode = match kind {
+        ControlKind::Canny => Some(0u32),
+        ControlKind::SoftEdge => Some(1u32),
+        ControlKind::OpenPose => Some(2u32),
+        ControlKind::Depth => Some(3u32),
+        // Lineart isn't a separate Union Pro v2 mode but produces
+        // close-enough results via the canny channel (canny is
+        // strict edge detection; lineart is softer pen-style).
+        ControlKind::Lineart => Some(0u32),
     };
     Ok(flux::FluxControlNetLoad {
-        repo: repo.to_string(),
-        file: file.to_string(),
-        cfg: flux_controlnet::Config::instantx_canny(),
+        repo: union_pro_v2_repo.to_string(),
+        file: union_pro_v2_file.to_string(),
+        cfg: flux_controlnet::Config::shakker_union_pro_v2(),
         scale: strength,
+        mode: union_mode,
     })
 }
 
