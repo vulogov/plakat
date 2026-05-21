@@ -45,7 +45,7 @@ use candle_transformers::models::stable_diffusion::{
 };
 use tokenizers::Tokenizer;
 
-use crate::pipelines::lora::LoraSpec;
+use crate::pipelines::lora::ResolvedLora;
 use crate::ui::progress;
 
 /// SD variant the backbone routes through. Detected from the model
@@ -98,10 +98,15 @@ impl SdVariant {
 
 /// Load-time inputs for the SD core. Identity / refiner / image
 /// encoder / etc. live on the task-specific wrappers, not here.
+///
+/// `loras` is already resolved (paths + scales + display names);
+/// the caller decides where they came from. portrait::Pipeline
+/// uses this to inject FaceID's auto-LoRA before resolution so
+/// the SD core merges it transparently.
 pub struct SdLoadRequest {
     pub model: String,
     pub device: Device,
-    pub loras: Vec<LoraSpec>,
+    pub loras: Vec<ResolvedLora>,
     pub lora_scale: f32,
 }
 
@@ -210,21 +215,10 @@ impl SdCore {
         .await?;
         dl.finish_with_message("✓ base weights ready");
 
-        // -------- resolve LoRA files (user-supplied only; auto-
-        //          LoRAs like FaceID's UNet adapter remain on the
-        //          task-specific load path). --------
+        // LoRAs arrive pre-resolved. Temp-file handles for merged
+        // weights are accumulated below.
         let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
-        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
-            Vec::new()
-        } else {
-            let s = progress::spinner("Resolving LoRA file(s)");
-            let mut v = Vec::with_capacity(req.loras.len());
-            for spec in &req.loras {
-                v.push(spec.resolve().await?);
-            }
-            s.finish_with_message(format!("✓ resolved {} LoRA file(s)", v.len()));
-            v
-        };
+        let resolved_loras = &req.loras;
 
         // -------- build models --------
         let build = progress::spinner("Loading SD core");
@@ -250,7 +244,7 @@ impl SdCore {
             let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
                 &unet_path,
                 tmp.path(),
-                &resolved_loras,
+                resolved_loras,
                 req.lora_scale,
                 &req.device,
                 crate::pipelines::lora::MergeTarget::UNET,
@@ -280,7 +274,7 @@ impl SdCore {
             let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
                 &text_enc_l_path,
                 tmp.path(),
-                &resolved_loras,
+                resolved_loras,
                 req.lora_scale,
                 &req.device,
                 te_l_target,
@@ -323,7 +317,7 @@ impl SdCore {
                     let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
                         p,
                         tmp.path(),
-                        &resolved_loras,
+                        resolved_loras,
                         req.lora_scale,
                         &req.device,
                         target,

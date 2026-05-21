@@ -27,10 +27,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip, unet_2d::UNet2DConditionModel,
-    vae::AutoEncoderKL,
-};
+use candle_transformers::models::stable_diffusion::{self, clip as sdclip};
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
@@ -44,51 +41,13 @@ use crate::ui::progress;
 // in `ip_adapter`. New strategies are added there, not here.
 pub use crate::pipelines::ip_adapter::IdentityKind;
 
-/// SD variant the portrait pipeline routes through. Detected from the
-/// `model` alias / repo at load time. SD 1.5 is the default (alias `sd15`);
-/// SDXL is selected by any alias / repo containing `xl` (case-insensitive).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Variant {
-    Sd15,
-    Sdxl,
-}
-
-impl Variant {
-    pub fn detect(model: &str) -> Self {
-        let m = model.to_lowercase();
-        if m.contains("flux") {
-            // Caller validates this earlier; treat as SD 1.5 to keep the
-            // type total. Flux portraits are not a thing.
-            return Self::Sd15;
-        }
-        if m.contains("xl") {
-            Self::Sdxl
-        } else {
-            Self::Sd15
-        }
-    }
-
-    pub fn cross_attn_dim(self) -> usize {
-        match self {
-            Self::Sd15 => 768,
-            Self::Sdxl => 2048,
-        }
-    }
-
-    pub fn vae_scale(self) -> f64 {
-        match self {
-            Self::Sd15 => 0.18215,
-            Self::Sdxl => 0.13025,
-        }
-    }
-
-    pub fn config(self, w: usize, h: usize) -> StableDiffusionConfig {
-        match self {
-            Self::Sd15 => StableDiffusionConfig::v1_5(None, Some(h), Some(w)),
-            Self::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
-        }
-    }
-}
+/// SD variant the portrait pipeline routes through. Phase 7b
+/// re-exports [`sd_core::SdVariant`](crate::pipelines::sd_core::SdVariant)
+/// — same Sd15 / Sdxl values, same `cross_attn_dim` / `vae_scale` /
+/// `config` / `detect` helpers. Keeping the `portrait::Variant`
+/// name preserves the existing internal call sites
+/// (`Variant::Sd15`, `Variant::detect(...)`, etc.) untouched.
+pub use crate::pipelines::sd_core::SdVariant as Variant;
 
 // =====================================================================
 // Request types.
@@ -183,31 +142,29 @@ pub struct GenRequest {
 // Pipeline.
 // =====================================================================
 
+/// Portrait wrapping pipeline. Phase 7b: holds an `Arc<SdCore>`
+/// for the shared SD backbone (UNet / VAE / CLIP / tokenizers /
+/// device / dtype / merged-LoRA tempfiles), plus the portrait-
+/// specific identity encoder. Multiple pipelines can share the
+/// same SdCore in v0.10 phase 7d+ to eliminate redundant model
+/// loads on `--artefact-blend` paths.
 pub struct Pipeline {
-    variant: Variant,
-    cfg: StableDiffusionConfig,
-    tokenizer_l: Tokenizer,
-    /// SDXL only — the CLIP-G tokenizer + encoder. `None` for SD 1.5.
-    tokenizer_g: Option<Tokenizer>,
-    text_encoder_l: sdclip::ClipTextTransformer,
-    text_encoder_g: Option<sdclip::ClipTextTransformer>,
-    vae: AutoEncoderKL,
-    unet: UNet2DConditionModel,
+    core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
     identity_encoder: Option<Box<dyn IdentityEncoder>>,
     /// Number of image tokens emitted by `identity_encoder`, when present.
     /// Cached so a zero-tokens tensor for the CFG uncond branch is the
     /// right shape without re-querying the trait.
     identity_num_tokens: usize,
-    device: Device,
-    dtype: DType,
-    /// Kept alive so merged-LoRA safetensors mmaps stay valid for the
-    /// pipeline's lifetime.
-    _lora_tmp: Vec<tempfile::NamedTempFile>,
 }
 
 impl Pipeline {
     /// Load weights for SD 1.5 or SDXL based on the model alias / repo.
     /// Flux models are rejected (portrait is a SD-architecture feature).
+    ///
+    /// Phase 7b: the SD backbone load delegates to
+    /// [`SdCore::load`](crate::pipelines::sd_core::SdCore::load).
+    /// Portrait-specific concerns (identity sanity check, FaceID
+    /// auto-LoRA injection, identity encoder construction) stay here.
     pub async fn load(req: LoadRequest) -> Result<Self> {
         let base_repo = if req.model.contains('/') {
             req.model.clone()
@@ -242,76 +199,16 @@ impl Pipeline {
                 );
             }
             // Pre-flight FaceID strategies' weight requirements before the
-            // (potentially multi-GB) base model download. A user who set
-            // PLAKAT_ARCFACE_WEIGHTS to the wrong path shouldn't pay for
-            // SDXL's 7 GB download just to discover the typo.
+            // (potentially multi-GB) base model download.
             kind.preflight_weights()?;
         }
 
-        let cfg = variant.config(512, 512);
-        let dtype = if matches!(req.device, Device::Cpu) {
-            DType::F32
-        } else {
-            DType::F16
-        };
-
-        // -------- download base weights (variant-aware) --------
-        let dl = progress::spinner(&format!(
-            "Resolving {} weights",
-            match variant { Variant::Sd15 => "SD 1.5", Variant::Sdxl => "SDXL" }
-        ));
-        let tokenizer_l_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "tokenizer/tokenizer.json"),
-            ("openai/clip-vit-large-patch14", "tokenizer.json"),
-        ])
-        .await
-        .with_context(|| format!("tokenizer (CLIP-L) for {base_repo}"))?;
-        let text_enc_l_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "text_encoder/model.fp16.safetensors"),
-            (&base_repo, "text_encoder/model.safetensors"),
-        ])
-        .await?;
-        let (tokenizer_g_path, text_enc_g_path) = match variant {
-            Variant::Sd15 => (None, None),
-            Variant::Sdxl => {
-                let t = crate::hf::download::get_first_of(&[
-                    (&base_repo, "tokenizer_2/tokenizer.json"),
-                    ("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json"),
-                    ("openai/clip-vit-large-patch14", "tokenizer.json"),
-                ])
-                .await
-                .with_context(|| format!("tokenizer (CLIP-G) for {base_repo}"))?;
-                let e = crate::hf::download::get_first_of(&[
-                    (&base_repo, "text_encoder_2/model.fp16.safetensors"),
-                    (&base_repo, "text_encoder_2/model.safetensors"),
-                ])
-                .await
-                .with_context(|| format!("text_encoder_2 in {base_repo}"))?;
-                (Some(t), Some(e))
-            }
-        };
-        let unet_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "unet/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
-        let vae_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
-        dl.finish_with_message("✓ base weights ready");
-
-        // -------- resolve LoRA files (once) --------
-        // `lora_tmps` keeps temp-file handles alive for the pipeline's
-        // lifetime. Both LoRA merging (downstream) and FaceID's auto-
-        // converted UNet LoRA (here) drop files into it.
-        let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
-
-        // FaceID strategies ship a UNet cross-attention LoRA bundled in
-        // their `.bin`. Convert it to kohya format and prepend to the
-        // user-supplied LoRAs so it gets merged through the same path.
-        // Opt out via `PLAKAT_FACEID_LORA=off`.
+        // -------- resolve LoRAs (FaceID auto-LoRA + user LoRAs) --------
+        // The auto-LoRA is portrait-specific (FaceID UNet adapter
+        // bundled in the identity .bin); user LoRAs are general.
+        // Both are resolved here and passed pre-resolved to
+        // SdCore::load which merges them into the UNet + text
+        // encoder weights.
         let mut auto_loras: Vec<crate::pipelines::lora::ResolvedLora> = Vec::new();
         if let Some(kind) = req.identity {
             if let Some(path) = kind.aux_unet_lora(&req.device).await? {
@@ -320,11 +217,8 @@ impl Pipeline {
                     scale: 1.0,
                     display: format!("{} (auto)", kind.label()),
                 });
-                // No tempfile to keep alive — the FaceID LoRA download
-                // lives in the HF cache, which persists naturally.
             }
         }
-
         let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty()
             && auto_loras.is_empty()
         {
@@ -340,131 +234,20 @@ impl Pipeline {
             v
         };
 
-        // -------- build models --------
-        let build = progress::spinner("Loading portrait models");
-        let tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
-            .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
-        let tokenizer_g = match tokenizer_g_path.as_ref() {
-            Some(p) => Some(
-                Tokenizer::from_file(p).map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?,
-            ),
-            None => None,
-        };
-        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
+        // -------- delegate the SD backbone load --------
+        let core = crate::pipelines::sd_core::SdCore::load(
+            crate::pipelines::sd_core::SdLoadRequest {
+                model: req.model.clone(),
+                device: req.device.clone(),
+                loras: resolved_loras,
+                lora_scale: req.lora_scale,
+            },
+        )
+        .await
+        .context("loading SD backbone for portrait pipeline")?;
+        let dtype = core.dtype;
 
-        // UNet (with optional LoRA merge).
-        let effective_unet_path = if resolved_loras.is_empty() {
-            unet_path.clone()
-        } else {
-            let spin = progress::spinner("Merging LoRA into UNet");
-            let tmp = tempfile::Builder::new()
-                .prefix("plakat-portrait-unet-")
-                .suffix(".safetensors")
-                .tempfile()?;
-            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                &unet_path,
-                tmp.path(),
-                &resolved_loras,
-                req.lora_scale,
-                &req.device,
-                crate::pipelines::lora::MergeTarget::UNET,
-            )?;
-            spin.finish_with_message(format!(
-                "✓ merged {modified}/{targets} UNet LoRA target(s)"
-            ));
-            let p = tmp.path().to_path_buf();
-            lora_tmps.push(tmp);
-            p
-        };
-        let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
-
-        // CLIP-L text encoder (with optional LoRA merge).
-        let te_l_target = match variant {
-            Variant::Sd15 => crate::pipelines::lora::MergeTarget::TE_SD15,
-            Variant::Sdxl => crate::pipelines::lora::MergeTarget::TE1_SDXL,
-        };
-        let effective_te_l_path = if resolved_loras.is_empty() {
-            text_enc_l_path.clone()
-        } else {
-            let spin = progress::spinner(&format!("Merging LoRA into {}", te_l_target.name));
-            let tmp = tempfile::Builder::new()
-                .prefix("plakat-portrait-te-l-")
-                .suffix(".safetensors")
-                .tempfile()?;
-            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                &text_enc_l_path,
-                tmp.path(),
-                &resolved_loras,
-                req.lora_scale,
-                &req.device,
-                te_l_target,
-            )?;
-            spin.finish_with_message(format!(
-                "✓ merged {modified}/{targets} {} LoRA target(s)",
-                te_l_target.name
-            ));
-            let p = tmp.path().to_path_buf();
-            lora_tmps.push(tmp);
-            p
-        };
-        let text_encoder_l = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
-            &effective_te_l_path,
-            &req.device,
-            dtype,
-        )?;
-
-        // SDXL only: CLIP-G text encoder (with optional LoRA merge).
-        let text_encoder_g = match variant {
-            Variant::Sd15 => None,
-            Variant::Sdxl => {
-                let cfg_g = cfg
-                    .clip2
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("SDXL config is missing clip2"))?;
-                let p = text_enc_g_path
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
-                let effective_te_g_path = if resolved_loras.is_empty() {
-                    p.clone()
-                } else {
-                    let target = crate::pipelines::lora::MergeTarget::TE2_SDXL;
-                    let spin = progress::spinner(&format!("Merging LoRA into {}", target.name));
-                    let tmp = tempfile::Builder::new()
-                        .prefix("plakat-portrait-te-g-")
-                        .suffix(".safetensors")
-                        .tempfile()?;
-                    let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                        p,
-                        tmp.path(),
-                        &resolved_loras,
-                        req.lora_scale,
-                        &req.device,
-                        target,
-                    )?;
-                    spin.finish_with_message(format!(
-                        "✓ merged {modified}/{targets} {} LoRA target(s)",
-                        target.name
-                    ));
-                    let path = tmp.path().to_path_buf();
-                    lora_tmps.push(tmp);
-                    path
-                };
-                Some(stable_diffusion::build_clip_transformer(
-                    cfg_g,
-                    &effective_te_g_path,
-                    &req.device,
-                    dtype,
-                )?)
-            }
-        };
-
-        build.finish_with_message("✓ portrait models loaded");
-
-        // Identity encoder, if requested. The download + module construction
-        // is fully contained in `IdentityKind::load_encoder`, so adding a new
-        // strategy is an `ip_adapter` edit that this function never has to
-        // learn about.
+        // -------- identity encoder (portrait-specific) --------
         let (identity_encoder, identity_num_tokens) = if let Some(kind) = req.identity {
             let enc = kind.load_encoder(&req.device, dtype).await?;
             let n = enc.num_tokens();
@@ -474,19 +257,9 @@ impl Pipeline {
         };
 
         Ok(Self {
-            variant,
-            cfg,
-            tokenizer_l,
-            tokenizer_g,
-            text_encoder_l,
-            text_encoder_g,
-            vae,
-            unet,
+            core: std::sync::Arc::new(core),
             identity_encoder,
             identity_num_tokens,
-            device: req.device,
-            dtype,
-            _lora_tmp: lora_tmps,
         })
     }
 
@@ -495,39 +268,43 @@ impl Pipeline {
     ///   * SDXL   — `(1, 77, 2048)` from `concat(CLIP-L penultimate,
     ///              CLIP-G penultimate)` along the channel dim.
     fn encode_text(&self, text: &str) -> Result<Tensor> {
-        match self.variant {
+        match self.core.variant {
             Variant::Sd15 => self.encode_text_sd15(text),
             Variant::Sdxl => self.encode_text_sdxl(text),
         }
     }
 
     fn encode_text_sd15(&self, text: &str) -> Result<Tensor> {
-        let ids = tokenize_padded(&self.tokenizer_l, &self.cfg.clip, text, &self.device)?;
-        Ok(self.text_encoder_l.forward(&ids)?.to_dtype(self.dtype)?)
+        let ids = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, text, &self.core.device)?;
+        Ok(self.core.text_encoder_l.forward(&ids)?.to_dtype(self.core.dtype)?)
     }
 
     fn encode_text_sdxl(&self, text: &str) -> Result<Tensor> {
         let cfg_g = self
+            .core
             .cfg
             .clip2
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL Pipeline missing clip2 config"))?;
         let tok_g = self
+            .core
             .tokenizer_g
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL Pipeline missing tokenizer_g"))?;
         let enc_g = self
+            .core
             .text_encoder_g
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL Pipeline missing text_encoder_g"))?;
-        let ids_l = tokenize_padded(&self.tokenizer_l, &self.cfg.clip, text, &self.device)?;
-        let ids_g = tokenize_padded(tok_g, cfg_g, text, &self.device)?;
+        let ids_l = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, text, &self.core.device)?;
+        let ids_g = tokenize_padded(tok_g, cfg_g, text, &self.core.device)?;
         let (_final_l, hidden_l) = self
+            .core
             .text_encoder_l
             .forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
         let (_final_g, hidden_g) =
             enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
-        Ok(Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(self.dtype)?)
+        Ok(Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(self.core.dtype)?)
     }
 
     /// Run `req.count` portraits. Reuses loaded weights across calls.
@@ -541,7 +318,7 @@ impl Pipeline {
         req: &GenRequest,
         control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<()> {
-        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -561,7 +338,7 @@ impl Pipeline {
         let bsz: usize = 1;
         let latent_h = h / 8;
         let latent_w = w / 8;
-        let vae_scale: f64 = self.variant.vae_scale();
+        let vae_scale: f64 = self.core.variant.vae_scale();
 
         for idx in 0..req.count {
             let seed = req
@@ -569,17 +346,17 @@ impl Pipeline {
                 .map(|s| s + idx as u64)
                 .unwrap_or_else(rand::random)
                 & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed) {
+            if let Err(e) = self.core.device.set_seed(seed) {
                 tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
             }
 
             let mut scheduler =
-                crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+                crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
             let timesteps = scheduler.timesteps().to_vec();
 
             let mut latents =
-                Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.device)?
-                    .to_dtype(self.dtype)?;
+                Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
+                    .to_dtype(self.core.dtype)?;
             latents = (latents * scheduler.init_noise_sigma())?;
 
             let face_tag = if has_face { "+face" } else { "txt" };
@@ -610,14 +387,14 @@ impl Pipeline {
                 if rsteps > 0 {
                     let strength = req.refine_strength.clamp(0.0, 1.0);
                     let mut polish =
-                        crate::pipelines::scheduler::build(req.scheduler, &self.cfg, rsteps)?;
+                        crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, rsteps)?;
                     let pts = polish.timesteps().to_vec();
                     let init_skip = ((rsteps as f32) * (1.0 - strength)).round() as usize;
                     let init_skip = init_skip.min(rsteps.saturating_sub(1));
                     let active = &pts[init_skip..];
                     if let Some(&start_t) = active.first() {
-                        let noise = Tensor::randn(0f32, 1f32, latents.shape(), &self.device)?
-                            .to_dtype(self.dtype)?;
+                        let noise = Tensor::randn(0f32, 1f32, latents.shape(), &self.core.device)?
+                            .to_dtype(self.core.dtype)?;
                         latents = polish.add_noise(&latents, noise, start_t)?;
                         let rbar = progress::step_bar(
                             active.len() as u64,
@@ -645,7 +422,7 @@ impl Pipeline {
             }
 
             // Decode + save.
-            let image = self.vae.decode(&(&latents / vae_scale)?)?;
+            let image = self.core.vae.decode(&(&latents / vae_scale)?)?;
             let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
             let image = (image * 255.0)?
                 .to_dtype(DType::U8)?
@@ -708,7 +485,7 @@ impl Pipeline {
                     face_landmarks,
                 };
                 let tok = enc.encode(photos, opts)?;
-                let tok = (tok * (face_strength as f64))?.to_dtype(self.dtype)?;
+                let tok = (tok * (face_strength as f64))?.to_dtype(self.core.dtype)?;
                 s.finish_with_message("✓ identity encoded");
                 Some(tok)
             }
@@ -753,7 +530,7 @@ impl Pipeline {
         seed: u64,
         control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
-        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
         let (ehs, has_face) = self.build_encoder_hidden_states(
@@ -766,16 +543,16 @@ impl Pipeline {
             do_cfg,
         )?;
 
-        if let Err(e) = self.device.set_seed(seed) {
+        if let Err(e) = self.core.device.set_seed(seed) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
         }
         let mut scheduler =
-            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+            crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();
         let latent_h = h / 8;
         let latent_w = w / 8;
-        let mut latents = Tensor::randn(0f32, 1f32, (1, 4, latent_h, latent_w), &self.device)?
-            .to_dtype(self.dtype)?;
+        let mut latents = Tensor::randn(0f32, 1f32, (1, 4, latent_h, latent_w), &self.core.device)?
+            .to_dtype(self.core.dtype)?;
         latents = (latents * scheduler.init_noise_sigma())?;
 
         let face_tag = if has_face { "+face" } else { "txt" };
@@ -810,7 +587,7 @@ impl Pipeline {
         seed: u64,
         control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
-        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let do_cfg = req.guidance > 1.0;
         let (ehs, has_face) = self.build_encoder_hidden_states(
             &req.prompt,
@@ -822,11 +599,11 @@ impl Pipeline {
             do_cfg,
         )?;
 
-        if let Err(e) = self.device.set_seed(seed) {
+        if let Err(e) = self.core.device.set_seed(seed) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
         }
         let mut scheduler =
-            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+            crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();
         let first_t = *timesteps
             .first()
@@ -835,8 +612,8 @@ impl Pipeline {
         // Start: re-noise the base at the first timestep. The masked region
         // gets driven by the denoiser; the unmasked region gets re-noised
         // again at each step so the masked region sees a coherent neighbour.
-        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
-            .to_dtype(self.dtype)?;
+        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+            .to_dtype(self.core.dtype)?;
         let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
 
         let inv_mask = (mask.ones_like()? - mask)?;
@@ -852,8 +629,8 @@ impl Pipeline {
             // RePaint: re-noise the BASE (not the running latents) outside
             // the mask. This pins the unmasked region to the base image while
             // letting the denoiser walk freely inside the mask.
-            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
-                .to_dtype(self.dtype)?;
+            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+                .to_dtype(self.core.dtype)?;
             let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
@@ -884,10 +661,10 @@ impl Pipeline {
         w: u32,
         h: u32,
     ) -> Result<Tensor> {
-        let pixels = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.device, self.dtype)
+        let pixels = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.core.device, self.core.dtype)
             .with_context(|| format!("VAE-encoding {}", path.display()))?;
-        let vae_scale: f64 = self.variant.vae_scale();
-        let dist = self.vae.encode(&pixels)?;
+        let vae_scale: f64 = self.core.variant.vae_scale();
+        let dist = self.core.vae.encode(&pixels)?;
         // The diffusers convention: take the dist.mean and multiply by
         // vae_scale to land in the latent space the UNet operates on.
         let latents = (dist.sample()? * vae_scale)?;
@@ -920,7 +697,7 @@ impl Pipeline {
         seed: u64,
         control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<Tensor> {
-        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let strength = strength.clamp(0.0, 1.0);
         let do_cfg = req.guidance > 1.0;
         let (ehs, _has_face) = self.build_encoder_hidden_states(
@@ -933,11 +710,11 @@ impl Pipeline {
             do_cfg,
         )?;
 
-        if let Err(e) = self.device.set_seed(seed) {
+        if let Err(e) = self.core.device.set_seed(seed) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
         }
         let mut scheduler =
-            crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+            crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();
 
         // start_idx selects where on the noise schedule we begin. At
@@ -956,8 +733,8 @@ impl Pipeline {
         let first_t = active[0];
 
         // Re-noise the base latents at the partial-noise level.
-        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
-            .to_dtype(self.dtype)?;
+        let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+            .to_dtype(self.core.dtype)?;
         let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
 
         let inv_mask = (mask.ones_like()? - mask)?;
@@ -968,8 +745,8 @@ impl Pipeline {
         for (i, &t) in active.iter().enumerate() {
             let progress = (start_idx + i) as f32 / total as f32;
             let step_control = control.filter(|cr| cr.active_at(progress));
-            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
-                .to_dtype(self.dtype)?;
+            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+                .to_dtype(self.core.dtype)?;
             let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
@@ -993,8 +770,8 @@ impl Pipeline {
         latents: &Tensor,
         out_path: &std::path::Path,
     ) -> Result<()> {
-        let vae_scale: f64 = self.variant.vae_scale();
-        let image = self.vae.decode(&(latents / vae_scale)?)?;
+        let vae_scale: f64 = self.core.variant.vae_scale();
+        let image = self.core.vae.decode(&(latents / vae_scale)?)?;
         let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
         let image = (image * 255.0)?
             .to_dtype(DType::U8)?
@@ -1029,7 +806,7 @@ impl Pipeline {
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
         let noise_pred = match control {
-            None => self.unet.forward(
+            None => self.core.unet.forward(
                 &latent_in,
                 timestep as f64,
                 encoder_hidden_states,
@@ -1050,7 +827,7 @@ impl Pipeline {
                     &cond_in,
                     cr.strength,
                 )?;
-                self.unet.forward_with_additional_residuals(
+                self.core.unet.forward_with_additional_residuals(
                     &latent_in,
                     timestep as f64,
                     encoder_hidden_states,
@@ -1084,14 +861,14 @@ impl Pipeline {
     /// F32 on CPU). Callers building masks for `inpaint_latents_one`
     /// need this so the mask matches.
     pub fn latent_dtype(&self) -> DType {
-        self.dtype
+        self.core.dtype
     }
 
     /// The device backing this pipeline's tensors. Needed by callers
     /// that build mask tensors outside the pipeline (e.g. v2 artefact
     /// blending).
     pub fn device(&self) -> &Device {
-        &self.device
+        &self.core.device
     }
 }
 
