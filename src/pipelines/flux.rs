@@ -113,6 +113,10 @@ pub struct Request {
     /// by the caller). Empty disables LoRA merging.
     pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
     pub lora_scale: f32,
+    /// v0.12 phase 2b: optional Flux ControlNet weight repo + config +
+    /// conditioning-image path. `None` runs Flux without a ControlNet.
+    pub controlnet: Option<FluxControlNetLoad>,
+    pub conditioning: Option<PathBuf>,
 }
 
 // =====================================================================
@@ -129,6 +133,20 @@ pub struct LoadRequest {
     pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
     /// Global multiplier applied on top of each LoRA's per-file scale.
     pub lora_scale: f32,
+    /// v0.12 phase 2b: optional Flux ControlNet.
+    pub controlnet: Option<FluxControlNetLoad>,
+}
+
+/// Flux ControlNet weight repo + config. The actual model load happens
+/// inside `Pipeline::load`. Distinct from `flux_controlnet::Config` so
+/// the user-facing API stays narrow.
+#[derive(Debug, Clone)]
+pub struct FluxControlNetLoad {
+    pub repo: String,
+    pub file: String,
+    pub cfg: crate::pipelines::flux_controlnet::Config,
+    /// `controlnet_conditioning_scale` (diffusers default 1.0).
+    pub scale: f32,
 }
 
 pub struct GenRequest {
@@ -140,6 +158,13 @@ pub struct GenRequest {
     pub guidance: Option<f64>,
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
+    /// v0.12 phase 2b: optional path to a conditioning image. When
+    /// the pipeline has a ControlNet loaded AND this is `Some`, the
+    /// image is VAE-encoded + packed and threaded into the per-step
+    /// denoise. `None` skips the ControlNet pass (residuals come out
+    /// to zero) — useful for back-compat callers that don't know
+    /// about ControlNet.
+    pub conditioning: Option<PathBuf>,
 }
 
 pub struct Pipeline {
@@ -158,6 +183,11 @@ pub struct Pipeline {
     t5_tok: Tokenizer,
     flux_model: fmodel::Flux,
     ae_model: fae::AutoEncoder,
+    /// v0.12 phase 2b: optional Flux ControlNet + the conditioning
+    /// image (already VAE-encoded + packed to the 64-d token shape).
+    /// `controlnet_scale` is diffusers `controlnet_conditioning_scale`.
+    controlnet: Option<crate::pipelines::flux_controlnet::FluxControlNet>,
+    controlnet_scale: f32,
 }
 
 impl Pipeline {
@@ -281,6 +311,27 @@ impl Pipeline {
         let ae_model = fae::AutoEncoder::new(&req.variant.ae_config(), ae_vb)?;
         load.finish_with_message("✓ models loaded");
 
+        // ---------- Flux ControlNet (v0.12 phase 2b) ----------
+        let (controlnet, controlnet_scale) = match req.controlnet {
+            Some(cn) => {
+                let spin = progress::spinner(&format!(
+                    "Downloading + remapping Flux ControlNet {}/{}",
+                    cn.repo, cn.file
+                ));
+                let net = crate::pipelines::flux_controlnet::load_from_hf(
+                    &cn.repo,
+                    &cn.file,
+                    cn.cfg,
+                    &req.device,
+                    dtype,
+                )
+                .await?;
+                spin.finish_with_message("✓ Flux ControlNet ready");
+                (Some(net), cn.scale)
+            }
+            None => (None, 1.0),
+        };
+
         Ok(Self {
             variant: req.variant,
             repo: req.repo,
@@ -293,6 +344,8 @@ impl Pipeline {
             t5_tok,
             flux_model,
             ae_model,
+            controlnet,
+            controlnet_scale,
         })
     }
 
@@ -318,6 +371,32 @@ impl Pipeline {
         let lat_h = (h + 15) / 16;
         let lat_w = (w + 15) / 16;
         let image_seq_len = lat_h * lat_w;
+
+        // ---------- ControlNet conditioning prep (v0.12 phase 2b) ----
+        // VAE-encode the conditioning image (if any) and pack to the
+        // same `(1, image_seq_len, 64)` token shape the main image
+        // tokens use. Done once per `generate()` call — the same
+        // conditioning is reused at every denoise step.
+        let conditioning_packed: Option<Tensor> = match (
+            self.controlnet.as_ref(),
+            req.conditioning.as_deref(),
+        ) {
+            (Some(_), Some(path)) => {
+                let spin = progress::spinner("Encoding ControlNet conditioning");
+                let packed = self.encode_conditioning(path, h, w)?;
+                spin.finish_with_message("✓ conditioning encoded");
+                Some(packed)
+            }
+            (Some(_), None) => {
+                tracing::warn!(
+                    target: "plakat",
+                    "Flux ControlNet loaded but no conditioning image supplied — \
+                     running the pipeline without residuals."
+                );
+                None
+            }
+            _ => None,
+        };
 
         for idx in 0..req.count {
             let seed = req
@@ -346,18 +425,20 @@ impl Pipeline {
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            // candle's `denoise` runs the whole loop without per-step
-            // callbacks; the bar tracks started→finished rather than ticking.
             bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
-            let denoised = sampling::denoise(
-                &self.flux_model,
-                &state.img,
-                &state.img_ids,
-                &state.txt,
-                &state.txt_ids,
-                &state.vec,
+
+            // v0.12 phase 2b: custom denoise loop. When the pipeline
+            // has a ControlNet AND a conditioning image, run the
+            // ControlNet each step to produce DoubleStream residuals,
+            // then run Flux with those residuals. Otherwise this is
+            // the same flow-matching integration candle's
+            // `sampling::denoise` does, just inlined.
+            let denoised = self.denoise_with_optional_controlnet(
+                &state,
                 &timesteps,
                 guidance,
+                conditioning_packed.as_ref(),
+                &bar,
             )?;
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
             bar.finish_with_message("✓ denoised");
@@ -412,6 +493,106 @@ impl Pipeline {
         let t5_emb = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
         Ok((clip_pooled, t5_emb))
     }
+
+    /// v0.12 phase 2b: load + VAE-encode + pack a Flux ControlNet
+    /// conditioning image. Output shape `(1, image_seq_len, 64)` —
+    /// same as Flux's `State::new` img packing, ready to flow into
+    /// `FluxControlNet::forward`.
+    fn encode_conditioning(
+        &self,
+        path: &std::path::Path,
+        h: usize,
+        w: usize,
+    ) -> Result<Tensor> {
+        // Read pixels in the same `[-1, 1]` normalization the Flux AE
+        // was trained on, matching plakat's existing SD `sd_image_tensor`
+        // convention. The Flux AE accepts this domain directly.
+        let pixels = crate::imaging::preprocess::sd_image_tensor(
+            path,
+            w as u32,
+            h as u32,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| {
+            format!("loading Flux ControlNet conditioning {}", path.display())
+        })?;
+        // Flux AE expects pre-shift: z = (encode(x) - shift) * scale
+        let ae_cfg = self.variant.ae_config();
+        let z = self.ae_model.encode(&pixels)?;
+        let z = ((z - ae_cfg.shift_factor)? * ae_cfg.scale_factor)?;
+        // Pack 16-channel latent to (1, image_seq_len, 64) — the
+        // same pixel-unshuffle + flatten dance State::new does.
+        let (_bsz, c, lh, lw) = z.dims4()?;
+        if c != 16 {
+            anyhow::bail!(
+                "Flux AE encoded to {c} channels — expected 16. Conditioning prep aborted."
+            );
+        }
+        let packed = z
+            .reshape((1, c, lh / 2, 2, lw / 2, 2))?
+            .permute((0, 2, 4, 1, 3, 5))?
+            .reshape((1, lh / 2 * lw / 2, c * 4))?;
+        Ok(packed)
+    }
+
+    /// v0.12 phase 2b: flow-matching denoise loop that runs the
+    /// ControlNet per step (when present + conditioning supplied)
+    /// and threads its residuals into the main Flux's
+    /// `forward_with_residuals`. Identical to candle's
+    /// `sampling::denoise` when no ControlNet is engaged.
+    fn denoise_with_optional_controlnet(
+        &self,
+        state: &sampling::State,
+        timesteps: &[f64],
+        guidance: f64,
+        conditioning_packed: Option<&Tensor>,
+        bar: &indicatif::ProgressBar,
+    ) -> Result<Tensor> {
+        let b_sz = state.img.dim(0)?;
+        let dev = state.img.device();
+        let guidance_t = Tensor::full(guidance as f32, b_sz, dev)?;
+        let mut img = state.img.clone();
+        for (step_i, window) in timesteps.windows(2).enumerate() {
+            let (t_curr, t_prev) = match window {
+                [a, b] => (a, b),
+                _ => continue,
+            };
+            let t_vec = Tensor::full(*t_curr as f32, b_sz, dev)?;
+            // ControlNet residuals (DoubleStream only in this phase).
+            let residuals: Option<Vec<Tensor>> = match (
+                self.controlnet.as_ref(),
+                conditioning_packed,
+            ) {
+                (Some(net), Some(cond)) => Some(net.forward(
+                    &img,
+                    cond,
+                    &state.img_ids,
+                    &state.txt,
+                    &state.txt_ids,
+                    &t_vec,
+                    &state.vec,
+                    Some(&guidance_t),
+                    self.controlnet_scale,
+                )?),
+                _ => None,
+            };
+            let pred = self.flux_model.forward_with_residuals(
+                &img,
+                &state.img_ids,
+                &state.txt,
+                &state.txt_ids,
+                &t_vec,
+                &state.vec,
+                Some(&guidance_t),
+                residuals.as_deref(),
+                None,
+            )?;
+            img = (img + pred * (t_prev - t_curr))?;
+            bar.set_position(step_i as u64);
+        }
+        Ok(img)
+    }
 }
 
 // =====================================================================
@@ -425,6 +606,7 @@ pub async fn run(req: Request) -> Result<()> {
         device: req.device,
         loras: req.loras,
         lora_scale: req.lora_scale,
+        controlnet: req.controlnet,
     })
     .await?;
     p.generate(&GenRequest {
@@ -436,5 +618,6 @@ pub async fn run(req: Request) -> Result<()> {
         guidance: req.guidance,
         seed: req.seed,
         out_dir: req.out_dir,
+        conditioning: req.conditioning,
     })
 }
