@@ -56,6 +56,19 @@ pub async fn annotate(
     match kind {
         ControlKind::Depth => annotate_depth(src_path, out_w, out_h, device, dtype).await,
         ControlKind::Canny => annotate_canny(src_path, out_w, out_h, device, dtype),
+        // v0.11: variants and ControlNet weights ship now (so users can
+        // already use these with `image=PATH` pre-rendered maps); the
+        // auto-annotator port lands across follow-up commits.
+        ControlKind::OpenPose | ControlKind::Lineart | ControlKind::SoftEdge => {
+            anyhow::bail!(
+                "{:?} auto-annotation is not yet implemented in plakat. \
+                 Supply a pre-rendered conditioning map via \
+                 `--control-spec '{}:image=PATH'` for now. Auto-annotators \
+                 land in v0.11.x.",
+                kind,
+                kind.slug()
+            )
+        }
     }
 }
 
