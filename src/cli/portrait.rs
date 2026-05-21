@@ -453,6 +453,10 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
             &Default::default(),
             seed,
             smart_depth.as_ref(),
+            // Phase 7d: portrait CLI keeps its own SD load for now;
+            // sharing here is 7e's scope (cli/portrait owns more
+            // pipeline state — identity adapter etc. — than t2i).
+            None,
         )
         .await?;
     }

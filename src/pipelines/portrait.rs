@@ -263,6 +263,24 @@ impl Pipeline {
         })
     }
 
+    /// Construct a no-identity portrait pipeline from an already-loaded
+    /// SD backbone. Phase 7d — lets follow-on steps such as
+    /// `--artefact-blend` reuse the core loaded by `t2i::run` without
+    /// downloading + re-merging weights a second time.
+    ///
+    /// The caller is responsible for making sure `core` was loaded
+    /// with the model / device / LoRA set the blend pass expects;
+    /// portrait does not re-validate those here. Identity adapters
+    /// (FaceID / IP-Adapter) are unavailable on a `from_core` pipeline
+    /// — blend passes don't use them anyway.
+    pub fn from_core(core: std::sync::Arc<crate::pipelines::sd_core::SdCore>) -> Self {
+        Self {
+            core,
+            identity_encoder: None,
+            identity_num_tokens: 0,
+        }
+    }
+
     /// Encode text into the form the UNet expects:
     ///   * SD 1.5 — `(1, 77, 768)` from CLIP-L's final hidden state.
     ///   * SDXL   — `(1, 77, 2048)` from `concat(CLIP-L penultimate,

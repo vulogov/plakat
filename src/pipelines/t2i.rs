@@ -357,6 +357,14 @@ impl Pipeline {
         })
     }
 
+    /// Hand out a cheap `Arc` clone of the loaded SD backbone so a
+    /// follow-on step (e.g. `--artefact-blend`) can build its own
+    /// pipeline (`portrait::Pipeline::from_core`) without paying for
+    /// a second model load. Phase 7d.
+    pub fn core(&self) -> std::sync::Arc<crate::pipelines::sd_core::SdCore> {
+        std::sync::Arc::clone(&self.core)
+    }
+
     /// Encode `prompt` (and optionally `negative` for CFG) into the
     /// `encoder_hidden_states` tensor the UNet expects.
     fn encode_prompt(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
@@ -729,7 +737,13 @@ fn embed_xl(
 // `plakat generate` and any direct caller.
 // =====================================================================
 
-pub async fn run(req: Request) -> Result<()> {
+/// Run a t2i task. Returns the loaded `SdCore` so a follow-on step
+/// (e.g. `--artefact-blend`) can reuse the same weights via
+/// [`portrait::Pipeline::from_core`] instead of paying for a second
+/// load. Returns `Ok(None)` when the request routed through the Flux
+/// pipeline (which has no shared SdCore — Flux uses its own
+/// transformer-based backbone).
+pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
     // Flux routes to its own pipeline; LoRAs are not supported there yet.
@@ -746,7 +760,7 @@ pub async fn run(req: Request) -> Result<()> {
         } else {
             flux::Variant::Schnell
         };
-        return flux::run(flux::Request {
+        flux::run(flux::Request {
             prompt: req.prompt,
             variant: fvar,
             repo: resolve_repo(&req.model),
@@ -763,7 +777,8 @@ pub async fn run(req: Request) -> Result<()> {
             out_dir: req.out_dir,
             device: req.device,
         })
-        .await;
+        .await?;
+        return Ok(None);
     }
 
     // -- ControlNet preload (v0.9). Owned data lives on this stack
@@ -864,5 +879,6 @@ pub async fn run(req: Request) -> Result<()> {
             },
         },
         control_req.as_ref(),
-    )
+    )?;
+    Ok(Some(pipeline.core()))
 }

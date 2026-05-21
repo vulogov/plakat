@@ -240,7 +240,13 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     let steps = args.steps;
     let guidance = args.guidance;
 
-    t2i::run(t2i::Request {
+    // Phase 7d: capture the loaded SD backbone so the optional
+    // --artefact-blend pass below can reuse it instead of paying for
+    // a second multi-GB model load. `None` is returned when t2i routed
+    // through the Flux pipeline — Flux has its own backbone and the
+    // blend pass would need to load SD anyway (Flux portraits aren't
+    // supported by the blend path).
+    let shared_core = t2i::run(t2i::Request {
         prompt: args.prompt,
         negative: args.negative,
         model: args.model,
@@ -338,6 +344,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             &Default::default(),
             seed,
             smart_depth.as_ref(),
+            shared_core,
         )
         .await?;
     }
