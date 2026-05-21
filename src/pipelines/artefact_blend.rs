@@ -79,6 +79,15 @@ pub struct BlendConfig {
 /// When `smart` is supplied, the artefact zone rects (and therefore
 /// the blend mask) are recomputed per file from each image's own
 /// depth + luminance — same behaviour as the v3 compositor.
+///
+/// Phase 7d: `shared_core`, when `Some`, lets the blend pass reuse a
+/// previously-loaded SD backbone (e.g. the one `t2i::run` just used
+/// to generate the base images) instead of paying for a second load.
+/// Pass `None` to keep the standalone behaviour — the function loads
+/// its own portrait pipeline from `cfg.model` / `cfg.loras`. Callers
+/// that supply `shared_core` are responsible for ensuring it was
+/// loaded with the same model / device / LoRA set the blend pass
+/// expects; this function does not re-validate.
 pub async fn blend_files(
     cfg: BlendConfig,
     specs: &[ArtefactSpec],
@@ -87,6 +96,7 @@ pub async fn blend_files(
     zone_overrides: &ZoneOverrides,
     base_seed: Option<u64>,
     smart: Option<&crate::pipelines::depth::DepthPipeline>,
+    shared_core: Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>,
 ) -> Result<()> {
     if specs.is_empty() || files.is_empty() {
         return Ok(());
@@ -95,23 +105,31 @@ pub async fn blend_files(
         .with_context(|| format!("loading artefact library {}", library_dir.display()))?;
 
     let smart_tag = if smart.is_some() { " (smart zones)" } else { "" };
+    let reuse_tag = if shared_core.is_some() {
+        " (shared SD backbone)"
+    } else {
+        ""
+    };
     crate::ui::progress::println(&format!(
-        "  {} blending {} artefact(s) into {} image(s) (strength={:.2}){smart_tag}",
+        "  {} blending {} artefact(s) into {} image(s) (strength={:.2}){smart_tag}{reuse_tag}",
         console::style("◆").cyan().bold(),
         specs.len(),
         files.len(),
         cfg.strength,
     ));
 
-    let pipeline = portrait::Pipeline::load(LoadRequest {
-        model: cfg.model.clone(),
-        device: cfg.device.clone(),
-        loras: cfg.loras.clone(),
-        lora_scale: cfg.lora_scale,
-        identity: None,
-    })
-    .await
-    .context("loading SD pipeline for artefact blend")?;
+    let pipeline = match shared_core {
+        Some(core) => portrait::Pipeline::from_core(core),
+        None => portrait::Pipeline::load(LoadRequest {
+            model: cfg.model.clone(),
+            device: cfg.device.clone(),
+            loras: cfg.loras.clone(),
+            lora_scale: cfg.lora_scale,
+            identity: None,
+        })
+        .await
+        .context("loading SD pipeline for artefact blend")?,
+    };
 
     let feather_px = cfg.feather_px.unwrap_or(DEFAULT_FEATHER_PX);
 
@@ -162,7 +180,9 @@ pub async fn blend_files(
             face_landmarks: None,
         };
         let new_latents = pipeline
-            .blend_latents_one(&base_latents, &mask, &req, cfg.strength, seed)
+            // Artefact-blend doesn't expose --control; the conditioner
+            // here is the artefact mask itself, not a ControlNet guide.
+            .blend_latents_one(&base_latents, &mask, &req, cfg.strength, seed, None)
             .with_context(|| format!("blend denoise on {}", path.display()))?;
         pipeline
             .save_image(&new_latents, path)

@@ -60,6 +60,19 @@ jobs:
             archive: tar.gz
             bin_suffix: ""
 
+          # CUDA-enabled x86_64 Linux build. Dynamically links
+          # libcudart.so etc., so users without an NVIDIA stack
+          # should grab the plain x86_64-unknown-linux-gnu archive
+          # instead. CUDA toolkit is installed at build time via
+          # Jimver/cuda-toolkit on a stock ubuntu-22.04 runner.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            features: "cuda"
+            archive: tar.gz
+            bin_suffix: ""
+            name_suffix: "-cuda"
+            install_cuda: true
+
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
             features: ""
@@ -68,11 +81,11 @@ jobs:
             # Cross-compile via the system gcc-aarch64-linux-gnu toolchain.
             cross_linux: true
 
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            features: ""
-            archive: tar.gz
-            bin_suffix: ""
+          # x86_64-apple-darwin (Intel Mac) is intentionally not built.
+          # GitHub-hosted macos-13 runners are scarce and Apple Silicon
+          # is the supported target for plakat (Metal backend, the only
+          # GPU path on macOS). Users on Intel Macs can still build from
+          # source with `cargo install plakat`.
 
           - target: aarch64-apple-darwin
             runner: macos-14
@@ -109,7 +122,10 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Include features in the key so the CUDA build doesn't
+          # collide with the plain x86_64-linux-gnu CPU build (both
+          # share `target` but have different dep graphs).
+          key: ${{ matrix.target }}-${{ matrix.features }}
           shared-key: release
 
       # -----------------------------------------------------------------
@@ -119,13 +135,63 @@ jobs:
         if: matrix.cross_linux
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config libssl-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           # Tell cargo which linker to use for the aarch64 target.
+          # No OpenSSL sysroot needed — hf-hub + reqwest both use
+          # rustls (pure Rust TLS), so the dep graph is C-free.
           {
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
             echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
           } >> "$GITHUB_ENV"
+
+      # -----------------------------------------------------------------
+      # CUDA toolkit (cuda matrix entry only). ~3-4 GB on disk; fits
+      # within the GitHub-hosted Linux runner's 14 GB budget.
+      # NVCC compilation extends the build time considerably.
+      # -----------------------------------------------------------------
+      - name: Install CUDA toolkit (nvcc + cudart)
+        if: matrix.install_cuda
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: "12.4.0"
+          # nvcc + cudart are what candle-cuda links against; skip
+          # the heavyweight samples + docs. cublas is intentionally
+          # NOT requested here — on CUDA 12.x the Jimver action still
+          # asks apt for `cuda-cublas-12-4`, but NVIDIA renamed that
+          # package to `libcublas-12-4` in the 12.x repos, so the
+          # install fails. We install it manually below with the
+          # correct names.
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cudart-dev"]'
+
+      - name: Install cuBLAS + cuRAND + NVRTC (apt — correct names for CUDA 12.x)
+        if: matrix.install_cuda
+        # candle-cuda's linker spec is `-lcuda -lnvrtc -lcurand -lcublas
+        # -lcublasLt -lcudart`. cudart comes from the Jimver action above.
+        # libcuda.so is the driver and is shipped as a stub by the toolkit
+        # (in lib64/stubs), so we don't need it from apt. The remaining
+        # libs split across two package families in NVIDIA's repos: the
+        # math libraries use the `lib*` prefix (cuBLAS, cuRAND), while
+        # NVRTC ships under the `cuda-*` prefix.
+        run: |
+          sudo apt-get install -y \
+            libcublas-12-4 \
+            libcublas-dev-12-4 \
+            libcurand-12-4 \
+            libcurand-dev-12-4 \
+            cuda-nvrtc-12-4 \
+            cuda-nvrtc-dev-12-4
+
+      - name: Verify CUDA install
+        if: matrix.install_cuda
+        run: |
+          echo "CUDA_PATH=$CUDA_PATH"
+          nvcc --version
+          ls "$CUDA_PATH/lib64/" | head -20
+          # Confirm libcublas got installed where candle-cuda will
+          # find it (apt puts it under /usr/lib/x86_64-linux-gnu).
+          ls /usr/lib/x86_64-linux-gnu/libcublas* 2>/dev/null || true
 
       # -----------------------------------------------------------------
       # Build.
@@ -138,6 +204,18 @@ jobs:
       - name: Build (--features ${{ matrix.features }})
         if: matrix.features != ''
         shell: bash
+        # CUDA_COMPUTE_CAP is consumed by candle-kernels' bindgen_cuda
+        # crate at build time. Without it bindgen_cuda runs nvidia-smi
+        # to auto-detect the host GPU's compute cap — which panics on
+        # a GitHub Actions Linux runner because there is no GPU and no
+        # nvidia-smi. 80 = Ampere (A100, A40, RTX 30xx). The compiled
+        # kernels embed PTX, so newer archs (Ada Lovelace 89, Hopper 90,
+        # Blackwell 100) JIT forward at runtime. Older Turing (75) is
+        # not supported by this binary — users on T4 / RTX 20xx should
+        # stick with the CPU build or `cargo install` from source with
+        # CUDA_COMPUTE_CAP=75 set.
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.install_cuda && '80' || '' }}
         run: |
           cargo build --release --locked --target ${{ matrix.target }} \
             --features '${{ matrix.features }}'
@@ -166,7 +244,10 @@ jobs:
         shell: bash
         run: |
           tag="${{ steps.tag.outputs.tag }}"
-          name="plakat-${tag}-${{ matrix.target }}"
+          # name_suffix is empty for default builds; "-cuda" for the
+          # CUDA-enabled Linux matrix entry. Lets two matrix rows
+          # share `target` without colliding on archive name.
+          name="plakat-${tag}-${{ matrix.target }}${{ matrix.name_suffix }}"
           stage="dist/${name}"
           mkdir -p "${stage}"
           cp "target/${{ matrix.target }}/release/plakat${{ matrix.bin_suffix }}" "${stage}/"
@@ -249,7 +330,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          draft: true   # leave as draft for review; flip to false to auto-publish
+          draft: false   # auto-publish on tag push
           generate_release_notes: true
           files: |
             dist/*.tar.gz

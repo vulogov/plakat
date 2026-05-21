@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "0.7.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -70,12 +70,23 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "webp",
 ] }
+# imageproc: ControlNet Canny + future canny/sobel/HED annotators.
+# default-features off to skip the optional rusttype/dynimage frills
+# we don't need.
+imageproc = { version = "0.25", default-features = false }
 
 # RNG (only for cases where we want a host-side seed)
 rand = "0.8"
 
 # Hugging Face Hub
-hf-hub = { version = "0.4", features = ["tokio"] }
+# default-features disabled so hf-hub doesn't pull in openssl via
+# `native-tls`. Rustls keeps the dep graph C-free, which matters
+# for cross-compiles (notably aarch64-unknown-linux-gnu) where a
+# host-only OpenSSL install can't satisfy openssl-sys.
+hf-hub = { version = "0.4", default-features = false, features = [
+  "tokio",
+  "rustls-tls",
+] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 
 # Candle (inference)

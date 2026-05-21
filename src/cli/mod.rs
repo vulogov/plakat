@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub mod artefact;
 pub mod doctor;
 pub mod generate;
+pub mod img2img;
 pub mod inspect;
 pub mod models;
 pub mod portrait;
@@ -40,6 +41,9 @@ pub enum Command {
     Generate(generate::GenerateArgs),
     /// Generate a portrait, optionally from a reference photo.
     Portrait(portrait::PortraitArgs),
+    /// Image-to-image: transform an existing image with a prompt.
+    /// Supply `--mask` to restrict changes to a region (inpaint).
+    Img2img(img2img::Img2ImgArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
@@ -80,6 +84,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Portrait(args) => {
             let device = crate::device::select(&cli.device)?;
             portrait::run(args, device).await
+        }
+        Command::Img2img(args) => {
+            let device = crate::device::select(&cli.device)?;
+            img2img::run(args, device).await
         }
         Command::Stylize(args) => {
             let device = crate::device::select(&cli.device)?;

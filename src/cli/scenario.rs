@@ -416,6 +416,42 @@ struct TaskDef {
     /// scenario-level `smart-zones:` flag.
     #[serde(rename = "smart-zones", default)]
     smart_zones: Option<bool>,
+
+    /// v0.9: ControlNet block. When set, the named conditioner
+    /// guides every denoise step for this task. `strength` defaults
+    /// to 1.0 if omitted.
+    ///
+    /// ```hjson
+    /// control: { kind: depth, image: ./hint.png, strength: 0.85 }
+    /// ```
+    #[serde(default)]
+    control: Option<ControlSpec>,
+}
+
+/// Per-task ControlNet configuration. `kind` is a string parsed via
+/// the same `FromStr` impl as the CLI `--control`. Conditioning
+/// source is either `image` (pre-rendered map) or `auto-from`
+/// (image to auto-annotate via the matching annotator). Exactly
+/// one must be set. `strength` defaults to 1.0 when omitted.
+#[derive(Debug, Clone, Deserialize)]
+struct ControlSpec {
+    kind: String,
+    /// Pre-rendered conditioning image. Mutually exclusive with `auto-from`.
+    #[serde(default)]
+    image: Option<PathBuf>,
+    /// **v0.10**: source image to auto-annotate. Mutually exclusive with `image`.
+    #[serde(default, rename = "auto-from")]
+    auto_from: Option<PathBuf>,
+    #[serde(default)]
+    strength: Option<f32>,
+    /// Timestep window. `start` defaults to 0.0 when omitted; `end`
+    /// defaults to 1.0. Set `end: 0.5` to lock composition early
+    /// then release the prompt to drive late texture / atmosphere
+    /// refinement.
+    #[serde(default)]
+    start: Option<f32>,
+    #[serde(default)]
+    end: Option<f32>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -962,6 +998,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .iter()
             .any(|t| t.smart_zones.unwrap_or(false));
 
+    // -------- v0.9 ControlNet cache (lazy, keyed by kind) --------
+    // Same lazy pattern as smart_depth. The first task that needs a
+    // given ControlKind triggers a download; subsequent tasks reuse
+    // the loaded network.
+    let mut controlnets: std::collections::HashMap<
+        crate::pipelines::controlnet::ControlKind,
+        crate::pipelines::controlnet::ControlNet,
+    > = std::collections::HashMap::new();
+    let cn_dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    // v0.10: scenarios run a single model architecture for all
+    // tasks, so the ControlNet variant is scenario-wide too.
+    let cn_variant = crate::pipelines::controlnet::ControlNetVariant::detect(&model);
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -1247,6 +1300,121 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             (combined, persona.face_strength.unwrap_or(0.8))
         };
 
+        // -------- v0.9 per-task ControlNet plumbing --------
+        // Lazy-load the ControlNet for this kind (cached across tasks)
+        // and prepare the conditioning tensor at the task's working
+        // resolution.
+        let task_control_kind: Option<crate::pipelines::controlnet::ControlKind> =
+            match task.control.as_ref() {
+                None => None,
+                Some(spec) => Some(spec.kind.parse().with_context(|| {
+                    format!("task {:?}: parsing control.kind {:?}", task.name, spec.kind)
+                })?),
+            };
+        if let Some(kind) = task_control_kind {
+            if !controlnets.contains_key(&kind) {
+                let net = crate::pipelines::controlnet::ControlNet::load(
+                    device.clone(),
+                    cn_dtype,
+                    kind,
+                    cn_variant,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "task {:?}: loading ControlNet for {:?} ({:?})",
+                        task.name, kind, cn_variant,
+                    )
+                })?;
+                controlnets.insert(kind, net);
+            }
+        }
+        let task_control_conditioning: Option<candle_core::Tensor> = match (
+            task.control.as_ref(),
+            task_control_kind,
+        ) {
+            (Some(spec), Some(kind)) => {
+                // v0.10: support `image:` (pre-rendered) OR `auto-from:`
+                // (annotate via the matching annotator). Exactly one
+                // must be set.
+                let cond = match (spec.image.as_ref(), spec.auto_from.as_ref()) {
+                    (Some(path), None) => {
+                        crate::pipelines::controlnet::prepare_conditioning(
+                            path,
+                            eff_w,
+                            eff_h,
+                            &device,
+                            cn_dtype,
+                        )
+                        .with_context(|| {
+                            format!("task {:?}: preparing ControlNet conditioning", task.name)
+                        })?
+                    }
+                    (None, Some(path)) => {
+                        crate::pipelines::controlnet_annotator::annotate(
+                            kind,
+                            path,
+                            eff_w,
+                            eff_h,
+                            &device,
+                            cn_dtype,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "task {:?}: running --control auto-annotator on {}",
+                                task.name,
+                                path.display()
+                            )
+                        })?
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!(
+                            "task {:?}: control:{{...}} block must set either `image:` or `auto-from:`, not both",
+                            task.name
+                        );
+                    }
+                    (None, None) => {
+                        anyhow::bail!(
+                            "task {:?}: control:{{...}} block requires either `image:` or `auto-from:`",
+                            task.name
+                        );
+                    }
+                };
+                Some(cond)
+            }
+            _ => None,
+        };
+        let task_control_strength = task
+            .control
+            .as_ref()
+            .and_then(|c| c.strength)
+            .unwrap_or(1.0);
+        let task_control_start = task
+            .control
+            .as_ref()
+            .and_then(|c| c.start)
+            .unwrap_or(0.0);
+        let task_control_end = task
+            .control
+            .as_ref()
+            .and_then(|c| c.end)
+            .unwrap_or(1.0);
+        let make_control_req = || -> Option<crate::pipelines::controlnet::ControlRequest> {
+            match (task_control_kind, task_control_conditioning.as_ref()) {
+                (Some(kind), Some(cond)) => {
+                    Some(crate::pipelines::controlnet::ControlRequest {
+                        net: controlnets.get(&kind).expect("loaded above"),
+                        conditioning: cond.clone(),
+                        strength: task_control_strength,
+                        start: task_control_start,
+                        end: task_control_end,
+                    })
+                }
+                _ => None,
+            }
+        };
+
         match &task_persona_mode {
             // -------- single persona, whole image --------
             TaskPersonas::Single(persona) => {
@@ -1286,7 +1454,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     face_strength,
                     face_bbox: persona.face_bbox,
                     face_landmarks: persona.face_landmarks,
-                })?;
+                }, make_control_req().as_ref())?;
             }
 
             // -------- multi-persona, region-masked compositing --------
@@ -1337,7 +1505,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         face_landmarks: None,
                     };
 
-                    let mut latents = pp.generate_latents_one(&base_req, img_seed)?;
+                    // Multi-persona: control applies to the base layout pass
+                    // only. Each per-persona inpaint pass below skips control
+                    // (the persona reference itself drives the local region).
+                    let mut latents =
+                        pp.generate_latents_one(&base_req, img_seed, make_control_req().as_ref())?;
 
                     // Chain one inpaint pass per persona. Each pass uses
                     // a per-persona seed offset so re-running with the same
@@ -1376,7 +1548,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             .wrapping_add(1)
                             .wrapping_add(pass_idx as u64)
                             & (u32::MAX as u64);
-                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed)?;
+                        latents = pp.inpaint_latents_one(&latents, &mask, &pass_req, pass_seed, None)?;
                     }
 
                     let out_path = task_out.join(format!("{prefix}-{img_seed}.png"));
@@ -1403,7 +1575,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req)?,
+                (Some(p), _) => p.generate(&gen_req, make_control_req().as_ref())?,
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they
@@ -1518,6 +1690,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     &s.zones,
                     Some(task_seed),
                     smart_ref,
+                    // Phase 7e: reuse the scenario's t2i pipeline core
+                    // when present. The blend's BlendConfig.model is
+                    // already the scenario's main `model` (same one the
+                    // t2i pipeline was loaded with), so the core matches.
+                    // For dry-run or Flux scenarios the t2i pipeline is
+                    // None — fall back to the blend's own load. (Flux
+                    // blends aren't supported anyway; this just keeps
+                    // the dry-run path inert.)
+                    pipeline.as_ref().map(|p| p.core()),
                 )
                 .await
                 .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
