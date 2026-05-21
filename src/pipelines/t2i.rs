@@ -162,6 +162,53 @@ fn resolve_repo(model: &str) -> String {
     }
 }
 
+/// v0.12 phase 2b: pick a community Flux ControlNet for the user's
+/// requested conditioning kind. The repo coverage is intentionally
+/// small in this phase — we ship the most widely-mirrored variants
+/// for FLUX.1-dev and reject everything else with a helpful error.
+fn flux_controlnet_load_for(
+    kind: crate::pipelines::controlnet::ControlKind,
+    fvar: crate::pipelines::flux::Variant,
+    strength: f32,
+) -> Result<crate::pipelines::flux::FluxControlNetLoad> {
+    use crate::pipelines::controlnet::ControlKind;
+    use crate::pipelines::flux;
+    use crate::pipelines::flux_controlnet;
+    if !matches!(fvar, flux::Variant::Dev) {
+        anyhow::bail!(
+            "Flux ControlNet is only wired for --model flux-dev in v0.12. \
+             FLUX.1-schnell ControlNets exist but aren't yet validated."
+        );
+    }
+    let (repo, file) = match kind {
+        ControlKind::Canny => (
+            "InstantX/FLUX.1-dev-Controlnet-Canny",
+            "diffusion_pytorch_model.safetensors",
+        ),
+        ControlKind::Depth => (
+            "Shakker-Labs/FLUX.1-dev-ControlNet-Depth",
+            "diffusion_pytorch_model.safetensors",
+        ),
+        // OpenPose / Lineart / SoftEdge: shipped ControlNet repos for
+        // Flux exist (Shakker-Labs's union model covers them) but the
+        // union variant uses a `mode` embedder that needs the extra
+        // FluxControlNet plumbing we haven't built yet. Reject loudly.
+        other => anyhow::bail!(
+            "Flux ControlNet for kind={:?} isn't wired in v0.12. \
+             Currently supported: canny, depth. Union-mode conditioners \
+             (openpose, lineart, softedge) need an additional \
+             controlnet_mode_embedder pass, tracked as a follow-up.",
+            other
+        ),
+    };
+    Ok(flux::FluxControlNetLoad {
+        repo: repo.to_string(),
+        file: file.to_string(),
+        cfg: flux_controlnet::Config::instantx_canny(),
+        scale: strength,
+    })
+}
+
 async fn fetch_first(repo: &str, candidates: &[&str]) -> Result<PathBuf> {
     let mut last_err = None;
     for f in candidates {
@@ -1134,6 +1181,45 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                 s.finish_with_message(format!("✓ resolved {} Flux LoRA file(s)", v.len()));
                 v
             };
+        // v0.12 phase 2b: Flux ControlNet routing. At most one
+        // --control-spec for Flux; multi-CN is a follow-up. The
+        // spec's `image=PATH` is the conditioning image (pre-rendered
+        // canny / depth / etc.); `from=PATH` is rejected for Flux for
+        // now because we don't ship Flux auto-annotators yet —
+        // pre-rendered is the supported workflow.
+        let (flux_controlnet, flux_conditioning) = if req.controls.is_empty() {
+            (None, None)
+        } else {
+            if req.controls.len() > 1 {
+                anyhow::bail!(
+                    "Flux supports at most one --control-spec in v0.12. \
+                     Multi-Flux-ControlNet is a follow-up."
+                );
+            }
+            let spec = &req.controls[0];
+            let cond_path = match (spec.image.as_ref(), spec.from.as_ref()) {
+                (Some(p), None) => p.clone(),
+                (None, Some(_)) => anyhow::bail!(
+                    "--control-spec '{}:from=PATH' isn't supported on Flux yet — \
+                     auto-annotators for Flux aren't wired up. Pre-render the \
+                     conditioning map (canny / depth / etc.) and pass via \
+                     `image=PATH` instead.",
+                    spec.kind.slug()
+                ),
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                    spec.kind
+                ),
+                (None, None) => anyhow::bail!(
+                    "--control-spec for kind={:?}: requires image=PATH on Flux",
+                    spec.kind
+                ),
+            };
+            // Resolve kind → community Flux ControlNet repo.
+            let cn_load = flux_controlnet_load_for(spec.kind, fvar, spec.strength)?;
+            (Some(cn_load), Some(cond_path))
+        };
+
         flux::run(flux::Request {
             prompt: req.prompt,
             variant: fvar,
@@ -1152,6 +1238,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             device: req.device,
             loras: resolved_loras,
             lora_scale: req.lora_scale,
+            controlnet: flux_controlnet,
+            conditioning: flux_conditioning,
         })
         .await?;
         return Ok(None);

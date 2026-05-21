@@ -972,6 +972,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 device: device.clone(),
                 loras: resolved_flux_loras,
                 lora_scale,
+                // v0.12 phase 2b: scenarios don't carry Flux ControlNet
+                // config yet — schema extension is a follow-up.
+                controlnet: None,
             })
             .await?,
         )
@@ -1657,6 +1660,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         guidance: flux_guidance,
                         seed: gen_req.seed,
                         out_dir: gen_req.out_dir.clone(),
+                        conditioning: None,
                     })?;
                 }
                 // Dry-run path doesn't reach here.
