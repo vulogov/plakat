@@ -3,8 +3,9 @@
 #
 # Same depth-conditioning workflow as 01_basic.sh, but routed
 # through SDXL. Plakat auto-detects the architecture from --model
-# and downloads the SDXL ControlNet checkpoint
-# (diffusers/controlnet-depth-sdxl-1.0-small, ~600 MB).
+# and downloads the full-size SDXL ControlNet checkpoint
+# (diffusers/controlnet-depth-sdxl-1.0 fp16, ~2.5 GB — the variant
+# whose tensor layout matches candle's standard SDXL UNet config).
 #
 # SDXL outputs at 1024² yield significantly more detail than SD 1.5
 # at 512², at the cost of ~3-4× the wall time and ~2× the memory
@@ -13,7 +14,7 @@
 #
 # First-run downloads (one-time, cached):
 #   * SDXL base (~7 GB)
-#   * SDXL ControlNet-Depth-small (~600 MB)
+#   * SDXL ControlNet-Depth (~2.5 GB fp16)
 #   * Depth-Anything-V2-small if not cached (~99 MB)
 #
 # Output: out/control-tutorial/05_sdxl/plakat-3010.png
