@@ -113,9 +113,12 @@ pub struct Request {
     /// by the caller). Empty disables LoRA merging.
     pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
     pub lora_scale: f32,
-    /// v0.12 phase 2b: optional Flux ControlNet weight repo + config +
-    /// conditioning-image path. `None` runs Flux without a ControlNet.
-    pub controlnet: Option<FluxControlNetLoad>,
+    /// v0.12: Flux ControlNet stack. Each entry is loaded
+    /// independently; residuals sum at denoise time.
+    pub controlnets: Vec<FluxControlNetLoad>,
+    /// Back-compat for single-CN callers — applies to the first
+    /// loaded CN. Per-CN paths in `controlnets[i].conditioning`
+    /// override this for `i >= 1`.
     pub conditioning: Option<PathBuf>,
 }
 
@@ -133,8 +136,10 @@ pub struct LoadRequest {
     pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
     /// Global multiplier applied on top of each LoRA's per-file scale.
     pub lora_scale: f32,
-    /// v0.12 phase 2b: optional Flux ControlNet.
-    pub controlnet: Option<FluxControlNetLoad>,
+    /// v0.12: zero or more Flux ControlNets. Empty disables the
+    /// ControlNet path; one entry is the v0.12 phase 2b behaviour;
+    /// two+ stacks residuals (multi-Flux-ControlNet, v0.12 multi).
+    pub controlnets: Vec<FluxControlNetLoad>,
 }
 
 /// Flux ControlNet weight repo + config. The actual model load happens
@@ -150,6 +155,9 @@ pub struct FluxControlNetLoad {
     /// Union ControlNet mode index. Required when `cfg.num_mode` is
     /// `Some`; ignored otherwise. Specialised CNs leave this `None`.
     pub mode: Option<u32>,
+    /// Conditioning image path (pre-rendered canny / depth / etc.).
+    /// Each ControlNet in a multi-CN stack carries its own path.
+    pub conditioning: Option<PathBuf>,
 }
 
 pub struct GenRequest {
@@ -186,14 +194,26 @@ pub struct Pipeline {
     t5_tok: Tokenizer,
     flux_model: fmodel::Flux,
     ae_model: fae::AutoEncoder,
-    /// v0.12 phase 2b: optional Flux ControlNet + the conditioning
-    /// image (already VAE-encoded + packed to the 64-d token shape).
-    /// `controlnet_scale` is diffusers `controlnet_conditioning_scale`.
-    controlnet: Option<crate::pipelines::flux_controlnet::FluxControlNet>,
-    controlnet_scale: f32,
-    /// Union ControlNet mode index. Set alongside `controlnet` when
-    /// the load request was for a Union variant; `None` otherwise.
-    controlnet_mode: Option<u32>,
+    /// v0.12 phase 2b + v0.12 multi: zero or more Flux ControlNets.
+    /// At denoise time each loaded CN runs once per step with its
+    /// own conditioning, mode, and scale; the resulting residuals
+    /// are summed per-block before being fed to the main Flux's
+    /// `forward_with_residuals`. Empty disables the ControlNet path
+    /// entirely.
+    controlnets: Vec<LoadedFluxControlNet>,
+}
+
+/// One element of the Pipeline's ControlNet stack — the loaded
+/// network plus the user knobs (`scale`, `mode`) it was loaded with.
+/// The conditioning image is stored alongside per-`generate` call
+/// since it depends on width / height.
+pub struct LoadedFluxControlNet {
+    pub net: crate::pipelines::flux_controlnet::FluxControlNet,
+    pub scale: f32,
+    pub mode: Option<u32>,
+    /// Pending conditioning image — resolved here so the spec is
+    /// fully self-contained when we hand it to `generate`.
+    pub conditioning_path: Option<PathBuf>,
 }
 
 impl Pipeline {
@@ -317,26 +337,34 @@ impl Pipeline {
         let ae_model = fae::AutoEncoder::new(&req.variant.ae_config(), ae_vb)?;
         load.finish_with_message("✓ models loaded");
 
-        // ---------- Flux ControlNet (v0.12 phase 2b) ----------
-        let (controlnet, controlnet_scale, controlnet_mode) = match req.controlnet {
-            Some(cn) => {
-                let spin = progress::spinner(&format!(
-                    "Downloading + remapping Flux ControlNet {}/{}",
-                    cn.repo, cn.file
-                ));
-                let net = crate::pipelines::flux_controlnet::load_from_hf(
-                    &cn.repo,
-                    &cn.file,
-                    cn.cfg,
-                    &req.device,
-                    dtype,
-                )
-                .await?;
-                spin.finish_with_message("✓ Flux ControlNet ready");
-                (Some(net), cn.scale, cn.mode)
-            }
-            None => (None, 1.0, None),
-        };
+        // ---------- Flux ControlNet stack (v0.12 phase 2b + multi) -
+        // Each CN in the stack loads its own weights and carries its
+        // own scale / mode / conditioning path. Residuals from active
+        // CNs sum per-step inside `denoise_with_optional_controlnet`.
+        let mut controlnets: Vec<LoadedFluxControlNet> = Vec::with_capacity(req.controlnets.len());
+        for (i, cn) in req.controlnets.into_iter().enumerate() {
+            let spin = progress::spinner(&format!(
+                "Downloading + remapping Flux ControlNet #{} ({}/{})",
+                i + 1,
+                cn.repo,
+                cn.file
+            ));
+            let net = crate::pipelines::flux_controlnet::load_from_hf(
+                &cn.repo,
+                &cn.file,
+                cn.cfg,
+                &req.device,
+                dtype,
+            )
+            .await?;
+            spin.finish_with_message(format!("✓ Flux ControlNet #{} ready", i + 1));
+            controlnets.push(LoadedFluxControlNet {
+                net,
+                scale: cn.scale,
+                mode: cn.mode,
+                conditioning_path: cn.conditioning,
+            });
+        }
 
         Ok(Self {
             variant: req.variant,
@@ -350,9 +378,7 @@ impl Pipeline {
             t5_tok,
             flux_model,
             ae_model,
-            controlnet,
-            controlnet_scale,
-            controlnet_mode,
+            controlnets,
         })
     }
 
@@ -379,31 +405,48 @@ impl Pipeline {
         let lat_w = (w + 15) / 16;
         let image_seq_len = lat_h * lat_w;
 
-        // ---------- ControlNet conditioning prep (v0.12 phase 2b) ----
-        // VAE-encode the conditioning image (if any) and pack to the
-        // same `(1, image_seq_len, 64)` token shape the main image
-        // tokens use. Done once per `generate()` call — the same
-        // conditioning is reused at every denoise step.
-        let conditioning_packed: Option<Tensor> = match (
-            self.controlnet.as_ref(),
-            req.conditioning.as_deref(),
-        ) {
-            (Some(_), Some(path)) => {
-                let spin = progress::spinner("Encoding ControlNet conditioning");
-                let packed = self.encode_conditioning(path, h, w)?;
-                spin.finish_with_message("✓ conditioning encoded");
-                Some(packed)
+        // ---------- ControlNet conditioning prep (v0.12 + multi) ----
+        // VAE-encode + pack each loaded ControlNet's conditioning
+        // image once. Per-CN paths come from the LoadRequest; the
+        // GenRequest's `conditioning` field is a back-compat shim
+        // that applies to the first CN if present.
+        let mut conditioning_packed: Vec<Option<Tensor>> =
+            Vec::with_capacity(self.controlnets.len());
+        for (i, cn) in self.controlnets.iter().enumerate() {
+            // GenRequest.conditioning overrides the LoadRequest path
+            // for CN #0 — keeps single-CN callers that haven't been
+            // updated to per-CN conditioning paths working.
+            let path = if i == 0 {
+                req.conditioning
+                    .as_deref()
+                    .or(cn.conditioning_path.as_deref())
+            } else {
+                cn.conditioning_path.as_deref()
+            };
+            match path {
+                Some(p) => {
+                    let spin = progress::spinner(&format!(
+                        "Encoding ControlNet #{} conditioning",
+                        i + 1
+                    ));
+                    let packed = self.encode_conditioning(p, h, w)?;
+                    spin.finish_with_message(format!(
+                        "✓ ControlNet #{} conditioning encoded",
+                        i + 1
+                    ));
+                    conditioning_packed.push(Some(packed));
+                }
+                None => {
+                    tracing::warn!(
+                        target: "plakat",
+                        "Flux ControlNet #{} loaded but no conditioning image — \
+                         this CN won't contribute residuals.",
+                        i + 1
+                    );
+                    conditioning_packed.push(None);
+                }
             }
-            (Some(_), None) => {
-                tracing::warn!(
-                    target: "plakat",
-                    "Flux ControlNet loaded but no conditioning image supplied — \
-                     running the pipeline without residuals."
-                );
-                None
-            }
-            _ => None,
-        };
+        }
 
         for idx in 0..req.count {
             let seed = req
@@ -444,7 +487,7 @@ impl Pipeline {
                 &state,
                 &timesteps,
                 guidance,
-                conditioning_packed.as_ref(),
+                &conditioning_packed,
                 &bar,
             )?;
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
@@ -543,17 +586,19 @@ impl Pipeline {
         Ok(packed)
     }
 
-    /// v0.12 phase 2b: flow-matching denoise loop that runs the
-    /// ControlNet per step (when present + conditioning supplied)
-    /// and threads its residuals into the main Flux's
-    /// `forward_with_residuals`. Identical to candle's
-    /// `sampling::denoise` when no ControlNet is engaged.
+    /// v0.12 phase 2b + multi: flow-matching denoise loop. For each
+    /// step, every loaded ControlNet that has its conditioning ready
+    /// runs once with its own (scale, mode, conditioning) tuple. The
+    /// resulting DoubleStream + SingleStream residuals sum per-block
+    /// across all active CNs before being fed to the main Flux's
+    /// `forward_with_residuals`. Empty CN stack reduces to candle's
+    /// stock `sampling::denoise` byte-for-byte.
     fn denoise_with_optional_controlnet(
         &self,
         state: &sampling::State,
         timesteps: &[f64],
         guidance: f64,
-        conditioning_packed: Option<&Tensor>,
+        conditioning_packed: &[Option<Tensor>],
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
@@ -566,15 +611,18 @@ impl Pipeline {
                 _ => continue,
             };
             let t_vec = Tensor::full(*t_curr as f32, b_sz, dev)?;
-            // ControlNet residuals (DoubleStream + SingleStream for
-            // Union variants). Both vecs come back; the main Flux's
-            // `forward_with_residuals` accepts them via separate
-            // `Option<&[Tensor]>` slots from phase 2a.
-            let residuals: Option<(Vec<Tensor>, Vec<Tensor>)> = match (
-                self.controlnet.as_ref(),
-                conditioning_packed,
-            ) {
-                (Some(net), Some(cond)) => Some(net.forward(
+
+            // Run each loaded CN that has its conditioning ready;
+            // sum residuals per-block across all of them.
+            let mut summed_double: Option<Vec<Tensor>> = None;
+            let mut summed_single: Option<Vec<Tensor>> = None;
+            for (cn, cond_opt) in self.controlnets.iter().zip(conditioning_packed.iter())
+            {
+                let cond = match cond_opt.as_ref() {
+                    Some(c) => c,
+                    None => continue, // CN has no conditioning → skip.
+                };
+                let (d, s) = cn.net.forward(
                     &img,
                     cond,
                     &state.img_ids,
@@ -583,18 +631,23 @@ impl Pipeline {
                     &t_vec,
                     &state.vec,
                     Some(&guidance_t),
-                    self.controlnet_mode,
-                    self.controlnet_scale,
-                )?),
+                    cn.mode,
+                    cn.scale,
+                )?;
+                // Sum into the running accumulators. Length-mismatch
+                // (e.g. one specialised CN with 0 single residuals
+                // + one Union CN with 10) is handled by treating
+                // missing entries as zeros — only present entries
+                // contribute to that block's residual.
+                summed_double = Some(merge_residuals(summed_double, d)?);
+                summed_single = Some(merge_residuals(summed_single, s)?);
+            }
+            let double_r = summed_double.as_deref();
+            let single_r = match summed_single.as_ref() {
+                Some(v) if !v.is_empty() => Some(v.as_slice()),
                 _ => None,
             };
-            let (double_r, single_r) = match residuals.as_ref() {
-                Some((d, s)) => (
-                    Some(d.as_slice()),
-                    if s.is_empty() { None } else { Some(s.as_slice()) },
-                ),
-                None => (None, None),
-            };
+
             let pred = self.flux_model.forward_with_residuals(
                 &img,
                 &state.img_ids,
@@ -613,6 +666,21 @@ impl Pipeline {
     }
 }
 
+/// Sum two per-block residual lists, padding the shorter one to the
+/// longer one's length (missing entries contribute zero). Returns the
+/// merged Vec; the inputs are consumed.
+fn merge_residuals(acc: Option<Vec<Tensor>>, new: Vec<Tensor>) -> Result<Vec<Tensor>> {
+    let mut acc = acc.unwrap_or_default();
+    for (i, t) in new.into_iter().enumerate() {
+        if i < acc.len() {
+            acc[i] = (&acc[i] + &t)?;
+        } else {
+            acc.push(t);
+        }
+    }
+    Ok(acc)
+}
+
 // =====================================================================
 // Public single-shot entry — preserves the existing API used by t2i::run.
 // =====================================================================
@@ -624,7 +692,7 @@ pub async fn run(req: Request) -> Result<()> {
         device: req.device,
         loras: req.loras,
         lora_scale: req.lora_scale,
-        controlnet: req.controlnet,
+        controlnets: req.controlnets,
     })
     .await?;
     p.generate(&GenRequest {

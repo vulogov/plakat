@@ -208,6 +208,9 @@ fn flux_controlnet_load_for(
         cfg: flux_controlnet::Config::shakker_union_pro_v2(),
         scale: strength,
         mode: union_mode,
+        // Caller fills in the conditioning path after this returns —
+        // we don't have access to the per-spec image= path here.
+        conditioning: None,
     })
 }
 
@@ -1189,16 +1192,11 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         // canny / depth / etc.); `from=PATH` is rejected for Flux for
         // now because we don't ship Flux auto-annotators yet —
         // pre-rendered is the supported workflow.
-        let (flux_controlnet, flux_conditioning) = if req.controls.is_empty() {
-            (None, None)
-        } else {
-            if req.controls.len() > 1 {
-                anyhow::bail!(
-                    "Flux supports at most one --control-spec in v0.12. \
-                     Multi-Flux-ControlNet is a follow-up."
-                );
-            }
-            let spec = &req.controls[0];
+        // v0.12 multi: every `--control-spec` becomes one entry in
+        // the Flux ControlNet stack. Each loads its own weights and
+        // contributes residuals that sum at denoise time.
+        let mut flux_controlnets: Vec<flux::FluxControlNetLoad> = Vec::new();
+        for spec in &req.controls {
             let cond_path = match (spec.image.as_ref(), spec.from.as_ref()) {
                 (Some(p), None) => p.clone(),
                 (None, Some(_)) => anyhow::bail!(
@@ -1217,10 +1215,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                     spec.kind
                 ),
             };
-            // Resolve kind → community Flux ControlNet repo.
-            let cn_load = flux_controlnet_load_for(spec.kind, fvar, spec.strength)?;
-            (Some(cn_load), Some(cond_path))
-        };
+            let mut cn_load = flux_controlnet_load_for(spec.kind, fvar, spec.strength)?;
+            cn_load.conditioning = Some(cond_path);
+            flux_controlnets.push(cn_load);
+        }
 
         flux::run(flux::Request {
             prompt: req.prompt,
@@ -1240,8 +1238,9 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             device: req.device,
             loras: resolved_loras,
             lora_scale: req.lora_scale,
-            controlnet: flux_controlnet,
-            conditioning: flux_conditioning,
+            controlnets: flux_controlnets,
+            // Per-CN conditioning lives on each FluxControlNetLoad now.
+            conditioning: None,
         })
         .await?;
         return Ok(None);
