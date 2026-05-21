@@ -65,6 +65,9 @@ pub struct Request {
     /// transforming. Set explicitly to override.
     pub control_from: Option<PathBuf>,
     pub control_strength: f32,
+    /// v0.10 phase 4: timestep window in `[0, 1]`. Defaults 0.0 / 1.0.
+    pub control_start: f32,
+    pub control_end: f32,
 }
 
 /// Run the pipeline. Loads the SD model once and iterates over
@@ -214,6 +217,8 @@ pub async fn run(req: Request) -> Result<()> {
                 net,
                 conditioning: cond.clone(),
                 strength: req.control_strength,
+                start: req.control_start,
+                end: req.control_end,
             }
         });
 

@@ -298,9 +298,10 @@ contrapposto, sitting) while keeping subject identity locked.
   isn't on the roadmap.
 - **Depth + Canny only in v0.10.** Scribble, pose, MLSD, normal,
   openpose, segmentation, InstantID face — all on the roadmap.
-- **No timestep windowing.** Diffusers'
-  `control_guidance_start`/`control_guidance_end` (apply control
-  to a subset of the schedule) lands in v0.10 phase 4.
+- **Timestep windowing** via `--control-start` / `--control-end`
+  works on every subcommand. Common pattern: `--control-end 0.5`
+  locks composition early then lets the prompt drive late
+  texture / atmosphere.
 - **No multi-controlnet.** Stacking multiple conditioners
   (depth + canny in one generation) isn't exposed via the CLI.
   v0.11 candidate.

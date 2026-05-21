@@ -27,7 +27,8 @@ CONTROL/
     ├── 03_with_img2img.sh         ← compose control with img2img
     ├── 04_auto_depth.sh           ← v0.10: --control-from auto-annotates
     ├── 05_sdxl.sh                 ← v0.10: SDXL ControlNet at 1024²
-    └── 06_canny.sh                ← v0.10: --control canny (edge conditioning)
+    ├── 06_canny.sh                ← v0.10: --control canny (edge conditioning)
+    └── 07_timestep_windowing.sh   ← v0.10: --control-start / --control-end
 ```
 
 Regenerate `inputs/scene_depth.png` at any time with:
@@ -164,6 +165,32 @@ This script passes `--control canny --control-from
 landscape PNG and uses the binary edge map as the conditioner.
 The painted output respects the source's edges (hill outlines,
 sun border) while the prompt drives the oil-painting aesthetic.
+
+### 7. `07_timestep_windowing.sh` — control only part of the schedule (v0.10)
+
+```bash
+./scripts/07_timestep_windowing.sh
+```
+
+Three runs with the same prompt + seed + depth map, varying only
+the `--control-start` / `--control-end` flags:
+
+- **always** (`0.0` → `1.0`, the default): ControlNet active at
+  every step.
+- **early** (`0.0` → `0.5`): ControlNet locks composition in the
+  high-noise early steps, then disengages so the prompt drives
+  late texture and atmosphere.
+- **late** (`0.5` → `1.0`): the early steps run free, then
+  ControlNet snaps the composition into place near the end.
+
+`early` is often the most useful window — it gives you firm
+layout adherence without sacrificing the prompt's late-step
+refinement. `late` is rarely worth using; the early steps
+typically commit to a layout the conditioning then has to fight.
+
+The window is measured against the **full** schedule, not just
+the active subset on img2img / inpaint / blend (matching
+diffusers' convention).
 
 ## Choosing a conditioner
 
