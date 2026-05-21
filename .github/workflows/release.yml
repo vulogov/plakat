@@ -165,12 +165,23 @@ jobs:
           method: "network"
           sub-packages: '["nvcc", "cudart", "cudart-dev"]'
 
-      - name: Install cuBLAS (apt — correct names for CUDA 12.x)
+      - name: Install cuBLAS + cuRAND + NVRTC (apt — correct names for CUDA 12.x)
         if: matrix.install_cuda
+        # candle-cuda's linker spec is `-lcuda -lnvrtc -lcurand -lcublas
+        # -lcublasLt -lcudart`. cudart comes from the Jimver action above.
+        # libcuda.so is the driver and is shipped as a stub by the toolkit
+        # (in lib64/stubs), so we don't need it from apt. The remaining
+        # libs split across two package families in NVIDIA's repos: the
+        # math libraries use the `lib*` prefix (cuBLAS, cuRAND), while
+        # NVRTC ships under the `cuda-*` prefix.
         run: |
           sudo apt-get install -y \
             libcublas-12-4 \
-            libcublas-dev-12-4
+            libcublas-dev-12-4 \
+            libcurand-12-4 \
+            libcurand-dev-12-4 \
+            cuda-nvrtc-12-4 \
+            cuda-nvrtc-dev-12-4
 
       - name: Verify CUDA install
         if: matrix.install_cuda
