@@ -191,6 +191,19 @@ pub struct GenerateArgs {
     /// the structure at the cost of prompt adherence. Sweet spot 0.6–1.0.
     #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
+
+    /// **v0.10 phase 4**: fractional timestep at which ControlNet
+    /// becomes active. Default 0.0 (active from the start). Set e.g.
+    /// 0.3 to skip control on the early high-noise steps.
+    #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
+    pub control_start: f32,
+
+    /// **v0.10 phase 4**: fractional timestep at which ControlNet
+    /// stops applying. Default 1.0 (active through to the end). Set
+    /// e.g. 0.5 to lock composition early then let the prompt drive
+    /// the late texture/atmosphere passes.
+    #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
+    pub control_end: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -250,6 +263,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         control_image: args.control_image,
         control_from: args.control_from,
         control_strength: args.control_strength,
+        control_start: args.control_start,
+        control_end: args.control_end,
     })
     .await?;
 

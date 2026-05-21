@@ -131,6 +131,9 @@ pub struct Request {
     /// with `control_image`).
     pub control_from: Option<PathBuf>,
     pub control_strength: f32,
+    /// v0.10 phase 4: timestep window in `[0, 1]`. Defaults 0.0 / 1.0.
+    pub control_start: f32,
+    pub control_end: f32,
 }
 
 pub struct LoadRequest {
@@ -584,7 +587,10 @@ impl Pipeline {
                 timesteps.len() as u64,
                 &format!("portrait {}/{} {}", idx + 1, req.count, face_tag),
             );
-            for &timestep in &timesteps {
+            let total_steps = timesteps.len();
+            for (step_idx, &timestep) in timesteps.iter().enumerate() {
+                let progress = step_idx as f32 / total_steps as f32;
+                let step_control = control.filter(|cr| cr.active_at(progress));
                 latents = self.denoise_step(
                     &latents,
                     timestep,
@@ -592,7 +598,7 @@ impl Pipeline {
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
-                    control,
+                    step_control,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
@@ -617,7 +623,10 @@ impl Pipeline {
                             active.len() as u64,
                             &format!("polish {}/{}", idx + 1, req.count),
                         );
-                        for &timestep in active {
+                        let total_polish = active.len();
+                        for (step_idx, &timestep) in active.iter().enumerate() {
+                            let progress = step_idx as f32 / total_polish as f32;
+                            let step_control = control.filter(|cr| cr.active_at(progress));
                             latents = self.denoise_step(
                                 &latents,
                                 timestep,
@@ -625,7 +634,7 @@ impl Pipeline {
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
-                                control,
+                                step_control,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -774,8 +783,11 @@ impl Pipeline {
             timesteps.len() as u64,
             &format!("composite-base {face_tag}"),
         );
-        for &t in &timesteps {
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
+        let total_steps = timesteps.len();
+        for (step_idx, &t) in timesteps.iter().enumerate() {
+            let progress = step_idx as f32 / total_steps as f32;
+            let step_control = control.filter(|cr| cr.active_at(progress));
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -833,7 +845,10 @@ impl Pipeline {
             timesteps.len() as u64,
             &format!("inpaint {face_tag}"),
         );
-        for &t in &timesteps {
+        let total_steps = timesteps.len();
+        for (step_idx, &t) in timesteps.iter().enumerate() {
+            let progress = step_idx as f32 / total_steps as f32;
+            let step_control = control.filter(|cr| cr.active_at(progress));
             // RePaint: re-noise the BASE (not the running latents) outside
             // the mask. This pins the unmasked region to the base image while
             // letting the denoiser walk freely inside the mask.
@@ -843,7 +858,7 @@ impl Pipeline {
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -947,14 +962,19 @@ impl Pipeline {
 
         let inv_mask = (mask.ones_like()? - mask)?;
         let bar = progress::step_bar(active.len() as u64, "blend");
-        for &t in active {
+        // Diffusers convention: control_start/end is measured
+        // against the FULL schedule, not the active subset. So
+        // step_idx counts from `start_idx`, not from 0.
+        for (i, &t) in active.iter().enumerate() {
+            let progress = (start_idx + i) as f32 / total as f32;
+            let step_control = control.filter(|cr| cr.active_at(progress));
             let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.device)?
                 .to_dtype(self.dtype)?;
             let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, control)?;
+            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
         }
@@ -1154,6 +1174,8 @@ pub async fn run(req: Request) -> Result<()> {
             net,
             conditioning: cond.clone(),
             strength: req.control_strength,
+            start: req.control_start,
+            end: req.control_end,
         }
     });
 

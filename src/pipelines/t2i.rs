@@ -73,6 +73,13 @@ pub struct Request {
     /// Multiplier applied to ControlNet residuals before adding to
     /// the UNet's. Ignored when `control_kind` is `None`. Default 1.0.
     pub control_strength: f32,
+    /// **v0.10 phase 4**: timestep window during which the
+    /// conditioner is active. `[start, end)` as fractions of the
+    /// full schedule (`[0, 1]`). Outside the window, denoise steps
+    /// take the no-control path. Defaults: 0.0 / 1.0 (always
+    /// active — same as pre-phase-4).
+    pub control_start: f32,
+    pub control_end: f32,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -728,6 +735,7 @@ impl Pipeline {
                 timesteps.len() as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
+            let total_steps = timesteps.len();
             for (step_i, &timestep) in timesteps.iter().enumerate() {
                 let (unet_ref, embeds, tag) = if step_i < switch {
                     (&self.unet, &text_embeddings, "base")
@@ -738,6 +746,8 @@ impl Pipeline {
                         "refiner",
                     )
                 };
+                let progress = step_i as f32 / total_steps as f32;
+                let step_control = control.filter(|cr| cr.active_at(progress));
                 latents = self.denoise_step(
                     unet_ref,
                     &latents,
@@ -746,7 +756,7 @@ impl Pipeline {
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
-                    control,
+                    step_control,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
@@ -774,7 +784,10 @@ impl Pipeline {
                             active.len() as u64,
                             &format!("polish {}/{}", idx + 1, req.count),
                         );
-                        for &timestep in active {
+                        let total_polish = active.len();
+                        for (step_idx, &timestep) in active.iter().enumerate() {
+                            let progress = step_idx as f32 / total_polish as f32;
+                            let step_control = control.filter(|cr| cr.active_at(progress));
                             latents = self.denoise_step(
                                 &self.unet,
                                 &latents,
@@ -783,7 +796,7 @@ impl Pipeline {
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
-                                control,
+                                step_control,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -1035,6 +1048,8 @@ pub async fn run(req: Request) -> Result<()> {
             net,
             conditioning: cond.clone(),
             strength: req.control_strength,
+            start: req.control_start,
+            end: req.control_end,
         }
     });
 

@@ -60,6 +60,8 @@ plakat img2img sketch.png --prompt "polished oil painting" \
 | `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
 | `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
+| `--control-start <F>` | `0.0` | **v0.10**: fractional timestep at which ControlNet becomes active. `0.0` = active from the start. |
+| `--control-end <F>` | `1.0` | **v0.10**: fractional timestep at which ControlNet stops applying. `1.0` = active through to the end. Common pattern: `--control-end 0.5` locks composition early, then lets the prompt drive late texture / atmosphere passes. |
 
 All four flags work on `plakat generate`, `plakat portrait`, and
 `plakat img2img`. They also have a scenario-level equivalent (see
@@ -288,9 +290,10 @@ supported — they'd need a key remapping layer we don't ship.
 - **Depth and Canny.** v0.10 ships both. Scribble, pose, MLSD,
   normal, openpose, segmentation, and InstantID-style face
   conditioners are on the roadmap but not in v0.10.
-- **No timestep windowing.** Diffusers' `control_guidance_start`
-  and `control_guidance_end` (which let you apply control to a
-  subset of the timestep schedule) land in v0.10 phase 4.
+- **Timestep windowing is supported** via `--control-start` /
+  `--control-end`. Diffusers convention: progress is measured
+  against the **full** schedule (not the active subset on
+  img2img/inpaint/blend).
 - **No multi-controlnet.** Diffusers supports stacking multiple
   ControlNets (e.g. depth + pose) by summing their residuals.
   Plakat's current CLI grammar doesn't expose this; v0.11

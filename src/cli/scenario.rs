@@ -444,6 +444,14 @@ struct ControlSpec {
     auto_from: Option<PathBuf>,
     #[serde(default)]
     strength: Option<f32>,
+    /// **v0.10 phase 4**: timestep window. `start` defaults to 0.0
+    /// when omitted; `end` defaults to 1.0. Set `end: 0.5` to lock
+    /// composition early then release the prompt to drive late
+    /// texture/atmosphere refinement.
+    #[serde(default)]
+    start: Option<f32>,
+    #[serde(default)]
+    end: Option<f32>,
 }
 
 /// One persona reference inside a task. Accepts both the Phase-1
@@ -1382,6 +1390,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .as_ref()
             .and_then(|c| c.strength)
             .unwrap_or(1.0);
+        let task_control_start = task
+            .control
+            .as_ref()
+            .and_then(|c| c.start)
+            .unwrap_or(0.0);
+        let task_control_end = task
+            .control
+            .as_ref()
+            .and_then(|c| c.end)
+            .unwrap_or(1.0);
         let make_control_req = || -> Option<crate::pipelines::controlnet::ControlRequest> {
             match (task_control_kind, task_control_conditioning.as_ref()) {
                 (Some(kind), Some(cond)) => {
@@ -1389,6 +1407,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         net: controlnets.get(&kind).expect("loaded above"),
                         conditioning: cond.clone(),
                         strength: task_control_strength,
+                        start: task_control_start,
+                        end: task_control_end,
                     })
                 }
                 _ => None,
