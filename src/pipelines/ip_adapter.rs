@@ -626,8 +626,12 @@ pub trait IdentityEncoder: Send + Sync {
 
 /// IP-Adapter-Plus-Face encoder: CLIP-H penultimate hidden states →
 /// Perceiver resampler → 16 image tokens.
+///
+/// Phase 7f: `clip_vision` is held as `Arc<ImageEncoder>` so the same
+/// ~2.5 GB weight set can back both this encoder and `stylize::Pipeline`
+/// when both run in one process (scenarios, portrait + style-ref).
 pub struct PlusFaceEncoder {
-    clip_vision: ImageEncoder,
+    clip_vision: std::sync::Arc<ImageEncoder>,
     image_proj: ImageProjPlus,
     cfg: PlusConfig,
     device: Device,
@@ -635,6 +639,8 @@ pub struct PlusFaceEncoder {
 }
 
 impl PlusFaceEncoder {
+    /// Standalone load — fresh CLIP-H from disk. Used when no
+    /// pre-shared encoder is available.
     pub fn load(
         clip_vision_weights: &Path,
         plus_face_weights: &Path,
@@ -642,7 +648,8 @@ impl PlusFaceEncoder {
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
-        let clip_vision = ImageEncoder::load(clip_vision_weights, device, dtype)?;
+        let clip_vision =
+            std::sync::Arc::new(ImageEncoder::load(clip_vision_weights, device, dtype)?);
         let image_proj = ImageProjPlus::load(plus_face_weights, cfg, device, dtype)?;
         Ok(Self {
             clip_vision,
@@ -652,6 +659,51 @@ impl PlusFaceEncoder {
             dtype,
         })
     }
+
+    /// Phase 7f shared-CLIP-H constructor. Reuses an already-loaded
+    /// `ImageEncoder` (e.g. one a previous pipeline downloaded) and
+    /// only pulls the Plus-Face resampler weights fresh. The caller
+    /// is responsible for ensuring `clip_vision` was loaded with the
+    /// same device + dtype this encoder will run on; this function
+    /// does not re-validate.
+    pub fn from_shared_clip(
+        clip_vision: std::sync::Arc<ImageEncoder>,
+        plus_face_weights: &Path,
+        cfg: PlusConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let image_proj = ImageProjPlus::load(plus_face_weights, cfg, device, dtype)?;
+        Ok(Self {
+            clip_vision,
+            image_proj,
+            cfg,
+            device: device.clone(),
+            dtype,
+        })
+    }
+}
+
+/// Phase 7f. Download (cached) + load the CLIP-H image encoder used
+/// by both IP-Adapter Plus-Face and stylize. Returns an `Arc` so the
+/// same loaded weights can back multiple consumers.
+///
+/// `dtype` should typically be `DType::F32` for stylize (matches the
+/// existing standalone path) and `dtype` for portrait — when sharing
+/// across both, F32 is the safest choice; portrait casts down on
+/// encode anyway. Callers that mix dtypes should load separately.
+pub async fn load_shared_clip_vision(
+    device: &Device,
+    dtype: DType,
+) -> Result<std::sync::Arc<ImageEncoder>> {
+    let weights = crate::hf::download::get_file(
+        IPA_REPO,
+        "models/image_encoder/model.safetensors",
+    )
+    .await?;
+    Ok(std::sync::Arc::new(ImageEncoder::load(
+        &weights, device, dtype,
+    )?))
 }
 
 impl IdentityEncoder for PlusFaceEncoder {
@@ -891,6 +943,20 @@ impl IdentityKind {
         device: &Device,
         dtype: DType,
     ) -> Result<Box<dyn IdentityEncoder>> {
+        self.load_encoder_with_shared_clip(device, dtype, None).await
+    }
+
+    /// Phase 7f variant. Accepts an optional pre-loaded `Arc<ImageEncoder>`
+    /// so portrait identity strategies that depend on CLIP-H (`PlusFace`
+    /// / `PlusFaceSdxl`) can reuse weights another pipeline already
+    /// loaded (e.g. `stylize` in a scenario task). FaceID strategies
+    /// don't use CLIP-H — `shared_clip` is ignored on those arms.
+    pub async fn load_encoder_with_shared_clip(
+        self,
+        device: &Device,
+        dtype: DType,
+        shared_clip: Option<std::sync::Arc<ImageEncoder>>,
+    ) -> Result<Box<dyn IdentityEncoder>> {
         let dl = crate::ui::progress::spinner(&format!(
             "Resolving identity weights — {}",
             self.label()
@@ -902,18 +968,29 @@ impl IdentityKind {
                     "models/ip-adapter-plus-face_sd15.safetensors",
                 )
                 .await?;
-                let clip_weights = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/image_encoder/model.safetensors",
-                )
-                .await?;
-                let enc = PlusFaceEncoder::load(
-                    &clip_weights,
-                    &face_weights,
-                    PlusConfig::sd15_face(),
-                    device,
-                    dtype,
-                )?;
+                let enc = match shared_clip {
+                    Some(shared) => PlusFaceEncoder::from_shared_clip(
+                        shared,
+                        &face_weights,
+                        PlusConfig::sd15_face(),
+                        device,
+                        dtype,
+                    )?,
+                    None => {
+                        let clip_weights = crate::hf::download::get_file(
+                            IPA_REPO,
+                            "models/image_encoder/model.safetensors",
+                        )
+                        .await?;
+                        PlusFaceEncoder::load(
+                            &clip_weights,
+                            &face_weights,
+                            PlusConfig::sd15_face(),
+                            device,
+                            dtype,
+                        )?
+                    }
+                };
                 Box::new(enc)
             }
             Self::PlusFaceSdxl => {
@@ -923,20 +1000,31 @@ impl IdentityKind {
                 )
                 .await?;
                 // Same CLIP-H file as SD 1.5 — the `vit-h` SDXL variant
-                // reuses it, so the cache hit is free for users who've
-                // already run stylize / PlusFace portraits.
-                let clip_weights = crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/image_encoder/model.safetensors",
-                )
-                .await?;
-                let enc = PlusFaceEncoder::load(
-                    &clip_weights,
-                    &face_weights,
-                    PlusConfig::sdxl_face(),
-                    device,
-                    dtype,
-                )?;
+                // reuses it. With `shared_clip` set this is even cheaper:
+                // no second on-disk parse.
+                let enc = match shared_clip {
+                    Some(shared) => PlusFaceEncoder::from_shared_clip(
+                        shared,
+                        &face_weights,
+                        PlusConfig::sdxl_face(),
+                        device,
+                        dtype,
+                    )?,
+                    None => {
+                        let clip_weights = crate::hf::download::get_file(
+                            IPA_REPO,
+                            "models/image_encoder/model.safetensors",
+                        )
+                        .await?;
+                        PlusFaceEncoder::load(
+                            &clip_weights,
+                            &face_weights,
+                            PlusConfig::sdxl_face(),
+                            device,
+                            dtype,
+                        )?
+                    }
+                };
                 Box::new(enc)
             }
             Self::FaceId => {

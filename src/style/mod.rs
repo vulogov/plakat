@@ -32,6 +32,6 @@ pub use catalog::{
 pub use detect::detect_style;
 pub use encode::encode_reference_photo;
 pub use runtime::{
-    combine_negative, log_style_prep, parse_resolved_loras, prepare_style, prepend_trigger,
-    StylePrep, StylePrepRequest, StyleSession,
+    combine_negative, log_style_prep, parse_resolved_loras, prepare_style,
+    prepare_style_with_session, prepend_trigger, StylePrep, StylePrepRequest, StyleSession,
 };

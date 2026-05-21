@@ -20,7 +20,7 @@ use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
     self, clip as sdclip,
-    unet_2d::{BlockConfig, UNet2DConditionModel, UNet2DConditionModelConfig},
+    unet_2d::{BlockConfig, UNet2DConditionModelConfig},
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -56,28 +56,14 @@ pub struct Request {
     /// Fraction of the schedule where the refiner takes over (default 0.8).
     pub refiner_frac: f32,
 
-    // ---------- v0.9 ControlNet ----------
-    /// Optional conditioner kind. `None` disables ControlNet entirely
-    /// — preserves byte-identical pre-v0.9 behaviour. When `Some`,
-    /// exactly one of `control_image` or `control_from` must be set.
-    pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
-    /// Pre-rendered conditioning image (depth map, edge map, etc.).
-    /// Mutually exclusive with `control_from`.
-    pub control_image: Option<PathBuf>,
-    /// **v0.10**: source image to auto-annotate. Runs the matching
-    /// annotator for `control_kind` (e.g. Depth-Anything-V2 for
-    /// `Depth`) and uses the result as the conditioning tensor.
-    /// Mutually exclusive with `control_image`.
-    pub control_from: Option<PathBuf>,
-    /// Multiplier applied to ControlNet residuals before adding to
-    /// the UNet's. Ignored when `control_kind` is `None`. Default 1.0.
-    pub control_strength: f32,
-    /// Timestep window during which the conditioner is active.
-    /// `[start, end)` as fractions of the full schedule (`[0, 1]`).
-    /// Outside the window, denoise steps take the no-control path.
-    /// Defaults: 0.0 / 1.0 (always active).
-    pub control_start: f32,
-    pub control_end: f32,
+    // ---------- v0.9 ControlNet (v0.11: multi) ----------
+    /// Stack of ControlNet conditioners. Empty disables ControlNet
+    /// entirely (preserves byte-identical pre-v0.9 behaviour). One
+    /// entry mirrors the v0.9–v0.10 single-conditioner path. Two+
+    /// entries run diffusers-style multi-ControlNet — residuals from
+    /// each active conditioner are summed before being fed to the UNet.
+    /// All conditioners share the SD/SDXL variant (determined by `model`).
+    pub controls: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -199,7 +185,13 @@ pub struct Pipeline {
     /// Present only when `LoadRequest::use_refiner == true` and the variant
     /// is SDXL/SDXL-Turbo. Not shared via SdCore — the refiner is
     /// t2i-specific.
-    refiner_unet: Option<UNet2DConditionModel>,
+    ///
+    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. Phase 8d
+    /// holds it as `SdUNet::Sd` (no add_embedding — quality gap
+    /// preserved from pre-v0.11 behaviour). Phase 8e switches this to
+    /// `SdUNet::Sdxl` with the refiner's 5-time-id add_embedding so the
+    /// refiner pass also gets `text_time` micro-conditioning.
+    refiner_unet: Option<crate::pipelines::sdxl_unet::SdUNet>,
 }
 
 const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
@@ -333,18 +325,22 @@ impl Pipeline {
             let vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[&weights], dtype, &req.device)?
             };
-            // Refiner UNet has extra weight keys (add_embedding for
-            // pooled CLIP-G + time_ids) that candle 0.8's UNet doesn't
-            // consume. VarBuilder only fetches the keys we ask for, so
-            // those go unloaded silently.
-            let r_unet = UNet2DConditionModel::new(
-                vb,
-                4,
-                4,
-                false,
-                sdxl_refiner_unet_config(),
-            )?;
-            Some(r_unet)
+            // v0.11 phase 8e: refiner now loads via SdxlUNet too. Its
+            // add_embedding takes a 5-id time vector (aesthetic_score
+            // replaces target_size compared to the base UNet's 6-id
+            // vector); SdxlAddEmbedConfig::refiner() captures that.
+            // Refiner cross_attn_dim stays 1280 (CLIP-G only) per
+            // sdxl_refiner_unet_config.
+            let r_unet =
+                crate::pipelines::sdxl_unet::SdxlUNet2DConditionModel::new(
+                    vb,
+                    4,
+                    4,
+                    false,
+                    sdxl_refiner_unet_config(),
+                    crate::pipelines::sdxl_unet::SdxlAddEmbedConfig::refiner(),
+                )?;
+            Some(crate::pipelines::sdxl_unet::SdUNet::Sdxl(r_unet))
         } else {
             None
         };
@@ -367,11 +363,23 @@ impl Pipeline {
 
     /// Encode `prompt` (and optionally `negative` for CFG) into the
     /// `encoder_hidden_states` tensor the UNet expects.
-    fn encode_prompt(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    /// Returns `(hidden_states, pooled_text_for_sdxl)`:
+    ///   * For SD 1.5 / SD 2.1: pooled is `None` (no add_embedding).
+    ///   * For SDXL: pooled is `Some((B, 1280))` feeding the UNet's
+    ///     `add_embedding`. Caller pairs it with an `add_time_ids`
+    ///     tensor built in `generate`.
+    fn encode_prompt(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
         if self.variant.is_xl() {
-            self.encode_xl(prompt, negative, do_cfg)
+            let (hidden, pooled) = self.encode_xl(prompt, negative, do_cfg)?;
+            Ok((hidden, Some(pooled)))
         } else {
-            self.encode_single(prompt, negative, do_cfg)
+            let hidden = self.encode_single(prompt, negative, do_cfg)?;
+            Ok((hidden, None))
         }
     }
 
@@ -415,7 +423,22 @@ impl Pipeline {
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
-    fn encode_xl(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    /// SDXL base encoding. Returns:
+    ///   * `hidden_states` — `(B, 77, 2048)`. CFG batches uncond then
+    ///     cond along the first dim (matches the existing convention).
+    ///   * `pooled_text`  — `(B, 1280)` from the projected EOT row of
+    ///     CLIP-G's final layer norm output. Feeds the UNet's
+    ///     `add_embedding`. Same uncond-then-cond batching.
+    ///
+    /// `pooled_text` is the v0.11 phase-8d addition. Pre-8d the base
+    /// SDXL path threw this away (and the UNet ran with `add_embedding`
+    /// silently inactive). Caller now passes it through `denoise_step`.
+    fn encode_xl(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+    ) -> Result<(Tensor, Tensor)> {
         let cfg_g = self
             .core
             .cfg
@@ -433,7 +456,7 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
-        let cond = embed_xl(
+        let (cond_hidden, cond_pooled) = embed_xl(
             prompt,
             &self.core.tokenizer_l,
             tok_g,
@@ -444,9 +467,12 @@ impl Pipeline {
             &self.core.device,
         )?;
         if !do_cfg {
-            return Ok(cond.to_dtype(self.core.dtype)?);
+            return Ok((
+                cond_hidden.to_dtype(self.core.dtype)?,
+                cond_pooled.to_dtype(self.core.dtype)?,
+            ));
         }
-        let uncond = embed_xl(
+        let (uncond_hidden, uncond_pooled) = embed_xl(
             negative,
             &self.core.tokenizer_l,
             tok_g,
@@ -456,21 +482,25 @@ impl Pipeline {
             enc_g,
             &self.core.device,
         )?;
-        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
+        let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
+        let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
+        Ok((hidden, pooled))
     }
 
     /// Generate `req.count` images for one prompt. Reuses the loaded
     /// UNet/VAE/text encoder.
     ///
-    /// `control` is the v0.9 ControlNet hook. When `Some`, every
-    /// denoise step (including the refiner pass) feeds the network
-    /// the same conditioning + strength via
-    /// [`UNet2DConditionModel::forward_with_additional_residuals`].
-    /// `None` preserves byte-identical pre-v0.9 behaviour.
+    /// `controls` is the v0.9 ControlNet hook, extended to a stack in
+    /// v0.11. Every denoise step picks the subset whose timestep
+    /// window is active at that step's progress (see
+    /// `ControlRequest::active_at`), sums each one's residuals, and
+    /// hands the combined residuals to the UNet via
+    /// `forward_with_additional_residuals`. Empty slice = byte-identical
+    /// pre-v0.9 behaviour.
     pub fn generate(
         &self,
         req: &GenRequest,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<()> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         std::fs::create_dir_all(&req.out_dir)
@@ -478,13 +508,69 @@ impl Pipeline {
 
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
-        let text_embeddings = self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+        let (text_embeddings, pooled_text_sdxl) =
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
 
         // If the refiner is loaded AND the caller asked for it, prepare the
         // CLIP-G-only embeddings the refiner needs (different cross_attn_dim
         // means we can't reuse `text_embeddings`).
         let refiner_embeddings = match (&self.refiner_unet, req.refiner_frac) {
             (Some(_), Some(_)) => Some(self.encode_g_only(&req.prompt, &req.negative, do_cfg)?),
+            _ => None,
+        };
+
+        // v0.11 phase 8d: build the SDXL base add_time_ids tensor once
+        // per generate() call (it's a function of target size only —
+        // identical across denoise steps and across cond/uncond CFG
+        // branches). For non-SDXL variants this stays None and the
+        // UNet enum ignores the parameter.
+        let add_time_ids_base = if self.variant.is_xl() && pooled_text_sdxl.is_some() {
+            let cond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                req.height,
+                req.width,
+                &self.core.device,
+                self.core.dtype,
+            )?;
+            // For CFG the same vector is replicated across uncond + cond
+            // — diffusers does the same.
+            let stacked = if do_cfg {
+                Tensor::cat(&[&cond_ids, &cond_ids], 0)?
+            } else {
+                cond_ids
+            };
+            Some(stacked)
+        } else {
+            None
+        };
+
+        // v0.11 phase 8e: refiner add_time_ids (5 floats; last slot is
+        // aesthetic_score). cond uses POS=6.0; uncond uses NEG=2.5 so
+        // CFG pulls toward higher aesthetics — matching diffusers'
+        // default refiner inference setup. Only built when the refiner
+        // is actually going to run.
+        let add_time_ids_refiner = match (&self.refiner_unet, req.refiner_frac, &pooled_text_sdxl) {
+            (Some(_), Some(_), Some(_)) => {
+                let cond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_refiner(
+                    req.height,
+                    req.width,
+                    crate::pipelines::sdxl_unet::REFINER_AESTHETIC_SCORE_POS,
+                    &self.core.device,
+                    self.core.dtype,
+                )?;
+                let stacked = if do_cfg {
+                    let uncond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_refiner(
+                        req.height,
+                        req.width,
+                        crate::pipelines::sdxl_unet::REFINER_AESTHETIC_SCORE_NEG,
+                        &self.core.device,
+                        self.core.dtype,
+                    )?;
+                    Tensor::cat(&[&uncond_ids, &cond_ids], 0)?
+                } else {
+                    cond_ids
+                };
+                Some(stacked)
+            }
             _ => None,
         };
 
@@ -535,7 +621,8 @@ impl Pipeline {
             );
             let total_steps = timesteps.len();
             for (step_i, &timestep) in timesteps.iter().enumerate() {
-                let (unet_ref, embeds, tag) = if step_i < switch {
+                let in_base = step_i < switch;
+                let (unet_ref, embeds, tag) = if in_base {
                     (&self.core.unet, &text_embeddings, "base")
                 } else {
                     (
@@ -544,17 +631,30 @@ impl Pipeline {
                         "refiner",
                     )
                 };
+                // 8e: pooled_text is shared between base and refiner
+                // (same CLIP-G projection). Only the time_ids differ —
+                // base uses 6 floats with target_size; refiner uses 5
+                // floats with aesthetic_score. Both passes hit the
+                // SdxlUNet::Sdxl path so both require pooled + time_ids.
+                let (sdxl_pooled, sdxl_time_ids) = if in_base {
+                    (pooled_text_sdxl.as_ref(), add_time_ids_base.as_ref())
+                } else {
+                    (pooled_text_sdxl.as_ref(), add_time_ids_refiner.as_ref())
+                };
                 let progress = step_i as f32 / total_steps as f32;
-                let step_control = control.filter(|cr| cr.active_at(progress));
+                let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                    controls.iter().filter(|c| c.active_at(progress)).collect();
                 latents = self.denoise_step(
                     unet_ref,
                     &latents,
                     timestep,
                     embeds,
+                    sdxl_pooled,
+                    sdxl_time_ids,
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
-                    step_control,
+                    &active_controls,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
@@ -585,16 +685,23 @@ impl Pipeline {
                         let total_polish = active.len();
                         for (step_idx, &timestep) in active.iter().enumerate() {
                             let progress = step_idx as f32 / total_polish as f32;
-                            let step_control = control.filter(|cr| cr.active_at(progress));
+                            let active_controls: Vec<
+                                &crate::pipelines::controlnet::ControlRequest,
+                            > = controls
+                                .iter()
+                                .filter(|c| c.active_at(progress))
+                                .collect();
                             latents = self.denoise_step(
                                 &self.core.unet,
                                 &latents,
                                 timestep,
                                 &text_embeddings,
+                                pooled_text_sdxl.as_ref(),
+                                add_time_ids_base.as_ref(),
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
-                                step_control,
+                                &active_controls,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -620,16 +727,27 @@ impl Pipeline {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn denoise_step(
         &self,
-        unet: &UNet2DConditionModel,
+        unet: &crate::pipelines::sdxl_unet::SdUNet,
         latents: &Tensor,
         timestep: usize,
         text_embeddings: &Tensor,
+        // v0.11 phase 8d: pooled CLIP-G + time_ids for SDXL base's
+        // add_embedding. None on SD 1.5 / SD 2.1 and on the refiner
+        // pass (8d). SdUNet::Sdxl errors if these are None; SdUNet::Sd
+        // ignores them — making this signature uniform across variants.
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
-        control: Option<&crate::pipelines::controlnet::ControlRequest>,
+        // v0.11: multi-ControlNet. Caller pre-filters to controls
+        // active at this step. Empty slice = plain forward (no
+        // residuals); single entry mirrors the v0.9–v0.10 behaviour;
+        // 2+ entries sum residuals diffusers-style.
+        active_controls: &[&crate::pipelines::controlnet::ControlRequest],
     ) -> Result<Tensor> {
         let latent_in = if do_cfg {
             Tensor::cat(&[latents, latents], 0)?
@@ -637,29 +755,31 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-        let noise_pred = match control {
-            None => unet.forward(&latent_in, timestep as f64, text_embeddings)?,
-            Some(cr) => {
-                let cond_in = if do_cfg {
-                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
-                } else {
-                    cr.conditioning.clone()
-                };
-                let (down, mid) = cr.net.forward(
-                    &latent_in,
-                    timestep as f64,
-                    text_embeddings,
-                    &cond_in,
-                    cr.strength,
-                )?;
-                unet.forward_with_additional_residuals(
-                    &latent_in,
-                    timestep as f64,
-                    text_embeddings,
-                    Some(&down),
-                    Some(&mid),
-                )?
-            }
+        let noise_pred = if active_controls.is_empty() {
+            unet.forward(
+                &latent_in,
+                timestep as f64,
+                text_embeddings,
+                add_text_embeds,
+                add_time_ids,
+            )?
+        } else {
+            let (down, mid) = crate::pipelines::controlnet::sum_controlnet_residuals(
+                active_controls,
+                &latent_in,
+                timestep,
+                text_embeddings,
+                do_cfg,
+            )?;
+            unet.forward_with_additional_residuals(
+                &latent_in,
+                timestep as f64,
+                text_embeddings,
+                add_text_embeds,
+                add_time_ids,
+                Some(&down),
+                Some(&mid),
+            )?
         };
         let noise_pred = if do_cfg {
             let chunks = noise_pred.chunk(2, 0)?;
@@ -706,7 +826,7 @@ fn embed_g_only(
     text: &str,
     tok_g: &Tokenizer,
     cfg_g: &sdclip::Config,
-    enc_g: &sdclip::ClipTextTransformer,
+    enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
 ) -> Result<Tensor> {
     let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
@@ -714,6 +834,9 @@ fn embed_g_only(
     Ok(hidden_g)
 }
 
+/// Encode one branch (cond or uncond) for SDXL base: concat'd CLIP-L
+/// penultimate + CLIP-G penultimate for cross-attention, and the
+/// pooled CLIP-G output for the UNet's `add_embedding`.
 #[allow(clippy::too_many_arguments)]
 fn embed_xl(
     text: &str,
@@ -722,14 +845,15 @@ fn embed_xl(
     cfg_l: &sdclip::Config,
     cfg_g: &sdclip::Config,
     enc_l: &sdclip::ClipTextTransformer,
-    enc_g: &sdclip::ClipTextTransformer,
+    enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
-) -> Result<Tensor> {
+) -> Result<(Tensor, Tensor)> {
     let ids_l = tokenize_padded(tok_l, cfg_l, text, device)?;
     let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
     let (_final_l, hidden_l) = enc_l.forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
-    let (_final_g, hidden_g) = enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
-    Tensor::cat(&[&hidden_l, &hidden_g], 2).map_err(Into::into)
+    let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+    let cat = Tensor::cat(&[&hidden_l, &hidden_g], 2)?;
+    Ok((cat, pooled_g))
 }
 
 // =====================================================================
@@ -781,63 +905,24 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         return Ok(None);
     }
 
-    // -- ControlNet preload (v0.9). Owned data lives on this stack
-    //    frame; the `ControlRequest` is built from references to it
-    //    just before `generate` is called.
+    // -- ControlNet preload (v0.9 / v0.11 multi). Owned data lives on
+    //    this stack frame; `ControlRequest`s are built from references
+    //    to it just before `generate` is called.
     let dtype = if matches!(req.device, Device::Cpu) {
         DType::F32
     } else {
         DType::F16
     };
-    let control_owned: Option<(
-        crate::pipelines::controlnet::ControlNet,
-        candle_core::Tensor,
-    )> = if let Some(kind) = req.control_kind {
-        // v0.10: two ways to supply the conditioning image —
-        //  * --control-image PATH (use as-is, v0.9 behaviour)
-        //  * --control-from  PATH (auto-annotate via the matching annotator)
-        // Exactly one must be set; the CLI enforces mutual exclusion
-        // via `conflicts_with`, but we also error here defensively.
-        let cn_variant =
-            crate::pipelines::controlnet::ControlNetVariant::detect(&req.model);
-        let net = crate::pipelines::controlnet::ControlNet::load(
-            req.device.clone(),
-            dtype,
-            kind,
-            cn_variant,
-        )
-        .await
-        .context("loading ControlNet weights")?;
-        let cond = match (req.control_image.as_ref(), req.control_from.as_ref()) {
-            (Some(path), None) => crate::pipelines::controlnet::prepare_conditioning(
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                dtype,
-            )
-            .context("preparing ControlNet conditioning image")?,
-            (None, Some(path)) => crate::pipelines::controlnet_annotator::annotate(
-                kind,
-                path,
-                req.width,
-                req.height,
-                &req.device,
-                dtype,
-            )
-            .await
-            .context("running --control-from annotator")?,
-            (Some(_), Some(_)) => anyhow::bail!(
-                "--control={kind:?}: pass either --control-image PATH or --control-from PATH, not both"
-            ),
-            (None, None) => anyhow::bail!(
-                "--control={kind:?}: requires --control-image PATH or --control-from PATH"
-            ),
-        };
-        Some((net, cond))
-    } else {
-        None
-    };
+    let control_owned = crate::pipelines::controlnet::load_control_stack(
+        &req.controls,
+        &req.model,
+        req.width,
+        req.height,
+        &req.device,
+        dtype,
+        None, // t2i has no fallback input image to auto-annotate.
+    )
+    .await?;
 
     let pipeline = Pipeline::load(LoadRequest {
         model: req.model,
@@ -848,15 +933,16 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     })
     .await?;
 
-    let control_req = control_owned.as_ref().map(|(net, cond)| {
-        crate::pipelines::controlnet::ControlRequest {
-            net,
-            conditioning: cond.clone(),
-            strength: req.control_strength,
-            start: req.control_start,
-            end: req.control_end,
-        }
-    });
+    let control_reqs: Vec<crate::pipelines::controlnet::ControlRequest> = control_owned
+        .iter()
+        .map(|owned| crate::pipelines::controlnet::ControlRequest {
+            net: &owned.net,
+            conditioning: owned.conditioning.clone(),
+            strength: owned.strength,
+            start: owned.start,
+            end: owned.end,
+        })
+        .collect();
 
     pipeline.generate(
         &GenRequest {
@@ -878,7 +964,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                 None
             },
         },
-        control_req.as_ref(),
+        &control_reqs,
     )?;
     Ok(Some(pipeline.core()))
 }
