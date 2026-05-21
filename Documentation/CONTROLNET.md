@@ -56,7 +56,7 @@ plakat img2img sketch.png --prompt "polished oil painting" \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--control <KIND>` | (off) | Conditioner kind. v0.10: `depth` or `canny`. Triggers ControlNet activation. Works on both SD 1.5 and SDXL; the architecture is auto-detected from `--model`. |
+| `--control <KIND>` | (off) | Conditioner kind. Shipped: `depth`, `canny`, `softedge`, `lineart`, `openpose`. Triggers ControlNet activation. Works on SD 1.5, SDXL, and Flux (v0.12+); the architecture is auto-detected from `--model`. |
 | `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
 | `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
@@ -183,7 +183,7 @@ plakat feature:
 | `--photo` (portrait) | Composes — portrait IP-Adapter and ControlNet operate at different attention layers. |
 | `--mask` (img2img inpaint) | Composes — control applies inside the mask only (since the mask gates where denoise actually runs). |
 | Multi-persona scenarios | Control applies to the base layout pass only; per-persona inpaint passes skip it to avoid double-conditioning. |
-| Flux | **Not supported.** ControlNet is SD-family only (SD 1.5 + SDXL). Flux uses a different architecture and isn't on the roadmap. |
+| Flux | Supported via Shakker-Labs Union Pro v2 (v0.12 + v0.13). See the "Flux ControlNet" section below for the canny/depth/openpose/lineart/softedge map. Composes with Flux LoRA, GGUF, tiled denoise, and img2img init images. |
 
 ## Scenarios
 
@@ -278,6 +278,42 @@ All are diffusers-format. WebUI-format ControlNet checkpoints (with
 `control_model.input_blocks.…` key naming) are not currently
 supported — they'd need a key remapping layer we don't ship.
 
+## Flux ControlNet (v0.12 + v0.13)
+
+ControlNet on Flux uses Shakker-Labs Union Pro v2 by default — a
+single weight set covering canny / softedge / openpose / depth /
+lineart via a mode index. The CLI grammar is identical to SD:
+
+```bash
+# Auto-annotate a reference photo (v0.13 phase 8)
+plakat generate "..." --model flux-dev \
+    --control-spec 'depth:from=ref.jpg'
+
+# Pre-rendered conditioning map
+plakat generate "..." --model flux-dev \
+    --control-spec 'canny:image=edges.png:strength=0.6'
+
+# Step gating: lock structure early, release later (v0.13 phase 6)
+plakat generate "..." --model flux-dev \
+    --control-spec 'depth:from=ref.jpg:start=0.0:end=0.4'
+
+# Multi-Flux-CN — residuals from both CNs sum per step
+plakat generate "..." --model flux-dev \
+    --control-spec 'depth:from=scene.jpg:strength=0.8' \
+    --control-spec 'canny:image=edges.png:strength=0.5'
+
+# Composes with GGUF + tiled hi-res
+plakat generate "..." --model flux-dev-gguf --size 2048x2048 \
+    --tiled --tile-size 1024 --tile-stride 768 \
+    --control-spec 'depth:from=ref.jpg'
+```
+
+Flux ControlNet composes with LoRA (PEFT + AI-Toolkit), GGUF
+quantization (per-tile residuals still work on the 4-bit backbone),
+tiled denoise (each tile gets its own cropped conditioning), and
+img2img init images. It does **not** yet compose with Flux.1-Fill-dev
+(the 384-channel input layout would need per-tile mask slicing).
+
 ## Limits
 
 - **SDXL ControlNet weights are heavy.** Plakat loads the full-size
@@ -285,26 +321,26 @@ supported — they'd need a key remapping layer we don't ship.
   SDXL mirror — ~2.5 GB fp16 per checkpoint. We do NOT use diffusers'
   `-small` variant, which ships a reduced architecture (basic
   down-blocks replacing cross-attn ones) that doesn't match candle's
-  standard SDXL UNet config. Loading the `-small` mirror against the
-  standard config fails with "cannot find tensor
-  down_blocks.1.attentions.0.norm.weight".
-- **Flux: not supported.** ControlNet's residual-addition contract
-  is SD-UNet-specific.
-- **Depth and Canny.** v0.10 ships both. Scribble, pose, MLSD,
-  normal, openpose, segmentation, and InstantID-style face
-  conditioners are on the roadmap but not in v0.10.
+  standard SDXL UNet config.
+- **Flux ControlNet ships as Union Pro v2 only.** Specialised Flux
+  CN repos (e.g. InstantX depth-only) aren't wired up — the Union
+  model covers all five kinds via mode index.
+- **Conditioners shipped.** SD/SDXL: depth, canny, openpose,
+  lineart, softedge. Flux: same five via Union Pro v2 (canny and
+  lineart both map to Union mode 0).
 - **Timestep windowing is supported** via `--control-start` /
-  `--control-end`. Diffusers convention: progress is measured
-  against the **full** schedule (not the active subset on
-  img2img/inpaint/blend).
-- **No multi-controlnet.** Diffusers supports stacking multiple
-  ControlNets (e.g. depth + pose) by summing their residuals.
-  Plakat's current CLI grammar doesn't expose this; v0.11
-  candidate.
+  `--control-end` (or per-spec `start=…:end=…`). Diffusers
+  convention: progress is measured against the **full** schedule.
+  Works on both SD and Flux (v0.13 phase 6).
+- **Multi-ControlNet** is supported on both SD (since v0.11) and
+  Flux (since v0.12) via repeatable `--control-spec`. Residuals sum
+  per block.
+- **Tiled + Flux CN** composes (v0.13 phase 9). Each tile sees its
+  cropped conditioning; tiled + SD CN is still a v0.12 follow-up.
+- **Flux Fill + CN** doesn't compose yet — Fill's 384-channel input
+  would need per-tile mask + conditioning slicing.
 - **Multi-persona scenarios** apply control only to the base layout
-  pass, not the per-persona inpaint passes. That's the safer
-  default; the inverse (control on each persona) is on the
-  roadmap.
+  pass, not the per-persona inpaint passes.
 
 ## See also
 

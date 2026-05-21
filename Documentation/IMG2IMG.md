@@ -47,7 +47,7 @@ plakat img2img photo.jpg --prompt "..." --strength 0.4
 | `--steps <N>` | 28 | Denoising steps. Tutorial recommends 20 with `euler-a`. |
 | `--guidance <F>` | 7.5 | Classifier-free guidance scale. |
 | `--scheduler <K>` | `default` | Scheduler name. Same set as `plakat generate`. |
-| `--model <MODEL>` | `sd15` | Model alias or HF repo id. **Flux is not supported.** |
+| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img (v0.13); `flux-fill-dev` for Flux inpainting (v0.13). |
 | `--size <WxH>` | input dims | Override working resolution. Input is resized to match. Must be a multiple of 8. |
 | `--out <DIR>` | `./out` | Output directory. Created if absent. |
 
@@ -133,20 +133,70 @@ With `--count N`, files are `plakat-img2img-<base>.png`,
 identically to `plakat generate`. The denoise is the same modulo
 the partial-strength starting point.
 
+## Flux img2img and inpaint (v0.13)
+
+`plakat img2img --model flux-dev` (or `flux-schnell`, `flux-dev-gguf`)
+runs rectified-flow img2img: the init image is VAE-encoded and mixed
+with fresh noise at `t = strength`, then the truncated schedule
+denoises from there. Same `--strength` convention as SD.
+
+`plakat img2img --model flux-fill-dev --mask MASK init.png` runs BFL's
+dedicated Flux.1-Fill-dev checkpoint. It has a 384-channel `img_in`
+(64 noise + 64 masked-image-latent + 256 mask) — the mask drives the
+denoise directly rather than being a RePaint-style overlay, so
+`--strength` does not apply (the mask itself controls what changes).
+Default `--guidance 30` per BFL's recommendation.
+
+Both Flux paths compose with LoRA (PEFT + AI-Toolkit formats), GGUF
+quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`), and
+ControlNet via the standard `--control-spec` grammar.
+
+```bash
+# Flux img2img: re-imagine an init image, 70% strength
+plakat img2img init.png --model flux-dev \
+    --prompt "the same scene in a stained glass window" \
+    --strength 0.7
+
+# Flux inpaint (Fill model): only the masked region changes
+plakat img2img init.png --mask region.png --model flux-fill-dev \
+    --prompt "ornate carved stone arch"
+
+# Flux on a 16 GB GPU via GGUF
+plakat img2img init.png --model flux-fill-dev-gguf \
+    --mask region.png --quant-level Q5_K_M --quantize-t5 \
+    --prompt "..."
+```
+
+## Outpaint
+
+For canvas expansion (extend an image past its borders), use the
+dedicated `plakat outpaint` subcommand. It generates the expanded
+canvas + new-region mask and hands off to the same inpaint flow:
+
+```bash
+plakat outpaint photo.png --prompt "wide landscape, panorama" \
+    --left 512 --right 512 --model sdxl-inpaint
+
+# All four sides, Flux Fill model
+plakat outpaint photo.png --prompt "..." --expand 256 \
+    --model flux-fill-dev
+```
+
+`plakat outpaint` snaps padding to the model's VAE / patch constraint
+(8 for SD, 16 for Flux), replicates the input's edge pixels into the
+new region (better seam continuity than flat gray), and pins
+`--strength 1.0` (the new region has no original content to preserve).
+
 ## Limits
 
-- **No Flux support.** Flux uses a different latent space + scheduler
-  combo that the img2img wrapper doesn't (yet) handle. Use SD 1.5,
-  SD 2.1, or SDXL. Flux img2img is on the roadmap.
-- **No outpainting.** `plakat img2img` doesn't extend the canvas;
-  it only re-paints within the existing pixel grid. Outpainting is
-  planned as a separate subcommand.
-- **No scenario integration in v0.8.** `plakat scenario` doesn't yet
-  expose per-task `init-image:` / `mask:` fields. CLI-only for now.
 - **Mask resolution is downsampled.** The latent-space mask is
   `image/8 × image/8`, so very fine mask boundaries lose precision.
   Use `--mask-feather` to absorb the quantisation instead of fighting
   it.
+- **Scenarios** support per-task `init-image:` / `mask:` / `strength:`
+  / `outpaint:` for both SD and Flux models as of v0.13. SD inpaint
+  tasks in scenarios reload the pipeline per task (img2img doesn't yet
+  share the t2i `Pipeline::load`-once shape).
 
 ## See also
 

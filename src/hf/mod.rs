@@ -34,6 +34,26 @@ pub fn resolve_alias(name: &str) -> &str {
             "black-forest-labs/FLUX.1-schnell"
         }
         "flux-dev" | "FLUX.1-dev" | "flux1-dev" => "black-forest-labs/FLUX.1-dev",
+        // v0.13 phase 2: Flux.1-Fill-dev — BFL's dedicated inpainting
+        // checkpoint. Same DiT architecture as Flux.1-dev except
+        // `img_in` takes 384 input channels (64 noise + 64 masked
+        // latent + 256 image-space mask). Gated repo; HF_TOKEN
+        // required.
+        "flux-fill-dev" | "flux-fill" | "flux1-fill-dev" | "FLUX.1-Fill-dev" => {
+            "black-forest-labs/FLUX.1-Fill-dev"
+        }
+        // v0.13: 4-bit quantized Flux via GGUF. city96's mirrors are
+        // the canonical community source. The transformer drops from
+        // ~24 GB BF16 to ~7 GB Q4_K_S — Flux becomes practical on
+        // 16 GB GPUs. Text encoders (T5-XXL, CLIP-L) stay at full
+        // precision in Phase 1; quantized T5 lands in 1b.
+        "flux-dev-gguf" | "flux-dev-q4" => "city96/FLUX.1-dev-gguf",
+        "flux-schnell-gguf" | "flux-schnell-q4" => "city96/FLUX.1-schnell-gguf",
+        // GGUF mirror for Fill — city96 ships this in the same
+        // family as the BF16 model.
+        "flux-fill-dev-gguf" | "flux-fill-gguf" | "flux-fill-q4" => {
+            "city96/FLUX.1-Fill-dev-gguf"
+        }
         other => other,
     }
 }

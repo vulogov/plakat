@@ -2,6 +2,7 @@
 //! weather, and per-task prompts. See README for the schema and an example.
 
 use anyhow::{Context, Result, anyhow, bail};
+use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
 use serde::Deserialize;
@@ -66,6 +67,28 @@ struct ScenarioFile {
     refiner: bool,
     #[serde(rename = "refiner-frac")]
     refiner_frac: Option<f32>,
+
+    // ---------- v0.13 phase 10: GGUF + quant + tiled ----------
+    /// v0.13 phase 1b: load T5-XXL as a quantized GGUF when running
+    /// Flux GGUF. Requires `model: flux-*-gguf`. Bails loud otherwise.
+    #[serde(rename = "quantize-t5", default)]
+    quantize_t5: bool,
+    /// v0.13 phase 5: Flux GGUF quant level (e.g. `Q5_K_M`, `Q8_0`,
+    /// `F16`). `None` falls back to `Q4_K_S`. Only meaningful with a
+    /// GGUF Flux model.
+    #[serde(rename = "quant-level", default)]
+    quant_level: Option<String>,
+    /// v0.13 phase 5: T5-XXL GGUF quant level (e.g. `Q5_K_M`, `Q8_0`).
+    /// `None` falls back to `Q4_K_S`. Only meaningful with
+    /// `quantize-t5: true`.
+    #[serde(rename = "t5-quant-level", default)]
+    t5_quant_level: Option<String>,
+    /// v0.13 phase 4/9: MultiDiffusion-style tiled denoise. When set,
+    /// every task in the scenario runs through the tiled path (Flux or
+    /// SDXL). Lets scenarios target 2K-4K outputs without exceeding
+    /// the model's working resolution per pass.
+    #[serde(default)]
+    tiled: Option<TiledCfg>,
 
     // ---------- prompt-assembly fragments ----------
     #[serde(rename = "lora-header", default)]
@@ -424,8 +447,191 @@ struct TaskDef {
     /// ```hjson
     /// control: { kind: depth, image: ./hint.png, strength: 0.85 }
     /// ```
+    /// Mutually exclusive with `controls:` (the Vec form below).
     #[serde(default)]
     control: Option<ControlSpec>,
+
+    /// v0.13 phase 11: multi-ControlNet per task. Each entry is a
+    /// `ControlSpec` (same grammar as the singular `control:` block).
+    /// Residuals from all entries sum per denoise step.
+    ///
+    /// ```hjson
+    /// controls: [
+    ///   { kind: depth, image: ./d.png, strength: 0.8 },
+    ///   { kind: canny, auto-from: ./ref.png, strength: 0.5, end: 0.5 },
+    /// ]
+    /// ```
+    /// Mutually exclusive with the singular `control:` block. Both
+    /// SD and Flux multi-CN flows compose with the scenario
+    /// `tiled:` config (per phase 9).
+    #[serde(default)]
+    controls: Option<Vec<ControlSpec>>,
+
+    // ---------- v0.13 phase 10/11: img2img / Fill / inpaint inputs ----
+    /// v0.13 phase 3 / phase 11: init image. For Flux non-Fill →
+    /// img2img (uses `strength`). For Flux Fill or SD inpaint models →
+    /// inpaint with `mask`. For plain SD t2i models → RePaint-style
+    /// masked img2img if `mask:` is also set, else plain img2img.
+    /// Empty by default.
+    #[serde(rename = "init-image", default)]
+    init_image: Option<PathBuf>,
+    /// v0.13 phase 2 / phase 11: inpaint mask (white = inpaint, black
+    /// = preserve). Requires `init-image`. Pure t2i tasks ignore.
+    #[serde(default)]
+    mask: Option<PathBuf>,
+    /// v0.13 phase 3: img2img strength in `[0, 1]`. `None` → pipeline
+    /// default (Flux 0.85; SD 0.6 for img2img, 1.0 for inpaint).
+    #[serde(default)]
+    strength: Option<f32>,
+    /// v0.13 phase 11: SD inpaint mask feathering (px). Softens the
+    /// boundary between preserved and inpainted regions. Default 8.
+    /// Ignored on Flux (mask is binarised before the patching pack).
+    #[serde(rename = "mask-feather", default)]
+    mask_feather: Option<u32>,
+    /// v0.13 phase 11: invert mask polarity (treat black as inpaint).
+    #[serde(rename = "mask-invert", default)]
+    mask_invert: Option<bool>,
+
+    /// v0.13 phase 11: outpaint task — extend the canvas of
+    /// `init-image` past its borders, build a mask covering the new
+    /// region, and run the inpaint pipeline. Mutually exclusive with
+    /// `mask:` (the outpaint block synthesises the mask).
+    ///
+    /// ```hjson
+    /// outpaint: { expand: 256 }                         # all sides
+    /// outpaint: { left: 512, right: 512 }               # panoramic
+    /// outpaint: { top: 128, bottom: 256 }               # vertical
+    /// ```
+    #[serde(default)]
+    outpaint: Option<OutpaintSpec>,
+
+}
+
+/// v0.13 phase 11: outpaint task block. At least one of the four
+/// per-side fields (or `expand`) must be > 0. `expand` is shorthand
+/// for setting all four sides equally and conflicts with the per-
+/// side fields.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct OutpaintSpec {
+    #[serde(default)]
+    left: u32,
+    #[serde(default)]
+    right: u32,
+    #[serde(default)]
+    top: u32,
+    #[serde(default)]
+    bottom: u32,
+    /// Shorthand: extend all four sides by this many pixels. When
+    /// set, the per-side fields must all be 0.
+    #[serde(default)]
+    expand: Option<u32>,
+}
+
+/// v0.13 phase 11: helper trait — collapse `control:` (singular) and
+/// `controls:` (Vec) into a single Vec<&ControlSpec>. Validates
+/// mutual exclusion. Returned references live as long as the
+/// borrowed task.
+fn task_effective_controls(task: &TaskDef) -> Result<Vec<&ControlSpec>> {
+    match (task.control.as_ref(), task.controls.as_ref()) {
+        (Some(_), Some(_)) => bail!(
+            "task {:?}: `control:` (singular) and `controls:` (Vec) are mutually exclusive — pick one form",
+            task.name
+        ),
+        (Some(c), None) => Ok(vec![c]),
+        (None, Some(v)) => {
+            if v.is_empty() {
+                bail!(
+                    "task {:?}: `controls: []` is empty — drop the field or supply at least one entry",
+                    task.name
+                );
+            }
+            Ok(v.iter().collect())
+        }
+        (None, None) => Ok(Vec::new()),
+    }
+}
+
+/// v0.13 phase 11: validate the inpaint / outpaint input combination
+/// for a task. Returns the effective `(init_image, mask)` pair after
+/// honouring `outpaint:` (which synthesises the mask itself). The
+/// mask path returned for outpaint is `None` — the outpaint dispatch
+/// generates it from the canvas + padding at run time.
+fn task_validate_image_inputs(task: &TaskDef) -> Result<()> {
+    if let Some(ospec) = task.outpaint.as_ref() {
+        if task.init_image.is_none() {
+            bail!(
+                "task {:?}: `outpaint:` requires `init-image:` (the canvas to extend)",
+                task.name
+            );
+        }
+        if task.mask.is_some() {
+            bail!(
+                "task {:?}: `outpaint:` synthesises the mask — `mask:` must be unset",
+                task.name
+            );
+        }
+        // Touch ospec so the borrow stays around for the bail() above.
+        let _ = ospec;
+    }
+    if task.mask.is_some() && task.init_image.is_none() {
+        bail!(
+            "task {:?}: `mask:` requires `init-image:` (mask without init-image is meaningless)",
+            task.name
+        );
+    }
+    Ok(())
+}
+
+impl OutpaintSpec {
+    /// Resolve the four per-side amounts after applying `expand` and
+    /// validate that at least one side is > 0.
+    fn resolved(self) -> Result<(u32, u32, u32, u32)> {
+        let (l, r, t, b) = match self.expand {
+            Some(n) => {
+                if self.left != 0 || self.right != 0 || self.top != 0 || self.bottom != 0 {
+                    bail!(
+                        "outpaint: `expand:` conflicts with per-side amounts; pick one form"
+                    );
+                }
+                (n, n, n, n)
+            }
+            None => (self.left, self.right, self.top, self.bottom),
+        };
+        if l == 0 && r == 0 && t == 0 && b == 0 {
+            bail!(
+                "outpaint: need at least one of left/right/top/bottom (or expand) > 0"
+            );
+        }
+        Ok((l, r, t, b))
+    }
+}
+
+/// v0.13 phase 10: scenario-level tiled-denoise config. `size` and
+/// `stride` are in **pixels**; the pipelines internally divide by the
+/// VAE downsample (8) to get latent units. Same defaults as the CLI
+/// flags (1024 / 768) when fields are omitted.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct TiledCfg {
+    #[serde(default = "default_tile_size")]
+    size: u32,
+    #[serde(default = "default_tile_stride")]
+    stride: u32,
+}
+
+fn default_tile_size() -> u32 {
+    1024
+}
+fn default_tile_stride() -> u32 {
+    768
+}
+
+impl From<TiledCfg> for crate::pipelines::tiled::TiledConfig {
+    fn from(c: TiledCfg) -> Self {
+        Self {
+            tile_size: c.size,
+            stride: c.stride,
+        }
+    }
 }
 
 /// Per-task ControlNet configuration. `kind` is a string parsed via
@@ -731,6 +937,19 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .map(|x| x.parse::<LoraSpec>())
         .collect::<Result<Vec<_>>>()?;
 
+    // -------- v0.13 phase 11: validate per-task fields --------
+    // Surface schema errors (mutually-exclusive control/controls,
+    // outpaint without init-image, etc.) before we burn time on model
+    // loads. Same loop applies the validators across every task.
+    for task in &s.tasks {
+        task_effective_controls(task).with_context(|| {
+            format!("validating ControlNet config for task {:?}", task.name)
+        })?;
+        task_validate_image_inputs(task).with_context(|| {
+            format!("validating image inputs for task {:?}", task.name)
+        })?;
+    }
+
     // -------- style detection / transfer --------
     // A single `StyleSession` is constructed when any task (or the
     // scenario globally) uses style detection. The session shares one
@@ -804,6 +1023,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             "  upscale:   {:.2}× {} (post-stylize if `style` is set, else original)",
             shown, s.upscale.method
         );
+    }
+    // v0.13 phase 10: print effective tiled / GGUF settings when set.
+    if let Some(tcfg) = s.tiled {
+        println!(
+            "  tiled:     {}px tiles, stride {}px (MultiDiffusion)",
+            tcfg.size, tcfg.stride
+        );
+    }
+    if s.quantize_t5
+        || s.quant_level.is_some()
+        || s.t5_quant_level.is_some()
+    {
+        let q = s.quant_level.as_deref().unwrap_or("Q4_K_S");
+        if s.quantize_t5 {
+            let t5q = s.t5_quant_level.as_deref().unwrap_or("Q4_K_M");
+            println!("  gguf:      Flux={q}, T5={t5q} (quantized T5)");
+        } else {
+            println!("  gguf:      Flux={q} (T5 stays BF16)");
+        }
     }
     if !s.personas.is_empty() {
         let names: Vec<&str> = s.personas.iter().map(|p| p.name.as_str()).collect();
@@ -942,10 +1180,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras.len()
             ));
         }
-        let fvar = if variant == Variant::FluxDev {
-            flux::Variant::Dev
-        } else {
-            flux::Variant::Schnell
+        let fvar = match variant {
+            Variant::FluxDev => flux::Variant::Dev,
+            Variant::FluxFillDev => flux::Variant::FillDev,
+            _ => flux::Variant::Schnell,
         };
         let resolved_repo = if model.contains('/') {
             model.clone()
@@ -965,6 +1203,43 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 }
                 v
             };
+        // v0.13 phase 10: pre-load Shakker-Labs Union Pro v2 once if
+        // any task in the scenario uses `control:`. Union Pro v2 covers
+        // canny/softedge/openpose/depth/lineart via a single weight set
+        // — `set_controlnet_call_params` swaps the mode + scale per
+        // task. Tasks that have no `control:` simply leave the CN's
+        // conditioning empty and it contributes no residuals.
+        // v0.13 phase 11: scenario-wide max CN slots = the largest
+        // `effective_controls().len()` across all tasks. Load that
+        // many Union Pro v2 instances at startup so each per-task
+        // multi-CN dispatch has independent slots to mutate. One slot
+        // is enough for the common single-CN case; the cost scales
+        // linearly with the deepest stack any task asks for.
+        let max_flux_controls = s
+            .tasks
+            .iter()
+            .map(|t| task_effective_controls(t).map(|v| v.len()).unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        let flux_controlnets: Vec<flux::FluxControlNetLoad> = if max_flux_controls > 0 {
+            use crate::pipelines::flux_controlnet;
+            (0..max_flux_controls)
+                .map(|_| flux::FluxControlNetLoad {
+                    repo: "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0".to_string(),
+                    file: "diffusion_pytorch_model.safetensors".to_string(),
+                    cfg: flux_controlnet::Config::shakker_union_pro_v2(),
+                    // Per-task: mutated via `set_controlnet_call_params`
+                    // / `set_controlnet_conditioning` below.
+                    scale: 1.0,
+                    mode: None,
+                    conditioning: None,
+                    start: 0.0,
+                    end: 1.0,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(
             flux::Pipeline::load(flux::LoadRequest {
                 variant: fvar,
@@ -972,9 +1247,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 device: device.clone(),
                 loras: resolved_flux_loras,
                 lora_scale,
-                // v0.12: scenarios don't carry Flux ControlNet
-                // config yet — schema extension is a follow-up.
-                controlnets: Vec::new(),
+                controlnets: flux_controlnets,
+                // v0.13 phase 10: surface --quantize-t5 + GGUF quant
+                // levels at scenario scope (load-time decisions).
+                quantize_t5: s.quantize_t5,
+                flux_quant_level: s.quant_level.clone(),
+                t5_quant_level: s.t5_quant_level.clone(),
             })
             .await?,
         )
@@ -1258,7 +1536,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             Some(s) => Some(s.parse::<Size>().with_context(|| format!("task size {s:?}"))?),
             None => None,
         };
-        let (eff_w, eff_h) = if task_size.is_some() || task.aspect.is_some() {
+        let (mut eff_w, mut eff_h) = if task_size.is_some() || task.aspect.is_some() {
             crate::imaging::sizes::resolve(
                 task_size,
                 task.aspect.as_deref(),
@@ -1266,6 +1544,79 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             )?
         } else {
             (width, height)
+        };
+
+        // v0.13 phase 11: outpaint pre-processing. When `outpaint:` is
+        // set, the canvas + mask are synthesised from `init-image:`
+        // and the resolved per-side padding; the working resolution is
+        // overridden to the expanded canvas size (the user's `size:`
+        // is ignored — outpaint defines its own output dims). The
+        // tempdir holds canvas.png + mask.png alive across the
+        // generate dispatch.
+        let mut eff_init_image: Option<PathBuf> = task.init_image.clone();
+        let mut eff_mask: Option<PathBuf> = task.mask.clone();
+        let _outpaint_tmp: Option<tempfile::TempDir> = if let Some(ospec) = task.outpaint {
+            let init = task
+                .init_image
+                .as_ref()
+                .expect("validated above (outpaint requires init-image)");
+            let (l_req, r_req, t_req, b_req) = ospec.resolved()?;
+            // Snap padding to the model's VAE / patch constraint —
+            // mirrors `cli::outpaint::run`. Flux uses 16, SD uses 8.
+            let snap: u32 = if model.to_lowercase().contains("flux") {
+                16
+            } else {
+                8
+            };
+            let snap_up = |n: u32| if n == 0 { 0 } else { ((n + snap - 1) / snap) * snap };
+            let (l, r, t, b) =
+                (snap_up(l_req), snap_up(r_req), snap_up(t_req), snap_up(b_req));
+            let input_img = image::open(init).with_context(|| {
+                format!(
+                    "task {:?}: opening outpaint init-image {}",
+                    task.name,
+                    init.display()
+                )
+            })?;
+            let (in_w, in_h) = {
+                use image::GenericImageView;
+                input_img.dimensions()
+            };
+            if in_w % snap != 0 || in_h % snap != 0 {
+                bail!(
+                    "task {:?}: outpaint init-image is {in_w}x{in_h}, not divisible by {snap} \
+                     (the model's VAE / patch constraint). Resize the input to a multiple of \
+                     {snap} before outpainting.",
+                    task.name
+                );
+            }
+            let in_rgb = input_img.to_rgb8();
+            let new_w = in_w + l + r;
+            let new_h = in_h + t + b;
+            let canvas =
+                crate::cli::outpaint::build_replicate_canvas(&in_rgb, l, t, new_w, new_h);
+            let mask = crate::cli::outpaint::build_outpaint_mask(in_w, in_h, l, t, new_w, new_h);
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-scenario-outpaint-")
+                .tempdir()?;
+            let cpath = tmp.path().join("canvas.png");
+            let mpath = tmp.path().join("mask.png");
+            canvas.save(&cpath).with_context(|| {
+                format!("task {:?}: writing outpaint canvas", task.name)
+            })?;
+            mask.save(&mpath).with_context(|| {
+                format!("task {:?}: writing outpaint mask", task.name)
+            })?;
+            eff_w = new_w;
+            eff_h = new_h;
+            eff_init_image = Some(cpath);
+            eff_mask = Some(mpath);
+            crate::ui::progress::println(&format!(
+                "  outpaint: {in_w}x{in_h} → {new_w}x{new_h} (left={l} right={r} top={t} bottom={b}, snap={snap})"
+            ));
+            Some(tmp)
+        } else {
+            None
         };
 
         let eff_count = task.count.unwrap_or(count);
@@ -1352,18 +1703,27 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             (combined, persona.face_strength.unwrap_or(0.8))
         };
 
-        // -------- v0.9 per-task ControlNet plumbing --------
-        // Lazy-load the ControlNet for this kind (cached across tasks)
-        // and prepare the conditioning tensor at the task's working
-        // resolution.
-        let task_control_kind: Option<crate::pipelines::controlnet::ControlKind> =
-            match task.control.as_ref() {
-                None => None,
-                Some(spec) => Some(spec.kind.parse().with_context(|| {
+        // -------- v0.9 / v0.13 phase 11 per-task ControlNet plumbing --
+        // Resolve the task's effective control list (either the
+        // singular `control:` or the multi `controls:` Vec). For each
+        // entry, lazy-load the CN weights into the scenario-wide
+        // HashMap and prepare its conditioning tensor at the task's
+        // working resolution. The result is a parallel Vec of (kind,
+        // conditioning_tensor, strength, start, end) tuples consumed
+        // by `make_control_reqs` below.
+        let task_controls = task_effective_controls(task)?;
+        let mut task_cn_resolved: Vec<(
+            crate::pipelines::controlnet::ControlKind,
+            candle_core::Tensor,
+            f32,
+            f32,
+            f32,
+        )> = Vec::with_capacity(task_controls.len());
+        for spec in &task_controls {
+            let kind: crate::pipelines::controlnet::ControlKind =
+                spec.kind.parse().with_context(|| {
                     format!("task {:?}: parsing control.kind {:?}", task.name, spec.kind)
-                })?),
-            };
-        if let Some(kind) = task_control_kind {
+                })?;
             if !controlnets.contains_key(&kind) {
                 let net = crate::pipelines::controlnet::ControlNet::load(
                     device.clone(),
@@ -1380,94 +1740,62 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 })?;
                 controlnets.insert(kind, net);
             }
-        }
-        let task_control_conditioning: Option<candle_core::Tensor> = match (
-            task.control.as_ref(),
-            task_control_kind,
-        ) {
-            (Some(spec), Some(kind)) => {
-                // v0.10: support `image:` (pre-rendered) OR `auto-from:`
-                // (annotate via the matching annotator). Exactly one
-                // must be set.
-                let cond = match (spec.image.as_ref(), spec.auto_from.as_ref()) {
-                    (Some(path), None) => {
-                        crate::pipelines::controlnet::prepare_conditioning(
-                            path,
-                            eff_w,
-                            eff_h,
-                            &device,
-                            cn_dtype,
+            let cond = match (spec.image.as_ref(), spec.auto_from.as_ref()) {
+                (Some(path), None) => {
+                    crate::pipelines::controlnet::prepare_conditioning(
+                        path, eff_w, eff_h, &device, cn_dtype,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "task {:?}: preparing ControlNet conditioning ({:?})",
+                            task.name, kind
                         )
-                        .with_context(|| {
-                            format!("task {:?}: preparing ControlNet conditioning", task.name)
-                        })?
-                    }
-                    (None, Some(path)) => {
-                        crate::pipelines::controlnet_annotator::annotate(
-                            kind,
-                            path,
-                            eff_w,
-                            eff_h,
-                            &device,
-                            cn_dtype,
-                        )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "task {:?}: running --control auto-annotator on {}",
-                                task.name,
-                                path.display()
-                            )
-                        })?
-                    }
-                    (Some(_), Some(_)) => {
-                        anyhow::bail!(
-                            "task {:?}: control:{{...}} block must set either `image:` or `auto-from:`, not both",
-                            task.name
-                        );
-                    }
-                    (None, None) => {
-                        anyhow::bail!(
-                            "task {:?}: control:{{...}} block requires either `image:` or `auto-from:`",
-                            task.name
-                        );
-                    }
-                };
-                Some(cond)
-            }
-            _ => None,
-        };
-        let task_control_strength = task
-            .control
-            .as_ref()
-            .and_then(|c| c.strength)
-            .unwrap_or(1.0);
-        let task_control_start = task
-            .control
-            .as_ref()
-            .and_then(|c| c.start)
-            .unwrap_or(0.0);
-        let task_control_end = task
-            .control
-            .as_ref()
-            .and_then(|c| c.end)
-            .unwrap_or(1.0);
-        // v0.11 multi-ControlNet shape: scenarios still only express a
-        // single conditioner per task at the schema level, but the
-        // pipeline API takes a stack. Wrap into a Vec of length 0 or 1.
-        let make_control_reqs = || -> Vec<crate::pipelines::controlnet::ControlRequest> {
-            match (task_control_kind, task_control_conditioning.as_ref()) {
-                (Some(kind), Some(cond)) => {
-                    vec![crate::pipelines::controlnet::ControlRequest {
-                        net: controlnets.get(&kind).expect("loaded above"),
-                        conditioning: cond.clone(),
-                        strength: task_control_strength,
-                        start: task_control_start,
-                        end: task_control_end,
-                    }]
+                    })?
                 }
-                _ => Vec::new(),
-            }
+                (None, Some(path)) => {
+                    crate::pipelines::controlnet_annotator::annotate(
+                        kind, path, eff_w, eff_h, &device, cn_dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "task {:?}: running auto-annotator on {} ({:?})",
+                            task.name,
+                            path.display(),
+                            kind
+                        )
+                    })?
+                }
+                (Some(_), Some(_)) => bail!(
+                    "task {:?}: control entry must set either `image:` or `auto-from:`, not both",
+                    task.name
+                ),
+                (None, None) => bail!(
+                    "task {:?}: control entry requires either `image:` or `auto-from:`",
+                    task.name
+                ),
+            };
+            task_cn_resolved.push((
+                kind,
+                cond,
+                spec.strength.unwrap_or(1.0),
+                spec.start.unwrap_or(0.0),
+                spec.end.unwrap_or(1.0),
+            ));
+        }
+        let make_control_reqs = || -> Vec<crate::pipelines::controlnet::ControlRequest> {
+            task_cn_resolved
+                .iter()
+                .map(|(kind, cond, strength, start, end)| {
+                    crate::pipelines::controlnet::ControlRequest {
+                        net: controlnets.get(kind).expect("loaded above"),
+                        conditioning: cond.clone(),
+                        strength: *strength,
+                        start: *start,
+                        end: *end,
+                    }
+                })
+                .collect()
         };
 
         match &task_persona_mode {
@@ -1639,7 +1967,43 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             };
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
-                (Some(p), _) => p.generate(&gen_req, &make_control_reqs())?,
+                // v0.13 phase 10: dispatch to the tiled SDXL path when
+                // the scenario sets `tiled:` (matches `plakat generate
+                // --tiled`).
+                // v0.13 phase 11: if the task has `init-image:`, hand
+                // off to img2img::run (SD img2img / inpaint flow).
+                // This currently reloads the SD model per such task —
+                // the t2i Pipeline is built for load-once-generate-many,
+                // but img2img doesn't share that shape yet. Acceptable
+                // for v0.13's batch-rarely-img2img workflows; a follow-
+                // up could share the SdCore between paths.
+                (Some(p), _) if eff_init_image.is_some() => {
+                    if s.tiled.is_some() {
+                        bail!(
+                            "task {:?}: --tiled does not yet compose with SD img2img / \
+                             inpaint in scenarios. Drop `tiled:` or `init-image:`.",
+                            task.name
+                        );
+                    }
+                    let _ = p; // intentionally unused — img2img loads its own
+                    run_sd_img2img_task(
+                        task,
+                        &gen_req,
+                        &task_controls,
+                        &model,
+                        &loras,
+                        lora_scale,
+                        eff_scheduler,
+                        &device,
+                        eff_init_image.as_ref().unwrap(),
+                        eff_mask.as_deref(),
+                    )
+                    .await?;
+                }
+                (Some(p), _) => match s.tiled {
+                    Some(tcfg) => p.generate_tiled(&gen_req, tcfg.into())?,
+                    None => p.generate(&gen_req, &make_control_reqs())?,
+                },
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
                     // Pass `steps` / `guidance` through to Flux only if they
@@ -1651,6 +2015,92 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     } else {
                         Some(eff_guidance)
                     };
+
+                    // v0.13 phase 10/11: per-task Flux ControlNet swap.
+                    // The Pipeline holds up to `max_flux_controls`
+                    // Union Pro v2 instances pre-loaded at scenario
+                    // startup. For each entry in the task's
+                    // `effective_controls()` we mutate one slot's
+                    // call params + conditioning. Unused slots are
+                    // cleared so they contribute no residuals.
+                    // `_cn_tmps` outlives the `generate` call so any
+                    // auto-annotator PNGs stay readable.
+                    let task_flux_controls = task_effective_controls(task)?;
+                    let mut _cn_tmps: Vec<tempfile::TempDir> = Vec::new();
+                    if fp.has_controlnets() {
+                        let slots = fp.controlnet_count();
+                        if task_flux_controls.len() > slots {
+                            bail!(
+                                "task {:?}: {} controls requested but only {} Flux CN slots \
+                                 pre-loaded — scenario startup undercount",
+                                task.name,
+                                task_flux_controls.len(),
+                                slots
+                            );
+                        }
+                        for (slot, cspec) in task_flux_controls.iter().enumerate() {
+                            let parsed: crate::pipelines::controlnet::ControlKind = cspec
+                                .kind
+                                .parse()
+                                .with_context(|| {
+                                    format!(
+                                        "task {:?} control[{slot}] kind '{}' not recognised",
+                                        task.name, cspec.kind
+                                    )
+                                })?;
+                            // Shakker-Labs Union Pro v2 mode index per kind
+                            // — same mapping the CLI dispatch uses.
+                            use crate::pipelines::controlnet::ControlKind as CK;
+                            let mode = Some(match parsed {
+                                CK::Canny | CK::Lineart => 0u32,
+                                CK::SoftEdge => 1u32,
+                                CK::OpenPose => 2u32,
+                                CK::Depth => 3u32,
+                            });
+                            let scale = cspec.strength.unwrap_or(1.0);
+                            let start = cspec.start.unwrap_or(0.0);
+                            let end = cspec.end.unwrap_or(1.0);
+                            fp.set_controlnet_call_params(slot, mode, scale, start, end)?;
+                            let cond_path = match (cspec.image.as_ref(), cspec.auto_from.as_ref()) {
+                                (Some(p), None) => p.clone(),
+                                (None, Some(from_path)) => {
+                                    let anno_dtype = if matches!(device, Device::Cpu) {
+                                        candle_core::DType::F32
+                                    } else {
+                                        candle_core::DType::BF16
+                                    };
+                                    let anno = crate::pipelines::controlnet_annotator::annotate(
+                                        parsed, from_path, eff_w, eff_h, &device, anno_dtype,
+                                    )
+                                    .await?;
+                                    let tmp = tempfile::Builder::new()
+                                        .prefix("plakat-scenario-flux-anno-")
+                                        .tempdir()?;
+                                    let out_path = tmp
+                                        .path()
+                                        .join(format!("cn{slot}-{}.png", parsed.slug()));
+                                    write_flux_anno_png(&anno, &out_path)?;
+                                    _cn_tmps.push(tmp);
+                                    out_path
+                                }
+                                (Some(_), Some(_)) => bail!(
+                                    "task {:?} control[{slot}]: image and auto-from are mutually exclusive",
+                                    task.name
+                                ),
+                                (None, None) => bail!(
+                                    "task {:?} control[{slot}]: requires image or auto-from",
+                                    task.name
+                                ),
+                            };
+                            fp.set_controlnet_conditioning(slot, Some(cond_path))?;
+                        }
+                        // Clear any leftover slots from a previous task
+                        // that had more controls than this one.
+                        for slot in task_flux_controls.len()..slots {
+                            fp.set_controlnet_conditioning(slot, None)?;
+                        }
+                    }
+
                     fp.generate(&flux::GenRequest {
                         prompt: gen_req.prompt.clone(),
                         width: gen_req.width,
@@ -1660,7 +2110,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         guidance: flux_guidance,
                         seed: gen_req.seed,
                         out_dir: gen_req.out_dir.clone(),
+                        // Per-CN conditioning is now set via
+                        // `set_controlnet_conditioning` (per-slot)
+                        // rather than the singular `req.conditioning`
+                        // back-compat shim.
                         conditioning: None,
+                        // v0.13 phase 10/11: surface Flux img2img /
+                        // Fill / outpaint inputs and tiled denoise at
+                        // task scope. `eff_init_image` / `eff_mask`
+                        // are the outpaint-synthesised canvas+mask
+                        // when `outpaint:` is set, else passthrough.
+                        init_image: eff_init_image.clone(),
+                        mask: eff_mask.clone(),
+                        strength: task.strength,
+                        tiled: s.tiled.map(Into::into),
                     })?;
                 }
                 // Dry-run path doesn't reach here.
@@ -2182,4 +2645,101 @@ fn safe_name(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect()
+}
+
+/// v0.13 phase 10: write a `(1, 3, H, W)` `[0, 1]` ControlNet annotator
+/// tensor as an 8-bit RGB PNG. Mirrors `t2i::write_annotator_tensor_as_png`
+/// (kept private there) so scenarios don't take a dependency on
+/// internal pipeline code.
+/// v0.13 phase 11: dispatch one SD img2img / inpaint task in a
+/// scenario by delegating to `img2img::run`. Reloads the SD model
+/// per call (img2img doesn't share the t2i Pipeline's load-once-
+/// generate-many shape today). Caller has already validated that
+/// `task.init_image.is_some()`.
+#[allow(clippy::too_many_arguments)]
+async fn run_sd_img2img_task(
+    task: &TaskDef,
+    gen_req: &GenRequest,
+    task_controls: &[&ControlSpec],
+    model: &str,
+    loras: &[crate::pipelines::lora::LoraSpec],
+    lora_scale: f32,
+    scheduler: SchedulerKind,
+    device: &Device,
+    init_image: &std::path::Path,
+    mask: Option<&std::path::Path>,
+) -> Result<()> {
+    use crate::pipelines::{controlnet, img2img};
+
+    // Default strength matches the CLI flow: 0.6 for img2img, 1.0 for
+    // inpaint. Task can override via `strength:`.
+    let strength = task
+        .strength
+        .unwrap_or_else(|| if mask.is_some() { 1.0 } else { 0.6 });
+    if !(0.0..=1.0).contains(&strength) || !strength.is_finite() {
+        bail!(
+            "task {:?}: strength must be finite in [0, 1], got {strength}",
+            task.name
+        );
+    }
+    // Translate scenario ControlSpec → CLI/library ControlSpec.
+    let mut cli_controls: Vec<controlnet::ControlSpec> = Vec::with_capacity(task_controls.len());
+    for spec in task_controls {
+        let kind: controlnet::ControlKind = spec.kind.parse().with_context(|| {
+            format!(
+                "task {:?}: parsing control kind {:?}",
+                task.name, spec.kind
+            )
+        })?;
+        cli_controls.push(controlnet::ControlSpec {
+            kind,
+            image: spec.image.clone(),
+            from: spec.auto_from.clone(),
+            strength: spec.strength.unwrap_or(1.0),
+            start: spec.start.unwrap_or(0.0),
+            end: spec.end.unwrap_or(1.0),
+        });
+    }
+    let req = img2img::Request {
+        prompt: gen_req.prompt.clone(),
+        negative: gen_req.negative.clone(),
+        model: model.to_string(),
+        device: device.clone(),
+        loras: loras.to_vec(),
+        lora_scale,
+        input: init_image.to_path_buf(),
+        mask: mask.map(|p| p.to_path_buf()),
+        mask_feather: task.mask_feather.unwrap_or(8),
+        mask_invert: task.mask_invert.unwrap_or(false),
+        width: gen_req.width,
+        height: gen_req.height,
+        count: gen_req.count,
+        steps: gen_req.steps,
+        guidance: gen_req.guidance,
+        scheduler,
+        strength,
+        seed: gen_req.seed,
+        out_dir: gen_req.out_dir.clone(),
+        controls: cli_controls,
+    };
+    img2img::run(req).await?;
+    Ok(())
+}
+
+fn write_flux_anno_png(anno: &candle_core::Tensor, out_path: &std::path::Path) -> Result<()> {
+    use candle_core::{DType, IndexOp};
+    let (b, c, h, w) = anno.dims4()?;
+    if b != 1 || c != 3 {
+        anyhow::bail!(
+            "annotator output expected shape (1, 3, H, W), got ({b}, {c}, {h}, {w})"
+        );
+    }
+    let scaled = (anno * 255.0)?
+        .clamp(0f32, 255f32)?
+        .to_dtype(DType::U8)?
+        .i(0)?
+        .permute((1, 2, 0))?;
+    let buf = scaled.flatten_all()?.to_vec1::<u8>()?;
+    crate::imaging::io::save_rgb_u8(&buf, w as u32, h as u32, out_path)?;
+    Ok(())
 }
