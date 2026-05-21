@@ -58,18 +58,7 @@ pub async fn annotate(
         ControlKind::Canny => annotate_canny(src_path, out_w, out_h, device, dtype),
         ControlKind::SoftEdge => annotate_softedge(src_path, out_w, out_h, device, dtype).await,
         ControlKind::Lineart => annotate_lineart(src_path, out_w, out_h, device, dtype).await,
-        // OpenPose ships with weight-loading + pre-rendered support;
-        // the auto-annotator port (Phase D) lands in a follow-up commit.
-        ControlKind::OpenPose => {
-            anyhow::bail!(
-                "{:?} auto-annotation is not yet implemented in plakat. \
-                 Supply a pre-rendered conditioning map via \
-                 `--control-spec '{}:image=PATH'` for now. Auto-annotators \
-                 land in v0.11.x.",
-                kind,
-                kind.slug()
-            )
-        }
+        ControlKind::OpenPose => annotate_openpose(src_path, out_w, out_h, device, dtype).await,
     }
 }
 
@@ -263,6 +252,148 @@ async fn annotate_softedge(
         .map(|&v| v as f32 / 255.0)
         .collect();
     depth_to_rgb_tensor(&final_buf, out_w, out_h, device, dtype)
+}
+
+// =====================================================================
+// OpenPose annotator (v0.11)
+// =====================================================================
+
+const OPENPOSE_REPO: &str = "lllyasviel/Annotators";
+const OPENPOSE_FILE: &str = "body_pose_model.pth";
+
+/// OpenPose runs at 368 px short-edge (the boxsize the original CMU
+/// network was trained at). Stride is 8 — the model outputs heatmaps
+/// and PAFs at 1/8 the input resolution.
+const OPENPOSE_BOXSIZE: u32 = 368;
+const OPENPOSE_STRIDE: usize = 8;
+
+/// Run OpenPose body-pose detection on `src_path` and pack a
+/// coloured-skeleton-on-black RGB image into a `(1, 3, H, W)`
+/// ControlNet conditioning tensor.
+///
+/// First-run cost: downloads
+/// `lllyasviel/Annotators/body_pose_model.pth` (~205 MB) into the HF
+/// cache.
+///
+/// Simplifications relative to lllyasviel's reference implementation
+/// (documented in `pipelines::openpose_post`):
+///   * Single-scale forward (no scale-search pyramid).
+///   * Raw-heatmap NMS (no Gaussian smoothing).
+///   * Greedy bipartite matching for limb assembly (no Hungarian).
+///
+/// Quality is adequate for ControlNet conditioning, but detection
+/// reliability is below lllyasviel's reference, especially on small
+/// or partially-occluded figures.
+async fn annotate_openpose(
+    src_path: &Path,
+    out_w: u32,
+    out_h: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    use candle_nn::VarBuilder;
+
+    let weights = crate::hf::download::get_file(OPENPOSE_REPO, OPENPOSE_FILE)
+        .await
+        .with_context(|| {
+            format!("downloading OpenPose weights ({OPENPOSE_REPO}/{OPENPOSE_FILE})")
+        })?;
+    let vb = VarBuilder::from_pth(&weights, DType::F32, device)?;
+    let model = crate::pipelines::openpose::BodyPoseModel::new(vb)
+        .context("loading OpenPose weights")?;
+
+    let src = image::open(src_path)
+        .with_context(|| format!("opening openpose source {}", src_path.display()))?;
+    let rgb = src.to_rgb8();
+    let (src_w, src_h) = (rgb.width(), rgb.height());
+
+    // Scale so the short edge is OPENPOSE_BOXSIZE (368), then snap
+    // both dims to a multiple of the stride (8) so the heatmap math
+    // is exact.
+    let scale = OPENPOSE_BOXSIZE as f32 / src_w.min(src_h) as f32;
+    let det_w = ((src_w as f32 * scale).round() as u32).max(64);
+    let det_h = ((src_h as f32 * scale).round() as u32).max(64);
+    let det_w = det_w.div_ceil(OPENPOSE_STRIDE as u32) * OPENPOSE_STRIDE as u32;
+    let det_h = det_h.div_ceil(OPENPOSE_STRIDE as u32) * OPENPOSE_STRIDE as u32;
+    let resized_in = image::imageops::resize(
+        &rgb,
+        det_w,
+        det_h,
+        image::imageops::FilterType::Triangle,
+    );
+
+    // (1, 3, H, W) f32 in [-0.5, 0.5] — matches lllyasviel's
+    // `data = data.float() / 256 - 0.5` normalisation.
+    let h = det_h as usize;
+    let w = det_w as usize;
+    let mut buf: Vec<f32> = Vec::with_capacity(3 * h * w);
+    for c in 0..3 {
+        for y in 0..det_h {
+            for x in 0..det_w {
+                let px = resized_in.get_pixel(x, y);
+                buf.push((px[c] as f32) / 256.0 - 0.5);
+            }
+        }
+    }
+    let x = Tensor::from_vec(buf, (1, 3, h, w), device)?;
+
+    let (paf, heatmap) = model.forward(&x).context("OpenPose forward")?;
+    // PAFs and heatmaps come out at 1/stride spatial resolution.
+    let map_h = h / OPENPOSE_STRIDE;
+    let map_w = w / OPENPOSE_STRIDE;
+    let paf_v: Vec<f32> = paf.squeeze(0)?.flatten_all()?.to_vec1()?;
+    let hm_v: Vec<f32> = heatmap.squeeze(0)?.flatten_all()?.to_vec1()?;
+    if paf_v.len() != 38 * map_h * map_w {
+        anyhow::bail!(
+            "OpenPose PAF tensor shape mismatch: expected 38×{map_h}×{map_w} = {}, got {}",
+            38 * map_h * map_w,
+            paf_v.len()
+        );
+    }
+    if hm_v.len() != 19 * map_h * map_w {
+        anyhow::bail!(
+            "OpenPose heatmap tensor shape mismatch: expected 19×{map_h}×{map_w} = {}, got {}",
+            19 * map_h * map_w,
+            hm_v.len()
+        );
+    }
+
+    // Render skeleton at the detect-image resolution, then resize
+    // to the caller's requested (out_w, out_h).
+    let skel = crate::pipelines::openpose_post::render_skeleton(
+        &hm_v,
+        &paf_v,
+        map_h,
+        map_w,
+        det_w,
+        det_h,
+        OPENPOSE_STRIDE,
+    )?;
+    let resized_skel = image::imageops::resize(
+        &skel,
+        out_w,
+        out_h,
+        image::imageops::FilterType::Triangle,
+    );
+
+    // Pack into (1, 3, H, W) f32 in [0, 1]. The RGB skeleton image
+    // already carries colour information per limb; ControlNet-OpenPose
+    // is trained on coloured skeletons, so we keep the channels
+    // separate (unlike depth/canny/etc. that replicate a single
+    // grayscale value).
+    let total = (out_w as usize) * (out_h as usize);
+    let mut chw: Vec<f32> = Vec::with_capacity(3 * total);
+    for c in 0..3 {
+        for y in 0..out_h {
+            for x in 0..out_w {
+                let px = resized_skel.get_pixel(x, y);
+                chw.push(px[c] as f32 / 255.0);
+            }
+        }
+    }
+    let t = Tensor::from_vec(chw, (1, 3, out_h as usize, out_w as usize), device)?
+        .to_dtype(dtype)?;
+    Ok(t)
 }
 
 // =====================================================================
