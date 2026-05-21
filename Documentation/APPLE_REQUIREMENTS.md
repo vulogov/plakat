@@ -15,6 +15,20 @@ and what won't run at all.
 - **Intel Macs.** CPU-only. Each SD 1.5 image takes 5–15 minutes.
   Functional, not enjoyable.
 
+To verify your install's actual throughput before committing to a
+long run, use:
+
+```bash
+plakat doctor --benchmark
+```
+
+That dispatches a 2-second synthetic micro-benchmark (no model
+downloads, no network) on the resolved device and reports
+per-operation latency + a coarse SD 1.5 wall-time proxy. Useful for
+comparing CPU vs Metal on the same machine
+(`plakat doctor --benchmark --device cpu` forces CPU even on
+Metal-capable hosts).
+
 ## What plakat does on Apple
 
 plakat compiles with one of three backends:

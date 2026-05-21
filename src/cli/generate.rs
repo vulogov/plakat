@@ -165,6 +165,45 @@ pub struct GenerateArgs {
     /// model can't be loaded. Default: off.
     #[arg(long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
+
+    /// ControlNet conditioner kind. v0.10 supports: `depth`. Requires
+    /// either `--control-image PATH` (pre-rendered map) or
+    /// `--control-from PATH` (auto-annotate any image). SD 1.5 only;
+    /// Flux is unsupported.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<crate::pipelines::controlnet::ControlKind>,
+
+    /// Path to a pre-rendered conditioning image (a depth map, edge
+    /// image, pose skeleton, etc.). Use this when you already have
+    /// the annotator output. Mutually exclusive with `--control-from`.
+    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
+    pub control_image: Option<PathBuf>,
+
+    /// **v0.10**: path to an ordinary image to auto-annotate. Runs
+    /// the matching annotator for `--control` (e.g. Depth-Anything-V2
+    /// for `depth`) on this image and uses the result as the
+    /// conditioning. Mutually exclusive with `--control-image`.
+    #[arg(long = "control-from", value_name = "PATH")]
+    pub control_from: Option<PathBuf>,
+
+    /// Multiplier applied to ControlNet residuals. 0.0 = ignore the
+    /// conditioner; 1.0 = full diffusers default; >1.0 over-emphasises
+    /// the structure at the cost of prompt adherence. Sweet spot 0.6–1.0.
+    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    pub control_strength: f32,
+
+    /// Fractional timestep at which ControlNet becomes active.
+    /// Default 0.0 (active from the start). Set e.g. 0.3 to skip
+    /// control on the early high-noise steps.
+    #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
+    pub control_start: f32,
+
+    /// Fractional timestep at which ControlNet stops applying.
+    /// Default 1.0 (active through to the end). Set e.g. 0.5 to
+    /// lock composition early then let the prompt drive the late
+    /// texture/atmosphere passes.
+    #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
+    pub control_end: f32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -201,7 +240,13 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     let steps = args.steps;
     let guidance = args.guidance;
 
-    t2i::run(t2i::Request {
+    // Phase 7d: capture the loaded SD backbone so the optional
+    // --artefact-blend pass below can reuse it instead of paying for
+    // a second multi-GB model load. `None` is returned when t2i routed
+    // through the Flux pipeline — Flux has its own backbone and the
+    // blend pass would need to load SD anyway (Flux portraits aren't
+    // supported by the blend path).
+    let shared_core = t2i::run(t2i::Request {
         prompt: args.prompt,
         negative: args.negative,
         model: args.model,
@@ -220,6 +265,12 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         refine_strength: args.refine_strength,
         use_refiner: args.refiner,
         refiner_frac: args.refiner_frac,
+        control_kind: args.control,
+        control_image: args.control_image,
+        control_from: args.control_from,
+        control_strength: args.control_strength,
+        control_start: args.control_start,
+        control_end: args.control_end,
     })
     .await?;
 
@@ -293,6 +344,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             &Default::default(),
             seed,
             smart_depth.as_ref(),
+            shared_core,
         )
         .await?;
     }

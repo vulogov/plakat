@@ -25,7 +25,9 @@
 //! in that direction after the head's ReLU).
 
 use anyhow::{anyhow, Context, Result};
-use candle_core::{DType, Device, IndexOp, Module, Tensor};
+use candle_core::safetensors::MmapedSafetensors;
+use candle_core::{DType, Device, IndexOp, Module, Shape, Tensor};
+use candle_nn::var_builder::SimpleBackend;
 use candle_nn::VarBuilder;
 use candle_transformers::models::depth_anything_v2::{DepthAnythingV2, DepthAnythingV2Config};
 use candle_transformers::models::dinov2;
@@ -89,13 +91,17 @@ impl DepthPipeline {
                  (which only ships .pth). Smart zones cannot run without these.",
             )?;
 
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[&weights_path],
-                dtype,
-                &device,
-            )?
-        };
+        // candle's dinov2::vit_small() construction unconditionally
+        // builds a classifier `head` (Linear, 2*embed_dim → 1000),
+        // because the same struct is used for ImageNet classification.
+        // Depth-Anything-V2 safetensors mirrors strip the head (depth
+        // doesn't use it — we only call get_intermediate_layers).
+        // Wrap the mmap so missing `*.head.weight` / `*.head.bias`
+        // tensors are silently synthesised as zeros, letting
+        // construction succeed without touching any real weight data.
+        let mmap = unsafe { MmapedSafetensors::new(&weights_path)? };
+        let backend: Box<dyn SimpleBackend> = Box::new(StubMissingHead { inner: mmap });
+        let vb = VarBuilder::from_backend(backend, dtype, device.clone());
 
         let dino_cfg = DepthAnythingV2Config::vit_small();
         let backbone = dinov2::vit_small(vb.pp("pretrained"))?;
@@ -225,6 +231,56 @@ fn bilinear_resize(
     Ok(dst)
 }
 
+/// SimpleBackend wrapper that synthesises zero tensors for
+/// DinoVisionTransformer's classifier head (`*.head.weight` /
+/// `*.head.bias`) when the underlying safetensors file lacks them.
+///
+/// Background: candle's `dinov2::vit_small` constructor always
+/// builds a 1000-class Linear head, because the same module is used
+/// for ImageNet classification. Depth-Anything-V2 only invokes
+/// `get_intermediate_layers` — never `forward` — so the head is
+/// dead code. Community Depth-Anything-V2 safetensors mirrors
+/// strip the head to save ~3 MB. With strict tensor lookup this
+/// causes "cannot find tensor pretrained.head.weight" at load
+/// time, even though the weights would never be touched.
+///
+/// This wrapper sits between `MmapedSafetensors` and `VarBuilder`,
+/// intercepting only the head-tensor misses and returning zeros.
+/// All other missing-tensor errors propagate normally.
+struct StubMissingHead {
+    inner: MmapedSafetensors,
+}
+
+impl SimpleBackend for StubMissingHead {
+    fn get(
+        &self,
+        s: Shape,
+        name: &str,
+        h: candle_nn::Init,
+        dtype: DType,
+        dev: &Device,
+    ) -> candle_core::Result<Tensor> {
+        // UFCS disambiguates from the inherent `MmapedSafetensors::get(name)`
+        // (returns a TensorView) — we want the SimpleBackend trait method.
+        match <MmapedSafetensors as SimpleBackend>::get(&self.inner, s.clone(), name, h, dtype, dev) {
+            Ok(t) => Ok(t),
+            Err(_) if is_unused_head_tensor(name) => Tensor::zeros(s, dtype, dev),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn contains_tensor(&self, name: &str) -> bool {
+        if is_unused_head_tensor(name) {
+            return true;
+        }
+        SimpleBackend::contains_tensor(&self.inner, name)
+    }
+}
+
+fn is_unused_head_tensor(name: &str) -> bool {
+    name.ends_with(".head.weight") || name.ends_with(".head.bias")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +290,20 @@ mod tests {
         let src = (vec![1.0, 2.0, 3.0, 4.0], 2, 2);
         let out = bilinear_resize(&src, 2, 2).unwrap();
         assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn is_unused_head_tensor_matches_classifier_paths() {
+        // Paths candle's vit_small() actually requests.
+        assert!(is_unused_head_tensor("pretrained.head.weight"));
+        assert!(is_unused_head_tensor("pretrained.head.bias"));
+        // Nested under arbitrary prefixes (defensive).
+        assert!(is_unused_head_tensor("model.backbone.head.weight"));
+        // Things we must NOT silently synthesise.
+        assert!(!is_unused_head_tensor("pretrained.blocks.0.attn.qkv.weight"));
+        assert!(!is_unused_head_tensor("pretrained.cls_token"));
+        assert!(!is_unused_head_tensor("depth_head.scratch.refinenet1.weight"));
+        assert!(!is_unused_head_tensor("pretrained.head"));
     }
 
     #[test]

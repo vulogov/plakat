@@ -38,6 +38,25 @@ If you're new to plakat, work through these in order:
    [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
    (seven shell scripts + an HJSON scenario, end-to-end).
 
+6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
+   image with a prompt (img2img), or repaint just a masked region
+   (inpaint). Same `plakat img2img` subcommand drives both modes —
+   adding `--mask PATH` flips img2img into inpaint. The hands-on
+   companion lives at
+   [`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)
+   (four shell scripts + a procedurally-drawn sample input + mask).
+
+7. [`CONTROLNET_TUTORIAL.md`](CONTROLNET_TUTORIAL.md) — add
+   structural guidance to any generation. v0.10 ships two
+   conditioners (depth + canny) on both SD 1.5 and SDXL. Three
+   ways to supply the conditioning image: `--control-image PATH`
+   (pre-rendered), `--control-from PATH` (auto-annotate any
+   image), or — on `plakat img2img` — let the source image
+   annotate itself by default. Composes cleanly with generate /
+   portrait / img2img / scenarios. The hands-on companion lives at
+   [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
+   (six shell scripts + a procedurally-drawn sample depth map).
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -77,4 +96,6 @@ manuals in [`Documentation/`](..):
 - Identity strategies and ArcFace setup → [`PERSONA.md`](../PERSONA.md)
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
 - Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
+- Image-to-image and inpaint flags → [`IMG2IMG.md`](../IMG2IMG.md)
+- ControlNet conditioning flags → [`CONTROLNET.md`](../CONTROLNET.md)
 - Apple chip + memory tiers, expected speeds → [`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md)
