@@ -108,6 +108,111 @@ pub fn tile_positions(
     out
 }
 
+/// Tile a VAE decode pass over an arbitrary-size latent. For each
+/// latent tile (`latent_tile_size × latent_tile_size`), `decode_fn`
+/// is called to produce a pixel tile of size
+/// `(latent_tile_size * scale) × (latent_tile_size * scale)`. The
+/// pixel tiles are blended back together with a 2D Hann window —
+/// same blending math the MultiDiffusion noise-prediction tiling
+/// uses, just applied at pixel resolution.
+///
+/// Use this when the whole-canvas decode would OOM (typically 4K+
+/// outputs on tight GPUs).
+///
+/// `latent` is shape `(B, C, H, W)`. The returned tensor has the
+/// same batch + channel dims; spatial dims are scaled by `scale`
+/// (8 for both SDXL VAE and Flux AE).
+pub fn tile_decode_2d<F>(
+    latent: &Tensor,
+    latent_tile_size: usize,
+    latent_stride: usize,
+    scale: usize,
+    mut decode_fn: F,
+) -> Result<Tensor>
+where
+    F: FnMut(&Tensor) -> Result<Tensor>,
+{
+    let (b, c_latent, latent_h, latent_w) = latent.dims4()?;
+    if latent_h <= latent_tile_size && latent_w <= latent_tile_size {
+        // Canvas fits in one tile — just decode whole-cloth.
+        return decode_fn(latent);
+    }
+    let positions = tile_positions(latent_h, latent_w, latent_tile_size, latent_stride);
+    let _ = c_latent;
+
+    let pixel_tile = latent_tile_size * scale;
+    let pixel_h = latent_h * scale;
+    let pixel_w = latent_w * scale;
+
+    let device = latent.device();
+    let dtype = latent.dtype();
+    let pixel_window = hann_window_2d(pixel_tile, device, dtype)?; // (1, 1, t, t)
+
+    // We don't know the output channel count without running one
+    // decode. Allocate accumulators after the first tile.
+    let mut acc: Option<Tensor> = None;
+    let mut weights: Option<Tensor> = None;
+
+    for TilePos { y, x, size } in positions {
+        // Narrow latent tile and decode.
+        let tile_latent = latent.narrow(2, y, size)?.narrow(3, x, size)?;
+        let tile_pixels = decode_fn(&tile_latent)?;
+        let (tile_b, tile_c, tile_ph, tile_pw) = tile_pixels.dims4()?;
+        if tile_ph != pixel_tile || tile_pw != pixel_tile {
+            anyhow::bail!(
+                "tile_decode_2d: decode produced {tile_ph}×{tile_pw} pixels, \
+                 expected {pixel_tile}×{pixel_tile} (scale={scale})"
+            );
+        }
+        if tile_b != b {
+            anyhow::bail!(
+                "tile_decode_2d: decode produced batch {tile_b}, expected {b}"
+            );
+        }
+
+        // Lazy-allocate accumulators on the first tile (now that we
+        // know the output channel count).
+        let acc_t = match acc.take() {
+            Some(t) => t,
+            None => Tensor::zeros((b, tile_c, pixel_h, pixel_w), dtype, device)?,
+        };
+        let weights_t = match weights.take() {
+            Some(t) => t,
+            None => Tensor::zeros((1, 1, pixel_h, pixel_w), dtype, device)?,
+        };
+
+        // Pixel positions for this tile.
+        let py = y * scale;
+        let px = x * scale;
+        let pixel_size = size * scale;
+
+        // Weighted pixel contribution: tile_pixels * window.
+        let weighted = tile_pixels.broadcast_mul(&pixel_window)?;
+        let acc_region = acc_t.narrow(2, py, pixel_size)?.narrow(3, px, pixel_size)?;
+        let acc_updated = (acc_region + &weighted)?;
+        let acc_t = acc_t.slice_assign(
+            &[0..b, 0..tile_c, py..py + pixel_size, px..px + pixel_size],
+            &acc_updated,
+        )?;
+
+        let weights_region = weights_t
+            .narrow(2, py, pixel_size)?
+            .narrow(3, px, pixel_size)?;
+        let weights_updated = weights_region.broadcast_add(&pixel_window)?;
+        let weights_t = weights_t.slice_assign(
+            &[0..1, 0..1, py..py + pixel_size, px..px + pixel_size],
+            &weights_updated,
+        )?;
+
+        acc = Some(acc_t);
+        weights = Some(weights_t);
+    }
+
+    let acc = acc.expect("tile_decode_2d ran at least one tile");
+    let weights = weights.expect("tile_decode_2d weights set on first tile");
+    Ok(acc.broadcast_div(&weights)?)
+}
+
 /// Build a `(1, 1, n, n)` 2D Hann window (raised cosine), with values
 /// in `(0, 1]`. The window is `1.0` at the centre and tapers toward
 /// (small positive) values at the edges. A small epsilon keeps the

@@ -999,9 +999,29 @@ impl Pipeline {
             }
             bar.finish_and_clear();
 
-            // VAE decode + save. At 4K this is the memory-tightest
-            // step; consider tiled VAE in a follow-up if it OOMs.
-            let image = self.core.vae.decode(&(&latents / vae_scale)?)?;
+            // VAE decode + save. At 4K the whole-canvas decode is the
+            // memory-tightest step in the pipeline — use the tiled
+            // VAE decoder (same MultiDiffusion Hann-blend math, just
+            // applied at pixel resolution).
+            let pre_decode = (&latents / vae_scale)?;
+            // Use the same tile_latent size as the denoise tiles so
+            // each VAE-decode tile matches the receptive field the
+            // UNet operated on. Stride too matches.
+            let vae_spin = crate::ui::progress::spinner(&format!(
+                "Tiled VAE decode ({}×{} px)",
+                w, h
+            ));
+            let image = {
+                let vae = &self.core.vae;
+                crate::pipelines::tiled::tile_decode_2d(
+                    &pre_decode,
+                    tile_latent,
+                    stride_latent,
+                    8, // SDXL VAE downsample factor
+                    |tile| Ok(vae.decode(tile)?),
+                )?
+            };
+            vae_spin.finish_with_message("✓ VAE decoded");
             let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
             let image = (image * 255.0)?
                 .to_dtype(DType::U8)?
