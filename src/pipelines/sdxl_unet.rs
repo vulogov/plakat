@@ -44,6 +44,66 @@ use candle_transformers::models::stable_diffusion::{
     },
 };
 
+/// Diffusers-matching defaults for the refiner's micro-conditioning.
+/// `aesthetic_score = 6.0` is the standard "good aesthetics" positive
+/// signal that pre-trained-refiner pipelines use; `2.5` is the matching
+/// negative-CFG anchor that pulls outputs toward higher aesthetics.
+pub const REFINER_AESTHETIC_SCORE_POS: f32 = 6.0;
+pub const REFINER_AESTHETIC_SCORE_NEG: f32 = 2.5;
+
+/// Build base SDXL's `add_time_ids` tensor for **one** branch (cond
+/// **or** uncond). Shape: `(1, 6)`. The order matches diffusers'
+/// `_get_add_time_ids`: `[orig_h, orig_w, crop_top, crop_left,
+/// target_h, target_w]`. Caller duplicates / concatenates across the
+/// batch dim as needed for CFG.
+///
+/// Defaults align with diffusers' high-quality inference:
+///   * `orig_size = target_size` — pretend the training image was the
+///     same size as the target. Lying about original_size as larger
+///     than target can be used to bias toward zoomed-out compositions
+///     (advanced — exposed as a CLI flag in a future phase if asked).
+///   * `crops_coords_top_left = (0, 0)` — pretend no crop was applied
+///     during training. Non-zero values pull the model toward off-
+///     centre compositions.
+pub fn build_add_time_ids_base(
+    target_h: u32,
+    target_w: u32,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<Tensor> {
+    let vals: [f32; 6] = [
+        target_h as f32,
+        target_w as f32,
+        0.0,
+        0.0,
+        target_h as f32,
+        target_w as f32,
+    ];
+    Tensor::from_slice(&vals, (1, 6), device)?.to_dtype(dtype)
+}
+
+/// Build the refiner's `add_time_ids` for one branch. Shape: `(1, 5)`.
+/// Order: `[orig_h, orig_w, crop_top, crop_left, aesthetic_score]`.
+/// `aesthetic_score` should be [`REFINER_AESTHETIC_SCORE_POS`] for the
+/// conditional branch and [`REFINER_AESTHETIC_SCORE_NEG`] for the
+/// unconditional branch so the CFG step pulls toward higher quality.
+pub fn build_add_time_ids_refiner(
+    target_h: u32,
+    target_w: u32,
+    aesthetic_score: f32,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<Tensor> {
+    let vals: [f32; 5] = [
+        target_h as f32,
+        target_w as f32,
+        0.0,
+        0.0,
+        aesthetic_score,
+    ];
+    Tensor::from_slice(&vals, (1, 5), device)?.to_dtype(dtype)
+}
+
 /// Shape of the SDXL `text_time` add_embedding. Same struct used for
 /// base SDXL (`num_time_ids = 6`) and the refiner (`num_time_ids = 5`
 /// — the last slot is `aesthetic_score` instead of `target_size`).
