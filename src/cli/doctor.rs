@@ -32,9 +32,28 @@ pub struct DoctorArgs {
     /// checks local paths, but doesn't hit the network.
     #[arg(long)]
     pub verify: bool,
+
+    /// Run a synthetic micro-benchmark (conv2d / matmul / resize at
+    /// SD-typical tensor shapes) on the resolved device. Reports
+    /// per-op latency and an extrapolated SD 1.5 wall-time estimate.
+    /// No model downloads, no network — completes in ~2 seconds.
+    ///
+    /// Replaces the health-check flow; the two modes are independent.
+    #[arg(long)]
+    pub benchmark: bool,
+
+    /// Override the device for `--benchmark`. Default: auto-detect.
+    /// Mostly useful for forcing CPU benchmarking on a Metal/CUDA-
+    /// capable host to compare backends.
+    #[arg(long, value_name = "SPEC", default_value = "auto")]
+    pub device: String,
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
+    if args.benchmark {
+        return run_benchmark(&args.device);
+    }
+
     println!(
         "\n{}  plakat configuration health check\n",
         style("doctor").yellow().bold()
@@ -241,6 +260,208 @@ fn warn(msg: &str) {
 
 fn note(msg: &str) {
     println!("    {} {}", style("·").dim(), style(msg).dim());
+}
+
+/// `plakat doctor --benchmark`: synthetic micro-benchmark of the
+/// tensor primitives that dominate SD inference. Runs entirely
+/// in-process — no model downloads, no scheduler — so it gives a
+/// "this hardware does X conv2d ops per second" number in a couple
+/// of seconds.
+///
+/// Workloads (chosen to match the shape distribution of SD 1.5
+/// inference at 512²):
+/// * `conv2d`:  (1, 320, 64, 64) → (1, 320, 64, 64), 3×3 — UNet block.
+/// * `conv2d`:  (1, 4,   64, 64) → (1, 320, 64, 64), 3×3 — UNet conv_in.
+/// * `matmul`:  (1, 77, 768) × (768, 768) — text encoder layer.
+/// * `bilinear`: (1, 3, 256, 256) → (1, 3, 512, 512) — VAE-ish upsample.
+fn run_benchmark(device_spec: &str) -> Result<()> {
+    println!(
+        "\n{}  plakat synthetic benchmark\n",
+        style("doctor --benchmark").yellow().bold()
+    );
+
+    // -------- device + dtype --------
+    let device = crate::device::select(device_spec)?;
+    let dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    let backend = match &device {
+        candle_core::Device::Cpu => "CPU (F32)",
+        candle_core::Device::Cuda(_) => "CUDA (F16)",
+        candle_core::Device::Metal(_) => "Metal (F16)",
+    };
+    println!("  {} backend: {}", style("•").dim(), style(backend).bold());
+    println!("  {} requested device spec: {}", style("•").dim(), device_spec);
+    println!();
+
+    // -------- pre-build kernels (warm-up) --------
+    let warmup = crate::ui::progress::spinner("Warming up kernels");
+    // Materialise each shape once so subsequent timed runs reuse the
+    // compiled Metal kernel / CUDA kernel selection.
+    let _ = bench_conv2d(&device, dtype, 320, 320, 64, 64, 1)?;
+    let _ = bench_conv2d(&device, dtype, 4, 320, 64, 64, 1)?;
+    let _ = bench_matmul(&device, dtype, 77, 768, 768, 1)?;
+    let _ = bench_bilinear(&device, dtype, 3, 256, 256, 512, 512, 1)?;
+    warmup.finish_and_clear();
+
+    // -------- timed runs --------
+    section_header("Per-operation latency (median of 10 runs)");
+
+    let conv_block_ms = bench_conv2d(&device, dtype, 320, 320, 64, 64, 10)?;
+    println!(
+        "    {} {:<32} {:>8.2} ms",
+        style("·").dim(),
+        "conv2d  3×3  320→320 @ 64²",
+        conv_block_ms,
+    );
+
+    let conv_in_ms = bench_conv2d(&device, dtype, 4, 320, 64, 64, 10)?;
+    println!(
+        "    {} {:<32} {:>8.2} ms",
+        style("·").dim(),
+        "conv2d  3×3    4→320 @ 64²",
+        conv_in_ms,
+    );
+
+    let matmul_ms = bench_matmul(&device, dtype, 77, 768, 768, 10)?;
+    println!(
+        "    {} {:<32} {:>8.2} ms",
+        style("·").dim(),
+        "matmul (1,77,768)×(768,768)",
+        matmul_ms,
+    );
+
+    let bilinear_ms = bench_bilinear(&device, dtype, 3, 256, 256, 512, 512, 10)?;
+    println!(
+        "    {} {:<32} {:>8.2} ms",
+        style("·").dim(),
+        "bilinear 256² → 512²",
+        bilinear_ms,
+    );
+
+    println!();
+
+    // -------- extrapolated SD 1.5 estimate --------
+    //
+    // Per-step cost is dominated by ~24 conv2d ops at UNet shapes plus
+    // ~4 matmuls in the text encoder. This is a coarse proxy; real
+    // SD 1.5 throughput depends heavily on attention layers we don't
+    // simulate. Treat as "order-of-magnitude check" not gospel.
+    section_header("Coarse SD 1.5 wall-time estimate (28-step generation)");
+    let per_step_proxy_ms = conv_block_ms * 24.0 + matmul_ms * 4.0;
+    let per_image_s = (per_step_proxy_ms * 28.0) / 1000.0;
+    println!(
+        "    {} per-step proxy:    {:>8.2} ms",
+        style("·").dim(),
+        per_step_proxy_ms,
+    );
+    println!(
+        "    {} per-image proxy:   {:>8.2} s   (28 steps × per-step proxy)",
+        style("·").dim(),
+        per_image_s,
+    );
+    println!();
+    note(
+        "Estimate ignores attention layers and CFG doubling; real SD 1.5 wall \
+         times are often 1.5-2× the per-image proxy. Use this number to compare \
+         backends/devices, not to predict an absolute generation time.",
+    );
+
+    println!();
+    Ok(())
+}
+
+/// Measure median latency (ms) of `iters` conv2d invocations on `device`.
+fn bench_conv2d(
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+    in_ch: usize,
+    out_ch: usize,
+    h: usize,
+    w: usize,
+    iters: usize,
+) -> Result<f64> {
+    use candle_core::{Module, Tensor};
+    use candle_nn::{conv2d_no_bias, Conv2dConfig, VarBuilder, VarMap};
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, dtype, device);
+    let cfg = Conv2dConfig {
+        padding: 1,
+        ..Default::default()
+    };
+    let conv = conv2d_no_bias(in_ch, out_ch, 3, cfg, vb.pp("c"))?;
+    let input = Tensor::randn(0f32, 1f32, (1, in_ch, h, w), device)?.to_dtype(dtype)?;
+    median_run(device, iters, || {
+        let _ = conv.forward(&input)?;
+        Ok(())
+    })
+}
+
+/// Measure median latency (ms) of `iters` matmul invocations.
+fn bench_matmul(
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+    seq: usize,
+    d_in: usize,
+    d_out: usize,
+    iters: usize,
+) -> Result<f64> {
+    use candle_core::Tensor;
+
+    let lhs = Tensor::randn(0f32, 1f32, (1, seq, d_in), device)?.to_dtype(dtype)?;
+    let rhs = Tensor::randn(0f32, 1f32, (d_in, d_out), device)?.to_dtype(dtype)?;
+    median_run(device, iters, || {
+        let _ = lhs.broadcast_matmul(&rhs)?;
+        Ok(())
+    })
+}
+
+/// Measure median latency (ms) of `iters` bilinear upsamples.
+fn bench_bilinear(
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+    channels: usize,
+    in_h: usize,
+    in_w: usize,
+    out_h: usize,
+    out_w: usize,
+    iters: usize,
+) -> Result<f64> {
+    use candle_core::Tensor;
+
+    let input =
+        Tensor::randn(0f32, 1f32, (1, channels, in_h, in_w), device)?.to_dtype(dtype)?;
+    median_run(device, iters, || {
+        let _ = input.upsample_nearest2d(out_h, out_w)?;
+        Ok(())
+    })
+}
+
+/// Run `f` `iters` times, returning the median wall-time in ms.
+/// Calls `device.synchronize()` after each run so async-dispatch
+/// backends (Metal, CUDA) actually block until work is done — without
+/// the sync, the median would just measure kernel-launch overhead and
+/// produce sub-millisecond numbers regardless of actual GPU work.
+fn median_run<F: FnMut() -> Result<()>>(
+    device: &candle_core::Device,
+    iters: usize,
+    mut f: F,
+) -> Result<f64> {
+    use std::time::Instant;
+    let mut samples = Vec::with_capacity(iters);
+    // One untimed sync first so the queue is empty.
+    device.synchronize().ok();
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        f()?;
+        device.synchronize().ok();
+        samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(samples[samples.len() / 2])
 }
 
 /// Active HF probe — used by `doctor --verify`. Resolves the file via
