@@ -56,10 +56,10 @@ pub async fn annotate(
     match kind {
         ControlKind::Depth => annotate_depth(src_path, out_w, out_h, device, dtype).await,
         ControlKind::Canny => annotate_canny(src_path, out_w, out_h, device, dtype),
-        // v0.11: variants and ControlNet weights ship now (so users can
-        // already use these with `image=PATH` pre-rendered maps); the
-        // auto-annotator port lands across follow-up commits.
-        ControlKind::OpenPose | ControlKind::Lineart | ControlKind::SoftEdge => {
+        ControlKind::SoftEdge => annotate_softedge(src_path, out_w, out_h, device, dtype).await,
+        // Lineart and OpenPose ship with weight-loading + pre-rendered
+        // support; their auto-annotators land in follow-up commits.
+        ControlKind::Lineart | ControlKind::OpenPose => {
             anyhow::bail!(
                 "{:?} auto-annotation is not yet implemented in plakat. \
                  Supply a pre-rendered conditioning map via \
@@ -148,6 +148,120 @@ fn annotate_canny(
     }
     let depth: Vec<f32> = resized.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
     depth_to_rgb_tensor(&depth, out_w, out_h, device, dtype)
+}
+
+// =====================================================================
+// SoftEdge / HED annotator (v0.11)
+// =====================================================================
+
+const HED_REPO: &str = "lllyasviel/Annotators";
+const HED_FILE: &str = "ControlNetHED.pth";
+
+/// Detection resolution used by lllyasviel's reference annotators —
+/// HED runs at 512 px long-edge regardless of the final ControlNet
+/// input size. We mirror that: edge map is computed at 512, then
+/// triangle-resized to (out_w, out_h).
+const HED_DETECT_RES: u32 = 512;
+
+/// Run the HED softedge model on `src_path` and pack the result into
+/// a `(1, 3, H, W)` ControlNet conditioning tensor.
+///
+/// First-run cost: downloads `lllyasviel/Annotators/ControlNetHED.pth`
+/// (~30 MB) into the HF cache.
+async fn annotate_softedge(
+    src_path: &Path,
+    out_w: u32,
+    out_h: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    use candle_nn::VarBuilder;
+
+    let weights = crate::hf::download::get_file(HED_REPO, HED_FILE)
+        .await
+        .with_context(|| format!("downloading HED weights ({HED_REPO}/{HED_FILE})"))?;
+    // HED runs at F32 — the model is small (~30 MB) and the precision
+    // matters for the sigmoid-averaged edge probability map.
+    let vb = VarBuilder::from_pth(&weights, DType::F32, device)?;
+    let model = crate::pipelines::hed::HedModel::new(vb)
+        .context("loading HED weights")?;
+
+    // Read the source image, resize so the long edge is HED_DETECT_RES,
+    // then snap dims to a multiple of 8 (HED's 4 down-pools want the
+    // input to divide evenly enough to keep the upsample math clean).
+    let src = image::open(src_path)
+        .with_context(|| format!("opening softedge source {}", src_path.display()))?;
+    let rgb = src.to_rgb8();
+    let (src_w, src_h) = (rgb.width(), rgb.height());
+    let scale = HED_DETECT_RES as f32 / src_w.max(src_h) as f32;
+    let det_w = ((src_w as f32 * scale).round() as u32).max(64) & !7;
+    let det_h = ((src_h as f32 * scale).round() as u32).max(64) & !7;
+    let resized_in = image::imageops::resize(
+        &rgb,
+        det_w,
+        det_h,
+        image::imageops::FilterType::Triangle,
+    );
+
+    // (1, 3, H, W) f32 in [0, 255]. HED expects raw pixel values; the
+    // learnt `norm` parameter subtracts the mean.
+    let h = det_h as usize;
+    let w = det_w as usize;
+    let mut buf: Vec<f32> = Vec::with_capacity(3 * h * w);
+    // CHW order: channel R first across all pixels, then G, then B.
+    for c in 0..3 {
+        for y in 0..det_h {
+            for x in 0..det_w {
+                let px = resized_in.get_pixel(x, y);
+                buf.push(px[c] as f32);
+            }
+        }
+    }
+    let x = Tensor::from_vec(buf, (1, 3, h, w), device)?;
+
+    let side_outputs = model
+        .forward(&x)
+        .context("HED forward")?;
+
+    // Upsample each side output to the detect resolution, sum, divide
+    // by count, sigmoid. `interpolate2d` is nearest neighbour in
+    // candle 0.8 — slightly blockier than diffusers' bilinear resize
+    // but adequate for ControlNet conditioning at the resolutions
+    // SD/SDXL operates on.
+    let mut sum = Tensor::zeros((1, 1, h, w), DType::F32, device)?;
+    for e in &side_outputs {
+        let up = e.interpolate2d(h, w)?;
+        sum = (sum + up)?;
+    }
+    let avg = (sum / side_outputs.len() as f64)?;
+    let sigmoid = candle_nn::ops::sigmoid(&avg)?;
+
+    // Pull to host as a single-channel u8 grayscale image, then resize
+    // to the requested (out_w, out_h) and replicate to 3 channels.
+    let edge_vals: Vec<f32> = sigmoid
+        .squeeze(0)?
+        .squeeze(0)?
+        .flatten_all()?
+        .to_vec1()?;
+    let mut gray = image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::new(det_w, det_h);
+    for (i, p) in edge_vals.iter().enumerate() {
+        let y = (i / w) as u32;
+        let xp = (i % w) as u32;
+        let v = (p.clamp(0.0, 1.0) * 255.0).round() as u8;
+        gray.put_pixel(xp, y, image::Luma([v]));
+    }
+    let resized_out = image::imageops::resize(
+        &gray,
+        out_w,
+        out_h,
+        image::imageops::FilterType::Triangle,
+    );
+    let final_buf: Vec<f32> = resized_out
+        .as_raw()
+        .iter()
+        .map(|&v| v as f32 / 255.0)
+        .collect();
+    depth_to_rgb_tensor(&final_buf, out_w, out_h, device, dtype)
 }
 
 /// Pack a row-major `[0, 1]` depth buffer into a `(1, 3, H, W)`
