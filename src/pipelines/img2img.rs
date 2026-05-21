@@ -73,7 +73,13 @@ pub struct Request {
 /// Run the pipeline. Loads the SD model once and iterates over
 /// `count` seeds, writing `plakat-img2img-<seed>.png` (or
 /// `plakat-inpaint-<seed>.png` when a mask is supplied) for each.
-pub async fn run(req: Request) -> Result<()> {
+///
+/// Returns the loaded SD backbone (`Arc<SdCore>`) so a follow-on
+/// `--artefact-blend` pass can reuse the same weights — same pattern
+/// the v0.10 generate / portrait paths use.
+pub async fn run(
+    req: Request,
+) -> Result<std::sync::Arc<crate::pipelines::sd_core::SdCore>> {
     // Pre-load ControlNet + conditioning before the SD pipeline.
     // The owned tuple lives on this frame; the ControlRequest below
     // borrows from it.
@@ -239,7 +245,7 @@ pub async fn run(req: Request) -> Result<()> {
         pipeline.save_image(&new_latents, &out_path)?;
     }
 
-    Ok(())
+    Ok(pipeline.core())
 }
 
 fn output_path(out_dir: &Path, mode_tag: &str, seed: u64) -> PathBuf {
