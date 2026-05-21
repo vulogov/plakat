@@ -29,6 +29,7 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{
     flux::{autoencoder as fae, sampling},
+    quantized_t5 as qt5,
     stable_diffusion::clip as sdclip,
     t5,
 };
@@ -125,6 +126,8 @@ pub struct Request {
     /// loaded CN. Per-CN paths in `controlnets[i].conditioning`
     /// override this for `i >= 1`.
     pub conditioning: Option<PathBuf>,
+    /// v0.13 phase 1b: quantize T5-XXL via city96's GGUF mirror.
+    pub quantize_t5: bool,
 }
 
 // =====================================================================
@@ -145,6 +148,12 @@ pub struct LoadRequest {
     /// ControlNet path; one entry is the v0.12 phase 2b behaviour;
     /// two+ stacks residuals (multi-Flux-ControlNet, v0.12 multi).
     pub controlnets: Vec<FluxControlNetLoad>,
+    /// v0.13 phase 1b: when `true`, load T5-XXL as a quantized GGUF
+    /// (~3 GB instead of ~10 GB BF16). Combined with `--model
+    /// flux-*-gguf` the total Flux footprint drops from ~17 GB to
+    /// ~10 GB — fits 12 GB consumer GPUs. Only meaningful when the
+    /// transformer itself is quantized (loud-fail otherwise).
+    pub quantize_t5: bool,
 }
 
 /// Flux ControlNet weight repo + config. The actual model load happens
@@ -195,7 +204,8 @@ pub struct Pipeline {
     clip_cfg: sdclip::Config,
     // T5EncoderModel::forward needs &mut self (KV cache), so generate is
     // &mut self too. The scenario loop is sequential so this is fine.
-    t5_enc: t5::T5EncoderModel,
+    // v0.13 phase 1b: BF16 or Quantized via the T5Backbone enum.
+    t5_enc: T5Backbone,
     t5_tok: Tokenizer,
     flux_model: FluxBackbone,
     ae_model: fae::AutoEncoder,
@@ -221,6 +231,23 @@ pub struct Pipeline {
 pub enum FluxBackbone {
     Bf16(fmodel::Flux),
     Quantized(qmodel::Flux),
+}
+
+/// v0.13 phase 1b: T5-XXL encoder backbone. The T5 owns a KV cache
+/// internally so both variants take `&mut self` for forward — wrap
+/// in an enum so dispatch in `encode_prompt` is a thin match.
+pub enum T5Backbone {
+    Bf16(t5::T5EncoderModel),
+    Quantized(qt5::T5EncoderModel),
+}
+
+impl T5Backbone {
+    fn forward(&mut self, input_ids: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Bf16(t) => Ok(t.forward(input_ids)?),
+            Self::Quantized(t) => Ok(t.forward(input_ids)?),
+        }
+    }
 }
 
 pub struct LoadedFluxControlNet {
@@ -269,6 +296,16 @@ impl Pipeline {
                 );
             }
         }
+        // Quantized T5 only makes sense when paired with a quantized
+        // transformer — running BF16 transformer + Q4 T5 loses T5
+        // quality without saving meaningful memory.
+        if req.quantize_t5 && !is_gguf {
+            bail!(
+                "--quantize-t5 requires a GGUF Flux model (e.g. --model flux-dev-gguf). \
+                 Pairing quantized T5 with a BF16 transformer wastes T5 quality \
+                 without unlocking the memory budget that needs it."
+            );
+        }
         let donor_repo: String = if is_gguf {
             match req.variant {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
@@ -312,16 +349,39 @@ impl Pipeline {
         ])
         .await?;
 
-        let t5_shard1 = crate::hf::download::get_file(
-            &donor_repo,
-            "text_encoder_2/model-00001-of-00002.safetensors",
-        )
-        .await?;
-        let t5_shard2 = crate::hf::download::get_file(
-            &donor_repo,
-            "text_encoder_2/model-00002-of-00002.safetensors",
-        )
-        .await?;
+        // v0.13 phase 1b: when --quantize-t5 is on, the T5 encoder
+        // comes from city96's GGUF mirror; otherwise the standard
+        // BF16 sharded safetensors from the donor repo. config.json
+        // and the tokenizer come from the donor either way (city96
+        // T5 mirror doesn't ship them).
+        let t5_gguf_path = if req.quantize_t5 {
+            // Default to Q4_K_M — best memory/quality trade for T5.
+            Some(
+                crate::hf::download::get_file(
+                    "city96/t5-v1_1-xxl-encoder-gguf",
+                    "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+                )
+                .await
+                .context("downloading T5-XXL GGUF (Q4_K_M)")?,
+            )
+        } else {
+            None
+        };
+        let (t5_shard1, t5_shard2) = if req.quantize_t5 {
+            (None, None)
+        } else {
+            let s1 = crate::hf::download::get_file(
+                &donor_repo,
+                "text_encoder_2/model-00001-of-00002.safetensors",
+            )
+            .await?;
+            let s2 = crate::hf::download::get_file(
+                &donor_repo,
+                "text_encoder_2/model-00002-of-00002.safetensors",
+            )
+            .await?;
+            (Some(s1), Some(s2))
+        };
         let t5_config_path =
             crate::hf::download::get_file(&donor_repo, "text_encoder_2/config.json").await?;
         let t5_tokenizer = crate::hf::download::get_file(&donor_repo, "tokenizer_2/tokenizer.json")
@@ -342,12 +402,27 @@ impl Pipeline {
             .map_err(|e| anyhow!("CLIP tokenizer: {e}"))?;
 
         let t5_cfg_str = std::fs::read_to_string(&t5_config_path)?;
-        let t5_cfg: t5::Config = serde_json::from_str(&t5_cfg_str)
-            .with_context(|| format!("parse T5 config from {}", t5_config_path.display()))?;
-        let t5_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&t5_shard1, &t5_shard2], dtype, &req.device)?
+        let t5_enc = if let Some(gguf_path) = t5_gguf_path.as_ref() {
+            // qt5 has its own Config type — same JSON schema as t5::Config
+            // but a distinct Rust type. Both parse from the same
+            // config.json the donor ships.
+            let qt5_cfg: qt5::Config = serde_json::from_str(&t5_cfg_str).with_context(
+                || format!("parse T5 (quantized) config from {}", t5_config_path.display()),
+            )?;
+            let qvb = QVarBuilder::from_gguf(gguf_path, &req.device).with_context(
+                || format!("loading T5 GGUF from {}", gguf_path.display()),
+            )?;
+            T5Backbone::Quantized(qt5::T5EncoderModel::load(qvb, &qt5_cfg)?)
+        } else {
+            let t5_cfg: t5::Config = serde_json::from_str(&t5_cfg_str)
+                .with_context(|| format!("parse T5 config from {}", t5_config_path.display()))?;
+            let shard1 = t5_shard1.as_ref().expect("BF16 path keeps shard1");
+            let shard2 = t5_shard2.as_ref().expect("BF16 path keeps shard2");
+            let t5_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[shard1, shard2], dtype, &req.device)?
+            };
+            T5Backbone::Bf16(t5::T5EncoderModel::load(t5_vb, &t5_cfg)?)
         };
-        let t5_enc = t5::T5EncoderModel::load(t5_vb, &t5_cfg)?;
         let t5_tok = Tokenizer::from_file(&t5_tokenizer)
             .map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ text encoders ready");
@@ -792,6 +867,7 @@ pub async fn run(req: Request) -> Result<()> {
         loras: req.loras,
         lora_scale: req.lora_scale,
         controlnets: req.controlnets,
+        quantize_t5: req.quantize_t5,
     })
     .await?;
     p.generate(&GenRequest {
