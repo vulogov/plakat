@@ -20,7 +20,7 @@ use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
     self, clip as sdclip,
-    unet_2d::{BlockConfig, UNet2DConditionModel, UNet2DConditionModelConfig},
+    unet_2d::{BlockConfig, UNet2DConditionModelConfig},
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -339,22 +339,22 @@ impl Pipeline {
             let vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[&weights], dtype, &req.device)?
             };
-            // Refiner UNet has extra weight keys (add_embedding for
-            // pooled CLIP-G + time_ids) that candle 0.8's UNet doesn't
-            // consume. VarBuilder only fetches the keys we ask for, so
-            // those go unloaded silently.
-            let r_unet = UNet2DConditionModel::new(
-                vb,
-                4,
-                4,
-                false,
-                sdxl_refiner_unet_config(),
-            )?;
-            // 8d: refiner stays as the upstream candle UNet (no
-            // add_embedding — same partial-quality refiner behaviour
-            // we've had since v0.7). 8e swaps this to SdUNet::Sdxl
-            // with the refiner's 5-time-id add_embedding.
-            Some(crate::pipelines::sdxl_unet::SdUNet::Sd(r_unet))
+            // v0.11 phase 8e: refiner now loads via SdxlUNet too. Its
+            // add_embedding takes a 5-id time vector (aesthetic_score
+            // replaces target_size compared to the base UNet's 6-id
+            // vector); SdxlAddEmbedConfig::refiner() captures that.
+            // Refiner cross_attn_dim stays 1280 (CLIP-G only) per
+            // sdxl_refiner_unet_config.
+            let r_unet =
+                crate::pipelines::sdxl_unet::SdxlUNet2DConditionModel::new(
+                    vb,
+                    4,
+                    4,
+                    false,
+                    sdxl_refiner_unet_config(),
+                    crate::pipelines::sdxl_unet::SdxlAddEmbedConfig::refiner(),
+                )?;
+            Some(crate::pipelines::sdxl_unet::SdUNet::Sdxl(r_unet))
         } else {
             None
         };
@@ -555,6 +555,37 @@ impl Pipeline {
             None
         };
 
+        // v0.11 phase 8e: refiner add_time_ids (5 floats; last slot is
+        // aesthetic_score). cond uses POS=6.0; uncond uses NEG=2.5 so
+        // CFG pulls toward higher aesthetics — matching diffusers'
+        // default refiner inference setup. Only built when the refiner
+        // is actually going to run.
+        let add_time_ids_refiner = match (&self.refiner_unet, req.refiner_frac, &pooled_text_sdxl) {
+            (Some(_), Some(_), Some(_)) => {
+                let cond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_refiner(
+                    req.height,
+                    req.width,
+                    crate::pipelines::sdxl_unet::REFINER_AESTHETIC_SCORE_POS,
+                    &self.core.device,
+                    self.core.dtype,
+                )?;
+                let stacked = if do_cfg {
+                    let uncond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_refiner(
+                        req.height,
+                        req.width,
+                        crate::pipelines::sdxl_unet::REFINER_AESTHETIC_SCORE_NEG,
+                        &self.core.device,
+                        self.core.dtype,
+                    )?;
+                    Tensor::cat(&[&uncond_ids, &cond_ids], 0)?
+                } else {
+                    cond_ids
+                };
+                Some(stacked)
+            }
+            _ => None,
+        };
+
         let bsz: usize = 1;
         let latent_h = h / 8;
         let latent_w = w / 8;
@@ -612,14 +643,15 @@ impl Pipeline {
                         "refiner",
                     )
                 };
-                // 8d: pooled_text + add_time_ids only flow into the
-                // base SDXL pass. The refiner (still SdUNet::Sd in 8d)
-                // ignores them; 8e wires the refiner up too with its
-                // own 5-time-id pair.
+                // 8e: pooled_text is shared between base and refiner
+                // (same CLIP-G projection). Only the time_ids differ —
+                // base uses 6 floats with target_size; refiner uses 5
+                // floats with aesthetic_score. Both passes hit the
+                // SdxlUNet::Sdxl path so both require pooled + time_ids.
                 let (sdxl_pooled, sdxl_time_ids) = if in_base {
                     (pooled_text_sdxl.as_ref(), add_time_ids_base.as_ref())
                 } else {
-                    (None, None)
+                    (pooled_text_sdxl.as_ref(), add_time_ids_refiner.as_ref())
                 };
                 let progress = step_i as f32 / total_steps as f32;
                 let step_control = control.filter(|cr| cr.active_at(progress));
