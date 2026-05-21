@@ -178,6 +178,25 @@ pub struct Img2ImgArgs {
 }
 
 pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.13 phase 2: Flux.1-Fill-dev is an inpainting-only model.
+    // When the user picks it via `--model flux-fill-dev`, route to
+    // the Flux pipeline instead of the SD img2img path. The Fill
+    // model trains on the mask directly, so we don't need RePaint-
+    // style strength blending — every step respects the mask.
+    //
+    // v0.13 phase 3: standard Flux variants (Dev/Schnell) get the
+    // rectified-flow img2img path. Same VAE→lerp(init, noise,
+    // strength)→truncated-schedule denoise diffusers uses.
+    {
+        let variant = crate::pipelines::t2i::Variant::detect(&args.model);
+        if variant == crate::pipelines::t2i::Variant::FluxFillDev {
+            return run_flux_fill(args, device).await;
+        }
+        if variant.is_flux() {
+            return run_flux_img2img(args, device).await;
+        }
+    }
+
     // Strength: 0.6 for img2img, 1.0 for inpaint when not explicit.
     let strength = args
         .strength
@@ -328,6 +347,220 @@ pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
         .await?;
     }
 
+    Ok(())
+}
+
+/// v0.13 phase 2: dispatch `plakat img2img --model flux-fill-dev` to
+/// the Flux pipeline. Flux.1-Fill-dev is inpaint-only — the model
+/// trains with mask + masked-latent as input channels, so a mask is
+/// required and `--strength` doesn't apply (the schedule is the
+/// standard Flux flow-match, not RePaint-style partial denoise).
+///
+/// Unsupported on this path: `--mask-feather`, `--mask-invert`,
+/// `--negative` (Flux has no negative-prompt mechanism today),
+/// `--scheduler` (Flux uses flow-matching, not the SD schedulers),
+/// `--artefact*`, `--control-spec`. Warn-and-ignore rather than bail.
+async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
+    use crate::pipelines::flux;
+
+    let mask = args.mask.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Flux.1-Fill-dev requires --mask. The model is inpaint-only \
+             — without a mask there's nothing to vary."
+        )
+    })?;
+
+    let (width, height) = match args.size {
+        Some(s) => (s.w, s.h),
+        None => detect_input_size(&args.input)?,
+    };
+    if width % 16 != 0 || height % 16 != 0 {
+        anyhow::bail!(
+            "Flux.1-Fill-dev needs dimensions divisible by 16 (got {width}x{height}); \
+             pass --size to override.",
+        );
+    }
+
+    // Warn-and-ignore for SD-specific flags that don't apply.
+    if !args.negative.is_empty() {
+        crate::ui::progress::println(
+            "  warn: --negative ignored for Flux.1-Fill-dev (Flux has no negative-prompt path).",
+        );
+    }
+    if args.mask_feather != 8 || args.mask_invert {
+        crate::ui::progress::println(
+            "  warn: --mask-feather / --mask-invert ignored for Flux.1-Fill-dev (Fill trains \
+             on the raw binary mask).",
+        );
+    }
+    if args.strength.is_some() {
+        crate::ui::progress::println(
+            "  warn: --strength ignored for Flux.1-Fill-dev (the mask itself controls what \
+             changes; --strength is an SD-only RePaint knob).",
+        );
+    }
+    if !args.control_specs.is_empty() || args.control.is_some() {
+        crate::ui::progress::println(
+            "  warn: --control-spec / --control ignored for Flux.1-Fill-dev in this phase.",
+        );
+    }
+
+    // Resolve LoRAs. Same path the Flux generate flow uses — see
+    // `t2i::run` for the canonical pattern. flux_lora's resolver will
+    // silently skip SD-format LoRAs at merge time.
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(args.loras.len());
+    for spec in &args.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
+    let fvar = flux::Variant::FillDev;
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+
+    // Flux defaults: 28 steps, guidance ~30 for Fill (BFL recommends
+    // much higher CFG than standard Flux). User can still override.
+    let steps_opt = if args.steps == 28 { None } else { Some(args.steps) };
+    let guidance_opt = if (args.guidance - 7.5).abs() < f64::EPSILON {
+        None
+    } else {
+        Some(args.guidance)
+    };
+
+    flux::run(flux::Request {
+        prompt: args.prompt,
+        variant: fvar,
+        repo,
+        width,
+        height,
+        count: args.count,
+        steps: steps_opt,
+        guidance: guidance_opt,
+        seed: args.seed,
+        out_dir: args.out,
+        device,
+        loras: resolved_loras,
+        lora_scale: args.lora_scale,
+        controlnets: Vec::new(),
+        conditioning: None,
+        quantize_t5: false,
+        init_image: Some(args.input),
+        mask: Some(mask),
+        // Fill's mask drives the denoise — `--strength` doesn't apply.
+        strength: None,
+        // Tiled denoise + Fill don't compose in this phase.
+        tiled: None,
+        // Quant level not surfaced on the img2img CLI yet — defaults
+        // (Q4_K_S / Q4_K_M) match v0.13 phase 1.
+        flux_quant_level: None,
+        t5_quant_level: None,
+    })
+    .await?;
+    Ok(())
+}
+
+/// v0.13 phase 3: `plakat img2img --model flux-dev|flux-schnell` →
+/// rectified-flow img2img. Same shape as the SD path: VAE-encode the
+/// init, lerp with fresh noise at `t = strength`, truncate the
+/// schedule so the first step starts at `strength`, then run the
+/// standard Flux denoise. `--mask` is rejected here (use
+/// `--model flux-fill-dev` for masked Flux inpainting).
+///
+/// Unsupported on this path (warn-and-ignore): `--negative`,
+/// `--mask-feather`, `--mask-invert`, `--scheduler`, `--control-spec`,
+/// `--artefact*`. Keeps the entry point usable on the same CLI
+/// surface SD users already know.
+async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+    use crate::pipelines::flux;
+
+    if args.mask.is_some() {
+        anyhow::bail!(
+            "--mask requires --model flux-fill-dev for Flux inpainting (Fill is the only \
+             Flux variant trained with mask conditioning). For standard Flux img2img, \
+             drop --mask."
+        );
+    }
+
+    let (width, height) = match args.size {
+        Some(s) => (s.w, s.h),
+        None => detect_input_size(&args.input)?,
+    };
+    if width % 16 != 0 || height % 16 != 0 {
+        anyhow::bail!(
+            "Flux img2img needs dimensions divisible by 16 (got {width}x{height}); \
+             pass --size to override.",
+        );
+    }
+
+    let strength = args.strength.unwrap_or(0.85);
+    if !(0.0..=1.0).contains(&strength) || !strength.is_finite() {
+        anyhow::bail!("--strength must be finite in [0, 1], got {strength}");
+    }
+
+    if !args.negative.is_empty() {
+        crate::ui::progress::println(
+            "  warn: --negative ignored for Flux (no negative-prompt mechanism).",
+        );
+    }
+    if !args.control_specs.is_empty() || args.control.is_some() {
+        crate::ui::progress::println(
+            "  warn: --control-spec / --control on the Flux img2img CLI path isn't \
+             wired in this phase. The image init still runs; ControlNet is skipped.",
+        );
+    }
+
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(args.loras.len());
+    for spec in &args.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
+    let fvar = match crate::pipelines::t2i::Variant::detect(&args.model) {
+        crate::pipelines::t2i::Variant::FluxDev => flux::Variant::Dev,
+        _ => flux::Variant::Schnell,
+    };
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+
+    let steps_opt = if args.steps == 28 { None } else { Some(args.steps) };
+    let guidance_opt = if (args.guidance - 7.5).abs() < f64::EPSILON {
+        None
+    } else {
+        Some(args.guidance)
+    };
+
+    flux::run(flux::Request {
+        prompt: args.prompt,
+        variant: fvar,
+        repo,
+        width,
+        height,
+        count: args.count,
+        steps: steps_opt,
+        guidance: guidance_opt,
+        seed: args.seed,
+        out_dir: args.out,
+        device,
+        loras: resolved_loras,
+        lora_scale: args.lora_scale,
+        controlnets: Vec::new(),
+        conditioning: None,
+        quantize_t5: false,
+        init_image: Some(args.input),
+        mask: None,
+        strength: Some(strength),
+        // Tiled img2img on Flux ships via `plakat generate --tiled` later.
+        tiled: None,
+        flux_quant_level: None,
+        t5_quant_level: None,
+    })
+    .await?;
     Ok(())
 }
 

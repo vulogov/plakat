@@ -111,7 +111,7 @@ impl BaseModel {
         match v {
             Variant::Sd15 | Variant::Sd21 => Self::Sd15,
             Variant::Sdxl | Variant::SdxlTurbo => Self::Sdxl,
-            Variant::FluxSchnell | Variant::FluxDev => Self::Flux,
+            Variant::FluxSchnell | Variant::FluxDev | Variant::FluxFillDev => Self::Flux,
         }
     }
 

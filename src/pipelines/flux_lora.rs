@@ -1,19 +1,25 @@
-//! Flux LoRA merge — v0.12 phase 1 of the Flux modernization.
+//! Flux LoRA merge — v0.12 phase 1 + v0.13 phase 1d.
 //!
-//! Flux LoRAs ship in two main conventions on HuggingFace today:
+//! Flux LoRAs ship in two main conventions on HuggingFace today, and
+//! this module handles both:
 //!
-//! 1. **Diffusers PEFT format** (this module's scope). Keys look like
-//!    `transformer.transformer_blocks.0.attn.to_q.lora_A.weight` and the
-//!    matching `.lora_B.weight`. Sometimes the `transformer.` prefix is
-//!    elided. The base diffusers naming addresses the model's
-//!    *logical* Q/K/V/MLP/etc. layers separately.
+//! 1. **Diffusers PEFT format**. Keys look like
+//!    `transformer.transformer_blocks.0.attn.to_q.lora_A.weight` and
+//!    the matching `.lora_B.weight`. Sometimes the `transformer.`
+//!    prefix is elided. Targets each *logical* Q/K/V/MLP projection
+//!    separately — needs row-slice math against Flux's fused Linears.
 //!
-//! 2. **AI-Toolkit / kohya-style** (out of scope for this commit).
-//!    Keys like `lora_unet_double_blocks_0_img_attn_qkv.lora_down.weight`
-//!    — already in candle-Flux's flattened underscore-naming, so a
-//!    follow-up can add this format with much smaller plumbing.
+//! 2. **AI-Toolkit / kohya-style** (v0.13 addition). Keys like
+//!    `lora_unet_double_blocks_0_img_attn_qkv.lora_down.weight` —
+//!    already in candle-Flux's flattened underscore-naming and trained
+//!    against the *fused* tensor directly. No slice math needed; the
+//!    delta is the full base shape.
 //!
-//! ## The fused-Linear problem
+//! Both formats share the grouping code below (a/b/alpha lookups
+//! handle both `lora_A`/`lora_B` and `lora_down`/`lora_up`), so the
+//! only per-format work is the `resolve_target` dispatch.
+//!
+//! ## The fused-Linear problem (PEFT only)
 //!
 //! Flux's safetensors fuse multiple logical projections into single
 //! Linear layers:
@@ -33,7 +39,8 @@
 //!   base[row_start..row_end, :] += delta
 //! ```
 //!
-//! See [`apply_delta`] for the partial-row implementation.
+//! See [`apply_delta`] for the partial-row implementation. AI-Toolkit
+//! LoRAs targeting fused tensors skip the slice math (`RowSlice::Full`).
 
 use anyhow::{anyhow, Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -169,17 +176,33 @@ fn group_peft_keys(
     groups
 }
 
-/// Resolve a PEFT logical name (e.g. `transformer_blocks.0.attn.to_q`)
-/// to the candle-Flux base tensor key + the row slice the LoRA delta
-/// applies to. Returns `None` for unrecognised paths (silently skipped).
+/// Resolve a LoRA logical name to the candle-Flux base tensor key +
+/// the row slice the LoRA delta applies to. Tries PEFT/diffusers
+/// naming first (dot-separated, fused Linears addressed by logical
+/// sub-projection), then falls back to AI-Toolkit / kohya naming
+/// (underscore-flattened, fused Linears addressed directly).
+/// Returns `None` for unrecognised paths (silently skipped).
 fn resolve_target(logical: &str) -> Option<LoraTarget> {
-    // ---------- DoubleStream blocks ----------
+    // ---------- PEFT DoubleStream blocks ----------
     if let Some(rest) = logical.strip_prefix("transformer_blocks.") {
         return resolve_double_block(rest);
     }
-    // ---------- SingleStream blocks ----------
+    // ---------- PEFT SingleStream blocks ----------
     if let Some(rest) = logical.strip_prefix("single_transformer_blocks.") {
         return resolve_single_block(rest);
+    }
+    // ---------- AI-Toolkit / kohya ----------
+    // `lora_unet_` prefix marks the underscore-flattened naming.
+    // Some exports drop the prefix and emit `double_blocks_…` /
+    // `single_blocks_…` directly, so we also try the bare form.
+    let aitoolkit_rest = logical
+        .strip_prefix("lora_unet_")
+        .unwrap_or(logical);
+    if let Some(rest) = aitoolkit_rest.strip_prefix("double_blocks_") {
+        return resolve_aitoolkit_double(rest);
+    }
+    if let Some(rest) = aitoolkit_rest.strip_prefix("single_blocks_") {
+        return resolve_aitoolkit_single(rest);
     }
     None
 }
@@ -311,6 +334,55 @@ fn resolve_single_block(rest: &str) -> Option<LoraTarget> {
     }
 }
 
+/// AI-Toolkit DoubleStream resolver. Input `rest` is the underscore-
+/// flattened sub-path after `[lora_unet_]double_blocks_`, e.g.
+/// `0_img_attn_qkv` or `12_txt_mod_lin`. AI-Toolkit trains against the
+/// fused Linear, so the delta covers the full base tensor (no slice).
+fn resolve_aitoolkit_double(rest: &str) -> Option<LoraTarget> {
+    let (idx_str, tail) = rest.split_once('_')?;
+    let i: usize = idx_str.parse().ok()?;
+    let block_key = |suffix: &str| format!("double_blocks.{i}.{suffix}.weight");
+    let target = |suffix: &str| Some(LoraTarget {
+        base_key: block_key(suffix),
+        slice: RowSlice::Full,
+    });
+    match tail {
+        // Image stream.
+        "img_attn_qkv" => target("img_attn.qkv"),
+        "img_attn_proj" => target("img_attn.proj"),
+        "img_mlp_0" => target("img_mlp.0"),
+        "img_mlp_2" => target("img_mlp.2"),
+        "img_mod_lin" => target("img_mod.lin"),
+        // Text stream.
+        "txt_attn_qkv" => target("txt_attn.qkv"),
+        "txt_attn_proj" => target("txt_attn.proj"),
+        "txt_mlp_0" => target("txt_mlp.0"),
+        "txt_mlp_2" => target("txt_mlp.2"),
+        "txt_mod_lin" => target("txt_mod.lin"),
+        _ => None,
+    }
+}
+
+/// AI-Toolkit SingleStream resolver. Input `rest` is the underscore-
+/// flattened sub-path after `[lora_unet_]single_blocks_`. `linear1`
+/// fuses Q+K+V+MLP_up, so AI-Toolkit trains a 4-way merged delta that
+/// the merger writes as a single full-shape update.
+fn resolve_aitoolkit_single(rest: &str) -> Option<LoraTarget> {
+    let (idx_str, tail) = rest.split_once('_')?;
+    let i: usize = idx_str.parse().ok()?;
+    let block_key = |suffix: &str| format!("single_blocks.{i}.{suffix}.weight");
+    let target = |suffix: &str| Some(LoraTarget {
+        base_key: block_key(suffix),
+        slice: RowSlice::Full,
+    });
+    match tail {
+        "linear1" => target("linear1"),
+        "linear2" => target("linear2"),
+        "modulation_lin" => target("modulation.lin"),
+        _ => None,
+    }
+}
+
 /// Compute the LoRA delta `B @ A * (alpha / rank)`.
 fn compute_delta(
     group: &LoraGroup,
@@ -397,6 +469,83 @@ fn apply_delta(base: &Tensor, delta: &Tensor, slice: RowSlice) -> Result<Tensor>
         }
     };
     Ok(updated.to_dtype(base_dtype)?)
+}
+
+/// v0.13 phase 1e: precompute LoRA-merged dense overrides for a
+/// quantized (GGUF) Flux model.
+///
+/// Returns a map keyed by **full base tensor path including
+/// `.weight`** (e.g. `"double_blocks.0.img_attn.qkv.weight"`) mapping
+/// to the BF16 merged dense tensor. Only Linears whose path appears in
+/// this map need to be loaded as dense; everything else stays 4-bit.
+///
+/// The function dequantizes each targeted base tensor exactly once
+/// (subsequent LoRAs that hit the same tensor accumulate into the
+/// already-dense version), applies `apply_delta` with the resolved row
+/// slice (full or partial), and casts to BF16 — the runtime dtype.
+/// Multiple LoRAs touching the same target compose additively, exactly
+/// like the BF16 safetensors merge path.
+pub fn precompute_quantized_overrides(
+    qvb: &candle_transformers::quantized_var_builder::VarBuilder,
+    loras: &[ResolvedLora],
+    default_scale: f32,
+    device: &Device,
+) -> Result<(HashMap<String, Tensor>, usize, usize)> {
+    let mut overrides: HashMap<String, Tensor> = HashMap::new();
+    let mut modified = 0usize;
+    let mut total_groups = 0usize;
+
+    for lora in loras {
+        let lora_tensors: HashMap<String, Tensor> =
+            candle_core::safetensors::load(&lora.path, device)
+                .with_context(|| format!("loading Flux LoRA {}", lora.display))?;
+        let effective_scale = lora.scale * default_scale;
+        let groups = group_peft_keys(&lora_tensors);
+        total_groups += groups.len();
+        for (logical, group) in groups {
+            if group.a.is_none() || group.b.is_none() {
+                continue;
+            }
+            let target = match resolve_target(&logical) {
+                Some(t) => t,
+                None => continue,
+            };
+            // Dequantize base once per target — subsequent LoRAs reuse
+            // the already-dense version from the map.
+            let base_dense = if let Some(existing) = overrides.get(&target.base_key) {
+                existing.clone()
+            } else {
+                let qt = qvb.get_no_shape(&target.base_key).with_context(|| {
+                    format!(
+                        "Flux LoRA target {} not found in GGUF — skipping",
+                        target.base_key
+                    )
+                })?;
+                qt.dequantize(device)?
+            };
+            let delta = compute_delta(&group, effective_scale, device)
+                .with_context(|| format!("computing Flux LoRA delta for {logical}"))?;
+            let updated = apply_delta(&base_dense, &delta, target.slice).with_context(
+                || format!("applying Flux LoRA delta for {logical} into {}", target.base_key),
+            )?;
+            // Cast to BF16 — runtime dtype on GPU. F32 storage would
+            // double memory per merged Linear with no quality win, and
+            // candle's `QMatMul::Tensor` forward is dtype-agnostic.
+            let bf16 = updated.to_dtype(DType::BF16)?;
+            overrides.insert(target.base_key.clone(), bf16);
+            modified += 1;
+        }
+        if total_groups > 0 {
+            tracing::info!(
+                target: "plakat",
+                "Flux LoRA (GGUF) {} → {modified}/{total_groups} targets merged (scale {:.2})",
+                lora.display,
+                effective_scale
+            );
+        }
+    }
+
+    Ok((overrides, modified, total_groups))
 }
 
 fn apply_one_flux_lora(
@@ -523,6 +672,82 @@ mod tests {
         let g = groups
             .get("transformer_blocks.0.attn.to_q")
             .expect("transformer. prefix should be stripped");
+        assert!(g.a.is_some() && g.b.is_some());
+    }
+
+    // ---------- AI-Toolkit / kohya format (v0.13 phase 1d) ----------
+
+    #[test]
+    fn resolves_aitoolkit_double_qkv_full() {
+        // AI-Toolkit trains a single (3*hidden, hidden) delta against
+        // the fused QKV Linear — so the slice is Full, not a partial
+        // row slab like PEFT.
+        let t = resolve_target("lora_unet_double_blocks_0_img_attn_qkv").unwrap();
+        assert_eq!(t.base_key, "double_blocks.0.img_attn.qkv.weight");
+        assert!(matches!(t.slice, RowSlice::Full));
+    }
+
+    #[test]
+    fn resolves_aitoolkit_double_text_stream() {
+        let t = resolve_target("lora_unet_double_blocks_7_txt_mlp_0").unwrap();
+        assert_eq!(t.base_key, "double_blocks.7.txt_mlp.0.weight");
+        assert!(matches!(t.slice, RowSlice::Full));
+    }
+
+    #[test]
+    fn resolves_aitoolkit_single_linear1_full() {
+        // single-block linear1 is the 4-way fused [Q;K;V;MLP_up].
+        // AI-Toolkit deltas hit the whole fused matrix.
+        let t = resolve_target("lora_unet_single_blocks_3_linear1").unwrap();
+        assert_eq!(t.base_key, "single_blocks.3.linear1.weight");
+        assert!(matches!(t.slice, RowSlice::Full));
+    }
+
+    #[test]
+    fn resolves_aitoolkit_single_modulation() {
+        let t = resolve_target("lora_unet_single_blocks_37_modulation_lin").unwrap();
+        assert_eq!(t.base_key, "single_blocks.37.modulation.lin.weight");
+        assert!(matches!(t.slice, RowSlice::Full));
+    }
+
+    #[test]
+    fn resolves_aitoolkit_without_lora_unet_prefix() {
+        // Some exports drop the `lora_unet_` prefix and write the
+        // sub-path directly. Should still resolve.
+        let t = resolve_target("double_blocks_5_img_attn_proj").unwrap();
+        assert_eq!(t.base_key, "double_blocks.5.img_attn.proj.weight");
+        assert!(matches!(t.slice, RowSlice::Full));
+    }
+
+    #[test]
+    fn aitoolkit_unknown_subpaths_return_none() {
+        // AI-Toolkit naming with a sub-path candle-Flux doesn't have.
+        assert!(resolve_target("lora_unet_double_blocks_0_img_attn_qkv_extra").is_none());
+        assert!(resolve_target("lora_unet_single_blocks_0_unknown").is_none());
+        // Missing block index.
+        assert!(resolve_target("lora_unet_double_blocks_img_attn_qkv").is_none());
+    }
+
+    #[test]
+    fn aitoolkit_grouping_handles_kohya_suffixes() {
+        // Real AI-Toolkit files use `lora_down`/`lora_up` (kohya
+        // convention) — these are already accepted by group_peft_keys
+        // since it falls back when `lora_A`/`lora_B` don't match.
+        let mut t = HashMap::new();
+        let a = Tensor::zeros((4, 3072), DType::F32, &Device::Cpu).unwrap();
+        let b = Tensor::zeros((9216, 4), DType::F32, &Device::Cpu).unwrap();
+        t.insert(
+            "lora_unet_double_blocks_0_img_attn_qkv.lora_down.weight".to_string(),
+            a,
+        );
+        t.insert(
+            "lora_unet_double_blocks_0_img_attn_qkv.lora_up.weight".to_string(),
+            b,
+        );
+        let groups = group_peft_keys(&t);
+        let g = groups
+            .get("lora_unet_double_blocks_0_img_attn_qkv")
+            .expect("AI-Toolkit logical name should be the full underscore path");
         assert!(g.a.is_some() && g.b.is_some());
     }
 }
