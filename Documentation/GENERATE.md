@@ -759,10 +759,18 @@ reference: [`IMG2IMG.md`](IMG2IMG.md). Runnable walkthrough:
 
 ### ControlNet (layout conditioning)
 
-For structural guidance from a depth map (or, in future releases,
-canny/scribble/pose), every SD-family subcommand accepts
-`--control <KIND> --control-image PATH [--control-strength F]`.
-v0.9 ships `depth` conditioning. Full reference:
+For structural guidance from a depth map or canny edge map,
+every SD-family subcommand accepts:
+
+```bash
+--control <depth|canny>
+--control-image PATH    # pre-rendered conditioning
+--control-from  PATH    # OR auto-annotate any image
+--control-strength F    # default 1.0
+```
+
+Works on both SD 1.5 and SDXL — the architecture is auto-detected
+from `--model`. Full reference:
 [`CONTROLNET.md`](CONTROLNET.md). Runnable walkthrough:
 [`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
 

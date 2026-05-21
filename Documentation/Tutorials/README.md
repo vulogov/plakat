@@ -47,13 +47,15 @@ If you're new to plakat, work through these in order:
    (four shell scripts + a procedurally-drawn sample input + mask).
 
 7. [`CONTROLNET_TUTORIAL.md`](CONTROLNET_TUTORIAL.md) — add
-   structural guidance to any generation with `--control depth
-   --control-image PATH`. The conditioning image shapes the
-   composition (where the subject sits, what the depth is) while
-   the prompt drives content. Composes cleanly with generate /
+   structural guidance to any generation. v0.10 ships two
+   conditioners (depth + canny) on both SD 1.5 and SDXL. Three
+   ways to supply the conditioning image: `--control-image PATH`
+   (pre-rendered), `--control-from PATH` (auto-annotate any
+   image), or — on `plakat img2img` — let the source image
+   annotate itself by default. Composes cleanly with generate /
    portrait / img2img / scenarios. The hands-on companion lives at
    [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
-   (three shell scripts + a procedurally-drawn sample depth map).
+   (six shell scripts + a procedurally-drawn sample depth map).
 
 ## Specialized portrait techniques
 

@@ -47,9 +47,14 @@ plakat img2img photo.jpg --prompt "watercolor painting of the same scene"
 plakat img2img photo.jpg --mask sky.png \
     --prompt "dramatic stormy sky, lightning"
 
-# ControlNet: layout-guided generation from a depth map
+# ControlNet: layout-guided generation
+# Auto-annotates any photo into a depth map (no manual prep):
 plakat generate "a fox in tall grass" \
-    --control depth --control-image scene_depth.png
+    --control depth --control-from reference_photo.jpg
+
+# Or canny edges + SDXL:
+plakat generate "renaissance villa, oil painting" --model sdxl \
+    --control canny --control-from architecture.jpg
 
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
@@ -123,8 +128,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   - [`IMG2IMG.md`](Documentation/IMG2IMG.md) — image-to-image and
     inpaint via `plakat img2img`.
   - [`CONTROLNET.md`](Documentation/CONTROLNET.md) — ControlNet
-    conditioning (`--control depth --control-image PATH`) for
-    layout-guided generation.
+    conditioning (depth + canny, SD 1.5 + SDXL) for layout-guided
+    generation, with auto-annotation via `--control-from PATH`.
 
 ## Releases
 
