@@ -269,7 +269,13 @@ impl Pipeline {
     ///              CLIP-G penultimate)` along the channel dim.
     fn encode_text(&self, text: &str) -> Result<Tensor> {
         match self.core.variant {
-            Variant::Sd15 => self.encode_text_sd15(text),
+            // SD 1.5 and SD 2.1 each have a single text encoder
+            // (OpenAI CLIP-L for SD 1.5, OpenCLIP-H for SD 2.1).
+            // Both flow through `encode_text_sd15` — the dispatch
+            // only cares about "single encoder" vs "dual encoder",
+            // and the inner method picks up the right config / dtype
+            // from self.core.
+            Variant::Sd15 | Variant::Sd21 => self.encode_text_sd15(text),
             Variant::Sdxl => self.encode_text_sdxl(text),
         }
     }
