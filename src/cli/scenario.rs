@@ -1690,10 +1690,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     &s.zones,
                     Some(task_seed),
                     smart_ref,
-                    // Phase 7d: scenarios load their own SD pipeline up
-                    // front; sharing the core through to blend here is
-                    // 7e's scope.
-                    None,
+                    // Phase 7e: reuse the scenario's t2i pipeline core
+                    // when present. The blend's BlendConfig.model is
+                    // already the scenario's main `model` (same one the
+                    // t2i pipeline was loaded with), so the core matches.
+                    // For dry-run or Flux scenarios the t2i pipeline is
+                    // None — fall back to the blend's own load. (Flux
+                    // blends aren't supported anyway; this just keeps
+                    // the dry-run path inert.)
+                    pipeline.as_ref().map(|p| p.core()),
                 )
                 .await
                 .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
