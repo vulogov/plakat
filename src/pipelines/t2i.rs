@@ -199,7 +199,13 @@ pub struct Pipeline {
     /// Present only when `LoadRequest::use_refiner == true` and the variant
     /// is SDXL/SDXL-Turbo. Not shared via SdCore — the refiner is
     /// t2i-specific.
-    refiner_unet: Option<UNet2DConditionModel>,
+    ///
+    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. Phase 8d
+    /// holds it as `SdUNet::Sd` (no add_embedding — quality gap
+    /// preserved from pre-v0.11 behaviour). Phase 8e switches this to
+    /// `SdUNet::Sdxl` with the refiner's 5-time-id add_embedding so the
+    /// refiner pass also gets `text_time` micro-conditioning.
+    refiner_unet: Option<crate::pipelines::sdxl_unet::SdUNet>,
 }
 
 const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
@@ -344,7 +350,11 @@ impl Pipeline {
                 false,
                 sdxl_refiner_unet_config(),
             )?;
-            Some(r_unet)
+            // 8d: refiner stays as the upstream candle UNet (no
+            // add_embedding — same partial-quality refiner behaviour
+            // we've had since v0.7). 8e swaps this to SdUNet::Sdxl
+            // with the refiner's 5-time-id add_embedding.
+            Some(crate::pipelines::sdxl_unet::SdUNet::Sd(r_unet))
         } else {
             None
         };
@@ -367,11 +377,23 @@ impl Pipeline {
 
     /// Encode `prompt` (and optionally `negative` for CFG) into the
     /// `encoder_hidden_states` tensor the UNet expects.
-    fn encode_prompt(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    /// Returns `(hidden_states, pooled_text_for_sdxl)`:
+    ///   * For SD 1.5 / SD 2.1: pooled is `None` (no add_embedding).
+    ///   * For SDXL: pooled is `Some((B, 1280))` feeding the UNet's
+    ///     `add_embedding`. Caller pairs it with an `add_time_ids`
+    ///     tensor built in `generate`.
+    fn encode_prompt(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
         if self.variant.is_xl() {
-            self.encode_xl(prompt, negative, do_cfg)
+            let (hidden, pooled) = self.encode_xl(prompt, negative, do_cfg)?;
+            Ok((hidden, Some(pooled)))
         } else {
-            self.encode_single(prompt, negative, do_cfg)
+            let hidden = self.encode_single(prompt, negative, do_cfg)?;
+            Ok((hidden, None))
         }
     }
 
@@ -415,7 +437,22 @@ impl Pipeline {
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
-    fn encode_xl(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    /// SDXL base encoding. Returns:
+    ///   * `hidden_states` — `(B, 77, 2048)`. CFG batches uncond then
+    ///     cond along the first dim (matches the existing convention).
+    ///   * `pooled_text`  — `(B, 1280)` from the projected EOT row of
+    ///     CLIP-G's final layer norm output. Feeds the UNet's
+    ///     `add_embedding`. Same uncond-then-cond batching.
+    ///
+    /// `pooled_text` is the v0.11 phase-8d addition. Pre-8d the base
+    /// SDXL path threw this away (and the UNet ran with `add_embedding`
+    /// silently inactive). Caller now passes it through `denoise_step`.
+    fn encode_xl(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+    ) -> Result<(Tensor, Tensor)> {
         let cfg_g = self
             .core
             .cfg
@@ -433,7 +470,7 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
-        let cond = embed_xl(
+        let (cond_hidden, cond_pooled) = embed_xl(
             prompt,
             &self.core.tokenizer_l,
             tok_g,
@@ -444,9 +481,12 @@ impl Pipeline {
             &self.core.device,
         )?;
         if !do_cfg {
-            return Ok(cond.to_dtype(self.core.dtype)?);
+            return Ok((
+                cond_hidden.to_dtype(self.core.dtype)?,
+                cond_pooled.to_dtype(self.core.dtype)?,
+            ));
         }
-        let uncond = embed_xl(
+        let (uncond_hidden, uncond_pooled) = embed_xl(
             negative,
             &self.core.tokenizer_l,
             tok_g,
@@ -456,7 +496,9 @@ impl Pipeline {
             enc_g,
             &self.core.device,
         )?;
-        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
+        let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
+        let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
+        Ok((hidden, pooled))
     }
 
     /// Generate `req.count` images for one prompt. Reuses the loaded
@@ -478,7 +520,8 @@ impl Pipeline {
 
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
-        let text_embeddings = self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+        let (text_embeddings, pooled_text_sdxl) =
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
 
         // If the refiner is loaded AND the caller asked for it, prepare the
         // CLIP-G-only embeddings the refiner needs (different cross_attn_dim
@@ -486,6 +529,30 @@ impl Pipeline {
         let refiner_embeddings = match (&self.refiner_unet, req.refiner_frac) {
             (Some(_), Some(_)) => Some(self.encode_g_only(&req.prompt, &req.negative, do_cfg)?),
             _ => None,
+        };
+
+        // v0.11 phase 8d: build the SDXL base add_time_ids tensor once
+        // per generate() call (it's a function of target size only —
+        // identical across denoise steps and across cond/uncond CFG
+        // branches). For non-SDXL variants this stays None and the
+        // UNet enum ignores the parameter.
+        let add_time_ids_base = if self.variant.is_xl() && pooled_text_sdxl.is_some() {
+            let cond_ids = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                req.height,
+                req.width,
+                &self.core.device,
+                self.core.dtype,
+            )?;
+            // For CFG the same vector is replicated across uncond + cond
+            // — diffusers does the same.
+            let stacked = if do_cfg {
+                Tensor::cat(&[&cond_ids, &cond_ids], 0)?
+            } else {
+                cond_ids
+            };
+            Some(stacked)
+        } else {
+            None
         };
 
         let bsz: usize = 1;
@@ -535,7 +602,8 @@ impl Pipeline {
             );
             let total_steps = timesteps.len();
             for (step_i, &timestep) in timesteps.iter().enumerate() {
-                let (unet_ref, embeds, tag) = if step_i < switch {
+                let in_base = step_i < switch;
+                let (unet_ref, embeds, tag) = if in_base {
                     (&self.core.unet, &text_embeddings, "base")
                 } else {
                     (
@@ -544,6 +612,15 @@ impl Pipeline {
                         "refiner",
                     )
                 };
+                // 8d: pooled_text + add_time_ids only flow into the
+                // base SDXL pass. The refiner (still SdUNet::Sd in 8d)
+                // ignores them; 8e wires the refiner up too with its
+                // own 5-time-id pair.
+                let (sdxl_pooled, sdxl_time_ids) = if in_base {
+                    (pooled_text_sdxl.as_ref(), add_time_ids_base.as_ref())
+                } else {
+                    (None, None)
+                };
                 let progress = step_i as f32 / total_steps as f32;
                 let step_control = control.filter(|cr| cr.active_at(progress));
                 latents = self.denoise_step(
@@ -551,6 +628,8 @@ impl Pipeline {
                     &latents,
                     timestep,
                     embeds,
+                    sdxl_pooled,
+                    sdxl_time_ids,
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
@@ -591,6 +670,8 @@ impl Pipeline {
                                 &latents,
                                 timestep,
                                 &text_embeddings,
+                                pooled_text_sdxl.as_ref(),
+                                add_time_ids_base.as_ref(),
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
@@ -620,12 +701,19 @@ impl Pipeline {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn denoise_step(
         &self,
-        unet: &UNet2DConditionModel,
+        unet: &crate::pipelines::sdxl_unet::SdUNet,
         latents: &Tensor,
         timestep: usize,
         text_embeddings: &Tensor,
+        // v0.11 phase 8d: pooled CLIP-G + time_ids for SDXL base's
+        // add_embedding. None on SD 1.5 / SD 2.1 and on the refiner
+        // pass (8d). SdUNet::Sdxl errors if these are None; SdUNet::Sd
+        // ignores them — making this signature uniform across variants.
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
@@ -638,7 +726,13 @@ impl Pipeline {
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
         let noise_pred = match control {
-            None => unet.forward(&latent_in, timestep as f64, text_embeddings)?,
+            None => unet.forward(
+                &latent_in,
+                timestep as f64,
+                text_embeddings,
+                add_text_embeds,
+                add_time_ids,
+            )?,
             Some(cr) => {
                 let cond_in = if do_cfg {
                     Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
@@ -656,6 +750,8 @@ impl Pipeline {
                     &latent_in,
                     timestep as f64,
                     text_embeddings,
+                    add_text_embeds,
+                    add_time_ids,
                     Some(&down),
                     Some(&mid),
                 )?
@@ -706,7 +802,7 @@ fn embed_g_only(
     text: &str,
     tok_g: &Tokenizer,
     cfg_g: &sdclip::Config,
-    enc_g: &sdclip::ClipTextTransformer,
+    enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
 ) -> Result<Tensor> {
     let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
@@ -714,6 +810,9 @@ fn embed_g_only(
     Ok(hidden_g)
 }
 
+/// Encode one branch (cond or uncond) for SDXL base: concat'd CLIP-L
+/// penultimate + CLIP-G penultimate for cross-attention, and the
+/// pooled CLIP-G output for the UNet's `add_embedding`.
 #[allow(clippy::too_many_arguments)]
 fn embed_xl(
     text: &str,
@@ -722,14 +821,15 @@ fn embed_xl(
     cfg_l: &sdclip::Config,
     cfg_g: &sdclip::Config,
     enc_l: &sdclip::ClipTextTransformer,
-    enc_g: &sdclip::ClipTextTransformer,
+    enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
-) -> Result<Tensor> {
+) -> Result<(Tensor, Tensor)> {
     let ids_l = tokenize_padded(tok_l, cfg_l, text, device)?;
     let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
     let (_final_l, hidden_l) = enc_l.forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
-    let (_final_g, hidden_g) = enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
-    Tensor::cat(&[&hidden_l, &hidden_g], 2).map_err(Into::into)
+    let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+    let cat = Tensor::cat(&[&hidden_l, &hidden_g], 2)?;
+    Ok((cat, pooled_g))
 }
 
 // =====================================================================

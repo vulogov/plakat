@@ -293,16 +293,25 @@ impl Pipeline {
     ///   * SD 1.5 — `(1, 77, 768)` from CLIP-L's final hidden state.
     ///   * SDXL   — `(1, 77, 2048)` from `concat(CLIP-L penultimate,
     ///              CLIP-G penultimate)` along the channel dim.
-    fn encode_text(&self, text: &str) -> Result<Tensor> {
+    /// Encode `text` into one batch row's worth of inputs the
+    /// downstream UNet needs.
+    ///
+    /// Returns `(hidden_states, pooled_text)`:
+    ///   * SD 1.5 / SD 2.1 — `hidden_states` only (one branch row);
+    ///     `pooled_text` is `None` (no add_embedding in those UNets).
+    ///   * SDXL — `hidden_states` is `(1, 77, 2048)` concat of
+    ///     CLIP-L + CLIP-G penultimate; `pooled_text` is `Some((1, 1280))`
+    ///     from the projected EOT row of CLIP-G's final hidden state,
+    ///     consumed by [`SdxlUNet`]'s `add_embedding` after
+    ///     `build_encoder_hidden_states` stitches the cond + uncond
+    ///     branches together.
+    fn encode_text(&self, text: &str) -> Result<(Tensor, Option<Tensor>)> {
         match self.core.variant {
-            // SD 1.5 and SD 2.1 each have a single text encoder
-            // (OpenAI CLIP-L for SD 1.5, OpenCLIP-H for SD 2.1).
-            // Both flow through `encode_text_sd15` — the dispatch
-            // only cares about "single encoder" vs "dual encoder",
-            // and the inner method picks up the right config / dtype
-            // from self.core.
-            Variant::Sd15 | Variant::Sd21 => self.encode_text_sd15(text),
-            Variant::Sdxl => self.encode_text_sdxl(text),
+            Variant::Sd15 | Variant::Sd21 => Ok((self.encode_text_sd15(text)?, None)),
+            Variant::Sdxl => {
+                let (h, p) = self.encode_text_sdxl(text)?;
+                Ok((h, Some(p)))
+            }
         }
     }
 
@@ -311,7 +320,7 @@ impl Pipeline {
         Ok(self.core.text_encoder_l.forward(&ids)?.to_dtype(self.core.dtype)?)
     }
 
-    fn encode_text_sdxl(&self, text: &str) -> Result<Tensor> {
+    fn encode_text_sdxl(&self, text: &str) -> Result<(Tensor, Tensor)> {
         let cfg_g = self
             .core
             .cfg
@@ -334,9 +343,13 @@ impl Pipeline {
             .core
             .text_encoder_l
             .forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
-        let (_final_g, hidden_g) =
-            enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
-        Ok(Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(self.core.dtype)?)
+        // v0.11 phase 8d: also fetch the pooled CLIP-G output for the
+        // UNet's add_embedding. forward_for_sdxl runs the encoder once
+        // and hands back both penultimate hidden and projected pooled.
+        let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+        let hidden = Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(self.core.dtype)?;
+        let pooled = pooled_g.to_dtype(self.core.dtype)?;
+        Ok((hidden, pooled))
     }
 
     /// Run `req.count` portraits. Reuses loaded weights across calls.
@@ -357,20 +370,34 @@ impl Pipeline {
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
 
-        let (encoder_hidden_states, has_face) = self.build_encoder_hidden_states(
-            &req.prompt,
-            &req.negative,
-            &req.photos,
-            req.face_strength,
-            req.face_bbox,
-            req.face_landmarks,
-            do_cfg,
-        )?;
+        let (encoder_hidden_states, has_face, pooled_text_sdxl) =
+            self.build_encoder_hidden_states(
+                &req.prompt,
+                &req.negative,
+                &req.photos,
+                req.face_strength,
+                req.face_bbox,
+                req.face_landmarks,
+                do_cfg,
+            )?;
 
         let bsz: usize = 1;
         let latent_h = h / 8;
         let latent_w = w / 8;
         let vae_scale: f64 = self.core.variant.vae_scale();
+
+        // v0.11 phase 8d: build SDXL add_time_ids once per call. Same
+        // pattern as t2i — function of target size only, replicated
+        // for CFG. None on SD 1.5 / SD 2.1.
+        let add_time_ids = build_sdxl_add_time_ids_base(
+            self.core.variant,
+            req.width,
+            req.height,
+            &self.core.device,
+            self.core.dtype,
+            do_cfg,
+            pooled_text_sdxl.is_some(),
+        )?;
 
         for idx in 0..req.count {
             let seed = req
@@ -404,6 +431,8 @@ impl Pipeline {
                     &latents,
                     timestep,
                     &encoder_hidden_states,
+                    pooled_text_sdxl.as_ref(),
+                    add_time_ids.as_ref(),
                     &mut scheduler,
                     req.guidance,
                     do_cfg,
@@ -440,6 +469,8 @@ impl Pipeline {
                                 &latents,
                                 timestep,
                                 &encoder_hidden_states,
+                                pooled_text_sdxl.as_ref(),
+                                add_time_ids.as_ref(),
                                 &mut polish,
                                 req.guidance,
                                 do_cfg,
@@ -484,6 +515,15 @@ impl Pipeline {
     /// is `(2, 77 + K, 768)` where K = 0 (no face), 4 (plain), or 16
     /// (Plus). Returns the tensor plus a flag indicating whether image
     /// tokens were included (used for progress-bar labels).
+    /// Returns `(ehs, has_face, pooled_text_sdxl)`:
+    ///   * `ehs` — text + identity tokens concat'd along the seq dim
+    ///     and (when `do_cfg`) along the batch dim (uncond, then cond).
+    ///   * `has_face` — true iff identity tokens were attached.
+    ///   * `pooled_text_sdxl` — `Some((B, 1280))` for SDXL with the
+    ///     same uncond-then-cond batch layout as `ehs`. `None` for SD
+    ///     1.5 / SD 2.1. Caller pairs this with `add_time_ids` and
+    ///     feeds both to `denoise_step` so the SDXL UNet's
+    ///     `add_embedding` receives the micro-conditioning signal.
     fn build_encoder_hidden_states(
         &self,
         prompt: &str,
@@ -493,9 +533,9 @@ impl Pipeline {
         face_bbox: Option<[f32; 4]>,
         face_landmarks: Option<[[f32; 2]; 5]>,
         do_cfg: bool,
-    ) -> Result<(Tensor, bool)> {
-        let text_cond = self.encode_text(prompt)?;
-        let text_uncond = if do_cfg {
+    ) -> Result<(Tensor, bool, Option<Tensor>)> {
+        let (text_cond, cond_pooled) = self.encode_text(prompt)?;
+        let text_uncond_pair = if do_cfg {
             Some(self.encode_text(negative)?)
         } else {
             None
@@ -536,7 +576,7 @@ impl Pipeline {
             None => text_cond.clone(),
         };
         let ehs = if do_cfg {
-            let uncond_text = text_uncond.as_ref().unwrap();
+            let (uncond_text, _) = text_uncond_pair.as_ref().unwrap();
             let uncond_full = match &identity_tokens {
                 Some(img) => {
                     let zero = img.zeros_like()?;
@@ -548,7 +588,16 @@ impl Pipeline {
         } else {
             cond_full
         };
-        Ok((ehs, identity_tokens.is_some()))
+
+        // Pooled text for SDXL's add_embedding. Same uncond-then-cond
+        // batch layout as `ehs` so a single index aligns both.
+        let pooled = match (&cond_pooled, text_uncond_pair.as_ref().and_then(|(_, p)| p.as_ref())) {
+            (Some(c), Some(u)) if do_cfg => Some(Tensor::cat(&[u, c], 0)?),
+            (Some(c), _) if !do_cfg => Some(c.clone()),
+            _ => None,
+        };
+
+        Ok((ehs, identity_tokens.is_some(), pooled))
     }
 
     /// Generate one sample of latents from text alone (no inpainting).
@@ -565,7 +614,7 @@ impl Pipeline {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
-        let (ehs, has_face) = self.build_encoder_hidden_states(
+        let (ehs, has_face, pooled_text_sdxl) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
             &req.photos,
@@ -573,6 +622,15 @@ impl Pipeline {
             req.face_bbox,
             req.face_landmarks,
             do_cfg,
+        )?;
+        let add_time_ids = build_sdxl_add_time_ids_base(
+            self.core.variant,
+            req.width,
+            req.height,
+            &self.core.device,
+            self.core.dtype,
+            do_cfg,
+            pooled_text_sdxl.is_some(),
         )?;
 
         if let Err(e) = self.core.device.set_seed(seed) {
@@ -596,7 +654,17 @@ impl Pipeline {
         for (step_idx, &t) in timesteps.iter().enumerate() {
             let progress = step_idx as f32 / total_steps as f32;
             let step_control = control.filter(|cr| cr.active_at(progress));
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
+            latents = self.denoise_step(
+                &latents,
+                t,
+                &ehs,
+                pooled_text_sdxl.as_ref(),
+                add_time_ids.as_ref(),
+                &mut scheduler,
+                req.guidance,
+                do_cfg,
+                step_control,
+            )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -621,7 +689,7 @@ impl Pipeline {
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let do_cfg = req.guidance > 1.0;
-        let (ehs, has_face) = self.build_encoder_hidden_states(
+        let (ehs, has_face, pooled_text_sdxl) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
             &req.photos,
@@ -629,6 +697,15 @@ impl Pipeline {
             req.face_bbox,
             req.face_landmarks,
             do_cfg,
+        )?;
+        let add_time_ids = build_sdxl_add_time_ids_base(
+            self.core.variant,
+            req.width,
+            req.height,
+            &self.core.device,
+            self.core.dtype,
+            do_cfg,
+            pooled_text_sdxl.is_some(),
         )?;
 
         if let Err(e) = self.core.device.set_seed(seed) {
@@ -667,7 +744,17 @@ impl Pipeline {
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
+            latents = self.denoise_step(
+                &latents,
+                t,
+                &ehs,
+                pooled_text_sdxl.as_ref(),
+                add_time_ids.as_ref(),
+                &mut scheduler,
+                req.guidance,
+                do_cfg,
+                step_control,
+            )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
         }
@@ -732,7 +819,7 @@ impl Pipeline {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let strength = strength.clamp(0.0, 1.0);
         let do_cfg = req.guidance > 1.0;
-        let (ehs, _has_face) = self.build_encoder_hidden_states(
+        let (ehs, _has_face, pooled_text_sdxl) = self.build_encoder_hidden_states(
             &req.prompt,
             &req.negative,
             &req.photos,
@@ -740,6 +827,15 @@ impl Pipeline {
             req.face_bbox,
             req.face_landmarks,
             do_cfg,
+        )?;
+        let add_time_ids = build_sdxl_add_time_ids_base(
+            self.core.variant,
+            req.width,
+            req.height,
+            &self.core.device,
+            self.core.dtype,
+            do_cfg,
+            pooled_text_sdxl.is_some(),
         )?;
 
         if let Err(e) = self.core.device.set_seed(seed) {
@@ -783,7 +879,17 @@ impl Pipeline {
             latents = (latents.broadcast_mul(mask)?
                 + base_noised.broadcast_mul(&inv_mask)?)?;
 
-            latents = self.denoise_step(&latents, t, &ehs, &mut scheduler, req.guidance, do_cfg, step_control)?;
+            latents = self.denoise_step(
+                &latents,
+                t,
+                &ehs,
+                pooled_text_sdxl.as_ref(),
+                add_time_ids.as_ref(),
+                &mut scheduler,
+                req.guidance,
+                do_cfg,
+                step_control,
+            )?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
         }
@@ -821,11 +927,17 @@ impl Pipeline {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn denoise_step(
         &self,
         latents: &Tensor,
         timestep: usize,
         encoder_hidden_states: &Tensor,
+        // v0.11 phase 8d: SDXL `text_time` micro-conditioning.
+        // Required for SdUNet::Sdxl (set on SDXL portraits), ignored
+        // for SdUNet::Sd (SD 1.5 / SD 2.1).
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
         scheduler: &mut Box<dyn stable_diffusion::schedulers::Scheduler>,
         guidance: f64,
         do_cfg: bool,
@@ -842,6 +954,8 @@ impl Pipeline {
                 &latent_in,
                 timestep as f64,
                 encoder_hidden_states,
+                add_text_embeds,
+                add_time_ids,
             )?,
             Some(cr) => {
                 // Match latent_in's batch dim — duplicate the conditioning
@@ -863,6 +977,8 @@ impl Pipeline {
                     &latent_in,
                     timestep as f64,
                     encoder_hidden_states,
+                    add_text_embeds,
+                    add_time_ids,
                     Some(&down),
                     Some(&mid),
                 )?
@@ -1023,6 +1139,34 @@ pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_cor
 // pub; both modules now have their own copy. Trivial duplication is
 // preferable to a third "shared" module just for this.
 // =====================================================================
+/// v0.11 phase 8d helper. Returns `Some((B, 6))` add_time_ids for
+/// SDXL portraits, replicated across the CFG branch dim when present.
+/// Returns `None` for SD 1.5 / SD 2.1 or when the caller signals
+/// `pooled_text_present = false` (e.g. variant mismatch — should not
+/// normally happen). Mirrors the t2i helper.
+fn build_sdxl_add_time_ids_base(
+    variant: Variant,
+    width: u32,
+    height: u32,
+    device: &Device,
+    dtype: DType,
+    do_cfg: bool,
+    pooled_text_present: bool,
+) -> Result<Option<Tensor>> {
+    if variant != Variant::Sdxl || !pooled_text_present {
+        return Ok(None);
+    }
+    let row = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+        height, width, device, dtype,
+    )?;
+    let stacked = if do_cfg {
+        Tensor::cat(&[&row, &row], 0)?
+    } else {
+        row
+    };
+    Ok(Some(stacked))
+}
+
 fn tokenize_padded(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,

@@ -36,7 +36,7 @@ use candle_nn as nn;
 use candle_nn::{conv2d, Conv2d, Module};
 use candle_transformers::models::stable_diffusion::{
     embeddings::{TimestepEmbedding, Timesteps},
-    unet_2d::{BlockConfig, UNet2DConditionModelConfig},
+    unet_2d::{BlockConfig, UNet2DConditionModel, UNet2DConditionModelConfig},
     unet_2d_blocks::{
         CrossAttnDownBlock2D, CrossAttnDownBlock2DConfig, CrossAttnUpBlock2D,
         CrossAttnUpBlock2DConfig, DownBlock2D, DownBlock2DConfig, UNetMidBlock2DCrossAttn,
@@ -539,5 +539,96 @@ impl SdxlUNet2DConditionModel {
         let xs = self.conv_norm_out.forward(&xs)?;
         let xs = nn::ops::silu(&xs)?;
         self.conv_out.forward(&xs)
+    }
+}
+
+/// Enum that lets SD 1.5 / SD 2.1 keep using candle's upstream UNet
+/// while SDXL routes through our text_time-aware vendored copy. The
+/// pipeline holds `SdUNet` instead of either concrete type so the
+/// denoise loop stays variant-agnostic apart from passing the SDXL
+/// extras when they're available.
+#[derive(Debug)]
+pub enum SdUNet {
+    /// candle's stock UNet — `add_text_embeds` / `add_time_ids` are
+    /// ignored if the caller supplies them.
+    Sd(UNet2DConditionModel),
+    /// Vendored UNet with `add_embedding` plumbed through. Caller
+    /// **must** supply `add_text_embeds` + `add_time_ids` — None
+    /// triggers an error so we fail loudly rather than silently
+    /// run the model with broken micro-conditioning.
+    Sdxl(SdxlUNet2DConditionModel),
+}
+
+impl SdUNet {
+    /// Plain denoise step. `add_text_embeds` + `add_time_ids` are
+    /// required for `SdUNet::Sdxl`, ignored for `SdUNet::Sd`.
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        match self {
+            SdUNet::Sd(u) => u.forward(xs, timestep, encoder_hidden_states),
+            SdUNet::Sdxl(u) => {
+                let te = add_text_embeds.ok_or_else(|| {
+                    candle_core::Error::Msg(
+                        "SdUNet::Sdxl::forward requires add_text_embeds".to_string(),
+                    )
+                })?;
+                let ti = add_time_ids.ok_or_else(|| {
+                    candle_core::Error::Msg(
+                        "SdUNet::Sdxl::forward requires add_time_ids".to_string(),
+                    )
+                })?;
+                u.forward(xs, timestep, encoder_hidden_states, te, ti)
+            }
+        }
+    }
+
+    /// ControlNet-aware denoise step. Same requirements as
+    /// [`Self::forward`] plus the extra residuals.
+    pub fn forward_with_additional_residuals(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
+        down_block_additional_residuals: Option<&[Tensor]>,
+        mid_block_additional_residual: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        match self {
+            SdUNet::Sd(u) => u.forward_with_additional_residuals(
+                xs,
+                timestep,
+                encoder_hidden_states,
+                down_block_additional_residuals,
+                mid_block_additional_residual,
+            ),
+            SdUNet::Sdxl(u) => {
+                let te = add_text_embeds.ok_or_else(|| {
+                    candle_core::Error::Msg(
+                        "SdUNet::Sdxl requires add_text_embeds with residuals".to_string(),
+                    )
+                })?;
+                let ti = add_time_ids.ok_or_else(|| {
+                    candle_core::Error::Msg(
+                        "SdUNet::Sdxl requires add_time_ids with residuals".to_string(),
+                    )
+                })?;
+                u.forward_with_additional_residuals(
+                    xs,
+                    timestep,
+                    encoder_hidden_states,
+                    te,
+                    ti,
+                    down_block_additional_residuals,
+                    mid_block_additional_residual,
+                )
+            }
+        }
     }
 }

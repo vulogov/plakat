@@ -39,13 +39,16 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device};
+use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip, unet_2d::UNet2DConditionModel,
+    self, StableDiffusionConfig, clip as sdclip,
     vae::AutoEncoderKL,
 };
 use tokenizers::Tokenizer;
 
 use crate::pipelines::lora::ResolvedLora;
+use crate::pipelines::sdxl_clip::SdxlClipGTextTransformer;
+use crate::pipelines::sdxl_unet::{SdUNet, SdxlAddEmbedConfig, SdxlUNet2DConditionModel};
 use crate::ui::progress;
 
 /// SD variant the backbone routes through. Detected from the model
@@ -142,9 +145,16 @@ pub struct SdCore {
     /// SDXL only — the CLIP-G tokenizer. `None` for SD 1.5.
     pub tokenizer_g: Option<Tokenizer>,
     pub text_encoder_l: sdclip::ClipTextTransformer,
-    pub text_encoder_g: Option<sdclip::ClipTextTransformer>,
+    /// SDXL only — CLIP-G (text_encoder_2) wrapped with the v0.11
+    /// `text_projection` pooling head needed by the UNet's
+    /// `add_embedding`. `None` for SD 1.5 / SD 2.1.
+    pub text_encoder_g: Option<SdxlClipGTextTransformer>,
     pub vae: AutoEncoderKL,
-    pub unet: UNet2DConditionModel,
+    /// Backbone UNet. `SdUNet::Sd` for SD 1.5 / SD 2.1 (candle's
+    /// upstream type); `SdUNet::Sdxl` for SDXL (v0.11 phase 8 — adds
+    /// `text_time` micro-conditioning that diffusers' SDXL relies on
+    /// for full-quality outputs).
+    pub unet: SdUNet,
     pub device: Device,
     pub dtype: DType,
     /// Kept alive so merged-LoRA safetensors mmaps stay valid for
@@ -276,7 +286,34 @@ impl SdCore {
             lora_tmps.push(tmp);
             p
         };
-        let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
+        let unet = match variant {
+            // SD 1.5 / SD 2.1 — candle's stock UNet (no add_embedding).
+            SdVariant::Sd15 | SdVariant::Sd21 => SdUNet::Sd(
+                cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?,
+            ),
+            // SDXL — vendored UNet with `text_time` add_embedding.
+            // Reuses controlnet::sdxl_unet_config() so the SDXL UNet
+            // shape stays defined in one place. AddEmbedConfig::base()
+            // = 6 time_ids; the refiner gets its own variant in 8e.
+            SdVariant::Sdxl => {
+                let vs_unet = unsafe {
+                    VarBuilder::from_mmaped_safetensors(
+                        &[effective_unet_path.as_path()],
+                        dtype,
+                        &req.device,
+                    )?
+                };
+                let sdxl_unet = SdxlUNet2DConditionModel::new(
+                    vs_unet,
+                    4,
+                    4,
+                    false,
+                    crate::pipelines::controlnet::sdxl_unet_config(),
+                    SdxlAddEmbedConfig::base(),
+                )?;
+                SdUNet::Sdxl(sdxl_unet)
+            }
+        };
 
         // CLIP-L text encoder (with optional LoRA merge).
         // SD 2.1 uses the same key naming as SD 1.5 for LoRA merge
@@ -352,12 +389,19 @@ impl SdCore {
                     lora_tmps.push(tmp);
                     path
                 };
-                Some(stable_diffusion::build_clip_transformer(
-                    cfg_g,
-                    &effective_te_g_path,
-                    &req.device,
-                    dtype,
-                )?)
+                // v0.11 phase 8b: load via the SdxlClipGTextTransformer
+                // wrapper so the `text_projection` Linear is also
+                // pulled out of the safetensors. embed_dim = 1280 is
+                // the stock SDXL CLIP-G width (candle's Config::embed_dim
+                // is private so we pass it explicitly).
+                let vs_g = unsafe {
+                    VarBuilder::from_mmaped_safetensors(
+                        &[effective_te_g_path.as_path()],
+                        dtype,
+                        &req.device,
+                    )?
+                };
+                Some(SdxlClipGTextTransformer::new(vs_g, cfg_g, 1280)?)
             }
         };
 
