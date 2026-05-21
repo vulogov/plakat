@@ -47,14 +47,22 @@ plakat img2img photo.jpg --prompt "watercolor painting of the same scene"
 plakat img2img photo.jpg --mask sky.png \
     --prompt "dramatic stormy sky, lightning"
 
-# ControlNet: layout-guided generation
-# Auto-annotates any photo into a depth map (no manual prep):
+# ControlNet: layout-guided generation. Five conditioners ship with
+# auto-annotators (depth, canny, openpose, lineart, softedge); each
+# accepts either `from=PATH` (auto-annotate any photo) or
+# `image=PATH` (use a pre-rendered map).
 plakat generate "a fox in tall grass" \
-    --control depth --control-from reference_photo.jpg
+    --control-spec 'depth:from=reference_photo.jpg'
 
-# Or canny edges + SDXL:
-plakat generate "renaissance villa, oil painting" --model sdxl \
-    --control canny --control-from architecture.jpg
+# Stack multiple conditioners — residuals are summed per denoise step,
+# diffusers-style. Useful for "preserve this layout AND this pose":
+plakat generate "knight on a stone bridge, cinematic" --model sdxl \
+    --control-spec 'depth:from=scene.jpg:strength=0.8' \
+    --control-spec 'openpose:from=person.jpg:strength=0.6'
+
+# Each spec also takes optional `start=` / `end=` (timestep window) and
+# `strength=` (residual scale). See `plakat generate --help` and
+# `Documentation/CONTROLNET.md` for the full grammar.
 
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
@@ -128,8 +136,10 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   - [`IMG2IMG.md`](Documentation/IMG2IMG.md) — image-to-image and
     inpaint via `plakat img2img`.
   - [`CONTROLNET.md`](Documentation/CONTROLNET.md) — ControlNet
-    conditioning (depth + canny, SD 1.5 + SDXL) for layout-guided
-    generation, with auto-annotation via `--control-from PATH`.
+    conditioning (depth, canny, openpose, lineart, softedge) for
+    SD 1.5 + SDXL. Auto-annotation via
+    `--control-spec 'KIND:from=PATH'`; stack multiple conditioners
+    with repeatable `--control-spec`.
 
 ## Releases
 
