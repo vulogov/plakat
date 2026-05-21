@@ -28,10 +28,16 @@ use candle_core::Module;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{
-    flux::{autoencoder as fae, model as fmodel, sampling},
+    flux::{autoencoder as fae, sampling},
     stable_diffusion::clip as sdclip,
     t5,
 };
+// v0.12 phase 2a: use plakat's vendored Flux model (with the
+// residual-aware forward hook) instead of candle's upstream
+// flux::model. The vendored type is byte-identical to upstream when
+// no residuals are passed, so the existing Flux generation path
+// behaves the same.
+use crate::pipelines::flux_inner as fmodel;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
