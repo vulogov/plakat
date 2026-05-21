@@ -588,23 +588,28 @@ fn candidates_for(
             ),
         ],
         (ControlKind::Depth, ControlNetVariant::Sdxl) => vec![
-            // Primary: diffusers' official SDXL ControlNet-Depth (small,
-            // 600M parameters — the recommended SDXL ControlNet).
-            (
-                "diffusers/controlnet-depth-sdxl-1.0-small",
-                "diffusion_pytorch_model.safetensors",
-            ),
-            // Fallback 1: same repo, fp16 variant.
-            (
-                "diffusers/controlnet-depth-sdxl-1.0-small",
-                "diffusion_pytorch_model.fp16.safetensors",
-            ),
-            // Fallback 2: the full-size SDXL ControlNet-Depth (~5 GB).
-            // Higher quality, much heavier; only used if -small mirrors
-            // are unreachable.
+            // Primary: full-size SDXL ControlNet-Depth (fp16, ~2.5 GB).
+            // The diffusers-format state dict matches candle's standard
+            // SDXL UNet layout exactly. We intentionally do NOT use
+            // diffusers' `-small` variant: it ships a reduced
+            // architecture (basic down-blocks where the standard
+            // model has cross-attn), so candle's strict tensor
+            // lookup fails with "cannot find tensor
+            // down_blocks.1.attentions.0.norm.weight" against it.
             (
                 "diffusers/controlnet-depth-sdxl-1.0",
                 "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 1: same repo, fp32 variant (~5 GB).
+            (
+                "diffusers/controlnet-depth-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 2: xinsir's community SDXL ControlNet-Depth
+            // (full-size architecture, diffusers state-dict shape).
+            (
+                "xinsir/controlnet-depth-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
             ),
         ],
         (ControlKind::Canny, ControlNetVariant::Sd15) => vec![
@@ -625,20 +630,23 @@ fn candidates_for(
             ),
         ],
         (ControlKind::Canny, ControlNetVariant::Sdxl) => vec![
-            // Primary: diffusers' SDXL ControlNet-Canny (small).
-            (
-                "diffusers/controlnet-canny-sdxl-1.0-small",
-                "diffusion_pytorch_model.safetensors",
-            ),
-            // Fallback 1: same repo, fp16 variant.
-            (
-                "diffusers/controlnet-canny-sdxl-1.0-small",
-                "diffusion_pytorch_model.fp16.safetensors",
-            ),
-            // Fallback 2: full-size SDXL ControlNet-Canny.
+            // Primary: full-size SDXL ControlNet-Canny (fp16, ~2.5 GB).
+            // See the depth/sdxl arm for why we skip the `-small`
+            // variant: it uses a reduced architecture that doesn't
+            // match candle's standard SDXL UNet layout.
             (
                 "diffusers/controlnet-canny-sdxl-1.0",
                 "diffusion_pytorch_model.fp16.safetensors",
+            ),
+            // Fallback 1: same repo, fp32 variant (~5 GB).
+            (
+                "diffusers/controlnet-canny-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            // Fallback 2: xinsir's community SDXL ControlNet-Canny.
+            (
+                "xinsir/controlnet-canny-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
             ),
         ],
     }
@@ -861,7 +869,7 @@ mod tests {
             );
         }
         // Primary should be the recommended -small SDXL ControlNet.
-        assert_eq!(c[0].0, "diffusers/controlnet-depth-sdxl-1.0-small");
+        assert_eq!(c[0].0, "diffusers/controlnet-depth-sdxl-1.0");
     }
 
     #[test]

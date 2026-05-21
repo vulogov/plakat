@@ -258,9 +258,9 @@ order):
 
 **SDXL Depth** mirrors:
 
-1. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.safetensors` (~600 MB; the recommended SDXL ControlNet — small + competitive quality)
-2. `diffusers/controlnet-depth-sdxl-1.0-small` / `diffusion_pytorch_model.fp16.safetensors` (~300 MB)
-3. `diffusers/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size, higher quality, much heavier)
+1. `diffusers/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; the full-size SDXL ControlNet — matches candle's standard SDXL UNet layout exactly)
+2. `diffusers/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.safetensors` (~5 GB; fp32 variant)
+3. `xinsir/controlnet-depth-sdxl-1.0` / `diffusion_pytorch_model.safetensors` (community release, same standard architecture)
 
 **SD 1.5 Canny** mirrors:
 
@@ -270,9 +270,9 @@ order):
 
 **SDXL Canny** mirrors:
 
-1. `diffusers/controlnet-canny-sdxl-1.0-small` / `diffusion_pytorch_model.safetensors` (~600 MB)
-2. `diffusers/controlnet-canny-sdxl-1.0-small` / `diffusion_pytorch_model.fp16.safetensors` (~300 MB)
-3. `diffusers/controlnet-canny-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size)
+1. `diffusers/controlnet-canny-sdxl-1.0` / `diffusion_pytorch_model.fp16.safetensors` (~2.5 GB; full-size SDXL ControlNet, standard architecture)
+2. `diffusers/controlnet-canny-sdxl-1.0` / `diffusion_pytorch_model.safetensors` (~5 GB; fp32 variant)
+3. `xinsir/controlnet-canny-sdxl-1.0` / `diffusion_pytorch_model.safetensors` (community release)
 
 All are diffusers-format. WebUI-format ControlNet checkpoints (with
 `control_model.input_blocks.…` key naming) are not currently
@@ -280,11 +280,14 @@ supported — they'd need a key remapping layer we don't ship.
 
 ## Limits
 
-- **SDXL ControlNet uses a smaller-by-default checkpoint.** Plakat
-  loads `diffusers/controlnet-depth-sdxl-1.0-small` as the primary
-  SDXL mirror because it's competitive with the full-size variant
-  at ~600 MB vs ~2.5 GB. Force the full-size by clearing the cache
-  or pre-downloading the alt repo if you need top quality.
+- **SDXL ControlNet weights are heavy.** Plakat loads the full-size
+  `diffusers/controlnet-depth-sdxl-1.0` (or `-canny-`) as the primary
+  SDXL mirror — ~2.5 GB fp16 per checkpoint. We do NOT use diffusers'
+  `-small` variant, which ships a reduced architecture (basic
+  down-blocks replacing cross-attn ones) that doesn't match candle's
+  standard SDXL UNet config. Loading the `-small` mirror against the
+  standard config fails with "cannot find tensor
+  down_blocks.1.attentions.0.norm.weight".
 - **Flux: not supported.** ControlNet's residual-addition contract
   is SD-UNet-specific.
 - **Depth and Canny.** v0.10 ships both. Scribble, pose, MLSD,
