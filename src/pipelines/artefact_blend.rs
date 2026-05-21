@@ -184,7 +184,18 @@ pub async fn blend_files(
         let new_latents = pipeline
             // Artefact-blend doesn't expose --control; the conditioner
             // here is the artefact mask itself, not a ControlNet guide.
-            .blend_latents_one(&base_latents, &mask, &req, cfg.strength, seed, &[])
+            .blend_latents_one(
+                &base_latents,
+                &mask,
+                &req,
+                cfg.strength,
+                seed,
+                &[],
+                // Artefact-blend uses the pipeline's base UNet (regular
+                // SD 1.5 / SDXL) — RePaint blending. SDXL-Inpaint
+                // isn't supported on the artefact-blend path.
+                None,
+            )
             .with_context(|| format!("blend denoise on {}", path.display()))?;
         pipeline
             .save_image(&new_latents, path)

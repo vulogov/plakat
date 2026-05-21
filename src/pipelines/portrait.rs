@@ -444,6 +444,9 @@ impl Pipeline {
                     req.guidance,
                     do_cfg,
                     &active_controls,
+                    // generate() is text-to-image — no inpaint mask.
+                    None,
+                    None,
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
@@ -483,6 +486,9 @@ impl Pipeline {
                                 req.guidance,
                                 do_cfg,
                                 &active_controls,
+                                // Polish pass is text-to-image — no inpaint mask.
+                                None,
+                                None,
                             )?;
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
@@ -673,6 +679,9 @@ impl Pipeline {
                 req.guidance,
                 do_cfg,
                 &active_controls,
+                // generate_latents_one is text-to-image — no inpaint mask.
+                None,
+                None,
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
@@ -695,6 +704,13 @@ impl Pipeline {
         req: &GenRequest,
         seed: u64,
         controls: &[crate::pipelines::controlnet::ControlRequest],
+        // v0.12 SDXL-Inpaint: VAE-encoded `input × (1 - mask)` at
+        // latent resolution. When `Some` AND `self.core.is_sdxl_inpaint`
+        // the function takes the 9-channel UNet path (no RePaint
+        // mask-blending; mask + masked latents concat'd into UNet input
+        // every step). `None` keeps the RePaint path for regular SDXL
+        // and SD 1.5 / SD 2.1 UNets.
+        sdxl_inpaint_masked_latents: Option<&Tensor>,
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let do_cfg = req.guidance > 1.0;
@@ -716,6 +732,15 @@ impl Pipeline {
             do_cfg,
             pooled_text_sdxl.is_some(),
         )?;
+        let use_sdxl_inpaint = self.core.is_sdxl_inpaint
+            && sdxl_inpaint_masked_latents.is_some();
+        if self.core.is_sdxl_inpaint && sdxl_inpaint_masked_latents.is_none() {
+            anyhow::bail!(
+                "SDXL-Inpaint UNet loaded but no masked-image latents supplied. \
+                 The 9-channel UNet requires VAE(input × (1 - mask)) at every step. \
+                 Use a regular SDXL model with --mask for RePaint-style inpaint."
+            );
+        }
 
         if let Err(e) = self.core.device.set_seed(seed) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
@@ -736,23 +761,33 @@ impl Pipeline {
 
         let inv_mask = (mask.ones_like()? - mask)?;
         let face_tag = if has_face { "+face" } else { "txt" };
+        let mode_tag = if use_sdxl_inpaint {
+            "sdxl-inpaint"
+        } else {
+            "inpaint"
+        };
         let bar = progress::step_bar(
             timesteps.len() as u64,
-            &format!("inpaint {face_tag}"),
+            &format!("{mode_tag} {face_tag}"),
         );
         let total_steps = timesteps.len();
         for (step_idx, &t) in timesteps.iter().enumerate() {
             let progress = step_idx as f32 / total_steps as f32;
             let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
                 controls.iter().filter(|c| c.active_at(progress)).collect();
-            // RePaint: re-noise the BASE (not the running latents) outside
-            // the mask. This pins the unmasked region to the base image while
-            // letting the denoiser walk freely inside the mask.
-            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
-                .to_dtype(self.core.dtype)?;
-            let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
-            latents = (latents.broadcast_mul(mask)?
-                + base_noised.broadcast_mul(&inv_mask)?)?;
+
+            // RePaint-style mask blending is for regular UNets only.
+            // SDXL-Inpaint feeds the mask + masked-image latents through
+            // the 9-channel UNet input every step, so the network itself
+            // handles "preserve outside the mask"; doing the per-step
+            // re-noise on top would double-up the conditioning.
+            if !use_sdxl_inpaint {
+                let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+                    .to_dtype(self.core.dtype)?;
+                let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
+                latents = (latents.broadcast_mul(mask)?
+                    + base_noised.broadcast_mul(&inv_mask)?)?;
+            }
 
             latents = self.denoise_step(
                 &latents,
@@ -764,6 +799,12 @@ impl Pipeline {
                 req.guidance,
                 do_cfg,
                 &active_controls,
+                if use_sdxl_inpaint { Some(mask) } else { None },
+                if use_sdxl_inpaint {
+                    sdxl_inpaint_masked_latents
+                } else {
+                    None
+                },
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t} seed={seed}"));
@@ -772,6 +813,9 @@ impl Pipeline {
 
         // Final blend: pin unmasked region to the *clean* base latents (no
         // residual noise). The masked region keeps the denoiser's output.
+        // For SDXL-Inpaint the 9-channel UNet already preserves the
+        // unmasked region internally, but we still composite to clamp
+        // any edge bleed and to keep the contract uniform.
         let composited = (latents.broadcast_mul(mask)?
             + base_latents.broadcast_mul(&inv_mask)?)?;
         Ok(composited)
@@ -792,10 +836,16 @@ impl Pipeline {
     ) -> Result<Tensor> {
         let pixels = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.core.device, self.core.dtype)
             .with_context(|| format!("VAE-encoding {}", path.display()))?;
+        self.vae_encode_pixels(&pixels)
+    }
+
+    /// VAE-encode an already-prepared pixel tensor. The caller is
+    /// responsible for shape `(1, 3, H, W)` and the same `[-1, 1]`
+    /// normalisation that `sd_image_tensor` produces. Used by
+    /// SDXL-Inpaint's masked-image-latents preparation.
+    pub fn vae_encode_pixels(&self, pixels: &Tensor) -> Result<Tensor> {
         let vae_scale: f64 = self.core.variant.vae_scale();
-        let dist = self.core.vae.encode(&pixels)?;
-        // The diffusers convention: take the dist.mean and multiply by
-        // vae_scale to land in the latent space the UNet operates on.
+        let dist = self.core.vae.encode(pixels)?;
         let latents = (dist.sample()? * vae_scale)?;
         Ok(latents)
     }
@@ -825,6 +875,9 @@ impl Pipeline {
         strength: f32,
         seed: u64,
         controls: &[crate::pipelines::controlnet::ControlRequest],
+        // v0.12 SDXL-Inpaint: VAE-encoded masked-image latents.
+        // Same contract as [`Self::inpaint_latents_one`].
+        sdxl_inpaint_masked_latents: Option<&Tensor>,
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let strength = strength.clamp(0.0, 1.0);
@@ -847,6 +900,14 @@ impl Pipeline {
             do_cfg,
             pooled_text_sdxl.is_some(),
         )?;
+        let use_sdxl_inpaint = self.core.is_sdxl_inpaint
+            && sdxl_inpaint_masked_latents.is_some();
+        if self.core.is_sdxl_inpaint && sdxl_inpaint_masked_latents.is_none() {
+            anyhow::bail!(
+                "SDXL-Inpaint UNet loaded but no masked-image latents supplied. \
+                 The 9-channel UNet requires VAE(input × (1 - mask)) at every step."
+            );
+        }
 
         if let Err(e) = self.core.device.set_seed(seed) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
@@ -876,7 +937,8 @@ impl Pipeline {
         let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
 
         let inv_mask = (mask.ones_like()? - mask)?;
-        let bar = progress::step_bar(active.len() as u64, "blend");
+        let bar_tag = if use_sdxl_inpaint { "sdxl-blend" } else { "blend" };
+        let bar = progress::step_bar(active.len() as u64, bar_tag);
         // Diffusers convention: control_start/end is measured
         // against the FULL schedule, not the active subset. So
         // step_idx counts from `start_idx`, not from 0.
@@ -884,11 +946,17 @@ impl Pipeline {
             let progress = (start_idx + i) as f32 / total as f32;
             let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
                 controls.iter().filter(|c| c.active_at(progress)).collect();
-            let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
-                .to_dtype(self.core.dtype)?;
-            let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
-            latents = (latents.broadcast_mul(mask)?
-                + base_noised.broadcast_mul(&inv_mask)?)?;
+
+            // RePaint-style per-step blend only for the regular
+            // (4-channel) UNet path — SDXL-Inpaint handles the
+            // unmasked region inside the network.
+            if !use_sdxl_inpaint {
+                let fresh_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
+                    .to_dtype(self.core.dtype)?;
+                let base_noised = scheduler.add_noise(base_latents, fresh_noise, t)?;
+                latents = (latents.broadcast_mul(mask)?
+                    + base_noised.broadcast_mul(&inv_mask)?)?;
+            }
 
             latents = self.denoise_step(
                 &latents,
@@ -900,6 +968,12 @@ impl Pipeline {
                 req.guidance,
                 do_cfg,
                 &active_controls,
+                if use_sdxl_inpaint { Some(mask) } else { None },
+                if use_sdxl_inpaint {
+                    sdxl_inpaint_masked_latents
+                } else {
+                    None
+                },
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
@@ -954,6 +1028,20 @@ impl Pipeline {
         do_cfg: bool,
         // v0.11 multi-ControlNet: caller pre-filters to active controls.
         active_controls: &[&crate::pipelines::controlnet::ControlRequest],
+        // v0.12 SDXL Inpainting extras. Both `Some` for SDXL-Inpaint
+        // (the 9-channel UNet path); both `None` for every regular
+        // (4-channel) UNet — including RePaint-style SD 1.5/2.1/SDXL
+        // inpaint via mask blending. Tensors:
+        //   * `inpaint_mask`           — `(1, 1, h/8, w/8)`, same one
+        //                                the mask-blend uses.
+        //   * `inpaint_masked_latents` — `(1, 4, h/8, w/8)`, VAE-encode
+        //                                of the pixel-space `input ×
+        //                                (1 - mask)`.
+        // Tiled to 2× along the batch dim under CFG, then concat'd
+        // along the channel dim onto the scaled latent input before
+        // the UNet forward.
+        inpaint_mask: Option<&Tensor>,
+        inpaint_masked_latents: Option<&Tensor>,
     ) -> Result<Tensor> {
         let latent_in = if do_cfg {
             Tensor::cat(&[latents, latents], 0)?
@@ -961,6 +1049,28 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
+        // SDXL-Inpaint: concat the 9-channel input. Caller has already
+        // built the mask + masked-image latents at latent resolution.
+        let latent_in = match (inpaint_mask, inpaint_masked_latents) {
+            (Some(m), Some(ml)) => {
+                let m_tiled = if do_cfg {
+                    Tensor::cat(&[m, m], 0)?
+                } else {
+                    m.clone()
+                };
+                let ml_tiled = if do_cfg {
+                    Tensor::cat(&[ml, ml], 0)?
+                } else {
+                    ml.clone()
+                };
+                Tensor::cat(&[&latent_in, &m_tiled, &ml_tiled], 1)?
+            }
+            (None, None) => latent_in,
+            _ => anyhow::bail!(
+                "SDXL-Inpaint denoise: inpaint_mask and inpaint_masked_latents \
+                 must be supplied together"
+            ),
+        };
         let noise_pred = if active_controls.is_empty() {
             self.core.unet.forward(
                 &latent_in,
