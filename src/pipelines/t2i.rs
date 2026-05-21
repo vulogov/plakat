@@ -770,6 +770,10 @@ impl Pipeline {
                 timestep,
                 text_embeddings,
                 do_cfg,
+                // v0.12: SDXL ControlNet now consumes the same
+                // text_time micro-conditioning as the UNet.
+                add_text_embeds,
+                add_time_ids,
             )?;
             unet.forward_with_additional_residuals(
                 &latent_in,

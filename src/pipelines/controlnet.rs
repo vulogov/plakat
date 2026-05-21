@@ -221,6 +221,22 @@ pub struct ControlNet {
     time_proj: Timesteps,
     time_embedding: TimestepEmbedding,
 
+    /// SDXL only — mirrors the UNet's `text_time` add_embedding. The
+    /// SDXL ControlNet has its own `add_embedding` module in its
+    /// safetensors (`add_embedding.linear_{1,2}.weight/bias`), and
+    /// diffusers' SDXL ControlNet pipeline feeds it the same
+    /// `(pooled_text, add_time_ids)` pair the base UNet uses. Without
+    /// this, every SDXL ControlNet runs with broken micro-conditioning
+    /// — its residuals carry a timestep-only signal while the UNet
+    /// they feed into uses the full pooled+time_ids embedding.
+    ///
+    /// `None` on SD 1.5 / SD 2.1.
+    add_time_proj: Option<Timesteps>,
+    add_embedding: Option<TimestepEmbedding>,
+    /// Carried so [`ControlNet::forward`] can validate `add_time_ids`
+    /// against `num_time_ids` at call time.
+    add_cfg: Option<crate::pipelines::sdxl_unet::SdxlAddEmbedConfig>,
+
     /// 3-channel conditioning image → latent-grid feature map.
     /// Output channels match `conv_in`'s output, so the two can be
     /// summed before entering the down blocks.
@@ -235,7 +251,6 @@ pub struct ControlNet {
     /// One 1×1 zero-conv per intermediate residual:
     /// `1 (after hint+conv_in) + sum(num_residuals_per_down_block)`.
     /// For SD 1.5 default config this is 13 entries (1 + 3 + 3 + 3 + 2 = 12).
-    /// Wait — actually it's 1 + 3 + 3 + 3 + 2 = 12 total down residuals.
     controlnet_down_blocks: Vec<Conv2d>,
 
     /// Final zero-conv on the mid-block output.
@@ -248,11 +263,13 @@ pub struct ControlNet {
 impl ControlNet {
     /// Construct from a `VarBuilder` rooted at the ControlNet weights
     /// (typically `vb` over the safetensors file with no further prefix).
-    /// Pass the same `UNet2DConditionModelConfig` the paired UNet uses.
+    /// Pass the same `UNet2DConditionModelConfig` the paired UNet uses,
+    /// and the variant so SDXL ControlNets pick up their `add_embedding`.
     pub fn new(
         vb: VarBuilder,
         in_channels: usize,
         config: UNet2DConditionModelConfig,
+        variant: ControlNetVariant,
     ) -> Result<Self> {
         let n_blocks = config.blocks.len();
         let b_channels = config.blocks[0].out_channels;
@@ -271,6 +288,26 @@ impl ControlNet {
         let time_embedding =
             TimestepEmbedding::new(vb.pp("time_embedding"), b_channels, time_embed_dim)
                 .context("ControlNet time_embedding")?;
+
+        // SDXL `text_time` add_embedding. Same shape contract as the
+        // SDXL UNet's: 6 time_ids × 256 + 1280 pooled = 2816 → 1280.
+        // Weight paths in diffusers-format SDXL ControlNets:
+        // `add_embedding.linear_{1,2}.{weight,bias}` (sibling of
+        // `time_embedding`).
+        let (add_time_proj, add_embedding, add_cfg) = match variant {
+            ControlNetVariant::Sd15 => (None, None, None),
+            ControlNetVariant::Sdxl => {
+                let cfg = crate::pipelines::sdxl_unet::SdxlAddEmbedConfig::base();
+                let tp = Timesteps::new(cfg.addition_time_embed_dim, true, 0.0);
+                let ae = TimestepEmbedding::new(
+                    vb.pp("add_embedding"),
+                    cfg.in_dim(),
+                    time_embed_dim,
+                )
+                .context("SDXL ControlNet add_embedding")?;
+                (Some(tp), Some(ae), Some(cfg))
+            }
+        };
 
         let hint_encoder =
             HintEncoder::new(vb.pp("controlnet_cond_embedding"), 3, b_channels)
@@ -405,6 +442,9 @@ impl ControlNet {
             conv_in,
             time_proj,
             time_embedding,
+            add_time_proj,
+            add_embedding,
+            add_cfg,
             hint_encoder,
             down_blocks,
             mid_block,
@@ -423,6 +463,11 @@ impl ControlNet {
     ///   (e.g. a depth map). Normalised to `[0, 1]` typically.
     /// * `strength` — multiplicative scale applied to every residual
     ///   before returning. `1.0` matches diffusers' default.
+    /// * `add_text_embeds` / `add_time_ids` — v0.12: SDXL `text_time`
+    ///   micro-conditioning. **Required** when this is an SDXL
+    ///   ControlNet (`SdxlAddEmbedConfig::base()` was wired in
+    ///   `new`); errors out if missing. **Ignored** on SD 1.5
+    ///   ControlNets.
     ///
     /// Returns `(down_block_additional_residuals, mid_block_additional_residual)`
     /// in the exact shape `UNet2DConditionModel::forward_with_additional_residuals`
@@ -434,6 +479,8 @@ impl ControlNet {
         encoder_hidden_states: &Tensor,
         conditioning: &Tensor,
         strength: f32,
+        add_text_embeds: Option<&Tensor>,
+        add_time_ids: Option<&Tensor>,
     ) -> Result<(Vec<Tensor>, Tensor)> {
         let (bsize, _c, _h, _w) = latents.dims4()?;
         let device = latents.device();
@@ -443,6 +490,52 @@ impl ControlNet {
         let emb = (Tensor::ones(bsize, dtype, device)? * timestep)?;
         let emb = self.time_proj.forward(&emb)?;
         let emb = self.time_embedding.forward(&emb)?;
+
+        // 1b. SDXL `text_time` add — diffusers formula, applied to
+        // `emb` exactly as the SdxlUNet does. Loud-error when the
+        // caller forgot the SDXL extras; ignore when the ControlNet
+        // is SD 1.5.
+        let emb = match (&self.add_embedding, &self.add_time_proj, &self.add_cfg) {
+            (Some(add_emb), Some(add_tp), Some(cfg)) => {
+                let te = add_text_embeds.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "SDXL ControlNet::forward requires add_text_embeds \
+                         (pooled CLIP-G) — none supplied"
+                    )
+                })?;
+                let ti = add_time_ids.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "SDXL ControlNet::forward requires add_time_ids — \
+                         none supplied"
+                    )
+                })?;
+                let (b_a, n_ids) = ti.dims2()?;
+                if b_a != bsize {
+                    anyhow::bail!(
+                        "ControlNet add_time_ids batch {b_a} mismatches latents batch {bsize}"
+                    );
+                }
+                if n_ids != cfg.num_time_ids {
+                    anyhow::bail!(
+                        "ControlNet add_time_ids has {n_ids} columns but \
+                         SdxlAddEmbedConfig.num_time_ids = {}",
+                        cfg.num_time_ids
+                    );
+                }
+                let flat_ids = ti.reshape((b_a * n_ids,))?;
+                let time_ids_emb = add_tp.forward(&flat_ids)?;
+                let time_ids_emb = time_ids_emb
+                    .reshape((b_a, n_ids * cfg.addition_time_embed_dim))?;
+                let add_in = Tensor::cat(
+                    &[&te.to_dtype(time_ids_emb.dtype())?, &time_ids_emb],
+                    1,
+                )?;
+                let aug_emb = add_emb.forward(&add_in)?;
+                emb.broadcast_add(&aug_emb.to_dtype(emb.dtype())?)?
+            }
+            (None, None, None) => emb,
+            _ => unreachable!("ControlNet add_* fields constructed together or not at all"),
+        };
 
         // 2. pre-process latents + hint, then sum.
         let hint = self.hint_encoder.forward(conditioning)?;
@@ -515,8 +608,9 @@ impl ControlNet {
         };
         // Both SD 1.5 and SDXL use 4-channel latents — only the
         // UNet architecture (block count, channel depths,
-        // cross_attn_dim) differs.
-        Self::new(vb, 4, variant.unet_config())
+        // cross_attn_dim) differs. v0.12: pass variant so SDXL picks
+        // up the add_embedding.
+        Self::new(vb, 4, variant.unet_config(), variant)
             .with_context(|| format!("building ControlNet ({variant:?}) from weights"))
     }
 }
@@ -858,14 +952,34 @@ pub fn sum_controlnet_residuals(
     timestep: usize,
     text_embeddings: &Tensor,
     do_cfg: bool,
+    // v0.12: SDXL `text_time` micro-conditioning forwarded to each
+    // active ControlNet. `None` on SD 1.5 / SD 2.1; pipelines pass the
+    // same `(pooled_text, add_time_ids)` pair they hand to the UNet.
+    add_text_embeds: Option<&Tensor>,
+    add_time_ids: Option<&Tensor>,
 ) -> Result<(Vec<Tensor>, Tensor)> {
     assert!(!active.is_empty(), "sum_controlnet_residuals called with empty slice");
     let mut iter = active.iter();
     let first = iter.next().expect("checked above");
-    let (mut down, mut mid) =
-        run_one(first, latent_in, timestep, text_embeddings, do_cfg)?;
+    let (mut down, mut mid) = run_one(
+        first,
+        latent_in,
+        timestep,
+        text_embeddings,
+        do_cfg,
+        add_text_embeds,
+        add_time_ids,
+    )?;
     for cr in iter {
-        let (d, m) = run_one(cr, latent_in, timestep, text_embeddings, do_cfg)?;
+        let (d, m) = run_one(
+            cr,
+            latent_in,
+            timestep,
+            text_embeddings,
+            do_cfg,
+            add_text_embeds,
+            add_time_ids,
+        )?;
         if d.len() != down.len() {
             anyhow::bail!(
                 "multi-ControlNet residual count mismatch: {} vs {}. \
@@ -888,6 +1002,8 @@ fn run_one(
     timestep: usize,
     text_embeddings: &Tensor,
     do_cfg: bool,
+    add_text_embeds: Option<&Tensor>,
+    add_time_ids: Option<&Tensor>,
 ) -> Result<(Vec<Tensor>, Tensor)> {
     let cond_in = if do_cfg {
         Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
@@ -900,6 +1016,8 @@ fn run_one(
         text_embeddings,
         &cond_in,
         cr.strength,
+        add_text_embeds,
+        add_time_ids,
     )
 }
 
@@ -1507,7 +1625,7 @@ mod tests {
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
         // SD 1.5 latent is 4 channels.
         let cfg = UNet2DConditionModelConfig::default();
-        let net = ControlNet::new(vb, 4, cfg);
+        let net = ControlNet::new(vb, 4, cfg, ControlNetVariant::Sd15);
         assert!(net.is_ok(), "ControlNet::new failed: {:?}", net.err());
         let net = net.unwrap();
         // Default config has 4 blocks, layers_per_block=2, last has
