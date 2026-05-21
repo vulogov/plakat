@@ -38,6 +38,11 @@ use candle_transformers::models::{
 // no residuals are passed, so the existing Flux generation path
 // behaves the same.
 use crate::pipelines::flux_inner as fmodel;
+// v0.13: upstream's quantized Flux for the GGUF path. Implements
+// candle's `WithForward` (same signature as our vendored BF16 Flux's
+// `forward`), so the denoise loop dispatches through a thin enum.
+use candle_transformers::models::flux::quantized_model as qmodel;
+use candle_transformers::quantized_var_builder::VarBuilder as QVarBuilder;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
@@ -192,7 +197,7 @@ pub struct Pipeline {
     // &mut self too. The scenario loop is sequential so this is fine.
     t5_enc: t5::T5EncoderModel,
     t5_tok: Tokenizer,
-    flux_model: fmodel::Flux,
+    flux_model: FluxBackbone,
     ae_model: fae::AutoEncoder,
     /// v0.12 phase 2b + v0.12 multi: zero or more Flux ControlNets.
     /// At denoise time each loaded CN runs once per step with its
@@ -207,6 +212,17 @@ pub struct Pipeline {
 /// network plus the user knobs (`scale`, `mode`) it was loaded with.
 /// The conditioning image is stored alongside per-`generate` call
 /// since it depends on width / height.
+/// v0.13: which Flux backbone the pipeline is running on.
+/// `Bf16` is plakat's vendored BF16 Flux with the residual hook
+/// (composes with LoRA + ControlNet). `Quantized` is candle's
+/// quantized Flux loaded from a GGUF file — drastically smaller in
+/// memory (~7 GB for Q4_K_S vs ~24 GB BF16) but doesn't support
+/// LoRA or ControlNet in this phase.
+pub enum FluxBackbone {
+    Bf16(fmodel::Flux),
+    Quantized(qmodel::Flux),
+}
+
 pub struct LoadedFluxControlNet {
     pub net: crate::pipelines::flux_controlnet::FluxControlNet,
     pub scale: f32,
@@ -230,37 +246,85 @@ impl Pipeline {
             DType::BF16
         };
 
+        // v0.13: detect quantized GGUF mode. city96 / any repo with
+        // "gguf" in the id ships only the transformer in GGUF form;
+        // AE + text encoders still come from the original BFL repo
+        // ("donor"). Phase 1 bails loud on LoRA + Quantized and
+        // ControlNet + Quantized since neither composes with the
+        // quantized weight layout in upstream candle yet.
+        let is_gguf = req.repo.to_lowercase().contains("gguf");
+        if is_gguf {
+            if !req.loras.is_empty() {
+                bail!(
+                    "Quantized Flux (GGUF) doesn't support LoRAs in Phase 1 — \
+                     merging into 4-bit weights would defeat the memory win. \
+                     Drop --lora or switch to the BF16 model."
+                );
+            }
+            if !req.controlnets.is_empty() {
+                bail!(
+                    "Quantized Flux (GGUF) doesn't support ControlNet in Phase 1 — \
+                     the quantized model has no residual-aware forward yet. \
+                     Drop --control-spec or switch to the BF16 model."
+                );
+            }
+        }
+        let donor_repo: String = if is_gguf {
+            match req.variant {
+                Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
+                Variant::Schnell => "black-forest-labs/FLUX.1-schnell".to_string(),
+            }
+        } else {
+            req.repo.clone()
+        };
+
         // ---------- download weights ----------
         let dl = progress::spinner(&format!("Downloading weights for {}", req.repo));
-        let main_path = crate::hf::download::get_file(&req.repo, req.variant.main_filename())
-            .await
-            .with_context(|| format!("{}", req.variant.main_filename()))?;
-        let ae_path = crate::hf::download::get_file(&req.repo, "ae.safetensors").await?;
+        // Transformer: GGUF when quantized, safetensors otherwise.
+        let main_path = if is_gguf {
+            // Default to Q4_K_S — best balance of memory/quality from
+            // city96's lineup. Users wanting a different quant level
+            // can repo-pin the exact file in a future CLI iteration.
+            let gguf_file = match req.variant {
+                Variant::Dev => "flux1-dev-Q4_K_S.gguf",
+                Variant::Schnell => "flux1-schnell-Q4_K_S.gguf",
+            };
+            crate::hf::download::get_file(&req.repo, gguf_file)
+                .await
+                .with_context(|| format!("{} from {}", gguf_file, req.repo))?
+        } else {
+            crate::hf::download::get_file(&req.repo, req.variant.main_filename())
+                .await
+                .with_context(|| format!("{}", req.variant.main_filename()))?
+        };
+        // AE + text encoders + tokenizers come from the donor repo
+        // (= req.repo for BF16 mode, original BFL repo for GGUF mode).
+        let ae_path = crate::hf::download::get_file(&donor_repo, "ae.safetensors").await?;
 
         let clip_weights = crate::hf::download::get_first_of(&[
-            (&req.repo, "text_encoder/model.fp16.safetensors"),
-            (&req.repo, "text_encoder/model.safetensors"),
+            (&donor_repo, "text_encoder/model.fp16.safetensors"),
+            (&donor_repo, "text_encoder/model.safetensors"),
         ])
         .await?;
         let clip_tokenizer = crate::hf::download::get_first_of(&[
-            (&req.repo, "tokenizer/tokenizer.json"),
+            (&donor_repo, "tokenizer/tokenizer.json"),
             ("openai/clip-vit-large-patch14", "tokenizer.json"),
         ])
         .await?;
 
         let t5_shard1 = crate::hf::download::get_file(
-            &req.repo,
+            &donor_repo,
             "text_encoder_2/model-00001-of-00002.safetensors",
         )
         .await?;
         let t5_shard2 = crate::hf::download::get_file(
-            &req.repo,
+            &donor_repo,
             "text_encoder_2/model-00002-of-00002.safetensors",
         )
         .await?;
         let t5_config_path =
-            crate::hf::download::get_file(&req.repo, "text_encoder_2/config.json").await?;
-        let t5_tokenizer = crate::hf::download::get_file(&req.repo, "tokenizer_2/tokenizer.json")
+            crate::hf::download::get_file(&donor_repo, "text_encoder_2/config.json").await?;
+        let t5_tokenizer = crate::hf::download::get_file(&donor_repo, "tokenizer_2/tokenizer.json")
             .await?;
         dl.finish_with_message("✓ weights ready");
 
@@ -327,10 +391,25 @@ impl Pipeline {
 
         // ---------- load flux + ae ----------
         let load = progress::spinner("Loading transformer + autoencoder");
-        let flux_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&effective_main_path], dtype, &req.device)?
+        let flux_model = if is_gguf {
+            let qvb = QVarBuilder::from_gguf(&main_path, &req.device).with_context(
+                || format!("loading GGUF transformer from {}", main_path.display()),
+            )?;
+            // qmodel::Flux::new wants candle's upstream Config struct
+            // (structurally identical to our vendored one but a
+            // different type). Construct the upstream Config inline.
+            use candle_transformers::models::flux::model::Config as UpstreamCfg;
+            let upstream_cfg = match req.variant {
+                Variant::Dev => UpstreamCfg::dev(),
+                Variant::Schnell => UpstreamCfg::schnell(),
+            };
+            FluxBackbone::Quantized(qmodel::Flux::new(&upstream_cfg, qvb)?)
+        } else {
+            let flux_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[&effective_main_path], dtype, &req.device)?
+            };
+            FluxBackbone::Bf16(fmodel::Flux::new(&req.variant.flux_config(), flux_vb)?)
         };
-        let flux_model = fmodel::Flux::new(&req.variant.flux_config(), flux_vb)?;
         let ae_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&ae_path], dtype, &req.device)?
         };
@@ -648,17 +727,37 @@ impl Pipeline {
                 _ => None,
             };
 
-            let pred = self.flux_model.forward_with_residuals(
-                &img,
-                &state.img_ids,
-                &state.txt,
-                &state.txt_ids,
-                &t_vec,
-                &state.vec,
-                Some(&guidance_t),
-                double_r,
-                single_r,
-            )?;
+            // v0.13: dispatch on backbone variant. BF16 path goes
+            // through plakat's vendored Flux with residual hooks
+            // (ControlNet support). Quantized path uses upstream's
+            // quantized Flux without residuals (ControlNet rejected
+            // at load time anyway). Both share the same input shape
+            // and produce the same output shape.
+            let pred = match &self.flux_model {
+                FluxBackbone::Bf16(net) => net.forward_with_residuals(
+                    &img,
+                    &state.img_ids,
+                    &state.txt,
+                    &state.txt_ids,
+                    &t_vec,
+                    &state.vec,
+                    Some(&guidance_t),
+                    double_r,
+                    single_r,
+                )?,
+                FluxBackbone::Quantized(net) => {
+                    use candle_transformers::models::flux::WithForward;
+                    net.forward(
+                        &img,
+                        &state.img_ids,
+                        &state.txt,
+                        &state.txt_ids,
+                        &t_vec,
+                        &state.vec,
+                        Some(&guidance_t),
+                    )?
+                }
+            };
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
         }
