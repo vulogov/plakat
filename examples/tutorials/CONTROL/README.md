@@ -1,13 +1,18 @@
 # CONTROL — ControlNet conditioning
 
-Runnable tutorial for `plakat --control`. Demonstrates the v0.9
-depth conditioner end-to-end.
+Runnable tutorial for `plakat --control`. Demonstrates both
+ControlNet conditioners shipped in v0.10 — depth + canny — on
+both SD 1.5 and SDXL.
 
 ControlNet adds an extra layer of structural guidance to the
 denoise: every diffusion step gets a parallel network's residuals
 that tell the UNet "the layout should look like *this*". The
-"this" can be a depth map (v0.9), or in future releases a canny
-edge image, a pose skeleton, a scribble, etc.
+"this" can be:
+- a **depth map** (3-D layout: foreground / mid-distance / sky)
+- a **canny edge map** (2-D outlines and silhouettes)
+
+Future releases will add scribble, pose, MLSD lines, normals,
+and more.
 
 ## What's in here
 
@@ -126,23 +131,74 @@ First run downloads Depth-Anything-V2-small (~99 MB) once. The
 weight is shared across smart-zones and ControlNet annotation; if
 you've already used `--smart-zones`, no extra download.
 
+### 5. `05_sdxl.sh` — SDXL ControlNet at 1024² (v0.10)
+
+```bash
+./scripts/05_sdxl.sh
+```
+
+Same depth-conditioning workflow as `01_basic.sh`, but routed
+through SDXL. Plakat auto-detects the architecture from `--model
+sdxl` and downloads the matching SDXL ControlNet
+(`diffusers/controlnet-depth-sdxl-1.0-small`, ~600 MB).
+
+Compare the output with `01_basic.sh`'s SD 1.5 version at 512² —
+the SDXL output at 1024² should have noticeably sharper texture
+detail. Tradeoff: ~3–4× the wall time per image, ~2× the
+memory headroom required.
+
+### 6. `06_canny.sh` — Canny edge conditioning (v0.10)
+
+```bash
+./scripts/06_canny.sh
+```
+
+The second conditioner shipped in v0.10. Where depth controls
+*where* things sit in the frame (3-D layout), canny controls
+*exact outlines* (2-D edges). The annotator is pure CPU image
+processing — Sobel + non-maximum suppression + hysteresis
+thresholding via the `imageproc` crate — no extra ML model.
+
+This script passes `--control canny --control-from
+../IMG2IMG/inputs/landscape.png`. Plakat runs Canny on the
+landscape PNG and uses the binary edge map as the conditioner.
+The painted output respects the source's edges (hill outlines,
+sun border) while the prompt drives the oil-painting aesthetic.
+
+## Choosing a conditioner
+
+| Conditioner | Captures | Best for |
+|---|---|---|
+| `--control depth` | 3-D layout: foreground / mid / far distance | Compositional control. "I want the subject *here* in the frame." Tolerant of rough inputs. |
+| `--control canny` | 2-D edges: silhouettes, contours, structural lines | Exact-shape control. "Follow *these outlines*." Most useful when shapes matter (architecture, line art, faithful re-renders). |
+
+Switch between them by changing only the `--control` flag — the
+rest of the CLI surface is identical. The matching ControlNet
+checkpoint downloads automatically.
+
 ## Modifications to try
+
+**Skip the manual depth map step.** Pass `--control-from PATH`
+instead of `--control-image PATH` on any script. Plakat runs
+Depth-Anything-V2 (for depth) or Canny edge detection (for
+canny) on the source automatically.
 
 **Bring your own depth map.** Replace `inputs/scene_depth.png`
 with any grayscale image where bright = near, dark = far. Tools:
 - [Depth-Anything-V2 online](https://huggingface.co/spaces/LiheYoung/Depth-Anything-V2)
 - MiDaS or DPT in a separate script
 - Hand-paint in any image editor
-- Run plakat's own depth estimator on a reference photo (not
-  yet a CLI subcommand — see `src/pipelines/depth.rs`)
 
-**Use a non-depth image.** ControlNet-Depth was trained on
-*proper* depth maps, but it sort of works with any grayscale
-brightness-encodes-depth signal — e.g. a luminance-flattened
-photograph. Results are less reliable but it's worth trying.
+**Swap depth for canny.** Change `--control depth` to
+`--control canny` on any script. Use `--control-from PATH` to
+auto-extract edges from any photo, or supply a pre-rendered
+edge map via `--control-image PATH`.
 
-**Combine with `--style-ref`.** A style reference photo + depth
-conditioning lets you control both composition (depth) and
+**Switch to SDXL.** Add `--model sdxl --size 1024x1024` to any
+script. The matching SDXL ControlNet downloads automatically.
+
+**Combine with `--style-ref`.** A style reference photo + control
+conditioning lets you control both composition (control) and
 aesthetic (style) independently. Add `--style-ref my_painting.jpg`
 to any script.
 
