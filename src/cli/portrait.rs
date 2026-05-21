@@ -361,7 +361,10 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     let steps = args.steps;
     let guidance = args.guidance;
 
-    portrait::run(portrait::Request {
+    // Phase 7e: capture the loaded SD backbone so the optional
+    // --artefact-blend pass below can reuse it instead of paying for
+    // a second multi-GB model load.
+    let shared_core = portrait::run(portrait::Request {
         prompt: args.prompt,
         negative,
         photos,
@@ -453,10 +456,10 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
             &Default::default(),
             seed,
             smart_depth.as_ref(),
-            // Phase 7d: portrait CLI keeps its own SD load for now;
-            // sharing here is 7e's scope (cli/portrait owns more
-            // pipeline state — identity adapter etc. — than t2i).
-            None,
+            // Phase 7e: reuse the SD backbone loaded for the portrait
+            // pass. Identity adapter weights are pipeline-local (not in
+            // SdCore), so they correctly don't carry into the blend.
+            Some(shared_core),
         )
         .await?;
     }

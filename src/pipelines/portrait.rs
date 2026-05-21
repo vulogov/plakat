@@ -263,6 +263,14 @@ impl Pipeline {
         })
     }
 
+    /// Hand out a cheap `Arc` clone of the loaded SD backbone so a
+    /// follow-on step (e.g. `--artefact-blend`) can build its own
+    /// pipeline (`Pipeline::from_core`) without paying for a second
+    /// model load. Phase 7e — mirrors `t2i::Pipeline::core`.
+    pub fn core(&self) -> std::sync::Arc<crate::pipelines::sd_core::SdCore> {
+        std::sync::Arc::clone(&self.core)
+    }
+
     /// Construct a no-identity portrait pipeline from an already-loaded
     /// SD backbone. Phase 7d — lets follow-on steps such as
     /// `--artefact-blend` reuse the core loaded by `t2i::run` without
@@ -900,7 +908,12 @@ impl Pipeline {
 // Single-shot entry — what `plakat portrait` calls.
 // =====================================================================
 
-pub async fn run(req: Request) -> Result<()> {
+/// Run a portrait task. Returns the loaded `SdCore` so a follow-on
+/// step (e.g. `--artefact-blend`) can reuse the same weights via
+/// [`Pipeline::from_core`] instead of paying for a second load.
+/// Portrait does not route through Flux (Flux portraits are rejected
+/// inside `Pipeline::load`), so the return is unconditional. Phase 7e.
+pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_core::SdCore>> {
     // Preload ControlNet + conditioning before the pipeline (same
     // ordering as `t2i::run`). Owned data lives on this stack frame.
     let dtype = if matches!(req.device, Device::Cpu) {
@@ -1000,7 +1013,8 @@ pub async fn run(req: Request) -> Result<()> {
             face_landmarks: req.face_landmarks,
         },
         control_req.as_ref(),
-    )
+    )?;
+    Ok(pipeline.core())
 }
 
 // =====================================================================
