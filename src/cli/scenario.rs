@@ -1690,6 +1690,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     &s.zones,
                     Some(task_seed),
                     smart_ref,
+                    // Phase 7d: scenarios load their own SD pipeline up
+                    // front; sharing the core through to blend here is
+                    // 7e's scope.
+                    None,
                 )
                 .await
                 .with_context(|| format!("task {:?}: blending artefacts", task.name))?;
