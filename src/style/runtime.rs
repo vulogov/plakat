@@ -80,7 +80,11 @@ const RUNTIME_ENCODER_ID: &str = "clip-h-laion2b";
 /// rather than re-loading 2.5 GB of weights.
 pub struct StyleSession {
     catalog: StyleCatalog,
-    encoder: Option<ImageEncoder>,
+    /// Phase 7f: stored as `Arc` so the encoder can be shared with
+    /// `portrait::Pipeline`'s identity encoder when both run in one
+    /// process (scenarios, portrait + style-ref). Lazy-loaded on
+    /// first `prepare()` that needs it.
+    encoder: Option<std::sync::Arc<ImageEncoder>>,
     device: Device,
 }
 
@@ -112,9 +116,34 @@ impl StyleSession {
                 "models/image_encoder/model.safetensors",
             )
             .await?;
-            self.encoder = Some(ImageEncoder::load(&weights, &self.device, DType::F32)?);
+            self.encoder = Some(std::sync::Arc::new(ImageEncoder::load(
+                &weights,
+                &self.device,
+                DType::F32,
+            )?));
         }
         Ok(())
+    }
+
+    /// Phase 7f. Inject a pre-loaded CLIP-H encoder so the session
+    /// won't load one itself. Caller-supplied dtype/device need to
+    /// match the rest of the session's expectations (F32 is the
+    /// standard for stylize). No-op if the session already has one.
+    pub fn set_shared_encoder(
+        &mut self,
+        encoder: std::sync::Arc<ImageEncoder>,
+    ) {
+        if self.encoder.is_none() {
+            self.encoder = Some(encoder);
+        }
+    }
+
+    /// Phase 7f. Hand out the encoder if it's been loaded — useful
+    /// when one CLI flow lazy-loads CLIP-H here and wants to feed it
+    /// into a later pipeline build instead of paying a second load.
+    /// Returns `None` if `prepare()` hasn't run yet.
+    pub fn shared_encoder(&self) -> Option<std::sync::Arc<ImageEncoder>> {
+        self.encoder.clone()
     }
 
     /// Detect (if photo set) and resolve a style against the catalog.
@@ -181,8 +210,25 @@ impl StyleSession {
 /// needed. Scenarios with per-task style-ref use the session API
 /// directly to share the encoder across tasks.
 pub async fn prepare_style(req: StylePrepRequest<'_>) -> Result<StylePrep> {
+    let (prep, _) = prepare_style_with_session(req).await?;
+    Ok(prep)
+}
+
+/// Phase 7f variant of [`prepare_style`] that also hands back any
+/// CLIP-H image encoder the session lazy-loaded during the prepare
+/// call. Lets the CLI feed that same encoder into the downstream
+/// portrait pipeline so PlusFace identity doesn't pay for a second
+/// load of the same ~2.5 GB weight set. Returns `None` for the encoder
+/// when the prep didn't actually need to encode (e.g. user passed
+/// `--style ID` directly without a `--style-ref` photo, or the prep
+/// failed before the lazy load fired).
+pub async fn prepare_style_with_session(
+    req: StylePrepRequest<'_>,
+) -> Result<(StylePrep, Option<std::sync::Arc<ImageEncoder>>)> {
     let mut session = StyleSession::load(req.style_catalog, req.device.clone())?;
-    session.prepare(req).await
+    let prep = session.prepare(req).await?;
+    let shared = session.shared_encoder();
+    Ok((prep, shared))
 }
 
 /// Parse resolved LoRA refs into plakat's `LoraSpec` type. When the

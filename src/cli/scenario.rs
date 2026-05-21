@@ -856,6 +856,41 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     };
     // -------- preload the stylize pipeline if any task uses `style` --------
     let any_style = s.tasks.iter().any(|t| t.style.is_some());
+
+    // -------- preload the portrait pipeline if any task uses `personas` ----
+    let any_persona = s
+        .tasks
+        .iter()
+        .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
+
+    // Phase 7f: pre-load a single CLIP-H image encoder when both
+    // stylize and a Plus-Face portrait identity are going to run.
+    // FaceID strategies don't touch CLIP-H, so they don't trigger the
+    // share. The shared Arc is then fed into both pipelines' load
+    // requests so each skips its own download / mmap.
+    let plusface_portrait = any_persona
+        && matches!(
+            portrait_identity,
+            Some(IdentityKind::PlusFace) | Some(IdentityKind::PlusFaceSdxl)
+        );
+    let shared_clip_h: Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>> =
+        if !args.dry_run && any_style && plusface_portrait {
+            let spinner = crate::ui::progress::spinner(
+                "Pre-loading shared CLIP-H image encoder",
+            );
+            // F32 matches stylize's standalone choice and the portrait
+            // identity encoder casts down at encode-time as needed.
+            let arc = crate::pipelines::ip_adapter::load_shared_clip_vision(
+                &device,
+                candle_core::DType::F32,
+            )
+            .await?;
+            spinner.finish_with_message("✓ shared CLIP-H loaded");
+            Some(arc)
+        } else {
+            None
+        };
+
     let stylize_pipeline: Option<stylize::Pipeline> = if !args.dry_run && any_style {
         // stylize is SD 1.5 only — the IP-Adapter projection targets the SD 1.5
         // cross-attention dim (768). The scenario's main `model` can still be
@@ -864,6 +899,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             stylize::Pipeline::load(stylize::LoadRequest {
                 model: "sd15".to_string(),
                 device: device.clone(),
+                shared_clip_h: shared_clip_h.clone(),
             })
             .await?,
         )
@@ -871,11 +907,6 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         None
     };
 
-    // -------- preload the portrait pipeline if any task uses `personas` ----
-    let any_persona = s
-        .tasks
-        .iter()
-        .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
     let portrait_pipeline: Option<portrait::Pipeline> = if !args.dry_run && any_persona {
         // Portrait base model is derived from the scenario's persona
         // identity kind (all personas must agree — validated above). The
@@ -891,6 +922,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras: loras.clone(),
                 lora_scale,
                 identity: Some(kind),
+                // Only Plus-Face identity strategies consume CLIP-H;
+                // FaceID strategies ignore this even when set.
+                shared_clip_h: shared_clip_h.clone(),
             })
             .await?,
         )

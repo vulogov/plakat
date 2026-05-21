@@ -149,6 +149,8 @@ pub async fn run(req: Request) -> Result<()> {
         loras: req.loras.clone(),
         lora_scale: req.lora_scale,
         identity: None,
+        // img2img doesn't run identity encoding, so no CLIP-H needed.
+        shared_clip_h: None,
     })
     .await
     .context("loading SD pipeline for img2img")?;

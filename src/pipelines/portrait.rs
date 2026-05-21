@@ -82,6 +82,10 @@ pub struct Request {
     /// Which identity strategy to wire up. `None` collapses portrait into a
     /// portrait-tuned text-only generate.
     pub identity: Option<IdentityKind>,
+    /// Phase 7f optional shared CLIP-H. Forwarded into the pipeline's
+    /// `LoadRequest` and consumed only by `PlusFace` / `PlusFaceSdxl`
+    /// identity strategies.
+    pub shared_clip_h: Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>>,
 
     // ---------- v0.9 ControlNet ----------
     pub control_kind: Option<crate::pipelines::controlnet::ControlKind>,
@@ -104,6 +108,13 @@ pub struct LoadRequest {
     /// pipeline can only do text-only portrait generation even if the
     /// caller later passes a `photo`.
     pub identity: Option<IdentityKind>,
+    /// Phase 7f. Optional pre-loaded CLIP-H image encoder to share
+    /// with `stylize::Pipeline` / `style::runtime::StyleSession`.
+    /// Used only when `identity` is `PlusFace` / `PlusFaceSdxl`
+    /// (FaceID strategies don't touch CLIP-H). `None` causes the
+    /// identity encoder to download + load CLIP-H itself — the
+    /// pre-7f behaviour.
+    pub shared_clip_h: Option<std::sync::Arc<crate::pipelines::ip_adapter::ImageEncoder>>,
 }
 
 pub struct GenRequest {
@@ -249,7 +260,9 @@ impl Pipeline {
 
         // -------- identity encoder (portrait-specific) --------
         let (identity_encoder, identity_num_tokens) = if let Some(kind) = req.identity {
-            let enc = kind.load_encoder(&req.device, dtype).await?;
+            let enc = kind
+                .load_encoder_with_shared_clip(&req.device, dtype, req.shared_clip_h.clone())
+                .await?;
             let n = enc.num_tokens();
             (Some(enc), n)
         } else {
@@ -1088,6 +1101,7 @@ pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_cor
         loras: req.loras,
         lora_scale: req.lora_scale,
         identity: req.identity,
+        shared_clip_h: req.shared_clip_h,
     })
     .await?;
 

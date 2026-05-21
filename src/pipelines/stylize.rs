@@ -60,6 +60,10 @@ const CLIP_H_INPUT: u32 = 224;
 pub struct LoadRequest {
     pub model: String,
     pub device: Device,
+    /// Phase 7f. Optional pre-loaded CLIP-H image encoder to share
+    /// with `portrait::Pipeline`'s identity encoder. `None` causes
+    /// stylize to download + load CLIP-H itself (pre-7f behaviour).
+    pub shared_clip_h: Option<std::sync::Arc<ImageEncoder>>,
 }
 
 pub struct GenRequest {
@@ -79,7 +83,10 @@ pub struct Pipeline {
     text_encoder: sdclip::ClipTextTransformer,
     vae: AutoEncoderKL,
     unet: UNet2DConditionModel,
-    image_encoder: ImageEncoder,
+    /// Phase 7f: `Arc` so the same CLIP-H weights can back both this
+    /// pipeline and portrait's identity encoder when both run in one
+    /// process.
+    image_encoder: std::sync::Arc<ImageEncoder>,
     image_proj: ImageProj,
     /// Pre-computed empty-prompt text embeddings (1, 77, 768) at this
     /// pipeline's dtype. Same across every stylize call — cached so we
@@ -138,9 +145,19 @@ impl Pipeline {
         .await?;
         let ipa_weights =
             crate::hf::download::get_file(IPA_REPO, "models/ip-adapter_sd15.safetensors").await?;
-        let img_enc_weights =
-            crate::hf::download::get_file(IPA_REPO, "models/image_encoder/model.safetensors")
-                .await?;
+        // Phase 7f: skip the CLIP-H download entirely when the caller
+        // supplied a pre-loaded encoder.
+        let img_enc_weights = if req.shared_clip_h.is_none() {
+            Some(
+                crate::hf::download::get_file(
+                    IPA_REPO,
+                    "models/image_encoder/model.safetensors",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         dl.finish_with_message("✓ weights ready");
 
         // -------- build models --------
@@ -155,7 +172,16 @@ impl Pipeline {
         )?;
         let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
         let unet = cfg.build_unet(&unet_path, &req.device, 4, false, dtype)?;
-        let image_encoder = ImageEncoder::load(&img_enc_weights, &req.device, dtype)?;
+        let image_encoder = match req.shared_clip_h {
+            Some(shared) => shared,
+            None => std::sync::Arc::new(ImageEncoder::load(
+                img_enc_weights
+                    .as_ref()
+                    .expect("img_enc_weights set when shared_clip_h is None"),
+                &req.device,
+                dtype,
+            )?),
+        };
         let image_proj = ImageProj::load(
             &ipa_weights,
             CLIP_H_PROJ_DIM,
@@ -283,6 +309,7 @@ pub async fn run(req: Request) -> Result<()> {
     let p = Pipeline::load(LoadRequest {
         model: req.model,
         device: req.device,
+        shared_clip_h: None,
     })
     .await?;
     p.stylize_one(&GenRequest {
