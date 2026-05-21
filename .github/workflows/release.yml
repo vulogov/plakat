@@ -193,6 +193,18 @@ jobs:
       - name: Build (--features ${{ matrix.features }})
         if: matrix.features != ''
         shell: bash
+        # CUDA_COMPUTE_CAP is consumed by candle-kernels' bindgen_cuda
+        # crate at build time. Without it bindgen_cuda runs nvidia-smi
+        # to auto-detect the host GPU's compute cap — which panics on
+        # a GitHub Actions Linux runner because there is no GPU and no
+        # nvidia-smi. 80 = Ampere (A100, A40, RTX 30xx). The compiled
+        # kernels embed PTX, so newer archs (Ada Lovelace 89, Hopper 90,
+        # Blackwell 100) JIT forward at runtime. Older Turing (75) is
+        # not supported by this binary — users on T4 / RTX 20xx should
+        # stick with the CPU build or `cargo install` from source with
+        # CUDA_COMPUTE_CAP=75 set.
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.install_cuda && '80' || '' }}
         run: |
           cargo build --release --locked --target ${{ matrix.target }} \
             --features '${{ matrix.features }}'
