@@ -15,6 +15,7 @@ pub mod img2img;
 pub mod face_models;
 pub mod faceid_lora;
 pub mod flux;
+pub mod flux_lora;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
 pub mod lora;

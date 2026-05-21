@@ -103,6 +103,10 @@ pub struct Request {
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
     pub device: Device,
+    /// v0.12: Flux LoRAs (already resolved to local safetensors paths
+    /// by the caller). Empty disables LoRA merging.
+    pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
+    pub lora_scale: f32,
 }
 
 // =====================================================================
@@ -113,6 +117,12 @@ pub struct LoadRequest {
     pub variant: Variant,
     pub repo: String,
     pub device: Device,
+    /// v0.12: Flux LoRAs to merge into the transformer at load time.
+    /// Empty for the original Flux behaviour. Supports diffusers PEFT
+    /// format only in this phase (see `pipelines::flux_lora`).
+    pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
+    /// Global multiplier applied on top of each LoRA's per-file scale.
+    pub lora_scale: f32,
 }
 
 pub struct GenRequest {
@@ -216,10 +226,47 @@ impl Pipeline {
             .map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ text encoders ready");
 
+        // ---------- merge Flux LoRAs (v0.12) ----------
+        // When the caller supplied LoRAs, we merge them into the Flux
+        // transformer safetensors first (writing to a temp file) and
+        // then load the merged file. Same pattern plakat uses for SD
+        // LoRA merging into the UNet — keeps candle's Flux loader
+        // unchanged.
+        let (effective_main_path, lora_tmp) = if req.loras.is_empty() {
+            (main_path.clone(), None)
+        } else {
+            let spin = progress::spinner(&format!(
+                "Merging {} Flux LoRA(s) into transformer",
+                req.loras.len()
+            ));
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-flux-merged-")
+                .suffix(".safetensors")
+                .tempfile()?;
+            let (modified, total) =
+                crate::pipelines::flux_lora::merge_flux_loras_into_weights(
+                    &main_path,
+                    tmp.path(),
+                    &req.loras,
+                    req.lora_scale,
+                    &req.device,
+                )?;
+            spin.finish_with_message(format!(
+                "✓ Flux LoRA merged ({modified}/{total} target groups)"
+            ));
+            let p = tmp.path().to_path_buf();
+            (p, Some(tmp))
+        };
+        // Tempfile handle kept alive for the rest of this fn — the
+        // mmap below references it. Pipeline holds none of it after
+        // load completes (the merged tensors are loaded into RAM by
+        // candle's loader, so the file can drop after `new` returns).
+        let _lora_tmp = lora_tmp;
+
         // ---------- load flux + ae ----------
         let load = progress::spinner("Loading transformer + autoencoder");
         let flux_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&main_path], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&[&effective_main_path], dtype, &req.device)?
         };
         let flux_model = fmodel::Flux::new(&req.variant.flux_config(), flux_vb)?;
         let ae_vb = unsafe {
@@ -370,6 +417,8 @@ pub async fn run(req: Request) -> Result<()> {
         variant: req.variant,
         repo: req.repo,
         device: req.device,
+        loras: req.loras,
+        lora_scale: req.lora_scale,
     })
     .await?;
     p.generate(&GenRequest {

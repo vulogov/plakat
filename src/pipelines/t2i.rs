@@ -1111,20 +1111,29 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
-    // Flux routes to its own pipeline; LoRAs are not supported there yet.
+    // Flux routes to its own pipeline. v0.12: LoRAs ARE supported via
+    // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
-        if !req.loras.is_empty() {
-            tracing::warn!(target: "plakat",
-                "ignoring {} LoRA file(s): kohya SD LoRAs don't apply to Flux's transformer",
-                req.loras.len()
-            );
-        }
         use crate::pipelines::flux;
         let fvar = if matches!(variant, Variant::FluxDev) {
             flux::Variant::Dev
         } else {
             flux::Variant::Schnell
         };
+        // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
+        // early if any LoRA file can't be fetched / opened.
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+            if req.loras.is_empty() {
+                Vec::new()
+            } else {
+                let s = progress::spinner("Resolving Flux LoRA file(s)");
+                let mut v = Vec::with_capacity(req.loras.len());
+                for spec in &req.loras {
+                    v.push(spec.resolve().await?);
+                }
+                s.finish_with_message(format!("✓ resolved {} Flux LoRA file(s)", v.len()));
+                v
+            };
         flux::run(flux::Request {
             prompt: req.prompt,
             variant: fvar,
@@ -1141,6 +1150,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             seed: req.seed,
             out_dir: req.out_dir,
             device: req.device,
+            loras: resolved_loras,
+            lora_scale: req.lora_scale,
         })
         .await?;
         return Ok(None);
