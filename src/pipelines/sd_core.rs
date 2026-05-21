@@ -49,41 +49,57 @@ use crate::pipelines::lora::ResolvedLora;
 use crate::ui::progress;
 
 /// SD variant the backbone routes through. Detected from the model
-/// alias / repo at load time. Mirrors `portrait::Variant` (and
-/// `t2i::Variant` modulo Flux) — kept separate so this module
-/// stays free of portrait-specific concerns.
+/// alias / repo at load time. Covers every SD-family architecture
+/// plakat supports (SD 1.5, SD 2.1, SDXL — SDXL-Turbo is
+/// architecturally identical to SDXL and uses the `Sdxl` variant;
+/// only the caller's scheduler defaults differ).
 ///
 /// Flux is **not** supported by `SdCore`. Flux's pipeline has a
 /// different architecture (transformer + T5, not UNet + CLIP) and
 /// stays in `pipelines::flux`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SdVariant {
+    /// SD 1.5. CLIP-L only, `cross_attention_dim = 768`.
     Sd15,
+    /// SD 2.1. OpenCLIP-H, `cross_attention_dim = 1024`,
+    /// `use_linear_projection = true`. Architecturally distinct
+    /// from SD 1.5.
+    Sd21,
+    /// SDXL (and SDXL-Turbo). Dual CLIP-L + CLIP-G,
+    /// `cross_attention_dim = 2048`, `use_linear_projection = true`.
     Sdxl,
 }
 
 impl SdVariant {
-    /// Same heuristic as `portrait::Variant::detect`: any "xl" in
-    /// the model name means SDXL, otherwise SD 1.5.
+    /// Detect the variant from a model name / HF repo id.
+    /// Priority: Flux markers raise an error to the caller (we
+    /// can't return None from a `-> Self` function — t2i checks
+    /// for Flux separately before calling SdCore::load).
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
+        // SDXL Turbo / SDXL → Sdxl (same architecture).
         if m.contains("xl") {
-            Self::Sdxl
-        } else {
-            Self::Sd15
+            return Self::Sdxl;
         }
+        // SD 2.1: explicit "2-1" / "2.1" / "v2" markers.
+        if m.contains("2-1") || m.contains("2.1") || m.contains("v2") {
+            return Self::Sd21;
+        }
+        Self::Sd15
     }
 
     pub fn cross_attn_dim(self) -> usize {
         match self {
             Self::Sd15 => 768,
+            Self::Sd21 => 1024,
             Self::Sdxl => 2048,
         }
     }
 
     pub fn vae_scale(self) -> f64 {
         match self {
-            Self::Sd15 => 0.18215,
+            // SD 1.5 and SD 2.1 share the same VAE scaling factor.
+            Self::Sd15 | Self::Sd21 => 0.18215,
             Self::Sdxl => 0.13025,
         }
     }
@@ -91,6 +107,7 @@ impl SdVariant {
     pub fn config(self, w: usize, h: usize) -> StableDiffusionConfig {
         match self {
             Self::Sd15 => StableDiffusionConfig::v1_5(None, Some(h), Some(w)),
+            Self::Sd21 => StableDiffusionConfig::v2_1(None, Some(h), Some(w)),
             Self::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
         }
     }
@@ -170,6 +187,7 @@ impl SdCore {
             "Resolving {} weights",
             match variant {
                 SdVariant::Sd15 => "SD 1.5",
+                SdVariant::Sd21 => "SD 2.1",
                 SdVariant::Sdxl => "SDXL",
             }
         ));
@@ -185,7 +203,9 @@ impl SdCore {
         ])
         .await?;
         let (tokenizer_g_path, text_enc_g_path) = match variant {
-            SdVariant::Sd15 => (None, None),
+            // SD 1.5 + SD 2.1 each have a single text encoder
+            // (no CLIP-G dual encoder).
+            SdVariant::Sd15 | SdVariant::Sd21 => (None, None),
             SdVariant::Sdxl => {
                 let t = crate::hf::download::get_first_of(&[
                     (&base_repo, "tokenizer_2/tokenizer.json"),
@@ -259,8 +279,10 @@ impl SdCore {
         let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
 
         // CLIP-L text encoder (with optional LoRA merge).
+        // SD 2.1 uses the same key naming as SD 1.5 for LoRA merge
+        // targets (both have a single `text_encoder` module on disk).
         let te_l_target = match variant {
-            SdVariant::Sd15 => crate::pipelines::lora::MergeTarget::TE_SD15,
+            SdVariant::Sd15 | SdVariant::Sd21 => crate::pipelines::lora::MergeTarget::TE_SD15,
             SdVariant::Sdxl => crate::pipelines::lora::MergeTarget::TE1_SDXL,
         };
         let effective_te_l_path = if resolved_loras.is_empty() {
@@ -296,7 +318,7 @@ impl SdCore {
 
         // SDXL only: CLIP-G text encoder (with optional LoRA merge).
         let text_encoder_g = match variant {
-            SdVariant::Sd15 => None,
+            SdVariant::Sd15 | SdVariant::Sd21 => None,
             SdVariant::Sdxl => {
                 let cfg_g = cfg
                     .clip2

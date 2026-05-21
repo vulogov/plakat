@@ -19,9 +19,8 @@ use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip,
+    self, clip as sdclip,
     unet_2d::{BlockConfig, UNet2DConditionModel, UNet2DConditionModelConfig},
-    vae::AutoEncoderKL,
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -148,33 +147,6 @@ impl Variant {
         }
     }
 
-    fn config(self, w: usize, h: usize) -> Result<StableDiffusionConfig> {
-        Ok(match self {
-            Self::Sd15 => StableDiffusionConfig::v1_5(None, Some(h), Some(w)),
-            Self::Sd21 => StableDiffusionConfig::v2_1(None, Some(h), Some(w)),
-            Self::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
-            Self::SdxlTurbo => StableDiffusionConfig::sdxl_turbo(None, Some(h), Some(w)),
-            Self::FluxSchnell | Self::FluxDev => unreachable!(
-                "Flux variants route through pipelines::flux::run, not Pipeline::load"
-            ),
-        })
-    }
-
-    fn dtype(self, dev: &Device) -> DType {
-        if matches!(dev, Device::Cpu) {
-            DType::F32
-        } else {
-            DType::F16
-        }
-    }
-
-    fn vae_scale(self) -> f64 {
-        match self {
-            Self::Sdxl | Self::SdxlTurbo => 0.13025,
-            _ => 0.18215,
-        }
-    }
-
     pub fn is_xl(self) -> bool {
         matches!(self, Self::Sdxl | Self::SdxlTurbo)
     }
@@ -209,29 +181,25 @@ async fn fetch_first(repo: &str, candidates: &[&str]) -> Result<PathBuf> {
 // Pipeline: load once, generate many.
 // =====================================================================
 
+/// t2i wrapping pipeline. Phase 7c: holds an `Arc<SdCore>` for the
+/// shared SD backbone, plus the t2i-specific `variant` (which knows
+/// about SDXL-Turbo / SD 2.1 distinctions that the architectural
+/// SdCore collapses) and the optional SDXL refiner UNet.
+///
+/// Sharing the SdCore across pipelines (e.g. with portrait::Pipeline
+/// when --artefact-blend is set, v0.10 phase 7d) eliminates
+/// redundant model loads.
 pub struct Pipeline {
     pub variant: Variant,
     /// Resolved HF repo id this pipeline was loaded from (after alias resolution).
     #[allow(dead_code)]
     pub repo: String,
-    cfg: StableDiffusionConfig,
-    tokenizer_l: Tokenizer,
-    tokenizer_g: Option<Tokenizer>,
-    text_encoder_l: sdclip::ClipTextTransformer,
-    text_encoder_g: Option<sdclip::ClipTextTransformer>,
-    vae: AutoEncoderKL,
-    unet: UNet2DConditionModel,
+    core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
     /// Optional second UNet from `stabilityai/stable-diffusion-xl-refiner-1.0`.
     /// Present only when `LoadRequest::use_refiner == true` and the variant
-    /// is SDXL/SDXL-Turbo.
+    /// is SDXL/SDXL-Turbo. Not shared via SdCore — the refiner is
+    /// t2i-specific.
     refiner_unet: Option<UNet2DConditionModel>,
-    device: Device,
-    dtype: DType,
-    // Held to keep merged-weight tempfiles alive for the Pipeline's lifetime.
-    // One per target merged (UNet, optional CLIP-L, optional CLIP-G). The
-    // mmaps actually survive the temp file's unlink on Unix, but holding
-    // the guards avoids relying on that.
-    _lora_tmp: Vec<tempfile::NamedTempFile>,
 }
 
 const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
@@ -300,7 +268,13 @@ async fn fetch_refiner_unet() -> Result<PathBuf> {
 }
 
 impl Pipeline {
-    /// Download + load + merge LoRAs once. SD/SDXL only.
+    /// Download + load + merge LoRAs once. SD/SDXL only — Flux
+    /// routes to `pipelines::flux::run`.
+    ///
+    /// Phase 7c: the SD backbone load delegates to
+    /// [`SdCore::load`](crate::pipelines::sd_core::SdCore::load).
+    /// t2i-specific concerns (Flux rejection, optional SDXL refiner
+    /// UNet) stay here.
     pub async fn load(req: LoadRequest) -> Result<Self> {
         let variant = Variant::detect(&req.model);
         if variant.is_flux() {
@@ -309,216 +283,38 @@ impl Pipeline {
             );
         }
         let repo = resolve_repo(&req.model);
-        // Placeholder dims — not baked into model weights, only stored in cfg.
-        let cfg = variant.config(512, 512)?;
-        let dtype = variant.dtype(&req.device);
 
-        // ---- download weights ----
-        let dl = progress::spinner(&format!("Resolving weights for {repo}"));
-
-        let tokenizer_l_path = crate::hf::download::get_first_of(&[
-            (&repo, "tokenizer/tokenizer.json"),
-            ("openai/clip-vit-large-patch14", "tokenizer.json"),
-        ])
-        .await
-        .with_context(|| format!("tokenizer (CLIP-L) for {repo}"))?;
-        let text_enc_l_path = fetch_first(
-            &repo,
-            &[
-                "text_encoder/model.fp16.safetensors",
-                "text_encoder/model.safetensors",
-            ],
-        )
-        .await
-        .with_context(|| format!("text_encoder weights in {repo}"))?;
-
-        let (tokenizer_g_path, text_enc_g_path) = if variant.is_xl() {
-            let t = crate::hf::download::get_first_of(&[
-                (&repo, "tokenizer_2/tokenizer.json"),
-                ("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json"),
-                ("openai/clip-vit-large-patch14", "tokenizer.json"),
-            ])
-            .await
-            .with_context(|| format!("tokenizer (CLIP-G) for {repo}"))?;
-            let e = fetch_first(
-                &repo,
-                &[
-                    "text_encoder_2/model.fp16.safetensors",
-                    "text_encoder_2/model.safetensors",
-                ],
-            )
-            .await
-            .with_context(|| format!("text_encoder_2 in {repo}"))?;
-            (Some(t), Some(e))
-        } else {
-            (None, None)
-        };
-
-        let unet_path = fetch_first(
-            &repo,
-            &[
-                "unet/diffusion_pytorch_model.fp16.safetensors",
-                "unet/diffusion_pytorch_model.safetensors",
-            ],
-        )
-        .await
-        .with_context(|| format!("unet weights in {repo}"))?;
-        let vae_path = fetch_first(
-            &repo,
-            &[
-                "vae/diffusion_pytorch_model.fp16.safetensors",
-                "vae/diffusion_pytorch_model.safetensors",
-            ],
-        )
-        .await
-        .with_context(|| format!("vae weights in {repo}"))?;
-        dl.finish_with_message(format!("✓ weights ready for {repo}"));
-
-        // ---- build models ----
-        let build = progress::spinner("Loading models");
-
-        let tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
-            .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
-        let tokenizer_g = match tokenizer_g_path.as_ref() {
-            Some(p) => Some(
-                Tokenizer::from_file(p).map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?,
-            ),
-            None => None,
-        };
-
-        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
-
-        // ---- LoRA: resolve once, then merge per target ----
-        let mut lora_tmps: Vec<tempfile::NamedTempFile> = Vec::new();
+        // Resolve user LoRAs (t2i has no auto-LoRAs; that's a
+        // portrait-pipeline concern for FaceID).
         let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
             Vec::new()
         } else {
-            let resolve_spinner = progress::spinner("Resolving LoRA file(s)");
+            let s = progress::spinner("Resolving LoRA file(s)");
             let mut v = Vec::with_capacity(req.loras.len());
             for spec in &req.loras {
                 v.push(spec.resolve().await?);
             }
-            resolve_spinner.finish_with_message(format!("✓ resolved {} LoRA file(s)", v.len()));
+            s.finish_with_message(format!("✓ resolved {} LoRA file(s)", v.len()));
             v
         };
 
-        let merge_target_for = |is_xl: bool, target: crate::pipelines::lora::MergeTarget|
-            -> crate::pipelines::lora::MergeTarget {
-            let _ = is_xl;
-            target
-        };
-
-        // Merge into UNet.
-        let effective_unet_path = if resolved_loras.is_empty() {
-            unet_path.clone()
-        } else {
-            let spin = progress::spinner("Merging LoRA into UNet");
-            let tmp = tempfile::Builder::new()
-                .prefix("plakat-merged-unet-")
-                .suffix(".safetensors")
-                .tempfile()?;
-            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                &unet_path,
-                tmp.path(),
-                &resolved_loras,
-                req.lora_scale,
-                &req.device,
-                crate::pipelines::lora::MergeTarget::UNET,
-            )?;
-            spin.finish_with_message(format!(
-                "✓ merged {modified}/{targets} UNet LoRA target(s)"
-            ));
-            let p = tmp.path().to_path_buf();
-            lora_tmps.push(tmp);
-            p
-        };
-        let unet = cfg.build_unet(&effective_unet_path, &req.device, 4, false, dtype)?;
-
-        // Merge into CLIP-L (text_encoder).
-        let te_l_target = merge_target_for(
-            variant.is_xl(),
-            if variant.is_xl() {
-                crate::pipelines::lora::MergeTarget::TE1_SDXL
-            } else {
-                crate::pipelines::lora::MergeTarget::TE_SD15
+        // Delegate the SD backbone load. SdVariant::detect collapses
+        // t2i's SdxlTurbo→Sdxl mapping (same architecture; only
+        // scheduler defaults differ, which we don't carry through
+        // SdCore).
+        let core = crate::pipelines::sd_core::SdCore::load(
+            crate::pipelines::sd_core::SdLoadRequest {
+                model: req.model.clone(),
+                device: req.device.clone(),
+                loras: resolved_loras,
+                lora_scale: req.lora_scale,
             },
-        );
-        let effective_te_l_path = if resolved_loras.is_empty() {
-            text_enc_l_path.clone()
-        } else {
-            let spin = progress::spinner(&format!("Merging LoRA into {}", te_l_target.name));
-            let tmp = tempfile::Builder::new()
-                .prefix("plakat-merged-te-l-")
-                .suffix(".safetensors")
-                .tempfile()?;
-            let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                &text_enc_l_path,
-                tmp.path(),
-                &resolved_loras,
-                req.lora_scale,
-                &req.device,
-                te_l_target,
-            )?;
-            spin.finish_with_message(format!(
-                "✓ merged {modified}/{targets} {} LoRA target(s)",
-                te_l_target.name
-            ));
-            let p = tmp.path().to_path_buf();
-            lora_tmps.push(tmp);
-            p
-        };
-        let text_encoder_l = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
-            &effective_te_l_path,
-            &req.device,
-            dtype,
-        )?;
+        )
+        .await
+        .context("loading SD backbone for t2i pipeline")?;
+        let dtype = core.dtype;
 
-        // Merge into CLIP-G (text_encoder_2) for SDXL.
-        let text_encoder_g = if variant.is_xl() {
-            let cfg_g = cfg
-                .clip2
-                .as_ref()
-                .ok_or_else(|| anyhow!("SDXL config is missing clip2"))?;
-            let p = text_enc_g_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
-            let effective_te_g_path = if resolved_loras.is_empty() {
-                p.clone()
-            } else {
-                let target = crate::pipelines::lora::MergeTarget::TE2_SDXL;
-                let spin = progress::spinner(&format!("Merging LoRA into {}", target.name));
-                let tmp = tempfile::Builder::new()
-                    .prefix("plakat-merged-te-g-")
-                    .suffix(".safetensors")
-                    .tempfile()?;
-                let (modified, targets) = crate::pipelines::lora::merge_loras_into_weights(
-                    p,
-                    tmp.path(),
-                    &resolved_loras,
-                    req.lora_scale,
-                    &req.device,
-                    target,
-                )?;
-                spin.finish_with_message(format!(
-                    "✓ merged {modified}/{targets} {} LoRA target(s)",
-                    target.name
-                ));
-                let path = tmp.path().to_path_buf();
-                lora_tmps.push(tmp);
-                path
-            };
-            Some(stable_diffusion::build_clip_transformer(
-                cfg_g,
-                &effective_te_g_path,
-                &req.device,
-                dtype,
-            )?)
-        } else {
-            None
-        };
-
-        // Optional second UNet: SDXL refiner.
+        // Optional second UNet: SDXL refiner. t2i-specific.
         let refiner_unet = if req.use_refiner {
             if !variant.is_xl() {
                 anyhow::bail!(
@@ -553,22 +349,11 @@ impl Pipeline {
             None
         };
 
-        build.finish_with_message("✓ models loaded");
-
         Ok(Self {
             variant,
             repo,
-            cfg,
-            tokenizer_l,
-            tokenizer_g,
-            text_encoder_l,
-            text_encoder_g,
-            vae,
-            unet,
+            core: std::sync::Arc::new(core),
             refiner_unet,
-            device: req.device,
-            dtype,
-            _lora_tmp: lora_tmps,
         })
     }
 
@@ -583,81 +368,87 @@ impl Pipeline {
     }
 
     fn encode_single(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
-        let cond_ids = tokenize_padded(&self.tokenizer_l, &self.cfg.clip, prompt, &self.device)?;
-        let cond = self.text_encoder_l.forward(&cond_ids)?;
+        let cond_ids = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, prompt, &self.core.device)?;
+        let cond = self.core.text_encoder_l.forward(&cond_ids)?;
         if !do_cfg {
-            return Ok(cond.to_dtype(self.dtype)?);
+            return Ok(cond.to_dtype(self.core.dtype)?);
         }
         let uncond_ids =
-            tokenize_padded(&self.tokenizer_l, &self.cfg.clip, negative, &self.device)?;
-        let uncond = self.text_encoder_l.forward(&uncond_ids)?;
-        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.dtype)?)
+            tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, negative, &self.core.device)?;
+        let uncond = self.core.text_encoder_l.forward(&uncond_ids)?;
+        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
     /// CLIP-G-only encoding for the SDXL refiner UNet. Produces
     /// `(B, 77, 1280)` — base SDXL uses `(B, 77, 2048)` instead.
     fn encode_g_only(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
         let cfg_g = self
+            .core
             .cfg
             .clip2
             .as_ref()
             .ok_or_else(|| anyhow!("refiner encoding needs clip2 (SDXL config)"))?;
         let tok_g = self
+            .core
             .tokenizer_g
             .as_ref()
             .ok_or_else(|| anyhow!("refiner encoding needs tokenizer_g"))?;
         let enc_g = self
+            .core
             .text_encoder_g
             .as_ref()
             .ok_or_else(|| anyhow!("refiner encoding needs text_encoder_g"))?;
 
-        let cond = embed_g_only(prompt, tok_g, cfg_g, enc_g, &self.device)?;
+        let cond = embed_g_only(prompt, tok_g, cfg_g, enc_g, &self.core.device)?;
         if !do_cfg {
-            return Ok(cond.to_dtype(self.dtype)?);
+            return Ok(cond.to_dtype(self.core.dtype)?);
         }
-        let uncond = embed_g_only(negative, tok_g, cfg_g, enc_g, &self.device)?;
-        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.dtype)?)
+        let uncond = embed_g_only(negative, tok_g, cfg_g, enc_g, &self.core.device)?;
+        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
     fn encode_xl(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
         let cfg_g = self
+            .core
             .cfg
             .clip2
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL config is missing clip2"))?;
         let tok_g = self
+            .core
             .tokenizer_g
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing tokenizer_g"))?;
         let enc_g = self
+            .core
             .text_encoder_g
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
         let cond = embed_xl(
             prompt,
-            &self.tokenizer_l,
+            &self.core.tokenizer_l,
             tok_g,
-            &self.cfg.clip,
+            &self.core.cfg.clip,
             cfg_g,
-            &self.text_encoder_l,
+            &self.core.text_encoder_l,
             enc_g,
-            &self.device,
+            &self.core.device,
         )?;
         if !do_cfg {
-            return Ok(cond.to_dtype(self.dtype)?);
+            return Ok(cond.to_dtype(self.core.dtype)?);
         }
         let uncond = embed_xl(
             negative,
-            &self.tokenizer_l,
+            &self.core.tokenizer_l,
             tok_g,
-            &self.cfg.clip,
+            &self.core.cfg.clip,
             cfg_g,
-            &self.text_encoder_l,
+            &self.core.text_encoder_l,
             enc_g,
-            &self.device,
+            &self.core.device,
         )?;
-        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.dtype)?)
+        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
     /// Generate `req.count` images for one prompt. Reuses the loaded
@@ -673,7 +464,7 @@ impl Pipeline {
         req: &GenRequest,
         control: Option<&crate::pipelines::controlnet::ControlRequest>,
     ) -> Result<()> {
-        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.device)?;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -692,7 +483,7 @@ impl Pipeline {
         let bsz: usize = 1;
         let latent_h = h / 8;
         let latent_w = w / 8;
-        let vae_scale = self.variant.vae_scale();
+        let vae_scale: f64 = self.core.variant.vae_scale();
 
         for idx in 0..req.count {
             let seed = req
@@ -700,7 +491,7 @@ impl Pipeline {
                 .map(|s| s + idx as u64)
                 .unwrap_or_else(rand::random)
                 & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed) {
+            if let Err(e) = self.core.device.set_seed(seed) {
                 tracing::debug!(
                     target: "plakat",
                     "set_seed not supported ({e}); using global RNG"
@@ -708,12 +499,12 @@ impl Pipeline {
             }
 
             let mut scheduler =
-                crate::pipelines::scheduler::build(req.scheduler, &self.cfg, req.steps)?;
+                crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
             let timesteps = scheduler.timesteps().to_vec();
 
             let mut latents =
-                Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.device)?
-                    .to_dtype(self.dtype)?;
+                Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
+                    .to_dtype(self.core.dtype)?;
             latents = (latents * scheduler.init_noise_sigma())?;
 
             // Compute the index where to switch from base UNet to the
@@ -737,7 +528,7 @@ impl Pipeline {
             let total_steps = timesteps.len();
             for (step_i, &timestep) in timesteps.iter().enumerate() {
                 let (unet_ref, embeds, tag) = if step_i < switch {
-                    (&self.unet, &text_embeddings, "base")
+                    (&self.core.unet, &text_embeddings, "base")
                 } else {
                     (
                         self.refiner_unet.as_ref().unwrap(),
@@ -768,7 +559,7 @@ impl Pipeline {
                     let strength = req.refine_strength.clamp(0.0, 1.0);
                     let mut polish = crate::pipelines::scheduler::build(
                         req.scheduler,
-                        &self.cfg,
+                        &self.core.cfg,
                         rsteps,
                     )?;
                     let pts = polish.timesteps().to_vec();
@@ -776,8 +567,8 @@ impl Pipeline {
                     let init_skip = init_skip.min(rsteps.saturating_sub(1));
                     let active = &pts[init_skip..];
                     if let Some(&start_t) = active.first() {
-                        let noise = Tensor::randn(0f32, 1f32, latents.shape(), &self.device)?
-                            .to_dtype(self.dtype)?;
+                        let noise = Tensor::randn(0f32, 1f32, latents.shape(), &self.core.device)?
+                            .to_dtype(self.core.dtype)?;
                         latents = polish.add_noise(&latents, noise, start_t)?;
                         let rbar = progress::step_bar(
                             active.len() as u64,
@@ -788,7 +579,7 @@ impl Pipeline {
                             let progress = step_idx as f32 / total_polish as f32;
                             let step_control = control.filter(|cr| cr.active_at(progress));
                             latents = self.denoise_step(
-                                &self.unet,
+                                &self.core.unet,
                                 &latents,
                                 timestep,
                                 &text_embeddings,
@@ -806,7 +597,7 @@ impl Pipeline {
             }
 
             // VAE decode + save
-            let image = self.vae.decode(&(&latents / vae_scale)?)?;
+            let image = self.core.vae.decode(&(&latents / vae_scale)?)?;
             let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
             let image = (image * 255.0)?
                 .to_dtype(DType::U8)?
