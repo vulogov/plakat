@@ -136,27 +136,32 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 Pre-built binaries for the 0.7+ tags are attached to each
 [GitHub release](https://github.com/vulogov/plakat/releases). The
 release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
-builds four targets on every `v*` tag push:
+builds five archives on every `v*` tag push:
 
-| Target | Backend |
-|---|---|
-| `aarch64-apple-darwin`   | Metal (Apple Silicon GPU) |
-| `x86_64-unknown-linux-gnu` | CPU only |
-| `aarch64-unknown-linux-gnu` | CPU only |
-| `x86_64-pc-windows-msvc` | CPU only |
+| Archive | Target | Backend | Notes |
+|---|---|---|---|
+| `plakat-vX.Y.Z-aarch64-apple-darwin.tar.gz` | aarch64-apple-darwin | Metal (Apple Silicon GPU) | |
+| `plakat-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` | x86_64-unknown-linux-gnu | CPU only | Works on any Linux x86_64. |
+| `plakat-vX.Y.Z-x86_64-unknown-linux-gnu-cuda.tar.gz` | x86_64-unknown-linux-gnu | **CUDA + CPU fallback** | Requires the NVIDIA CUDA 12 runtime libraries on the host (`libcudart.so.12`, etc.). |
+| `plakat-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` | aarch64-unknown-linux-gnu | CPU only | |
+| `plakat-vX.Y.Z-x86_64-pc-windows-msvc.zip` | x86_64-pc-windows-msvc | CPU only | |
 
 Each archive contains the `plakat` binary, `LICENSE`, `README.md`, and
 the bundled `assets/` (artefact library + style catalog). A
 `SHA256SUMS` file is attached to the same release for verification:
 `shasum -a 256 -c SHA256SUMS`.
 
+**Picking the right Linux binary**: if you have an NVIDIA GPU AND the
+CUDA 12 runtime installed (`apt install nvidia-cuda-toolkit` on Debian/
+Ubuntu, or via the NVIDIA installer), grab the `-cuda` variant —
+it'll auto-detect your GPU and run inference there. Otherwise grab
+the plain `x86_64-unknown-linux-gnu` archive (no CUDA runtime
+dependency).
+
 Intel Macs (`x86_64-apple-darwin`) are not pre-built — Apple Silicon
 is the supported macOS target (Metal is the only GPU backend candle
 offers on macOS). Install from source on Intel with
 `cargo install plakat`.
-
-CUDA-enabled Linux binaries are not pre-built; install with
-`cargo install plakat --features cuda` when you need them.
 
 ## License
 
