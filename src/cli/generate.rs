@@ -230,12 +230,14 @@ pub struct GenerateArgs {
     )]
     pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 
-    /// **v0.12**: tiled hi-res generation. Enables MultiDiffusion-style
-    /// overlapping SDXL passes — the UNet only ever sees tiles of
-    /// `--tile-size` × `--tile-size`, blended per-step via a 2D Hann
-    /// window. Lets SDXL produce 4K+ outputs without exceeding its
-    /// trained working resolution. Currently SDXL only; doesn't
-    /// compose with `--control*` or the SDXL refiner.
+    /// **v0.12 / v0.13**: tiled hi-res generation. Enables
+    /// MultiDiffusion-style overlapping passes — the transformer only
+    /// ever sees tiles of `--tile-size` × `--tile-size`, blended
+    /// per-step via a 2D Hann window. Lets SDXL or Flux produce 4K+
+    /// outputs without exceeding the model's trained working
+    /// resolution. Supported on SDXL (v0.12) and Flux (v0.13 phase 4).
+    /// Doesn't yet compose with `--control*`, the SDXL refiner, or
+    /// Flux.1-Fill-dev.
     #[arg(long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
@@ -259,6 +261,27 @@ pub struct GenerateArgs {
     /// models.
     #[arg(long = "quantize-t5", default_value_t = false)]
     pub quantize_t5: bool,
+
+    /// **v0.13 phase 5**: GGUF quant level for the Flux transformer.
+    /// Defaults to `Q4_K_S` (~7 GB; v0.13 phase 1 footprint). city96
+    /// publishes Q2_K..Q8_0 + F16; pick lower for tighter VRAM, higher
+    /// for better quality. Ignored on BF16 Flux (`flux-dev` /
+    /// `flux-schnell`) and SD-family models.
+    ///
+    /// Common picks:
+    ///   * `Q3_K_S` (~5.5 GB) — tightest at the cost of noticeable quality drop
+    ///   * `Q4_K_S` (~7 GB) — default; balanced
+    ///   * `Q5_K_M` (~8.5 GB) — sweeter quality/memory tradeoff
+    ///   * `Q8_0`   (~13 GB) — near-BF16 quality at half the memory
+    ///   * `F16`    (~24 GB) — equivalent to BF16
+    #[arg(long = "quant-level", value_name = "LEVEL")]
+    pub quant_level: Option<String>,
+
+    /// **v0.13 phase 5**: GGUF quant level for the T5-XXL encoder.
+    /// Defaults to `Q4_K_M` (~3 GB). Only meaningful with
+    /// `--quantize-t5`. city96 publishes Q3_K_S..Q8_0 + F16/F32.
+    #[arg(long = "t5-quant-level", value_name = "LEVEL")]
+    pub t5_quant_level: Option<String>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -338,6 +361,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             None
         },
         quantize_t5: args.quantize_t5,
+        flux_quant_level: args.quant_level,
+        t5_quant_level: args.t5_quant_level,
     })
     .await?;
 

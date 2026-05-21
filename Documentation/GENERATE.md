@@ -47,11 +47,42 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `sdxl-turbo` | `stabilityai/sdxl-turbo` | 512–1024. Requires `--steps 4 --guidance 0`. |
 | `flux-schnell` | `black-forest-labs/FLUX.1-schnell` | 1024² typical. 4 steps. ~31 GB. |
 | `flux-dev` | `black-forest-labs/FLUX.1-dev` | Gated — needs `HF_TOKEN`. 20–50 steps. |
+| `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | **v0.13**: BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
+| `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | **v0.13**: 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
+| `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | **v0.13**: 4-bit quantized FLUX.1-schnell. |
+| `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | **v0.13**: 4-bit quantized Flux Fill. |
 
 Custom HF repos: pass the full `org/name`. For SD-family the repo must
 have the diffusers layout (`unet/`, `vae/`, `text_encoder[_2]/`,
 `tokenizer[_2]/`). For Flux variants we expect the BFL-native single-file
-layout (`flux1-{schnell,dev}.safetensors` + `ae.safetensors`).
+layout (`flux1-{schnell,dev}.safetensors` + `ae.safetensors`). GGUF
+repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
+`ae.safetensors` + text encoders come from the original BFL repo
+("donor") on first run.
+
+#### `--quant-level <LEVEL>` (default `Q4_K_S`, v0.13)
+
+GGUF quant level for the Flux transformer when running a `flux-*-gguf`
+model. city96 publishes Q2_K through Q8_0 plus F16. Common picks:
+
+| Level | Approx footprint | Notes |
+|---|---|---|
+| `Q3_K_S` | ~5.5 GB | Tightest VRAM; noticeable quality drop. |
+| `Q4_K_S` | ~7 GB | Default; balanced. |
+| `Q5_K_M` | ~8.5 GB | Sweet spot for quality/memory tradeoff. |
+| `Q8_0` | ~13 GB | Near-BF16 quality at half memory. |
+| `F16` | ~24 GB | Equivalent to BF16. |
+
+Ignored on BF16 Flux and SD-family models.
+
+#### `--quantize-t5` (default off, v0.13)
+
+Load T5-XXL via city96's GGUF mirror instead of the BF16 sharded
+safetensors. Drops T5 from ~10 GB to ~3 GB (Q4_K_M default).
+`--t5-quant-level Q5_K_M` picks a higher level. Requires `--model
+flux-*-gguf` (bails loud otherwise — pairing quantized T5 with a BF16
+transformer wastes T5 quality without unlocking the memory budget
+that needs it).
 
 #### `--size <WxH>`
 
@@ -312,6 +343,32 @@ particular).
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
 
+### Tiled hi-res generation (v0.12 SDXL, v0.13 Flux)
+
+For outputs above the model's trained working resolution (4K SDXL,
+2K–4K Flux) without OOM, use MultiDiffusion-style tiled denoise:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tiled` | off | Enable tiled denoise. The transformer/UNet only ever sees `--tile-size` worth of tokens per call; per-step noise predictions are blended via a 2D Hann window. |
+| `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux). |
+| `--tile-stride <PX>` | `768` | Stride between tile origins. Smaller = more overlap = smoother seams + more compute. |
+
+Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both SDXL
+(SDXL+CN tiled is a v0.12 follow-up) and Flux (v0.13 phase 9 — each
+tile gets its CN conditioning cropped to its region). Does **not**
+compose with the SDXL refiner or Flux.1-Fill-dev.
+
+```bash
+# 4K SDXL
+plakat generate "ultra-detailed architectural diagram" \
+    --model sdxl --size 3072x2048 --tiled
+
+# 2K Flux with depth-guided structure across every tile
+plakat generate "..." --model flux-dev --size 2048x2048 \
+    --tiled --control-spec 'depth:from=ref.jpg'
+```
+
 ### Artefact compositing
 
 `plakat generate` (and `plakat portrait`) accept three related flags
@@ -326,6 +383,43 @@ for placing named PNG cutouts into the generated image:
 
 Full reference: [`ARTEFACTS.md`](ARTEFACTS.md). Runnable end-to-end
 walkthrough: [`examples/tutorials/ZONES/`](../examples/tutorials/ZONES/).
+
+---
+
+## `plakat outpaint` (v0.13)
+
+Extend an input image past its borders. A thin wrapper around the
+inpaint pipeline: expand the canvas, replicate-fill the new region
+from the input's edge pixels, build a mask covering the new region
+(white = inpaint, black = preserve), then hand off to `plakat
+img2img --mask`.
+
+```bash
+# 256 px on every side, default sdxl-inpaint
+plakat outpaint photo.png --prompt "..." --expand 256
+
+# Panoramic: extend only horizontally
+plakat outpaint photo.png --prompt "wide mountain valley" \
+    --left 512 --right 512
+
+# Flux Fill outpaint
+plakat outpaint photo.png --prompt "..." --expand 256 \
+    --model flux-fill-dev
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `<INPUT>` | required | Path to the input image. |
+| `--prompt` | required | Describes the whole output (including the new region). |
+| `--left / --right / --top / --bottom <PX>` | `0` | Per-side padding. At least one must be > 0. |
+| `--expand <PX>` | (off) | Shorthand for all four sides equally. Conflicts with per-side flags. |
+| `--model` | `sdxl-inpaint` | Inpaint-capable model. `sd15-inpaint` and `flux-fill-dev` also work, as do non-inpaint models in RePaint mode. |
+| `--mask-feather <PX>` | `16` | Softens the seam between original + outpainted regions. Higher than `img2img`'s default 8. |
+
+Padding is snapped up to the model's VAE / patch granularity (8 for
+SD, 16 for Flux). Edge replication gives the inpaint UNet a smooth
+low-frequency hint at the seam — beats flat gray, which often biases
+the denoise toward "wall" content.
 
 ---
 
@@ -750,10 +844,13 @@ plakat stylize \
     --strength 0.4 --steps 30
 ```
 
-### Img2img / inpaint
+### Img2img / inpaint / outpaint
 
 For prompt-driven transforms of an existing image (with or without a
-region mask), use the dedicated `plakat img2img` subcommand. Full
+region mask), use the dedicated `plakat img2img` subcommand. Both SD
+1.5 / 2.1 / SDXL and Flux (`flux-dev` for img2img, `flux-fill-dev`
+for inpaint, both available as GGUF variants — all v0.13) work. To
+extend a canvas past its borders, use `plakat outpaint` (v0.13). Full
 reference: [`IMG2IMG.md`](IMG2IMG.md). Runnable walkthrough:
 [`examples/tutorials/IMG2IMG/`](../examples/tutorials/IMG2IMG/).
 
@@ -793,3 +890,57 @@ the annotated example at
 subcommand assembles per-task prompts from a catalog of scenes and
 weather, runs the per-image pipeline, and reuses loaded weights across
 every task.
+
+#### Scenario fields (v0.13)
+
+v0.13 adds the following scenario-level + per-task fields. All are
+optional; existing scenarios keep working unchanged.
+
+**Scenario-level (top of the HJSON):**
+
+| Field | Type | Description |
+|---|---|---|
+| `quantize-t5:` | `bool` | Load T5-XXL as a quantized GGUF. Requires a GGUF Flux model. |
+| `quant-level:` | string | Flux GGUF quant level (e.g. `Q5_K_M`). Defaults to `Q4_K_S`. |
+| `t5-quant-level:` | string | T5 GGUF quant level. Defaults to `Q4_K_M`. |
+| `tiled:` | `{ size, stride }` | MultiDiffusion-style tiled denoise for every task. Defaults: `1024` / `768`. |
+
+**Per-task (inside each `tasks: [...]` entry):**
+
+| Field | Type | Description |
+|---|---|---|
+| `controls:` | `Vec<ControlSpec>` | Multi-ControlNet — residuals sum per step. Mutually exclusive with the singular `control:`. |
+| `init-image:` | path | Source image for img2img / inpaint / outpaint. |
+| `mask:` | path | Inpaint mask. Requires `init-image:`. |
+| `strength:` | float | img2img strength `[0, 1]`. Ignored for Fill. |
+| `mask-feather:` | int | SD inpaint mask feather radius (px). |
+| `mask-invert:` | `bool` | Flip mask polarity (black = inpaint). |
+| `outpaint:` | `{ expand | left/right/top/bottom }` | Canvas expansion. Synthesises mask from padding amounts. Requires `init-image:`. |
+
+```hjson
+{
+  model: flux-dev-gguf,
+  quant-level: Q5_K_M,
+  quantize-t5: true,
+  tiled: { size: 1024, stride: 768 },
+  tasks: [
+    // Multi-CN, depth + canny stacked
+    { name: gen1, prompt: "...", controls: [
+        { kind: depth, image: ./d.png, strength: 0.8 },
+        { kind: canny, auto-from: ./ref.jpg, strength: 0.5, end: 0.5 },
+    ]},
+    // Outpaint via Flux Fill
+    { name: panorama, prompt: "wide landscape", model: flux-fill-dev,
+      init-image: ./photo.png, outpaint: { left: 512, right: 512 } },
+    // SD inpaint
+    { name: fix-sky, model: sdxl-inpaint, prompt: "blue sky",
+      init-image: ./in.png, mask: ./sky-mask.png,
+      mask-feather: 16, strength: 1.0 },
+  ]
+}
+```
+
+Note: SD img2img/inpaint tasks reload the SD pipeline per task —
+img2img doesn't yet share the t2i `Pipeline::load`-once shape.
+Acceptable for v0.13 batch-rarely-img2img workflows; a follow-up
+could share the SdCore between the two paths.

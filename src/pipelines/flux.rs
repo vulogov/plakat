@@ -25,7 +25,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::Module;
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{
     flux::{autoencoder as fae, sampling},
@@ -39,10 +39,13 @@ use candle_transformers::models::{
 // no residuals are passed, so the existing Flux generation path
 // behaves the same.
 use crate::pipelines::flux_inner as fmodel;
-// v0.13: upstream's quantized Flux for the GGUF path. Implements
-// candle's `WithForward` (same signature as our vendored BF16 Flux's
-// `forward`), so the denoise loop dispatches through a thin enum.
-use candle_transformers::models::flux::quantized_model as qmodel;
+// v0.13 phase 1c: plakat's vendored quantized Flux (mirror of the
+// BF16 vendor, but every Linear is `quantized_nn::Linear` so the GGUF
+// tensors stay 4-bit until the forward dequantises them). This vendor
+// re-uses the same `Config` / `EmbedNd` / helpers as `flux_inner`, and
+// adds the matching `forward_with_residuals` hook so a single
+// FluxControlNet can drive either backbone.
+use crate::pipelines::flux_quantized_inner as qmodel;
 use candle_transformers::quantized_var_builder::VarBuilder as QVarBuilder;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -51,50 +54,68 @@ use crate::ui::progress;
 
 const CLIP_EOT: u32 = 49407;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     Schnell,
     Dev,
+    /// v0.13 phase 2: Flux.1-Fill-dev. Same architecture as Dev except
+    /// `img_in` has 384 input channels (noise + masked-latent + mask).
+    /// Always runs in inpainting mode — caller must supply an init
+    /// image + mask.
+    FillDev,
 }
 
 impl Variant {
     pub fn is_dev(self) -> bool {
-        matches!(self, Self::Dev)
+        matches!(self, Self::Dev | Self::FillDev)
+    }
+    /// v0.13 phase 2: does this variant expect inpainting inputs?
+    pub fn is_fill(self) -> bool {
+        matches!(self, Self::FillDev)
     }
     fn main_filename(self) -> &'static str {
         match self {
             Self::Schnell => "flux1-schnell.safetensors",
             Self::Dev => "flux1-dev.safetensors",
+            Self::FillDev => "flux1-fill-dev.safetensors",
         }
     }
     fn t5_seq_len(self) -> usize {
         match self {
             Self::Schnell => 256,
-            Self::Dev => 512,
+            // Fill uses the same 512-token T5 budget as Dev.
+            Self::Dev | Self::FillDev => 512,
         }
     }
     fn flux_config(self) -> fmodel::Config {
         match self {
             Self::Schnell => fmodel::Config::schnell(),
             Self::Dev => fmodel::Config::dev(),
+            Self::FillDev => fmodel::Config::fill_dev(),
         }
     }
     fn ae_config(self) -> fae::Config {
         match self {
+            // Fill shares Dev's autoencoder.
             Self::Schnell => fae::Config::schnell(),
-            Self::Dev => fae::Config::dev(),
+            Self::Dev | Self::FillDev => fae::Config::dev(),
         }
     }
     pub fn default_guidance(self) -> f64 {
         match self {
             Self::Schnell => 1.0,
+            // BFL's Fill model card recommends guidance ~30 (much
+            // higher than standard Flux.1-dev's 3.5) — the mask signal
+            // needs a stronger guidance to actually respect the
+            // conditioning. Callers can override via `--guidance`.
             Self::Dev => 3.5,
+            Self::FillDev => 30.0,
         }
     }
     pub fn default_steps(self) -> usize {
         match self {
             Self::Schnell => 4,
-            Self::Dev => 28,
+            Self::Dev | Self::FillDev => 28,
         }
     }
 }
@@ -128,6 +149,29 @@ pub struct Request {
     pub conditioning: Option<PathBuf>,
     /// v0.13 phase 1b: quantize T5-XXL via city96's GGUF mirror.
     pub quantize_t5: bool,
+    /// v0.13 phase 5: GGUF quant level for the Flux transformer
+    /// (e.g. `"Q4_K_S"`, `"Q5_K_M"`, `"Q8_0"`, `"F16"`). `None` →
+    /// `"Q4_K_S"`. Ignored on BF16 (`--model flux-dev|flux-schnell`).
+    pub flux_quant_level: Option<String>,
+    /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
+    /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
+    pub t5_quant_level: Option<String>,
+    /// v0.13 phase 2: Flux.1-Fill-dev inputs.
+    pub init_image: Option<PathBuf>,
+    pub mask: Option<PathBuf>,
+    /// v0.13 phase 3: Flux img2img strength in `[0, 1]`. Only used when
+    /// `init_image` is `Some` AND the variant is not Fill (Fill ignores
+    /// strength — its mask controls what changes). `None` falls back to
+    /// the pipeline default (~0.85). 1.0 ≈ ignore the init image
+    /// entirely; 0.0 ≈ no change.
+    pub strength: Option<f32>,
+    /// v0.13 phase 4: tiled (MultiDiffusion-style) denoise. When set,
+    /// the full canvas is split into overlapping `tile_size`-pixel
+    /// windows; each step runs Flux per-tile and blends noise
+    /// predictions with a Hann window. Lets Flux produce 2K-4K
+    /// outputs without exceeding the model's working resolution per
+    /// pass. Rejects ControlNet and Fill in this first cut.
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 // =====================================================================
@@ -154,6 +198,63 @@ pub struct LoadRequest {
     /// ~10 GB — fits 12 GB consumer GPUs. Only meaningful when the
     /// transformer itself is quantized (loud-fail otherwise).
     pub quantize_t5: bool,
+    /// v0.13 phase 5: see `Request::flux_quant_level`.
+    pub flux_quant_level: Option<String>,
+    /// v0.13 phase 5: see `Request::t5_quant_level`.
+    pub t5_quant_level: Option<String>,
+}
+
+/// v0.13 phase 5: city96's published GGUF quant levels for the Flux
+/// transformer. Anything else gets rejected with this list in the
+/// error message — saves a long HF round-trip on typos.
+///
+/// Source: https://huggingface.co/city96/FLUX.1-dev-gguf/tree/main
+pub const FLUX_QUANT_LEVELS: &[&str] = &[
+    "F16",
+    "Q8_0",
+    "Q6_K",
+    "Q5_K_M",
+    "Q5_K_S",
+    "Q5_1",
+    "Q5_0",
+    "Q4_K_M",
+    "Q4_K_S",
+    "Q4_1",
+    "Q4_0",
+    "Q3_K_M",
+    "Q3_K_S",
+    "Q2_K",
+];
+
+/// v0.13 phase 5: city96's published GGUF quant levels for the T5-XXL
+/// encoder. Slightly different set from Flux (no Q4_0/Q4_1/Q5_0/Q5_1,
+/// has Q3_K_L).
+///
+/// Source: https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/tree/main
+pub const T5_QUANT_LEVELS: &[&str] = &[
+    "F32",
+    "F16",
+    "Q8_0",
+    "Q6_K",
+    "Q5_K_M",
+    "Q5_K_S",
+    "Q4_K_M",
+    "Q4_K_S",
+    "Q3_K_L",
+    "Q3_K_M",
+    "Q3_K_S",
+];
+
+fn validate_quant_level(level: &str, allowed: &[&str], component: &str) -> Result<()> {
+    if allowed.iter().any(|l| l.eq_ignore_ascii_case(level)) {
+        Ok(())
+    } else {
+        bail!(
+            "{component} quant level '{level}' isn't published by city96. \
+             Supported: {}",
+            allowed.join(", ")
+        )
+    }
 }
 
 /// Flux ControlNet weight repo + config. The actual model load happens
@@ -172,6 +273,14 @@ pub struct FluxControlNetLoad {
     /// Conditioning image path (pre-rendered canny / depth / etc.).
     /// Each ControlNet in a multi-CN stack carries its own path.
     pub conditioning: Option<PathBuf>,
+    /// v0.13 phase 6: gating window in `[0, 1]`. `start=0.0` means the
+    /// CN engages from the first step; `end=1.0` means it stays active
+    /// to the end. `start=0.0, end=0.4` keeps the CN's structure pull
+    /// only in the early high-noise steps — common pattern when you
+    /// want geometry from the conditioner but free composition later.
+    /// Defaults: `start=0.0, end=1.0` (full schedule).
+    pub start: f32,
+    pub end: f32,
 }
 
 pub struct GenRequest {
@@ -190,6 +299,18 @@ pub struct GenRequest {
     /// to zero) — useful for back-compat callers that don't know
     /// about ControlNet.
     pub conditioning: Option<PathBuf>,
+    /// v0.13 phase 2: inpainting inputs for `Variant::FillDev`. Both
+    /// fields are required when the loaded model is Fill; ignored
+    /// otherwise. `init_image` is the source image; `mask` is a single-
+    /// channel image where white (≥128) marks pixels to inpaint and
+    /// black leaves them. Both are resized to (`width`, `height`)
+    /// before encoding.
+    pub init_image: Option<PathBuf>,
+    pub mask: Option<PathBuf>,
+    /// v0.13 phase 3: img2img strength. See `Request::strength`.
+    pub strength: Option<f32>,
+    /// v0.13 phase 4: tiled denoise config. See `Request::tiled`.
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 pub struct Pipeline {
@@ -223,11 +344,14 @@ pub struct Pipeline {
 /// The conditioning image is stored alongside per-`generate` call
 /// since it depends on width / height.
 /// v0.13: which Flux backbone the pipeline is running on.
-/// `Bf16` is plakat's vendored BF16 Flux with the residual hook
-/// (composes with LoRA + ControlNet). `Quantized` is candle's
-/// quantized Flux loaded from a GGUF file — drastically smaller in
-/// memory (~7 GB for Q4_K_S vs ~24 GB BF16) but doesn't support
-/// LoRA or ControlNet in this phase.
+/// `Bf16` is plakat's vendored BF16 Flux with the residual hook;
+/// `Quantized` is plakat's vendored quantized Flux loaded from a
+/// GGUF file (~7 GB for Q4_K_S vs ~24 GB BF16). Both variants expose
+/// the same `forward_with_residuals` API, so ControlNet composes on
+/// either backbone. v0.13 phase 1e: LoRAs also compose on the
+/// quantized backbone — affected Linears are dequantized once at
+/// load time, merged with deltas, and substituted as dense; the rest
+/// of the model stays 4-bit.
 pub enum FluxBackbone {
     Bf16(fmodel::Flux),
     Quantized(qmodel::Flux),
@@ -257,9 +381,91 @@ pub struct LoadedFluxControlNet {
     /// Pending conditioning image — resolved here so the spec is
     /// fully self-contained when we hand it to `generate`.
     pub conditioning_path: Option<PathBuf>,
+    /// v0.13 phase 6: step-gating window (see `FluxControlNetLoad`).
+    pub start: f32,
+    pub end: f32,
+}
+
+impl LoadedFluxControlNet {
+    /// `true` when this CN should contribute residuals at the given
+    /// schedule progress (0.0 at the first step, 1.0 just past the
+    /// last). Same `[start, end)` half-open convention plakat uses for
+    /// SD ControlNet's `active_at`.
+    pub fn active_at(&self, progress: f32) -> bool {
+        progress >= self.start && progress < self.end
+    }
 }
 
 impl Pipeline {
+    /// v0.13 phase 10: re-tune an already-loaded ControlNet's per-call
+    /// parameters between `generate` calls. Scenarios load Union Pro v2
+    /// once at startup and then vary `(mode, scale, [start, end])` per
+    /// task — this is the bridge for that pattern without forcing a
+    /// reload of the ~600 MB CN weights per task.
+    ///
+    /// Returns an error when `idx` is out of bounds, when `start`/`end`
+    /// land outside `[0, 1]`, or when `start >= end`.
+    pub fn set_controlnet_call_params(
+        &mut self,
+        idx: usize,
+        mode: Option<u32>,
+        scale: f32,
+        start: f32,
+        end: f32,
+    ) -> Result<()> {
+        if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) {
+            bail!(
+                "set_controlnet_call_params: start/end must be in [0, 1] (got {start}, {end})"
+            );
+        }
+        if start >= end {
+            bail!(
+                "set_controlnet_call_params: start ({start}) must be < end ({end})"
+            );
+        }
+        let n = self.controlnets.len();
+        let cn = self
+            .controlnets
+            .get_mut(idx)
+            .ok_or_else(|| anyhow!("ControlNet index {idx} out of bounds (have {n})"))?;
+        cn.mode = mode;
+        cn.scale = scale;
+        cn.start = start;
+        cn.end = end;
+        Ok(())
+    }
+
+    /// `true` when this Pipeline has at least one loaded ControlNet.
+    /// Used by callers that build a CN stack only when needed.
+    pub fn has_controlnets(&self) -> bool {
+        !self.controlnets.is_empty()
+    }
+
+    /// Count of loaded ControlNets. Lets per-task callers (e.g.,
+    /// scenarios) check how many slots are available before slot-
+    /// indexed mutations.
+    pub fn controlnet_count(&self) -> usize {
+        self.controlnets.len()
+    }
+
+    /// v0.13 phase 11: swap a loaded ControlNet's conditioning image
+    /// path between `generate` calls. `None` clears the path so the
+    /// CN contributes no residuals on the next call (used when a
+    /// task has fewer CNs than the scenario's max slot count).
+    pub fn set_controlnet_conditioning(
+        &mut self,
+        idx: usize,
+        path: Option<PathBuf>,
+    ) -> Result<()> {
+        let n = self.controlnets.len();
+        let cn = self
+            .controlnets
+            .get_mut(idx)
+            .ok_or_else(|| anyhow!("ControlNet index {idx} out of bounds (have {n})"))?;
+        cn.conditioning_path = path;
+        Ok(())
+    }
+
     /// Download + load everything Flux needs. ~33 GB on first run.
     pub async fn load(req: LoadRequest) -> Result<Self> {
         // Flux was trained in BF16 and its transformer's wide intermediates
@@ -276,26 +482,10 @@ impl Pipeline {
         // v0.13: detect quantized GGUF mode. city96 / any repo with
         // "gguf" in the id ships only the transformer in GGUF form;
         // AE + text encoders still come from the original BFL repo
-        // ("donor"). Phase 1 bails loud on LoRA + Quantized and
-        // ControlNet + Quantized since neither composes with the
-        // quantized weight layout in upstream candle yet.
+        // ("donor"). Phase 1c unblocks ControlNet on the quantized
+        // backbone; phase 1e unblocks LoRAs via selective dequant
+        // overrides — so both compose now.
         let is_gguf = req.repo.to_lowercase().contains("gguf");
-        if is_gguf {
-            if !req.loras.is_empty() {
-                bail!(
-                    "Quantized Flux (GGUF) doesn't support LoRAs in Phase 1 — \
-                     merging into 4-bit weights would defeat the memory win. \
-                     Drop --lora or switch to the BF16 model."
-                );
-            }
-            if !req.controlnets.is_empty() {
-                bail!(
-                    "Quantized Flux (GGUF) doesn't support ControlNet in Phase 1 — \
-                     the quantized model has no residual-aware forward yet. \
-                     Drop --control-spec or switch to the BF16 model."
-                );
-            }
-        }
         // Quantized T5 only makes sense when paired with a quantized
         // transformer — running BF16 transformer + Q4 T5 loses T5
         // quality without saving meaningful memory.
@@ -310,6 +500,7 @@ impl Pipeline {
             match req.variant {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
                 Variant::Schnell => "black-forest-labs/FLUX.1-schnell".to_string(),
+                Variant::FillDev => "black-forest-labs/FLUX.1-Fill-dev".to_string(),
             }
         } else {
             req.repo.clone()
@@ -319,14 +510,22 @@ impl Pipeline {
         let dl = progress::spinner(&format!("Downloading weights for {}", req.repo));
         // Transformer: GGUF when quantized, safetensors otherwise.
         let main_path = if is_gguf {
-            // Default to Q4_K_S — best balance of memory/quality from
-            // city96's lineup. Users wanting a different quant level
-            // can repo-pin the exact file in a future CLI iteration.
-            let gguf_file = match req.variant {
-                Variant::Dev => "flux1-dev-Q4_K_S.gguf",
-                Variant::Schnell => "flux1-schnell-Q4_K_S.gguf",
+            // v0.13 phase 5: user can override the GGUF quant level
+            // (Q2_K..F16). Default Q4_K_S keeps the v0.13 phase 1
+            // memory profile.
+            let level = req
+                .flux_quant_level
+                .as_deref()
+                .unwrap_or("Q4_K_S")
+                .to_string();
+            validate_quant_level(&level, FLUX_QUANT_LEVELS, "Flux GGUF")?;
+            let stem = match req.variant {
+                Variant::Dev => "flux1-dev",
+                Variant::Schnell => "flux1-schnell",
+                Variant::FillDev => "flux1-fill-dev",
             };
-            crate::hf::download::get_file(&req.repo, gguf_file)
+            let gguf_file = format!("{stem}-{level}.gguf");
+            crate::hf::download::get_file(&req.repo, &gguf_file)
                 .await
                 .with_context(|| format!("{} from {}", gguf_file, req.repo))?
         } else {
@@ -355,14 +554,19 @@ impl Pipeline {
         // and the tokenizer come from the donor either way (city96
         // T5 mirror doesn't ship them).
         let t5_gguf_path = if req.quantize_t5 {
-            // Default to Q4_K_M — best memory/quality trade for T5.
+            // v0.13 phase 5: user can override the T5 quant level too.
+            // Default Q4_K_M keeps the v0.13 phase 1b memory profile.
+            let level = req
+                .t5_quant_level
+                .as_deref()
+                .unwrap_or("Q4_K_M")
+                .to_string();
+            validate_quant_level(&level, T5_QUANT_LEVELS, "T5 GGUF")?;
+            let t5_file = format!("t5-v1_1-xxl-encoder-{level}.gguf");
             Some(
-                crate::hf::download::get_file(
-                    "city96/t5-v1_1-xxl-encoder-gguf",
-                    "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
-                )
-                .await
-                .context("downloading T5-XXL GGUF (Q4_K_M)")?,
+                crate::hf::download::get_file("city96/t5-v1_1-xxl-encoder-gguf", &t5_file)
+                    .await
+                    .with_context(|| format!("downloading T5-XXL GGUF ({level})"))?,
             )
         } else {
             None
@@ -427,13 +631,18 @@ impl Pipeline {
             .map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ text encoders ready");
 
-        // ---------- merge Flux LoRAs (v0.12) ----------
-        // When the caller supplied LoRAs, we merge them into the Flux
-        // transformer safetensors first (writing to a temp file) and
-        // then load the merged file. Same pattern plakat uses for SD
-        // LoRA merging into the UNet — keeps candle's Flux loader
-        // unchanged.
-        let (effective_main_path, lora_tmp) = if req.loras.is_empty() {
+        // ---------- merge Flux LoRAs ----------
+        // BF16 path (v0.12): merge LoRA deltas into a temporary
+        // safetensors file, then mmap that. Defeats nothing because
+        // the base is already dense BF16.
+        // GGUF path (v0.13 phase 1e): merging into 4-bit storage would
+        // either defeat the memory win (rewriting to BF16 of everything)
+        // or compound quantization noise (re-quantize after delta). Instead,
+        // we dequantize **only** the LoRA-targeted Linears, apply deltas
+        // densely, and feed them into the quantized Flux as
+        // `QMatMul::Tensor` overrides — the un-targeted ~95% of the
+        // model stays 4-bit.
+        let (effective_main_path, lora_tmp) = if req.loras.is_empty() || is_gguf {
             (main_path.clone(), None)
         } else {
             let spin = progress::spinner(&format!(
@@ -470,15 +679,39 @@ impl Pipeline {
             let qvb = QVarBuilder::from_gguf(&main_path, &req.device).with_context(
                 || format!("loading GGUF transformer from {}", main_path.display()),
             )?;
-            // qmodel::Flux::new wants candle's upstream Config struct
-            // (structurally identical to our vendored one but a
-            // different type). Construct the upstream Config inline.
-            use candle_transformers::models::flux::model::Config as UpstreamCfg;
-            let upstream_cfg = match req.variant {
-                Variant::Dev => UpstreamCfg::dev(),
-                Variant::Schnell => UpstreamCfg::schnell(),
+            // GGUF + LoRAs: build a dense-override map keyed by base
+            // path (e.g. "double_blocks.0.img_attn.qkv.weight"). The
+            // vendored quantized Flux substitutes a dense `QMatMul::Tensor`
+            // for each override and leaves everything else 4-bit.
+            let overrides = if req.loras.is_empty() {
+                std::sync::Arc::new(std::collections::HashMap::new())
+            } else {
+                let spin = progress::spinner(&format!(
+                    "Merging {} Flux LoRA(s) into quantized transformer",
+                    req.loras.len()
+                ));
+                let (map, modified, total) =
+                    crate::pipelines::flux_lora::precompute_quantized_overrides(
+                        &qvb,
+                        &req.loras,
+                        req.lora_scale,
+                        &req.device,
+                    )?;
+                spin.finish_with_message(format!(
+                    "✓ Flux LoRA merged onto quantized backbone ({modified}/{total} target groups, \
+                     {} dense Linears)",
+                    map.len()
+                ));
+                std::sync::Arc::new(map)
             };
-            FluxBackbone::Quantized(qmodel::Flux::new(&upstream_cfg, qvb)?)
+            // Plakat's vendored quantized Flux shares the BF16 vendor's
+            // Config type, so the same `Variant::flux_config()` works
+            // for both backbones.
+            FluxBackbone::Quantized(qmodel::Flux::new_with_loras(
+                &req.variant.flux_config(),
+                qvb,
+                overrides,
+            )?)
         } else {
             let flux_vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[&effective_main_path], dtype, &req.device)?
@@ -517,6 +750,8 @@ impl Pipeline {
                 scale: cn.scale,
                 mode: cn.mode,
                 conditioning_path: cn.conditioning,
+                start: cn.start,
+                end: cn.end,
             });
         }
 
@@ -549,6 +784,38 @@ impl Pipeline {
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
+        // ---------- tiled-denoise validation (v0.13 phase 4 + 9) ----
+        // Tiled Flux composes with ControlNet (v0.13 phase 9) by
+        // pre-encoding each CN's conditioning as a 2D latent and
+        // cropping per tile inside the denoise loop. Fill still bails
+        // — the 384-channel input layout would need per-tile mask
+        // slicing, distinct from the CN cropping done here.
+        // Img2img + LoRA + GGUF compose for free.
+        if let Some(tcfg) = req.tiled.as_ref() {
+            if self.variant.is_fill() {
+                bail!(
+                    "--tiled doesn't yet compose with Flux.1-Fill-dev. The Fill \
+                     conditioning (masked latent + mask) would need to be sliced \
+                     per tile."
+                );
+            }
+            if tcfg.tile_size % 16 != 0 || tcfg.stride % 16 != 0 {
+                bail!(
+                    "Tiled Flux: --tile-size and --tile-stride must be divisible by 16 \
+                     (got tile={} stride={}). Flux's 2×2 patching plus the VAE's 8× \
+                     downsample requires a 16-pixel granularity.",
+                    tcfg.tile_size, tcfg.stride
+                );
+            }
+            if tcfg.stride == 0 || tcfg.stride > tcfg.tile_size {
+                bail!(
+                    "Tiled Flux: --tile-stride must be in (0, --tile-size]; \
+                     got stride={} tile={}",
+                    tcfg.stride, tcfg.tile_size
+                );
+            }
+        }
+
         // ---------- encode prompt ----------
         let enc = progress::spinner("Encoding prompt");
         let (clip_pooled, t5_emb) = self.encode_prompt(&req.prompt)?;
@@ -559,6 +826,74 @@ impl Pipeline {
         let lat_w = (w + 15) / 16;
         let image_seq_len = lat_h * lat_w;
 
+        // ---------- Flux img2img init prep (v0.13 phase 3) ---------
+        // For non-Fill variants with an init image, VAE-encode the
+        // init once and reuse across the per-count loop. Each
+        // generation builds its own start_latent = lerp(init, noise,
+        // strength) and runs a truncated schedule starting at t=strength.
+        // Fill mode uses `init_image` for its own conditioning path
+        // (handled below) so we skip this branch when is_fill().
+        let img2img_init: Option<(Tensor, f32)> = if self.variant.is_fill() {
+            None
+        } else if let Some(init_path) = req.init_image.as_ref() {
+            let strength = req.strength.unwrap_or(0.85).clamp(0.0, 1.0);
+            if !strength.is_finite() {
+                bail!("img2img strength must be finite in [0, 1], got {strength}");
+            }
+            let spin = progress::spinner("Encoding img2img init image");
+            // [-1, 1] domain, then VAE-encode and apply the BFL latent
+            // normalization (z - shift) * scale — same convention the
+            // standard t2i path's noise sampling produces, so lerp is
+            // dimensionally consistent.
+            let init_pixels = crate::imaging::preprocess::sd_image_tensor(
+                init_path,
+                w as u32,
+                h as u32,
+                &self.device,
+                self.dtype,
+            )
+            .with_context(|| {
+                format!("loading img2img init image {}", init_path.display())
+            })?;
+            let init_z = self.ae_model.encode(&init_pixels)?;
+            let init_norm = ((init_z - ae_cfg.shift_factor)? * ae_cfg.scale_factor)?;
+            spin.finish_with_message(format!("✓ img2img init encoded (strength {strength:.2})"));
+            Some((init_norm, strength))
+        } else {
+            None
+        };
+
+        // ---------- Flux Fill inpainting prep (v0.13 phase 2) -------
+        // Fill-dev's `img_in` takes 384 channels = 64 noise + 64 masked-
+        // latent + 256 image-space-mask. The first 64 are filled per
+        // step from the noise tensor we're integrating; the trailing
+        // 320 are constants computed here from the user's init image +
+        // mask. Stays `None` for non-Fill variants — the denoise loop
+        // skips the cat.
+        let fill_cond = if self.variant.is_fill() {
+            let init_path = req.init_image.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Flux.1-Fill-dev requires --image / init_image — no init image provided."
+                )
+            })?;
+            let mask_path = req.mask.as_ref().ok_or_else(|| {
+                anyhow!("Flux.1-Fill-dev requires --mask — no mask image provided.")
+            })?;
+            let spin = progress::spinner("Encoding init image + mask for Fill");
+            let cond = self.encode_fill_conditioning(init_path, mask_path, h, w)?;
+            spin.finish_with_message("✓ Fill conditioning encoded");
+            Some(cond)
+        } else {
+            if req.init_image.is_some() || req.mask.is_some() {
+                tracing::warn!(
+                    target: "plakat",
+                    "init_image / mask supplied but model is not Flux.1-Fill-dev — \
+                     inputs ignored."
+                );
+            }
+            None
+        };
+
         // ---------- ControlNet conditioning prep (v0.12 + multi) ----
         // VAE-encode + pack each loaded ControlNet's conditioning
         // image once. Per-CN paths come from the LoadRequest; the
@@ -566,6 +901,17 @@ impl Pipeline {
         // that applies to the first CN if present.
         let mut conditioning_packed: Vec<Option<Tensor>> =
             Vec::with_capacity(self.controlnets.len());
+        // v0.13 phase 9: when tiled is on, also keep the 2D conditioning
+        // latent alongside the packed-token form. Tiled denoise narrows
+        // per tile and packs locally; non-tiled uses `packed` directly
+        // and ignores `conditioning_2d`. Memory cost is small (one 2D
+        // latent per CN) and only paid when tiled is active.
+        let want_2d_cond = req.tiled.is_some();
+        let mut conditioning_2d: Vec<Option<Tensor>> = if want_2d_cond {
+            Vec::with_capacity(self.controlnets.len())
+        } else {
+            Vec::new()
+        };
         for (i, cn) in self.controlnets.iter().enumerate() {
             // GenRequest.conditioning overrides the LoadRequest path
             // for CN #0 — keeps single-CN callers that haven't been
@@ -583,7 +929,11 @@ impl Pipeline {
                         "Encoding ControlNet #{} conditioning",
                         i + 1
                     ));
-                    let packed = self.encode_conditioning(p, h, w)?;
+                    let z2d = self.encode_conditioning_2d(p, h, w)?;
+                    let packed = pack_latent_to_tokens(&z2d)?;
+                    if want_2d_cond {
+                        conditioning_2d.push(Some(z2d));
+                    }
                     spin.finish_with_message(format!(
                         "✓ ControlNet #{} conditioning encoded",
                         i + 1
@@ -598,6 +948,9 @@ impl Pipeline {
                         i + 1
                     );
                     conditioning_packed.push(None);
+                    if want_2d_cond {
+                        conditioning_2d.push(None);
+                    }
                 }
             }
         }
@@ -615,42 +968,101 @@ impl Pipeline {
                 );
             }
 
-            let img = sampling::get_noise(1, h, w, &self.device)?.to_dtype(self.dtype)?;
-            let state = sampling::State::new(&t5_emb, &clip_pooled, &img)?;
+            // Fresh noise. For img2img, mixed with the (pre-encoded)
+            // init latent at t=strength using the standard rectified-
+            // flow interpolation: x_t = (1-t)*x_init + t*x_noise.
+            let noise = sampling::get_noise(1, h, w, &self.device)?.to_dtype(self.dtype)?;
+            let img_2d = match img2img_init.as_ref() {
+                Some((init_norm, strength)) => {
+                    let s = *strength as f64;
+                    ((init_norm * (1.0 - s))? + (&noise * s)?)?
+                }
+                None => noise,
+            };
 
             let shift = if self.variant.is_dev() {
                 Some((image_seq_len, 0.5_f64, 1.15_f64))
             } else {
                 None
             };
-            let timesteps = sampling::get_schedule(steps, shift);
+            let mut timesteps = sampling::get_schedule(steps, shift);
+            // img2img: drop schedule entries above `strength` so the
+            // loop starts at t≈strength. Prepend `strength` itself so
+            // the first window's t_curr matches the noise level the
+            // start latent was built at. Mirrors diffusers'
+            // `FluxImg2ImgPipeline.get_timesteps`. Without this the
+            // model would think the input is fully-noised when it's
+            // only partially noised.
+            if let Some((_init, strength)) = img2img_init.as_ref() {
+                let s = *strength as f64;
+                let mut filtered: Vec<f64> =
+                    timesteps.iter().copied().filter(|&t| t < s).collect();
+                if filtered.is_empty() {
+                    filtered.push(0.0);
+                }
+                let mut new_ts = Vec::with_capacity(filtered.len() + 1);
+                new_ts.push(s);
+                new_ts.extend(filtered);
+                timesteps = new_ts;
+            }
 
             let bar = progress::step_bar(
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
 
-            // v0.12 phase 2b: custom denoise loop. When the pipeline
-            // has a ControlNet AND a conditioning image, run the
-            // ControlNet each step to produce DoubleStream residuals,
-            // then run Flux with those residuals. Otherwise this is
-            // the same flow-matching integration candle's
-            // `sampling::denoise` does, just inlined.
-            let denoised = self.denoise_with_optional_controlnet(
-                &state,
-                &timesteps,
-                guidance,
-                &conditioning_packed,
-                &bar,
-            )?;
+            // v0.13 phase 4: tiled denoise stays in 2D latent form
+            // throughout — every per-step forward operates on a tile
+            // and the predictions are blended back via Hann window.
+            // Standard path packs to tokens once, denoises, unpacks
+            // at the end.
+            let denoised_2d = if let Some(tcfg) = req.tiled.as_ref() {
+                bar.set_message(format!(
+                    "tiled flow-match denoise, {steps} steps, seed={seed}"
+                ));
+                self.denoise_tiled(
+                    &img_2d,
+                    &t5_emb,
+                    &clip_pooled,
+                    &timesteps,
+                    guidance,
+                    tcfg,
+                    &conditioning_2d,
+                    &bar,
+                )?
+            } else {
+                bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
+                let state = sampling::State::new(&t5_emb, &clip_pooled, &img_2d)?;
+                let denoised = self.denoise_with_optional_controlnet(
+                    &state,
+                    &timesteps,
+                    guidance,
+                    &conditioning_packed,
+                    fill_cond.as_ref(),
+                    &bar,
+                )?;
+                sampling::unpack(&denoised, h, w)?
+            };
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
             bar.finish_with_message("✓ denoised");
 
-            let unpacked = sampling::unpack(&denoised, h, w)?;
             // BFL AE expects: x = decode((z / scale) + shift)
-            let pre_decode = ((&unpacked / ae_cfg.scale_factor)? + ae_cfg.shift_factor)?;
-            let decoded = self.ae_model.decode(&pre_decode)?;
+            let pre_decode = ((&denoised_2d / ae_cfg.scale_factor)? + ae_cfg.shift_factor)?;
+            let decoded = if let Some(tcfg) = req.tiled.as_ref() {
+                // Tiled decode keeps the VAE working at its native scale
+                // even for 4K outputs. Latent units = pixel units / 8.
+                let lat_tile = (tcfg.tile_size as usize) / 8;
+                let lat_stride = (tcfg.stride as usize) / 8;
+                crate::pipelines::tiled::tile_decode_2d(
+                    &pre_decode,
+                    lat_tile,
+                    lat_stride,
+                    8,
+                    |t| Ok(self.ae_model.decode(t)?),
+                )?
+            } else {
+                self.ae_model.decode(&pre_decode)?
+            };
             let img_norm = ((decoded.clamp(-1f32, 1f32)? + 1.0)? * 0.5)?;
             let img_u8 = (img_norm * 255.0)?
                 .to_dtype(DType::U8)?
@@ -698,11 +1110,14 @@ impl Pipeline {
         Ok((clip_pooled, t5_emb))
     }
 
-    /// v0.12 phase 2b: load + VAE-encode + pack a Flux ControlNet
-    /// conditioning image. Output shape `(1, image_seq_len, 64)` —
-    /// same as Flux's `State::new` img packing, ready to flow into
-    /// `FluxControlNet::forward`.
-    fn encode_conditioning(
+    /// v0.12 phase 2b → v0.13 phase 9: load + VAE-encode a Flux
+    /// ControlNet conditioning image. Returns the **2D latent**
+    /// `(1, 16, lh, lw)`. Standard non-tiled callers pack the result
+    /// with `pack_latent_to_tokens` immediately; tiled callers keep
+    /// the 2D form so they can `.narrow` per tile before packing —
+    /// without that, every tile would receive the full-canvas
+    /// conditioning and the CN's spatial signal would smear.
+    fn encode_conditioning_2d(
         &self,
         path: &std::path::Path,
         h: usize,
@@ -725,19 +1140,13 @@ impl Pipeline {
         let ae_cfg = self.variant.ae_config();
         let z = self.ae_model.encode(&pixels)?;
         let z = ((z - ae_cfg.shift_factor)? * ae_cfg.scale_factor)?;
-        // Pack 16-channel latent to (1, image_seq_len, 64) — the
-        // same pixel-unshuffle + flatten dance State::new does.
-        let (_bsz, c, lh, lw) = z.dims4()?;
+        let (_b, c, _lh, _lw) = z.dims4()?;
         if c != 16 {
             anyhow::bail!(
                 "Flux AE encoded to {c} channels — expected 16. Conditioning prep aborted."
             );
         }
-        let packed = z
-            .reshape((1, c, lh / 2, 2, lw / 2, 2))?
-            .permute((0, 2, 4, 1, 3, 5))?
-            .reshape((1, lh / 2 * lw / 2, c * 4))?;
-        Ok(packed)
+        Ok(z)
     }
 
     /// v0.12 phase 2b + multi: flow-matching denoise loop. For each
@@ -753,25 +1162,43 @@ impl Pipeline {
         timesteps: &[f64],
         guidance: f64,
         conditioning_packed: &[Option<Tensor>],
+        fill_cond: Option<&Tensor>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
         let dev = state.img.device();
         let guidance_t = Tensor::full(guidance as f32, b_sz, dev)?;
+        // `img` is always the 64-channel noise tensor we're integrating
+        // over time. Fill mode concatenates `fill_cond` (320ch) to it
+        // only for the Flux forward call — CNs still see the noise
+        // tensor unchanged, and the output noise prediction is also
+        // 64ch (final_layer is independent of img_in's input width).
         let mut img = state.img.clone();
+        // Total steps for the per-step progress fraction. timesteps has
+        // `num_steps + 1` entries (boundary list), so `num_steps` =
+        // `timesteps.windows(2).count()` — denominator for the
+        // `[0, 1)` progress signal each CN's `active_at` consumes.
+        let num_steps = timesteps.windows(2).count().max(1);
         for (step_i, window) in timesteps.windows(2).enumerate() {
             let (t_curr, t_prev) = match window {
                 [a, b] => (a, b),
                 _ => continue,
             };
             let t_vec = Tensor::full(*t_curr as f32, b_sz, dev)?;
+            let progress = step_i as f32 / num_steps as f32;
 
-            // Run each loaded CN that has its conditioning ready;
-            // sum residuals per-block across all of them.
+            // Run each loaded CN that has its conditioning ready AND is
+            // active at this progress; sum residuals per-block across
+            // all of them. CN's img_in is 64ch (stock Flux), so we
+            // pass the noise tensor — not the concatenated Fill input
+            // — even in Fill mode.
             let mut summed_double: Option<Vec<Tensor>> = None;
             let mut summed_single: Option<Vec<Tensor>> = None;
             for (cn, cond_opt) in self.controlnets.iter().zip(conditioning_packed.iter())
             {
+                if !cn.active_at(progress) {
+                    continue; // outside this CN's `[start, end)` window
+                }
                 let cond = match cond_opt.as_ref() {
                     Some(c) => c,
                     None => continue, // CN has no conditioning → skip.
@@ -788,11 +1215,6 @@ impl Pipeline {
                     cn.mode,
                     cn.scale,
                 )?;
-                // Sum into the running accumulators. Length-mismatch
-                // (e.g. one specialised CN with 0 single residuals
-                // + one Union CN with 10) is handled by treating
-                // missing entries as zeros — only present entries
-                // contribute to that block's residual.
                 summed_double = Some(merge_residuals(summed_double, d)?);
                 summed_single = Some(merge_residuals(summed_single, s)?);
             }
@@ -802,15 +1224,20 @@ impl Pipeline {
                 _ => None,
             };
 
-            // v0.13: dispatch on backbone variant. BF16 path goes
-            // through plakat's vendored Flux with residual hooks
-            // (ControlNet support). Quantized path uses upstream's
-            // quantized Flux without residuals (ControlNet rejected
-            // at load time anyway). Both share the same input shape
-            // and produce the same output shape.
+            // Build the Flux-forward input. Standard Flux: img is 64ch
+            // noise. Fill: prepend nothing — Fill `img_in` expects the
+            // 384ch concat we build right before the forward call.
+            let flux_input: Tensor = match fill_cond {
+                Some(c) => Tensor::cat(&[&img, c], D::Minus1)?,
+                None => img.clone(),
+            };
+
+            // v0.13 phase 1c: both backbones expose the same
+            // `forward_with_residuals` signature. ControlNet residuals
+            // compose exactly the same way on BF16 and quantized.
             let pred = match &self.flux_model {
                 FluxBackbone::Bf16(net) => net.forward_with_residuals(
-                    &img,
+                    &flux_input,
                     &state.img_ids,
                     &state.txt,
                     &state.txt_ids,
@@ -820,27 +1247,383 @@ impl Pipeline {
                     double_r,
                     single_r,
                 )?,
-                FluxBackbone::Quantized(net) => {
-                    use candle_transformers::models::flux::WithForward;
-                    net.forward(
-                        &img,
-                        &state.img_ids,
-                        &state.txt,
-                        &state.txt_ids,
-                        &t_vec,
-                        &state.vec,
-                        Some(&guidance_t),
-                    )?
-                }
+                FluxBackbone::Quantized(net) => net.forward_with_residuals(
+                    &flux_input,
+                    &state.img_ids,
+                    &state.txt,
+                    &state.txt_ids,
+                    &t_vec,
+                    &state.vec,
+                    Some(&guidance_t),
+                    double_r,
+                    single_r,
+                )?,
             };
+            // `pred` is the 64ch noise prediction regardless of Fill
+            // mode (final_layer outputs the same 64ch). The flow-match
+            // step only ever updates the noise tensor.
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
         }
         Ok(img)
     }
+
+    /// v0.13 phase 2: build the 320-channel Fill conditioning tensor.
+    ///
+    /// Output shape: `(1, image_seq_len, 320)` — concatenates with the
+    /// 64-channel noise to form Fill's 384-channel `img_in` input.
+    ///
+    /// Layout per token:
+    /// * channels `0..64`: VAE-encoded init image with mask=1 regions
+    ///   zeroed, 2x2-patched the same way the noise latent is packed.
+    /// * channels `64..320`: image-space mask (1ch × H × W) reshaped
+    ///   into 16×16 patches → 256 channels per token. The 16-pixel
+    ///   patch size matches Flux's effective per-token receptive field
+    ///   (8× VAE downsample × 2× Flux 2x2 patching).
+    fn encode_fill_conditioning(
+        &self,
+        init_path: &std::path::Path,
+        mask_path: &std::path::Path,
+        h: usize,
+        w: usize,
+    ) -> Result<Tensor> {
+        // Load init image at the target resolution, normalized to
+        // `[-1, 1]` (the Flux AE input domain).
+        let init_pixels = crate::imaging::preprocess::sd_image_tensor(
+            init_path,
+            w as u32,
+            h as u32,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| format!("loading Fill init image {}", init_path.display()))?;
+
+        // Load mask as a single-channel grayscale at full resolution
+        // and binarise: ≥128 → 1.0 (inpaint), else 0.0. Same convention
+        // plakat's SD inpaint path uses. Shape: (1, 1, H_img, W_img).
+        let mask_img = image::open(mask_path)
+            .with_context(|| format!("opening mask {}", mask_path.display()))?
+            .to_luma8();
+        let mask_img = image::imageops::resize(
+            &mask_img,
+            w as u32,
+            h as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        let mask_data: Vec<f32> = mask_img
+            .pixels()
+            .map(|p| if p.0[0] >= 128 { 1.0 } else { 0.0 })
+            .collect();
+        let mask_tensor = Tensor::from_vec(mask_data, (1, 1, h, w), &self.device)?
+            .to_dtype(self.dtype)?;
+
+        // Apply mask to init (zero out the mask=1 region) — the model
+        // sees the regions to be inpainted as black in the masked
+        // latent, which matches BFL's training distribution. Mask is
+        // broadcast across the 3 colour channels.
+        let one_minus_mask = (Tensor::ones_like(&mask_tensor)? - &mask_tensor)?;
+        let masked_pixels = init_pixels.broadcast_mul(&one_minus_mask)?;
+
+        // VAE-encode the masked image into a 16ch latent.
+        let ae_cfg = self.variant.ae_config();
+        let z = self.ae_model.encode(&masked_pixels)?;
+        let z = ((z - ae_cfg.shift_factor)? * ae_cfg.scale_factor)?;
+        let (_b, c, lh, lw) = z.dims4()?;
+        if c != 16 {
+            bail!(
+                "Flux AE encoded to {c} channels — expected 16. Fill conditioning aborted."
+            );
+        }
+        if lh % 2 != 0 || lw % 2 != 0 {
+            bail!(
+                "Flux Fill needs latent dims divisible by 2 (got {lh}x{lw}); image dims \
+                 should be divisible by 16."
+            );
+        }
+
+        // Pack masked latent: (1, 16, lh, lw) → (1, lh/2 * lw/2, 64).
+        let masked_packed = z
+            .reshape((1, c, lh / 2, 2, lw / 2, 2))?
+            .permute((0, 2, 4, 1, 3, 5))?
+            .reshape((1, lh / 2 * lw / 2, c * 4))?;
+
+        // Pack image-space mask: (1, 1, H, W) → (1, H/16 * W/16, 256).
+        // Each Flux token spans a 16×16 image patch (8× VAE × 2× Flux),
+        // so the mask carries 256 raw mask values per token.
+        if h % 16 != 0 || w % 16 != 0 {
+            bail!(
+                "Flux Fill needs image dims divisible by 16 (got {h}x{w})."
+            );
+        }
+        let mask_packed = mask_tensor
+            .reshape((1, 1, h / 16, 16, w / 16, 16))?
+            .permute((0, 2, 4, 1, 3, 5))?
+            .reshape((1, h / 16 * w / 16, 16 * 16))?
+            .to_dtype(self.dtype)?;
+
+        // Concat along the channel-per-token dim: 64 + 256 = 320.
+        let cond = Tensor::cat(&[&masked_packed, &mask_packed], D::Minus1)?;
+        Ok(cond)
+    }
+
+    /// v0.13 phase 4: MultiDiffusion-style tiled Flux denoise.
+    ///
+    /// Each step:
+    /// 1. For every overlapping tile in the latent canvas, pack to
+    ///    `(1, num_tokens, 64)` tokens, build per-tile `img_ids` that
+    ///    reflect the tile's **global** position (so positional
+    ///    embeddings agree across tiles), and run Flux forward to get
+    ///    a per-tile noise prediction.
+    /// 2. Unpack each prediction back to a 2D latent tile, weight it
+    ///    by a 2D Hann window, and accumulate into a full-canvas
+    ///    noise-prediction buffer plus a matching weight buffer.
+    /// 3. Divide accumulator by weights → full-canvas noise prediction.
+    /// 4. Standard flow-match update: `latent += pred * (t_prev - t_curr)`.
+    ///
+    /// The transformer only ever sees `tile_size × tile_size` worth of
+    /// tokens per call, so memory cost is bounded by the tile, not the
+    /// canvas — same trick the SDXL tiled path uses. Trades wall time
+    /// linearly with tile count: a 2048² canvas with 1024² tiles at
+    /// 768 stride = 3×3 = 9 forwards per step.
+    ///
+    /// Composes with: LoRA, GGUF (via the same `FluxBackbone` dispatch
+    /// the standard denoise uses), img2img (caller pre-mixes the
+    /// init+noise into the canvas), and **ControlNet** (v0.13 phase 9
+    /// — each loaded CN's conditioning latent is cropped to the
+    /// current tile and packed inside the loop). Does **not** compose
+    /// with Fill in this phase — `Pipeline::generate` bails loud at
+    /// the entry point.
+    ///
+    /// `conditioning_2d` carries one optional entry per loaded
+    /// ControlNet, in the same order as `self.controlnets`. Entries
+    /// shape `(1, 16, lh, lw)` (the full-canvas conditioning latent).
+    /// `None` entries mean "CN loaded but no conditioning image" — the
+    /// CN is silently skipped for every tile.
+    #[allow(clippy::too_many_arguments)]
+    fn denoise_tiled(
+        &self,
+        canvas_latent: &Tensor,
+        t5_emb: &Tensor,
+        clip_pooled: &Tensor,
+        timesteps: &[f64],
+        guidance: f64,
+        tile_cfg: &crate::pipelines::tiled::TiledConfig,
+        conditioning_2d: &[Option<Tensor>],
+        bar: &indicatif::ProgressBar,
+    ) -> Result<Tensor> {
+        use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
+
+        let dev = canvas_latent.device();
+        let dtype = canvas_latent.dtype();
+        let (b_sz, c, lh, lw) = canvas_latent.dims4()?;
+        if c != 16 {
+            bail!(
+                "denoise_tiled expected a 16-channel Flux latent (got {c}); call after \
+                 noise/init prep, before token packing."
+            );
+        }
+
+        // Tile dims in LATENT units (VAE downsample = 8).
+        let tile_lat = (tile_cfg.tile_size as usize) / 8;
+        let stride_lat = (tile_cfg.stride as usize) / 8;
+        if tile_lat % 2 != 0 {
+            bail!(
+                "Tiled Flux: --tile-size {} produces an odd-sized latent tile ({} latent \
+                 units). Flux's 2x2 patching needs an even latent tile.",
+                tile_cfg.tile_size,
+                tile_lat
+            );
+        }
+        // Clamp tile dims to canvas — if the user asked for a tile
+        // bigger than the canvas, the single-tile fallback below is
+        // equivalent to the standard non-tiled denoise (with a Hann
+        // window that's just 1 at the centre — no blending needed).
+        let tile_lat = tile_lat.min(lh).min(lw);
+        let stride_lat = stride_lat.min(tile_lat);
+
+        let positions: Vec<TilePos> = tile_positions(lh, lw, tile_lat, stride_lat);
+
+        // Shared text components (same across tiles, same across steps).
+        let txt = t5_emb.clone();
+        let txt_ids = Tensor::zeros((b_sz, txt.dim(1)?, 3), dtype, dev)?;
+        let vec_ = clip_pooled.clone();
+
+        // Hann window at latent resolution. Shape `(1, 1, tile_lat,
+        // tile_lat)`, broadcast-multiplies 16ch noise predictions
+        // cleanly.
+        let win = hann_window_2d(tile_lat, dev, dtype)?;
+        let guidance_t = Tensor::full(guidance as f32, b_sz, dev)?;
+
+        let mut canvas = canvas_latent.clone();
+        let num_steps = timesteps.windows(2).count().max(1);
+
+        for (step_i, window) in timesteps.windows(2).enumerate() {
+            let (t_curr, t_prev) = match window {
+                [a, b] => (*a, *b),
+                _ => continue,
+            };
+            let t_vec = Tensor::full(t_curr as f32, b_sz, dev)?;
+            let progress = step_i as f32 / num_steps as f32;
+
+            // Per-step accumulators. `pred_acc` collects weighted noise
+            // predictions over the full canvas; `weight_acc` tracks the
+            // overlap weight at each latent pixel so we can normalise.
+            let mut pred_acc = Tensor::zeros((b_sz, c, lh, lw), dtype, dev)?;
+            let mut weight_acc = Tensor::zeros((1, 1, lh, lw), dtype, dev)?;
+
+            for TilePos { y: ty, x: tx, size: sz } in positions.iter().copied() {
+                // Extract tile latent: (1, 16, sz, sz).
+                let tile = canvas.narrow(2, ty, sz)?.narrow(3, tx, sz)?;
+
+                // Pack to tokens (1, sz/2 * sz/2, 64). Same patching
+                // `sampling::State::new` does on the full canvas.
+                let h_tokens = sz / 2;
+                let w_tokens = sz / 2;
+                let tile_packed = pack_latent_to_tokens(&tile)?;
+
+                // Per-tile img_ids that point at the tile's global
+                // position. The Flux RoPE positional embedding uses
+                // these to compute per-axis frequencies; if every tile
+                // claimed (0, 0) as its origin the tiles wouldn't agree
+                // on geometry and the blend would smear.
+                let h_start = (ty / 2) as u32;
+                let w_start = (tx / 2) as u32;
+                let zeros_ids = Tensor::zeros((h_tokens, w_tokens), dtype, dev)?;
+                let h_ids = Tensor::arange(h_start, h_start + h_tokens as u32, dev)?
+                    .reshape((h_tokens, 1))?
+                    .broadcast_as((h_tokens, w_tokens))?
+                    .to_dtype(dtype)?;
+                let w_ids = Tensor::arange(w_start, w_start + w_tokens as u32, dev)?
+                    .reshape((1, w_tokens))?
+                    .broadcast_as((h_tokens, w_tokens))?
+                    .to_dtype(dtype)?;
+                let img_ids = Tensor::stack(&[zeros_ids, h_ids, w_ids], 2)?
+                    .reshape((1, h_tokens * w_tokens, 3))?
+                    .repeat((b_sz, 1, 1))?;
+
+                // v0.13 phase 9: per-tile ControlNet residuals. Each
+                // loaded CN that's active at this progress runs once
+                // per tile with the tile-cropped + packed conditioning.
+                // Residuals sum across CNs the same way the non-tiled
+                // path does.
+                let mut summed_double: Option<Vec<Tensor>> = None;
+                let mut summed_single: Option<Vec<Tensor>> = None;
+                for (cn, cond_opt) in self.controlnets.iter().zip(conditioning_2d.iter()) {
+                    if !cn.active_at(progress) {
+                        continue;
+                    }
+                    let cond_full = match cond_opt.as_ref() {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    // Crop the 2D conditioning to this tile and pack to
+                    // tokens. Same patching the noise tile uses, so the
+                    // CN sees a per-tile conditioning aligned with the
+                    // per-tile noise.
+                    let cond_tile = cond_full.narrow(2, ty, sz)?.narrow(3, tx, sz)?;
+                    let cond_packed = pack_latent_to_tokens(&cond_tile)?;
+                    let (d, s) = cn.net.forward(
+                        &tile_packed,
+                        &cond_packed,
+                        &img_ids,
+                        &txt,
+                        &txt_ids,
+                        &t_vec,
+                        &vec_,
+                        Some(&guidance_t),
+                        cn.mode,
+                        cn.scale,
+                    )?;
+                    summed_double = Some(merge_residuals(summed_double, d)?);
+                    summed_single = Some(merge_residuals(summed_single, s)?);
+                }
+                let double_r = summed_double.as_deref();
+                let single_r = match summed_single.as_ref() {
+                    Some(v) if !v.is_empty() => Some(v.as_slice()),
+                    _ => None,
+                };
+
+                let pred = match &self.flux_model {
+                    FluxBackbone::Bf16(net) => net.forward_with_residuals(
+                        &tile_packed,
+                        &img_ids,
+                        &txt,
+                        &txt_ids,
+                        &t_vec,
+                        &vec_,
+                        Some(&guidance_t),
+                        double_r,
+                        single_r,
+                    )?,
+                    FluxBackbone::Quantized(net) => net.forward_with_residuals(
+                        &tile_packed,
+                        &img_ids,
+                        &txt,
+                        &txt_ids,
+                        &t_vec,
+                        &vec_,
+                        Some(&guidance_t),
+                        double_r,
+                        single_r,
+                    )?,
+                };
+
+                // Unpack the (1, n_tokens, 64) prediction back to a
+                // 2D latent tile (1, 16, sz, sz). Inverse of the pack
+                // above.
+                let pred_2d = pred
+                    .reshape((b_sz, h_tokens, w_tokens, c, 2, 2))?
+                    .permute((0, 3, 1, 4, 2, 5))?
+                    .reshape((b_sz, c, sz, sz))?;
+
+                // Hann-weight and add into accumulators.
+                let weighted = pred_2d.broadcast_mul(&win)?;
+                let pred_region = pred_acc.narrow(2, ty, sz)?.narrow(3, tx, sz)?;
+                let pred_updated = (pred_region + &weighted)?;
+                pred_acc = pred_acc.slice_assign(
+                    &[0..b_sz, 0..c, ty..ty + sz, tx..tx + sz],
+                    &pred_updated,
+                )?;
+
+                let weight_region = weight_acc.narrow(2, ty, sz)?.narrow(3, tx, sz)?;
+                let weight_updated = weight_region.broadcast_add(&win)?;
+                weight_acc = weight_acc.slice_assign(
+                    &[0..1, 0..1, ty..ty + sz, tx..tx + sz],
+                    &weight_updated,
+                )?;
+            }
+
+            // Normalised per-pixel noise prediction over the whole canvas.
+            let pred_canvas = pred_acc.broadcast_div(&weight_acc)?;
+            canvas = (canvas + pred_canvas * (t_prev - t_curr))?;
+            bar.set_position(step_i as u64);
+        }
+
+        Ok(canvas)
+    }
 }
 
 /// Sum two per-block residual lists, padding the shorter one to the
+/// v0.13 phase 9: pack a 2D Flux latent `(1, 16, lh, lw)` into the
+/// per-token form `(1, lh/2 * lw/2, 64)` that Flux's `img_in` consumes.
+/// Same 2×2 patching the upstream `sampling::State::new` does on the
+/// noise latent. Used by both `encode_conditioning` (whole canvas) and
+/// the tiled denoise loop (per tile).
+fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
+    let (b, c, lh, lw) = z.dims4()?;
+    if lh % 2 != 0 || lw % 2 != 0 {
+        anyhow::bail!(
+            "pack_latent_to_tokens: latent dims must be even (got {lh}x{lw}); Flux \
+             patches by 2x2."
+        );
+    }
+    let packed = z
+        .reshape((b, c, lh / 2, 2, lw / 2, 2))?
+        .permute((0, 2, 4, 1, 3, 5))?
+        .reshape((b, lh / 2 * lw / 2, c * 4))?;
+    Ok(packed)
+}
+
 /// longer one's length (missing entries contribute zero). Returns the
 /// merged Vec; the inputs are consumed.
 fn merge_residuals(acc: Option<Vec<Tensor>>, new: Vec<Tensor>) -> Result<Vec<Tensor>> {
@@ -868,6 +1651,8 @@ pub async fn run(req: Request) -> Result<()> {
         lora_scale: req.lora_scale,
         controlnets: req.controlnets,
         quantize_t5: req.quantize_t5,
+        flux_quant_level: req.flux_quant_level,
+        t5_quant_level: req.t5_quant_level,
     })
     .await?;
     p.generate(&GenRequest {
@@ -880,5 +1665,96 @@ pub async fn run(req: Request) -> Result<()> {
         seed: req.seed,
         out_dir: req.out_dir,
         conditioning: req.conditioning,
+        init_image: req.init_image,
+        mask: req.mask,
+        strength: req.strength,
+        tiled: req.tiled,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v0.13 phase 5 — quant-level validation.
+
+    #[test]
+    fn validates_known_flux_quant_level() {
+        assert!(validate_quant_level("Q4_K_S", FLUX_QUANT_LEVELS, "Flux GGUF").is_ok());
+        assert!(validate_quant_level("Q8_0", FLUX_QUANT_LEVELS, "Flux GGUF").is_ok());
+        assert!(validate_quant_level("F16", FLUX_QUANT_LEVELS, "Flux GGUF").is_ok());
+    }
+
+    #[test]
+    fn quant_level_case_insensitive() {
+        // CLI users sometimes lowercase; the validator should still
+        // accept since GGUF filenames are case-preserved by city96 but
+        // user typing varies.
+        assert!(validate_quant_level("q4_k_s", FLUX_QUANT_LEVELS, "Flux GGUF").is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_quant_level() {
+        // city96 doesn't publish Q1_K — should bail loud.
+        let err = validate_quant_level("Q1_K", FLUX_QUANT_LEVELS, "Flux GGUF").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Q4_K_S"), "error should list supported levels: {msg}");
+    }
+
+    #[test]
+    fn rejects_t5_only_level_for_flux() {
+        // Q3_K_L is published for T5 but not for Flux — should bail
+        // when used as the Flux level.
+        assert!(validate_quant_level("Q3_K_L", FLUX_QUANT_LEVELS, "Flux GGUF").is_err());
+        assert!(validate_quant_level("Q3_K_L", T5_QUANT_LEVELS, "T5 GGUF").is_ok());
+    }
+
+    // v0.13 phase 6 — Flux ControlNet step gating. Half-open `[start,
+    // end)` matches the SD path so the same `start=0.0:end=0.4` flag
+    // string means the same thing on both backbones. Note: we can't
+    // construct a `LoadedFluxControlNet` without real CN weights, so
+    // these tests cover the gate predicate via a free function with
+    // the same body as `LoadedFluxControlNet::active_at`.
+    fn active_at_window(start: f32, end: f32, progress: f32) -> bool {
+        progress >= start && progress < end
+    }
+
+    #[test]
+    fn cn_gate_full_window_active_every_step() {
+        for i in 0..28 {
+            let progress = i as f32 / 28.0;
+            assert!(
+                active_at_window(0.0, 1.0, progress),
+                "default window must include progress={progress}"
+            );
+        }
+    }
+
+    #[test]
+    fn cn_gate_early_window_drops_late_steps() {
+        // start=0.0, end=0.4 → active for first 40% of steps.
+        // 28 steps → first ~11 active, rest inactive.
+        let early_active = (0..28)
+            .filter(|i| active_at_window(0.0, 0.4, *i as f32 / 28.0))
+            .count();
+        assert!((10..=12).contains(&early_active), "got {early_active} active steps");
+    }
+
+    #[test]
+    fn cn_gate_late_window_drops_early_steps() {
+        // start=0.6, end=1.0 → active only for the last 40%.
+        // step 0 progress=0.0 → inactive; step 27 progress~=0.96 → active.
+        assert!(!active_at_window(0.6, 1.0, 0.0));
+        assert!(active_at_window(0.6, 1.0, 0.7));
+        assert!(active_at_window(0.6, 1.0, 0.95));
+        // Right edge is half-open — progress=end must be inactive.
+        assert!(!active_at_window(0.6, 1.0, 1.0));
+    }
+
+    #[test]
+    fn cn_gate_zero_width_window_never_active() {
+        // start == end: half-open window is empty.
+        assert!(!active_at_window(0.5, 0.5, 0.5));
+        assert!(!active_at_window(0.5, 0.5, 0.0));
+    }
 }

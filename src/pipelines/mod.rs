@@ -18,6 +18,7 @@ pub mod flux;
 pub mod flux_controlnet;
 pub mod flux_inner;
 pub mod flux_lora;
+pub mod flux_quantized_inner;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
 pub mod lora;
