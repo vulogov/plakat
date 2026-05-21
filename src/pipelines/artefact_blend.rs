@@ -126,6 +126,8 @@ pub async fn blend_files(
             loras: cfg.loras.clone(),
             lora_scale: cfg.lora_scale,
             identity: None,
+            // Blend uses no identity encoder, so no CLIP-H load.
+            shared_clip_h: None,
         })
         .await
         .context("loading SD pipeline for artefact blend")?,
