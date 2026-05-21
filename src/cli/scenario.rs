@@ -952,11 +952,26 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         } else {
             crate::hf::resolve_alias(&model).to_string()
         };
+        // v0.12: Flux LoRAs (PEFT-format) are now supported via
+        // flux_lora::merge_flux_loras_into_weights. Resolve the
+        // scenario's `loras` here so the merge runs at load time.
+        let resolved_flux_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+            if loras.is_empty() {
+                Vec::new()
+            } else {
+                let mut v = Vec::with_capacity(loras.len());
+                for spec in &loras {
+                    v.push(spec.resolve().await?);
+                }
+                v
+            };
         Some(
             flux::Pipeline::load(flux::LoadRequest {
                 variant: fvar,
                 repo: resolved_repo,
                 device: device.clone(),
+                loras: resolved_flux_loras,
+                lora_scale,
             })
             .await?,
         )
