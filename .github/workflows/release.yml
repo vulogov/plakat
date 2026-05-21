@@ -60,6 +60,19 @@ jobs:
             archive: tar.gz
             bin_suffix: ""
 
+          # CUDA-enabled x86_64 Linux build. Dynamically links
+          # libcudart.so etc., so users without an NVIDIA stack
+          # should grab the plain x86_64-unknown-linux-gnu archive
+          # instead. CUDA toolkit is installed at build time via
+          # Jimver/cuda-toolkit on a stock ubuntu-22.04 runner.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            features: "cuda"
+            archive: tar.gz
+            bin_suffix: ""
+            name_suffix: "-cuda"
+            install_cuda: true
+
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
             features: ""
@@ -109,7 +122,10 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Include features in the key so the CUDA build doesn't
+          # collide with the plain x86_64-linux-gnu CPU build (both
+          # share `target` but have different dep graphs).
+          key: ${{ matrix.target }}-${{ matrix.features }}
           shared-key: release
 
       # -----------------------------------------------------------------
@@ -128,6 +144,28 @@ jobs:
             echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
           } >> "$GITHUB_ENV"
+
+      # -----------------------------------------------------------------
+      # CUDA toolkit (cuda matrix entry only). ~3-4 GB on disk; fits
+      # within the GitHub-hosted Linux runner's 14 GB budget.
+      # NVCC compilation extends the build time considerably.
+      # -----------------------------------------------------------------
+      - name: Install CUDA toolkit
+        if: matrix.install_cuda
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: "12.4.0"
+          # nvcc + cudart are what candle-cuda links against; skip
+          # the heavyweight samples + docs.
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "cublas", "cublas-dev"]'
+
+      - name: Verify CUDA install
+        if: matrix.install_cuda
+        run: |
+          echo "CUDA_PATH=$CUDA_PATH"
+          nvcc --version
+          ls "$CUDA_PATH/lib64/" | head -20
 
       # -----------------------------------------------------------------
       # Build.
@@ -168,7 +206,10 @@ jobs:
         shell: bash
         run: |
           tag="${{ steps.tag.outputs.tag }}"
-          name="plakat-${tag}-${{ matrix.target }}"
+          # name_suffix is empty for default builds; "-cuda" for the
+          # CUDA-enabled Linux matrix entry. Lets two matrix rows
+          # share `target` without colliding on archive name.
+          name="plakat-${tag}-${{ matrix.target }}${{ matrix.name_suffix }}"
           stage="dist/${name}"
           mkdir -p "${stage}"
           cp "target/${{ matrix.target }}/release/plakat${{ matrix.bin_suffix }}" "${stage}/"
