@@ -505,6 +505,18 @@ struct TaskDef {
     #[serde(default)]
     outpaint: Option<OutpaintSpec>,
 
+    /// v0.14 phase 3c: zero or more Flux Redux reference images for
+    /// this task. Each string parses as `path` (weight = 1.0) or
+    /// `path:weight=0.7`. Only meaningful for Flux variants except
+    /// Fill (which has an incompatible `img_in` shape).
+    ///
+    /// ```hjson
+    /// redux-images: [ ./refs/cat1.jpg, ./refs/cat2.jpg:weight=0.6 ]
+    /// ```
+    ///
+    /// Cap of 4 enforced inside `Pipeline::generate`.
+    #[serde(rename = "redux-images", default)]
+    redux_images: Vec<String>,
 }
 
 /// v0.13 phase 11: outpaint task block. At least one of the four
@@ -1253,9 +1265,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 quantize_t5: s.quantize_t5,
                 flux_quant_level: s.quant_level.clone(),
                 t5_quant_level: s.t5_quant_level.clone(),
-                // v0.14 phase 3: scenarios don't surface Flux Redux
-                // yet — per-task `redux_image:` is a follow-up.
-                redux: false,
+                // v0.14 phase 3c: enable the Redux encoder if ANY
+                // task in the scenario uses `redux-images:`. Loaded
+                // once at scenario startup, reused across tasks.
+                redux: s.tasks.iter().any(|t| !t.redux_images.is_empty()),
             })
             .await?,
         )
@@ -2028,6 +2041,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // cleared so they contribute no residuals.
                     // `_cn_tmps` outlives the `generate` call so any
                     // auto-annotator PNGs stay readable.
+                    //
+                    // v0.14 phase 3c: parse the task's Redux specs
+                    // here so an invalid spec fails the task with a
+                    // clear error before the slow generate kicks in.
+                    let task_redux_specs: Vec<
+                        crate::pipelines::flux_redux::ReduxSpec,
+                    > = task
+                        .redux_images
+                        .iter()
+                        .map(|s| s.parse::<crate::pipelines::flux_redux::ReduxSpec>())
+                        .collect::<Result<Vec<_>>>()
+                        .with_context(|| {
+                            format!("task {:?}: parsing redux-images entries", task.name)
+                        })?;
                     let task_flux_controls = task_effective_controls(task)?;
                     let mut _cn_tmps: Vec<tempfile::TempDir> = Vec::new();
                     if fp.has_controlnets() {
@@ -2127,11 +2154,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         mask: eff_mask.clone(),
                         strength: task.strength,
                         tiled: s.tiled.map(Into::into),
-                        // v0.14 phase 3: per-task Redux not surfaced
-                        // in scenarios yet. The pipeline was loaded
-                        // with `redux: false` above, so leaving this
-                        // None preserves invariants.
-                        redux_image: None,
+                        // v0.14 phase 3c: per-task Redux. The
+                        // task's `redux-images: [...]` is parsed
+                        // upstream as `Vec<ReduxSpec>`; pass it
+                        // through verbatim. The Pipeline was loaded
+                        // with `redux: any_task_has_redux` above so
+                        // the encoder is available iff any task uses
+                        // it.
+                        redux_images: task_redux_specs.clone(),
                     })?;
                 }
                 // Dry-run path doesn't reach here.
