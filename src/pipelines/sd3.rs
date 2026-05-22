@@ -38,11 +38,20 @@
 //!   We double-batch `[neg, pos]` per step and blend via
 //!   `pred = neg + guidance * (pos - neg)`.
 //!
-//! ## Phase 1a scope
+//! ## Phase 1a / 8a / v0.15 phase 2 scope
 //!
-//! Just t2i on `sd35-medium`. LoRA / GGUF / ControlNet / img2img all
-//! land in subsequent phases. Sd35Large + Sd35LargeTurbo + Sd3Medium
-//! variants land in phase 1b.
+//! * t2i on Sd3Medium, Sd35Medium, Sd35Large, Sd35LargeTurbo.
+//! * v0.15 phase 2: img2img + inpaint (RePaint-style) for the full
+//!   lineup. VAE-encoded init lerps with fresh noise at `t=strength`;
+//!   the timestep schedule is truncated to entries below `strength`
+//!   with `strength` itself prepended (same trick `FluxImg2Img` uses).
+//!   Inpaint keeps unmasked pixels on the flow trajectory of the init
+//!   by per-step blending `latent = mask * latent + (1-mask) *
+//!   lerp(init, eps, t_next)` where `eps` is the same noise sample the
+//!   start latent was built with.
+//!
+//! Still deferred (v0.15+): LoRA (phase 3), Canny/Depth-dev (phase 4),
+//! tiled (phase 5), ControlNet (phase 6).
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::Module;
@@ -156,6 +165,27 @@ pub struct Request {
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
     pub device: Device,
+    /// v0.15 phase 2: img2img init image. `None` is pure t2i. When set
+    /// AND `mask` is `None`, every pixel is re-denoised at `strength`
+    /// (img2img). When set AND `mask` is `Some`, only the masked
+    /// region re-denoises; unmasked pixels stay on the init's flow
+    /// trajectory (RePaint-style inpaint).
+    pub init_image: Option<PathBuf>,
+    /// v0.15 phase 2: per-image binary or feathered mask. Same
+    /// conventions as `imaging::mask::Mask` — white (1.0) = inpaint,
+    /// black (0.0) = preserve.
+    pub mask: Option<PathBuf>,
+    /// v0.15 phase 2: feather radius (pixels) applied to the mask
+    /// before downsampling to latent resolution. Soft edges hide
+    /// the inpaint↔preserve boundary.
+    pub mask_feather: u32,
+    /// v0.15 phase 2: when `true`, the loaded mask is inverted
+    /// before feathering (handles sources where black = inpaint).
+    pub mask_invert: bool,
+    /// v0.15 phase 2: img2img / inpaint strength in `[0, 1]`. `None`
+    /// defaults to 0.6 for img2img, 1.0 for inpaint (matches Flux +
+    /// SD img2img defaults). Ignored when `init_image` is `None`.
+    pub strength: Option<f32>,
 }
 
 pub struct LoadRequest {
@@ -174,6 +204,13 @@ pub struct GenRequest {
     pub guidance: Option<f64>,
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
+    /// v0.15 phase 2: img2img / inpaint surface. See `Request` for
+    /// field semantics.
+    pub init_image: Option<PathBuf>,
+    pub mask: Option<PathBuf>,
+    pub mask_feather: u32,
+    pub mask_invert: bool,
+    pub strength: Option<f32>,
 }
 
 pub struct Pipeline {
@@ -377,6 +414,67 @@ impl Pipeline {
         let lat_w = w / 8;
         let time_shift = self.variant.default_time_shift();
 
+        // ---------- v0.15 phase 2: img2img / inpaint prep ----------
+        // VAE-encode the init image once; reuse across the count loop.
+        // The mask is image-space (HxW); we downsample to latent
+        // resolution (H/8 x W/8) inside the loop. RePaint convention:
+        // white (1.0) = inpaint (denoise this region), black (0.0) =
+        // preserve (snap back to the init's flow trajectory).
+        let img2img_init: Option<(Tensor, f32, Option<Tensor>)> =
+            if let Some(init_path) = req.init_image.as_ref() {
+                let has_mask = req.mask.is_some();
+                let strength = req
+                    .strength
+                    .unwrap_or(if has_mask { 1.0 } else { 0.6 })
+                    .clamp(0.0, 1.0);
+                if !strength.is_finite() {
+                    bail!(
+                        "SD3 img2img strength must be finite in [0, 1], got {strength}"
+                    );
+                }
+                let spin = progress::spinner("Encoding SD3 img2img init image");
+                let init_pixels = crate::imaging::preprocess::sd_image_tensor(
+                    init_path,
+                    w as u32,
+                    h as u32,
+                    &self.device,
+                    self.dtype,
+                )
+                .with_context(|| {
+                    format!("loading SD3 init image {}", init_path.display())
+                })?;
+                // SD3 latent normalisation is the inverse of the decode
+                // path's `(x / SCALE) + SHIFT`: `(z - SHIFT) * SCALE`.
+                // `encode` returns a `DiagonalGaussianDistribution`;
+                // `.sample()` draws one latent sample (matches every
+                // other SD-family encode site in the codebase).
+                let init_dist = self.vae.encode(&init_pixels)?;
+                let init_z = init_dist.sample()?;
+                let init_norm = ((init_z - VAE_SHIFT)? * VAE_SCALE)?;
+
+                let mask_lat = if let Some(mask_path) = req.mask.as_ref() {
+                    let mut m = crate::imaging::mask::Mask::load(
+                        mask_path, w as u32, h as u32,
+                    )?;
+                    if req.mask_invert {
+                        m.invert();
+                    }
+                    if req.mask_feather > 0 {
+                        m.feather(req.mask_feather);
+                    }
+                    Some(m.to_latent_tensor(&self.device, self.dtype)?)
+                } else {
+                    None
+                };
+                spin.finish_with_message(format!(
+                    "✓ SD3 init encoded (strength {strength:.2}{})",
+                    if has_mask { ", masked" } else { "" }
+                ));
+                Some((init_norm, strength, mask_lat))
+            } else {
+                None
+            };
+
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -387,33 +485,57 @@ impl Pipeline {
                 tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
             }
 
-            // Initial latent: pure Gaussian noise, (1, 16, lat_h, lat_w).
-            let mut x = Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?
+            // Fresh per-image noise. Cached for inpaint mode below so
+            // the unmasked-region resampling uses the same noise the
+            // start latent was built from.
+            let eps = Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?
                 .to_dtype(self.dtype)?;
 
-            // Linear timestep schedule [1.0 → 0.0] with the SD3 time
-            // shift transform applied.
-            let timesteps: Vec<f64> = (0..=steps)
-                .map(|v| 1.0 - (v as f64 / steps as f64))
-                .map(|t| shift_t(t, time_shift))
-                .collect();
+            // Initial latent + schedule.
+            //
+            // **Pure t2i**: x = eps (Gaussian noise), timesteps full
+            //   [1.0 → 0.0] linear-with-shift.
+            //
+            // **img2img / inpaint**: x = lerp(init, eps, strength) using
+            //   the rectified-flow interpolation `x_t = (1-t)*init + t*eps`,
+            //   then truncate the schedule to entries below strength
+            //   and prepend strength itself so the first step's
+            //   `t_curr` matches the noise level of the start latent.
+            //   Mirrors diffusers' FlowMatchEulerDiscreteScheduler
+            //   `get_timesteps` + Flux phase-3 img2img init.
+            let (mut x, timesteps) = match img2img_init.as_ref() {
+                Some((init_norm, strength, _)) => {
+                    let s = *strength as f64;
+                    let start = ((init_norm * (1.0 - s))? + (&eps * s)?)?;
+                    let ts = build_img2img_timesteps(steps, time_shift, Some(s));
+                    (start, ts)
+                }
+                None => {
+                    let ts = build_img2img_timesteps(steps, time_shift, None);
+                    (eps.clone(), ts)
+                }
+            };
 
             let bar = progress::step_bar(
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
+            let mode_tag = match (req.init_image.is_some(), req.mask.is_some()) {
+                (true, true) => "inpaint",
+                (true, false) => "img2img",
+                _ => "denoise",
+            };
+            bar.set_message(format!(
+                "{mode_tag} flow-match, {} steps, seed={seed}",
+                timesteps.len().saturating_sub(1)
+            ));
 
             for (step_i, window) in timesteps.windows(2).enumerate() {
                 let (t_curr, t_prev) = match window {
                     [a, b] => (*a, *b),
                     _ => continue,
                 };
-                // Double-batch [neg, pos] so the model forward
-                // produces both directions in one call.
                 let x_doubled = Tensor::cat(&[&x, &x], 0)?;
-                // MMDiT timestep convention: scalar 0..1 broadcast to
-                // batch. Pass the current t per batch row.
                 let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
                 let pred_doubled =
                     self.mmdit_model
@@ -422,13 +544,32 @@ impl Pipeline {
                 let pred_pos = pred_doubled.i(1..2)?;
                 let pred = (&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?;
                 x = (x + pred * (t_prev - t_curr))?;
+
+                // RePaint-style inpaint blend: after the denoise step
+                // brought every pixel to `t_prev`, snap the *unmasked*
+                // region back onto the init's flow trajectory at the
+                // same noise level. This keeps unmasked content
+                // visually anchored to the init while letting the
+                // masked region freely re-denoise. Done in latent
+                // space so per-step VAE roundtrips aren't needed.
+                if let Some((init_norm, _strength, Some(mask_lat))) =
+                    img2img_init.as_ref()
+                {
+                    let init_at_tprev = ((init_norm * (1.0 - t_prev))?
+                        + (&eps * t_prev)?)?;
+                    // mask*x + (1-mask)*init_at_tprev — broadcasting
+                    // mask (1,1,h,w) over the 16 latent channels.
+                    let one_minus = (mask_lat.affine(-1.0, 1.0))?;
+                    let kept = init_at_tprev.broadcast_mul(&one_minus)?;
+                    let edited = x.broadcast_mul(mask_lat)?;
+                    x = (edited + kept)?;
+                }
+
                 bar.set_position(step_i as u64);
             }
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
-            bar.finish_with_message("✓ denoised");
+            bar.finish_with_message(format!("✓ {mode_tag} done"));
 
-            // VAE decode: undo the latent normalisation, decode,
-            // convert to RGB u8.
             let pre_decode = ((&x / VAE_SCALE)? + VAE_SHIFT)?;
             let decoded = self.vae.decode(&pre_decode)?;
             let img_norm = ((decoded.clamp(-1f32, 1f32)? + 1.0)? * 0.5)?;
@@ -439,7 +580,9 @@ impl Pipeline {
             let (oh, ow, _) = img_u8.dims3()?;
             let buf = img_u8.flatten_all()?.to_vec1::<u8>()?;
 
-            let out_path = req.out_dir.join(format!("plakat-sd3-{seed}.png"));
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-sd3-{mode_tag}-{seed}.png"));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
@@ -546,6 +689,36 @@ fn shift_t(t: f64, shift: f64) -> f64 {
     }
 }
 
+/// v0.15 phase 2: build the SD3 img2img schedule — same construction
+/// the `generate` loop runs inline, factored out for unit testing.
+///
+/// Pure t2i (`strength == None`): the full linear `[1.0 → 0.0]`
+/// schedule with `shift_t` applied.
+///
+/// img2img (`strength = Some(s)`): drop schedule entries with
+/// `shifted_t >= s` and prepend `s` itself, so the first window's
+/// `t_curr` matches the noise level of the `lerp(init, eps, s)`
+/// start latent. Mirrors `FluxImg2ImgPipeline.get_timesteps`.
+fn build_img2img_timesteps(steps: usize, shift: f64, strength: Option<f64>) -> Vec<f64> {
+    let full: Vec<f64> = (0..=steps)
+        .map(|v| 1.0 - (v as f64 / steps as f64))
+        .map(|t| shift_t(t, shift))
+        .collect();
+    match strength {
+        None => full,
+        Some(s) => {
+            let mut filtered: Vec<f64> = full.into_iter().filter(|t| *t < s).collect();
+            if filtered.is_empty() {
+                filtered.push(0.0);
+            }
+            let mut new_ts = Vec::with_capacity(filtered.len() + 1);
+            new_ts.push(s);
+            new_ts.extend(filtered);
+            new_ts
+        }
+    }
+}
+
 pub async fn run(req: Request) -> Result<()> {
     let mut p = Pipeline::load(LoadRequest {
         variant: req.variant,
@@ -563,6 +736,11 @@ pub async fn run(req: Request) -> Result<()> {
         guidance: req.guidance,
         seed: req.seed,
         out_dir: req.out_dir,
+        init_image: req.init_image,
+        mask: req.mask,
+        mask_feather: req.mask_feather,
+        mask_invert: req.mask_invert,
+        strength: req.strength,
     })
 }
 
@@ -594,5 +772,74 @@ mod tests {
         // = 3*0.5 / (1 + 2*0.5) = 0.75 — the midpoint of the schedule
         // sits past 0.5 in t-space, meaning more steps cluster near 1.
         assert!((shift_t(0.5, 3.0) - 0.75).abs() < 1e-12);
+    }
+
+    // v0.15 phase 2 — img2img schedule truncation.
+
+    #[test]
+    fn schedule_unchanged_without_strength() {
+        // Pure t2i: full linear schedule with shift_t applied,
+        // length = steps + 1, endpoints 1.0 and 0.0.
+        let ts = build_img2img_timesteps(4, 1.0, None);
+        assert_eq!(ts.len(), 5);
+        assert!((ts[0] - 1.0).abs() < 1e-12);
+        assert!((ts[4] - 0.0).abs() < 1e-12);
+        // shift = 1.0 is identity, so middle entries are linear.
+        assert!((ts[2] - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_truncated_to_strength() {
+        // Strength = 0.5: drop the high-noise half and prepend 0.5
+        // itself. So the schedule starts at 0.5, walks down, ends 0.0.
+        let ts = build_img2img_timesteps(4, 1.0, Some(0.5));
+        // Full was [1.0, 0.75, 0.5, 0.25, 0.0]. Filter < 0.5 → [0.25,
+        // 0.0]. Prepend 0.5 → [0.5, 0.25, 0.0].
+        assert_eq!(ts.len(), 3);
+        assert!((ts[0] - 0.5).abs() < 1e-12);
+        assert!((ts[1] - 0.25).abs() < 1e-12);
+        assert!((ts[2] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_strength_zero_falls_back_to_terminal_step() {
+        // Strength = 0.0 would filter out every entry; we fall back to
+        // a single 0.0 step. Schedule becomes [0.0, 0.0] — a no-op
+        // denoise window. The generate loop's `t_prev - t_curr` is
+        // zero so no update happens. Safer than panicking on empty.
+        let ts = build_img2img_timesteps(4, 1.0, Some(0.0));
+        assert_eq!(ts.len(), 2);
+        assert!((ts[0] - 0.0).abs() < 1e-12);
+        assert!((ts[1] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_strength_one_keeps_all_but_one() {
+        // Strength = 1.0: filter keeps every entry except the terminal
+        // 1.0 itself (since the filter is `t < s`). Prepended 1.0
+        // recovers the standard `[1.0, ..., 0.0]` shape — equivalent
+        // to pure t2i except built differently.
+        let ts = build_img2img_timesteps(4, 1.0, Some(1.0));
+        // Full = [1.0, 0.75, 0.5, 0.25, 0.0]. Filter < 1.0 → [0.75,
+        // 0.5, 0.25, 0.0]. Prepend 1.0 → [1.0, 0.75, 0.5, 0.25, 0.0].
+        assert_eq!(ts.len(), 5);
+        assert!((ts[0] - 1.0).abs() < 1e-12);
+        assert!((ts[4] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_respects_shift() {
+        // With shift = 3.0, the schedule is non-linear; truncating at
+        // a low strength keeps fewer entries because the shift packed
+        // more density into the high-noise end.
+        let full_steps_count =
+            build_img2img_timesteps(8, 3.0, Some(0.5)).len();
+        // Should still start at 0.5 and end at 0.0. The intermediate
+        // count depends on how many shifted t's fell below 0.5.
+        let ts = build_img2img_timesteps(8, 3.0, Some(0.5));
+        assert!((ts[0] - 0.5).abs() < 1e-12);
+        assert!((ts[ts.len() - 1] - 0.0).abs() < 1e-12);
+        // Sanity: result is non-empty and well-formed.
+        assert!(full_steps_count >= 2);
     }
 }

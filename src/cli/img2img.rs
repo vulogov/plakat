@@ -195,6 +195,14 @@ pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
         if variant.is_flux() {
             return run_flux_img2img(args, device).await;
         }
+        // v0.15 phase 2: SD3.x img2img + inpaint. The MMDiT pipeline
+        // already supports the rectified-flow lerp + truncated
+        // schedule; this dispatch builds the sd3::Request directly,
+        // skipping the SD-family LoRA / refiner / ControlNet plumbing
+        // that doesn't apply on MMDiT.
+        if variant.is_sd3() {
+            return run_sd3_img2img(args, device).await;
+        }
     }
 
     // Strength: 0.6 for img2img, 1.0 for inpaint when not explicit.
@@ -645,6 +653,85 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
     })
     .await?;
     Ok(())
+}
+
+/// v0.15 phase 2: SD3 / SD3.5 img2img + inpaint dispatch.
+///
+/// Builds an `sd3::Request` directly from the CLI args and runs it.
+/// MMDiT doesn't carry the SD-family extras (refiner / ControlNet /
+/// LoRA — those land in later phases), so we explicitly bail when the
+/// user passes flags that don't apply on SD3 yet. That's friendlier
+/// than silently ignoring `--loras` on an SD3 model.
+async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+    use crate::pipelines::{sd3, t2i};
+
+    if !args.loras.is_empty() {
+        anyhow::bail!(
+            "--loras isn't wired for SD3 yet (v0.15 phase 3 deferred). \
+             Drop --loras or switch to SD/Flux."
+        );
+    }
+    if args.control.is_some()
+        || args.control_image.is_some()
+        || args.control_from.is_some()
+    {
+        anyhow::bail!(
+            "--control / --control-image / --control-from aren't wired for SD3 yet \
+             (v0.15 phase 6 deferred)."
+        );
+    }
+    let variant = t2i::Variant::detect(&args.model);
+    let sd3_variant = match variant {
+        t2i::Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+        t2i::Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+        t2i::Variant::Sd35Large => sd3::Variant::Sd35Large,
+        t2i::Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+        _ => unreachable!("dispatch ensures variant.is_sd3()"),
+    };
+
+    let (width, height) = match args.size {
+        Some(s) => (s.w, s.h),
+        None => detect_input_size(&args.input)?,
+    };
+
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+
+    sd3::run(sd3::Request {
+        prompt: args.prompt,
+        negative: args.negative,
+        variant: sd3_variant,
+        repo,
+        width,
+        height,
+        count: args.count,
+        // Only forward `steps` / `guidance` if the user moved them off
+        // the CLI defaults; otherwise let sd3 pick the per-variant
+        // recommended values (Turbo wants 4 steps + guidance 0, Large
+        // / Medium want 28 + 4.5, etc.).
+        steps: if args.steps == 28 {
+            None
+        } else {
+            Some(args.steps)
+        },
+        guidance: if (args.guidance - 7.5).abs() < f64::EPSILON {
+            None
+        } else {
+            Some(args.guidance)
+        },
+        seed: args.seed,
+        out_dir: args.out,
+        device,
+        init_image: Some(args.input),
+        mask: args.mask,
+        mask_feather: args.mask_feather,
+        mask_invert: args.mask_invert,
+        strength: args.strength,
+    })
+    .await
 }
 
 /// Read the input's actual dimensions and round each axis DOWN to
