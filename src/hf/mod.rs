@@ -51,11 +51,23 @@ pub fn resolve_alias(name: &str) -> &str {
         "flux-schnell-gguf" | "flux-schnell-q4" => "city96/FLUX.1-schnell-gguf",
         // GGUF mirror for Fill — city96 ships this in the same
         // family as the BF16 model.
-        // v0.14 phase 1a: Stable Diffusion 3.5 Medium (Stability AI's
-        // MMDiT). Gated repo — HF_TOKEN required. Phase 1b adds the
-        // Large and Large-Turbo variants.
+        // v0.14 phase 1a / 8a: Stable Diffusion 3 / 3.5 (Stability AI's
+        // MMDiT). All gated repos — HF_TOKEN required.
         "sd35-medium" | "sd3.5-medium" | "stable-diffusion-3.5-medium" => {
             "stabilityai/stable-diffusion-3.5-medium"
+        }
+        "sd35-large" | "sd3.5-large" | "stable-diffusion-3.5-large" => {
+            "stabilityai/stable-diffusion-3.5-large"
+        }
+        "sd35-large-turbo"
+        | "sd3.5-large-turbo"
+        | "stable-diffusion-3.5-large-turbo" => {
+            "stabilityai/stable-diffusion-3.5-large-turbo"
+        }
+        // Original SD3 (June 2024 release) — superseded by 3.5 but
+        // some workflows still target it.
+        "sd3-medium" | "stable-diffusion-3-medium" => {
+            "stabilityai/stable-diffusion-3-medium"
         }
         // v0.14 phase 2d: NF4 (bitsandbytes 4-bit) Flux. lllyasviel's
         // pack is the canonical community NF4 source. Weights stay

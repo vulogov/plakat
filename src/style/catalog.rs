@@ -116,7 +116,10 @@ impl BaseModel {
             Variant::Sd15 | Variant::Sd21 => Self::Sd15,
             Variant::Sdxl | Variant::SdxlTurbo => Self::Sdxl,
             Variant::FluxSchnell | Variant::FluxDev | Variant::FluxFillDev => Self::Flux,
-            Variant::Sd35Medium => Self::Sd3,
+            Variant::Sd3Medium
+            | Variant::Sd35Medium
+            | Variant::Sd35Large
+            | Variant::Sd35LargeTurbo => Self::Sd3,
         }
     }
 

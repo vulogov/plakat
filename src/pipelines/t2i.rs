@@ -147,6 +147,12 @@ pub enum Variant {
     FluxFillDev,
     /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
     Sd35Medium,
+    /// v0.14 phase 8a: SD3.5 Large (8B-param flagship MMDiT).
+    Sd35Large,
+    /// v0.14 phase 8a: SD3.5 Large Turbo (4-step distillation).
+    Sd35LargeTurbo,
+    /// v0.14 phase 8a: original Stable Diffusion 3 Medium (June 2024).
+    Sd3Medium,
 }
 
 impl Variant {
@@ -154,12 +160,35 @@ impl Variant {
         let m = model.to_lowercase();
         // SD3 detection precedes SDXL/SD because "sd3" / "sd3.5" /
         // "stable-diffusion-3.5" contain "sd" but should route to the
-        // MMDiT pipeline.
-        if m.contains("sd3") || m.contains("sd-3") || m.contains("stable-diffusion-3") {
-            // Phase 1a only ships Medium; Large and Large-Turbo
-            // land in phase 1b. For now any sd3.x string maps to
-            // Medium — the pipeline will bail at load time if the
-            // weight shape doesn't match Medium's config.
+        // MMDiT pipeline. Sub-variant differentiation:
+        //   * "large-turbo" / "3.5-large-turbo" → Sd35LargeTurbo
+        //   * "large"       / "3.5-large"       → Sd35Large
+        //   * "3.5"         / "3-5"             → Sd35Medium
+        //   * "sd3" + "medium" (no "3.5")       → Sd3Medium
+        // Order matters: check "turbo" before "large" since the turbo
+        // string contains "large".
+        let is_sd3_family = m.contains("sd3")
+            || m.contains("sd-3")
+            || m.contains("stable-diffusion-3");
+        if is_sd3_family {
+            if m.contains("turbo") {
+                return Self::Sd35LargeTurbo;
+            }
+            if m.contains("large") {
+                return Self::Sd35Large;
+            }
+            // Pick the SD3.x sub-version: 3.5 ships everything except
+            // the original 3-medium. Match "3.5" or "3-5" (HF repos
+            // use the dash form: `stable-diffusion-3.5-medium`).
+            if m.contains("3.5") || m.contains("3-5") {
+                return Self::Sd35Medium;
+            }
+            // Original SD3-medium (no `.5` in the name).
+            if m.contains("medium") {
+                return Self::Sd3Medium;
+            }
+            // Default for `sd3` / `sd-3` strings without a sub-flag —
+            // pick the recommended Medium variant from the modern lineup.
             return Self::Sd35Medium;
         }
         if m.contains("flux") {
@@ -187,10 +216,16 @@ impl Variant {
     pub fn is_flux(self) -> bool {
         matches!(self, Self::FluxSchnell | Self::FluxDev | Self::FluxFillDev)
     }
-    /// v0.14 phase 1a: any SD3 / SD3.5 variant. Routes to the MMDiT
-    /// pipeline in `pipelines::sd3`.
+    /// v0.14 phase 1a / 8a: any SD3 / SD3.5 variant. Routes to the
+    /// MMDiT pipeline in `pipelines::sd3`.
     pub fn is_sd3(self) -> bool {
-        matches!(self, Self::Sd35Medium)
+        matches!(
+            self,
+            Self::Sd3Medium
+                | Self::Sd35Medium
+                | Self::Sd35Large
+                | Self::Sd35LargeTurbo
+        )
     }
 }
 
@@ -1307,7 +1342,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             );
         }
         let sd3_variant = match variant {
+            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
             Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+            Variant::Sd35Large => sd3::Variant::Sd35Large,
+            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
             _ => unreachable!("is_sd3() implies one of the SD3 variants"),
         };
         sd3::run(sd3::Request {

@@ -51,6 +51,11 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | **v0.13**: 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | **v0.13**: 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | **v0.13**: 4-bit quantized Flux Fill. |
+| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | **v0.14 phase 2**: NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras` (v0.14 phase 8b). |
+| `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | **v0.14 phase 1a**: Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
+| `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | **v0.14 phase 8a**: SD3.5 Large flagship. 8B-param MMDiT. Gated. |
+| `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | **v0.14 phase 8a**: 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
+| `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | **v0.14 phase 8a**: original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
 
 Custom HF repos: pass the full `org/name`. For SD-family the repo must
 have the diffusers layout (`unet/`, `vae/`, `text_encoder[_2]/`,
@@ -383,6 +388,48 @@ for placing named PNG cutouts into the generated image:
 
 Full reference: [`ARTEFACTS.md`](ARTEFACTS.md). Runnable end-to-end
 walkthrough: [`examples/tutorials/ZONES/`](../examples/tutorials/ZONES/).
+
+---
+
+### `--redux-image <SPEC>` (v0.14 phase 3)
+
+Repeatable image-conditioning input for Flux Redux. Each spec is a
+path (weight = 1.0) or `path:weight=F.F` (custom weight; 0.0 turns
+the image off, ≤2.0 typical range). Up to 4 references; the
+attention cost grows quadratically with the seq length so 1–2 is
+typical.
+
+```bash
+# Single ref
+plakat generate "in this style" --model flux-dev \
+    --redux-image style.png
+
+# Multi-ref with weights
+plakat generate "..." --model flux-dev \
+    --redux-image style.png:weight=0.8 \
+    --redux-image subject.png:weight=0.4
+```
+
+Composes with: BF16 / GGUF / NF4 Flux, LoRA, ControlNet, img2img,
+tiled denoise. **Does not** compose with `flux-fill-dev` (Fill's
+384ch `img_in` is incompatible).
+
+### `--fast <PRESET>` (v0.14 phase 6)
+
+Bundles a published distillation LoRA + recommended step + guidance
+in one flag. Presets:
+
+* `hyper-8` — ByteDance Hyper-FLUX 8-step (CFG-free)
+* `hyper-16` — ByteDance Hyper-FLUX 16-step (CFG-free)
+* `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
+
+```bash
+plakat generate "..." --model flux-dev --fast hyper-8
+```
+
+The preset LoRA gets prepended to `--loras`; `--steps` / `--guidance`
+are overridden **only** when you didn't pass them explicitly.
+Requires a non-Fill Flux model.
 
 ---
 
