@@ -156,6 +156,12 @@ pub struct Request {
     /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
     /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
     pub t5_quant_level: Option<String>,
+    /// v0.14 phase 3: reference image for Flux Redux conditioning.
+    /// Requires the Pipeline to be loaded with Redux enabled. See
+    /// `GenRequest::redux_image`.
+    pub redux_image: Option<PathBuf>,
+    /// v0.14 phase 3: see `LoadRequest::redux`.
+    pub redux: bool,
     /// v0.13 phase 2: Flux.1-Fill-dev inputs.
     pub init_image: Option<PathBuf>,
     pub mask: Option<PathBuf>,
@@ -202,6 +208,12 @@ pub struct LoadRequest {
     pub flux_quant_level: Option<String>,
     /// v0.13 phase 5: see `Request::t5_quant_level`.
     pub t5_quant_level: Option<String>,
+    /// v0.14 phase 3: when `true`, load SigLIP-so400m + the Flux
+    /// Redux adapter at load time so per-`generate` calls can pass
+    /// `redux_image`. Loading is lazy here — empty when the caller
+    /// doesn't intend to use Redux, since SigLIP + adapter add
+    /// ~1 GB of memory and a noticeable load delay.
+    pub redux: bool,
 }
 
 /// v0.13 phase 5: city96's published GGUF quant levels for the Flux
@@ -311,6 +323,9 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.13 phase 4: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.14 phase 3: reference image for Flux Redux. See
+    /// `Request::redux_image`.
+    pub redux_image: Option<PathBuf>,
 }
 
 pub struct Pipeline {
@@ -337,6 +352,11 @@ pub struct Pipeline {
     /// `forward_with_residuals`. Empty disables the ControlNet path
     /// entirely.
     controlnets: Vec<LoadedFluxControlNet>,
+    /// v0.14 phase 3: optional Redux encoder for image-conditioned
+    /// Flux. `Some` when `LoadRequest::redux` was true; per-call
+    /// `redux_image` activates conditioning by feeding the encoded
+    /// tokens through `encode_prompt`.
+    redux_encoder: Option<crate::pipelines::flux_redux::ReduxEncoder>,
 }
 
 /// One element of the Pipeline's ControlNet stack — the loaded
@@ -352,9 +372,17 @@ pub struct Pipeline {
 /// quantized backbone — affected Linears are dequantized once at
 /// load time, merged with deltas, and substituted as dense; the rest
 /// of the model stays 4-bit.
+///
+/// v0.14 phase 2d: `Nf4` is plakat's vendored NF4 backbone — weights
+/// stay packed at 4-bit (bnb / NormalFloat-4) and dequantize per
+/// forward call. ~6 GB transformer at inference. Slower than the
+/// GGUF backbone (no kernel-fused dequant+matmul) but a real 4×
+/// weight-memory savings vs BF16. ControlNet / LoRA composition
+/// with NF4 isn't wired yet — Pipeline::load bails for those combos.
 pub enum FluxBackbone {
     Bf16(fmodel::Flux),
     Quantized(qmodel::Flux),
+    Nf4(crate::pipelines::flux_nf4_inner::Flux),
 }
 
 /// v0.13 phase 1b: T5-XXL encoder backbone. The T5 owns a KV cache
@@ -486,6 +514,13 @@ impl Pipeline {
         // backbone; phase 1e unblocks LoRAs via selective dequant
         // overrides — so both compose now.
         let is_gguf = req.repo.to_lowercase().contains("gguf");
+        // v0.14 phase 2d: NF4 detection. "nf4" or "bnb-nf4" in the
+        // repo id routes through the NF4 vendor (flux_nf4_inner).
+        // Like GGUF, NF4 packs ship only the transformer; AE + text
+        // encoders come from the BFL donor.
+        let is_nf4 = !is_gguf
+            && (req.repo.to_lowercase().contains("nf4")
+                || req.repo.to_lowercase().contains("bnb"));
         // Quantized T5 only makes sense when paired with a quantized
         // transformer — running BF16 transformer + Q4 T5 loses T5
         // quality without saving meaningful memory.
@@ -496,7 +531,31 @@ impl Pipeline {
                  without unlocking the memory budget that needs it."
             );
         }
-        let donor_repo: String = if is_gguf {
+        // v0.14 phase 2d: bail loud on NF4 + LoRA / ControlNet.
+        // Composition isn't wired (the NF4 vendor's forward doesn't
+        // expose residual hooks, and LoRA-on-NF4 needs the same
+        // selective-dequant trick we use for GGUF — a follow-up).
+        if is_nf4 {
+            if !req.loras.is_empty() {
+                bail!(
+                    "NF4 Flux doesn't support --lora yet (v0.14 phase 2d). \
+                     Drop --lora or switch to BF16 / GGUF (which both compose)."
+                );
+            }
+            if !req.controlnets.is_empty() {
+                bail!(
+                    "NF4 Flux doesn't support --control-spec yet (v0.14 phase 2d). \
+                     Drop --control-spec or switch to BF16 / GGUF."
+                );
+            }
+            if matches!(req.variant, Variant::FillDev) {
+                bail!(
+                    "NF4 Flux Fill isn't supported. Use BF16 (flux-fill-dev) or GGUF \
+                     (flux-fill-dev-gguf) instead."
+                );
+            }
+        }
+        let donor_repo: String = if is_gguf || is_nf4 {
             match req.variant {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
                 Variant::Schnell => "black-forest-labs/FLUX.1-schnell".to_string(),
@@ -508,7 +567,8 @@ impl Pipeline {
 
         // ---------- download weights ----------
         let dl = progress::spinner(&format!("Downloading weights for {}", req.repo));
-        // Transformer: GGUF when quantized, safetensors otherwise.
+        // Transformer: GGUF when quantized, NF4 safetensors when nf4,
+        // BF16 safetensors otherwise.
         let main_path = if is_gguf {
             // v0.13 phase 5: user can override the GGUF quant level
             // (Q2_K..F16). Default Q4_K_S keeps the v0.13 phase 1
@@ -528,6 +588,30 @@ impl Pipeline {
             crate::hf::download::get_file(&req.repo, &gguf_file)
                 .await
                 .with_context(|| format!("{} from {}", gguf_file, req.repo))?
+        } else if is_nf4 {
+            // v0.14 phase 2d: NF4 packs typically ship as a single
+            // file at the repo root. lllyasviel's pack is
+            // `flux1-dev-bnb-nf4-v2.safetensors`; other community
+            // packs vary by name. Try the known-good names in order;
+            // fall back to the first .safetensors at the root if
+            // none match.
+            crate::hf::download::get_first_of(&[
+                (&req.repo, "flux1-dev-bnb-nf4-v2.safetensors"),
+                (&req.repo, "flux1-dev-bnb-nf4.safetensors"),
+                (&req.repo, "flux1-dev-nf4.safetensors"),
+                (&req.repo, "diffusion_pytorch_model.safetensors"),
+            ])
+            .await
+            .with_context(|| {
+                format!(
+                    "locating NF4 Flux pack in {}. Plakat tries the lllyasviel naming \
+                     convention (`flux1-dev-bnb-nf4-v2.safetensors` and similar). If \
+                     the repo uses a different filename, point `--model` at the full \
+                     HF repo id and ensure the pack matches the bitsandbytes-NF4 \
+                     layout (per-weight `.absmax` companions, no double quant).",
+                    req.repo
+                )
+            })?
         } else {
             crate::hf::download::get_file(&req.repo, req.variant.main_filename())
                 .await
@@ -712,6 +796,32 @@ impl Pipeline {
                 qvb,
                 overrides,
             )?)
+        } else if is_nf4 {
+            // v0.14 phase 2d: NF4 backbone. The pack is a regular
+            // safetensors file with quantized weight bytes + per-block
+            // absmax. We load every tensor into an Nf4Store and the
+            // vendored Flux looks up packed+absmax via path-tracking
+            // at each Linear construction site.
+            //
+            // The lllyasviel pack prefixes every transformer key with
+            // `model.diffusion_model.` (ComfyUI convention). We strip
+            // that here so the vendor's path matches Flux's BFL-native
+            // naming (`img_in.weight`, `double_blocks.0.img_attn.qkv.weight`,
+            // etc.).
+            let raw_store =
+                crate::pipelines::nf4_loader::Nf4Store::from_safetensors(
+                    &main_path,
+                    &req.device,
+                )?;
+            // ComfyUI / lllyasviel pack convention: transformer keys
+            // are namespaced under `model.diffusion_model.`. Strip
+            // that so the vendor's BFL-native paths match.
+            let store = raw_store.with_prefix_stripped("model.diffusion_model.")?;
+            FluxBackbone::Nf4(crate::pipelines::flux_nf4_inner::Flux::new(
+                &req.variant.flux_config(),
+                &store,
+                dtype,
+            )?)
         } else {
             let flux_vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[&effective_main_path], dtype, &req.device)?
@@ -755,6 +865,26 @@ impl Pipeline {
             });
         }
 
+        // v0.14 phase 3: Redux encoder. Only loaded when the caller
+        // explicitly opted in (`LoadRequest::redux`) — SigLIP-so400m
+        // is ~1.5 GB and the adapter is ~140 MB, and nothing in the
+        // standard t2i path needs them. Pipeline::generate bails loud
+        // if `redux_image` is set without this loader.
+        let redux_encoder = if req.redux {
+            let spin = progress::spinner("Loading Flux Redux (SigLIP + adapter)");
+            let enc = crate::pipelines::flux_redux::ReduxEncoder::load(
+                "google/siglip-so400m-patch14-384",
+                "black-forest-labs/FLUX.1-Redux-dev",
+                &req.device,
+                dtype,
+            )
+            .await?;
+            spin.finish_with_message("✓ Redux ready");
+            Some(enc)
+        } else {
+            None
+        };
+
         Ok(Self {
             variant: req.variant,
             repo: req.repo,
@@ -768,6 +898,7 @@ impl Pipeline {
             flux_model,
             ae_model,
             controlnets,
+            redux_encoder,
         })
     }
 
@@ -818,8 +949,39 @@ impl Pipeline {
 
         // ---------- encode prompt ----------
         let enc = progress::spinner("Encoding prompt");
-        let (clip_pooled, t5_emb) = self.encode_prompt(&req.prompt)?;
+        let (clip_pooled, mut t5_emb) = self.encode_prompt(&req.prompt)?;
         enc.finish_with_message("✓ prompt encoded");
+
+        // ---------- Flux Redux conditioning (v0.14 phase 3) --------
+        // When the user supplies `--redux-image`, encode the reference
+        // through SigLIP-so400m + the Redux adapter and seq-concat the
+        // resulting 729 tokens to the T5 embedding. The Flux
+        // transformer's `txt` input grows from (1, t5_seq, 4096) to
+        // (1, t5_seq + 729, 4096); `txt_ids` is regenerated below as
+        // zeros of matching length inside `sampling::State::new`,
+        // which already builds it from `t5_emb.dim(1)`.
+        if let Some(redux_path) = req.redux_image.as_ref() {
+            if self.variant.is_fill() {
+                bail!(
+                    "Flux Redux doesn't compose with Flux.1-Fill-dev (Fill's `img_in` \
+                     is 384ch — Redux changes only the text sequence so it works on \
+                     the standard Flux variants only)."
+                );
+            }
+            let enc = self.redux_encoder.as_ref().ok_or_else(|| anyhow!(
+                "redux_image set but Redux encoder isn't loaded. Build the Pipeline \
+                 with `LoadRequest::redux = true` (or run the CLI without --redux-image)."
+            ))?;
+            let spin = progress::spinner("Encoding Redux reference image");
+            let redux_tokens = enc.encode_image(redux_path)?;
+            let t5_dtype = t5_emb.dtype();
+            let redux_aligned = redux_tokens.to_dtype(t5_dtype)?;
+            t5_emb = Tensor::cat(&[&t5_emb, &redux_aligned], 1)?;
+            spin.finish_with_message(format!(
+                "✓ Redux conditioning encoded (+{} tokens)",
+                redux_aligned.dim(1)?
+            ));
+        }
 
         let ae_cfg = self.variant.ae_config();
         let lat_h = (h + 15) / 16;
@@ -1258,6 +1420,23 @@ impl Pipeline {
                     double_r,
                     single_r,
                 )?,
+                FluxBackbone::Nf4(net) => {
+                    // v0.14 phase 2d: NF4 vendor doesn't have a
+                    // residual-aware forward yet. ControlNet + NF4
+                    // composition is deferred; Pipeline::load bails on
+                    // this combo, so `double_r` / `single_r` are both
+                    // None here.
+                    debug_assert!(double_r.is_none() && single_r.is_none());
+                    net.forward(
+                        &flux_input,
+                        &state.img_ids,
+                        &state.txt,
+                        &state.txt_ids,
+                        &t_vec,
+                        &state.vec,
+                        Some(&guidance_t),
+                    )?
+                }
             };
             // `pred` is the 64ch noise prediction regardless of Fill
             // mode (final_layer outputs the same 64ch). The flow-match
@@ -1566,6 +1745,23 @@ impl Pipeline {
                         double_r,
                         single_r,
                     )?,
+                    FluxBackbone::Nf4(net) => {
+                        // NF4 + tiled compose, since the NF4 forward
+                        // doesn't care about input sequence length.
+                        // ControlNet residuals are still skipped — the
+                        // Pipeline::load bail keeps CN out of the NF4
+                        // path entirely.
+                        debug_assert!(double_r.is_none() && single_r.is_none());
+                        net.forward(
+                            &tile_packed,
+                            &img_ids,
+                            &txt,
+                            &txt_ids,
+                            &t_vec,
+                            &vec_,
+                            Some(&guidance_t),
+                        )?
+                    }
                 };
 
                 // Unpack the (1, n_tokens, 64) prediction back to a
@@ -1653,6 +1849,7 @@ pub async fn run(req: Request) -> Result<()> {
         quantize_t5: req.quantize_t5,
         flux_quant_level: req.flux_quant_level,
         t5_quant_level: req.t5_quant_level,
+        redux: req.redux,
     })
     .await?;
     p.generate(&GenRequest {
@@ -1669,6 +1866,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask: req.mask,
         strength: req.strength,
         tiled: req.tiled,
+        redux_image: req.redux_image,
     })
 }
 

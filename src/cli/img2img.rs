@@ -457,6 +457,9 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
         // (Q4_K_S / Q4_K_M) match v0.13 phase 1.
         flux_quant_level: None,
         t5_quant_level: None,
+        // Redux + Fill don't compose (different forward shape).
+        redux: false,
+        redux_image: None,
     })
     .await?;
     Ok(())
@@ -559,6 +562,10 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         tiled: None,
         flux_quant_level: None,
         t5_quant_level: None,
+        // Redux not exposed on img2img CLI (use `plakat generate` for
+        // image-conditioned generation).
+        redux: false,
+        redux_image: None,
     })
     .await?;
     Ok(())
