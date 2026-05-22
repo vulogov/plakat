@@ -65,17 +65,18 @@ pub struct Request {
     /// All conditioners share the SD/SDXL variant (determined by `model`).
     pub controls: Vec<crate::pipelines::controlnet::ControlSpec>,
 
-    // ---------- v0.12 tiled hi-res ----------
+    // ---------- v0.12 / v0.13 / v0.14 tiled hi-res ----------
     /// When `Some`, run MultiDiffusion-style tiled denoise on a
     /// canvas of `(width, height)`. The UNet only ever sees
     /// `tile_size × tile_size` crops; overlapping tiles are blended
-    /// per step via a 2D Hann window. Lets SDXL produce 4K+ outputs
-    /// without exceeding its trained working resolution.
+    /// per step via a 2D Hann window. Lets the backbone produce 4K+
+    /// outputs without exceeding its trained working resolution.
     ///
-    /// Currently SDXL only — mixing with ControlNet or the SDXL
-    /// refiner is rejected (the per-tile residual concat + the
-    /// scheduler-switch mid-stream don't compose with MultiDiffusion).
-    /// Both restrictions are tracked for a follow-up.
+    /// Supported on SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo (v0.12 +
+    /// v0.14 phase 4) and Flux (v0.13 phase 4). SD3 (MMDiT) is the
+    /// remaining gap. ControlNet + the SDXL refiner are still
+    /// rejected — the per-tile residual concat and the scheduler-
+    /// switch mid-stream don't compose with MultiDiffusion.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 
     /// v0.13 phase 1b: quantize T5-XXL when running Flux GGUF.
@@ -89,6 +90,12 @@ pub struct Request {
     /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
     /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
     pub t5_quant_level: Option<String>,
+    /// v0.14 phase 3 / 3c: zero or more Flux Redux reference images.
+    /// Each entry is encoded via SigLIP-so400m + the BFL Redux
+    /// adapter and contributes 729 tokens (scaled by its weight) to
+    /// the T5 text embedding. Empty disables Redux. Cap of 4 enforced
+    /// at `Pipeline::generate`. Ignored on SD-family models.
+    pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -138,11 +145,52 @@ pub enum Variant {
     FluxDev,
     /// v0.13 phase 2: Flux.1-Fill-dev. 384-channel `img_in`, inpaint-only.
     FluxFillDev,
+    /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
+    Sd35Medium,
+    /// v0.14 phase 8a: SD3.5 Large (8B-param flagship MMDiT).
+    Sd35Large,
+    /// v0.14 phase 8a: SD3.5 Large Turbo (4-step distillation).
+    Sd35LargeTurbo,
+    /// v0.14 phase 8a: original Stable Diffusion 3 Medium (June 2024).
+    Sd3Medium,
 }
 
 impl Variant {
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
+        // SD3 detection precedes SDXL/SD because "sd3" / "sd3.5" /
+        // "stable-diffusion-3.5" contain "sd" but should route to the
+        // MMDiT pipeline. Sub-variant differentiation:
+        //   * "large-turbo" / "3.5-large-turbo" → Sd35LargeTurbo
+        //   * "large"       / "3.5-large"       → Sd35Large
+        //   * "3.5"         / "3-5"             → Sd35Medium
+        //   * "sd3" + "medium" (no "3.5")       → Sd3Medium
+        // Order matters: check "turbo" before "large" since the turbo
+        // string contains "large".
+        let is_sd3_family = m.contains("sd3")
+            || m.contains("sd-3")
+            || m.contains("stable-diffusion-3");
+        if is_sd3_family {
+            if m.contains("turbo") {
+                return Self::Sd35LargeTurbo;
+            }
+            if m.contains("large") {
+                return Self::Sd35Large;
+            }
+            // Pick the SD3.x sub-version: 3.5 ships everything except
+            // the original 3-medium. Match "3.5" or "3-5" (HF repos
+            // use the dash form: `stable-diffusion-3.5-medium`).
+            if m.contains("3.5") || m.contains("3-5") {
+                return Self::Sd35Medium;
+            }
+            // Original SD3-medium (no `.5` in the name).
+            if m.contains("medium") {
+                return Self::Sd3Medium;
+            }
+            // Default for `sd3` / `sd-3` strings without a sub-flag —
+            // pick the recommended Medium variant from the modern lineup.
+            return Self::Sd35Medium;
+        }
         if m.contains("flux") {
             if m.contains("fill") {
                 Self::FluxFillDev
@@ -168,6 +216,17 @@ impl Variant {
     pub fn is_flux(self) -> bool {
         matches!(self, Self::FluxSchnell | Self::FluxDev | Self::FluxFillDev)
     }
+    /// v0.14 phase 1a / 8a: any SD3 / SD3.5 variant. Routes to the
+    /// MMDiT pipeline in `pipelines::sd3`.
+    pub fn is_sd3(self) -> bool {
+        matches!(
+            self,
+            Self::Sd3Medium
+                | Self::Sd35Medium
+                | Self::Sd35Large
+                | Self::Sd35LargeTurbo
+        )
+    }
 }
 
 fn resolve_repo(model: &str) -> String {
@@ -190,7 +249,7 @@ fn resolve_repo(model: &str) -> String {
 ///   2: openpose
 ///   3: depth
 ///   4: gray
-fn flux_controlnet_load_for(
+pub(crate) fn flux_controlnet_load_for(
     kind: crate::pipelines::controlnet::ControlKind,
     fvar: crate::pipelines::flux::Variant,
     strength: f32,
@@ -198,9 +257,17 @@ fn flux_controlnet_load_for(
     use crate::pipelines::controlnet::ControlKind;
     use crate::pipelines::flux;
     use crate::pipelines::flux_controlnet;
-    if !matches!(fvar, flux::Variant::Dev) {
+    // v0.14 phase 5: allow ControlNet on both Flux.1-dev and
+    // Flux.1-Fill-dev. The Union Pro v2 weights were trained against
+    // Flux.1-dev, but Fill shares everything except `img_in`'s width;
+    // CN residuals are added at the hidden state level (3072d, post
+    // `img_in`), so the same CN model composes with Fill's noise
+    // tokens cleanly. Schnell stays gated — fewer real-world reports
+    // of Schnell-CN compatibility and the rectified-flow schedule
+    // diverges enough that we want explicit validation first.
+    if !matches!(fvar, flux::Variant::Dev | flux::Variant::FillDev) {
         anyhow::bail!(
-            "Flux ControlNet is only wired for --model flux-dev in v0.12. \
+            "Flux ControlNet is wired for flux-dev and flux-fill-dev. \
              FLUX.1-schnell ControlNets exist but aren't yet validated."
         );
     }
@@ -240,7 +307,7 @@ fn flux_controlnet_load_for(
 /// (`encode_conditioning` reads + VAE-encodes), so this is the bridge
 /// from "annotator output in tensor land" to "path the Flux pipeline
 /// loads".
-fn write_annotator_tensor_as_png(anno: &Tensor, out_path: &std::path::Path) -> Result<()> {
+pub(crate) fn write_annotator_tensor_as_png(anno: &Tensor, out_path: &std::path::Path) -> Result<()> {
     // Annotator emits (1, 3, H, W) in [0, 1]. Convert to (H, W, 3) u8.
     let (b, c, h, w) = anno.dims4()?;
     if b != 1 || c != 3 {
@@ -836,15 +903,20 @@ impl Pipeline {
         Ok(())
     }
 
-    /// v0.12 tiled hi-res — MultiDiffusion-style SDXL generation at
+    /// v0.12 / v0.14 tiled hi-res — MultiDiffusion-style generation at
     /// arbitrary target sizes. The UNet only ever sees
     /// `cfg.tile_size × cfg.tile_size` crops; per-step noise
     /// predictions from overlapping tiles blend via a 2D Hann window.
     /// See `pipelines::tiled` for the windowing math and tile-position
     /// generator.
     ///
+    /// v0.14 phase 4: SD 1.5 / 2.1 tiled mode added. The SDXL-only
+    /// micro-conditioning (`add_text_embeds` + `add_time_ids`) is
+    /// skipped for non-XL variants; everything else (tile loop, Hann
+    /// blending, CFG inside the tile, scheduler step on the
+    /// accumulated full-canvas noise prediction) works the same.
+    ///
     /// Restrictions enforced upstream in `run()`:
-    ///   * SDXL only — SD 1.5 / 2.1 tiled mode is a follow-up.
     ///   * No ControlNet, no SDXL refiner.
     ///
     /// `controls` parameter from `generate` is omitted entirely here —
@@ -890,8 +962,16 @@ impl Pipeline {
         let do_cfg = req.guidance > 1.0;
         let (text_embeddings, pooled_text_sdxl) =
             self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
-        let pooled_text = pooled_text_sdxl
-            .ok_or_else(|| anyhow!("generate_tiled requires SDXL pooled text embeds"))?;
+        // SDXL needs the pooled text embed for `add_text_embeds`; SD
+        // 1.5 / 2.1 don't have one. The UNet forward accepts both as
+        // `Option<&Tensor>`, so this just gates which arm runs.
+        let is_xl = self.core.variant.is_xl();
+        if is_xl && pooled_text_sdxl.is_none() {
+            anyhow::bail!(
+                "tiled SDXL: pooled text embed missing — encode_prompt should always \
+                 produce one when variant.is_xl()"
+            );
+        }
 
         // 2D Hann window for blending per-tile noise predictions.
         // Same dims as a per-tile noise tensor's spatial axes; one
@@ -901,9 +981,11 @@ impl Pipeline {
         // single-channel (1, 1, tile, tile) shape, which `window`
         // already has.
         let positions = tile_positions(latent_h, latent_w, tile_latent, stride_latent);
+        let backbone_tag = if is_xl { "SDXL" } else { "SD" };
         crate::ui::progress::println(&format!(
-            "  {} tiled SDXL: {} × {} ({}×{} latent), {} tile(s) at {}px stride {}px",
+            "  {} tiled {}: {} × {} ({}×{} latent), {} tile(s) at {}px stride {}px",
             console::style("◆").cyan().bold(),
+            backbone_tag,
             w,
             h,
             latent_w,
@@ -965,16 +1047,18 @@ impl Pipeline {
                 for TilePos { y, x, size } in positions.iter().copied() {
                     let tile_latents = latents.narrow(2, y, size)?.narrow(3, x, size)?;
 
-                    // Per-tile micro-conditioning. `original_size` and
-                    // `target_size` stay at the FULL canvas — that's
-                    // what the model thinks the target output is.
-                    // `crops_coords_top_left` tells SDXL where this
-                    // tile sits within that target. Diffusers'
-                    // DemoFusion / Tiled-SDXL takes this approach.
-                    let tile_y_px = (y * 8) as u32;
-                    let tile_x_px = (x * 8) as u32;
-                    let tile_add_time_ids =
-                        crate::pipelines::sdxl_unet::build_tile_add_time_ids(
+                    // Per-tile micro-conditioning (SDXL only — SD 1.5
+                    // / 2.1 UNets have no `add_embedding`). For XL the
+                    // `original_size` / `target_size` stay at the full
+                    // canvas (the model thinks it's painting at that
+                    // resolution), with `crops_coords_top_left` telling
+                    // SDXL where this tile sits in the target.
+                    // Diffusers' DemoFusion / Tiled-SDXL takes this
+                    // approach.
+                    let tile_add_time_ids = if is_xl {
+                        let tile_y_px = (y * 8) as u32;
+                        let tile_x_px = (x * 8) as u32;
+                        let t = crate::pipelines::sdxl_unet::build_tile_add_time_ids(
                             req.height,
                             req.width,
                             tile_y_px,
@@ -982,10 +1066,13 @@ impl Pipeline {
                             &self.core.device,
                             self.core.dtype,
                         )?;
-                    let tile_add_time_ids = if do_cfg {
-                        Tensor::cat(&[&tile_add_time_ids, &tile_add_time_ids], 0)?
+                        if do_cfg {
+                            Some(Tensor::cat(&[&t, &t], 0)?)
+                        } else {
+                            Some(t)
+                        }
                     } else {
-                        tile_add_time_ids
+                        None
                     };
 
                     let latent_in = if do_cfg {
@@ -1000,8 +1087,8 @@ impl Pipeline {
                         &latent_in,
                         timestep as f64,
                         &text_embeddings,
-                        Some(&pooled_text),
-                        Some(&tile_add_time_ids),
+                        pooled_text_sdxl.as_ref(),
+                        tile_add_time_ids.as_ref(),
                     )?;
                     // Merge CFG inside the tile so the accumulator
                     // sees one batch row, not two.
@@ -1227,6 +1314,62 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
+    // v0.14 phase 1a: SD3 / SD3.5 routes to the MMDiT pipeline. Phase
+    // 1a is t2i only; LoRA / ControlNet / img2img are bail-loud for
+    // now since those code paths don't yet know about MMDiT.
+    if variant.is_sd3() {
+        use crate::pipelines::sd3;
+        if !req.loras.is_empty() {
+            anyhow::bail!(
+                "SD3 LoRAs aren't wired yet (v0.14 phase 1a t2i only). \
+                 Drop --loras or switch to an SDXL / Flux model."
+            );
+        }
+        if !req.controls.is_empty() {
+            anyhow::bail!(
+                "SD3 ControlNet isn't wired yet (v0.14 phase 1a t2i only). \
+                 Drop --control-spec or switch to an SDXL / Flux model."
+            );
+        }
+        if req.tiled.is_some() {
+            anyhow::bail!(
+                "SD3 --tiled isn't wired yet (v0.14 phase 1a t2i only)."
+            );
+        }
+        if req.quantize_t5 {
+            anyhow::bail!(
+                "SD3 --quantize-t5 isn't wired yet (Flux-only in v0.13)."
+            );
+        }
+        let sd3_variant = match variant {
+            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+            Variant::Sd35Large => sd3::Variant::Sd35Large,
+            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        };
+        sd3::run(sd3::Request {
+            prompt: req.prompt,
+            negative: req.negative,
+            variant: sd3_variant,
+            repo: resolve_repo(&req.model),
+            width: req.width,
+            height: req.height,
+            count: req.count,
+            steps: if req.steps == 28 { None } else { Some(req.steps) },
+            guidance: if (req.guidance - 7.5).abs() < f64::EPSILON {
+                None
+            } else {
+                Some(req.guidance)
+            },
+            seed: req.seed,
+            out_dir: req.out_dir,
+            device: req.device,
+        })
+        .await?;
+        return Ok(None);
+    }
+
     // Flux routes to its own pipeline. v0.12: LoRAs ARE supported via
     // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
@@ -1381,6 +1524,12 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // Flux pipeline. The pipeline itself bails loud if --tiled
             // is combined with ControlNet or Fill in this phase.
             tiled: req.tiled,
+            // v0.14 phase 3 / 3c: thread the Redux image stack and
+            // the implied `redux: true` load-time flag. When the user
+            // doesn't ask for Redux, neither the SigLIP nor the
+            // adapter is loaded.
+            redux: !req.redux_images.is_empty(),
+            redux_images: req.redux_images.clone(),
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are
@@ -1402,14 +1551,14 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // pipeline (handled before this guard via the early `is_flux()`
     // dispatch). SD 1.5 / SD 2.1 tiled is still the lone gap.
     if req.tiled.is_some() {
-        if variant != Variant::Sdxl
-            && variant != Variant::SdxlTurbo
-            && !variant.is_flux()
-        {
+        // v0.14 phase 4: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo / Flux all
+        // support tiled. SD3 is the lone remaining gap — its MMDiT
+        // forward signature is different enough that the generate_tiled
+        // loop would need its own dispatch.
+        if variant.is_sd3() {
             anyhow::bail!(
-                "--tiled is currently SDXL- and Flux-only (got variant {:?}). \
-                 Tiled hi-res for SD 1.5 / SD 2.1 lands in a follow-up.",
-                variant
+                "--tiled isn't wired for SD3 yet (the MMDiT forward signature differs \
+                 from SD UNets). Use Flux or SDXL for tiled hi-res, or skip --tiled."
             );
         }
         if !req.controls.is_empty() {

@@ -485,6 +485,133 @@ fn apply_delta(base: &Tensor, delta: &Tensor, slice: RowSlice) -> Result<Tensor>
 /// slice (full or partial), and casts to BF16 — the runtime dtype.
 /// Multiple LoRAs touching the same target compose additively, exactly
 /// like the BF16 safetensors merge path.
+/// v0.14 phase 8b: derive the canonical Flux base-tensor shape
+/// `(out_dim, in_dim)` from its safetensors path + the Flux config.
+/// Used by `precompute_nf4_overrides` to know how to size each NF4
+/// dequant — the NF4 codec's `dequant_nf4` requires an explicit shape
+/// (unlike the GGUF path, which stores it in the QTensor metadata).
+///
+/// Returns `None` for paths that aren't standard Flux Linear weight
+/// keys (e.g. LayerNorm scales, RmsNorm scales) — those don't carry
+/// NF4 packed data anyway.
+pub fn flux_target_shape(
+    base_key: &str,
+    cfg: &crate::pipelines::flux_inner::Config,
+) -> Option<(usize, usize)> {
+    let stem = base_key.strip_suffix(".weight").unwrap_or(base_key);
+    let h = cfg.hidden_size;
+    let mlp = (h as f64 * cfg.mlp_ratio) as usize;
+    // DoubleStream blocks: `double_blocks.{i}.{img|txt}_*`.
+    if let Some(rest) = stem.strip_prefix("double_blocks.") {
+        let (_idx, tail) = rest.split_once('.')?;
+        return match tail {
+            "img_attn.qkv" | "txt_attn.qkv" => Some((3 * h, h)),
+            "img_attn.proj" | "txt_attn.proj" => Some((h, h)),
+            "img_mlp.0" | "txt_mlp.0" => Some((mlp, h)),
+            "img_mlp.2" | "txt_mlp.2" => Some((h, mlp)),
+            "img_mod.lin" | "txt_mod.lin" => Some((6 * h, h)),
+            _ => None,
+        };
+    }
+    if let Some(rest) = stem.strip_prefix("single_blocks.") {
+        let (_idx, tail) = rest.split_once('.')?;
+        return match tail {
+            "linear1" => Some((3 * h + mlp, h)),
+            "linear2" => Some((h, h + mlp)),
+            "modulation.lin" => Some((3 * h, h)),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// v0.14 phase 8b: NF4-equivalent of `precompute_quantized_overrides`.
+/// Walks `loras`, resolves each target via the standard PEFT /
+/// AI-Toolkit resolvers, dequantizes only the affected NF4-packed
+/// weights via the codec, applies deltas with the right row-slice
+/// math, and returns a HashMap of dense BF16 tensors keyed by full
+/// base path (`<path>.weight`). Non-targeted Linears stay packed in
+/// the store — the same selective-dequant memory profile the GGUF
+/// path delivers (v0.13 phase 1e).
+pub fn precompute_nf4_overrides(
+    store: &crate::pipelines::nf4_loader::Nf4Store,
+    loras: &[ResolvedLora],
+    default_scale: f32,
+    cfg: &crate::pipelines::flux_inner::Config,
+    device: &Device,
+) -> Result<(HashMap<String, Tensor>, usize, usize)> {
+    let mut overrides: HashMap<String, Tensor> = HashMap::new();
+    let mut modified = 0usize;
+    let mut total_groups = 0usize;
+
+    for lora in loras {
+        let lora_tensors: HashMap<String, Tensor> =
+            candle_core::safetensors::load(&lora.path, device)
+                .with_context(|| format!("loading Flux LoRA {}", lora.display))?;
+        let effective_scale = lora.scale * default_scale;
+        let groups = group_peft_keys(&lora_tensors);
+        total_groups += groups.len();
+        for (logical, group) in groups {
+            if group.a.is_none() || group.b.is_none() {
+                continue;
+            }
+            let target = match resolve_target(&logical) {
+                Some(t) => t,
+                None => continue,
+            };
+            // Resolve the (out, in) shape from the Flux config so the
+            // NF4 codec knows how to lay out the dequantized tensor.
+            let shape = match flux_target_shape(&target.base_key, cfg) {
+                Some(s) => s,
+                None => {
+                    tracing::debug!(
+                        target: "plakat",
+                        "Flux NF4 LoRA: skipping unresolvable target {}",
+                        target.base_key
+                    );
+                    continue;
+                }
+            };
+            // Dequantize base once per target — subsequent LoRAs reuse
+            // the already-dense version from the map.
+            let base_dense = if let Some(existing) = overrides.get(&target.base_key) {
+                existing.to_dtype(DType::F32)?
+            } else {
+                store
+                    .dequantize_weight(&target.base_key, &[shape.0, shape.1])
+                    .with_context(|| {
+                        format!(
+                            "dequantizing NF4 base for Flux LoRA target {}",
+                            target.base_key
+                        )
+                    })?
+            };
+            let delta = compute_delta(&group, effective_scale, device)
+                .with_context(|| format!("computing Flux LoRA delta for {logical}"))?;
+            let updated = apply_delta(&base_dense, &delta, target.slice).with_context(
+                || format!("applying Flux LoRA delta for {logical} into {}", target.base_key),
+            )?;
+            // BF16 storage matches the runtime dtype on GPU — keeps
+            // override memory comparable to the equivalent BF16-Flux
+            // Linear (~56 MB for a fused QKV vs the 4-bit packed
+            // ~7 MB it replaces).
+            let bf16 = updated.to_dtype(DType::BF16)?;
+            overrides.insert(target.base_key.clone(), bf16);
+            modified += 1;
+        }
+        if total_groups > 0 {
+            tracing::info!(
+                target: "plakat",
+                "Flux LoRA (NF4) {} → {modified}/{total_groups} targets merged (scale {:.2})",
+                lora.display,
+                effective_scale
+            );
+        }
+    }
+
+    Ok((overrides, modified, total_groups))
+}
+
 pub fn precompute_quantized_overrides(
     qvb: &candle_transformers::quantized_var_builder::VarBuilder,
     loras: &[ResolvedLora],
@@ -749,5 +876,79 @@ mod tests {
             .get("lora_unet_double_blocks_0_img_attn_qkv")
             .expect("AI-Toolkit logical name should be the full underscore path");
         assert!(g.a.is_some() && g.b.is_some());
+    }
+
+    // ---------- v0.14 phase 8b — flux_target_shape ----------
+    // Path → (out, in) derivation used by the NF4 LoRA precompute to
+    // size dequant calls. The codec needs the explicit shape (unlike
+    // GGUF QTensor, which carries its own metadata).
+
+    fn dev_cfg() -> crate::pipelines::flux_inner::Config {
+        crate::pipelines::flux_inner::Config::dev()
+    }
+
+    #[test]
+    fn target_shape_double_block_qkv() {
+        let cfg = dev_cfg();
+        let h = cfg.hidden_size;
+        let s = flux_target_shape("double_blocks.0.img_attn.qkv.weight", &cfg).unwrap();
+        assert_eq!(s, (3 * h, h));
+        // Same for the txt branch.
+        let s = flux_target_shape("double_blocks.12.txt_attn.qkv.weight", &cfg).unwrap();
+        assert_eq!(s, (3 * h, h));
+    }
+
+    #[test]
+    fn target_shape_double_block_mlp() {
+        let cfg = dev_cfg();
+        let h = cfg.hidden_size;
+        let mlp = (h as f64 * cfg.mlp_ratio) as usize;
+        assert_eq!(
+            flux_target_shape("double_blocks.0.img_mlp.0.weight", &cfg),
+            Some((mlp, h))
+        );
+        assert_eq!(
+            flux_target_shape("double_blocks.0.img_mlp.2.weight", &cfg),
+            Some((h, mlp))
+        );
+    }
+
+    #[test]
+    fn target_shape_double_block_mod() {
+        let cfg = dev_cfg();
+        let h = cfg.hidden_size;
+        assert_eq!(
+            flux_target_shape("double_blocks.5.img_mod.lin.weight", &cfg),
+            Some((6 * h, h))
+        );
+    }
+
+    #[test]
+    fn target_shape_single_block_fused() {
+        let cfg = dev_cfg();
+        let h = cfg.hidden_size;
+        let mlp = (h as f64 * cfg.mlp_ratio) as usize;
+        // linear1 fuses [Q; K; V; MLP_up] along dim 0.
+        assert_eq!(
+            flux_target_shape("single_blocks.10.linear1.weight", &cfg),
+            Some((3 * h + mlp, h))
+        );
+        // linear2 is the final projection — input is concat(attn_out, mlp).
+        assert_eq!(
+            flux_target_shape("single_blocks.10.linear2.weight", &cfg),
+            Some((h, h + mlp))
+        );
+    }
+
+    #[test]
+    fn target_shape_unknown_returns_none() {
+        let cfg = dev_cfg();
+        // Path that doesn't match any Flux Linear (e.g. a QkNorm
+        // scale or some custom adapter key).
+        assert_eq!(
+            flux_target_shape("double_blocks.0.img_attn.norm.query_norm.scale", &cfg),
+            None
+        );
+        assert_eq!(flux_target_shape("some.unrelated.path", &cfg), None);
     }
 }

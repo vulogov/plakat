@@ -8,6 +8,36 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.14 — the SD3.5 + NF4 + Redux release
+
+- **Stable Diffusion 3 / 3.5 (MMDiT)**. New family — `sd35-medium`,
+  `sd35-large`, `sd35-large-turbo`, `sd3-medium`. Triple text encoder
+  (CLIP-L + CLIP-G + T5-XXL), 16-channel VAE, rectified-flow sampler
+  with SD3 time-shift. CFG via `[neg, pos]` double-batch.
+- **NF4 quantized Flux**. `--model flux-dev-nf4` loads lllyasviel's
+  bitsandbytes NF4 pack — ~6 GB transformer at inference (4× weight
+  savings vs BF16), pure-CPU dequant codec means it runs on any
+  candle device. Phase 8b adds **NF4 + LoRA composition** via the
+  same selective-dequant trick GGUF uses.
+- **Flux Redux**. `--redux-image PATH` adds image conditioning via
+  SigLIP-so400m + BFL's Redux adapter (729 tokens → seq-concat onto
+  T5). Repeatable for multi-image stacks (`--redux-image
+  style.png:weight=0.8 --redux-image subject.png:weight=0.5`). Cap
+  of 4 with attention-cost guardrails. Composes with GGUF, NF4,
+  LoRA, ControlNet, img2img, tiled.
+- **Tiled SD 1.5 / 2.1**. `--tiled` now supported on the smaller
+  SD backbones too (was SDXL-only in v0.12).
+- **Flux Fill + ControlNet**. The CLI gap from v0.13 phase 2 closed:
+  `plakat img2img --model flux-fill-dev --mask ... --control-spec
+  depth:from=...` composes with auto-annotator + multi-CN.
+- **Hyper-FLUX / FLUX-Turbo presets**. `--fast hyper-8 | hyper-16 |
+  turbo-alpha` bundles the matching distillation LoRA + recommended
+  step count + guidance in one flag.
+- **Shared SdCore**. Scenarios with mixed t2i + img2img tasks now
+  load the SD backbone **once** (was: per-task). The t2i Pipeline's
+  `Arc<SdCore>` is reused by img2img via the existing `from_core`
+  path.
+
 ## What's new in v0.13 — the Flux modernization release
 
 - **Quantized Flux (GGUF)**. Run FLUX.1-dev on 16 GB GPUs.
@@ -90,6 +120,22 @@ plakat img2img init.png --mask region.png --model flux-fill-dev \
 plakat generate "ultra-detailed architectural diagram" \
     --model flux-dev --size 3072x2048 \
     --tiled --tile-size 1024 --tile-stride 768
+
+# Stable Diffusion 3.5 (v0.14) — Stability's MMDiT family
+plakat generate "..." --model sd35-medium  # 2.5B params
+plakat generate "..." --model sd35-large   # 8B params, the flagship
+plakat generate "..." --model sd35-large-turbo  # 4-step distillation
+
+# NF4 Flux (v0.14) — bitsandbytes 4-bit quantization. ~6 GB transformer.
+plakat generate "..." --model flux-dev-nf4
+
+# Flux Redux (v0.14) — image-conditioned Flux via SigLIP. Stack up to 4 refs.
+plakat generate "in this style" --model flux-dev \
+    --redux-image style.png:weight=0.7 \
+    --redux-image subject.png:weight=0.4
+
+# Hyper-FLUX / FLUX-Turbo presets (v0.14) — 8-step distillations
+plakat generate "..." --model flux-dev --fast hyper-8
 
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each

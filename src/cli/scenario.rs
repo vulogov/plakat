@@ -505,6 +505,18 @@ struct TaskDef {
     #[serde(default)]
     outpaint: Option<OutpaintSpec>,
 
+    /// v0.14 phase 3c: zero or more Flux Redux reference images for
+    /// this task. Each string parses as `path` (weight = 1.0) or
+    /// `path:weight=0.7`. Only meaningful for Flux variants except
+    /// Fill (which has an incompatible `img_in` shape).
+    ///
+    /// ```hjson
+    /// redux-images: [ ./refs/cat1.jpg, ./refs/cat2.jpg:weight=0.6 ]
+    /// ```
+    ///
+    /// Cap of 4 enforced inside `Pipeline::generate`.
+    #[serde(rename = "redux-images", default)]
+    redux_images: Vec<String>,
 }
 
 /// v0.13 phase 11: outpaint task block. At least one of the four
@@ -1253,6 +1265,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 quantize_t5: s.quantize_t5,
                 flux_quant_level: s.quant_level.clone(),
                 t5_quant_level: s.t5_quant_level.clone(),
+                // v0.14 phase 3c: enable the Redux encoder if ANY
+                // task in the scenario uses `redux-images:`. Loaded
+                // once at scenario startup, reused across tasks.
+                redux: s.tasks.iter().any(|t| !t.redux_images.is_empty()),
             })
             .await?,
         )
@@ -1985,7 +2001,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             task.name
                         );
                     }
-                    let _ = p; // intentionally unused — img2img loads its own
+                    // v0.14 phase 7: pass the t2i Pipeline by ref so
+                    // `run_sd_img2img_task` can share its SdCore with
+                    // the img2img runner. Pre-phase-7 the helper
+                    // delegated to `img2img::run` which built its own
+                    // ~5GB SD pipeline per task.
                     run_sd_img2img_task(
                         task,
                         &gen_req,
@@ -1997,6 +2017,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         &device,
                         eff_init_image.as_ref().unwrap(),
                         eff_mask.as_deref(),
+                        p,
                     )
                     .await?;
                 }
@@ -2025,6 +2046,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // cleared so they contribute no residuals.
                     // `_cn_tmps` outlives the `generate` call so any
                     // auto-annotator PNGs stay readable.
+                    //
+                    // v0.14 phase 3c: parse the task's Redux specs
+                    // here so an invalid spec fails the task with a
+                    // clear error before the slow generate kicks in.
+                    let task_redux_specs: Vec<
+                        crate::pipelines::flux_redux::ReduxSpec,
+                    > = task
+                        .redux_images
+                        .iter()
+                        .map(|s| s.parse::<crate::pipelines::flux_redux::ReduxSpec>())
+                        .collect::<Result<Vec<_>>>()
+                        .with_context(|| {
+                            format!("task {:?}: parsing redux-images entries", task.name)
+                        })?;
                     let task_flux_controls = task_effective_controls(task)?;
                     let mut _cn_tmps: Vec<tempfile::TempDir> = Vec::new();
                     if fp.has_controlnets() {
@@ -2124,6 +2159,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         mask: eff_mask.clone(),
                         strength: task.strength,
                         tiled: s.tiled.map(Into::into),
+                        // v0.14 phase 3c: per-task Redux. The
+                        // task's `redux-images: [...]` is parsed
+                        // upstream as `Vec<ReduxSpec>`; pass it
+                        // through verbatim. The Pipeline was loaded
+                        // with `redux: any_task_has_redux` above so
+                        // the encoder is available iff any task uses
+                        // it.
+                        redux_images: task_redux_specs.clone(),
                     })?;
                 }
                 // Dry-run path doesn't reach here.
@@ -2668,8 +2711,9 @@ async fn run_sd_img2img_task(
     device: &Device,
     init_image: &std::path::Path,
     mask: Option<&std::path::Path>,
+    sd_pipeline: &Pipeline,
 ) -> Result<()> {
-    use crate::pipelines::{controlnet, img2img};
+    use crate::pipelines::{controlnet, img2img, portrait};
 
     // Default strength matches the CLI flow: 0.6 for img2img, 1.0 for
     // inpaint. Task can override via `strength:`.
@@ -2705,6 +2749,11 @@ async fn run_sd_img2img_task(
         negative: gen_req.negative.clone(),
         model: model.to_string(),
         device: device.clone(),
+        // v0.14 phase 7: the scenario's t2i Pipeline already has these
+        // LoRAs merged into the SdCore we're about to reuse. Pass them
+        // along for parity with `img2img::run`'s Request shape, but
+        // `run_with_pipeline` doesn't re-merge — the pipeline's
+        // weights are authoritative.
         loras: loras.to_vec(),
         lora_scale,
         input: init_image.to_path_buf(),
@@ -2722,7 +2771,14 @@ async fn run_sd_img2img_task(
         out_dir: gen_req.out_dir.clone(),
         controls: cli_controls,
     };
-    img2img::run(req).await?;
+    // v0.14 phase 7: share the t2i Pipeline's SdCore with the
+    // img2img runner instead of paying for a second multi-GB load
+    // per task. `portrait::Pipeline::from_core` is just an `Arc`
+    // clone of the existing core (no identity encoder needed for
+    // img2img). Pre-phase-7 each scenario img2img task triggered a
+    // fresh `portrait::Pipeline::load` inside `img2img::run`.
+    let port = portrait::Pipeline::from_core(sd_pipeline.core());
+    img2img::run_with_pipeline(&port, &req).await?;
     Ok(())
 }
 
