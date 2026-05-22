@@ -310,9 +310,20 @@ plakat generate "..." --model flux-dev-gguf --size 2048x2048 \
 
 Flux ControlNet composes with LoRA (PEFT + AI-Toolkit), GGUF
 quantization (per-tile residuals still work on the 4-bit backbone),
-tiled denoise (each tile gets its own cropped conditioning), and
-img2img init images. It does **not** yet compose with Flux.1-Fill-dev
-(the 384-channel input layout would need per-tile mask slicing).
+tiled denoise (each tile gets its own cropped conditioning), img2img
+init images, and **Flux.1-Fill-dev** (v0.14 phase 5 — Fill's 384ch
+concat happens inside the Flux forward only; the CN sees the 64ch
+noise tokens and its residuals add at the 3072d hidden state).
+
+```bash
+# Inpaint a region with Flux.1-Fill-dev + structure-preserving CN
+plakat img2img photo.png --mask region.png --model flux-fill-dev \
+    --prompt "ornate stained glass window" \
+    --control-spec 'depth:from=photo.png:strength=0.7'
+```
+
+Still NOT composing: tiled + Fill (per-tile mask slicing is its own
+gap, distinct from CN cropping) and NF4 + ControlNet.
 
 ## Limits
 
@@ -337,8 +348,12 @@ img2img init images. It does **not** yet compose with Flux.1-Fill-dev
   per block.
 - **Tiled + Flux CN** composes (v0.13 phase 9). Each tile sees its
   cropped conditioning; tiled + SD CN is still a v0.12 follow-up.
-- **Flux Fill + CN** doesn't compose yet — Fill's 384-channel input
-  would need per-tile mask + conditioning slicing.
+- **Flux Fill + CN** composes (v0.14 phase 5). The CN sees the 64ch
+  noise tokens; Fill's 384ch concat happens inside the Flux forward
+  only. Residuals add at the 3072d hidden state (post `img_in`) the
+  same way they do on standard Flux. Still **not composing**: tiled
+  + Flux Fill (per-tile mask slicing) and Flux Fill + Redux
+  (incompatible text-side input layout) — both deferred.
 - **Multi-persona scenarios** apply control only to the base layout
   pass, not the per-persona inpaint passes.
 

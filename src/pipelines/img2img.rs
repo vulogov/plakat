@@ -74,11 +74,39 @@ pub struct Request {
 pub async fn run(
     req: Request,
 ) -> Result<std::sync::Arc<crate::pipelines::sd_core::SdCore>> {
-    // Pre-load the ControlNet stack + conditioning(s) before the SD
-    // pipeline. The owned data lives on this frame; ControlRequest
-    // borrows from it below. img2img's distinguishing feature is the
-    // "auto-annotate the input image" fallback when a spec has neither
-    // image= nor from= — surface that as `fallback_input = &req.input`.
+    let pipeline = portrait::Pipeline::load(LoadRequest {
+        model: req.model.clone(),
+        device: req.device.clone(),
+        loras: req.loras.clone(),
+        lora_scale: req.lora_scale,
+        identity: None,
+        // img2img doesn't run identity encoding, so no CLIP-H needed.
+        shared_clip_h: None,
+    })
+    .await
+    .context("loading SD pipeline for img2img")?;
+    run_with_pipeline(&pipeline, &req).await?;
+    Ok(pipeline.core())
+}
+
+/// v0.14 phase 7: per-call img2img / inpaint body, factored out so
+/// callers that already have a loaded `portrait::Pipeline` (e.g.
+/// scenarios reusing the t2i SdCore via `portrait::Pipeline::from_core`)
+/// don't pay the load cost a second time.
+///
+/// `pipeline` must be loaded with the model / device / LoRA set the
+/// request expects — this function does not re-validate. The same
+/// constraint applies to `Pipeline::from_core` callers in the v0.10
+/// artefact-blend path.
+pub async fn run_with_pipeline(
+    pipeline: &portrait::Pipeline,
+    req: &Request,
+) -> Result<()> {
+    // Pre-load the ControlNet stack + conditioning(s) once per call.
+    // The owned data lives on this frame; ControlRequest borrows from
+    // it below. img2img's distinguishing feature is the "auto-annotate
+    // the input image" fallback when a spec has neither image= nor
+    // from= — surface that as `fallback_input = &req.input`.
     let cn_dtype = if matches!(req.device, candle_core::Device::Cpu) {
         candle_core::DType::F32
     } else {
@@ -94,18 +122,6 @@ pub async fn run(
         Some(&req.input),
     )
     .await?;
-
-    let pipeline = portrait::Pipeline::load(LoadRequest {
-        model: req.model.clone(),
-        device: req.device.clone(),
-        loras: req.loras.clone(),
-        lora_scale: req.lora_scale,
-        identity: None,
-        // img2img doesn't run identity encoding, so no CLIP-H needed.
-        shared_clip_h: None,
-    })
-    .await
-    .context("loading SD pipeline for img2img")?;
 
     // Build the mask once. img2img mode → solid 1.0; inpaint mode →
     // load from disk, optionally invert + feather.
@@ -217,7 +233,7 @@ pub async fn run(
         pipeline.save_image(&new_latents, &out_path)?;
     }
 
-    Ok(pipeline.core())
+    Ok(())
 }
 
 /// Build the `(1, 3, H, W)` masked-image tensor a 9-channel inpaint

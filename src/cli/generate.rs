@@ -282,6 +282,48 @@ pub struct GenerateArgs {
     /// `--quantize-t5`. city96 publishes Q3_K_S..Q8_0 + F16/F32.
     #[arg(long = "t5-quant-level", value_name = "LEVEL")]
     pub t5_quant_level: Option<String>,
+
+    /// **v0.14 phase 6**: Apply a curated distillation-LoRA preset for
+    /// fast Flux inference. Each preset bundles a published LoRA +
+    /// recommended `--steps` + `--guidance`; the LoRA gets prepended
+    /// to your `--loras` stack and the step/guidance defaults are
+    /// overridden when you didn't pass them explicitly.
+    ///
+    /// Supported presets:
+    ///   * `hyper-8`     — ByteDance Hyper-FLUX 8-step (CFG-free)
+    ///   * `hyper-16`    — ByteDance Hyper-FLUX 16-step (CFG-free)
+    ///   * `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
+    ///
+    /// ```bash
+    /// plakat generate "..." --model flux-dev --fast hyper-8
+    /// ```
+    ///
+    /// Requires a non-Fill Flux variant. NF4 + `--fast` bails (NF4 +
+    /// LoRA composition isn't wired in v0.14).
+    #[arg(long = "fast", value_name = "PRESET")]
+    pub fast: Option<crate::pipelines::flux_fast::FastPresetArg>,
+
+    /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
+    /// conditioning to the standard Flux variants (`flux-dev`,
+    /// `flux-schnell`, GGUF, NF4) by encoding the image through
+    /// SigLIP-so400m and BFL's Redux adapter, then seq-concatenating
+    /// 729 tokens onto the T5 text embedding. Doesn't compose with
+    /// `flux-fill-dev` (different `img_in` shape).
+    ///
+    /// **Repeatable** (v0.14 phase 3c): pass `--redux-image` up to 4
+    /// times to stack references. Each entry accepts an optional
+    /// `:weight=F.F` suffix that scales its tokens before concat
+    /// (default 1.0; 0.0 turns the image off; ≤2.0 typical range).
+    ///
+    /// ```bash
+    /// --redux-image style.png
+    /// --redux-image subject.png:weight=0.7 --redux-image pose.png:weight=0.4
+    /// ```
+    ///
+    /// Loading Redux adds ~1.5 GB of memory for SigLIP + the 140 MB
+    /// adapter — paid only when this flag is set.
+    #[arg(long = "redux-image", value_name = "SPEC")]
+    pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -300,6 +342,59 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     let (width, height) =
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
     std::fs::create_dir_all(&args.out)?;
+
+    // v0.14 phase 6: apply the `--fast` preset before LoRA / steps /
+    // guidance get snapshotted into the t2i Request. Sequencing
+    // matters: the preset LoRA must land on the LoRA stack BEFORE
+    // the snapshot, and the step / guidance defaults must be
+    // overridden only when the user didn't pass them explicitly
+    // (clap doesn't give us provenance, so we match against the
+    // documented defaults — `steps == 28` and `guidance == 7.5`).
+    if let Some(fast) = args.fast.take() {
+        let preset = fast.0;
+        // Bail loud on incompatible model targets. Detection mirrors
+        // t2i::Variant::detect so the failure mode is consistent.
+        let m = args.model.to_lowercase();
+        if !m.contains("flux") {
+            anyhow::bail!(
+                "--fast {} requires a Flux model (got --model {:?}). Hyper-FLUX / \
+                 FLUX-Turbo LoRAs are Flux-family only.",
+                preset.name,
+                args.model
+            );
+        }
+        if m.contains("fill") {
+            anyhow::bail!(
+                "--fast {} doesn't compose with flux-fill-dev. Use the standard \
+                 flux-dev model with the distillation LoRA, then handle inpainting \
+                 separately.",
+                preset.name
+            );
+        }
+        if m.contains("nf4") {
+            anyhow::bail!(
+                "--fast {} bails on NF4 — NF4 + LoRA composition isn't wired \
+                 (deferred from v0.14 phase 2). Use --model flux-dev or \
+                 flux-dev-gguf with the preset.",
+                preset.name
+            );
+        }
+        // Prepend so the preset LoRA loads BEFORE user LoRAs — user
+        // LoRAs override at merge time when keys collide.
+        args.loras.insert(0, preset.to_lora_spec());
+        if args.steps == 28 {
+            args.steps = preset.steps;
+        }
+        // clap's default for --guidance is 7.5; the preset override
+        // only fires when that hasn't been touched.
+        if (args.guidance - 7.5).abs() < f64::EPSILON {
+            args.guidance = preset.guidance;
+        }
+        crate::ui::progress::println(&format!(
+            "  fast preset '{}': +{} LoRA, steps={}, guidance={}",
+            preset.name, preset.lora_repo, args.steps, args.guidance
+        ));
+    }
 
     let out_dir = args.out.clone();
     let count = args.count;
@@ -363,6 +458,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         quantize_t5: args.quantize_t5,
         flux_quant_level: args.quant_level,
         t5_quant_level: args.t5_quant_level,
+        redux_images: args.redux_images,
     })
     .await?;
 
