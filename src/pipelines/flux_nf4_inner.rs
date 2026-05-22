@@ -707,8 +707,8 @@ impl Flux {
         })
     }
 
-    /// Standard forward — no ControlNet residuals (composition with
-    /// CN is deferred for the NF4 backbone).
+    /// Standard forward — no ControlNet residuals. Delegates to
+    /// `forward_with_residuals` with both lists `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
@@ -719,6 +719,31 @@ impl Flux {
         timesteps: &Tensor,
         y: &Tensor,
         guidance: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        self.forward_with_residuals(
+            img, img_ids, txt, txt_ids, timesteps, y, guidance, None, None,
+        )
+    }
+
+    /// v0.15 phase 1: Forward with optional per-block ControlNet
+    /// residuals — same signature + interleave semantics as the BF16
+    /// vendor (`flux_inner::Flux::forward_with_residuals`) and the
+    /// GGUF vendor (`flux_quantized_inner::Flux::forward_with_residuals`).
+    /// Both lists `None` reproduces upstream byte-for-byte. The
+    /// `ceil(blocks / residuals)` interleave is identical to the GGUF
+    /// vendor's so the same CN model composes with NF4, GGUF, and BF16.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_with_residuals(
+        &self,
+        img: &Tensor,
+        img_ids: &Tensor,
+        txt: &Tensor,
+        txt_ids: &Tensor,
+        timesteps: &Tensor,
+        y: &Tensor,
+        guidance: Option<&Tensor>,
+        double_residuals: Option<&[Tensor]>,
+        single_residuals: Option<&[Tensor]>,
     ) -> Result<Tensor> {
         if txt.rank() != 3 {
             candle_core::bail!("unexpected shape for txt {:?}", txt.shape())
@@ -740,12 +765,50 @@ impl Flux {
         };
         let vec_ = (vec_ + y.apply(&self.vector_in))?;
 
-        for block in self.double_blocks.iter() {
+        // DoubleStream residual interleave — `ceil(blocks/residuals)`
+        // step. Matches the BF16 + GGUF vendors so a single CN
+        // checkpoint trained against any of them composes with NF4.
+        let double_interval = match double_residuals {
+            Some(r) if !r.is_empty() => {
+                ((self.double_blocks.len() + r.len() - 1) / r.len()).max(1)
+            }
+            _ => 1,
+        };
+        for (i, block) in self.double_blocks.iter().enumerate() {
             (img, txt) = block.forward(&img, &txt, &vec_, &pe)?;
+            if let Some(residuals) = double_residuals {
+                let idx = i / double_interval;
+                if idx < residuals.len() {
+                    img = (&img + &residuals[idx])?;
+                }
+            }
         }
+
         let mut img = Tensor::cat(&[&txt, &img], 1)?;
-        for block in self.single_blocks.iter() {
+        let txt_len = txt.dim(1)?;
+        let single_interval = match single_residuals {
+            Some(r) if !r.is_empty() => {
+                ((self.single_blocks.len() + r.len() - 1) / r.len()).max(1)
+            }
+            _ => 1,
+        };
+        for (i, block) in self.single_blocks.iter().enumerate() {
             img = block.forward(&img, &vec_, &pe)?;
+            if let Some(residuals) = single_residuals {
+                let idx = i / single_interval;
+                if idx < residuals.len() {
+                    // Single-stream residuals only touch the img tail
+                    // (the txt prefix is rebuilt at the end). Slice,
+                    // add, re-cat — same shape contract as the GGUF
+                    // vendor.
+                    let img_tail = img.narrow(1, txt_len, img.dim(1)? - txt_len)?;
+                    let img_tail_updated = (img_tail + &residuals[idx])?;
+                    img = Tensor::cat(
+                        &[&img.narrow(1, 0, txt_len)?, &img_tail_updated],
+                        1,
+                    )?;
+                }
+            }
         }
         let img = img.i((.., txt.dim(1)?..))?;
         self.final_layer.forward(&img, &vec_)

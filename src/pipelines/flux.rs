@@ -534,24 +534,18 @@ impl Pipeline {
                  without unlocking the memory budget that needs it."
             );
         }
-        // v0.14 phase 2d: bail loud on NF4 + ControlNet / Fill.
-        // ControlNet composition isn't wired (the NF4 vendor's
-        // forward doesn't expose residual hooks); Fill needs a
-        // distinct loader path. v0.14 phase 8b unblocks NF4 + LoRA
-        // via the selective-dequant pattern used by the GGUF path.
-        if is_nf4 {
-            if !req.controlnets.is_empty() {
-                bail!(
-                    "NF4 Flux doesn't support --control-spec yet (v0.14 phase 2d). \
-                     Drop --control-spec or switch to BF16 / GGUF."
-                );
-            }
-            if matches!(req.variant, Variant::FillDev) {
-                bail!(
-                    "NF4 Flux Fill isn't supported. Use BF16 (flux-fill-dev) or GGUF \
-                     (flux-fill-dev-gguf) instead."
-                );
-            }
+        // v0.14 phase 2d → v0.15 phase 1: NF4 + LoRA composes (v0.14
+        // phase 8b) and NF4 + ControlNet composes (v0.15 phase 1 —
+        // forward_with_residuals added to the NF4 vendor mirrors the
+        // GGUF path). The only remaining NF4 bail is Fill, which
+        // needs a distinct loader path (Fill's `img_in` is 384ch and
+        // the NF4 pack would need a matching wider quant — none
+        // shipped yet).
+        if is_nf4 && matches!(req.variant, Variant::FillDev) {
+            bail!(
+                "NF4 Flux Fill isn't supported. Use BF16 (flux-fill-dev) or GGUF \
+                 (flux-fill-dev-gguf) instead."
+            );
         }
         let donor_repo: String = if is_gguf || is_nf4 {
             match req.variant {
@@ -1484,23 +1478,19 @@ impl Pipeline {
                     double_r,
                     single_r,
                 )?,
-                FluxBackbone::Nf4(net) => {
-                    // v0.14 phase 2d: NF4 vendor doesn't have a
-                    // residual-aware forward yet. ControlNet + NF4
-                    // composition is deferred; Pipeline::load bails on
-                    // this combo, so `double_r` / `single_r` are both
-                    // None here.
-                    debug_assert!(double_r.is_none() && single_r.is_none());
-                    net.forward(
-                        &flux_input,
-                        &state.img_ids,
-                        &state.txt,
-                        &state.txt_ids,
-                        &t_vec,
-                        &state.vec,
-                        Some(&guidance_t),
-                    )?
-                }
+                // v0.15 phase 1: NF4 vendor now exposes
+                // forward_with_residuals (same interleave as GGUF/BF16).
+                FluxBackbone::Nf4(net) => net.forward_with_residuals(
+                    &flux_input,
+                    &state.img_ids,
+                    &state.txt,
+                    &state.txt_ids,
+                    &t_vec,
+                    &state.vec,
+                    Some(&guidance_t),
+                    double_r,
+                    single_r,
+                )?,
             };
             // `pred` is the 64ch noise prediction regardless of Fill
             // mode (final_layer outputs the same 64ch). The flow-match
@@ -1809,23 +1799,24 @@ impl Pipeline {
                         double_r,
                         single_r,
                     )?,
-                    FluxBackbone::Nf4(net) => {
-                        // NF4 + tiled compose, since the NF4 forward
-                        // doesn't care about input sequence length.
-                        // ControlNet residuals are still skipped — the
-                        // Pipeline::load bail keeps CN out of the NF4
-                        // path entirely.
-                        debug_assert!(double_r.is_none() && single_r.is_none());
-                        net.forward(
-                            &tile_packed,
-                            &img_ids,
-                            &txt,
-                            &txt_ids,
-                            &t_vec,
-                            &vec_,
-                            Some(&guidance_t),
-                        )?
-                    }
+                    // v0.15 phase 1: NF4 + tiled + ControlNet all
+                    // compose via forward_with_residuals (same
+                    // signature as GGUF/BF16). The per-tile residual
+                    // slicing happened earlier in this loop so by
+                    // here `double_r`/`single_r` are already in the
+                    // (1, tile_tokens, hidden) shape the backbone
+                    // expects.
+                    FluxBackbone::Nf4(net) => net.forward_with_residuals(
+                        &tile_packed,
+                        &img_ids,
+                        &txt,
+                        &txt_ids,
+                        &t_vec,
+                        &vec_,
+                        Some(&guidance_t),
+                        double_r,
+                        single_r,
+                    )?,
                 };
 
                 // Unpack the (1, n_tokens, 64) prediction back to a
