@@ -16,6 +16,7 @@ pub mod face_models;
 pub mod faceid_lora;
 pub mod flux;
 pub mod flux_controlnet;
+pub mod flux_fast;
 pub mod flux_inner;
 pub mod flux_lora;
 pub mod flux_nf4_inner;

@@ -156,10 +156,13 @@ pub struct Request {
     /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
     /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
     pub t5_quant_level: Option<String>,
-    /// v0.14 phase 3: reference image for Flux Redux conditioning.
-    /// Requires the Pipeline to be loaded with Redux enabled. See
-    /// `GenRequest::redux_image`.
-    pub redux_image: Option<PathBuf>,
+    /// v0.14 phase 3 / 3c: zero or more reference images for Flux
+    /// Redux conditioning. Each entry encodes through SigLIP + the
+    /// Redux adapter, scales by `weight`, then seq-concats 729 tokens
+    /// onto T5's hidden state. Empty disables Redux. Up to 4 images
+    /// supported (cap is a soft attention-cost guardrail — see
+    /// `Pipeline::generate`'s validation).
+    pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
     /// v0.14 phase 3: see `LoadRequest::redux`.
     pub redux: bool,
     /// v0.13 phase 2: Flux.1-Fill-dev inputs.
@@ -323,9 +326,9 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.13 phase 4: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
-    /// v0.14 phase 3: reference image for Flux Redux. See
-    /// `Request::redux_image`.
-    pub redux_image: Option<PathBuf>,
+    /// v0.14 phase 3 / 3c: reference images for Flux Redux. See
+    /// `Request::redux_images`.
+    pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 }
 
 pub struct Pipeline {
@@ -952,15 +955,16 @@ impl Pipeline {
         let (clip_pooled, mut t5_emb) = self.encode_prompt(&req.prompt)?;
         enc.finish_with_message("✓ prompt encoded");
 
-        // ---------- Flux Redux conditioning (v0.14 phase 3) --------
-        // When the user supplies `--redux-image`, encode the reference
-        // through SigLIP-so400m + the Redux adapter and seq-concat the
-        // resulting 729 tokens to the T5 embedding. The Flux
+        // ---------- Flux Redux conditioning (v0.14 phase 3 / 3c) ---
+        // When the user supplies one or more `--redux-image` specs,
+        // encode each through SigLIP-so400m + the Redux adapter,
+        // scale by the spec's weight, and seq-concat the resulting
+        // 729 tokens per image onto the T5 embedding. The Flux
         // transformer's `txt` input grows from (1, t5_seq, 4096) to
-        // (1, t5_seq + 729, 4096); `txt_ids` is regenerated below as
-        // zeros of matching length inside `sampling::State::new`,
+        // (1, t5_seq + N * 729, 4096); `txt_ids` is regenerated below
+        // as zeros of matching length inside `sampling::State::new`,
         // which already builds it from `t5_emb.dim(1)`.
-        if let Some(redux_path) = req.redux_image.as_ref() {
+        if !req.redux_images.is_empty() {
             if self.variant.is_fill() {
                 bail!(
                     "Flux Redux doesn't compose with Flux.1-Fill-dev (Fill's `img_in` \
@@ -968,18 +972,56 @@ impl Pipeline {
                      the standard Flux variants only)."
                 );
             }
+            // Soft guardrails on stack depth. Attention is O(seq²), so
+            // every Redux image adds 729² ≈ 530k extra attn entries.
+            // 4 images: ~8.5M entries on top of T5's ~250k. Beyond
+            // that the per-step cost dwarfs everything else and the
+            // user usually doesn't realise.
+            const REDUX_MAX_IMAGES: usize = 4;
+            const REDUX_WARN_THRESHOLD: usize = 2;
+            if req.redux_images.len() > REDUX_MAX_IMAGES {
+                bail!(
+                    "--redux-image cap is {} (got {}). Each image adds 729 attention \
+                     tokens to every Flux block — past the cap, per-step cost \
+                     dominates and quality usually doesn't improve.",
+                    REDUX_MAX_IMAGES,
+                    req.redux_images.len()
+                );
+            }
+            if req.redux_images.len() > REDUX_WARN_THRESHOLD {
+                tracing::warn!(
+                    target: "plakat",
+                    "Flux Redux with {} images: txt sequence grows to {} tokens, \
+                     attention cost scales quadratically.",
+                    req.redux_images.len(),
+                    self.variant.t5_seq_len() + 729 * req.redux_images.len(),
+                );
+            }
             let enc = self.redux_encoder.as_ref().ok_or_else(|| anyhow!(
-                "redux_image set but Redux encoder isn't loaded. Build the Pipeline \
+                "redux_images set but Redux encoder isn't loaded. Build the Pipeline \
                  with `LoadRequest::redux = true` (or run the CLI without --redux-image)."
             ))?;
-            let spin = progress::spinner("Encoding Redux reference image");
-            let redux_tokens = enc.encode_image(redux_path)?;
+            let spin = progress::spinner(&format!(
+                "Encoding {} Redux reference image(s)",
+                req.redux_images.len()
+            ));
             let t5_dtype = t5_emb.dtype();
-            let redux_aligned = redux_tokens.to_dtype(t5_dtype)?;
-            t5_emb = Tensor::cat(&[&t5_emb, &redux_aligned], 1)?;
+            let mut total_added = 0usize;
+            for spec in &req.redux_images {
+                if spec.weight == 0.0 {
+                    // Weight-0 image is a no-op — skip to save a
+                    // SigLIP + adapter forward each generate call.
+                    continue;
+                }
+                let tokens = enc.encode_image_scaled(&spec.path, spec.weight)?;
+                let tokens = tokens.to_dtype(t5_dtype)?;
+                total_added += tokens.dim(1)?;
+                t5_emb = Tensor::cat(&[&t5_emb, &tokens], 1)?;
+            }
             spin.finish_with_message(format!(
-                "✓ Redux conditioning encoded (+{} tokens)",
-                redux_aligned.dim(1)?
+                "✓ Redux conditioning encoded (+{} tokens across {} image(s))",
+                total_added,
+                req.redux_images.len()
             ));
         }
 
@@ -1866,7 +1908,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask: req.mask,
         strength: req.strength,
         tiled: req.tiled,
-        redux_image: req.redux_image,
+        redux_images: req.redux_images,
     })
 }
 

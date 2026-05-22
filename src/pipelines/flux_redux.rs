@@ -40,11 +40,70 @@
 //! (mean = std = 0.5). Resize via the triangle filter — same default
 //! plakat uses for the SD AE preprocessing.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::{Linear, VarBuilder};
 use candle_transformers::models::siglip;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+/// One Redux reference image with an associated weight. Parsed from
+/// CLI specs of the form `path` (weight = 1.0) or `path:weight=F`.
+///
+/// `weight` scales the 729 image tokens before they get concatenated
+/// onto the T5 hidden state — `0.0` makes the image contribute
+/// nothing (effectively turning it off), `1.0` is full strength
+/// (BFL's recipe), values up to ~2.0 amplify. Negative or non-finite
+/// weights bail at parse time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReduxSpec {
+    pub path: PathBuf,
+    pub weight: f32,
+}
+
+impl ReduxSpec {
+    /// Build a spec for a single image at full strength.
+    pub fn at_default_weight(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            weight: 1.0,
+        }
+    }
+}
+
+impl FromStr for ReduxSpec {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        // Grammar:
+        //   `path`                  → weight = 1.0
+        //   `path:weight=F.F`       → weight = F.F (named, to disambiguate
+        //                              from filenames containing colons)
+        let (raw_path, weight) = if let Some((p, opts)) = s.rsplit_once(':') {
+            if let Some(w) = opts.strip_prefix("weight=") {
+                let w: f32 = w.parse().with_context(|| {
+                    format!("--redux-image '{s}': can't parse weight={w:?}")
+                })?;
+                (p, w)
+            } else {
+                // Treat the whole string as the path — `:opts` without
+                // `weight=` prefix is probably part of the filename.
+                (s, 1.0)
+            }
+        } else {
+            (s, 1.0)
+        };
+        if !weight.is_finite() {
+            bail!("--redux-image '{s}': weight must be finite (got {weight})");
+        }
+        if weight < 0.0 {
+            bail!("--redux-image '{s}': weight must be ≥ 0 (got {weight})");
+        }
+        Ok(Self {
+            path: PathBuf::from(raw_path),
+            weight,
+        })
+    }
+}
 
 /// Small 2-layer MLP that projects SigLIP-so400m patch embeddings
 /// (1152-d) into Flux's text hidden dimension (4096-d). One MLP
@@ -157,10 +216,27 @@ impl ReduxEncoder {
     /// Encode a reference image into Redux tokens `(1, 729, 4096)`
     /// ready to seq-concat onto a T5 hidden state.
     pub fn encode_image(&self, path: &Path) -> Result<Tensor> {
+        self.encode_image_scaled(path, 1.0)
+    }
+
+    /// Encode + scale: same as `encode_image` but multiplies the
+    /// resulting tokens by `weight` before returning. A weight of
+    /// `0.0` produces an all-zero tensor that contributes nothing to
+    /// the attention; `1.0` is BFL's default; larger values amplify.
+    /// Skips the SigLIP + adapter forward entirely when weight = 0
+    /// to save the work.
+    pub fn encode_image_scaled(&self, path: &Path, weight: f32) -> Result<Tensor> {
+        if !weight.is_finite() || weight < 0.0 {
+            anyhow::bail!(
+                "Redux weight must be finite ≥ 0 (got {weight})",
+            );
+        }
         let pixels = preprocess_image_for_siglip(path, &self.device, self.dtype)?;
-        // SigLIP vision forward: (1, 3, 384, 384) -> (1, 729, 1152).
         let siglip_out = self.siglip.forward(&pixels)?;
-        let tokens = self.adapter.forward(&siglip_out)?;
+        let mut tokens = self.adapter.forward(&siglip_out)?;
+        if (weight - 1.0).abs() > f32::EPSILON {
+            tokens = (tokens * weight as f64)?;
+        }
         Ok(tokens)
     }
 }
@@ -227,6 +303,44 @@ mod tests {
         let x = Tensor::zeros((2, 729, ReduxAdapter::SIGLIP_DIM), DType::F32, &cpu()).unwrap();
         let y = adapter.forward(&x).unwrap();
         assert_eq!(y.dims(), &[2, 729, ReduxAdapter::T5_DIM]);
+    }
+
+    // v0.14 phase 3c — `ReduxSpec` parser.
+
+    #[test]
+    fn spec_parses_bare_path() {
+        let s: ReduxSpec = "ref.png".parse().unwrap();
+        assert_eq!(s.path, PathBuf::from("ref.png"));
+        assert_eq!(s.weight, 1.0);
+    }
+
+    #[test]
+    fn spec_parses_path_with_weight() {
+        let s: ReduxSpec = "./images/ref.png:weight=0.7".parse().unwrap();
+        assert_eq!(s.path, PathBuf::from("./images/ref.png"));
+        assert!((s.weight - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spec_filename_with_colon_no_weight() {
+        // A `:` not followed by `weight=` is treated as part of the
+        // path (e.g. Windows-style filenames are rare here but the
+        // safeguard means existing files don't get reinterpreted).
+        let s: ReduxSpec = "weird:name.png".parse().unwrap();
+        assert_eq!(s.path, PathBuf::from("weird:name.png"));
+        assert_eq!(s.weight, 1.0);
+    }
+
+    #[test]
+    fn spec_rejects_negative_weight() {
+        let err = "ref.png:weight=-0.1".parse::<ReduxSpec>().unwrap_err();
+        assert!(format!("{err}").contains("weight must be"), "{err}");
+    }
+
+    #[test]
+    fn spec_rejects_nan_weight() {
+        let err = "ref.png:weight=NaN".parse::<ReduxSpec>().unwrap_err();
+        assert!(format!("{err}").contains("must be finite"), "{err}");
     }
 
     /// Zero input → linear layers (without bias zeroed in VarMap

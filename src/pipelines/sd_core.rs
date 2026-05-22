@@ -101,6 +101,14 @@ impl SdVariant {
         }
     }
 
+    /// v0.14 phase 4: `true` for the SDXL family (which carries the
+    /// `add_embedding` micro-conditioning input). SD 1.5 / SD 2.1
+    /// don't, so callers gate `add_text_embeds` / `add_time_ids` on
+    /// this predicate.
+    pub fn is_xl(self) -> bool {
+        matches!(self, Self::Sdxl)
+    }
+
     pub fn vae_scale(self) -> f64 {
         match self {
             // SD 1.5 and SD 2.1 share the same VAE scaling factor.

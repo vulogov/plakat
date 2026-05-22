@@ -399,12 +399,6 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
              changes; --strength is an SD-only RePaint knob).",
         );
     }
-    if !args.control_specs.is_empty() || args.control.is_some() {
-        crate::ui::progress::println(
-            "  warn: --control-spec / --control ignored for Flux.1-Fill-dev in this phase.",
-        );
-    }
-
     // Resolve LoRAs. Same path the Flux generate flow uses — see
     // `t2i::run` for the canonical pattern. flux_lora's resolver will
     // silently skip SD-format LoRAs at merge time.
@@ -430,6 +424,77 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
         Some(args.guidance)
     };
 
+    // v0.14 phase 5: Fill + ControlNet composition. Resolve the
+    // user's --control-spec stack into `FluxControlNetLoad` entries
+    // with the same Union Pro v2 routing the generate CLI uses. CN
+    // residuals add at the 3072-d hidden state (post `img_in`), so
+    // Fill's wider input doesn't affect composition — the same Union
+    // weights work for both Dev and Fill.
+    let resolved_specs = crate::pipelines::controlnet::resolve_control_specs(
+        args.control_specs,
+        args.control,
+        args.control_image,
+        args.control_from,
+        args.control_strength,
+        args.control_start,
+        args.control_end,
+    );
+    // Tempdir for any auto-annotator PNGs. Held alive across
+    // `flux::run` below so the pipeline can read the conditioning
+    // files at load time.
+    let anno_tmp = tempfile::Builder::new()
+        .prefix("plakat-flux-fill-anno-")
+        .tempdir()
+        .context("creating tempdir for Flux Fill ControlNet auto-annotator output")?;
+    let anno_dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::BF16
+    };
+    let mut flux_controlnets: Vec<flux::FluxControlNetLoad> =
+        Vec::with_capacity(resolved_specs.len());
+    for (cn_idx, spec) in resolved_specs.iter().enumerate() {
+        let cond_path = match (spec.image.as_ref(), spec.from.as_ref()) {
+            (Some(p), None) => p.clone(),
+            (None, Some(from_path)) => {
+                let anno = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, from_path, width, height, &device, anno_dtype,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "auto-annotating {} for Flux Fill ControlNet",
+                        spec.kind.slug()
+                    )
+                })?;
+                let out_path = anno_tmp
+                    .path()
+                    .join(format!("cn{cn_idx}-{}.png", spec.kind.slug()));
+                crate::pipelines::t2i::write_annotator_tensor_as_png(&anno, &out_path)?;
+                out_path
+            }
+            (Some(_), Some(_)) => {
+                anyhow::bail!(
+                    "--control-spec {}: image= and from= are mutually exclusive",
+                    spec.kind.slug()
+                )
+            }
+            (None, None) => {
+                anyhow::bail!(
+                    "--control-spec {}: requires image=PATH or from=PATH on Flux",
+                    spec.kind.slug()
+                )
+            }
+        };
+        let mut cn_load = crate::pipelines::t2i::flux_controlnet_load_for(
+            spec.kind, fvar, spec.strength,
+        )?;
+        cn_load.conditioning = Some(cond_path);
+        cn_load.start = spec.start;
+        cn_load.end = spec.end;
+        flux_controlnets.push(cn_load);
+    }
+
     flux::run(flux::Request {
         prompt: args.prompt,
         variant: fvar,
@@ -444,7 +509,12 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
         device,
         loras: resolved_loras,
         lora_scale: args.lora_scale,
-        controlnets: Vec::new(),
+        // v0.14 phase 5: Fill + CN composes. CN sees the 64ch noise
+        // tokens (Fill's 384ch concat happens inside the Flux forward
+        // only); residuals add at the hidden state level the same way
+        // as on standard Flux.
+        controlnets: flux_controlnets,
+        // Per-CN conditioning lives on each FluxControlNetLoad now.
         conditioning: None,
         quantize_t5: false,
         init_image: Some(args.input),
@@ -459,9 +529,15 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
         t5_quant_level: None,
         // Redux + Fill don't compose (different forward shape).
         redux: false,
-        redux_image: None,
+        redux_images: Vec::new(),
     })
     .await?;
+    // Tempdir held until after the awaited generate completes —
+    // pipeline reads any auto-annotated PNGs at load time, so the
+    // files must survive until then. Dropping explicitly here is
+    // cosmetic (would happen on scope exit anyway) but documents
+    // the intent.
+    drop(anno_tmp);
     Ok(())
 }
 
@@ -565,7 +641,7 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // Redux not exposed on img2img CLI (use `plakat generate` for
         // image-conditioned generation).
         redux: false,
-        redux_image: None,
+        redux_images: Vec::new(),
     })
     .await?;
     Ok(())
