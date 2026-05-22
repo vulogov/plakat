@@ -250,7 +250,8 @@ for the last 20%, then a polish pass on top).
 
 #### `--lora <SPEC>` (repeatable)
 
-Apply a LoRA. SD-family only — Flux ignores LoRAs with a warning.
+Apply a LoRA. Supported on SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo),
+Flux (BF16 / GGUF / NF4), and **SD3 / SD3.5 (v0.15 phase 3)**.
 
 The `<SPEC>` accepts three forms:
 

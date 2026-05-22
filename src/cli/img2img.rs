@@ -665,12 +665,6 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
 async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
     use crate::pipelines::{sd3, t2i};
 
-    if !args.loras.is_empty() {
-        anyhow::bail!(
-            "--loras isn't wired for SD3 yet (v0.15 phase 3 deferred). \
-             Drop --loras or switch to SD/Flux."
-        );
-    }
     if args.control.is_some()
         || args.control_image.is_some()
         || args.control_from.is_some()
@@ -680,6 +674,8 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
              (v0.15 phase 6 deferred)."
         );
     }
+    // v0.15 phase 3: SD3 + LoRA composes. Resolved at sd3::Pipeline::load
+    // via the tempfile merge path; nothing else to gate here.
     let variant = t2i::Variant::detect(&args.model);
     let sd3_variant = match variant {
         t2i::Variant::Sd3Medium => sd3::Variant::Sd3Medium,
@@ -730,6 +726,11 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         mask_feather: args.mask_feather,
         mask_invert: args.mask_invert,
         strength: args.strength,
+        // v0.15 phase 3: SD3 LoRA — merged into the MMDiT tempfile
+        // at Pipeline::load. Empty Vec = no merge (byte-identical to
+        // the phase-2 behaviour).
+        loras: args.loras,
+        lora_scale: args.lora_scale,
     })
     .await
 }

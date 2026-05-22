@@ -1373,6 +1373,11 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             mask_feather: 0,
             mask_invert: false,
             strength: None,
+            // v0.15 phase 3: SD3 LoRA support. Resolved at load time
+            // via sd3_lora::merge_sd3_loras_into_weights — a tempfile
+            // replaces the base MMDiT mmap for the VarBuilder.
+            loras: req.loras,
+            lora_scale: req.lora_scale,
         })
         .await?;
         return Ok(None);
