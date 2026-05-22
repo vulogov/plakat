@@ -1365,6 +1365,14 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             seed: req.seed,
             out_dir: req.out_dir,
             device: req.device,
+            // v0.15 phase 2: t2i path doesn't carry img2img args; the
+            // img2img CLI dispatch (cli/img2img.rs::run_sd3_img2img)
+            // builds an sd3::Request directly with these populated.
+            init_image: None,
+            mask: None,
+            mask_feather: 0,
+            mask_invert: false,
+            strength: None,
         })
         .await?;
         return Ok(None);
