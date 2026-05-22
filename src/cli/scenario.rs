@@ -2001,7 +2001,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                             task.name
                         );
                     }
-                    let _ = p; // intentionally unused — img2img loads its own
+                    // v0.14 phase 7: pass the t2i Pipeline by ref so
+                    // `run_sd_img2img_task` can share its SdCore with
+                    // the img2img runner. Pre-phase-7 the helper
+                    // delegated to `img2img::run` which built its own
+                    // ~5GB SD pipeline per task.
                     run_sd_img2img_task(
                         task,
                         &gen_req,
@@ -2013,6 +2017,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         &device,
                         eff_init_image.as_ref().unwrap(),
                         eff_mask.as_deref(),
+                        p,
                     )
                     .await?;
                 }
@@ -2706,8 +2711,9 @@ async fn run_sd_img2img_task(
     device: &Device,
     init_image: &std::path::Path,
     mask: Option<&std::path::Path>,
+    sd_pipeline: &Pipeline,
 ) -> Result<()> {
-    use crate::pipelines::{controlnet, img2img};
+    use crate::pipelines::{controlnet, img2img, portrait};
 
     // Default strength matches the CLI flow: 0.6 for img2img, 1.0 for
     // inpaint. Task can override via `strength:`.
@@ -2743,6 +2749,11 @@ async fn run_sd_img2img_task(
         negative: gen_req.negative.clone(),
         model: model.to_string(),
         device: device.clone(),
+        // v0.14 phase 7: the scenario's t2i Pipeline already has these
+        // LoRAs merged into the SdCore we're about to reuse. Pass them
+        // along for parity with `img2img::run`'s Request shape, but
+        // `run_with_pipeline` doesn't re-merge — the pipeline's
+        // weights are authoritative.
         loras: loras.to_vec(),
         lora_scale,
         input: init_image.to_path_buf(),
@@ -2760,7 +2771,14 @@ async fn run_sd_img2img_task(
         out_dir: gen_req.out_dir.clone(),
         controls: cli_controls,
     };
-    img2img::run(req).await?;
+    // v0.14 phase 7: share the t2i Pipeline's SdCore with the
+    // img2img runner instead of paying for a second multi-GB load
+    // per task. `portrait::Pipeline::from_core` is just an `Arc`
+    // clone of the existing core (no identity encoder needed for
+    // img2img). Pre-phase-7 each scenario img2img task triggered a
+    // fresh `portrait::Pipeline::load` inside `img2img::run`.
+    let port = portrait::Pipeline::from_core(sd_pipeline.core());
+    img2img::run_with_pipeline(&port, &req).await?;
     Ok(())
 }
 

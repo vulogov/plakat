@@ -44,6 +44,16 @@ pub struct NF4Linear {
     /// Runtime dtype the dequantized weight casts to before matmul
     /// (typically BF16 on GPU, F32 on CPU).
     out_dtype: DType,
+    /// v0.14 phase 8b: optional dense LoRA-merged weight override.
+    /// When `Some`, `dequant_weight` short-circuits and returns this
+    /// tensor instead of dequantizing the NF4 packed bytes. Set at
+    /// load time by `Nf4LinearLoader` when the path matches a key in
+    /// its overrides map. Memory cost: the LoRA-targeted Linear's
+    /// dense BF16 weight stays resident (~56 MB for a QKV slot vs
+    /// the 4-bit packed ~7 MB). Non-LoRA-targeted Linears never set
+    /// this, keeping the 4× weight-memory savings on the bulk of
+    /// the model.
+    dense_override: Option<Tensor>,
 }
 
 impl NF4Linear {
@@ -62,10 +72,42 @@ impl NF4Linear {
             out_dim,
             in_dim,
             out_dtype,
+            dense_override: None,
+        }
+    }
+
+    /// v0.14 phase 8b: build an NF4Linear whose weight is actually a
+    /// pre-merged dense BF16 tensor (the result of `dequant_nf4 +
+    /// apply_delta` for one or more LoRAs). Forward skips the per-call
+    /// dequant and uses `weight` directly.
+    ///
+    /// The packed + absmax fields are still stored — gives the
+    /// pipeline a way to reset back to the un-LoRA'd version
+    /// without reloading.
+    pub fn new_with_dense_override(
+        packed: Tensor,
+        absmax: Tensor,
+        bias: Option<Tensor>,
+        out_dim: usize,
+        in_dim: usize,
+        out_dtype: DType,
+        dense_weight: Tensor,
+    ) -> Self {
+        Self {
+            packed,
+            absmax,
+            bias,
+            out_dim,
+            in_dim,
+            out_dtype,
+            dense_override: Some(dense_weight),
         }
     }
 
     fn dequant_weight(&self) -> Result<Tensor> {
+        if let Some(dense) = self.dense_override.as_ref() {
+            return Ok(dense.clone());
+        }
         let device = self.packed.device();
         let f32_w = dequant_nf4(
             &self.packed,
@@ -93,21 +135,45 @@ impl Module for NF4Linear {
 /// Path-tracking wrapper around an [`Nf4Store`]. Each `pp(name)`
 /// extends the namespace path the next `linear()` / `linear_b()`
 /// call resolves against. Mirrors `LinearLoader` from the GGUF
-/// vendor; the substantive difference is the loader doesn't carry
-/// LoRA overrides (NF4 + LoRA composition is a follow-up).
+/// vendor.
+///
+/// v0.14 phase 8b: optional `overrides` map (path-with-`.weight` →
+/// dense BF16 tensor pre-merged with LoRA deltas). When a Linear's
+/// path is present, the loader skips NF4 packed loading entirely and
+/// returns an `NF4Linear` with `dense_override` set — same selective
+/// dequant pattern the GGUF vendor uses (v0.13 phase 1e). Empty map
+/// = phase-2 behaviour, every Linear stays packed.
 #[derive(Clone)]
 pub struct Nf4LinearLoader<'a> {
     pub store: &'a Nf4Store,
     pub path: String,
     pub dtype: DType,
+    pub overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
 }
 
 impl<'a> Nf4LinearLoader<'a> {
     pub fn new(store: &'a Nf4Store, dtype: DType) -> Self {
+        Self::with_overrides(
+            store,
+            dtype,
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
+    }
+
+    /// v0.14 phase 8b: build a loader carrying a LoRA-merged dense
+    /// override map. `overrides` keys are the FULL base tensor path
+    /// including `.weight` (e.g. `"double_blocks.0.img_attn.qkv.weight"`);
+    /// values are dense BF16 tensors of `(out_dim, in_dim)`.
+    pub fn with_overrides(
+        store: &'a Nf4Store,
+        dtype: DType,
+        overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
+    ) -> Self {
         Self {
             store,
             path: String::new(),
             dtype,
+            overrides,
         }
     }
 
@@ -122,6 +188,7 @@ impl<'a> Nf4LinearLoader<'a> {
             store: self.store,
             path,
             dtype: self.dtype,
+            overrides: self.overrides.clone(),
         }
     }
 
@@ -162,6 +229,35 @@ impl<'a> Nf4LinearLoader<'a> {
         } else {
             None
         };
+        // v0.14 phase 8b: LoRA override path. If the user supplied a
+        // pre-merged dense tensor for this Linear (precomputed via
+        // flux_lora::precompute_nf4_overrides), use it directly —
+        // forward becomes a regular BF16 matmul, no per-call dequant.
+        // Shape sanity check protects against a mis-keyed override.
+        if let Some(dense) = self.overrides.get(&weight_path) {
+            let want = (out_dim, in_dim);
+            let got = dense.dims2().map_err(|e| {
+                anyhow::anyhow!(
+                    "NF4 LoRA override {weight_path}: expected 2D dense tensor: {e}"
+                )
+            })?;
+            if got != want {
+                anyhow::bail!(
+                    "NF4 LoRA override {weight_path}: shape mismatch (got {got:?}, \
+                     expected {want:?})"
+                );
+            }
+            let dense_aligned = dense.to_dtype(self.dtype)?;
+            return Ok(NF4Linear::new_with_dense_override(
+                packed,
+                absmax,
+                bias_t,
+                out_dim,
+                in_dim,
+                self.dtype,
+                dense_aligned,
+            ));
+        }
         Ok(NF4Linear::new(packed, absmax, bias_t, out_dim, in_dim, self.dtype))
     }
 
@@ -555,7 +651,26 @@ pub struct Flux {
 
 impl Flux {
     pub fn new(cfg: &Config, store: &Nf4Store, dtype: DType) -> AnyResult<Self> {
-        let root = Nf4LinearLoader::new(store, dtype);
+        Self::new_with_loras(
+            cfg,
+            store,
+            dtype,
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
+    }
+
+    /// v0.14 phase 8b: load with LoRA-merged dense overrides. Each
+    /// entry in `overrides` (keyed by full path including `.weight`)
+    /// substitutes for the NF4 packed weight at that Linear, giving
+    /// the same selective dequant pattern the GGUF vendor uses
+    /// (v0.13 phase 1e). Non-targeted Linears stay 4-bit.
+    pub fn new_with_loras(
+        cfg: &Config,
+        store: &Nf4Store,
+        dtype: DType,
+        overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
+    ) -> AnyResult<Self> {
+        let root = Nf4LinearLoader::with_overrides(store, dtype, overrides);
         let img_in = root.pp("img_in").linear(cfg.in_channels, cfg.hidden_size)?;
         let txt_in = root.pp("txt_in").linear(cfg.context_in_dim, cfg.hidden_size)?;
         let mut double_blocks = Vec::with_capacity(cfg.depth);

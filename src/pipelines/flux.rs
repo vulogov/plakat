@@ -534,17 +534,12 @@ impl Pipeline {
                  without unlocking the memory budget that needs it."
             );
         }
-        // v0.14 phase 2d: bail loud on NF4 + LoRA / ControlNet.
-        // Composition isn't wired (the NF4 vendor's forward doesn't
-        // expose residual hooks, and LoRA-on-NF4 needs the same
-        // selective-dequant trick we use for GGUF — a follow-up).
+        // v0.14 phase 2d: bail loud on NF4 + ControlNet / Fill.
+        // ControlNet composition isn't wired (the NF4 vendor's
+        // forward doesn't expose residual hooks); Fill needs a
+        // distinct loader path. v0.14 phase 8b unblocks NF4 + LoRA
+        // via the selective-dequant pattern used by the GGUF path.
         if is_nf4 {
-            if !req.loras.is_empty() {
-                bail!(
-                    "NF4 Flux doesn't support --lora yet (v0.14 phase 2d). \
-                     Drop --lora or switch to BF16 / GGUF (which both compose)."
-                );
-            }
             if !req.controlnets.is_empty() {
                 bail!(
                     "NF4 Flux doesn't support --control-spec yet (v0.14 phase 2d). \
@@ -820,10 +815,37 @@ impl Pipeline {
             // are namespaced under `model.diffusion_model.`. Strip
             // that so the vendor's BFL-native paths match.
             let store = raw_store.with_prefix_stripped("model.diffusion_model.")?;
-            FluxBackbone::Nf4(crate::pipelines::flux_nf4_inner::Flux::new(
+            // v0.14 phase 8b: NF4 + LoRA composition. Same selective
+            // dequant strategy as GGUF: dequantize only LoRA-targeted
+            // Linears at load, leave the rest 4-bit. Empty LoRA stack
+            // → empty overrides map → exact phase-2 behaviour.
+            let overrides = if req.loras.is_empty() {
+                std::sync::Arc::new(std::collections::HashMap::new())
+            } else {
+                let spin = progress::spinner(&format!(
+                    "Merging {} Flux LoRA(s) into NF4 transformer",
+                    req.loras.len()
+                ));
+                let (map, modified, total) =
+                    crate::pipelines::flux_lora::precompute_nf4_overrides(
+                        &store,
+                        &req.loras,
+                        req.lora_scale,
+                        &req.variant.flux_config(),
+                        &req.device,
+                    )?;
+                spin.finish_with_message(format!(
+                    "✓ Flux LoRA merged onto NF4 backbone ({modified}/{total} target groups, \
+                     {} dense Linears)",
+                    map.len()
+                ));
+                std::sync::Arc::new(map)
+            };
+            FluxBackbone::Nf4(crate::pipelines::flux_nf4_inner::Flux::new_with_loras(
                 &req.variant.flux_config(),
                 &store,
                 dtype,
+                overrides,
             )?)
         } else {
             let flux_vb = unsafe {

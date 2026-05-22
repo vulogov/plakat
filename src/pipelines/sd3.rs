@@ -66,41 +66,80 @@ const CLIP_EOT: u32 = 49407;
 const VAE_SCALE: f64 = 1.5305;
 const VAE_SHIFT: f64 = 0.0609;
 
-/// SD3 variant. Phase 1a wires Sd35Medium only; the rest are
-/// reserved for phase 1b.
+/// SD3 / SD3.5 variant.
+///
+/// * `Sd3Medium` — the original v0.5 Stable Diffusion 3 Medium
+///   (June 2024). 2B parameters. Known anatomy issues; SD3.5 is the
+///   recommended baseline today.
+/// * `Sd35Medium` — SD3.5 Medium (Oct 2024). Same 2.5B-param MMDiT
+///   shape as SD3 but with `pos_embed_max_size = 384` (vs 192) so it
+///   handles up to 1536² without positional aliasing.
+/// * `Sd35Large` — SD3.5 Large. 8B-parameter MMDiT (depth=38). The
+///   flagship. ~17 GB BF16 weights.
+/// * `Sd35LargeTurbo` — 4-step distillation of Sd35Large. Recommended
+///   `guidance: 0.0`, `steps: 4`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
+    Sd3Medium,
     Sd35Medium,
+    Sd35Large,
+    Sd35LargeTurbo,
 }
 
 impl Variant {
     fn mmdit_config(self) -> mmdit::model::Config {
         match self {
+            Self::Sd3Medium => mmdit::model::Config::sd3_medium(),
             Self::Sd35Medium => mmdit::model::Config::sd3_5_medium(),
+            // SD3.5 Large + Turbo share the same MMDiT shape; the
+            // turbo distillation only changes the sampling schedule.
+            Self::Sd35Large | Self::Sd35LargeTurbo => mmdit::model::Config::sd3_5_large(),
         }
     }
 
     /// T5-XXL sequence length budget per the SD3 paper. 256 is the
-    /// canonical value Stability used in training; longer prompts get
-    /// truncated.
+    /// canonical value Stability used in training across the lineup;
+    /// longer prompts get truncated.
     fn t5_seq_len(self) -> usize {
         256
     }
 
     /// Default time-shift parameter for the rectified-flow schedule.
     /// Diffusers' `FlowMatchEulerDiscreteScheduler` uses 3.0 for SD3.5
-    /// Medium at 1024² — higher resolutions / larger models tune this
-    /// upward.
+    /// Medium at 1024². Sd35Large + Sd35LargeTurbo recommend higher
+    /// shift values matching the increased token count of the deeper
+    /// transformer; Turbo's 4-step schedule benefits from shift = 1.0
+    /// (linear) since the schedule is so short.
     fn default_time_shift(self) -> f64 {
-        3.0
+        match self {
+            Self::Sd35LargeTurbo => 1.0,
+            Self::Sd35Large => 3.0,
+            Self::Sd35Medium | Self::Sd3Medium => 3.0,
+        }
     }
 
     pub fn default_guidance(self) -> f64 {
-        4.5
+        match self {
+            // Sd35LargeTurbo is a distillation that ignores CFG — its
+            // training schedule is single-pass (no conditional /
+            // unconditional pairing). Per Stability's model card,
+            // guidance=0.0 (no CFG) is the recommended sampling.
+            Self::Sd35LargeTurbo => 0.0,
+            // Sd3Medium / Sd35Medium / Sd35Large all use the same
+            // default CFG. Stability publishes a 4.5 floor across the
+            // lineup.
+            Self::Sd3Medium | Self::Sd35Medium | Self::Sd35Large => 4.5,
+        }
     }
 
     pub fn default_steps(self) -> usize {
-        28
+        match self {
+            // Turbo is a 4-step distillation. Going past 4 typically
+            // hurts quality — the distillation collapses the
+            // intermediate timesteps.
+            Self::Sd35LargeTurbo => 4,
+            Self::Sd3Medium | Self::Sd35Medium | Self::Sd35Large => 28,
+        }
     }
 }
 
