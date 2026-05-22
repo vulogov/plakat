@@ -150,6 +150,16 @@ impl Variant {
             Self::Sd3Medium | Self::Sd35Medium | Self::Sd35Large => 28,
         }
     }
+
+    /// v0.15 phase 3: MMDiT hidden size = `head_size * depth`. SD3 /
+    /// SD3.5-Medium both use 64 * 24 = 1536; SD3.5-Large is
+    /// 64 * 38 = 2432. Used by the LoRA resolver for QKV-fusion row
+    /// slicing — wrong value silently mis-slices into wrong rows of
+    /// the fused QKV tensor, producing scrambled outputs.
+    pub fn mmdit_hidden_size(self) -> usize {
+        let cfg = self.mmdit_config();
+        cfg.head_size * cfg.depth
+    }
 }
 
 pub struct Request {
@@ -186,12 +196,25 @@ pub struct Request {
     /// defaults to 0.6 for img2img, 1.0 for inpaint (matches Flux +
     /// SD img2img defaults). Ignored when `init_image` is `None`.
     pub strength: Option<f32>,
+    /// v0.15 phase 3: PEFT-format SD3 LoRAs to merge at load time.
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// v0.15 phase 3: per-LoRA scale multiplier.
+    pub lora_scale: f32,
 }
 
 pub struct LoadRequest {
     pub variant: Variant,
     pub repo: String,
     pub device: Device,
+    /// v0.15 phase 3: PEFT-format LoRA stack to merge into the MMDiT
+    /// weights at load time. Empty = no merge (pre-phase-3 path,
+    /// byte-identical). Diffusers SD3 LoRAs use `transformer.` as the
+    /// PEFT root; the resolver strips it automatically.
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// v0.15 phase 3: per-LoRA scale multiplier applied on top of each
+    /// LoRA's own `:scale` suffix. Same semantics as Flux/SD LoRA's
+    /// `--lora-scale`. 1.0 is the default.
+    pub lora_scale: f32,
 }
 
 pub struct GenRequest {
@@ -343,10 +366,67 @@ impl Pipeline {
             Tokenizer::from_file(&t5_tok_json).map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ text encoders ready");
 
+        // ---------- v0.15 phase 3: optional LoRA merge ----------
+        //
+        // When the caller passes any `LoadRequest::loras`, resolve each
+        // and merge into a tempfile that replaces `mmdit_path` for the
+        // VarBuilder. The tempfile lives in `std::env::temp_dir()`
+        // (named uniquely by PID + nanos) and is kept around for the
+        // lifetime of the loaded MMDiT — the mmap into VarBuilder
+        // needs the bytes on disk. Best-effort cleanup is a deferred
+        // concern; the OS sweeps temp_dir periodically.
+        //
+        // Sd35-Large + Sd35-LargeTurbo use the same hidden_size
+        // (64 * 38 = 2432) since the LargeTurbo is just a distillation
+        // of the Large transformer.
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
+            Vec::new()
+        } else {
+            let lr = progress::spinner(&format!("Resolving {} SD3 LoRA(s)", req.loras.len()));
+            let mut v = Vec::with_capacity(req.loras.len());
+            for spec in &req.loras {
+                v.push(spec.resolve().await?);
+            }
+            lr.finish_with_message(format!("✓ resolved {} SD3 LoRA file(s)", v.len()));
+            v
+        };
+        let merged_mmdit_path: Option<std::path::PathBuf> = if resolved_loras.is_empty() {
+            None
+        } else {
+            let h = req.variant.mmdit_hidden_size();
+            let lr = progress::spinner(&format!(
+                "Merging {} SD3 LoRA(s) into MMDiT", resolved_loras.len()
+            ));
+            let out_path = std::env::temp_dir().join(format!(
+                "plakat-sd3-lora-merged-{}-{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let (n_mod, n_total) =
+                crate::pipelines::sd3_lora::merge_sd3_loras_into_weights(
+                    &mmdit_path,
+                    &out_path,
+                    &resolved_loras,
+                    req.lora_scale,
+                    h,
+                    &req.device,
+                )?;
+            lr.finish_with_message(format!(
+                "✓ SD3 LoRA merge → {n_mod}/{n_total} target groups applied"
+            ));
+            Some(out_path)
+        };
+        let effective_mmdit_path = merged_mmdit_path.as_ref().unwrap_or(&mmdit_path);
+
         // ---------- MMDiT + VAE ----------
         let load = progress::spinner("Loading MMDiT + VAE");
         let mmdit_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&mmdit_path], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(
+                &[effective_mmdit_path], dtype, &req.device,
+            )?
         };
         let mmdit_model = mmdit::model::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
 
@@ -724,6 +804,8 @@ pub async fn run(req: Request) -> Result<()> {
         variant: req.variant,
         repo: req.repo,
         device: req.device,
+        loras: req.loras,
+        lora_scale: req.lora_scale,
     })
     .await?;
     p.generate(&GenRequest {

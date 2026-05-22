@@ -58,8 +58,11 @@ const FLUX_MLP_DIM: usize = 12288;
 const QKV_OUT: usize = 3 * FLUX_HIDDEN;
 
 /// Where a LoRA delta lands inside the base tensor.
+///
+/// v0.15 phase 3: promoted to `pub(crate)` so `sd3_lora.rs` can
+/// reuse the same row-slice math for MMDiT's fused QKV targets.
 #[derive(Debug, Clone, Copy)]
-enum RowSlice {
+pub(crate) enum RowSlice {
     /// Add the delta to the entire base tensor (shapes must match).
     Full,
     /// Add the delta only to rows `[start, end)` of dim 0. The base
@@ -69,11 +72,12 @@ enum RowSlice {
 }
 
 /// One LoRA target — base tensor name and the slice of it the delta
-/// applies to.
+/// applies to. `pub(crate)` so the SD3 LoRA resolver can produce
+/// these alongside Flux's.
 #[derive(Debug, Clone)]
-struct LoraTarget {
-    base_key: String,
-    slice: RowSlice,
+pub(crate) struct LoraTarget {
+    pub(crate) base_key: String,
+    pub(crate) slice: RowSlice,
 }
 
 /// Public entry. Merges PEFT-format Flux LoRAs into the base Flux
@@ -127,17 +131,21 @@ pub fn merge_flux_loras_into_weights(
 
 /// Group a PEFT-format Flux LoRA's tensors into (logical_target_name → group).
 /// Strips an optional `transformer.` prefix. Unknown keys are dropped.
+///
+/// v0.15 phase 3: `pub(crate)` so `sd3_lora.rs` reuses the same
+/// grouping for diffusers PEFT-format SD3 LoRAs (which use identical
+/// `.lora_A` / `.lora_B` / `.alpha` suffix conventions).
 #[derive(Default, Debug)]
-struct LoraGroup {
+pub(crate) struct LoraGroup {
     /// LoRA "down" matrix, shape `(rank, in)`.
-    a: Option<Tensor>,
+    pub(crate) a: Option<Tensor>,
     /// LoRA "up" matrix, shape `(out, rank)`.
-    b: Option<Tensor>,
+    pub(crate) b: Option<Tensor>,
     /// Optional learnable alpha — if missing, `alpha = rank`.
-    alpha: Option<Tensor>,
+    pub(crate) alpha: Option<Tensor>,
 }
 
-fn group_peft_keys(
+pub(crate) fn group_peft_keys(
     lora_tensors: &HashMap<String, Tensor>,
 ) -> HashMap<String, LoraGroup> {
     let mut groups: HashMap<String, LoraGroup> = HashMap::new();
@@ -384,7 +392,10 @@ fn resolve_aitoolkit_single(rest: &str) -> Option<LoraTarget> {
 }
 
 /// Compute the LoRA delta `B @ A * (alpha / rank)`.
-fn compute_delta(
+///
+/// v0.15 phase 3: `pub(crate)` for SD3 LoRA reuse — the formula is
+/// identical across diffusers PEFT LoRAs regardless of the backbone.
+pub(crate) fn compute_delta(
     group: &LoraGroup,
     effective_scale: f32,
     device: &Device,
@@ -419,7 +430,11 @@ fn compute_delta(
 
 /// Add `delta` into `base` at `slice`. If `slice` is `Partial`, only
 /// the rows `[start, end)` of dim 0 are updated. Preserves base dtype.
-fn apply_delta(base: &Tensor, delta: &Tensor, slice: RowSlice) -> Result<Tensor> {
+///
+/// v0.15 phase 3: `pub(crate)` for SD3 LoRA reuse. MMDiT's fused
+/// QKV per joint block uses the same Partial-slice math (e.g.
+/// `to_q` → rows `[0, hidden)`, `to_k` → `[hidden, 2*hidden)`).
+pub(crate) fn apply_delta(base: &Tensor, delta: &Tensor, slice: RowSlice) -> Result<Tensor> {
     let base_dtype = base.dtype();
     // Math in F32 — Flux's BF16 has the range but not the resolution
     // for accurate accumulation of small LoRA deltas, especially
