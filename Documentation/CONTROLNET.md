@@ -322,8 +322,14 @@ plakat img2img photo.png --mask region.png --model flux-fill-dev \
     --control-spec 'depth:from=photo.png:strength=0.7'
 ```
 
+**v0.15 phase 1**: NF4 + ControlNet now composes — the NF4 vendor
+gained `forward_with_residuals` with the same `ceil(blocks/residuals)`
+interleave as the BF16 + GGUF vendors, so a single CN checkpoint
+trained against any of them works on NF4. Tiled + NF4 + CN composes
+too (per-tile residuals slice the same way as on GGUF).
+
 Still NOT composing: tiled + Fill (per-tile mask slicing is its own
-gap, distinct from CN cropping) and NF4 + ControlNet.
+gap, distinct from CN cropping).
 
 ## Limits
 
