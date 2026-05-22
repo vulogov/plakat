@@ -97,6 +97,10 @@ pub enum BaseModel {
     Sd15,
     Sdxl,
     Flux,
+    /// v0.14 phase 1a: SD3 / SD3.5 (MMDiT). Catalog-LoRA support for
+    /// SD3 isn't wired yet — this slot reserves the name so the
+    /// variant enum stays exhaustive.
+    Sd3,
 }
 
 impl BaseModel {
@@ -112,6 +116,7 @@ impl BaseModel {
             Variant::Sd15 | Variant::Sd21 => Self::Sd15,
             Variant::Sdxl | Variant::SdxlTurbo => Self::Sdxl,
             Variant::FluxSchnell | Variant::FluxDev | Variant::FluxFillDev => Self::Flux,
+            Variant::Sd35Medium => Self::Sd3,
         }
     }
 
@@ -121,6 +126,7 @@ impl BaseModel {
             Self::Sd15 => "sd15",
             Self::Sdxl => "sdxl",
             Self::Flux => "flux",
+            Self::Sd3 => "sd3",
         }
     }
 }

@@ -1253,6 +1253,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 quantize_t5: s.quantize_t5,
                 flux_quant_level: s.quant_level.clone(),
                 t5_quant_level: s.t5_quant_level.clone(),
+                // v0.14 phase 3: scenarios don't surface Flux Redux
+                // yet — per-task `redux_image:` is a follow-up.
+                redux: false,
             })
             .await?,
         )
@@ -2124,6 +2127,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         mask: eff_mask.clone(),
                         strength: task.strength,
                         tiled: s.tiled.map(Into::into),
+                        // v0.14 phase 3: per-task Redux not surfaced
+                        // in scenarios yet. The pipeline was loaded
+                        // with `redux: false` above, so leaving this
+                        // None preserves invariants.
+                        redux_image: None,
                     })?;
                 }
                 // Dry-run path doesn't reach here.

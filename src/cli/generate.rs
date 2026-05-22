@@ -282,6 +282,18 @@ pub struct GenerateArgs {
     /// `--quantize-t5`. city96 publishes Q3_K_S..Q8_0 + F16/F32.
     #[arg(long = "t5-quant-level", value_name = "LEVEL")]
     pub t5_quant_level: Option<String>,
+
+    /// **v0.14 phase 3**: Flux Redux reference image. Adds image
+    /// conditioning to the standard Flux variants (`flux-dev`,
+    /// `flux-schnell`, GGUF, NF4) by encoding the image through
+    /// SigLIP-so400m and BFL's Redux adapter, then seq-concatenating
+    /// 729 tokens onto the T5 text embedding. Doesn't compose with
+    /// `flux-fill-dev` (different `img_in` shape).
+    ///
+    /// Loading Redux adds ~1.5 GB of memory for SigLIP + the 140 MB
+    /// adapter — paid only when this flag is set.
+    #[arg(long = "redux-image", value_name = "PATH")]
+    pub redux_image: Option<PathBuf>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -363,6 +375,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         quantize_t5: args.quantize_t5,
         flux_quant_level: args.quant_level,
         t5_quant_level: args.t5_quant_level,
+        redux_image: args.redux_image,
     })
     .await?;
 

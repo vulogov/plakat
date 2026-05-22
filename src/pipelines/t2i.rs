@@ -89,6 +89,12 @@ pub struct Request {
     /// v0.13 phase 5: GGUF quant level for the T5-XXL encoder. `None`
     /// → `"Q4_K_M"`. Ignored unless `quantize_t5` is `true`.
     pub t5_quant_level: Option<String>,
+    /// v0.14 phase 3: Flux Redux reference image. Setting this on a
+    /// non-Fill Flux variant enables image-conditioned generation —
+    /// SigLIP-so400m + the BFL Redux adapter encode the reference,
+    /// and the resulting 729 tokens are sequence-concatenated to T5's
+    /// text embedding. Ignored on SD-family models.
+    pub redux_image: Option<PathBuf>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -138,11 +144,23 @@ pub enum Variant {
     FluxDev,
     /// v0.13 phase 2: Flux.1-Fill-dev. 384-channel `img_in`, inpaint-only.
     FluxFillDev,
+    /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
+    Sd35Medium,
 }
 
 impl Variant {
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
+        // SD3 detection precedes SDXL/SD because "sd3" / "sd3.5" /
+        // "stable-diffusion-3.5" contain "sd" but should route to the
+        // MMDiT pipeline.
+        if m.contains("sd3") || m.contains("sd-3") || m.contains("stable-diffusion-3") {
+            // Phase 1a only ships Medium; Large and Large-Turbo
+            // land in phase 1b. For now any sd3.x string maps to
+            // Medium — the pipeline will bail at load time if the
+            // weight shape doesn't match Medium's config.
+            return Self::Sd35Medium;
+        }
         if m.contains("flux") {
             if m.contains("fill") {
                 Self::FluxFillDev
@@ -167,6 +185,11 @@ impl Variant {
     }
     pub fn is_flux(self) -> bool {
         matches!(self, Self::FluxSchnell | Self::FluxDev | Self::FluxFillDev)
+    }
+    /// v0.14 phase 1a: any SD3 / SD3.5 variant. Routes to the MMDiT
+    /// pipeline in `pipelines::sd3`.
+    pub fn is_sd3(self) -> bool {
+        matches!(self, Self::Sd35Medium)
     }
 }
 
@@ -1227,6 +1250,59 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
+    // v0.14 phase 1a: SD3 / SD3.5 routes to the MMDiT pipeline. Phase
+    // 1a is t2i only; LoRA / ControlNet / img2img are bail-loud for
+    // now since those code paths don't yet know about MMDiT.
+    if variant.is_sd3() {
+        use crate::pipelines::sd3;
+        if !req.loras.is_empty() {
+            anyhow::bail!(
+                "SD3 LoRAs aren't wired yet (v0.14 phase 1a t2i only). \
+                 Drop --loras or switch to an SDXL / Flux model."
+            );
+        }
+        if !req.controls.is_empty() {
+            anyhow::bail!(
+                "SD3 ControlNet isn't wired yet (v0.14 phase 1a t2i only). \
+                 Drop --control-spec or switch to an SDXL / Flux model."
+            );
+        }
+        if req.tiled.is_some() {
+            anyhow::bail!(
+                "SD3 --tiled isn't wired yet (v0.14 phase 1a t2i only)."
+            );
+        }
+        if req.quantize_t5 {
+            anyhow::bail!(
+                "SD3 --quantize-t5 isn't wired yet (Flux-only in v0.13)."
+            );
+        }
+        let sd3_variant = match variant {
+            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        };
+        sd3::run(sd3::Request {
+            prompt: req.prompt,
+            negative: req.negative,
+            variant: sd3_variant,
+            repo: resolve_repo(&req.model),
+            width: req.width,
+            height: req.height,
+            count: req.count,
+            steps: if req.steps == 28 { None } else { Some(req.steps) },
+            guidance: if (req.guidance - 7.5).abs() < f64::EPSILON {
+                None
+            } else {
+                Some(req.guidance)
+            },
+            seed: req.seed,
+            out_dir: req.out_dir,
+            device: req.device,
+        })
+        .await?;
+        return Ok(None);
+    }
+
     // Flux routes to its own pipeline. v0.12: LoRAs ARE supported via
     // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
@@ -1381,6 +1457,11 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // Flux pipeline. The pipeline itself bails loud if --tiled
             // is combined with ControlNet or Fill in this phase.
             tiled: req.tiled,
+            // v0.14 phase 3: thread --redux-image and the implied
+            // `redux: true` load-time flag. When the user doesn't ask
+            // for Redux, neither the SigLIP nor the adapter is loaded.
+            redux: req.redux_image.is_some(),
+            redux_image: req.redux_image.clone(),
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are
