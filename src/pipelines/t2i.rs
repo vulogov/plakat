@@ -1360,11 +1360,9 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                  Drop --control-spec or switch to an SDXL / Flux model."
             );
         }
-        if req.tiled.is_some() {
-            anyhow::bail!(
-                "SD3 --tiled isn't wired yet (v0.14 phase 1a t2i only)."
-            );
-        }
+        // v0.15 phase 5: SD3 + --tiled composes. Plumbed via the new
+        // sd3::Request.tiled field. img2img/inpaint + tiled is still
+        // deferred — sd3::Pipeline::generate bails when both are set.
         if req.quantize_t5 {
             anyhow::bail!(
                 "SD3 --quantize-t5 isn't wired yet (Flux-only in v0.13)."
@@ -1407,6 +1405,13 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // replaces the base MMDiT mmap for the VarBuilder.
             loras: req.loras,
             lora_scale: req.lora_scale,
+            // v0.15 phase 5: tiled MultiDiffusion denoise. When set,
+            // every step splits the latent into overlapping tiles,
+            // runs MMDiT per tile, and Hann-blends the predictions
+            // back into a full-canvas update. Composes with the
+            // standard t2i path only — img2img/inpaint + tiled bail
+            // in sd3::Pipeline::generate.
+            tiled: req.tiled,
         })
         .await?;
         return Ok(None);

@@ -351,7 +351,7 @@ particular).
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
 
-### Tiled hi-res generation (v0.12 SDXL, v0.13 Flux)
+### Tiled hi-res generation (v0.12 SDXL, v0.13 Flux, v0.15 SD3)
 
 For outputs above the model's trained working resolution (4K SDXL,
 2K–4K Flux) without OOM, use MultiDiffusion-style tiled denoise:
@@ -359,13 +359,21 @@ For outputs above the model's trained working resolution (4K SDXL,
 | Flag | Default | Description |
 |---|---|---|
 | `--tiled` | off | Enable tiled denoise. The transformer/UNet only ever sees `--tile-size` worth of tokens per call; per-step noise predictions are blended via a 2D Hann window. |
-| `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux). |
+| `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux + SD3). |
 | `--tile-stride <PX>` | `768` | Stride between tile origins. Smaller = more overlap = smoother seams + more compute. |
 
 Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both SDXL
 (SDXL+CN tiled is a v0.12 follow-up) and Flux (v0.13 phase 9 — each
 tile gets its CN conditioning cropped to its region). Does **not**
-compose with the SDXL refiner or Flux.1-Fill-dev.
+compose with the SDXL refiner, Flux.1-Fill-dev, Flux concept variants
+(Canny-dev / Depth-dev), or SD3 img2img / inpaint.
+
+**v0.15 phase 5**: SD3 / SD3.5 join the tiled lineup. MMDiT's
+`pos_embed_max_size` caps the patched tile dim at 192 (SD3 /
+SD3.5-Large) or 384 (SD3.5-Medium); the default 1024-px tile
+patches to 64×64, well within either cap. Each per-step prediction
+is the post-CFG velocity per tile, Hann-blended into a full-canvas
+update applied via the Euler step.
 
 ```bash
 # 4K SDXL
@@ -375,6 +383,10 @@ plakat generate "ultra-detailed architectural diagram" \
 # 2K Flux with depth-guided structure across every tile
 plakat generate "..." --model flux-dev --size 2048x2048 \
     --tiled --control-spec 'depth:from=ref.jpg'
+
+# 2K SD3.5-Medium (v0.15 phase 5)
+plakat generate "..." --model sd35-medium --size 2048x2048 \
+    --tiled --tile-size 1024 --tile-stride 768
 ```
 
 ### Artefact compositing

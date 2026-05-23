@@ -737,6 +737,10 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // the phase-2 behaviour).
         loras: args.loras,
         lora_scale: args.lora_scale,
+        // v0.15 phase 5: img2img + tiled isn't wired yet; the
+        // pipeline bails if both are set. Drop tiled here so the
+        // CLI surfaces a clear error on incompatible combos.
+        tiled: None,
     })
     .await
 }
