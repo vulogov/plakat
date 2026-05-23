@@ -479,6 +479,52 @@ impl Pipeline {
         })
     }
 
+    /// v0.16 phase 2: replace the runtime LoRA stack on the MMDiT
+    /// backbone. Mirrors `flux::FluxBackbone::apply_loras`. The
+    /// scenario dispatcher uses this between tasks to apply each
+    /// task's per-task LoRA additions on top of the scenario-merged
+    /// baseline; followed by `clear_all_loras()` at end-of-task to
+    /// avoid bleed.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+    ) -> Result<usize> {
+        let applied = self
+            .mmdit_model
+            .apply_loras(specs, self.dtype, &self.device)
+            .map_err(|e| anyhow!("SD3 apply_loras: {e}"))?;
+        Ok(applied)
+    }
+
+    /// v0.16 phase 2: clear every runtime LoRA on the MMDiT.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        self.mmdit_model
+            .clear_all_loras()
+            .map_err(|e| anyhow!("SD3 clear_all_loras: {e}"))?;
+        Ok(())
+    }
+
+    /// v0.16 phase 2: runtime dtype the MMDiT uses (BF16 on GPU,
+    /// F32 on CPU). Exposed for the scenario dispatcher's LoRA spec
+    /// builder.
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    /// v0.16 phase 2: device the pipeline lives on.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// v0.16 phase 2: variant accessor. Used by the dispatcher to
+    /// look up the MMDiT hidden size for LoRA-B row-slice padding.
+    pub fn variant(&self) -> Variant {
+        self.variant
+    }
+
     /// Generate `req.count` images. Reuses the loaded weights across
     /// images; `&mut self` because T5 maintains an internal KV cache.
     pub fn generate(&mut self, req: &GenRequest) -> Result<()> {
