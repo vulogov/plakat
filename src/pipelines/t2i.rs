@@ -479,6 +479,12 @@ impl Pipeline {
                 "Pipeline::load is SD-only; Flux models use pipelines::flux::run"
             );
         }
+        if variant.is_sd3() {
+            anyhow::bail!(
+                "Pipeline::load is SD-only; SD3 / SD3.5 models use \
+                 pipelines::sd3::Pipeline::load"
+            );
+        }
         let repo = resolve_repo(&req.model);
 
         // Resolve user LoRAs (t2i has no auto-LoRAs; that's a
@@ -1348,12 +1354,6 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // now since those code paths don't yet know about MMDiT.
     if variant.is_sd3() {
         use crate::pipelines::sd3;
-        if !req.loras.is_empty() {
-            anyhow::bail!(
-                "SD3 LoRAs aren't wired yet (v0.14 phase 1a t2i only). \
-                 Drop --loras or switch to an SDXL / Flux model."
-            );
-        }
         if !req.controls.is_empty() {
             anyhow::bail!(
                 "SD3 ControlNet isn't wired yet (v0.14 phase 1a t2i only). \

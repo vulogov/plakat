@@ -119,10 +119,10 @@ plakat generate "..." --model sd35-large \
     --lora "user/style-lora" --lora-scale 0.7
 ```
 
-LoRA composes with img2img and tiled. In scenarios, use the
-scenario-level `loras:` field — per-task `loras:` on an SD3 model
-raises an explicit error (the per-task LoRA path is supported on
-Flux only).
+LoRA composes with img2img and tiled. Scenarios support both
+scenario-level `loras:` (merged into MMDiT at load time) and
+per-task `loras:` (applied at runtime between tasks via the MMDiT
+LoraLinear stack).
 
 ## 6. SD3 img2img
 
@@ -253,10 +253,11 @@ For lower-VRAM workflows, Flux NF4 / GGUF cover the 12–16 GB tier.
 }
 ```
 
-Per-task `tiled:` overrides work. Per-task `loras:` is **not**
-supported on SD3 — use scenario-level `loras:` (the per-task LoRA
-path is Flux-only). Per-task `init-image:` + img2img works the same
-way it does for Flux.
+Per-task `tiled:` overrides work. Per-task `loras:` is supported
+— each task's LoRA stack is applied to the MMDiT at runtime on top
+of the scenario-merged baseline, then cleared at end-of-task so the
+next task isn't contaminated. Per-task `init-image:` + img2img works
+the same way it does for Flux.
 
 ## 11. Common gotchas
 
