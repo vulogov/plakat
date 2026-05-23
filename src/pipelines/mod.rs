@@ -34,6 +34,7 @@ pub mod scheduler;
 pub mod scrfd;
 pub mod mmdit_inner;
 pub mod sd3;
+pub mod sd3_controlnet;
 pub mod sd3_lora;
 pub mod stylize;
 pub mod t2i;
