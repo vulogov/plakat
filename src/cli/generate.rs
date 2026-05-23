@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use candle_core::Device;
 use clap::Args as ClapArgs;
 
@@ -422,6 +422,41 @@ pub struct GenerateArgs {
     /// (e.g. "ethereal portrait, soft lighting").
     #[arg(long = "adetailer-prompt", value_name = "STR")]
     pub adetailer_prompt: Option<String>,
+
+    /// v0.16 phase 8: enable Hires fix workflow. After the t2i pass,
+    /// upscales each output by `--hires-scale` and runs img2img at
+    /// `--hires-strength` to recover small-scale detail. Standard
+    /// mitigation for the "multi-head problem" when sampling SD 1.5
+    /// or SDXL above their trained resolution. SD-family only;
+    /// Flux / SD3 bail loud.
+    #[arg(long = "hires-fix", default_value_t = false)]
+    pub hires_fix: bool,
+
+    /// v0.16 phase 8: upscale factor for the hires-fix pass. `2.0`
+    /// (default) doubles each axis. Ignored for ML upscalers
+    /// (Real-ESRGAN) which use their native fixed scale (2× / 4×).
+    #[arg(long = "hires-scale", default_value_t = 2.0, value_name = "F")]
+    pub hires_scale: f32,
+
+    /// v0.16 phase 8: img2img strength on the upscaled image. `0.5`
+    /// (default) preserves the t2i composition + adds refinement;
+    /// `0.7+` allows more reinterpretation.
+    #[arg(long = "hires-strength", default_value_t = 0.5, value_name = "F")]
+    pub hires_strength: f32,
+
+    /// v0.16 phase 8: upscaler for the hires-fix pass. Accepts the
+    /// same tokens as `plakat upscale --method`:
+    /// `lanczos | bicubic | bilinear | nearest | real-esrgan-x2 |
+    /// real-esrgan-x4 | real-esrgan-anime-x4`.
+    /// Classical filters are fast + sharp; Real-ESRGAN reconstructs
+    /// high-frequency detail at extra compute cost.
+    #[arg(long = "hires-upscaler", default_value = "lanczos", value_name = "MODE")]
+    pub hires_upscaler: String,
+
+    /// v0.16 phase 8: optional step-count override for the refine
+    /// pass. Defaults to the main `--steps`.
+    #[arg(long = "hires-steps", value_name = "N")]
+    pub hires_steps: Option<usize>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -656,6 +691,87 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     } else {
         None
     };
+
+    // v0.16 phase 8: Hires fix runs BEFORE ADetailer + artefacts so
+    // the face refinement and artefact placement operate on the
+    // upscaled image (refined faces, correctly-sized stamps).
+    //
+    // Gated against `--artefacts` / `--artefact-blend` since those
+    // pipelines reference the original t2i dimensions and would
+    // misplace stamps after the upscale changes dims. Drop one or
+    // the other — Auto1111 has similar mutual-exclusivity quirks.
+    if args.hires_fix {
+        let variant = crate::pipelines::t2i::Variant::detect(&model);
+        if variant.is_flux() || variant.is_sd3() {
+            anyhow::bail!(
+                "--hires-fix requires an SD-family model (SD 1.5 / SD 2.1 / SDXL / \
+                 SDXL-Turbo). Got --model {} which routes through the {} pipeline. \
+                 SD-family models can run the post-t2i hires-fix refine pass; Flux \
+                 / SD3 already have native tiled paths for high-res output \
+                 (--tiled).",
+                model,
+                if variant.is_flux() { "Flux" } else { "SD3" }
+            );
+        }
+        if !args.artefacts.is_empty() || args.artefact_blend {
+            anyhow::bail!(
+                "--hires-fix doesn't compose with --artefact / --artefact-blend \
+                 yet. The hires upscale changes image dims; the artefact compositor \
+                 reads them from the t2i config and would misplace stamps. Drop one \
+                 or the other."
+            );
+        }
+        let upscaler: crate::imaging::upscale::Method = args
+            .hires_upscaler
+            .parse()
+            .with_context(|| format!("parsing --hires-upscaler {:?}", args.hires_upscaler))?;
+        if upscaler.is_ml() && (args.hires_scale - 2.0).abs() > f32::EPSILON {
+            // Honour the user's choice silently if they're using a
+            // classical upscaler at non-2x. The ML branch is fixed by
+            // the model, so log when the user passed something else.
+            tracing::info!(
+                target: "plakat",
+                "--hires-scale {} ignored for ML upscaler (uses native {}×)",
+                args.hires_scale,
+                upscaler.native_scale().unwrap_or(0.0),
+            );
+        }
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if !files.is_empty() {
+            let hires_cfg = crate::pipelines::hires_fix::Config {
+                model: model.clone(),
+                loras: loras.clone(),
+                lora_scale,
+                prompt: prompt.clone(),
+                negative: negative.clone(),
+                scale: args.hires_scale,
+                upscaler,
+                strength: args.hires_strength,
+                steps: args.hires_steps.unwrap_or(steps),
+                guidance,
+                scheduler,
+                device: device.clone(),
+            };
+            let spin = crate::ui::progress::spinner(&format!(
+                "Hires fix over {} image(s)", files.len()
+            ));
+            let n = crate::pipelines::hires_fix::refine_files(
+                &hires_cfg,
+                &files,
+                shared_core.clone(),
+            )
+            .await?;
+            spin.finish_with_message(format!(
+                "✓ Hires fix refined {n} image(s)"
+            ));
+        }
+    }
 
     // v0.16 phase 6: ADetailer-style face refinement runs BEFORE the
     // artefact composite + blend. Order matters: face refinement is
