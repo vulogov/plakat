@@ -325,19 +325,35 @@ pub struct GenerateArgs {
     #[arg(long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 
-    /// **v0.15 phase 4**: conditioning map for the BFL Flux "concept"
+    /// Pre-rendered conditioning map for the BFL Flux "concept"
     /// checkpoints (`--model flux-canny-dev` or `flux-depth-dev`). The
-    /// path is a pre-rendered canny edge map (for Canny-dev) or depth
-    /// map (for Depth-dev) at the target output resolution. The image
-    /// is VAE-encoded and concat'd onto the noise tokens at every
+    /// path is a canny edge map (for Canny-dev) or depth map (for
+    /// Depth-dev) at the target output resolution. The image is
+    /// VAE-encoded and concat'd onto the noise tokens at every
     /// denoise step — the model's `img_in` Linear is widened to
     /// 128 channels to consume it.
     ///
-    /// Required for the concept variants; ignored on other models.
-    /// Auto-annotation (synthesise the conditioning from a photo) is
-    /// not yet wired — pass a pre-rendered map.
-    #[arg(long = "concept-image", value_name = "PATH")]
+    /// Required for the concept variants when `--concept-from` isn't
+    /// supplied; ignored on other models. Mutually exclusive with
+    /// `--concept-from`.
+    #[arg(
+        long = "concept-image",
+        value_name = "PATH",
+        conflicts_with = "concept_from"
+    )]
     pub concept_image: Option<PathBuf>,
+
+    /// Auto-annotate this source photo into the conditioning map the
+    /// loaded concept variant expects. With `--model flux-canny-dev`
+    /// the source is run through the canny edge detector; with
+    /// `--model flux-depth-dev` it's run through Depth-Anything-V2.
+    /// The annotated PNG is written to a temporary file and fed to
+    /// the model the same way `--concept-image` would.
+    ///
+    /// Mutually exclusive with `--concept-image`. Only valid with
+    /// `--model flux-canny-dev` / `flux-depth-dev`.
+    #[arg(long = "concept-from", value_name = "PATH")]
+    pub concept_from: Option<PathBuf>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -409,6 +425,69 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             preset.name, preset.lora_repo, args.steps, args.guidance
         ));
     }
+
+    // v0.16 phase 1: auto-annotation for the Flux "concept" variants.
+    // When `--concept-from PATH` is set on `--model flux-canny-dev` /
+    // `flux-depth-dev`, run the matching annotator (canny or depth)
+    // on the source photo, write the result to a tempdir PNG, and
+    // hand that path to the downstream pipeline the same way
+    // `--concept-image` would.
+    //
+    // The tempdir must outlive the t2i::run call (the pipeline reads
+    // the file inside `Pipeline::generate`), so we hold it in
+    // `_concept_anno_tmp` for the rest of this function.
+    let _concept_anno_tmp = if let Some(src) = args.concept_from.as_ref() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::t2i::Variant as TVariant;
+        let variant = TVariant::detect(&args.model);
+        if !variant.is_flux_concept() {
+            anyhow::bail!(
+                "--concept-from requires a Flux concept variant (--model \
+                 flux-canny-dev or flux-depth-dev), got --model {:?}",
+                args.model
+            );
+        }
+        // Resolve target size: explicit --size wins; otherwise default
+        // to 1024² (BFL's reference resolution for the concept models).
+        let (anno_w, anno_h) = match &args.size {
+            Some(sz) => (sz.w, sz.h),
+            None => (1024, 1024),
+        };
+        // Pick the kind that matches the loaded variant. Canny-dev
+        // wants edges; Depth-dev wants depth.
+        let kind = if matches!(variant, TVariant::FluxCannyDev) {
+            ControlKind::Canny
+        } else {
+            ControlKind::Depth
+        };
+        let anno_dtype = if matches!(device, Device::Cpu) {
+            candle_core::DType::F32
+        } else {
+            candle_core::DType::BF16
+        };
+        let spin = crate::ui::progress::spinner(&format!(
+            "Auto-annotating concept-from with {kind:?}"
+        ));
+        let anno = crate::pipelines::controlnet_annotator::annotate(
+            kind, src, anno_w, anno_h, &device, anno_dtype,
+        )
+        .await?;
+        let tmp = tempfile::Builder::new()
+            .prefix("plakat-concept-anno-")
+            .tempdir()?;
+        let out_path = tmp.path().join(format!("concept-{}.png", kind.slug()));
+        crate::pipelines::t2i::write_annotator_tensor_as_png(&anno, &out_path)?;
+        spin.finish_with_message(format!(
+            "✓ auto-annotated to {}", out_path.display()
+        ));
+        // Promote the auto-annotated PNG into `args.concept_image` so
+        // the downstream code path is identical to the pre-rendered
+        // case.
+        args.concept_image = Some(out_path);
+        Some(tmp)
+    } else {
+        None
+    };
 
     let out_dir = args.out.clone();
     let count = args.count;

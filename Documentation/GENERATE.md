@@ -429,33 +429,46 @@ Composes with: BF16 / GGUF / NF4 Flux, LoRA, ControlNet, img2img,
 tiled denoise. **Does not** compose with `flux-fill-dev` (Fill's
 384ch `img_in` is incompatible).
 
-### `--concept-image <PATH>`
+### `--concept-image <PATH>` / `--concept-from <PATH>`
 
-Pre-rendered conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev.
-Pass a canny edge map (with `--model flux-canny-dev`) or a depth map
-(with `--model flux-depth-dev`) at the target output resolution. The
-image is VAE-encoded and packed alongside the noise tokens — the
-"concept" checkpoint's `img_in` Linear is 128 channels wide (64
-noise + 64 conditioning).
+Conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev. Pass a
+canny edge map (with `--model flux-canny-dev`) or a depth map (with
+`--model flux-depth-dev`) at the target output resolution. The image
+is VAE-encoded and packed alongside the noise tokens — the "concept"
+checkpoint's `img_in` Linear is 128 channels wide (64 noise + 64
+conditioning).
+
+Two ways to supply the map:
+
+* **`--concept-image PATH`** — a pre-rendered canny / depth map you
+  already have on disk.
+* **`--concept-from PATH`** — a source photo to auto-annotate. Plakat
+  runs Canny edge detection (for `flux-canny-dev`) or
+  Depth-Anything-V2 (for `flux-depth-dev`) on the source, writes the
+  result to a temporary PNG, and feeds it to the model the same way
+  `--concept-image` would.
 
 ```bash
-# Canny-guided generation. Recommended guidance ~30.
+# Auto-annotate a reference photo with the matching annotator
 plakat generate "a Victorian mansion, gothic, twilight" \
-    --model flux-canny-dev --concept-image edges.png --guidance 30
+    --model flux-canny-dev --concept-from photo.jpg --guidance 30
 
-# Depth-guided. Same shape; different conditioning modality.
 plakat generate "a polished marble statue of an angel" \
-    --model flux-depth-dev --concept-image depth.png --guidance 30
+    --model flux-depth-dev --concept-from photo.jpg --guidance 30
+
+# Or supply a pre-rendered map
+plakat generate "..." --model flux-canny-dev \
+    --concept-image edges.png --guidance 30
 ```
+
+The two flags are mutually exclusive. `--concept-from` is only valid
+with the two concept variants — passing it with `flux-dev` or any
+other model raises an explicit error.
 
 Caveats:
 * Doesn't compose with `--tiled`, `--init-image` / `--mask`,
   `--redux-image`, or `--control-spec` — pairing raises an explicit
   error.
-* Pass a pre-rendered conditioning map. Generate one via
-  `plakat generate --control-spec canny:from=photo.jpg` (which writes
-  the annotated conditioning to the output dir) or with `cv2.Canny`
-  / a depth model externally.
 * `--guidance 30` is BFL's recommendation per their model cards.
   Lower values (3-7) underrespect the conditioning; higher
   oversharpen.
