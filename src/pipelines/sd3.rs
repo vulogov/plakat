@@ -200,6 +200,13 @@ pub struct Request {
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     /// v0.15 phase 3: per-LoRA scale multiplier.
     pub lora_scale: f32,
+    /// v0.15 phase 5: tiled MultiDiffusion-style denoise. `Some(cfg)`
+    /// splits the latent into overlapping `tile_size`-pixel windows
+    /// and Hann-blends MMDiT predictions per step. Lets SD3 produce
+    /// 4K+ outputs without exceeding `pos_embed_max_size` (192 for
+    /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
+    /// canvas (phase 1a behaviour).
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 pub struct LoadRequest {
@@ -234,6 +241,8 @@ pub struct GenRequest {
     pub mask_feather: u32,
     pub mask_invert: bool,
     pub strength: Option<f32>,
+    /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 pub struct Pipeline {
@@ -477,6 +486,16 @@ impl Pipeline {
         if w == 0 || h == 0 {
             bail!("SD3 requires width and height divisible by 16, both ≥ 16");
         }
+        // v0.15 phase 5: img2img + tiled isn't validated yet. The
+        // start-latent lerp + truncated schedule path doesn't compose
+        // cleanly with the per-step tile blending — defer to a future
+        // phase. Catch the combo early before the CN-style bails.
+        if req.tiled.is_some() && req.init_image.is_some() {
+            bail!(
+                "SD3 --tiled doesn't compose with --init-image / --mask yet \
+                 (v0.15 phase 5 deferral). Drop one or the other."
+            );
+        }
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -603,6 +622,7 @@ impl Pipeline {
             let mode_tag = match (req.init_image.is_some(), req.mask.is_some()) {
                 (true, true) => "inpaint",
                 (true, false) => "img2img",
+                _ if req.tiled.is_some() => "tiled",
                 _ => "denoise",
             };
             bar.set_message(format!(
@@ -615,14 +635,17 @@ impl Pipeline {
                     [a, b] => (*a, *b),
                     _ => continue,
                 };
-                let x_doubled = Tensor::cat(&[&x, &x], 0)?;
-                let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
-                let pred_doubled =
-                    self.mmdit_model
-                        .forward(&x_doubled, &t_vec, &cfg_y, &cfg_ctx, None)?;
-                let pred_neg = pred_doubled.i(0..1)?;
-                let pred_pos = pred_doubled.i(1..2)?;
-                let pred = (&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?;
+                // v0.15 phase 5: dispatch to tiled or single-pass.
+                // Both return the post-CFG velocity prediction at
+                // full canvas resolution; the Euler step is identical.
+                let pred = match req.tiled.as_ref() {
+                    None => self.predict_velocity_full(
+                        &x, t_curr, &cfg_y, &cfg_ctx, guidance,
+                    )?,
+                    Some(cfg) => self.predict_velocity_tiled(
+                        &x, t_curr, &cfg_y, &cfg_ctx, guidance, cfg,
+                    )?,
+                };
                 x = (x + pred * (t_prev - t_curr))?;
 
                 // RePaint-style inpaint blend: after the denoise step
@@ -667,6 +690,143 @@ impl Pipeline {
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
+    }
+
+    /// v0.15 phase 5: single-pass post-CFG velocity prediction.
+    ///
+    /// Builds the `[neg, pos]` double-batch, runs MMDiT once, splits
+    /// the two predictions, and blends with `guidance`. Same math as
+    /// the inline path in `generate` — factored out so the tiled
+    /// dispatch can reuse it inside the per-tile loop.
+    fn predict_velocity_full(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        cfg_y: &Tensor,
+        cfg_ctx: &Tensor,
+        guidance: f64,
+    ) -> Result<Tensor> {
+        let x_doubled = Tensor::cat(&[x, x], 0)?;
+        let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
+        let pred_doubled =
+            self.mmdit_model
+                .forward(&x_doubled, &t_vec, cfg_y, cfg_ctx, None)?;
+        let pred_neg = pred_doubled.i(0..1)?;
+        let pred_pos = pred_doubled.i(1..2)?;
+        Ok((&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?)
+    }
+
+    /// v0.15 phase 5: tiled MultiDiffusion-style post-CFG velocity
+    /// prediction.
+    ///
+    /// Splits the latent into overlapping `tile_size`-pixel windows
+    /// (`stride`-spaced), runs MMDiT per tile, and blends the per-tile
+    /// velocity predictions back into a full-canvas tensor with a 2D
+    /// Hann window. Output shape matches `x` — the Euler step the
+    /// caller applies is identical to the single-pass path.
+    ///
+    /// Constraints:
+    /// * `tile_size` and `stride` must be multiples of 16 (the
+    ///   product of VAE downsample 8 × MMDiT patch_size 2).
+    /// * Patched tile dim = `tile_latent / 2` must be `<=
+    ///   pos_embed_max_size` (384 on SD3.5-Medium, 192 on
+    ///   SD3 / SD3.5-Large). For the default 1024-px tile that's 64
+    ///   patches per axis — well within either cap.
+    ///
+    /// When the canvas fits inside one tile, falls back to
+    /// `predict_velocity_full` (cheaper, identical output).
+    fn predict_velocity_tiled(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        cfg_y: &Tensor,
+        cfg_ctx: &Tensor,
+        guidance: f64,
+        tcfg: &crate::pipelines::tiled::TiledConfig,
+    ) -> Result<Tensor> {
+        let (_b, c, lat_h, lat_w) = x.dims4()?;
+        // VAE downsample 8 — same factor the rest of the SD3 pipeline
+        // uses. Pixel-to-latent conversion for the tile + stride.
+        const VAE_FACTOR: usize = 8;
+        if tcfg.tile_size as usize % 16 != 0 || tcfg.stride as usize % 16 != 0 {
+            bail!(
+                "SD3 tiled denoise requires --tile-size and --tile-stride \
+                 divisible by 16 (got {} / {})",
+                tcfg.tile_size, tcfg.stride
+            );
+        }
+        let tile_lat = (tcfg.tile_size as usize) / VAE_FACTOR;
+        let stride_lat = (tcfg.stride as usize) / VAE_FACTOR;
+        // Patched-tile dim against MMDiT's pos_embed cap. patch_size=2
+        // is the SD3 constant — kept inline rather than reaching into
+        // the variant config so the constraint is explicit at the
+        // call site.
+        let max_patched =
+            self.variant.mmdit_config().pos_embed_max_size;
+        if tile_lat / 2 > max_patched {
+            bail!(
+                "SD3 tile_size {}px → patched {} exceeds variant's pos_embed_max_size {} \
+                 (drop --tile-size or pick a larger SD3 variant)",
+                tcfg.tile_size,
+                tile_lat / 2,
+                max_patched
+            );
+        }
+        // Single-tile fast path: latent fits within the tile. Skips
+        // the Hann blend overhead.
+        if lat_h <= tile_lat && lat_w <= tile_lat {
+            return self.predict_velocity_full(x, t_curr, cfg_y, cfg_ctx, guidance);
+        }
+        let positions = crate::pipelines::tiled::tile_positions(
+            lat_h, lat_w, tile_lat, stride_lat,
+        );
+        let win = crate::pipelines::tiled::hann_window_2d(
+            tile_lat,
+            &self.device,
+            self.dtype,
+        )?;
+        // Accumulators: weighted velocity sum + scalar weight sum
+        // (broadcast over channels at the final divide).
+        let mut acc_pred = Tensor::zeros(
+            (1, c, lat_h, lat_w),
+            self.dtype,
+            &self.device,
+        )?;
+        let mut acc_weight = Tensor::zeros(
+            (1, 1, lat_h, lat_w),
+            self.dtype,
+            &self.device,
+        )?;
+        for pos in positions.iter() {
+            // narrow extracts a tile; both axes use the same size since
+            // tile_positions always emits square tiles.
+            let x_tile = x.narrow(2, pos.y, pos.size)?.narrow(3, pos.x, pos.size)?;
+            let pred_tile =
+                self.predict_velocity_full(&x_tile, t_curr, cfg_y, cfg_ctx, guidance)?;
+            // Weighted contribution: pred_tile * hann broadcast over
+            // (B, C, tile, tile).
+            let weighted = pred_tile.broadcast_mul(&win)?;
+            // Slice the accumulator at the tile position, add, write
+            // back. candle 0.8 has no in-place slice update so we
+            // narrow → add → reassemble via cat.
+            //
+            // Approach: build a `(1, c, lat_h, lat_w)` "patch" tensor
+            // that's zero everywhere except inside the tile rect; the
+            // tile rect holds `weighted`. Adding two equal-shape
+            // tensors is the simplest path on candle.
+            let patch = pad_tile_to_canvas(
+                &weighted, pos.y, pos.x, lat_h, lat_w, self.dtype, &self.device,
+            )?;
+            acc_pred = (acc_pred + patch)?;
+            let w_patch = pad_tile_to_canvas(
+                &win, pos.y, pos.x, lat_h, lat_w, self.dtype, &self.device,
+            )?;
+            acc_weight = (acc_weight + w_patch)?;
+        }
+        // Normalise by the weight sum. The Hann window has a small
+        // positive epsilon at its edges (see tiled::hann_window_2d) so
+        // every covered pixel has weight > 0; no NaN guards needed.
+        Ok(acc_pred.broadcast_div(&acc_weight)?)
     }
 
     /// Encode a single prompt into the `(y, context)` pair the MMDiT
@@ -761,6 +921,44 @@ impl Pipeline {
 /// `shift = 1.0` is the identity; higher values push more steps into
 /// the high-noise region (where the model has more uncertainty to
 /// resolve).
+/// v0.15 phase 5: place a tile-shaped tensor into a zero-padded
+/// canvas-shaped tensor at the given top-left offset. The tile may
+/// have a batch dim (1, C, T, T) or no batch dim (1, 1, T, T) for
+/// the Hann weight. The returned tensor matches the tile's channel
+/// count and the requested canvas spatial size.
+///
+/// Builds the padded tensor via three `Tensor::cat` calls — top/bot
+/// rows of zeros and left/right cols of zeros wrapping the tile.
+/// candle 0.8 has no `slice_assign`, so this cat-based approach is
+/// the cleanest way to lift a sub-region into a larger canvas.
+fn pad_tile_to_canvas(
+    tile: &Tensor,
+    y: usize,
+    x: usize,
+    canvas_h: usize,
+    canvas_w: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<Tensor> {
+    let (b, c, th, tw) = tile.dims4()?;
+    // Left + right horizontal pads. Both can be width 0; candle's cat
+    // handles zero-width inputs fine.
+    let left = Tensor::zeros((b, c, th, x), dtype, device)?;
+    let right = Tensor::zeros(
+        (b, c, th, canvas_w.saturating_sub(x + tw)),
+        dtype,
+        device,
+    )?;
+    let row = Tensor::cat(&[&left, tile, &right], 3)?;
+    let top = Tensor::zeros((b, c, y, canvas_w), dtype, device)?;
+    let bot = Tensor::zeros(
+        (b, c, canvas_h.saturating_sub(y + th), canvas_w),
+        dtype,
+        device,
+    )?;
+    Ok(Tensor::cat(&[&top, &row, &bot], 2)?)
+}
+
 fn shift_t(t: f64, shift: f64) -> f64 {
     if shift == 1.0 {
         t
@@ -823,6 +1021,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask_feather: req.mask_feather,
         mask_invert: req.mask_invert,
         strength: req.strength,
+        tiled: req.tiled,
     })
 }
 
@@ -907,6 +1106,51 @@ mod tests {
         assert_eq!(ts.len(), 5);
         assert!((ts[0] - 1.0).abs() < 1e-12);
         assert!((ts[4] - 0.0).abs() < 1e-12);
+    }
+
+    // v0.15 phase 5 — tile-to-canvas pad helper.
+
+    #[test]
+    fn pad_tile_places_at_origin() {
+        // Tile (1, 2, 2, 2) of ones, canvas 4x4. Place at (0, 0).
+        // Top-left 2x2 of the canvas should be ones, rest zeros.
+        let tile = Tensor::ones((1, 2, 2, 2), DType::F32, &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 0, 0, 4, 4, DType::F32, &Device::Cpu).unwrap();
+        let (_b, c, h, w) = out.dims4().unwrap();
+        assert_eq!((c, h, w), (2, 4, 4));
+        // Channel 0 should have ones in the top-left 2x2 corner.
+        let ch0 = out.i(0).unwrap().i(0).unwrap().to_vec2::<f32>().unwrap();
+        assert_eq!(ch0[0][0], 1.0);
+        assert_eq!(ch0[1][1], 1.0);
+        assert_eq!(ch0[0][2], 0.0);
+        assert_eq!(ch0[2][0], 0.0);
+        assert_eq!(ch0[3][3], 0.0);
+    }
+
+    #[test]
+    fn pad_tile_places_with_offset() {
+        let tile = Tensor::ones((1, 1, 2, 2), DType::F32, &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 1, 2, 4, 5, DType::F32, &Device::Cpu).unwrap();
+        let (_b, c, h, w) = out.dims4().unwrap();
+        assert_eq!((c, h, w), (1, 4, 5));
+        let ch = out.i(0).unwrap().i(0).unwrap().to_vec2::<f32>().unwrap();
+        // The 2x2 ones should land at rows 1-2, cols 2-3.
+        assert_eq!(ch[1][2], 1.0);
+        assert_eq!(ch[2][3], 1.0);
+        assert_eq!(ch[0][2], 0.0); // row above
+        assert_eq!(ch[3][2], 0.0); // row below
+        assert_eq!(ch[1][1], 0.0); // col left
+        assert_eq!(ch[1][4], 0.0); // col right
+    }
+
+    #[test]
+    fn pad_tile_full_canvas_is_identity() {
+        // A tile exactly the canvas size should be returned unchanged.
+        let tile = Tensor::randn(0f32, 1.0_f32, (1, 3, 4, 4), &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 0, 0, 4, 4, DType::F32, &Device::Cpu).unwrap();
+        let diff = (&tile - &out).unwrap().abs().unwrap().sum_all().unwrap();
+        let d: f32 = diff.to_scalar().unwrap();
+        assert!(d < 1e-5, "expected identity; got diff {d}");
     }
 
     #[test]
