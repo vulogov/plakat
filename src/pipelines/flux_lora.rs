@@ -548,6 +548,107 @@ pub fn flux_target_shape(
 /// base path (`<path>.weight`). Non-targeted Linears stay packed in
 /// the store — the same selective-dequant memory profile the GGUF
 /// path delivers (v0.13 phase 1e).
+/// v0.15 phase 7b-7: build a path-keyed runtime LoRA spec map for
+/// the Flux backbone.
+///
+/// Unlike `precompute_quantized_overrides` / `precompute_nf4_overrides`
+/// (which merge LoRA deltas into a single dense weight at load time),
+/// this helper keeps A and B matrices separate per LoRA. The result
+/// is consumed by `FluxBackbone::apply_loras` at scenario per-task
+/// dispatch time — each registered LoraLinear updates its slot stack
+/// with the deltas targeting it.
+///
+/// Returns `(specs, modified_groups, total_groups)`. `specs` is keyed
+/// by full safetensors path (with `.weight`); each value is the
+/// stack of LoRA spec entries that target that Linear (multiple
+/// LoRAs targeting the same path compose additively at forward
+/// time).
+pub fn compute_runtime_specs(
+    loras: &[ResolvedLora],
+    default_scale: f32,
+    device: &Device,
+) -> Result<(
+    HashMap<String, Vec<crate::pipelines::lora_linear::LoraSpec>>,
+    usize,
+    usize,
+)> {
+    use crate::pipelines::lora_linear::LoraSpec as RtSpec;
+    let mut specs: HashMap<String, Vec<RtSpec>> = HashMap::new();
+    let mut modified = 0usize;
+    let mut total_groups = 0usize;
+
+    for lora in loras {
+        let lora_tensors: HashMap<String, Tensor> =
+            candle_core::safetensors::load(&lora.path, device)
+                .with_context(|| format!("loading Flux LoRA {}", lora.display))?;
+        let effective_scale_base = lora.scale * default_scale;
+        let groups = group_peft_keys(&lora_tensors);
+        total_groups += groups.len();
+        for (logical, group) in groups {
+            let (Some(a), Some(b)) = (group.a.as_ref(), group.b.as_ref()) else {
+                continue;
+            };
+            let target = match resolve_target(&logical) {
+                Some(t) => t,
+                None => {
+                    tracing::debug!(
+                        target: "plakat",
+                        "Flux runtime LoRA: skipping unresolvable target {logical}"
+                    );
+                    continue;
+                }
+            };
+            // Build the effective scale folded with the LoRA's
+            // own alpha / rank ratio. `compute_delta` does this
+            // multiplication internally; for the runtime path we
+            // keep A and B separate so the forward does
+            //   y += scale · (B @ A @ x)
+            // which means our pre-folded `scale` already covers
+            // both alpha/rank and the user multiplier.
+            let rank = a.dim(0)? as f32;
+            let alpha_f32 = match group.alpha.as_ref() {
+                Some(t) => {
+                    let t = t.to_dtype(DType::F32)?;
+                    match t.dims().len() {
+                        0 => t.to_scalar::<f32>()?,
+                        _ => t
+                            .flatten_all()?
+                            .to_vec1::<f32>()
+                            .ok()
+                            .and_then(|v| v.first().copied())
+                            .unwrap_or(rank),
+                    }
+                }
+                None => rank,
+            };
+            let scaling =
+                (alpha_f32 / rank.max(1.0)) * effective_scale_base;
+            let row_slice = match target.slice {
+                RowSlice::Full => None,
+                RowSlice::Partial { start, end } => Some((start, end)),
+            };
+            let spec = RtSpec {
+                a: a.clone(),
+                b: b.clone(),
+                scale: scaling,
+                row_slice,
+            };
+            specs.entry(target.base_key.clone()).or_default().push(spec);
+            modified += 1;
+        }
+        if total_groups > 0 {
+            tracing::info!(
+                target: "plakat",
+                "Flux runtime LoRA {} → {modified}/{total_groups} targets staged (scale {:.2})",
+                lora.display,
+                effective_scale_base
+            );
+        }
+    }
+
+    Ok((specs, modified, total_groups))
+}
+
 pub fn precompute_nf4_overrides(
     store: &crate::pipelines::nf4_loader::Nf4Store,
     loras: &[ResolvedLora],

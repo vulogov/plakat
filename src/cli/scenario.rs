@@ -563,6 +563,24 @@ struct TaskDef {
     ///   * `tiled: { size: 1024, stride: 768 }` — override config
     #[serde(default)]
     tiled: Option<TaskTiledCfg>,
+
+    /// v0.15 phase 7b-7: per-task LoRA stack (ADDITIVE on top of
+    /// the scenario-level LoRAs). Each string parses via the same
+    /// `LoraSpec` grammar the CLI `--lora` flag uses: local path,
+    /// HF repo, or `:weight` suffix.
+    ///
+    /// Supported on Flux (BF16 / GGUF / NF4) and SD3 / SD3.5.
+    /// SD-family tasks (`sd15`, `sd21`, `sdxl`, `sdxl-turbo`) bail
+    /// loud at dispatch — SD UNet runtime LoRA infrastructure is
+    /// deferred (v0.15 phase 7b-6 skeleton).
+    #[serde(default)]
+    loras: Vec<String>,
+
+    /// v0.15 phase 7b-7: per-task LoRA scale multiplier applied on
+    /// top of each LoRA's own `:weight` suffix. `None` defaults to
+    /// 1.0. Mirrors `--lora-scale` on the CLI.
+    #[serde(rename = "lora-scale", default)]
+    lora_scale: Option<f32>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -2179,6 +2197,37 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 refine_strength: eff_refine_strength,
                 refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
             };
+
+            // v0.15 phase 7b-7: per-task runtime LoRA. Applied BEFORE
+            // the per-task generate, cleared AFTER (so the next task
+            // starts from the scenario-merged baseline).
+            //
+            // Backbone routing:
+            //   * Flux (BF16 / GGUF / NF4) → flux_pipeline backbone's
+            //     apply_loras driven by flux_lora::compute_runtime_specs
+            //   * SD3 / SD3.5            → handled inside sd3 dispatch
+            //     (the sd3 path builds the pipeline per-task today; LoRAs
+            //     stay scenario-level until that path shares the SdCore-
+            //     equivalent across tasks). Bails loud on per-task here.
+            //   * SD-family (sd15 / sd21 / sdxl)  → loud bail (7b-6
+            //     skeleton — vendor work deferred).
+            //
+            // Empty task.loras = no-op for every backbone.
+            let task_lora_applied = if !task.loras.is_empty() {
+                apply_task_loras_for_dispatch(
+                    task,
+                    &task.loras,
+                    task.lora_scale.unwrap_or(lora_scale),
+                    flux_pipeline.as_mut(),
+                    &pipeline,
+                    &model,
+                    &device,
+                )
+                .await?
+            } else {
+                false
+            };
+
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
                 // v0.13 phase 10: dispatch to the tiled SDXL path when
@@ -2377,6 +2426,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 }
                 // Dry-run path doesn't reach here.
                 (None, None) => unreachable!("non-dry-run task without a pipeline"),
+            }
+
+            // v0.15 phase 7b-7: clear the runtime LoRA stack after
+            // the task generates. Restores every LoraLinear to the
+            // scenario-merged baseline so the next task isn't
+            // contaminated by this task's deltas. No-op when
+            // task.loras was empty.
+            if task_lora_applied {
+                if let Some(fp) = flux_pipeline.as_mut() {
+                    fp.backbone().clear_all_loras()?;
+                    tracing::debug!(
+                        target: "plakat",
+                        "task {:?}: cleared runtime LoRA stack",
+                        task.name
+                    );
+                }
             }
             }
         }
@@ -2906,6 +2971,105 @@ fn safe_name(s: &str) -> String {
 /// generate-many shape today). Caller has already validated that
 /// `task.init_image.is_some()`.
 #[allow(clippy::too_many_arguments)]
+/// v0.15 phase 7b-7: apply a task's per-task runtime LoRA stack.
+///
+/// Backbone routing:
+/// * Flux (BF16 / GGUF / NF4): resolves user specs via
+///   `flux_lora::compute_runtime_specs` and calls
+///   `FluxBackbone::apply_loras`. Returns `true` so the caller clears
+///   the stack at end-of-task.
+/// * SD3 / SD3.5: bails — the scenario SD3 dispatch builds a fresh
+///   pipeline per task today, so per-task LoRA is best handled via
+///   scenario-level LoRAs for now. (Hooking 7b-5's runtime LoRA into
+///   the per-task SD3 path is a follow-up; the infrastructure is
+///   already in place inside `sd3::Pipeline`.)
+/// * SD-family (sd15 / sd21 / sdxl): bails with the v0.15 phase 7b-6
+///   skeleton message — UNet vendor work deferred.
+///
+/// Returns `Ok(true)` when a stack was successfully applied (caller
+/// must clear after the task) and `Ok(false)` when no application
+/// happened (e.g. all specs resolved to unknown targets — silent
+/// skip with a debug log).
+async fn apply_task_loras_for_dispatch(
+    task: &TaskDef,
+    task_loras: &[String],
+    task_lora_scale: f32,
+    flux_pipeline: Option<&mut crate::pipelines::flux::Pipeline>,
+    sd_pipeline: &Option<crate::pipelines::t2i::Pipeline>,
+    model: &str,
+    device: &Device,
+) -> Result<bool> {
+    use crate::pipelines::lora::LoraSpec;
+    use crate::pipelines::t2i::Variant as TVariant;
+
+    // Parse + resolve user specs (downloads any HF-hosted LoRAs).
+    let parsed: Vec<LoraSpec> = task_loras
+        .iter()
+        .map(|s| s.parse::<LoraSpec>())
+        .collect::<Result<_>>()
+        .with_context(|| format!("task {:?}: parsing loras", task.name))?;
+    if parsed.is_empty() {
+        return Ok(false);
+    }
+    let mut resolved: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(parsed.len());
+    for spec in &parsed {
+        resolved.push(spec.resolve().await.with_context(|| {
+            format!("task {:?}: resolving lora {spec:?}", task.name)
+        })?);
+    }
+
+    let variant = TVariant::detect(model);
+    if variant.is_flux() {
+        let fp = flux_pipeline.ok_or_else(|| {
+            anyhow::anyhow!(
+                "task {:?}: declared Flux task LoRAs but no Flux pipeline loaded",
+                task.name
+            )
+        })?;
+        let (specs, modified, total) =
+            crate::pipelines::flux_lora::compute_runtime_specs(
+                &resolved, task_lora_scale, device,
+            )?;
+        tracing::info!(
+            target: "plakat",
+            "task {:?}: staging {} per-task Flux runtime LoRA target(s) ({modified}/{total} groups)",
+            task.name,
+            specs.len()
+        );
+        let dtype = fp.dtype();
+        let applied = fp.backbone().apply_loras(specs, dtype, device)?;
+        tracing::debug!(
+            target: "plakat",
+            "task {:?}: applied {} per-task runtime LoRA target(s) to Flux backbone",
+            task.name, applied
+        );
+        return Ok(true);
+    }
+
+    if variant.is_sd3() {
+        anyhow::bail!(
+            "task {:?}: per-task LoRA on SD3 / SD3.5 isn't wired in v0.15 yet — \
+             the scenario SD3 dispatch builds a pipeline per task. Use \
+             scenario-level `loras:` for SD3 models.",
+            task.name
+        );
+    }
+
+    if sd_pipeline.is_some() {
+        anyhow::bail!(
+            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) isn't wired \
+             in v0.15 — the SD UNet's Linears aren't yet wrapped as `LoraLinear` \
+             (vendor work deferred from phase 7b-6). Use scenario-level `loras:` for \
+             SD models.",
+            task.name
+        );
+    }
+
+    // Unreachable in practice — dry-run paths short-circuit earlier.
+    Ok(false)
+}
+
 async fn run_sd_img2img_task(
     task: &TaskDef,
     gen_req: &GenRequest,
@@ -3115,6 +3279,29 @@ mod tests {
         let s = deser_hjson::from_str::<ScenarioFile>(src)
             .expect("scenario parses");
         assert_eq!(s.fast.as_deref(), Some("hyper-8"));
+    }
+
+    // v0.15 phase 7b-7 — per-task LoRA schema parsing.
+
+    #[test]
+    fn task_parses_per_task_loras() {
+        let src = format!(r#"{{{COMMON_TASK}
+            loras: [ "user/repo:0.7", "./local/style.safetensors" ]
+            lora-scale: 0.5
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.loras.len(), 2);
+        assert_eq!(t.loras[0], "user/repo:0.7");
+        assert_eq!(t.loras[1], "./local/style.safetensors");
+        assert_eq!(t.lora_scale, Some(0.5));
+    }
+
+    #[test]
+    fn task_omitting_loras_is_empty_vec() {
+        let src = format!("{{{COMMON_TASK}\n}}");
+        let t = parse_task(&src);
+        assert!(t.loras.is_empty());
+        assert!(t.lora_scale.is_none());
     }
 
     #[test]

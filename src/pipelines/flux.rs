@@ -426,6 +426,50 @@ pub enum FluxBackbone {
     Nf4(crate::pipelines::flux_nf4_inner::Flux),
 }
 
+impl FluxBackbone {
+    /// v0.15 phase 7b-7: dispatch the per-task runtime LoRA stack to
+    /// the underlying backbone. Each Flux variant (BF16 / GGUF / NF4)
+    /// implements `apply_loras` with identical semantics — path-keyed
+    /// `LoraSpec` maps replace the active slot stack on every
+    /// registered LoraLinear. Returns the count of Linears updated.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+        dtype: candle_core::DType,
+        device: &candle_core::Device,
+    ) -> Result<usize> {
+        let r = match self {
+            FluxBackbone::Bf16(net) => net.apply_loras(specs, dtype, device),
+            FluxBackbone::Quantized(net) => net.apply_loras(specs, dtype, device),
+            FluxBackbone::Nf4(net) => net
+                .apply_loras(specs, dtype, device)
+                .map_err(|e| candle_core::Error::Msg(format!("{e}"))),
+        };
+        r.map_err(|e| anyhow::anyhow!("Flux apply_loras: {e}"))
+    }
+
+    /// v0.15 phase 7b-7: clear every runtime LoRA on the backbone.
+    /// Called at end-of-task in scenarios so the next task starts
+    /// from the scenario-level merged baseline (no per-task LoRA
+    /// bleed across tasks).
+    pub fn clear_all_loras(&self) -> Result<()> {
+        match self {
+            FluxBackbone::Bf16(net) => net
+                .clear_all_loras()
+                .map_err(|e| anyhow::anyhow!("Flux BF16 clear: {e}")),
+            FluxBackbone::Quantized(net) => net
+                .clear_all_loras()
+                .map_err(|e| anyhow::anyhow!("Flux GGUF clear: {e}")),
+            FluxBackbone::Nf4(net) => net
+                .clear_all_loras()
+                .map_err(|e| anyhow::anyhow!("Flux NF4 clear: {e}")),
+        }
+    }
+}
+
 /// v0.13 phase 1b: T5-XXL encoder backbone. The T5 owns a KV cache
 /// internally so both variants take `&mut self` for forward — wrap
 /// in an enum so dispatch in `encode_prompt` is a thin match.
@@ -515,6 +559,27 @@ impl Pipeline {
     /// indexed mutations.
     pub fn controlnet_count(&self) -> usize {
         self.controlnets.len()
+    }
+
+    /// v0.15 phase 7b-7: borrow the active FluxBackbone for runtime
+    /// LoRA dispatch. Callers (scenarios applying per-task LoRA)
+    /// use this to call `apply_loras` / `clear_all_loras` between
+    /// `generate` calls without holding `&mut Pipeline`.
+    pub fn backbone(&self) -> &FluxBackbone {
+        &self.flux_model
+    }
+
+    /// v0.15 phase 7b-7: convenience — current runtime dtype the
+    /// backbone uses (BF16 on GPU, F32 on CPU). Used by
+    /// `apply_loras` to cast LoRA A/B matrices.
+    pub fn dtype(&self) -> candle_core::DType {
+        self.dtype
+    }
+
+    /// v0.15 phase 7b-7: convenience — current device. Used to
+    /// build padded LoRA-B tensors.
+    pub fn device(&self) -> &candle_core::Device {
+        &self.device
     }
 
     /// v0.13 phase 11: swap a loaded ControlNet's conditioning image
