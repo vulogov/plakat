@@ -25,6 +25,7 @@ pub mod flux_redux;
 pub mod ip_adapter;
 pub mod lcm_scheduler;
 pub mod lora;
+pub mod lora_linear;
 pub mod nf4_codec;
 pub mod nf4_loader;
 pub mod portrait;
