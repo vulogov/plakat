@@ -84,11 +84,25 @@ struct ScenarioFile {
     #[serde(rename = "t5-quant-level", default)]
     t5_quant_level: Option<String>,
     /// v0.13 phase 4/9: MultiDiffusion-style tiled denoise. When set,
-    /// every task in the scenario runs through the tiled path (Flux or
-    /// SDXL). Lets scenarios target 2K-4K outputs without exceeding
-    /// the model's working resolution per pass.
+    /// every task in the scenario runs through the tiled path (Flux,
+    /// SDXL, SD 1.5/2.1, or SD3). Per-task `tiled:` overrides this.
     #[serde(default)]
     tiled: Option<TiledCfg>,
+
+    /// v0.15 phase 7a: scenario-wide Flux distillation preset (Hyper-FLUX
+    /// or FLUX-Turbo) — applied to every Flux task by default. Per-task
+    /// `fast:` overrides. Accepts the same preset names as the CLI
+    /// `--fast` flag: `hyper-8`, `hyper-16`, `turbo-alpha`. Non-Flux
+    /// tasks ignore with a warning.
+    #[serde(default)]
+    fast: Option<String>,
+
+    /// v0.15 phase 7a: scenario-wide conditioning map for Flux concept
+    /// variants (Flux.1-Canny-dev / Flux.1-Depth-dev). Per-task
+    /// `concept-image:` overrides. Only meaningful when `model:` is
+    /// one of the concept variants.
+    #[serde(rename = "concept-image", default)]
+    concept_image: Option<PathBuf>,
 
     // ---------- prompt-assembly fragments ----------
     #[serde(rename = "lora-header", default)]
@@ -517,6 +531,74 @@ struct TaskDef {
     /// Cap of 4 enforced inside `Pipeline::generate`.
     #[serde(rename = "redux-images", default)]
     redux_images: Vec<String>,
+
+    /// v0.15 phase 7a: per-task Flux distillation preset (`hyper-8`,
+    /// `hyper-16`, `turbo-alpha`). Overrides the scenario-level `fast:`.
+    /// Applies the preset's LoRA + step/guidance defaults the same way
+    /// `plakat generate --fast PRESET` does. Bails if combined with a
+    /// non-Flux task model.
+    #[serde(default)]
+    fast: Option<String>,
+
+    /// v0.15 phase 7a: per-task conditioning map for the BFL "concept"
+    /// Flux variants (Canny-dev / Depth-dev). Required when the task's
+    /// `model:` resolves to a concept variant; falls back to the
+    /// scenario-level `concept-image:` when unset here.
+    #[serde(rename = "concept-image", default)]
+    concept_image: Option<PathBuf>,
+
+    /// v0.15 phase 7a: per-task prompt enhancement override. Three
+    /// forms:
+    ///   * absent — inherit scenario-level `enhancer:`
+    ///   * `enhance: "deepseek"` — use this provider for this task
+    ///   * `enhance: false` — opt out of enhancement entirely for this
+    ///     task even when the scenario has one configured
+    #[serde(default)]
+    enhance: Option<EnhanceCfg>,
+
+    /// v0.15 phase 7a: per-task tiled-denoise override.
+    ///   * absent — inherit scenario-level `tiled:`
+    ///   * `tiled: false` — force off (e.g. a small portrait task in
+    ///     a mostly-4K scenario)
+    ///   * `tiled: { size: 1024, stride: 768 }` — override config
+    #[serde(default)]
+    tiled: Option<TaskTiledCfg>,
+
+    /// v0.15 phase 7b-7: per-task LoRA stack (ADDITIVE on top of
+    /// the scenario-level LoRAs). Each string parses via the same
+    /// `LoraSpec` grammar the CLI `--lora` flag uses: local path,
+    /// HF repo, or `:weight` suffix.
+    ///
+    /// Supported on Flux (BF16 / GGUF / NF4) and SD3 / SD3.5.
+    /// SD-family tasks (`sd15`, `sd21`, `sdxl`, `sdxl-turbo`) bail
+    /// loud at dispatch — SD UNet runtime LoRA infrastructure is
+    /// deferred (v0.15 phase 7b-6 skeleton).
+    #[serde(default)]
+    loras: Vec<String>,
+
+    /// v0.15 phase 7b-7: per-task LoRA scale multiplier applied on
+    /// top of each LoRA's own `:weight` suffix. `None` defaults to
+    /// 1.0. Mirrors `--lora-scale` on the CLI.
+    #[serde(rename = "lora-scale", default)]
+    lora_scale: Option<f32>,
+}
+
+/// v0.15 phase 7a: per-task enhancement override. Accepts a string
+/// provider name (`"deepseek"`) or `false` to opt out.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum EnhanceCfg {
+    Provider(String),
+    Toggle(bool),
+}
+
+/// v0.15 phase 7a: per-task tiled override. Accepts a full config
+/// block or `false` to force off.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+enum TaskTiledCfg {
+    Toggle(bool),
+    Override(TiledCfg),
 }
 
 /// v0.13 phase 11: outpaint task block. At least one of the four
@@ -926,8 +1008,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let device = crate::device::select(s.device.as_deref().unwrap_or("auto"))?;
     let base = s.base.unwrap_or(768);
     let count = s.count.unwrap_or(1);
-    let steps = s.steps.unwrap_or(28);
-    let guidance = s.guidance.unwrap_or(7.5);
+    // `steps` / `guidance` start at the user's scenario values; the
+    // v0.15 phase 7a `fast:` preset application below may override
+    // them when the user didn't explicitly set them (i.e. left them
+    // at plakat's documented defaults 28 / 7.5).
+    let mut steps = s.steps.unwrap_or(28);
+    let mut guidance = s.guidance.unwrap_or(7.5);
     let seed = s.seed.unwrap_or(0);
     let out_root = s.out.clone().unwrap_or_else(|| PathBuf::from("./out"));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
@@ -948,6 +1034,82 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .iter()
         .map(|x| x.parse::<LoraSpec>())
         .collect::<Result<Vec<_>>>()?;
+
+    // -------- v0.15 phase 7a: scenario-level `fast:` preset --------
+    // Mirrors `plakat generate --fast PRESET` semantics:
+    // * Prepend the preset's distillation LoRA to the scenario LoRA stack
+    //   (so user-supplied LoRAs land later and can override on collision)
+    // * Override `steps` / `guidance` only when user left them at the
+    //   plakat defaults (28 / 7.5).
+    // Per-task `fast:` is allowed iff equal to scenario-level — divergent
+    // per-task presets need v0.15 phase 7b runtime LoRA.
+    if let Some(name) = s.fast.as_deref() {
+        let preset_arg: crate::pipelines::flux_fast::FastPresetArg = name
+            .parse()
+            .with_context(|| format!("scenario fast preset {name:?}"))?;
+        let preset = preset_arg.0;
+        let m = model.to_lowercase();
+        if !m.contains("flux") {
+            anyhow::bail!(
+                "scenario `fast: {}` requires a Flux model (got model {:?}). \
+                 Hyper-FLUX / FLUX-Turbo presets are Flux-family only.",
+                preset.name, model
+            );
+        }
+        if m.contains("fill") {
+            anyhow::bail!(
+                "scenario `fast: {}` doesn't compose with flux-fill-dev — Fill \
+                 needs its own forward path.",
+                preset.name
+            );
+        }
+        // v0.15 phase 1 unblocked NF4 + LoRA + CN; fast (LoRA-based)
+        // composes too. No NF4 bail here, unlike pre-v0.15 generate.rs.
+        loras.insert(0, preset.to_lora_spec());
+        if s.steps.is_none() {
+            steps = preset.steps;
+        }
+        if s.guidance.is_none() {
+            guidance = preset.guidance;
+        }
+        tracing::info!(
+            target: "plakat",
+            "scenario fast preset '{}': +{} LoRA, steps={steps}, guidance={guidance}",
+            preset.name, preset.lora_repo
+        );
+        // Per-task `fast:` validation: must match scenario when both
+        // are set, and must NOT be set per-task when scenario isn't
+        // (the load-once design can't swap presets mid-run).
+        for task in &s.tasks {
+            if let Some(task_fast) = task.fast.as_deref() {
+                if task_fast != name {
+                    anyhow::bail!(
+                        "task {:?} declares `fast: {task_fast}` but scenario uses \
+                         `fast: {name}` — per-task preset swaps require runtime \
+                         LoRA (deferred to v0.15 phase 7b). For now, all tasks must \
+                         share the scenario preset.",
+                        task.name
+                    );
+                }
+            }
+        }
+    } else {
+        // No scenario-level fast — reject per-task fast too. The
+        // pre-loaded SdCore/Flux backbone doesn't have the preset's
+        // distillation LoRA merged, so applying just the
+        // step/guidance overrides per task would silently produce
+        // garbage outputs.
+        for task in &s.tasks {
+            if let Some(task_fast) = task.fast.as_deref() {
+                anyhow::bail!(
+                    "task {:?} declares `fast: {task_fast}` but scenario has no \
+                     scenario-level `fast:` — promote it to the scenario level so \
+                     the preset's distillation LoRA is loaded into the pipeline.",
+                    task.name
+                );
+            }
+        }
+    }
 
     // -------- v0.13 phase 11: validate per-task fields --------
     // Surface schema errors (mutually-exclusive control/controls,
@@ -1283,9 +1445,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let enhanced_cache: HashMap<String, String> = if args.dry_run {
         HashMap::new()
     } else {
+        // v0.15 phase 7a: skip pre_refines for tasks that opted out
+        // via `enhance: false` — those won't consult the cache.
         let pre_refines: Vec<String> = s
             .tasks
             .iter()
+            .filter(|t| !matches!(t.enhance, Some(EnhanceCfg::Toggle(false))))
             .map(|t| {
                 let scene = scenes[t.scene.as_str()];
                 let weather = weathers[t.weather.as_str()];
@@ -1441,8 +1606,28 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             task_negative_base = effective_negative.clone();
         }
 
+        // v0.15 phase 7a: `enhance: false` on the task skips the
+        // enhancement step for this task only — pre_refine carries
+        // through unmodified. `enhance: "provider"` must match the
+        // scenario-level enhancer (the cache is built once with the
+        // scenario provider, so per-task swap requires a wider
+        // refactor — deferred).
+        let task_skip_enhance =
+            matches!(task.enhance, Some(EnhanceCfg::Toggle(false)));
+        if let Some(EnhanceCfg::Provider(p)) = task.enhance.as_ref() {
+            if p != &enhancer {
+                anyhow::bail!(
+                    "task {:?}: enhance provider {p:?} differs from scenario \
+                     `enhancer: {enhancer}` — per-task provider swap not yet wired. \
+                     Use the scenario enhancer or drop the override.",
+                    task.name
+                );
+            }
+        }
         let enhanced = if args.dry_run {
             format!("(dry-run; {enhancer} not called)")
+        } else if task_skip_enhance {
+            pre_refine.clone()
         } else {
             enhanced_cache
                 .get(&pre_refine)
@@ -1649,6 +1834,37 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         let eff_refine = task.refine.or(s.refine);
         let eff_refine_strength = task.refine_strength.unwrap_or(refine_strength);
         let eff_refiner_frac = task.refiner_frac.unwrap_or(s.refiner_frac.unwrap_or(0.8));
+
+        // v0.15 phase 7a: scenario↔task sync resolutions. Task wins
+        // when set; scenario provides the default; explicit `false`
+        // on tiled / enhance forces off even if scenario has it on.
+        let eff_concept_image: Option<PathBuf> = task
+            .concept_image
+            .clone()
+            .or_else(|| s.concept_image.clone());
+        let eff_tiled: Option<crate::pipelines::tiled::TiledConfig> = match &task.tiled {
+            Some(TaskTiledCfg::Toggle(false)) => None,
+            Some(TaskTiledCfg::Toggle(true)) => {
+                // `tiled: true` without an explicit block at task scope:
+                // inherit the scenario-level config, or fall back to
+                // the same defaults the CLI uses (1024 / 768).
+                s.tiled.map(Into::into).or(Some(
+                    crate::pipelines::tiled::TiledConfig {
+                        tile_size: default_tile_size(),
+                        stride: default_tile_stride(),
+                    },
+                ))
+            }
+            Some(TaskTiledCfg::Override(cfg)) => Some((*cfg).into()),
+            None => s.tiled.map(Into::into),
+        };
+        // `task.enhance` is checked directly at the per-task enhance
+        // lookup below — `Toggle(false)` skips the cache, `Provider(p)`
+        // must equal scenario.enhancer (validated below).
+        //
+        // `task.fast` is validated at scenario load (must equal
+        // scenario.fast — true per-task swap is v0.15 phase 7b runtime
+        // LoRA), so no per-task resolution is needed here.
         // Seed: per-task override picks an absolute seed; global path
         // advances seed_offset to keep later tasks reproducible.
         let task_seed = task.seed.unwrap_or(seed + seed_offset);
@@ -1981,6 +2197,37 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 refine_strength: eff_refine_strength,
                 refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
             };
+
+            // v0.15 phase 7b-7: per-task runtime LoRA. Applied BEFORE
+            // the per-task generate, cleared AFTER (so the next task
+            // starts from the scenario-merged baseline).
+            //
+            // Backbone routing:
+            //   * Flux (BF16 / GGUF / NF4) → flux_pipeline backbone's
+            //     apply_loras driven by flux_lora::compute_runtime_specs
+            //   * SD3 / SD3.5            → handled inside sd3 dispatch
+            //     (the sd3 path builds the pipeline per-task today; LoRAs
+            //     stay scenario-level until that path shares the SdCore-
+            //     equivalent across tasks). Bails loud on per-task here.
+            //   * SD-family (sd15 / sd21 / sdxl)  → loud bail (7b-6
+            //     skeleton — vendor work deferred).
+            //
+            // Empty task.loras = no-op for every backbone.
+            let task_lora_applied = if !task.loras.is_empty() {
+                apply_task_loras_for_dispatch(
+                    task,
+                    &task.loras,
+                    task.lora_scale.unwrap_or(lora_scale),
+                    flux_pipeline.as_mut(),
+                    &pipeline,
+                    &model,
+                    &device,
+                )
+                .await?
+            } else {
+                false
+            };
+
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
                 // v0.13 phase 10: dispatch to the tiled SDXL path when
@@ -1994,7 +2241,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // for v0.13's batch-rarely-img2img workflows; a follow-
                 // up could share the SdCore between paths.
                 (Some(p), _) if eff_init_image.is_some() => {
-                    if s.tiled.is_some() {
+                    if eff_tiled.is_some() {
                         bail!(
                             "task {:?}: --tiled does not yet compose with SD img2img / \
                              inpaint in scenarios. Drop `tiled:` or `init-image:`.",
@@ -2021,8 +2268,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     )
                     .await?;
                 }
-                (Some(p), _) => match s.tiled {
-                    Some(tcfg) => p.generate_tiled(&gen_req, tcfg.into())?,
+                (Some(p), _) => match eff_tiled.as_ref() {
+                    Some(tcfg) => p.generate_tiled(&gen_req, tcfg.clone())?,
                     None => p.generate(&gen_req, &make_control_reqs())?,
                 },
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
@@ -2158,7 +2405,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         init_image: eff_init_image.clone(),
                         mask: eff_mask.clone(),
                         strength: task.strength,
-                        tiled: s.tiled.map(Into::into),
+                        // v0.15 phase 7a: per-task tiled override
+                        // (was scenario-global only).
+                        tiled: eff_tiled.clone(),
                         // v0.14 phase 3c: per-task Redux. The
                         // task's `redux-images: [...]` is parsed
                         // upstream as `Vec<ReduxSpec>`; pass it
@@ -2167,10 +2416,32 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // the encoder is available iff any task uses
                         // it.
                         redux_images: task_redux_specs.clone(),
+                        // v0.15 phase 7a: concept-variant conditioning
+                        // — `task.concept-image:` overrides scenario
+                        // `concept-image:`; bails inside the Flux
+                        // pipeline if the loaded variant doesn't
+                        // expect this input.
+                        concept_conditioning: eff_concept_image.clone(),
                     })?;
                 }
                 // Dry-run path doesn't reach here.
                 (None, None) => unreachable!("non-dry-run task without a pipeline"),
+            }
+
+            // v0.15 phase 7b-7: clear the runtime LoRA stack after
+            // the task generates. Restores every LoraLinear to the
+            // scenario-merged baseline so the next task isn't
+            // contaminated by this task's deltas. No-op when
+            // task.loras was empty.
+            if task_lora_applied {
+                if let Some(fp) = flux_pipeline.as_mut() {
+                    fp.backbone().clear_all_loras()?;
+                    tracing::debug!(
+                        target: "plakat",
+                        "task {:?}: cleared runtime LoRA stack",
+                        task.name
+                    );
+                }
             }
             }
         }
@@ -2700,6 +2971,105 @@ fn safe_name(s: &str) -> String {
 /// generate-many shape today). Caller has already validated that
 /// `task.init_image.is_some()`.
 #[allow(clippy::too_many_arguments)]
+/// v0.15 phase 7b-7: apply a task's per-task runtime LoRA stack.
+///
+/// Backbone routing:
+/// * Flux (BF16 / GGUF / NF4): resolves user specs via
+///   `flux_lora::compute_runtime_specs` and calls
+///   `FluxBackbone::apply_loras`. Returns `true` so the caller clears
+///   the stack at end-of-task.
+/// * SD3 / SD3.5: bails — the scenario SD3 dispatch builds a fresh
+///   pipeline per task today, so per-task LoRA is best handled via
+///   scenario-level LoRAs for now. (Hooking 7b-5's runtime LoRA into
+///   the per-task SD3 path is a follow-up; the infrastructure is
+///   already in place inside `sd3::Pipeline`.)
+/// * SD-family (sd15 / sd21 / sdxl): bails with the v0.15 phase 7b-6
+///   skeleton message — UNet vendor work deferred.
+///
+/// Returns `Ok(true)` when a stack was successfully applied (caller
+/// must clear after the task) and `Ok(false)` when no application
+/// happened (e.g. all specs resolved to unknown targets — silent
+/// skip with a debug log).
+async fn apply_task_loras_for_dispatch(
+    task: &TaskDef,
+    task_loras: &[String],
+    task_lora_scale: f32,
+    flux_pipeline: Option<&mut crate::pipelines::flux::Pipeline>,
+    sd_pipeline: &Option<crate::pipelines::t2i::Pipeline>,
+    model: &str,
+    device: &Device,
+) -> Result<bool> {
+    use crate::pipelines::lora::LoraSpec;
+    use crate::pipelines::t2i::Variant as TVariant;
+
+    // Parse + resolve user specs (downloads any HF-hosted LoRAs).
+    let parsed: Vec<LoraSpec> = task_loras
+        .iter()
+        .map(|s| s.parse::<LoraSpec>())
+        .collect::<Result<_>>()
+        .with_context(|| format!("task {:?}: parsing loras", task.name))?;
+    if parsed.is_empty() {
+        return Ok(false);
+    }
+    let mut resolved: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(parsed.len());
+    for spec in &parsed {
+        resolved.push(spec.resolve().await.with_context(|| {
+            format!("task {:?}: resolving lora {spec:?}", task.name)
+        })?);
+    }
+
+    let variant = TVariant::detect(model);
+    if variant.is_flux() {
+        let fp = flux_pipeline.ok_or_else(|| {
+            anyhow::anyhow!(
+                "task {:?}: declared Flux task LoRAs but no Flux pipeline loaded",
+                task.name
+            )
+        })?;
+        let (specs, modified, total) =
+            crate::pipelines::flux_lora::compute_runtime_specs(
+                &resolved, task_lora_scale, device,
+            )?;
+        tracing::info!(
+            target: "plakat",
+            "task {:?}: staging {} per-task Flux runtime LoRA target(s) ({modified}/{total} groups)",
+            task.name,
+            specs.len()
+        );
+        let dtype = fp.dtype();
+        let applied = fp.backbone().apply_loras(specs, dtype, device)?;
+        tracing::debug!(
+            target: "plakat",
+            "task {:?}: applied {} per-task runtime LoRA target(s) to Flux backbone",
+            task.name, applied
+        );
+        return Ok(true);
+    }
+
+    if variant.is_sd3() {
+        anyhow::bail!(
+            "task {:?}: per-task LoRA on SD3 / SD3.5 isn't wired in v0.15 yet — \
+             the scenario SD3 dispatch builds a pipeline per task. Use \
+             scenario-level `loras:` for SD3 models.",
+            task.name
+        );
+    }
+
+    if sd_pipeline.is_some() {
+        anyhow::bail!(
+            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) isn't wired \
+             in v0.15 — the SD UNet's Linears aren't yet wrapped as `LoraLinear` \
+             (vendor work deferred from phase 7b-6). Use scenario-level `loras:` for \
+             SD models.",
+            task.name
+        );
+    }
+
+    // Unreachable in practice — dry-run paths short-circuit earlier.
+    Ok(false)
+}
+
 async fn run_sd_img2img_task(
     task: &TaskDef,
     gen_req: &GenRequest,
@@ -2798,4 +3168,155 @@ fn write_flux_anno_png(anno: &candle_core::Tensor, out_path: &std::path::Path) -
     let buf = scaled.flatten_all()?.to_vec1::<u8>()?;
     crate::imaging::io::save_rgb_u8(&buf, w as u32, h as u32, out_path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v0.15 phase 7a — schema parsing for the new task/scenario fields.
+
+    fn parse_task(src: &str) -> TaskDef {
+        deser_hjson::from_str::<TaskDef>(src).expect("task parses")
+    }
+
+    /// HJSON requires newline-separated keys (commas are optional but
+    /// the parser doesn't reliably consume them inline). The common
+    /// task fields `name` / `scene` / `weather` / `prompt` are
+    /// required by the deser; we set them to placeholders in every
+    /// test.
+    const COMMON_TASK: &str = r#"
+        name: t
+        scene: s
+        weather: w
+        prompt: p"#;
+
+    #[test]
+    fn task_parses_fast_preset() {
+        let src = format!(r#"{{{COMMON_TASK}
+            fast: hyper-8
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.fast.as_deref(), Some("hyper-8"));
+    }
+
+    #[test]
+    fn task_parses_concept_image() {
+        let src = format!(r#"{{{COMMON_TASK}
+            concept-image: ./edges.png
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(
+            t.concept_image.as_deref().map(|p| p.to_string_lossy().into_owned()),
+            Some("./edges.png".to_string())
+        );
+    }
+
+    #[test]
+    fn task_parses_enhance_false() {
+        let src = format!(r#"{{{COMMON_TASK}
+            enhance: false
+        }}"#);
+        let t = parse_task(&src);
+        assert!(matches!(t.enhance, Some(EnhanceCfg::Toggle(false))));
+    }
+
+    #[test]
+    fn task_parses_enhance_provider() {
+        let src = format!(r#"{{{COMMON_TASK}
+            enhance: deepseek
+        }}"#);
+        let t = parse_task(&src);
+        assert!(matches!(
+            t.enhance.as_ref(),
+            Some(EnhanceCfg::Provider(p)) if p == "deepseek"
+        ));
+    }
+
+    #[test]
+    fn task_parses_tiled_toggle_false() {
+        let src = format!(r#"{{{COMMON_TASK}
+            tiled: false
+        }}"#);
+        let t = parse_task(&src);
+        assert!(matches!(t.tiled, Some(TaskTiledCfg::Toggle(false))));
+    }
+
+    #[test]
+    fn task_parses_tiled_override_block() {
+        let src = format!(r#"{{{COMMON_TASK}
+            tiled: {{ size: 768, stride: 512 }}
+        }}"#);
+        let t = parse_task(&src);
+        let cfg = match t.tiled {
+            Some(TaskTiledCfg::Override(c)) => c,
+            other => panic!("expected Override, got {other:?}"),
+        };
+        assert_eq!(cfg.size, 768);
+        assert_eq!(cfg.stride, 512);
+    }
+
+    #[test]
+    fn task_omitting_new_fields_keeps_them_none() {
+        // Backward-compat: every new v0.15 phase 7a field is optional,
+        // so an existing scenario task (pre-7a schema) still parses.
+        let src = format!("{{{COMMON_TASK}\n}}");
+        let t = parse_task(&src);
+        assert!(t.fast.is_none());
+        assert!(t.concept_image.is_none());
+        assert!(t.enhance.is_none());
+        assert!(t.tiled.is_none());
+    }
+
+    #[test]
+    fn scenario_file_parses_fast_at_global() {
+        let src = r#"{
+            model: flux-dev
+            fast: hyper-8
+            enhancer: deepseek
+            lora-header: ""
+        }"#;
+        let s = deser_hjson::from_str::<ScenarioFile>(src)
+            .expect("scenario parses");
+        assert_eq!(s.fast.as_deref(), Some("hyper-8"));
+    }
+
+    // v0.15 phase 7b-7 — per-task LoRA schema parsing.
+
+    #[test]
+    fn task_parses_per_task_loras() {
+        let src = format!(r#"{{{COMMON_TASK}
+            loras: [ "user/repo:0.7", "./local/style.safetensors" ]
+            lora-scale: 0.5
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.loras.len(), 2);
+        assert_eq!(t.loras[0], "user/repo:0.7");
+        assert_eq!(t.loras[1], "./local/style.safetensors");
+        assert_eq!(t.lora_scale, Some(0.5));
+    }
+
+    #[test]
+    fn task_omitting_loras_is_empty_vec() {
+        let src = format!("{{{COMMON_TASK}\n}}");
+        let t = parse_task(&src);
+        assert!(t.loras.is_empty());
+        assert!(t.lora_scale.is_none());
+    }
+
+    #[test]
+    fn scenario_file_parses_concept_image_at_global() {
+        let src = r#"{
+            model: flux-canny-dev
+            concept-image: ./edges.png
+            enhancer: deepseek
+            lora-header: ""
+        }"#;
+        let s = deser_hjson::from_str::<ScenarioFile>(src)
+            .expect("scenario parses");
+        assert_eq!(
+            s.concept_image.as_deref().map(|p| p.to_string_lossy().into_owned()),
+            Some("./edges.png".to_string())
+        );
+    }
 }

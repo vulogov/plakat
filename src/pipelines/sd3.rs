@@ -38,18 +38,33 @@
 //!   We double-batch `[neg, pos]` per step and blend via
 //!   `pred = neg + guidance * (pos - neg)`.
 //!
-//! ## Phase 1a scope
+//! ## Phase 1a / 8a / v0.15 phase 2 scope
 //!
-//! Just t2i on `sd35-medium`. LoRA / GGUF / ControlNet / img2img all
-//! land in subsequent phases. Sd35Large + Sd35LargeTurbo + Sd3Medium
-//! variants land in phase 1b.
+//! * t2i on Sd3Medium, Sd35Medium, Sd35Large, Sd35LargeTurbo.
+//! * v0.15 phase 2: img2img + inpaint (RePaint-style) for the full
+//!   lineup. VAE-encoded init lerps with fresh noise at `t=strength`;
+//!   the timestep schedule is truncated to entries below `strength`
+//!   with `strength` itself prepended (same trick `FluxImg2Img` uses).
+//!   Inpaint keeps unmasked pixels on the flow trajectory of the init
+//!   by per-step blending `latent = mask * latent + (1-mask) *
+//!   lerp(init, eps, t_next)` where `eps` is the same noise sample the
+//!   start latent was built with.
+//!
+//! Still deferred (v0.15+): LoRA (phase 3), Canny/Depth-dev (phase 4),
+//! tiled (phase 5), ControlNet (phase 6).
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::Module;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+// v0.15 phase 6a: route MMDiT through the vendored module
+// (`mmdit_inner`) instead of candle's upstream. The vendor exposes
+// `forward_with_residuals` for the v0.16 SD3 ControlNet integration.
+// Pre-phase-6 callers see identical behaviour — the vendor's
+// `forward(...)` delegates to `forward_with_residuals(... None)`.
+use crate::pipelines::mmdit_inner as mmdit;
 use candle_transformers::models::{
-    mmdit, stable_diffusion::clip as sdclip, stable_diffusion::vae as sdvae, t5,
+    stable_diffusion::clip as sdclip, stable_diffusion::vae as sdvae, t5,
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -87,13 +102,13 @@ pub enum Variant {
 }
 
 impl Variant {
-    fn mmdit_config(self) -> mmdit::model::Config {
+    fn mmdit_config(self) -> mmdit::Config {
         match self {
-            Self::Sd3Medium => mmdit::model::Config::sd3_medium(),
-            Self::Sd35Medium => mmdit::model::Config::sd3_5_medium(),
+            Self::Sd3Medium => mmdit::Config::sd3_medium(),
+            Self::Sd35Medium => mmdit::Config::sd3_5_medium(),
             // SD3.5 Large + Turbo share the same MMDiT shape; the
             // turbo distillation only changes the sampling schedule.
-            Self::Sd35Large | Self::Sd35LargeTurbo => mmdit::model::Config::sd3_5_large(),
+            Self::Sd35Large | Self::Sd35LargeTurbo => mmdit::Config::sd3_5_large(),
         }
     }
 
@@ -141,6 +156,16 @@ impl Variant {
             Self::Sd3Medium | Self::Sd35Medium | Self::Sd35Large => 28,
         }
     }
+
+    /// v0.15 phase 3: MMDiT hidden size = `head_size * depth`. SD3 /
+    /// SD3.5-Medium both use 64 * 24 = 1536; SD3.5-Large is
+    /// 64 * 38 = 2432. Used by the LoRA resolver for QKV-fusion row
+    /// slicing — wrong value silently mis-slices into wrong rows of
+    /// the fused QKV tensor, producing scrambled outputs.
+    pub fn mmdit_hidden_size(self) -> usize {
+        let cfg = self.mmdit_config();
+        cfg.head_size * cfg.depth
+    }
 }
 
 pub struct Request {
@@ -156,12 +181,53 @@ pub struct Request {
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
     pub device: Device,
+    /// v0.15 phase 2: img2img init image. `None` is pure t2i. When set
+    /// AND `mask` is `None`, every pixel is re-denoised at `strength`
+    /// (img2img). When set AND `mask` is `Some`, only the masked
+    /// region re-denoises; unmasked pixels stay on the init's flow
+    /// trajectory (RePaint-style inpaint).
+    pub init_image: Option<PathBuf>,
+    /// v0.15 phase 2: per-image binary or feathered mask. Same
+    /// conventions as `imaging::mask::Mask` — white (1.0) = inpaint,
+    /// black (0.0) = preserve.
+    pub mask: Option<PathBuf>,
+    /// v0.15 phase 2: feather radius (pixels) applied to the mask
+    /// before downsampling to latent resolution. Soft edges hide
+    /// the inpaint↔preserve boundary.
+    pub mask_feather: u32,
+    /// v0.15 phase 2: when `true`, the loaded mask is inverted
+    /// before feathering (handles sources where black = inpaint).
+    pub mask_invert: bool,
+    /// v0.15 phase 2: img2img / inpaint strength in `[0, 1]`. `None`
+    /// defaults to 0.6 for img2img, 1.0 for inpaint (matches Flux +
+    /// SD img2img defaults). Ignored when `init_image` is `None`.
+    pub strength: Option<f32>,
+    /// v0.15 phase 3: PEFT-format SD3 LoRAs to merge at load time.
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// v0.15 phase 3: per-LoRA scale multiplier.
+    pub lora_scale: f32,
+    /// v0.15 phase 5: tiled MultiDiffusion-style denoise. `Some(cfg)`
+    /// splits the latent into overlapping `tile_size`-pixel windows
+    /// and Hann-blends MMDiT predictions per step. Lets SD3 produce
+    /// 4K+ outputs without exceeding `pos_embed_max_size` (192 for
+    /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
+    /// canvas (phase 1a behaviour).
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 pub struct LoadRequest {
     pub variant: Variant,
     pub repo: String,
     pub device: Device,
+    /// v0.15 phase 3: PEFT-format LoRA stack to merge into the MMDiT
+    /// weights at load time. Empty = no merge (pre-phase-3 path,
+    /// byte-identical). Diffusers SD3 LoRAs use `transformer.` as the
+    /// PEFT root; the resolver strips it automatically.
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// v0.15 phase 3: per-LoRA scale multiplier applied on top of each
+    /// LoRA's own `:scale` suffix. Same semantics as Flux/SD LoRA's
+    /// `--lora-scale`. 1.0 is the default.
+    pub lora_scale: f32,
 }
 
 pub struct GenRequest {
@@ -174,6 +240,15 @@ pub struct GenRequest {
     pub guidance: Option<f64>,
     pub seed: Option<u64>,
     pub out_dir: PathBuf,
+    /// v0.15 phase 2: img2img / inpaint surface. See `Request` for
+    /// field semantics.
+    pub init_image: Option<PathBuf>,
+    pub mask: Option<PathBuf>,
+    pub mask_feather: u32,
+    pub mask_invert: bool,
+    pub strength: Option<f32>,
+    /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
+    pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 }
 
 pub struct Pipeline {
@@ -189,7 +264,7 @@ pub struct Pipeline {
     clip_g_tok: Tokenizer,
     t5_enc: t5::T5EncoderModel,
     t5_tok: Tokenizer,
-    mmdit_model: mmdit::model::MMDiT,
+    mmdit_model: mmdit::MMDiT,
     vae: sdvae::AutoEncoderKL,
 }
 
@@ -306,12 +381,69 @@ impl Pipeline {
             Tokenizer::from_file(&t5_tok_json).map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ text encoders ready");
 
+        // ---------- v0.15 phase 3: optional LoRA merge ----------
+        //
+        // When the caller passes any `LoadRequest::loras`, resolve each
+        // and merge into a tempfile that replaces `mmdit_path` for the
+        // VarBuilder. The tempfile lives in `std::env::temp_dir()`
+        // (named uniquely by PID + nanos) and is kept around for the
+        // lifetime of the loaded MMDiT — the mmap into VarBuilder
+        // needs the bytes on disk. Best-effort cleanup is a deferred
+        // concern; the OS sweeps temp_dir periodically.
+        //
+        // Sd35-Large + Sd35-LargeTurbo use the same hidden_size
+        // (64 * 38 = 2432) since the LargeTurbo is just a distillation
+        // of the Large transformer.
+        let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
+            Vec::new()
+        } else {
+            let lr = progress::spinner(&format!("Resolving {} SD3 LoRA(s)", req.loras.len()));
+            let mut v = Vec::with_capacity(req.loras.len());
+            for spec in &req.loras {
+                v.push(spec.resolve().await?);
+            }
+            lr.finish_with_message(format!("✓ resolved {} SD3 LoRA file(s)", v.len()));
+            v
+        };
+        let merged_mmdit_path: Option<std::path::PathBuf> = if resolved_loras.is_empty() {
+            None
+        } else {
+            let h = req.variant.mmdit_hidden_size();
+            let lr = progress::spinner(&format!(
+                "Merging {} SD3 LoRA(s) into MMDiT", resolved_loras.len()
+            ));
+            let out_path = std::env::temp_dir().join(format!(
+                "plakat-sd3-lora-merged-{}-{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let (n_mod, n_total) =
+                crate::pipelines::sd3_lora::merge_sd3_loras_into_weights(
+                    &mmdit_path,
+                    &out_path,
+                    &resolved_loras,
+                    req.lora_scale,
+                    h,
+                    &req.device,
+                )?;
+            lr.finish_with_message(format!(
+                "✓ SD3 LoRA merge → {n_mod}/{n_total} target groups applied"
+            ));
+            Some(out_path)
+        };
+        let effective_mmdit_path = merged_mmdit_path.as_ref().unwrap_or(&mmdit_path);
+
         // ---------- MMDiT + VAE ----------
         let load = progress::spinner("Loading MMDiT + VAE");
         let mmdit_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&mmdit_path], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(
+                &[effective_mmdit_path], dtype, &req.device,
+            )?
         };
-        let mmdit_model = mmdit::model::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
+        let mmdit_model = mmdit::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
 
         // SD3 VAE: 4 down-blocks (128, 256, 512, 512), 2 layers each,
         // 16 latent channels, no quant/post-quant convs (diffusers
@@ -360,6 +492,16 @@ impl Pipeline {
         if w == 0 || h == 0 {
             bail!("SD3 requires width and height divisible by 16, both ≥ 16");
         }
+        // v0.15 phase 5: img2img + tiled isn't validated yet. The
+        // start-latent lerp + truncated schedule path doesn't compose
+        // cleanly with the per-step tile blending — defer to a future
+        // phase. Catch the combo early before the CN-style bails.
+        if req.tiled.is_some() && req.init_image.is_some() {
+            bail!(
+                "SD3 --tiled doesn't compose with --init-image / --mask yet \
+                 (v0.15 phase 5 deferral). Drop one or the other."
+            );
+        }
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -377,6 +519,67 @@ impl Pipeline {
         let lat_w = w / 8;
         let time_shift = self.variant.default_time_shift();
 
+        // ---------- v0.15 phase 2: img2img / inpaint prep ----------
+        // VAE-encode the init image once; reuse across the count loop.
+        // The mask is image-space (HxW); we downsample to latent
+        // resolution (H/8 x W/8) inside the loop. RePaint convention:
+        // white (1.0) = inpaint (denoise this region), black (0.0) =
+        // preserve (snap back to the init's flow trajectory).
+        let img2img_init: Option<(Tensor, f32, Option<Tensor>)> =
+            if let Some(init_path) = req.init_image.as_ref() {
+                let has_mask = req.mask.is_some();
+                let strength = req
+                    .strength
+                    .unwrap_or(if has_mask { 1.0 } else { 0.6 })
+                    .clamp(0.0, 1.0);
+                if !strength.is_finite() {
+                    bail!(
+                        "SD3 img2img strength must be finite in [0, 1], got {strength}"
+                    );
+                }
+                let spin = progress::spinner("Encoding SD3 img2img init image");
+                let init_pixels = crate::imaging::preprocess::sd_image_tensor(
+                    init_path,
+                    w as u32,
+                    h as u32,
+                    &self.device,
+                    self.dtype,
+                )
+                .with_context(|| {
+                    format!("loading SD3 init image {}", init_path.display())
+                })?;
+                // SD3 latent normalisation is the inverse of the decode
+                // path's `(x / SCALE) + SHIFT`: `(z - SHIFT) * SCALE`.
+                // `encode` returns a `DiagonalGaussianDistribution`;
+                // `.sample()` draws one latent sample (matches every
+                // other SD-family encode site in the codebase).
+                let init_dist = self.vae.encode(&init_pixels)?;
+                let init_z = init_dist.sample()?;
+                let init_norm = ((init_z - VAE_SHIFT)? * VAE_SCALE)?;
+
+                let mask_lat = if let Some(mask_path) = req.mask.as_ref() {
+                    let mut m = crate::imaging::mask::Mask::load(
+                        mask_path, w as u32, h as u32,
+                    )?;
+                    if req.mask_invert {
+                        m.invert();
+                    }
+                    if req.mask_feather > 0 {
+                        m.feather(req.mask_feather);
+                    }
+                    Some(m.to_latent_tensor(&self.device, self.dtype)?)
+                } else {
+                    None
+                };
+                spin.finish_with_message(format!(
+                    "✓ SD3 init encoded (strength {strength:.2}{})",
+                    if has_mask { ", masked" } else { "" }
+                ));
+                Some((init_norm, strength, mask_lat))
+            } else {
+                None
+            };
+
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -387,48 +590,95 @@ impl Pipeline {
                 tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
             }
 
-            // Initial latent: pure Gaussian noise, (1, 16, lat_h, lat_w).
-            let mut x = Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?
+            // Fresh per-image noise. Cached for inpaint mode below so
+            // the unmasked-region resampling uses the same noise the
+            // start latent was built from.
+            let eps = Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?
                 .to_dtype(self.dtype)?;
 
-            // Linear timestep schedule [1.0 → 0.0] with the SD3 time
-            // shift transform applied.
-            let timesteps: Vec<f64> = (0..=steps)
-                .map(|v| 1.0 - (v as f64 / steps as f64))
-                .map(|t| shift_t(t, time_shift))
-                .collect();
+            // Initial latent + schedule.
+            //
+            // **Pure t2i**: x = eps (Gaussian noise), timesteps full
+            //   [1.0 → 0.0] linear-with-shift.
+            //
+            // **img2img / inpaint**: x = lerp(init, eps, strength) using
+            //   the rectified-flow interpolation `x_t = (1-t)*init + t*eps`,
+            //   then truncate the schedule to entries below strength
+            //   and prepend strength itself so the first step's
+            //   `t_curr` matches the noise level of the start latent.
+            //   Mirrors diffusers' FlowMatchEulerDiscreteScheduler
+            //   `get_timesteps` + Flux phase-3 img2img init.
+            let (mut x, timesteps) = match img2img_init.as_ref() {
+                Some((init_norm, strength, _)) => {
+                    let s = *strength as f64;
+                    let start = ((init_norm * (1.0 - s))? + (&eps * s)?)?;
+                    let ts = build_img2img_timesteps(steps, time_shift, Some(s));
+                    (start, ts)
+                }
+                None => {
+                    let ts = build_img2img_timesteps(steps, time_shift, None);
+                    (eps.clone(), ts)
+                }
+            };
 
             let bar = progress::step_bar(
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
+            let mode_tag = match (req.init_image.is_some(), req.mask.is_some()) {
+                (true, true) => "inpaint",
+                (true, false) => "img2img",
+                _ if req.tiled.is_some() => "tiled",
+                _ => "denoise",
+            };
+            bar.set_message(format!(
+                "{mode_tag} flow-match, {} steps, seed={seed}",
+                timesteps.len().saturating_sub(1)
+            ));
 
             for (step_i, window) in timesteps.windows(2).enumerate() {
                 let (t_curr, t_prev) = match window {
                     [a, b] => (*a, *b),
                     _ => continue,
                 };
-                // Double-batch [neg, pos] so the model forward
-                // produces both directions in one call.
-                let x_doubled = Tensor::cat(&[&x, &x], 0)?;
-                // MMDiT timestep convention: scalar 0..1 broadcast to
-                // batch. Pass the current t per batch row.
-                let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
-                let pred_doubled =
-                    self.mmdit_model
-                        .forward(&x_doubled, &t_vec, &cfg_y, &cfg_ctx, None)?;
-                let pred_neg = pred_doubled.i(0..1)?;
-                let pred_pos = pred_doubled.i(1..2)?;
-                let pred = (&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?;
+                // v0.15 phase 5: dispatch to tiled or single-pass.
+                // Both return the post-CFG velocity prediction at
+                // full canvas resolution; the Euler step is identical.
+                let pred = match req.tiled.as_ref() {
+                    None => self.predict_velocity_full(
+                        &x, t_curr, &cfg_y, &cfg_ctx, guidance,
+                    )?,
+                    Some(cfg) => self.predict_velocity_tiled(
+                        &x, t_curr, &cfg_y, &cfg_ctx, guidance, cfg,
+                    )?,
+                };
                 x = (x + pred * (t_prev - t_curr))?;
+
+                // RePaint-style inpaint blend: after the denoise step
+                // brought every pixel to `t_prev`, snap the *unmasked*
+                // region back onto the init's flow trajectory at the
+                // same noise level. This keeps unmasked content
+                // visually anchored to the init while letting the
+                // masked region freely re-denoise. Done in latent
+                // space so per-step VAE roundtrips aren't needed.
+                if let Some((init_norm, _strength, Some(mask_lat))) =
+                    img2img_init.as_ref()
+                {
+                    let init_at_tprev = ((init_norm * (1.0 - t_prev))?
+                        + (&eps * t_prev)?)?;
+                    // mask*x + (1-mask)*init_at_tprev — broadcasting
+                    // mask (1,1,h,w) over the 16 latent channels.
+                    let one_minus = (mask_lat.affine(-1.0, 1.0))?;
+                    let kept = init_at_tprev.broadcast_mul(&one_minus)?;
+                    let edited = x.broadcast_mul(mask_lat)?;
+                    x = (edited + kept)?;
+                }
+
                 bar.set_position(step_i as u64);
             }
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
-            bar.finish_with_message("✓ denoised");
+            bar.finish_with_message(format!("✓ {mode_tag} done"));
 
-            // VAE decode: undo the latent normalisation, decode,
-            // convert to RGB u8.
             let pre_decode = ((&x / VAE_SCALE)? + VAE_SHIFT)?;
             let decoded = self.vae.decode(&pre_decode)?;
             let img_norm = ((decoded.clamp(-1f32, 1f32)? + 1.0)? * 0.5)?;
@@ -439,11 +689,150 @@ impl Pipeline {
             let (oh, ow, _) = img_u8.dims3()?;
             let buf = img_u8.flatten_all()?.to_vec1::<u8>()?;
 
-            let out_path = req.out_dir.join(format!("plakat-sd3-{seed}.png"));
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-sd3-{mode_tag}-{seed}.png"));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
+    }
+
+    /// v0.15 phase 5: single-pass post-CFG velocity prediction.
+    ///
+    /// Builds the `[neg, pos]` double-batch, runs MMDiT once, splits
+    /// the two predictions, and blends with `guidance`. Same math as
+    /// the inline path in `generate` — factored out so the tiled
+    /// dispatch can reuse it inside the per-tile loop.
+    fn predict_velocity_full(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        cfg_y: &Tensor,
+        cfg_ctx: &Tensor,
+        guidance: f64,
+    ) -> Result<Tensor> {
+        let x_doubled = Tensor::cat(&[x, x], 0)?;
+        let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
+        let pred_doubled =
+            self.mmdit_model
+                .forward(&x_doubled, &t_vec, cfg_y, cfg_ctx, None)?;
+        let pred_neg = pred_doubled.i(0..1)?;
+        let pred_pos = pred_doubled.i(1..2)?;
+        Ok((&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?)
+    }
+
+    /// v0.15 phase 5: tiled MultiDiffusion-style post-CFG velocity
+    /// prediction.
+    ///
+    /// Splits the latent into overlapping `tile_size`-pixel windows
+    /// (`stride`-spaced), runs MMDiT per tile, and blends the per-tile
+    /// velocity predictions back into a full-canvas tensor with a 2D
+    /// Hann window. Output shape matches `x` — the Euler step the
+    /// caller applies is identical to the single-pass path.
+    ///
+    /// Constraints:
+    /// * `tile_size` and `stride` must be multiples of 16 (the
+    ///   product of VAE downsample 8 × MMDiT patch_size 2).
+    /// * Patched tile dim = `tile_latent / 2` must be `<=
+    ///   pos_embed_max_size` (384 on SD3.5-Medium, 192 on
+    ///   SD3 / SD3.5-Large). For the default 1024-px tile that's 64
+    ///   patches per axis — well within either cap.
+    ///
+    /// When the canvas fits inside one tile, falls back to
+    /// `predict_velocity_full` (cheaper, identical output).
+    fn predict_velocity_tiled(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        cfg_y: &Tensor,
+        cfg_ctx: &Tensor,
+        guidance: f64,
+        tcfg: &crate::pipelines::tiled::TiledConfig,
+    ) -> Result<Tensor> {
+        let (_b, c, lat_h, lat_w) = x.dims4()?;
+        // VAE downsample 8 — same factor the rest of the SD3 pipeline
+        // uses. Pixel-to-latent conversion for the tile + stride.
+        const VAE_FACTOR: usize = 8;
+        if tcfg.tile_size as usize % 16 != 0 || tcfg.stride as usize % 16 != 0 {
+            bail!(
+                "SD3 tiled denoise requires --tile-size and --tile-stride \
+                 divisible by 16 (got {} / {})",
+                tcfg.tile_size, tcfg.stride
+            );
+        }
+        let tile_lat = (tcfg.tile_size as usize) / VAE_FACTOR;
+        let stride_lat = (tcfg.stride as usize) / VAE_FACTOR;
+        // Patched-tile dim against MMDiT's pos_embed cap. patch_size=2
+        // is the SD3 constant — kept inline rather than reaching into
+        // the variant config so the constraint is explicit at the
+        // call site.
+        let max_patched =
+            self.variant.mmdit_config().pos_embed_max_size;
+        if tile_lat / 2 > max_patched {
+            bail!(
+                "SD3 tile_size {}px → patched {} exceeds variant's pos_embed_max_size {} \
+                 (drop --tile-size or pick a larger SD3 variant)",
+                tcfg.tile_size,
+                tile_lat / 2,
+                max_patched
+            );
+        }
+        // Single-tile fast path: latent fits within the tile. Skips
+        // the Hann blend overhead.
+        if lat_h <= tile_lat && lat_w <= tile_lat {
+            return self.predict_velocity_full(x, t_curr, cfg_y, cfg_ctx, guidance);
+        }
+        let positions = crate::pipelines::tiled::tile_positions(
+            lat_h, lat_w, tile_lat, stride_lat,
+        );
+        let win = crate::pipelines::tiled::hann_window_2d(
+            tile_lat,
+            &self.device,
+            self.dtype,
+        )?;
+        // Accumulators: weighted velocity sum + scalar weight sum
+        // (broadcast over channels at the final divide).
+        let mut acc_pred = Tensor::zeros(
+            (1, c, lat_h, lat_w),
+            self.dtype,
+            &self.device,
+        )?;
+        let mut acc_weight = Tensor::zeros(
+            (1, 1, lat_h, lat_w),
+            self.dtype,
+            &self.device,
+        )?;
+        for pos in positions.iter() {
+            // narrow extracts a tile; both axes use the same size since
+            // tile_positions always emits square tiles.
+            let x_tile = x.narrow(2, pos.y, pos.size)?.narrow(3, pos.x, pos.size)?;
+            let pred_tile =
+                self.predict_velocity_full(&x_tile, t_curr, cfg_y, cfg_ctx, guidance)?;
+            // Weighted contribution: pred_tile * hann broadcast over
+            // (B, C, tile, tile).
+            let weighted = pred_tile.broadcast_mul(&win)?;
+            // Slice the accumulator at the tile position, add, write
+            // back. candle 0.8 has no in-place slice update so we
+            // narrow → add → reassemble via cat.
+            //
+            // Approach: build a `(1, c, lat_h, lat_w)` "patch" tensor
+            // that's zero everywhere except inside the tile rect; the
+            // tile rect holds `weighted`. Adding two equal-shape
+            // tensors is the simplest path on candle.
+            let patch = pad_tile_to_canvas(
+                &weighted, pos.y, pos.x, lat_h, lat_w, self.dtype, &self.device,
+            )?;
+            acc_pred = (acc_pred + patch)?;
+            let w_patch = pad_tile_to_canvas(
+                &win, pos.y, pos.x, lat_h, lat_w, self.dtype, &self.device,
+            )?;
+            acc_weight = (acc_weight + w_patch)?;
+        }
+        // Normalise by the weight sum. The Hann window has a small
+        // positive epsilon at its edges (see tiled::hann_window_2d) so
+        // every covered pixel has weight > 0; no NaN guards needed.
+        Ok(acc_pred.broadcast_div(&acc_weight)?)
     }
 
     /// Encode a single prompt into the `(y, context)` pair the MMDiT
@@ -538,6 +927,44 @@ impl Pipeline {
 /// `shift = 1.0` is the identity; higher values push more steps into
 /// the high-noise region (where the model has more uncertainty to
 /// resolve).
+/// v0.15 phase 5: place a tile-shaped tensor into a zero-padded
+/// canvas-shaped tensor at the given top-left offset. The tile may
+/// have a batch dim (1, C, T, T) or no batch dim (1, 1, T, T) for
+/// the Hann weight. The returned tensor matches the tile's channel
+/// count and the requested canvas spatial size.
+///
+/// Builds the padded tensor via three `Tensor::cat` calls — top/bot
+/// rows of zeros and left/right cols of zeros wrapping the tile.
+/// candle 0.8 has no `slice_assign`, so this cat-based approach is
+/// the cleanest way to lift a sub-region into a larger canvas.
+fn pad_tile_to_canvas(
+    tile: &Tensor,
+    y: usize,
+    x: usize,
+    canvas_h: usize,
+    canvas_w: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<Tensor> {
+    let (b, c, th, tw) = tile.dims4()?;
+    // Left + right horizontal pads. Both can be width 0; candle's cat
+    // handles zero-width inputs fine.
+    let left = Tensor::zeros((b, c, th, x), dtype, device)?;
+    let right = Tensor::zeros(
+        (b, c, th, canvas_w.saturating_sub(x + tw)),
+        dtype,
+        device,
+    )?;
+    let row = Tensor::cat(&[&left, tile, &right], 3)?;
+    let top = Tensor::zeros((b, c, y, canvas_w), dtype, device)?;
+    let bot = Tensor::zeros(
+        (b, c, canvas_h.saturating_sub(y + th), canvas_w),
+        dtype,
+        device,
+    )?;
+    Ok(Tensor::cat(&[&top, &row, &bot], 2)?)
+}
+
 fn shift_t(t: f64, shift: f64) -> f64 {
     if shift == 1.0 {
         t
@@ -546,11 +973,43 @@ fn shift_t(t: f64, shift: f64) -> f64 {
     }
 }
 
+/// v0.15 phase 2: build the SD3 img2img schedule — same construction
+/// the `generate` loop runs inline, factored out for unit testing.
+///
+/// Pure t2i (`strength == None`): the full linear `[1.0 → 0.0]`
+/// schedule with `shift_t` applied.
+///
+/// img2img (`strength = Some(s)`): drop schedule entries with
+/// `shifted_t >= s` and prepend `s` itself, so the first window's
+/// `t_curr` matches the noise level of the `lerp(init, eps, s)`
+/// start latent. Mirrors `FluxImg2ImgPipeline.get_timesteps`.
+fn build_img2img_timesteps(steps: usize, shift: f64, strength: Option<f64>) -> Vec<f64> {
+    let full: Vec<f64> = (0..=steps)
+        .map(|v| 1.0 - (v as f64 / steps as f64))
+        .map(|t| shift_t(t, shift))
+        .collect();
+    match strength {
+        None => full,
+        Some(s) => {
+            let mut filtered: Vec<f64> = full.into_iter().filter(|t| *t < s).collect();
+            if filtered.is_empty() {
+                filtered.push(0.0);
+            }
+            let mut new_ts = Vec::with_capacity(filtered.len() + 1);
+            new_ts.push(s);
+            new_ts.extend(filtered);
+            new_ts
+        }
+    }
+}
+
 pub async fn run(req: Request) -> Result<()> {
     let mut p = Pipeline::load(LoadRequest {
         variant: req.variant,
         repo: req.repo,
         device: req.device,
+        loras: req.loras,
+        lora_scale: req.lora_scale,
     })
     .await?;
     p.generate(&GenRequest {
@@ -563,6 +1022,12 @@ pub async fn run(req: Request) -> Result<()> {
         guidance: req.guidance,
         seed: req.seed,
         out_dir: req.out_dir,
+        init_image: req.init_image,
+        mask: req.mask,
+        mask_feather: req.mask_feather,
+        mask_invert: req.mask_invert,
+        strength: req.strength,
+        tiled: req.tiled,
     })
 }
 
@@ -594,5 +1059,119 @@ mod tests {
         // = 3*0.5 / (1 + 2*0.5) = 0.75 — the midpoint of the schedule
         // sits past 0.5 in t-space, meaning more steps cluster near 1.
         assert!((shift_t(0.5, 3.0) - 0.75).abs() < 1e-12);
+    }
+
+    // v0.15 phase 2 — img2img schedule truncation.
+
+    #[test]
+    fn schedule_unchanged_without_strength() {
+        // Pure t2i: full linear schedule with shift_t applied,
+        // length = steps + 1, endpoints 1.0 and 0.0.
+        let ts = build_img2img_timesteps(4, 1.0, None);
+        assert_eq!(ts.len(), 5);
+        assert!((ts[0] - 1.0).abs() < 1e-12);
+        assert!((ts[4] - 0.0).abs() < 1e-12);
+        // shift = 1.0 is identity, so middle entries are linear.
+        assert!((ts[2] - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_truncated_to_strength() {
+        // Strength = 0.5: drop the high-noise half and prepend 0.5
+        // itself. So the schedule starts at 0.5, walks down, ends 0.0.
+        let ts = build_img2img_timesteps(4, 1.0, Some(0.5));
+        // Full was [1.0, 0.75, 0.5, 0.25, 0.0]. Filter < 0.5 → [0.25,
+        // 0.0]. Prepend 0.5 → [0.5, 0.25, 0.0].
+        assert_eq!(ts.len(), 3);
+        assert!((ts[0] - 0.5).abs() < 1e-12);
+        assert!((ts[1] - 0.25).abs() < 1e-12);
+        assert!((ts[2] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_strength_zero_falls_back_to_terminal_step() {
+        // Strength = 0.0 would filter out every entry; we fall back to
+        // a single 0.0 step. Schedule becomes [0.0, 0.0] — a no-op
+        // denoise window. The generate loop's `t_prev - t_curr` is
+        // zero so no update happens. Safer than panicking on empty.
+        let ts = build_img2img_timesteps(4, 1.0, Some(0.0));
+        assert_eq!(ts.len(), 2);
+        assert!((ts[0] - 0.0).abs() < 1e-12);
+        assert!((ts[1] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn schedule_strength_one_keeps_all_but_one() {
+        // Strength = 1.0: filter keeps every entry except the terminal
+        // 1.0 itself (since the filter is `t < s`). Prepended 1.0
+        // recovers the standard `[1.0, ..., 0.0]` shape — equivalent
+        // to pure t2i except built differently.
+        let ts = build_img2img_timesteps(4, 1.0, Some(1.0));
+        // Full = [1.0, 0.75, 0.5, 0.25, 0.0]. Filter < 1.0 → [0.75,
+        // 0.5, 0.25, 0.0]. Prepend 1.0 → [1.0, 0.75, 0.5, 0.25, 0.0].
+        assert_eq!(ts.len(), 5);
+        assert!((ts[0] - 1.0).abs() < 1e-12);
+        assert!((ts[4] - 0.0).abs() < 1e-12);
+    }
+
+    // v0.15 phase 5 — tile-to-canvas pad helper.
+
+    #[test]
+    fn pad_tile_places_at_origin() {
+        // Tile (1, 2, 2, 2) of ones, canvas 4x4. Place at (0, 0).
+        // Top-left 2x2 of the canvas should be ones, rest zeros.
+        let tile = Tensor::ones((1, 2, 2, 2), DType::F32, &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 0, 0, 4, 4, DType::F32, &Device::Cpu).unwrap();
+        let (_b, c, h, w) = out.dims4().unwrap();
+        assert_eq!((c, h, w), (2, 4, 4));
+        // Channel 0 should have ones in the top-left 2x2 corner.
+        let ch0 = out.i(0).unwrap().i(0).unwrap().to_vec2::<f32>().unwrap();
+        assert_eq!(ch0[0][0], 1.0);
+        assert_eq!(ch0[1][1], 1.0);
+        assert_eq!(ch0[0][2], 0.0);
+        assert_eq!(ch0[2][0], 0.0);
+        assert_eq!(ch0[3][3], 0.0);
+    }
+
+    #[test]
+    fn pad_tile_places_with_offset() {
+        let tile = Tensor::ones((1, 1, 2, 2), DType::F32, &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 1, 2, 4, 5, DType::F32, &Device::Cpu).unwrap();
+        let (_b, c, h, w) = out.dims4().unwrap();
+        assert_eq!((c, h, w), (1, 4, 5));
+        let ch = out.i(0).unwrap().i(0).unwrap().to_vec2::<f32>().unwrap();
+        // The 2x2 ones should land at rows 1-2, cols 2-3.
+        assert_eq!(ch[1][2], 1.0);
+        assert_eq!(ch[2][3], 1.0);
+        assert_eq!(ch[0][2], 0.0); // row above
+        assert_eq!(ch[3][2], 0.0); // row below
+        assert_eq!(ch[1][1], 0.0); // col left
+        assert_eq!(ch[1][4], 0.0); // col right
+    }
+
+    #[test]
+    fn pad_tile_full_canvas_is_identity() {
+        // A tile exactly the canvas size should be returned unchanged.
+        let tile = Tensor::randn(0f32, 1.0_f32, (1, 3, 4, 4), &Device::Cpu).unwrap();
+        let out = pad_tile_to_canvas(&tile, 0, 0, 4, 4, DType::F32, &Device::Cpu).unwrap();
+        let diff = (&tile - &out).unwrap().abs().unwrap().sum_all().unwrap();
+        let d: f32 = diff.to_scalar().unwrap();
+        assert!(d < 1e-5, "expected identity; got diff {d}");
+    }
+
+    #[test]
+    fn schedule_respects_shift() {
+        // With shift = 3.0, the schedule is non-linear; truncating at
+        // a low strength keeps fewer entries because the shift packed
+        // more density into the high-noise end.
+        let full_steps_count =
+            build_img2img_timesteps(8, 3.0, Some(0.5)).len();
+        // Should still start at 0.5 and end at 0.0. The intermediate
+        // count depends on how many shifted t's fell below 0.5.
+        let ts = build_img2img_timesteps(8, 3.0, Some(0.5));
+        assert!((ts[0] - 0.5).abs() < 1e-12);
+        assert!((ts[ts.len() - 1] - 0.0).abs() < 1e-12);
+        // Sanity: result is non-empty and well-formed.
+        assert!(full_steps_count >= 2);
     }
 }

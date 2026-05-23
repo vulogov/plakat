@@ -655,4 +655,69 @@ impl SdUNet {
             }
         }
     }
+
+    // =================================================================
+    // v0.15 phase 7b-6 — runtime LoRA API surface.
+    //
+    // The vendored SDXL UNet (`sdxl_unet.rs`) and candle's upstream
+    // SD 1.5/2.1 UNet (`stable_diffusion::unet_2d`) both use plain
+    // `nn::Linear` inside their cross-attention blocks. The Linears
+    // that PEFT LoRAs target are buried 4-5 levels deep
+    // (`down_blocks.{i}.attentions.{j}.transformer_blocks.{k}.attn{1,2}.to_{q,k,v,out.0}`,
+    // plus `ff.net.0.proj` / `ff.net.2`); reaching them requires
+    // vendoring the full UNet machinery (~2000 LOC for SD 1.5/2.1 +
+    // extending the existing SDXL vendor to wrap every Linear).
+    //
+    // For v0.15 the pragmatic scope is:
+    //   * Flux (BF16 + GGUF + NF4) — full runtime LoRA via 7b-2/3/4
+    //   * SD3 / SD3.5 — full runtime LoRA via 7b-5 (MMDiT vendor)
+    //   * SD 1.5 / 2.1 / SDXL — load-time merge ONLY (existing
+    //     v0.10+ `lora_unet_merge` tempfile path). Per-task swap in
+    //     scenarios bails loud at dispatch.
+    //
+    // The methods below give the scenario dispatcher (7b-7) a
+    // uniform API across backbones; the SD-family arms return a
+    // clear error pointing at the deferral. Vendor the full UNet
+    // when SD per-task LoRA becomes a real workflow demand.
+    // =================================================================
+
+    /// v0.15 phase 7b-6: SD-family runtime per-task LoRA bails — the
+    /// UNet's nn::Linear modules aren't wrapped as `LoraLinear` yet
+    /// (vendor work deferred to a future cycle). Scenario-wide LoRAs
+    /// still work via the existing load-time merge path; only the
+    /// per-task swap surface is gated here.
+    ///
+    /// `specs` empty → silent no-op. Non-empty → loud bail with a
+    /// clear redirect.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+    ) -> Result<usize> {
+        if specs.is_empty() {
+            return Ok(0);
+        }
+        candle_core::bail!(
+            "SD-family per-task LoRA (SD 1.5 / 2.1 / SDXL) isn't wired in v0.15 — \
+             the UNet's Linears aren't yet wrapped as LoraLinear. Use scenario-level \
+             `loras:` for SD models. Flux + SD3 support per-task LoRA via \
+             v0.15 phase 7b."
+        );
+    }
+
+    /// v0.15 phase 7b-6: no-op for SD-family (no runtime stack to
+    /// clear). Provided so the scenario dispatcher can call
+    /// uniformly across every variant.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-6: zero for SD-family (no registered
+    /// LoraLinears yet). Provided for API uniformity with the Flux
+    /// and SD3 backbones.
+    pub fn n_registered_linears(&self) -> usize {
+        0
+    }
 }

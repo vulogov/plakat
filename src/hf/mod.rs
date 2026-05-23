@@ -42,6 +42,17 @@ pub fn resolve_alias(name: &str) -> &str {
         "flux-fill-dev" | "flux-fill" | "flux1-fill-dev" | "FLUX.1-Fill-dev" => {
             "black-forest-labs/FLUX.1-Fill-dev"
         }
+        // v0.15 phase 4: BFL "concept" Flux checkpoints. Canny / Depth
+        // conditioning is baked into a 128-channel `img_in` (64 noise
+        // + 64 VAE-encoded conditioning latent). Caller supplies the
+        // canny edge map / depth map; the model card recommends
+        // guidance ~30. Both are gated repos.
+        "flux-canny-dev" | "flux1-canny-dev" | "FLUX.1-Canny-dev" => {
+            "black-forest-labs/FLUX.1-Canny-dev"
+        }
+        "flux-depth-dev" | "flux1-depth-dev" | "FLUX.1-Depth-dev" => {
+            "black-forest-labs/FLUX.1-Depth-dev"
+        }
         // v0.13: 4-bit quantized Flux via GGUF. city96's mirrors are
         // the canonical community source. The transformer drops from
         // ~24 GB BF16 to ~7 GB Q4_K_S — Flux becomes practical on

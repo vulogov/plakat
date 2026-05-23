@@ -144,6 +144,16 @@ pub struct FluxControlNet {
 
 impl FluxControlNet {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+        // v0.15 phase 7b-3: flux_inner's MlpEmbedder / DoubleStreamBlock /
+        // SingleStreamBlock constructors now take a LoRA-registry Arc
+        // because their Linears wrap as LoraLinear. ControlNets are
+        // separate models; LoRAs target the BASE Flux, not the CN.
+        // Build a throwaway registry here and discard it after
+        // construction — the cost is negligible (one HashMap of
+        // ~depth Linears that never gets queried).
+        let cn_registry = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::pipelines::lora_linear::LoraRegistry::new(),
+        ));
         // We force the SAME hidden/attn/etc. shapes as base Flux.1-dev
         // since every published Flux ControlNet matches those.
         let flux_cfg = fi::Config::dev();
@@ -156,10 +166,11 @@ impl FluxControlNet {
             vb.pp("controlnet_x_embedder"),
         )?;
         let txt_in = candle_nn::linear(flux_cfg.context_in_dim, h, vb.pp("txt_in"))?;
-        let time_in = MlpEmbedder::new(256, h, vb.pp("time_in"))?;
-        let vector_in = MlpEmbedder::new(flux_cfg.vec_in_dim, h, vb.pp("vector_in"))?;
+        let time_in = MlpEmbedder::new(256, h, vb.pp("time_in"), &cn_registry)?;
+        let vector_in =
+            MlpEmbedder::new(flux_cfg.vec_in_dim, h, vb.pp("vector_in"), &cn_registry)?;
         let guidance_in = if cfg.guidance_embed {
-            Some(MlpEmbedder::new(256, h, vb.pp("guidance_in"))?)
+            Some(MlpEmbedder::new(256, h, vb.pp("guidance_in"), &cn_registry)?)
         } else {
             None
         };
@@ -167,7 +178,7 @@ impl FluxControlNet {
         let mut double_blocks = Vec::with_capacity(cfg.num_layers);
         let vb_d = vb.pp("double_blocks");
         for i in 0..cfg.num_layers {
-            double_blocks.push(DoubleStreamBlock::new(&flux_cfg, vb_d.pp(i))?);
+            double_blocks.push(DoubleStreamBlock::new(&flux_cfg, vb_d.pp(i), &cn_registry)?);
         }
 
         let mut controlnet_blocks = Vec::with_capacity(cfg.num_layers);
@@ -180,7 +191,7 @@ impl FluxControlNet {
         let mut single_blocks = Vec::with_capacity(cfg.num_single_layers);
         let vb_s = vb.pp("single_blocks");
         for i in 0..cfg.num_single_layers {
-            single_blocks.push(SingleStreamBlock::new(&flux_cfg, vb_s.pp(i))?);
+            single_blocks.push(SingleStreamBlock::new(&flux_cfg, vb_s.pp(i), &cn_registry)?);
         }
         let mut controlnet_single_blocks = Vec::with_capacity(cfg.num_single_layers);
         let vb_csb = vb.pp("controlnet_single_blocks");

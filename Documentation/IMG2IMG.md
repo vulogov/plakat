@@ -167,6 +167,49 @@ plakat img2img init.png --model flux-fill-dev-gguf \
     --prompt "..."
 ```
 
+## SD3 / SD3.5 img2img and inpaint
+
+`plakat img2img --model sd35-medium` (or any of `sd35-large`,
+`sd35-large-turbo`, `sd3-medium`) runs MMDiT-flavoured img2img: the
+init image is VAE-encoded with SD3's `(z - 0.0609) * 1.5305`
+normalisation, mixed with fresh noise at `t = strength` using the
+rectified-flow lerp, and denoised on a truncated schedule starting
+at `strength`. Same `--strength` convention as Flux/SD.
+
+`--mask MASK` adds RePaint-style inpaint: after each denoise step,
+unmasked pixels are snapped back to `lerp(init, eps, t_next)` —
+keeping them on the init's flow trajectory while the masked region
+freely denoises. White = inpaint, black = preserve (use
+`--mask-invert` for sources with the opposite convention).
+`--mask-feather PX` softens the edge before downsampling to latent.
+
+Output naming reflects the mode: `plakat-sd3-img2img-<seed>.png`
+when no mask, `plakat-sd3-inpaint-<seed>.png` when masked.
+
+```bash
+# SD3.5 img2img — re-imagine the input at 60% strength
+plakat img2img photo.png --model sd35-medium \
+    --prompt "the same scene rendered as a watercolor"
+
+# SD3.5 Large inpaint — replace just the masked region
+plakat img2img photo.png --model sd35-large \
+    --mask sky.png \
+    --prompt "dramatic stormy sky, lightning"
+
+# sd35-large-turbo + img2img — 4-step distilled, no CFG
+plakat img2img photo.png --model sd35-large-turbo \
+    --prompt "..." --guidance 0
+```
+
+SD3 LoRA (`--loras`) composes with img2img and inpaint. Diffusers
+PEFT format is the supported convention (keys under
+`transformer.transformer_blocks.{i}.attn.*` / `ff.*` / `norm1*`).
+Affected Linears are merged into the MMDiT weights at load time.
+
+Not supported on SD3 img2img: ControlNet (`--control*`) and tiled
+denoise (`--tiled` works for SD3 t2i but doesn't compose with
+img2img/inpaint). Passing those flags raises an explicit error.
+
 ## Outpaint
 
 For canvas expansion (extend an image past its borders), use the
