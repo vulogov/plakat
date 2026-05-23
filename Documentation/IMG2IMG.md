@@ -167,7 +167,7 @@ plakat img2img init.png --model flux-fill-dev-gguf \
     --prompt "..."
 ```
 
-## SD3 / SD3.5 img2img and inpaint (v0.15 phase 2)
+## SD3 / SD3.5 img2img and inpaint
 
 `plakat img2img --model sd35-medium` (or any of `sd35-large`,
 `sd35-large-turbo`, `sd3-medium`) runs MMDiT-flavoured img2img: the
@@ -201,16 +201,14 @@ plakat img2img photo.png --model sd35-large-turbo \
     --prompt "..." --guidance 0
 ```
 
-**v0.15 phase 3**: SD3 LoRA (`--loras`) composes with img2img and
-inpaint. Diffusers PEFT format is the supported convention (keys
-under `transformer.transformer_blocks.{i}.attn.*` / `ff.*` /
-`norm1*`). The merge runs at `sd3::Pipeline::load` — affected
-Linears are merged into a tempfile that mmaps as the MMDiT base.
+SD3 LoRA (`--loras`) composes with img2img and inpaint. Diffusers
+PEFT format is the supported convention (keys under
+`transformer.transformer_blocks.{i}.attn.*` / `ff.*` / `norm1*`).
+Affected Linears are merged into the MMDiT weights at load time.
 
-Still deferred: ControlNet (`--control*`, phase 6) and tiled denoise
-(`--tiled` not yet supported on SD3, phase 5). Passing
-`--control*` with an SD3 model bails loud rather than silently
-ignoring it.
+Not supported on SD3 img2img: ControlNet (`--control*`) and tiled
+denoise (`--tiled` works for SD3 t2i but doesn't compose with
+img2img/inpaint). Passing those flags raises an explicit error.
 
 ## Outpaint
 

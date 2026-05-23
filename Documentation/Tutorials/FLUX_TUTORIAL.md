@@ -2,11 +2,10 @@
 
 Flux (Black Forest Labs' 12B-parameter rectified-flow transformer)
 is plakat's flagship model for high-quality text-to-image. This
-tutorial walks through the full Flux feature set added across
-v0.13–v0.15: quantization (GGUF + NF4), LoRA, img2img + Fill
-inpaint, ControlNet, tiled hi-res, Redux image conditioning, the
-"concept" variants (Canny-dev / Depth-dev), and the `--fast`
-distillation presets.
+tutorial walks through the full Flux feature set: quantization
+(GGUF + NF4), LoRA, img2img + Fill inpaint, ControlNet, tiled
+hi-res, Redux image conditioning, the "concept" variants
+(Canny-dev / Depth-dev), and the `--fast` distillation presets.
 
 For one-line reference of every flag, see
 [`GENERATE.md`](../GENERATE.md) and [`IMG2IMG.md`](../IMG2IMG.md).
@@ -102,7 +101,7 @@ GGUF, but the model loads faster.
 - NF4 for the smallest possible memory footprint (works on 12 GB).
 - NF4 for first-time users — single-file download, no quant level to pick.
 
-Both compose with LoRA and ControlNet (added in v0.15 phase 1).
+Both compose with LoRA and ControlNet.
 
 ## 4. LoRA stacking
 
@@ -166,9 +165,8 @@ plakat generate "..." --model flux-dev --fast hyper-8 \
 ```
 
 `--fast` doesn't compose with `flux-fill-dev` (Fill's inpaint math
-is incompatible with the distillation training schedule). For
-NF4 + `--fast`, the preset LoRA merges via the runtime LoRA path
-added in v0.15.
+is incompatible with the distillation training schedule). NF4 +
+`--fast` works — the preset LoRA merges via the runtime LoRA path.
 
 ## 6. ControlNet on Flux
 
@@ -195,10 +193,10 @@ plakat generate "..." --model flux-dev \
     --control-spec 'canny:from=./photo.jpg:strength=0.7:start=0.0:end=0.5'
 ```
 
-Flux ControlNet works on Dev, Fill, GGUF, and NF4 (v0.15 phase 1
-added NF4 support). It does **not** compose with the "concept"
-variants (Canny-dev / Depth-dev) — those have conditioning baked
-into the transformer, doubling up with a CN would over-condition.
+Flux ControlNet works on Dev, Fill, GGUF, and NF4. It does **not**
+compose with the "concept" variants (Canny-dev / Depth-dev) — those
+have conditioning baked into the transformer, doubling up with a CN
+would over-condition.
 
 ## 7. Flux img2img
 
@@ -226,9 +224,9 @@ plakat img2img init.png --mask region.png \
 Fill's `img_in` is 384 channels (64 noise + 64 masked-latent + 256
 image-space mask). The mask drives the denoise directly — no
 RePaint-style strength blending. Default `--guidance 30` per BFL's
-model card. Fill composes with ControlNet (v0.15 phase 5) and tiled
-denoise (with the caveat that per-tile mask slicing isn't wired
-yet — full canvas tiled + Fill bails).
+model card. Fill composes with ControlNet. Tiled + Fill isn't
+supported (per-tile mask slicing doesn't compose); use whole-canvas
+Fill or drop the tiled path.
 
 ## 8. Tiled hi-res
 
@@ -246,8 +244,8 @@ Each step splits the canvas into 1024-px tiles (stride 768 means
 2D Hann window. Total VRAM stays at the 1024² working set.
 
 Composes with: GGUF / NF4, LoRA, ControlNet (per-tile residuals
-sliced correctly), img2img. Does **not** compose with: Fill
-(per-tile mask slicing not wired) or the concept variants.
+sliced correctly), img2img. Does **not** compose with: Fill or the
+concept variants.
 
 ## 9. Flux Redux (image conditioning)
 
@@ -317,7 +315,7 @@ actually steer toward the conditioning map.
 (adding ControlNet on top of baked conditioning would double-
 condition).
 
-## 11. Per-task LoRA in scenarios (v0.15 phase 7b)
+## 11. Per-task LoRA in scenarios
 
 Scenarios can declare per-task LoRA stacks that compose with the
 scenario-level LoRAs:
@@ -347,10 +345,10 @@ scenario-level LoRAs:
 ```
 
 The scenario-level `loras:` apply to every task (load-time merge).
-The per-task `loras:` add additional LoRAs runtime, swapped between
-tasks. Currently supported on Flux variants (BF16 / GGUF / NF4);
-SD-family and SD3 per-task LoRA bail with a clear message —
-deferred to a future cycle.
+The per-task `loras:` add additional LoRAs at runtime, swapped
+between tasks. Supported on Flux variants (BF16 / GGUF / NF4). For
+SD-family and SD3, use scenario-level `loras:` instead — plakat
+raises an explicit error if you set per-task `loras:` on those.
 
 ## 12. Memory tiers — picking the right backbone
 
@@ -380,9 +378,10 @@ from 1024² to 512² roughly halves VRAM.
 - **`--fast` ignores user `--steps` only if you didn't set it.**
   If you explicitly pass `--steps 28` with `--fast hyper-8`, plakat
   honors your choice. The preset only fills in defaults.
-- **Concept variants need pre-rendered maps.** Auto-annotation
-  isn't yet wired for `--concept-image`. Use the ControlNet
-  annotator workflow to generate one first.
+- **Concept variants need pre-rendered maps.** `--concept-image`
+  takes a pre-rendered canny / depth map; use the ControlNet
+  annotator workflow (`plakat generate --control-spec
+  canny:from=photo.jpg`) to produce one first.
 
 ## What's next
 
