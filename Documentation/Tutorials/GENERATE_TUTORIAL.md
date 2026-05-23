@@ -425,7 +425,58 @@ gets 1002-1003, and so on.
 
 ---
 
-## 12. Common issues
+## 12. Wildcards (v0.16+)
+
+Two ways to add randomness to a prompt without re-typing it:
+
+**Inline alternation** — pick one of N options at random:
+
+```bash
+plakat generate "a {red|blue|green} {fox|cat|owl}" \
+    --model sd15 --count 4 --seed 42
+```
+
+Each run with `--seed 42` reproduces the same picks. With no
+`--seed`, OS entropy seeds the wildcard RNG (different output each
+run).
+
+**File wildcards** — pick a random line from a text file:
+
+```bash
+mkdir -p wildcards
+echo -e "red\nblue\nemerald\ngolden" > wildcards/colors.txt
+plakat generate "a __colors__ fox" \
+    --wildcard-dir ./wildcards --model sd15
+```
+
+Files live under `<dir>/<name>.txt`. Comments (`#`) and blank lines
+are skipped. Names accept letters, digits, `-`, and `_` (so
+`__warm-colors__` and `__warm_colors__` both work).
+
+Wildcards compose with the prompt enhancer (`--enhance`) — expansion
+runs first, then the enhancer sees the concrete prompt.
+
+## 13. CLIP-skip (v0.16+, SD 1.5 / SD 2.1)
+
+The Auto1111 / NovelAI community default for SD 1.5 anime checkpoints
+(Anything-v3, AnyLoRA, ...) is to read the **penultimate** CLIP
+hidden state rather than the last. plakat exposes this as
+`--clip-skip N`:
+
+```bash
+# Default — last layer (diffusers default, byte-identical to pre-v0.16):
+plakat generate "..." --model sd15
+
+# Penultimate — community-standard SD 1.5 anime path:
+plakat generate "..." --model sd15 --clip-skip 2
+```
+
+SDXL ignores `--clip-skip` (its dual-encoder path already uses
+penultimate by training default — plakat logs a warning if you pass
+`--clip-skip > 1` on SDXL). Flux / SD3 don't use this flag at all
+(T5 + CLIP-pooled architecture).
+
+## 14. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

@@ -2236,6 +2236,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 refine: eff_refine,
                 refine_strength: eff_refine_strength,
                 refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
+                // v0.16 phase 5: scenarios don't surface per-task
+                // clip-skip yet. Default `1` = bit-identical to
+                // pre-phase-5 behaviour.
+                clip_skip: 1,
             };
 
             // Per-task runtime LoRA. Applied BEFORE the per-task
