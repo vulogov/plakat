@@ -651,16 +651,23 @@ impl Pipeline {
         if w == 0 || h == 0 {
             bail!("SD3 requires width and height divisible by 16, both ≥ 16");
         }
-        // v0.15 phase 5: img2img + tiled isn't validated yet. The
-        // start-latent lerp + truncated schedule path doesn't compose
-        // cleanly with the per-step tile blending — defer to a future
-        // phase. Catch the combo early before the CN-style bails.
-        if req.tiled.is_some() && req.init_image.is_some() {
-            bail!(
-                "SD3 --tiled doesn't compose with --init-image / --mask yet \
-                 (v0.15 phase 5 deferral). Drop one or the other."
-            );
-        }
+        // v0.16 phase 10: --tiled now composes with --init-image
+        // (img2img + inpaint). The math is straightforward: the
+        // start-latent lerp builds a full-canvas `x`, tiled
+        // velocity prediction blends per-tile Hann-weighted
+        // contributions into a full-canvas `pred`, and the
+        // Euler step + the optional RePaint mask blend operate
+        // unchanged on the full canvas. ControlNet + tiled is
+        // still bail-loud inside `predict_velocity_tiled` (the
+        // CN's `pos_embed_input` works on full-canvas latents,
+        // not tile slices) — combinations with --init-image are
+        // unaffected.
+        //
+        // Inpaint + tiled note: tile seams can become visible near
+        // sharp mask boundaries because the Hann blend smooths
+        // across tile edges without knowing about the mask. Use
+        // a feathered mask (`--mask-feather`) to smooth the
+        // transition.
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -834,12 +841,14 @@ impl Pipeline {
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            let mode_tag = match (req.init_image.is_some(), req.mask.is_some()) {
-                (true, true) => "inpaint",
-                (true, false) => "img2img",
-                _ if req.tiled.is_some() => "tiled",
-                _ => "denoise",
-            };
+            // v0.16 phase 10: mode tags now compose. `tiled inpaint`
+            // / `tiled img2img` surface the new combinations
+            // explicitly in the progress bar.
+            let mode_tag = sd3_mode_tag(
+                req.tiled.is_some(),
+                req.init_image.is_some(),
+                req.mask.is_some(),
+            );
             bar.set_message(format!(
                 "{mode_tag} flow-match, {} steps, seed={seed}",
                 timesteps.len().saturating_sub(1)
@@ -1299,6 +1308,31 @@ fn merge_residuals(
     Ok(acc)
 }
 
+/// v0.16 phase 10: derive the progress-bar mode tag from the SD3
+/// pipeline's active feature flags. Pure function so the test suite
+/// can pin every combination without needing real weights.
+///
+/// Truth table:
+/// ```text
+///   tiled  init  mask  → tag
+///   T      T     T     → "tiled inpaint"
+///   T      T     F     → "tiled img2img"
+///   T      F     _     → "tiled"
+///   F      T     T     → "inpaint"
+///   F      T     F     → "img2img"
+///   F      F     _     → "denoise"
+/// ```
+fn sd3_mode_tag(tiled: bool, init: bool, mask: bool) -> &'static str {
+    match (tiled, init, mask) {
+        (true, true, true) => "tiled inpaint",
+        (true, true, false) => "tiled img2img",
+        (true, false, _) => "tiled",
+        (false, true, true) => "inpaint",
+        (false, true, false) => "img2img",
+        _ => "denoise",
+    }
+}
+
 fn shift_t(t: f64, shift: f64) -> f64 {
     if shift == 1.0 {
         t
@@ -1583,5 +1617,41 @@ mod tests {
         let merged = merge_residuals(Some(a), Vec::new()).unwrap();
         assert_eq!(merged.len(), 1);
         assert_eq!(tensor_to_vec(&merged[0]), vec![1.0, 2.0]);
+    }
+
+    // v0.16 phase 10 — mode tag truth table for SD3
+    // tiled / img2img / inpaint combinations.
+
+    #[test]
+    fn mode_tag_tiled_inpaint() {
+        assert_eq!(sd3_mode_tag(true, true, true), "tiled inpaint");
+    }
+
+    #[test]
+    fn mode_tag_tiled_img2img() {
+        assert_eq!(sd3_mode_tag(true, true, false), "tiled img2img");
+    }
+
+    #[test]
+    fn mode_tag_plain_tiled() {
+        // Mask without init is ignored — img2img requires init too.
+        assert_eq!(sd3_mode_tag(true, false, false), "tiled");
+        assert_eq!(sd3_mode_tag(true, false, true), "tiled");
+    }
+
+    #[test]
+    fn mode_tag_non_tiled_inpaint() {
+        assert_eq!(sd3_mode_tag(false, true, true), "inpaint");
+    }
+
+    #[test]
+    fn mode_tag_non_tiled_img2img() {
+        assert_eq!(sd3_mode_tag(false, true, false), "img2img");
+    }
+
+    #[test]
+    fn mode_tag_plain_denoise() {
+        assert_eq!(sd3_mode_tag(false, false, false), "denoise");
+        assert_eq!(sd3_mode_tag(false, false, true), "denoise");
     }
 }

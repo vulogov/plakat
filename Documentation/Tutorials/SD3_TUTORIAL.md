@@ -154,7 +154,9 @@ Output naming reflects the mode: `plakat-sd3-{img2img,inpaint}-<seed>.png`.
 - SD3 ControlNet works on t2i only — the img2img CLI doesn't
   forward `--control-spec`. Use `plakat generate` for CN-guided
   outputs.
-- Tiled + img2img doesn't compose — drop one or the other.
+- Tiled + img2img / inpaint composes (v0.16+). Tile seams may
+  become visible near sharp mask boundaries — pass
+  `--mask-feather` to smooth the transition.
 
 ## 7. Tiled hi-res
 
@@ -185,8 +187,32 @@ plakat generate "..." --model sd35-large --size 2048x2048 \
     --tiled
 ```
 
-Composes with LoRA. Does **not** compose with img2img / inpaint on
-SD3 — drop one or the other.
+Composes with LoRA, img2img, and inpaint (v0.16+). The tiled
+denoise blends per-tile velocity predictions with a 2D Hann
+window; the img2img start-latent lerp + truncated schedule and
+the RePaint inpaint mask blend operate on the full canvas, so
+they compose cleanly with the per-tile velocity prediction.
+
+Inpaint + tiled note: tile seams can become visible near sharp
+mask boundaries because the Hann blend doesn't know about the
+mask. Pass `--mask-feather PX` to smooth the transition.
+
+```bash
+# Tiled SD3 img2img at 2K
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+    --prompt "rendered as a watercolor" \
+    --tiled --tile-size 1024 --tile-stride 768
+
+# Tiled SD3 inpaint with a feathered mask
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+    --mask sky.png --mask-feather 16 \
+    --prompt "dramatic stormy sky" \
+    --tiled --tile-size 1024
+```
+
+Does **not** compose with ControlNet (`predict_velocity_tiled`
+bails — the CN's `pos_embed_input` operates on the full-canvas
+latent, not per-tile crops).
 
 ## 8. Sampler & guidance
 
