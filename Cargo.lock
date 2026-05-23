@@ -2020,7 +2020,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plakat"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "candle-core",
