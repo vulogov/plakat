@@ -593,7 +593,65 @@ plakat generate "..." --model sd15 \
 <https://civitai.com/user/account> (API Keys section). Public
 models work without one.
 
-## 16. Common issues
+## 16. Hires fix — escape the trained-resolution ceiling (v0.16+)
+
+SD 1.5 was trained at 512², SDXL at 1024². Sampling much past
+those introduces the "multi-head problem": the model loses track of
+global composition across more tokens than it saw at train time and
+produces repeated faces / doubled limbs / malformed crowds.
+
+The standard mitigation: generate at the trained resolution, then
+upscale + img2img-refine. plakat exposes this as `--hires-fix`:
+
+```bash
+# SD 1.5 → 1.5k canvas via 2x hires-fix (Lanczos upscale, 0.5
+# refine strength).
+plakat generate "an astronaut on a beach, full body shot" \
+    --model sd15 --size 768x768 \
+    --hires-fix
+
+# SDXL → 4K via 2x ESRGAN upscale + img2img refine.
+plakat generate "an architectural drawing of a cathedral" \
+    --model sdxl --size 1024x1024 \
+    --hires-fix --hires-upscaler real-esrgan-x2
+
+# Aggressive refine — let the model rework small detail more.
+plakat generate "..." --model sd15 --size 768x768 \
+    --hires-fix --hires-strength 0.7 --hires-scale 2.0
+```
+
+**Knobs**:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--hires-scale F` | `2.0` | Multiplier for classical upscalers. ML upscalers ignore (use native scale). |
+| `--hires-strength F` | `0.5` | img2img strength on the upscaled image. Lower = preserve composition; higher = re-imagine. |
+| `--hires-upscaler MODE` | `lanczos` | `lanczos / bicubic / bilinear / nearest / real-esrgan-x2 / real-esrgan-x4 / real-esrgan-anime-x4`. |
+| `--hires-steps N` | (main `--steps`) | Step count for the refine pass. |
+
+**Composition**:
+- Composes with `--lora` (refine uses the same stack).
+- Composes with `--adetailer` (face refinement runs on the upscaled
+  image — gives better results than refining at the small res).
+- Does **not** compose with `--artefact*` (the upscale changes
+  image dims; the artefact compositor would misplace stamps —
+  plakat bails loud).
+- Does **not** compose with `--tiled` (tiled has its own 4K
+  workflow; combining is redundant).
+
+**SD-family only**: Flux / SD3 already have native tiled paths
+(`--tiled`) for high-res output. `--hires-fix` on Flux / SD3 bails
+loud — use `--tiled` instead.
+
+**Recipe — 4K poster**:
+```bash
+plakat generate "a vintage travel poster of Tokyo at night" \
+    --model sd15 --size 768x768 --steps 30 \
+    --hires-fix --hires-upscaler real-esrgan-x2 --hires-strength 0.45 \
+    --adetailer
+```
+
+## 17. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
