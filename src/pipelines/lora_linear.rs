@@ -203,7 +203,11 @@ impl Module for LoraLinear {
 /// `(slice_size, rank)` to the full output shape `(out_dim, rank)`.
 /// `row_slice = None` is the identity (B already covers the full
 /// output; just dtype-cast).
-fn pad_b_to_out_dim(
+///
+/// `pub(crate)` so the per-backbone runtime LoRA wrappers (7b-2:
+/// NF4, 7b-3: BF16, 7b-4: GGUF, 7b-5: MMDiT, 7b-6: SD UNet) can
+/// build `LoraSlot`s with the same padding rules `LoraLinear` uses.
+pub(crate) fn pad_b_to_out_dim(
     b: &Tensor,
     row_slice: Option<(usize, usize)>,
     out_dim: usize,
