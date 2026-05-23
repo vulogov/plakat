@@ -58,19 +58,16 @@ If you're new to plakat, work through these in order:
    (six shell scripts + a procedurally-drawn sample depth map).
 
 8. [`FLUX_TUTORIAL.md`](FLUX_TUTORIAL.md) — Black Forest Labs'
-   Flux family (v0.13–v0.15). Covers quantization (GGUF + NF4),
-   LoRA, img2img + Fill inpaint, ControlNet, tiled hi-res, Redux
-   image conditioning, the "concept" variants (Canny-dev /
-   Depth-dev), and the `--fast` distillation presets. Memory tiers
-   for picking the right backbone on your GPU.
+   Flux family. Covers quantization (GGUF + NF4), LoRA, img2img +
+   Fill inpaint, ControlNet, tiled hi-res, Redux image conditioning,
+   the "concept" variants (Canny-dev / Depth-dev), and the `--fast`
+   distillation presets. Memory tiers for picking the right backbone
+   on your GPU.
 
-9. [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — Stable Diffusion 3 /
-   3.5 family (v0.14–v0.15). MMDiT architecture, the four variants
-   (SD3 / SD3.5 Medium / SD3.5 Large / SD3.5 Large Turbo), the
-   rectified-flow sampler, LoRA, img2img + RePaint-style inpaint,
-   tiled hi-res. SD3 ControlNet is in v0.15 as scope skeleton
-   (MMDiT vendor with residual hooks ready); the CN model itself
-   is deferred to v0.16.
+9. [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — Stable Diffusion 3 / 3.5
+   family. MMDiT architecture, the four variants (SD3 / SD3.5
+   Medium / SD3.5 Large / SD3.5 Large Turbo), the rectified-flow
+   sampler, LoRA, img2img + RePaint-style inpaint, tiled hi-res.
 
 ## Specialized portrait techniques
 

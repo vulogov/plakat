@@ -2,15 +2,14 @@
 
 Stable Diffusion 3 / 3.5 is Stability AI's MMDiT (Multimodal Diffusion
 Transformer) architecture — a successor to the SD 1.5 / SDXL UNet
-family. plakat supports the full lineup (added across v0.14 phase 1a
-through v0.15 phase 6a): SD3 Medium, SD3.5 Medium, SD3.5 Large, and
-SD3.5 Large Turbo.
+family. plakat supports the full lineup: SD3 Medium, SD3.5 Medium,
+SD3.5 Large, and SD3.5 Large Turbo.
 
 This tutorial walks through the variants, prompt encoding,
-rectified-flow sampler, LoRA, img2img, and tiled hi-res. For
-ControlNet on SD3, see the v0.15 phase 6a status — the MMDiT vendor
-with residual hooks is in place; the CN model itself is deferred to
-v0.16.
+rectified-flow sampler, LoRA, img2img, and tiled hi-res. ControlNet
+support for SD3 isn't shipped — plakat raises an explicit error if
+you pass `--control-spec` with an SD3 model. Use Flux or SDXL for
+ControlNet-guided workflows.
 
 ## Prerequisites
 
@@ -98,7 +97,7 @@ distillation training has no conditional/unconditional pairing —
 the model is trained to produce final outputs in 4 steps from
 prompt alone. Pass `--guidance 0` (or let plakat default).
 
-## 5. LoRA support (v0.15 phase 3)
+## 5. LoRA support
 
 SD3 LoRAs use diffusers PEFT format and target the MMDiT joint
 blocks. Stability publishes a LoRA cookbook with the canonical
@@ -120,14 +119,12 @@ plakat generate "..." --model sd35-large \
     --lora "user/style-lora" --lora-scale 0.7
 ```
 
-LoRA composes with img2img and tiled (v0.15 phase 5). v0.15
-phase 7b-5 added runtime LoRA infrastructure to MMDiT but the
-scenario per-task dispatch isn't yet wired for SD3 (the scenario
-SD3 path currently builds a new pipeline per task — wiring runtime
-LoRA needs the pipeline-caching refactor first). For now: use
-scenario-level `loras:` for SD3 in scenarios.
+LoRA composes with img2img and tiled. In scenarios, use the
+scenario-level `loras:` field — per-task `loras:` on an SD3 model
+raises an explicit error (the per-task LoRA path is supported on
+Flux only).
 
-## 6. SD3 img2img (v0.15 phase 2)
+## 6. SD3 img2img
 
 Same `plakat img2img` subcommand, just pass `--model sd35-*`:
 
@@ -154,11 +151,10 @@ keeps unmasked pixels on the init's flow trajectory.
 Output naming reflects the mode: `plakat-sd3-{img2img,inpaint}-<seed>.png`.
 
 **Caveats**:
-- SD3 ControlNet (`--control*`) bails — phase 6 work deferred.
-- Tiled + img2img doesn't compose yet (the start-latent lerp +
-  per-tile blending interact awkwardly). Drop one or the other.
+- SD3 ControlNet (`--control*`) isn't supported.
+- Tiled + img2img doesn't compose — drop one or the other.
 
-## 7. Tiled hi-res (v0.15 phase 5)
+## 7. Tiled hi-res
 
 ```bash
 plakat generate "ultra-detailed architectural diagram" \
@@ -188,7 +184,7 @@ plakat generate "..." --model sd35-large --size 2048x2048 \
 ```
 
 Composes with LoRA. Does **not** compose with img2img / inpaint on
-SD3 (deferred).
+SD3 — drop one or the other.
 
 ## 8. Sampler & guidance
 
@@ -229,9 +225,9 @@ SDXL's typical 7.5 because MMDiT follows prompts better natively.
 | 32 GB+ | `--model sd35-large --tiled` for 4K+ Large. |
 
 If a config OOMs, drop the variant tier (Large → Medium) or shrink
-`--size`. SD3 doesn't have a quantized variant yet (no
-SD3-GGUF / SD3-NF4 in plakat as of v0.15), so the only memory dial
-is "smaller variant + smaller size + tiled".
+`--size`. plakat doesn't currently ship quantized SD3 variants —
+the only memory dial is "smaller variant + smaller size + tiled".
+For lower-VRAM workflows, Flux NF4 / GGUF cover the 12–16 GB tier.
 
 ## 10. SD3 in scenarios
 
@@ -257,9 +253,10 @@ is "smaller variant + smaller size + tiled".
 }
 ```
 
-Per-task `tiled:` override works (v0.15 phase 7a). Per-task LoRA
-is deferred on SD3 (use scenario-level `loras:`). Per-task
-`init-image:` + img2img works the same way it does for Flux.
+Per-task `tiled:` overrides work. Per-task `loras:` is **not**
+supported on SD3 — use scenario-level `loras:` (the per-task LoRA
+path is Flux-only). Per-task `init-image:` + img2img works the same
+way it does for Flux.
 
 ## 11. Common gotchas
 
@@ -278,10 +275,10 @@ is deferred on SD3 (use scenario-level `loras:`). Per-task
   = smoother seams + more compute. Default 768 (with default
   `--tile-size 1024`, giving 256-px overlap) is the SDXL/Flux
   precedent and works well for SD3 too.
-- **SD3 ControlNet status.** Phase 6a (v0.15) shipped the MMDiT
-  vendor with residual hooks (`forward_with_residuals` exists).
-  The actual CN model + integration is deferred. Plakat returns a
-  clear error if you pass `--control-spec` with an SD3 model.
+- **SD3 ControlNet.** Not supported — plakat returns a clear error
+  if you pass `--control-spec` with an SD3 model. Use Flux
+  (`flux-dev` + Union Pro v2 ControlNet) or SDXL for ControlNet-
+  guided workflows.
 
 ## What's next
 
