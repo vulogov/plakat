@@ -373,6 +373,55 @@ pub struct GenerateArgs {
     /// `--model flux-canny-dev` / `flux-depth-dev`.
     #[arg(long = "concept-from", value_name = "PATH")]
     pub concept_from: Option<PathBuf>,
+
+    /// v0.16 phase 6: enable ADetailer-style face refinement. After
+    /// the main t2i pass, plakat runs SCRFD on each output image,
+    /// then for each detected face: crops an expanded bounding box,
+    /// runs img2img on the crop with the same SD model + LoRAs, and
+    /// feather-composites the refined crop back onto the original.
+    /// Needs SCRFD weights configured via `PLAKAT_SCRFD_WEIGHTS` or
+    /// `PLAKAT_SCRFD_HF` (same env vars the FaceID portrait flow
+    /// uses). SD 1.5 / SDXL only — Flux / SD3 bail loud.
+    #[arg(long = "adetailer", default_value_t = false)]
+    pub adetailer: bool,
+
+    /// v0.16 phase 6: img2img strength for the face refinement pass.
+    /// `0.4` (default) preserves identity + colour, only crisps
+    /// detail. `0.6+` can change the face significantly.
+    #[arg(long = "adetailer-strength", default_value_t = 0.4, value_name = "F")]
+    pub adetailer_strength: f32,
+
+    /// v0.16 phase 6: bbox expansion factor for the face crop.
+    /// `0.25` (default) adds 25% on each side — gives the inpaint
+    /// pass enough surrounding context to match colour + skin tone.
+    #[arg(long = "adetailer-padding", default_value_t = 0.25, value_name = "F")]
+    pub adetailer_padding: f32,
+
+    /// v0.16 phase 6: feather fraction for the composite. `0.25`
+    /// fades the outer 25% of the bbox from full opacity → 0 at the
+    /// edge. Larger feather = softer seam, smaller = sharper detail
+    /// near the edge but more visible boundary.
+    #[arg(long = "adetailer-feather", default_value_t = 0.25, value_name = "F")]
+    pub adetailer_feather: f32,
+
+    /// v0.16 phase 6: SCRFD confidence threshold. Faces below this
+    /// score are skipped. `0.5` is the InsightFace deploy default.
+    #[arg(long = "adetailer-confidence", default_value_t = 0.5, value_name = "F")]
+    pub adetailer_confidence: f32,
+
+    /// v0.16 phase 6: working resolution for the face img2img pass
+    /// (square, snapped to multiples of 8). `512` (default) suits
+    /// SD 1.5; `1024` matches SDXL. Larger = more VRAM + slower per
+    /// face.
+    #[arg(long = "adetailer-size", default_value_t = 512, value_name = "PX")]
+    pub adetailer_size: u32,
+
+    /// v0.16 phase 6: optional prompt override for the face pass.
+    /// When unset, plakat uses a generic "detailed face, sharp
+    /// focus, high quality". Override when you want a specific style
+    /// (e.g. "ethereal portrait, soft lighting").
+    #[arg(long = "adetailer-prompt", value_name = "STR")]
+    pub adetailer_prompt: Option<String>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -607,6 +656,72 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     } else {
         None
     };
+
+    // v0.16 phase 6: ADetailer-style face refinement runs BEFORE the
+    // artefact composite + blend. Order matters: face refinement is
+    // a content fix, artefacts are intentional overlays — running
+    // refinement first means the user's stamps land on faces that
+    // already look right. The shared_core gets Arc-cloned so the
+    // later artefact-blend pass can still consume it.
+    if args.adetailer {
+        let variant = crate::pipelines::t2i::Variant::detect(&model);
+        if variant.is_flux() || variant.is_sd3() {
+            anyhow::bail!(
+                "--adetailer requires an SD-family model (SD 1.5 / SD 2.1 / SDXL / \
+                 SDXL-Turbo). Got --model {} which routes through the {} pipeline. \
+                 SD-family models can run the post-t2i face refinement pass; \
+                 Flux / SD3 portrait support is a future phase.",
+                model,
+                if variant.is_flux() { "Flux" } else { "SD3" }
+            );
+        }
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if !files.is_empty() {
+            let adetailer_cfg = crate::pipelines::adetailer::Config {
+                model: model.clone(),
+                loras: loras.clone(),
+                lora_scale,
+                prompt: args.adetailer_prompt
+                    .clone()
+                    .unwrap_or_else(|| {
+                        "detailed face, sharp focus, high quality".to_string()
+                    }),
+                negative: if negative.is_empty() {
+                    "lowres, bad anatomy, blurry, deformed".to_string()
+                } else {
+                    negative.clone()
+                },
+                strength: args.adetailer_strength,
+                working_size: args.adetailer_size,
+                steps,
+                guidance,
+                scheduler,
+                confidence: args.adetailer_confidence,
+                padding: args.adetailer_padding,
+                feather: args.adetailer_feather,
+                device: device.clone(),
+            };
+            let spin = crate::ui::progress::spinner(&format!(
+                "Running ADetailer over {} image(s)", files.len()
+            ));
+            let n = crate::pipelines::adetailer::refine_files(
+                &adetailer_cfg,
+                &files,
+                shared_core.clone(),
+            )
+            .await?;
+            spin.finish_with_message(format!(
+                "✓ ADetailer refined {n} face(s) across {} image(s)",
+                files.len()
+            ));
+        }
+    }
 
     crate::artefacts::composite_onto_seed_range(
         &args.artefacts,

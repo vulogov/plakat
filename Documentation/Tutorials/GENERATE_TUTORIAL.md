@@ -476,7 +476,66 @@ penultimate by training default — plakat logs a warning if you pass
 `--clip-skip > 1` on SDXL). Flux / SD3 don't use this flag at all
 (T5 + CLIP-pooled architecture).
 
-## 14. Common issues
+## 14. ADetailer — face refinement (v0.16+, SD-family)
+
+SD/SDXL often produce lo-fi faces at non-face working resolutions
+(small face in a big canvas — the model only had ~64² of latent for
+the actual face). ADetailer is a post-pass that fixes this:
+
+1. Detect each face with SCRFD.
+2. Crop an expanded bounding box around the face (default +25% on
+   each side).
+3. Run img2img on the crop at a higher working resolution.
+4. Feather-composite the refined crop back onto the original.
+
+Enable it with `--adetailer`:
+
+```bash
+# SD 1.5 portrait — default 0.4 strength, 25% bbox padding, 512²
+# working resolution per face.
+plakat generate "a woman walking through a forest, full body shot" \
+    --model sd15 --size 768x1024 --adetailer
+
+# SDXL — 1024² working resolution per face matches SDXL native.
+plakat generate "..." --model sdxl --size 1280x1920 \
+    --adetailer --adetailer-size 1024
+```
+
+**Required setup**: ADetailer needs SCRFD weights. Same env vars
+the FaceID portrait flow uses — either a local path:
+
+```bash
+export PLAKAT_SCRFD_WEIGHTS=/path/to/scrfd_10g_bnkps.safetensors
+```
+
+…or an HF spec:
+
+```bash
+export PLAKAT_SCRFD_HF="immich-app/SCRFD#scrfd_10g_bnkps.safetensors"
+```
+
+Without one of these, `--adetailer` bails loud.
+
+**Knobs**:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--adetailer-strength F` | `0.4` | img2img strength on each face crop. Lower = preserve identity, higher = re-imagine. `0.6+` will change the face. |
+| `--adetailer-padding F` | `0.25` | Bbox expansion per side. More = better blending, less res per face. |
+| `--adetailer-feather F` | `0.25` | Outer fraction of bbox that fades to 0. Softer seam vs sharper detail near edge. |
+| `--adetailer-confidence F` | `0.5` | SCRFD score threshold. Faces below skipped. |
+| `--adetailer-size N` | `512` | Working res for the face img2img (square, snapped /8). |
+| `--adetailer-prompt STR` | (generic) | Override the face pass prompt. Default: "detailed face, sharp focus, high quality". |
+
+**Restrictions**:
+- SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux / SD3 bail loud
+  (their portrait paths aren't shipped yet).
+- Runs once per output image — `--count 4` triggers four ADetailer
+  passes total. Each face within an image runs separately.
+- Composes with `--lora`, `--scheduler`, `--seed`. The face pass
+  reuses the t2i SdCore so there's no extra model load.
+
+## 15. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
