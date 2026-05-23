@@ -48,6 +48,8 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-schnell` | `black-forest-labs/FLUX.1-schnell` | 1024² typical. 4 steps. ~31 GB. |
 | `flux-dev` | `black-forest-labs/FLUX.1-dev` | Gated — needs `HF_TOKEN`. 20–50 steps. |
 | `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | **v0.13**: BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
+| `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | **v0.15 phase 4**: BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
+| `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | **v0.15 phase 4**: BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
 | `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | **v0.13**: 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | **v0.13**: 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | **v0.13**: 4-bit quantized Flux Fill. |
@@ -414,6 +416,36 @@ plakat generate "..." --model flux-dev \
 Composes with: BF16 / GGUF / NF4 Flux, LoRA, ControlNet, img2img,
 tiled denoise. **Does not** compose with `flux-fill-dev` (Fill's
 384ch `img_in` is incompatible).
+
+### `--concept-image <PATH>` (v0.15 phase 4)
+
+Pre-rendered conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev.
+Pass a canny edge map (with `--model flux-canny-dev`) or a depth map
+(with `--model flux-depth-dev`) at the target output resolution. The
+image is VAE-encoded and packed alongside the noise tokens — the
+"concept" checkpoint's `img_in` Linear is 128 channels wide (64
+noise + 64 conditioning).
+
+```bash
+# Canny-guided generation. Recommended guidance ~30.
+plakat generate "a Victorian mansion, gothic, twilight" \
+    --model flux-canny-dev --concept-image edges.png --guidance 30
+
+# Depth-guided. Same shape; different conditioning modality.
+plakat generate "a polished marble statue of an angel" \
+    --model flux-depth-dev --concept-image depth.png --guidance 30
+```
+
+Caveats (v0.15 phase 4):
+* Doesn't compose with `--tiled`, `--init-image` / `--mask`,
+  `--redux-image`, or `--control-spec` — pairing bails loud.
+* No auto-annotation yet — pass a pre-rendered map. Generate one via
+  the existing `plakat generate --control-spec canny:from=photo.jpg`
+  workflow (which writes the annotated conditioning to the output dir)
+  or with `cv2.Canny` / a depth model externally.
+* `--guidance 30` is BFL's recommendation per their model cards.
+  Lower values (3-7) underrespect the conditioning; higher
+  oversharpen.
 
 ### `--fast <PRESET>` (v0.14 phase 6)
 

@@ -96,6 +96,9 @@ pub struct Request {
     /// the T5 text embedding. Empty disables Redux. Cap of 4 enforced
     /// at `Pipeline::generate`. Ignored on SD-family models.
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
+    /// v0.15 phase 4: conditioning map for Flux.1-Canny-dev /
+    /// Flux.1-Depth-dev. Required for those variants; ignored otherwise.
+    pub flux_concept_image: Option<PathBuf>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -145,6 +148,12 @@ pub enum Variant {
     FluxDev,
     /// v0.13 phase 2: Flux.1-Fill-dev. 384-channel `img_in`, inpaint-only.
     FluxFillDev,
+    /// v0.15 phase 4: Flux.1-Canny-dev. BFL "concept" checkpoint with
+    /// canny-edge conditioning baked into a 128-channel `img_in`.
+    FluxCannyDev,
+    /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
+    /// trained on depth-map conditioning.
+    FluxDepthDev,
     /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
     Sd35Medium,
     /// v0.14 phase 8a: SD3.5 Large (8B-param flagship MMDiT).
@@ -192,7 +201,14 @@ impl Variant {
             return Self::Sd35Medium;
         }
         if m.contains("flux") {
-            if m.contains("fill") {
+            // v0.15 phase 4: Canny / Depth concept variants precede
+            // the generic "dev" check — "flux-canny-dev" contains
+            // "dev" but routes to the 128-channel `img_in` config.
+            if m.contains("canny") {
+                Self::FluxCannyDev
+            } else if m.contains("depth") {
+                Self::FluxDepthDev
+            } else if m.contains("fill") {
                 Self::FluxFillDev
             } else if m.contains("dev") {
                 Self::FluxDev
@@ -214,7 +230,20 @@ impl Variant {
         matches!(self, Self::Sdxl | Self::SdxlTurbo)
     }
     pub fn is_flux(self) -> bool {
-        matches!(self, Self::FluxSchnell | Self::FluxDev | Self::FluxFillDev)
+        matches!(
+            self,
+            Self::FluxSchnell
+                | Self::FluxDev
+                | Self::FluxFillDev
+                | Self::FluxCannyDev
+                | Self::FluxDepthDev
+        )
+    }
+    /// v0.15 phase 4: BFL "concept" Flux variants (Canny-dev /
+    /// Depth-dev). Conditioning is baked into a 128-channel `img_in`
+    /// rather than via a separate ControlNet.
+    pub fn is_flux_concept(self) -> bool {
+        matches!(self, Self::FluxCannyDev | Self::FluxDepthDev)
     }
     /// v0.14 phase 1a / 8a: any SD3 / SD3.5 variant. Routes to the
     /// MMDiT pipeline in `pipelines::sd3`.
@@ -1390,6 +1419,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         let fvar = match variant {
             Variant::FluxDev => flux::Variant::Dev,
             Variant::FluxFillDev => flux::Variant::FillDev,
+            Variant::FluxCannyDev => flux::Variant::CannyDev,
+            Variant::FluxDepthDev => flux::Variant::DepthDev,
             _ => flux::Variant::Schnell,
         };
         // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
@@ -1543,6 +1574,13 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // adapter is loaded.
             redux: !req.redux_images.is_empty(),
             redux_images: req.redux_images.clone(),
+            // v0.15 phase 4: concept conditioning (Canny-dev / Depth-dev).
+            // The t2i path doesn't carry this yet — pass None and let
+            // the CLI dispatch the concept variants directly via a
+            // dedicated flag in cli/generate.rs. The Flux pipeline
+            // bails loud if a concept variant is loaded without
+            // concept_conditioning set.
+            concept_conditioning: req.flux_concept_image.clone(),
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are
@@ -1686,5 +1724,55 @@ mod tests {
         assert_eq!(read.dimensions(), (4, 4));
         assert_eq!(read.get_pixel(0, 0).0, [255, 0, 0]);
         assert_eq!(read.get_pixel(3, 3).0, [255, 0, 0]);
+    }
+
+    // v0.15 phase 4 — variant detection for the BFL concept models.
+
+    #[test]
+    fn detects_flux_canny_dev() {
+        assert_eq!(Variant::detect("flux-canny-dev"), Variant::FluxCannyDev);
+        assert_eq!(Variant::detect("flux1-canny-dev"), Variant::FluxCannyDev);
+        assert_eq!(
+            Variant::detect("black-forest-labs/FLUX.1-Canny-dev"),
+            Variant::FluxCannyDev
+        );
+    }
+
+    #[test]
+    fn detects_flux_depth_dev() {
+        assert_eq!(Variant::detect("flux-depth-dev"), Variant::FluxDepthDev);
+        assert_eq!(Variant::detect("flux1-depth-dev"), Variant::FluxDepthDev);
+        assert_eq!(
+            Variant::detect("black-forest-labs/FLUX.1-Depth-dev"),
+            Variant::FluxDepthDev
+        );
+    }
+
+    #[test]
+    fn concept_variants_preempt_dev() {
+        // "flux-canny-dev" contains "dev" — the canny/depth checks
+        // must precede the generic dev check, otherwise we'd
+        // route to plain FluxDev and the 128ch `img_in` would be
+        // mis-sized at load time.
+        assert_eq!(Variant::detect("flux-canny-dev"), Variant::FluxCannyDev);
+        assert_eq!(Variant::detect("flux-depth-dev"), Variant::FluxDepthDev);
+        // Sanity: plain dev still routes to FluxDev.
+        assert_eq!(Variant::detect("flux-dev"), Variant::FluxDev);
+        assert_eq!(Variant::detect("flux-fill-dev"), Variant::FluxFillDev);
+    }
+
+    #[test]
+    fn is_flux_includes_concept_variants() {
+        assert!(Variant::FluxCannyDev.is_flux());
+        assert!(Variant::FluxDepthDev.is_flux());
+    }
+
+    #[test]
+    fn is_flux_concept_predicate() {
+        assert!(Variant::FluxCannyDev.is_flux_concept());
+        assert!(Variant::FluxDepthDev.is_flux_concept());
+        assert!(!Variant::FluxDev.is_flux_concept());
+        assert!(!Variant::FluxFillDev.is_flux_concept());
+        assert!(!Variant::Sd15.is_flux_concept());
     }
 }

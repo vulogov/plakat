@@ -324,6 +324,20 @@ pub struct GenerateArgs {
     /// adapter — paid only when this flag is set.
     #[arg(long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
+
+    /// **v0.15 phase 4**: conditioning map for the BFL Flux "concept"
+    /// checkpoints (`--model flux-canny-dev` or `flux-depth-dev`). The
+    /// path is a pre-rendered canny edge map (for Canny-dev) or depth
+    /// map (for Depth-dev) at the target output resolution. The image
+    /// is VAE-encoded and concat'd onto the noise tokens at every
+    /// denoise step — the model's `img_in` Linear is widened to
+    /// 128 channels to consume it.
+    ///
+    /// Required for the concept variants; ignored on other models.
+    /// Auto-annotation (synthesise the conditioning from a photo) is
+    /// not yet wired — pass a pre-rendered map.
+    #[arg(long = "concept-image", value_name = "PATH")]
+    pub concept_image: Option<PathBuf>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -459,6 +473,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         flux_quant_level: args.quant_level,
         t5_quant_level: args.t5_quant_level,
         redux_images: args.redux_images,
+        // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
+        flux_concept_image: args.concept_image,
     })
     .await?;
 
