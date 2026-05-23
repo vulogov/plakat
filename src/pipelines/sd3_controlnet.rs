@@ -335,6 +335,87 @@ impl Sd3ControlNet {
     }
 }
 
+/// Per-instance ControlNet load spec — mirrors `FluxControlNetLoad`.
+/// Carries the repo / file / config plus the runtime knobs (scale,
+/// conditioning path, step-gating window) that the dispatch sets
+/// per-task or per-call.
+#[derive(Debug, Clone)]
+pub struct Sd3ControlNetLoad {
+    /// HuggingFace repo id, e.g. `"InstantX/SD3-Controlnet-Canny"`.
+    pub repo: String,
+    /// File within the repo. Default for InstantX repos:
+    /// `"diffusion_pytorch_model.safetensors"`.
+    pub file: String,
+    /// Model architecture config.
+    pub cfg: Config,
+    /// Residual scale applied uniformly across all joint blocks.
+    /// 1.0 = full strength, 0.0 = disable. Diffusers calls this
+    /// `controlnet_conditioning_scale`.
+    pub scale: f32,
+    /// Path to the conditioning image (canny edges / depth map /
+    /// pose map). The image is VAE-encoded at dispatch time and
+    /// patchified by the CN's `pos_embed_input.proj`.
+    pub conditioning: Option<std::path::PathBuf>,
+    /// Step-gating window in `[0, 1]` schedule fractions. CN
+    /// residuals contribute only when `start <= progress < end`.
+    /// Diffusers calls these `control_guidance_start` /
+    /// `control_guidance_end`.
+    pub start: f32,
+    pub end: f32,
+}
+
+/// A loaded SD3 ControlNet bound to a conditioning image. The
+/// scenario / CLI dispatcher holds one of these per active CN slot
+/// and mutates `scale` / `conditioning` / `start` / `end` per task.
+pub struct LoadedSd3ControlNet {
+    pub net: Sd3ControlNet,
+    pub scale: f32,
+    pub conditioning_path: Option<std::path::PathBuf>,
+    pub start: f32,
+    pub end: f32,
+}
+
+impl LoadedSd3ControlNet {
+    /// `true` if the CN's step-gating window includes the given
+    /// progress fraction. `progress` is the fraction through the
+    /// denoise schedule in `[0, 1)` — same convention diffusers uses.
+    pub fn active_at(&self, progress: f32) -> bool {
+        progress >= self.start && progress < self.end
+    }
+}
+
+/// Download a single InstantX SD3 ControlNet safetensors from
+/// HuggingFace and construct the model. Async because the first
+/// call on a cold cache downloads ~2-3 GB.
+///
+/// Returns the model — the dispatcher wraps it in a
+/// [`LoadedSd3ControlNet`] with the per-instance runtime knobs.
+///
+/// The InstantX repos publish weights with key names that match the
+/// diffusers `SD3ControlNetModel` convention (`pos_embed.proj`,
+/// `pos_embed_input.proj`, `time_text_embed.timestep_embedder.*`,
+/// `transformer_blocks.{i}.*`, `controlnet_blocks.{i}`). Our
+/// `Sd3ControlNet::new` resolves directly against those paths, so
+/// no state-dict remap is needed (unlike the diffusers→BFL remap
+/// Flux ControlNet requires).
+pub async fn load_from_hf(
+    repo: &str,
+    file: &str,
+    cfg: &Config,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<Sd3ControlNet> {
+    let path = crate::hf::download::get_file(repo, file)
+        .await
+        .with_context(|| format!("downloading SD3 ControlNet {repo}/{file}"))?;
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&path], dtype, device)?
+    };
+    Sd3ControlNet::new(cfg, vb).with_context(|| {
+        format!("constructing SD3 ControlNet from {repo}/{file}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +456,34 @@ mod tests {
             assert_eq!(c.frequency_embedding_size, 256);
             assert_eq!(c.context_embed_size, 4096);
         }
+    }
+
+    /// Standalone gating predicate to exercise the same math
+    /// `LoadedSd3ControlNet::active_at` runs without needing a real
+    /// `Sd3ControlNet`. The struct can't be `mem::zeroed` safely
+    /// (Vec / Linear fields have ownership invariants), so we test
+    /// the bool by mirroring its implementation here.
+    fn gate_active_at(start: f32, end: f32, progress: f32) -> bool {
+        progress >= start && progress < end
+    }
+
+    #[test]
+    fn gating_window_full_range() {
+        // Standard start=0.0, end=1.0: active throughout, exclusive
+        // at the right edge.
+        assert!(gate_active_at(0.0, 1.0, 0.0));
+        assert!(gate_active_at(0.0, 1.0, 0.5));
+        assert!(!gate_active_at(0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn gating_window_excludes_outside() {
+        let (s, e) = (0.2, 0.6);
+        assert!(!gate_active_at(s, e, 0.0));
+        assert!(!gate_active_at(s, e, 0.1));
+        assert!(gate_active_at(s, e, 0.2));
+        assert!(gate_active_at(s, e, 0.5));
+        assert!(!gate_active_at(s, e, 0.6));
+        assert!(!gate_active_at(s, e, 0.9));
     }
 }
