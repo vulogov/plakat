@@ -44,6 +44,7 @@
 use anyhow::Result;
 use candle_core::{DType, Device, Module, Tensor};
 use candle_nn as nn;
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// One active LoRA, stored in the runtime LoRA stack of a
@@ -87,6 +88,11 @@ pub struct LoraSpec {
 /// at forward time. Initial stack is empty — the LoraLinear behaves
 /// byte-identically to the wrapped Linear until `set_loras` is
 /// called.
+///
+/// `Clone` clones the base Linear (cheap — its weight is a `Tensor`
+/// which is internally an `Arc`) and the `slots` Arc (shared
+/// reference; cloned LoraLinears see the same active LoRAs).
+#[derive(Debug, Clone)]
 pub struct LoraLinear {
     base: nn::Linear,
     /// Cached output dim (extracted from `base.weight().dim(0)` at
@@ -198,6 +204,36 @@ impl Module for LoraLinear {
         Ok(y)
     }
 }
+
+// =====================================================================
+// v0.15 phase 7b-3: shared LoRA registry types — promoted from
+// `flux_nf4_inner` so every backbone (NF4 / Flux BF16 / Flux GGUF /
+// MMDiT / SD UNet) uses the same path-keyed structure.
+// =====================================================================
+
+/// One LoRA-registry entry — a handle into the target Linear's runtime
+/// LoRA stack plus the metadata needed to pad LoRA-B matrices to the
+/// right size in the backbone's `apply_loras`. Storing `out_dim` /
+/// `in_dim` here avoids walking the model structure at apply time.
+///
+/// `Clone` clones the `Arc<RwLock<...>>` handle (cheap, shared
+/// reference). `Debug` is derived so consuming backbones can
+/// derive `Debug` on their top-level model struct.
+#[derive(Debug, Clone)]
+pub struct LoraRegistryEntry {
+    pub handle: Arc<RwLock<Vec<LoraSlot>>>,
+    pub out_dim: usize,
+    pub in_dim: usize,
+}
+
+/// Path → entry map, keyed by full safetensors key (including the
+/// trailing `.weight`). Each backbone's model constructor populates
+/// this during weight loading; `apply_loras` consumes it.
+pub type LoraRegistry = HashMap<String, LoraRegistryEntry>;
+
+// =====================================================================
+// pad_b_to_out_dim — exported for backbone runtime-LoRA wrappers.
+// =====================================================================
 
 /// Zero-pad a LoRA-B matrix from the natural slice shape
 /// `(slice_size, rank)` to the full output shape `(out_dim, rank)`.

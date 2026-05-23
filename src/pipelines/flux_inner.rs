@@ -33,7 +33,19 @@
 //! be deleted and `Flux` aliased back to the upstream type.
 
 use candle_core::{DType, IndexOp, Result, Tensor, D};
-use candle_nn::{LayerNorm, Linear, RmsNorm, VarBuilder};
+use candle_nn::{LayerNorm, RmsNorm, VarBuilder};
+
+// v0.15 phase 7b-3: every Linear in the vendored Flux backbone is now
+// wrapped as a `LoraLinear` so the model can apply a runtime LoRA
+// stack at forward time. The stack starts empty (behaves identically
+// to the previous `nn::Linear` direct use) and is updated by
+// `Flux::apply_loras` at scenario per-task dispatch time. The slot
+// registry stores per-Linear handles keyed by full safetensors path
+// so the dispatcher doesn't have to walk the model.
+use crate::pipelines::lora_linear::{
+    LoraLinear, LoraRegistry, LoraRegistryEntry, LoraSlot, LoraSpec,
+};
+use std::sync::{Arc, RwLock};
 
 // ---------------------------------------------------------------------
 // Config — same as upstream.
@@ -215,6 +227,69 @@ pub fn timestep_embedding(t: &Tensor, dim: usize, dtype: DType) -> Result<Tensor
 }
 
 // ---------------------------------------------------------------------
+// v0.15 phase 7b-3: wrap_linear / wrap_linear_b — load a candle
+// Linear, hand it to `LoraLinear`, register the slots handle in the
+// shared registry under `<prefix>.weight`. Every Linear in the
+// vendored Flux backbone routes through these so the full path-keyed
+// registry is ready for `Flux::apply_loras`.
+// ---------------------------------------------------------------------
+
+fn wrap_linear(
+    in_dim: usize,
+    out_dim: usize,
+    vb: VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = candle_nn::linear(in_dim, out_dim, vb.clone())?;
+    let ll = LoraLinear::from_linear(base).map_err(|e| {
+        candle_core::Error::Msg(format!("wrapping LoraLinear at {}: {e}", vb.prefix()))
+    })?;
+    let key = format!("{}.weight", vb.prefix());
+    registry
+        .write()
+        .map_err(|_| {
+            candle_core::Error::Msg("Flux LoRA registry poisoned during construction".into())
+        })?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim,
+                in_dim,
+            },
+        );
+    Ok(ll)
+}
+
+fn wrap_linear_b(
+    in_dim: usize,
+    out_dim: usize,
+    bias: bool,
+    vb: VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = candle_nn::linear_b(in_dim, out_dim, bias, vb.clone())?;
+    let ll = LoraLinear::from_linear(base).map_err(|e| {
+        candle_core::Error::Msg(format!("wrapping LoraLinear at {}: {e}", vb.prefix()))
+    })?;
+    let key = format!("{}.weight", vb.prefix());
+    registry
+        .write()
+        .map_err(|_| {
+            candle_core::Error::Msg("Flux LoRA registry poisoned during construction".into())
+        })?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim,
+                in_dim,
+            },
+        );
+    Ok(ll)
+}
+
+// ---------------------------------------------------------------------
 // EmbedNd, MlpEmbedder, QkNorm — same as upstream, made `pub`.
 // ---------------------------------------------------------------------
 
@@ -255,14 +330,19 @@ impl candle_core::Module for EmbedNd {
 
 #[derive(Debug, Clone)]
 pub struct MlpEmbedder {
-    in_layer: Linear,
-    out_layer: Linear,
+    in_layer: LoraLinear,
+    out_layer: LoraLinear,
 }
 
 impl MlpEmbedder {
-    pub fn new(in_sz: usize, h_sz: usize, vb: VarBuilder) -> Result<Self> {
-        let in_layer = candle_nn::linear(in_sz, h_sz, vb.pp("in_layer"))?;
-        let out_layer = candle_nn::linear(h_sz, h_sz, vb.pp("out_layer"))?;
+    pub fn new(
+        in_sz: usize,
+        h_sz: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
+        let in_layer = wrap_linear(in_sz, h_sz, vb.pp("in_layer"), registry)?;
+        let out_layer = wrap_linear(h_sz, h_sz, vb.pp("out_layer"), registry)?;
         Ok(Self {
             in_layer,
             out_layer,
@@ -321,12 +401,16 @@ impl ModulationOut {
 
 #[derive(Debug, Clone)]
 pub struct Modulation1 {
-    lin: Linear,
+    lin: LoraLinear,
 }
 
 impl Modulation1 {
-    pub fn new(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let lin = candle_nn::linear(dim, 3 * dim, vb.pp("lin"))?;
+    pub fn new(
+        dim: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
+        let lin = wrap_linear(dim, 3 * dim, vb.pp("lin"), registry)?;
         Ok(Self { lin })
     }
 
@@ -349,12 +433,16 @@ impl Modulation1 {
 
 #[derive(Debug, Clone)]
 pub struct Modulation2 {
-    lin: Linear,
+    lin: LoraLinear,
 }
 
 impl Modulation2 {
-    pub fn new(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let lin = candle_nn::linear(dim, 6 * dim, vb.pp("lin"))?;
+    pub fn new(
+        dim: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
+        let lin = wrap_linear(dim, 6 * dim, vb.pp("lin"), registry)?;
         Ok(Self { lin })
     }
 
@@ -387,18 +475,24 @@ impl Modulation2 {
 
 #[derive(Debug, Clone)]
 pub struct SelfAttention {
-    qkv: Linear,
+    qkv: LoraLinear,
     norm: QkNorm,
-    pub proj: Linear,
+    pub proj: LoraLinear,
     num_heads: usize,
 }
 
 impl SelfAttention {
-    pub fn new(dim: usize, num_heads: usize, qkv_bias: bool, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        dim: usize,
+        num_heads: usize,
+        qkv_bias: bool,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let head_dim = dim / num_heads;
-        let qkv = candle_nn::linear_b(dim, dim * 3, qkv_bias, vb.pp("qkv"))?;
+        let qkv = wrap_linear_b(dim, dim * 3, qkv_bias, vb.pp("qkv"), registry)?;
         let norm = QkNorm::new(head_dim, vb.pp("norm"))?;
-        let proj = candle_nn::linear(dim, dim, vb.pp("proj"))?;
+        let proj = wrap_linear(dim, dim, vb.pp("proj"), registry)?;
         Ok(Self {
             qkv,
             norm,
@@ -422,14 +516,19 @@ impl SelfAttention {
 
 #[derive(Debug, Clone)]
 pub struct Mlp {
-    lin1: Linear,
-    lin2: Linear,
+    lin1: LoraLinear,
+    lin2: LoraLinear,
 }
 
 impl Mlp {
-    pub fn new(in_sz: usize, mlp_sz: usize, vb: VarBuilder) -> Result<Self> {
-        let lin1 = candle_nn::linear(in_sz, mlp_sz, vb.pp("0"))?;
-        let lin2 = candle_nn::linear(mlp_sz, in_sz, vb.pp("2"))?;
+    pub fn new(
+        in_sz: usize,
+        mlp_sz: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
+        let lin1 = wrap_linear(in_sz, mlp_sz, vb.pp("0"), registry)?;
+        let lin2 = wrap_linear(mlp_sz, in_sz, vb.pp("2"), registry)?;
         Ok(Self { lin1, lin2 })
     }
 }
@@ -461,19 +560,27 @@ pub struct DoubleStreamBlock {
 }
 
 impl DoubleStreamBlock {
-    pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        cfg: &Config,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let h_sz = cfg.hidden_size;
         let mlp_sz = (h_sz as f64 * cfg.mlp_ratio) as usize;
-        let img_mod = Modulation2::new(h_sz, vb.pp("img_mod"))?;
+        let img_mod = Modulation2::new(h_sz, vb.pp("img_mod"), registry)?;
         let img_norm1 = layer_norm(h_sz, vb.pp("img_norm1"))?;
-        let img_attn = SelfAttention::new(h_sz, cfg.num_heads, cfg.qkv_bias, vb.pp("img_attn"))?;
+        let img_attn = SelfAttention::new(
+            h_sz, cfg.num_heads, cfg.qkv_bias, vb.pp("img_attn"), registry,
+        )?;
         let img_norm2 = layer_norm(h_sz, vb.pp("img_norm2"))?;
-        let img_mlp = Mlp::new(h_sz, mlp_sz, vb.pp("img_mlp"))?;
-        let txt_mod = Modulation2::new(h_sz, vb.pp("txt_mod"))?;
+        let img_mlp = Mlp::new(h_sz, mlp_sz, vb.pp("img_mlp"), registry)?;
+        let txt_mod = Modulation2::new(h_sz, vb.pp("txt_mod"), registry)?;
         let txt_norm1 = layer_norm(h_sz, vb.pp("txt_norm1"))?;
-        let txt_attn = SelfAttention::new(h_sz, cfg.num_heads, cfg.qkv_bias, vb.pp("txt_attn"))?;
+        let txt_attn = SelfAttention::new(
+            h_sz, cfg.num_heads, cfg.qkv_bias, vb.pp("txt_attn"), registry,
+        )?;
         let txt_norm2 = layer_norm(h_sz, vb.pp("txt_norm2"))?;
-        let txt_mlp = Mlp::new(h_sz, mlp_sz, vb.pp("txt_mlp"))?;
+        let txt_mlp = Mlp::new(h_sz, mlp_sz, vb.pp("txt_mlp"), registry)?;
         Ok(Self {
             img_mod,
             img_norm1,
@@ -535,8 +642,8 @@ impl DoubleStreamBlock {
 
 #[derive(Debug, Clone)]
 pub struct SingleStreamBlock {
-    linear1: Linear,
-    linear2: Linear,
+    linear1: LoraLinear,
+    linear2: LoraLinear,
     norm: QkNorm,
     pre_norm: LayerNorm,
     modulation: Modulation1,
@@ -546,15 +653,21 @@ pub struct SingleStreamBlock {
 }
 
 impl SingleStreamBlock {
-    pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        cfg: &Config,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let h_sz = cfg.hidden_size;
         let mlp_sz = (h_sz as f64 * cfg.mlp_ratio) as usize;
         let head_dim = h_sz / cfg.num_heads;
-        let linear1 = candle_nn::linear(h_sz, h_sz * 3 + mlp_sz, vb.pp("linear1"))?;
-        let linear2 = candle_nn::linear(h_sz + mlp_sz, h_sz, vb.pp("linear2"))?;
+        let linear1 = wrap_linear(
+            h_sz, h_sz * 3 + mlp_sz, vb.pp("linear1"), registry,
+        )?;
+        let linear2 = wrap_linear(h_sz + mlp_sz, h_sz, vb.pp("linear2"), registry)?;
         let norm = QkNorm::new(head_dim, vb.pp("norm"))?;
         let pre_norm = layer_norm(h_sz, vb.pp("pre_norm"))?;
-        let modulation = Modulation1::new(h_sz, vb.pp("modulation"))?;
+        let modulation = Modulation1::new(h_sz, vb.pp("modulation"), registry)?;
         Ok(Self {
             linear1,
             linear2,
@@ -589,15 +702,25 @@ impl SingleStreamBlock {
 #[derive(Debug, Clone)]
 pub struct LastLayer {
     norm_final: LayerNorm,
-    linear: Linear,
-    ada_ln_modulation: Linear,
+    linear: LoraLinear,
+    ada_ln_modulation: LoraLinear,
 }
 
 impl LastLayer {
-    pub fn new(h_sz: usize, p_sz: usize, out_c: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        h_sz: usize,
+        p_sz: usize,
+        out_c: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let norm_final = layer_norm(h_sz, vb.pp("norm_final"))?;
-        let linear = candle_nn::linear(h_sz, p_sz * p_sz * out_c, vb.pp("linear"))?;
-        let ada_ln_modulation = candle_nn::linear(h_sz, 2 * h_sz, vb.pp("adaLN_modulation.1"))?;
+        let linear = wrap_linear(
+            h_sz, p_sz * p_sz * out_c, vb.pp("linear"), registry,
+        )?;
+        let ada_ln_modulation = wrap_linear(
+            h_sz, 2 * h_sz, vb.pp("adaLN_modulation.1"), registry,
+        )?;
         Ok(Self {
             norm_final,
             linear,
@@ -624,8 +747,8 @@ impl LastLayer {
 
 #[derive(Debug, Clone)]
 pub struct Flux {
-    img_in: Linear,
-    txt_in: Linear,
+    img_in: LoraLinear,
+    txt_in: LoraLinear,
     time_in: MlpEmbedder,
     vector_in: MlpEmbedder,
     guidance_in: Option<MlpEmbedder>,
@@ -633,36 +756,73 @@ pub struct Flux {
     pub double_blocks: Vec<DoubleStreamBlock>,
     pub single_blocks: Vec<SingleStreamBlock>,
     final_layer: LastLayer,
+    /// v0.15 phase 7b-3: path → LoraLinear-slots handle map populated
+    /// during construction. Consumed by `apply_loras` at scenario
+    /// per-task dispatch time so we can update slots by safetensors
+    /// path without re-walking blocks.
+    lora_registry: LoraRegistry,
 }
 
 impl Flux {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let img_in = candle_nn::linear(cfg.in_channels, cfg.hidden_size, vb.pp("img_in"))?;
-        let txt_in = candle_nn::linear(cfg.context_in_dim, cfg.hidden_size, vb.pp("txt_in"))?;
+        // v0.15 phase 7b-3: shared LoRA registry — every constructed
+        // LoraLinear writes its slot handle into this map. After all
+        // sub-loaders go out of scope at the end of construction, we
+        // unwrap the Arc and move the inner HashMap into the Flux
+        // struct.
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
+        let img_in = wrap_linear(
+            cfg.in_channels, cfg.hidden_size, vb.pp("img_in"), &registry,
+        )?;
+        let txt_in = wrap_linear(
+            cfg.context_in_dim, cfg.hidden_size, vb.pp("txt_in"), &registry,
+        )?;
         let mut double_blocks = Vec::with_capacity(cfg.depth);
         let vb_d = vb.pp("double_blocks");
         for idx in 0..cfg.depth {
-            let db = DoubleStreamBlock::new(cfg, vb_d.pp(idx))?;
+            let db = DoubleStreamBlock::new(cfg, vb_d.pp(idx), &registry)?;
             double_blocks.push(db)
         }
         let mut single_blocks = Vec::with_capacity(cfg.depth_single_blocks);
         let vb_s = vb.pp("single_blocks");
         for idx in 0..cfg.depth_single_blocks {
-            let sb = SingleStreamBlock::new(cfg, vb_s.pp(idx))?;
+            let sb = SingleStreamBlock::new(cfg, vb_s.pp(idx), &registry)?;
             single_blocks.push(sb)
         }
-        let time_in = MlpEmbedder::new(256, cfg.hidden_size, vb.pp("time_in"))?;
-        let vector_in = MlpEmbedder::new(cfg.vec_in_dim, cfg.hidden_size, vb.pp("vector_in"))?;
+        let time_in = MlpEmbedder::new(256, cfg.hidden_size, vb.pp("time_in"), &registry)?;
+        let vector_in = MlpEmbedder::new(
+            cfg.vec_in_dim, cfg.hidden_size, vb.pp("vector_in"), &registry,
+        )?;
         let guidance_in = if cfg.guidance_embed {
-            let mlp = MlpEmbedder::new(256, cfg.hidden_size, vb.pp("guidance_in"))?;
+            let mlp = MlpEmbedder::new(
+                256, cfg.hidden_size, vb.pp("guidance_in"), &registry,
+            )?;
             Some(mlp)
         } else {
             None
         };
-        let final_layer =
-            LastLayer::new(cfg.hidden_size, 1, cfg.in_channels, vb.pp("final_layer"))?;
+        let final_layer = LastLayer::new(
+            cfg.hidden_size, 1, cfg.in_channels, vb.pp("final_layer"), &registry,
+        )?;
         let pe_dim = cfg.hidden_size / cfg.num_heads;
         let pe_embedder = EmbedNd::new(pe_dim, cfg.theta, cfg.axes_dim.to_vec());
+        // Drop the loader chain so the registry Arc's refcount returns
+        // to 1, then `try_unwrap`. The local `vb` clones in nested
+        // constructors already went out of scope before this point;
+        // the only remaining Arc is our local `registry`.
+        let lora_registry = Arc::try_unwrap(registry)
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "Flux LoRA registry still has outstanding refs after construction"
+                        .into(),
+                )
+            })?
+            .into_inner()
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "Flux LoRA registry RwLock poisoned at construction".into(),
+                )
+            })?;
         Ok(Self {
             img_in,
             txt_in,
@@ -673,7 +833,87 @@ impl Flux {
             double_blocks,
             single_blocks,
             final_layer,
+            lora_registry,
         })
+    }
+
+    /// v0.15 phase 7b-3: replace the runtime LoRA stack on every
+    /// affected LoraLinear at once. `specs` is path-keyed (full
+    /// safetensors key including `.weight`); each entry's
+    /// `row_slice` pre-pads to the registered `out_dim`.
+    ///
+    /// Paths not present in the registry log at debug and skip.
+    /// Returns the number of slots successfully applied.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<String, Vec<LoraSpec>>,
+        dtype: DType,
+        device: &candle_core::Device,
+    ) -> Result<usize> {
+        let mut applied = 0usize;
+        for (key, slot_specs) in specs {
+            let Some(entry) = self.lora_registry.get(&key) else {
+                tracing::debug!(
+                    target: "plakat",
+                    "Flux apply_loras: no Linear registered at {key} — skipping"
+                );
+                continue;
+            };
+            let mut new_slots = Vec::<LoraSlot>::with_capacity(slot_specs.len());
+            for spec in slot_specs {
+                let b_padded = crate::pipelines::lora_linear::pad_b_to_out_dim(
+                    &spec.b,
+                    spec.row_slice,
+                    entry.out_dim,
+                    dtype,
+                    device,
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!(
+                        "Flux apply_loras pad_b at {key}: {e}"
+                    ))
+                })?;
+                let a = spec.a.to_dtype(dtype)?;
+                new_slots.push(LoraSlot {
+                    a,
+                    b: b_padded,
+                    scale: spec.scale,
+                });
+            }
+            *entry.handle.write().map_err(|_| {
+                candle_core::Error::Msg(format!(
+                    "Flux LoRA slot handle for {key} poisoned"
+                ))
+            })? = new_slots;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
+    /// v0.15 phase 7b-3: clear every active LoRA. Resets every
+    /// LoraLinear to its as-loaded weight contribution only.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        for entry in self.lora_registry.values() {
+            entry
+                .handle
+                .write()
+                .map_err(|_| {
+                    candle_core::Error::Msg("Flux LoRA slot handle poisoned".into())
+                })?
+                .clear();
+        }
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-3: snapshot of registered safetensors keys.
+    /// Useful for verifying the loader walked the whole model.
+    pub fn registered_keys(&self) -> Vec<String> {
+        self.lora_registry.keys().cloned().collect()
+    }
+
+    /// v0.15 phase 7b-3: how many LoraLinears were registered.
+    pub fn n_registered_linears(&self) -> usize {
+        self.lora_registry.len()
     }
 
     /// Standard forward — no ControlNet residuals. Same math as
@@ -812,5 +1052,89 @@ impl candle_transformers::models::flux::WithForward for Flux {
         guidance: Option<&Tensor>,
     ) -> Result<Tensor> {
         Self::forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance)
+    }
+}
+
+#[cfg(test)]
+mod bf16_lora_tests {
+    use super::*;
+    use candle_core::Module;
+    use std::collections::HashMap;
+
+    fn cpu() -> candle_core::Device {
+        candle_core::Device::Cpu
+    }
+
+    /// Build a 2x2 LoraLinear with zero base weight via the wrap_linear
+    /// helper. The VarMap-backed VarBuilder lets us construct a Linear
+    /// with controlled init (zeros) without needing real safetensors.
+    fn zero_wrapped(prefix: &str) -> (LoraLinear, Arc<RwLock<LoraRegistry>>) {
+        let vmap = candle_nn::VarMap::new();
+        vmap.get(
+            (2, 2),
+            &format!("{prefix}.weight"),
+            candle_nn::Init::Const(0.0),
+            DType::F32,
+            &cpu(),
+        )
+        .unwrap();
+        vmap.get(
+            (2,),
+            &format!("{prefix}.bias"),
+            candle_nn::Init::Const(0.0),
+            DType::F32,
+            &cpu(),
+        )
+        .unwrap();
+        let vb = VarBuilder::from_varmap(&vmap, DType::F32, &cpu());
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
+        let ll = wrap_linear(2, 2, vb.pp(prefix), &registry).unwrap();
+        (ll, registry)
+    }
+
+    #[test]
+    fn wrap_linear_registers_at_full_path() {
+        let (_ll, reg) = zero_wrapped("some.layer");
+        let map = reg.read().unwrap();
+        // The wrap helper registers at `<prefix>.weight`.
+        assert!(map.contains_key("some.layer.weight"));
+        let entry = &map["some.layer.weight"];
+        assert_eq!(entry.out_dim, 2);
+        assert_eq!(entry.in_dim, 2);
+    }
+
+    #[test]
+    fn wrapped_linear_passes_through_when_no_lora() {
+        // Base is zero; empty LoRA stack → forward(x) = 0.
+        let (ll, _reg) = zero_wrapped("test");
+        let x = Tensor::ones((1, 2), DType::F32, &cpu()).unwrap();
+        let y = ll.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(yv, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn registry_drives_runtime_lora_via_handle() {
+        // Apply identity LoRA via the registry handle (mimicking what
+        // Flux::apply_loras does internally).
+        let (ll, reg) = zero_wrapped("test");
+        let id = Tensor::from_vec(
+            vec![1.0f32, 0.0, 0.0, 1.0],
+            (2, 2),
+            &cpu(),
+        )
+        .unwrap();
+        let entry = reg.read().unwrap()["test.weight"].clone();
+        *entry.handle.write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        let x = Tensor::from_vec(vec![3.0f32, 7.0], (1, 2), &cpu()).unwrap();
+        let y = ll.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        // 0 (base) + 1 * I @ I @ [3, 7] = [3, 7].
+        assert!((yv[0] - 3.0).abs() < 1e-5);
+        assert!((yv[1] - 7.0).abs() < 1e-5);
     }
 }
