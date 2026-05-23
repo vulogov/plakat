@@ -224,9 +224,9 @@ plakat img2img init.png --mask region.png \
 Fill's `img_in` is 384 channels (64 noise + 64 masked-latent + 256
 image-space mask). The mask drives the denoise directly — no
 RePaint-style strength blending. Default `--guidance 30` per BFL's
-model card. Fill composes with ControlNet. Tiled + Fill isn't
-supported (per-tile mask slicing doesn't compose); use whole-canvas
-Fill or drop the tiled path.
+model card. Fill composes with ControlNet, and — as of v0.16 —
+with `--tiled` (per-tile masked-latent + mask slicing inside the
+denoise loop; same Hann-blend the standard tiled path uses).
 
 ## 8. Tiled hi-res
 
@@ -244,8 +244,18 @@ Each step splits the canvas into 1024-px tiles (stride 768 means
 2D Hann window. Total VRAM stays at the 1024² working set.
 
 Composes with: GGUF / NF4, LoRA, ControlNet (per-tile residuals
-sliced correctly), img2img. Does **not** compose with: Fill or the
-concept variants.
+sliced correctly), img2img, **Fill** (per-tile masked-latent + mask
+packing, v0.16+). Does **not** compose with: the concept variants
+(Canny-dev / Depth-dev), Redux.
+
+```bash
+# 4K tiled inpaint — Fill at canvas sizes that wouldn't fit
+# whole-canvas in 24GB VRAM.
+plakat generate "ornate carved stone window" \
+    --model flux-fill-dev --size 2048x2048 \
+    --image room.png --mask wall.png \
+    --tiled --tile-size 1024 --tile-stride 768
+```
 
 ## 9. Flux Redux (image conditioning)
 

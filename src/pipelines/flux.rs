@@ -1048,20 +1048,12 @@ impl Pipeline {
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
         // ---------- tiled-denoise validation (v0.13 phase 4 + 9) ----
-        // Tiled Flux composes with ControlNet (v0.13 phase 9) by
-        // pre-encoding each CN's conditioning as a 2D latent and
-        // cropping per tile inside the denoise loop. Fill still bails
-        // — the 384-channel input layout would need per-tile mask
-        // slicing, distinct from the CN cropping done here.
-        // Img2img + LoRA + GGUF compose for free.
+        // Tiled Flux composes with ControlNet (v0.13 phase 9) and
+        // — as of v0.16 phase 4 — also with Flux.1-Fill-dev: the
+        // 2D masked-latent + image-space mask are sliced per tile
+        // before packing (see `pack_fill_2d_tile`). Img2img + LoRA
+        // + GGUF compose for free.
         if let Some(tcfg) = req.tiled.as_ref() {
-            if self.variant.is_fill() {
-                bail!(
-                    "--tiled doesn't yet compose with Flux.1-Fill-dev. The Fill \
-                     conditioning (masked latent + mask) would need to be sliced \
-                     per tile."
-                );
-            }
             if tcfg.tile_size % 16 != 0 || tcfg.stride % 16 != 0 {
                 bail!(
                     "Tiled Flux: --tile-size and --tile-stride must be divisible by 16 \
@@ -1272,7 +1264,13 @@ impl Pipeline {
         // 320 are constants computed here from the user's init image +
         // mask. Stays `None` for non-Fill variants — the denoise loop
         // skips the cat.
-        let fill_cond = if self.variant.is_fill() {
+        //
+        // v0.16 phase 4: keep the 2D form alongside the packed full
+        // canvas so the tiled denoise can slice per tile.
+        // `fill_cond_2d` is `Some` only on Fill; `fill_cond_packed`
+        // is the canonical full-canvas packing (320ch) consumed by
+        // the non-tiled denoise.
+        let fill_cond_2d = if self.variant.is_fill() {
             let init_path = req.init_image.as_ref().ok_or_else(|| {
                 anyhow!(
                     "Flux.1-Fill-dev requires --image / init_image — no init image provided."
@@ -1282,7 +1280,7 @@ impl Pipeline {
                 anyhow!("Flux.1-Fill-dev requires --mask — no mask image provided.")
             })?;
             let spin = progress::spinner("Encoding init image + mask for Fill");
-            let cond = self.encode_fill_conditioning(init_path, mask_path, h, w)?;
+            let cond = self.encode_fill_conditioning_2d(init_path, mask_path, h, w)?;
             spin.finish_with_message("✓ Fill conditioning encoded");
             Some(cond)
         } else {
@@ -1294,6 +1292,12 @@ impl Pipeline {
                 );
             }
             None
+        };
+        // Pack the full canvas once for the non-tiled denoise. Tiled
+        // packs per-tile inside `denoise_tiled` from `fill_cond_2d`.
+        let fill_cond_packed = match fill_cond_2d.as_ref() {
+            Some(c) => Some(pack_fill_2d_full(c)?),
+            None => None,
         };
 
         // ---------- ControlNet conditioning prep (v0.12 + multi) ----
@@ -1430,6 +1434,7 @@ impl Pipeline {
                     guidance,
                     tcfg,
                     &conditioning_2d,
+                    fill_cond_2d.as_ref(),
                     &bar,
                 )?
             } else {
@@ -1440,7 +1445,7 @@ impl Pipeline {
                     &timesteps,
                     guidance,
                     &conditioning_packed,
-                    fill_cond.as_ref(),
+                    fill_cond_packed.as_ref(),
                     concept_cond_packed.as_ref(),
                     &bar,
                 )?;
@@ -1700,13 +1705,18 @@ impl Pipeline {
     ///   into 16×16 patches → 256 channels per token. The 16-pixel
     ///   patch size matches Flux's effective per-token receptive field
     ///   (8× VAE downsample × 2× Flux 2x2 patching).
-    fn encode_fill_conditioning(
+    /// v0.16 phase 4: build the **2D form** of Flux Fill conditioning
+    /// — the masked init latent + image-space mask — kept separately
+    /// so the tiled denoise can slice each per tile before packing.
+    /// Non-tiled callers pack the full canvas via [`pack_fill_2d_full`];
+    /// tiled callers slice + pack per tile in `denoise_tiled`.
+    fn encode_fill_conditioning_2d(
         &self,
         init_path: &std::path::Path,
         mask_path: &std::path::Path,
         h: usize,
         w: usize,
-    ) -> Result<Tensor> {
+    ) -> Result<FillConditioning2D> {
         // Load init image at the target resolution, normalized to
         // `[-1, 1]` (the Flux AE input domain).
         let init_pixels = crate::imaging::preprocess::sd_image_tensor(
@@ -1760,30 +1770,15 @@ impl Pipeline {
                  should be divisible by 16."
             );
         }
-
-        // Pack masked latent: (1, 16, lh, lw) → (1, lh/2 * lw/2, 64).
-        let masked_packed = z
-            .reshape((1, c, lh / 2, 2, lw / 2, 2))?
-            .permute((0, 2, 4, 1, 3, 5))?
-            .reshape((1, lh / 2 * lw / 2, c * 4))?;
-
-        // Pack image-space mask: (1, 1, H, W) → (1, H/16 * W/16, 256).
-        // Each Flux token spans a 16×16 image patch (8× VAE × 2× Flux),
-        // so the mask carries 256 raw mask values per token.
         if h % 16 != 0 || w % 16 != 0 {
             bail!(
                 "Flux Fill needs image dims divisible by 16 (got {h}x{w})."
             );
         }
-        let mask_packed = mask_tensor
-            .reshape((1, 1, h / 16, 16, w / 16, 16))?
-            .permute((0, 2, 4, 1, 3, 5))?
-            .reshape((1, h / 16 * w / 16, 16 * 16))?
-            .to_dtype(self.dtype)?;
-
-        // Concat along the channel-per-token dim: 64 + 256 = 320.
-        let cond = Tensor::cat(&[&masked_packed, &mask_packed], D::Minus1)?;
-        Ok(cond)
+        Ok(FillConditioning2D {
+            masked_latent_2d: z,
+            mask_2d: mask_tensor,
+        })
     }
 
     /// v0.13 phase 4: MultiDiffusion-style tiled Flux denoise.
@@ -1808,17 +1803,23 @@ impl Pipeline {
     ///
     /// Composes with: LoRA, GGUF (via the same `FluxBackbone` dispatch
     /// the standard denoise uses), img2img (caller pre-mixes the
-    /// init+noise into the canvas), and **ControlNet** (v0.13 phase 9
-    /// — each loaded CN's conditioning latent is cropped to the
-    /// current tile and packed inside the loop). Does **not** compose
-    /// with Fill in this phase — `Pipeline::generate` bails loud at
-    /// the entry point.
+    /// init+noise into the canvas), **ControlNet** (v0.13 phase 9 —
+    /// each loaded CN's conditioning latent is cropped to the current
+    /// tile and packed inside the loop), and — as of v0.16 phase 4 —
+    /// **Flux.1-Fill-dev**: the 2D masked latent + image-space mask
+    /// are sliced per tile via [`pack_fill_2d_tile`] and concatenated
+    /// to the per-tile noise packing before the Flux forward call.
     ///
     /// `conditioning_2d` carries one optional entry per loaded
     /// ControlNet, in the same order as `self.controlnets`. Entries
     /// shape `(1, 16, lh, lw)` (the full-canvas conditioning latent).
     /// `None` entries mean "CN loaded but no conditioning image" — the
     /// CN is silently skipped for every tile.
+    ///
+    /// `fill_cond_2d` is `Some` only when the loaded variant is
+    /// Flux.1-Fill-dev. Layout: `(1, 16, lh, lw)` masked latent +
+    /// `(1, 1, lh*8, lw*8)` image-space binary mask. Sliced per
+    /// tile in the loop below.
     #[allow(clippy::too_many_arguments)]
     fn denoise_tiled(
         &self,
@@ -1829,6 +1830,7 @@ impl Pipeline {
         guidance: f64,
         tile_cfg: &crate::pipelines::tiled::TiledConfig,
         conditioning_2d: &[Option<Tensor>],
+        fill_cond_2d: Option<&FillConditioning2D>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
@@ -1963,9 +1965,23 @@ impl Pipeline {
                     _ => None,
                 };
 
+                // v0.16 phase 4: per-tile Flux Fill packing. When
+                // `fill_cond_2d` is set the loaded variant is
+                // Flux.1-Fill-dev — slice the masked-latent + mask
+                // to the current tile and cat onto the noise tokens
+                // to get the 384-channel input Fill's `img_in`
+                // expects. Non-Fill: `flux_input` is the noise
+                // tokens unchanged (64ch).
+                let flux_input: Tensor = match fill_cond_2d {
+                    Some(fc) => {
+                        let fill_tile = pack_fill_2d_tile(fc, ty, tx, sz)?;
+                        Tensor::cat(&[&tile_packed, &fill_tile], D::Minus1)?
+                    }
+                    None => tile_packed.clone(),
+                };
                 let pred = match &self.flux_model {
                     FluxBackbone::Bf16(net) => net.forward_with_residuals(
-                        &tile_packed,
+                        &flux_input,
                         &img_ids,
                         &txt,
                         &txt_ids,
@@ -1976,7 +1992,7 @@ impl Pipeline {
                         single_r,
                     )?,
                     FluxBackbone::Quantized(net) => net.forward_with_residuals(
-                        &tile_packed,
+                        &flux_input,
                         &img_ids,
                         &txt,
                         &txt_ids,
@@ -1994,7 +2010,7 @@ impl Pipeline {
                     // (1, tile_tokens, hidden) shape the backbone
                     // expects.
                     FluxBackbone::Nf4(net) => net.forward_with_residuals(
-                        &tile_packed,
+                        &flux_input,
                         &img_ids,
                         &txt,
                         &txt_ids,
@@ -2039,6 +2055,86 @@ impl Pipeline {
 
         Ok(canvas)
     }
+}
+
+/// v0.16 phase 4: 2D form of Flux Fill conditioning. Held in 2D
+/// (rather than the packed-token form Flux's `img_in` consumes)
+/// because the tiled denoise needs to slice both planes per tile
+/// before packing — non-tiled callers pack the whole canvas once
+/// via [`pack_fill_2d_full`].
+///
+/// Layout invariants:
+/// * `masked_latent_2d.dims4() == (1, 16, lh, lw)` — VAE-encoded init,
+///   masked region zeroed in pixel space before encode.
+/// * `mask_2d.dims4() == (1, 1, lh*8, lw*8)` — binary image-space
+///   mask (1.0 = inpaint, 0.0 = preserve).
+struct FillConditioning2D {
+    masked_latent_2d: Tensor,
+    mask_2d: Tensor,
+}
+
+/// v0.16 phase 4: pack the full-canvas Fill conditioning into the
+/// 320-channel-per-token form Flux Fill's `img_in` consumes. Mirrors
+/// the inline packing the pre-phase-4 `encode_fill_conditioning` did
+/// — split out so both the non-tiled denoise (full canvas) and the
+/// tiled denoise (per tile via [`pack_fill_2d_tile`]) share the same
+/// reshape kernels.
+fn pack_fill_2d_full(cond: &FillConditioning2D) -> Result<Tensor> {
+    let (_b, c, lh, lw) = cond.masked_latent_2d.dims4()?;
+    let masked_packed = cond
+        .masked_latent_2d
+        .reshape((1, c, lh / 2, 2, lw / 2, 2))?
+        .permute((0, 2, 4, 1, 3, 5))?
+        .reshape((1, lh / 2 * lw / 2, c * 4))?;
+    let (_b, _c, h, w) = cond.mask_2d.dims4()?;
+    let mask_packed = cond
+        .mask_2d
+        .reshape((1, 1, h / 16, 16, w / 16, 16))?
+        .permute((0, 2, 4, 1, 3, 5))?
+        .reshape((1, h / 16 * w / 16, 16 * 16))?;
+    Ok(Tensor::cat(&[&masked_packed, &mask_packed], D::Minus1)?)
+}
+
+/// v0.16 phase 4: pack a per-tile slice of Fill conditioning. The
+/// tile is specified in **latent units** — same convention the rest
+/// of `denoise_tiled` uses (Y/X offset = tile origin in the
+/// `(1, 16, lh, lw)` latent; `sz` = tile side in latent units).
+///
+/// The image-space mask slice runs at 8× the tile coords (since
+/// latent = pixel / 8), and packs at 16-pixel granularity (256
+/// raw mask values per Flux token).
+///
+/// Caller must guarantee:
+/// * `sz` even (Flux's 2×2 patching), else the packing reshape errors.
+/// * `(ty + sz, tx + sz) ≤ (lh, lw)` — tile fits in the canvas.
+fn pack_fill_2d_tile(
+    cond: &FillConditioning2D,
+    ty: usize,
+    tx: usize,
+    sz: usize,
+) -> Result<Tensor> {
+    let (_b, c, _lh, _lw) = cond.masked_latent_2d.dims4()?;
+    let masked_tile = cond
+        .masked_latent_2d
+        .narrow(2, ty, sz)?
+        .narrow(3, tx, sz)?;
+    let masked_packed = masked_tile
+        .reshape((1, c, sz / 2, 2, sz / 2, 2))?
+        .permute((0, 2, 4, 1, 3, 5))?
+        .reshape((1, sz / 2 * sz / 2, c * 4))?;
+    // Mask slice in pixel space: 8× the latent tile coords.
+    let pixel_y = ty * 8;
+    let pixel_x = tx * 8;
+    let pixel_sz = sz * 8;
+    let mask_tile = cond
+        .mask_2d
+        .narrow(2, pixel_y, pixel_sz)?
+        .narrow(3, pixel_x, pixel_sz)?;
+    let mask_packed = mask_tile
+        .reshape((1, 1, pixel_sz / 16, 16, pixel_sz / 16, 16))?
+        .permute((0, 2, 4, 1, 3, 5))?
+        .reshape((1, (pixel_sz / 16) * (pixel_sz / 16), 16 * 16))?;
+    Ok(Tensor::cat(&[&masked_packed, &mask_packed], D::Minus1)?)
 }
 
 /// Sum two per-block residual lists, padding the shorter one to the
@@ -2197,5 +2293,74 @@ mod tests {
         // start == end: half-open window is empty.
         assert!(!active_at_window(0.5, 0.5, 0.5));
         assert!(!active_at_window(0.5, 0.5, 0.0));
+    }
+
+    // v0.16 phase 4 — Tiled + Flux Fill packing.
+
+    fn dummy_fill_cond_2d(lh: usize, lw: usize) -> FillConditioning2D {
+        use candle_core::Device;
+        // Distinct values per pixel so slicing bugs would change the
+        // packed tensor's content (vs. all-zeros which would mask
+        // the off-by-one).
+        let total_lat: usize = 1 * 16 * lh * lw;
+        let lat: Vec<f32> = (0..total_lat).map(|i| i as f32 * 0.001).collect();
+        let masked_latent_2d = Tensor::from_vec(lat, (1, 16, lh, lw), &Device::Cpu).unwrap();
+        let h = lh * 8;
+        let w = lw * 8;
+        let total_mask: usize = h * w;
+        let mask: Vec<f32> = (0..total_mask).map(|i| (i % 2) as f32).collect();
+        let mask_2d = Tensor::from_vec(mask, (1, 1, h, w), &Device::Cpu).unwrap();
+        FillConditioning2D { masked_latent_2d, mask_2d }
+    }
+
+    #[test]
+    fn pack_fill_2d_full_emits_320_channel_token_tensor() {
+        // Full canvas: lh=8, lw=8 → 4×4 tokens (each spans 2 latent
+        // units → 16 pixels) → 16 tokens, 64 (latent) + 256 (mask)
+        // = 320 channels per token.
+        let cond = dummy_fill_cond_2d(8, 8);
+        let packed = pack_fill_2d_full(&cond).unwrap();
+        let (b, n, c) = packed.dims3().unwrap();
+        assert_eq!((b, n, c), (1, 16, 320));
+    }
+
+    #[test]
+    fn pack_fill_2d_tile_emits_tile_sized_token_tensor() {
+        // Latent canvas 16×16 → 8×8 tokens at full canvas. Tile
+        // (sz=4 latent units) → 2×2 tokens → 4 tokens per tile.
+        let cond = dummy_fill_cond_2d(16, 16);
+        let tile = pack_fill_2d_tile(&cond, 0, 0, 4).unwrap();
+        let (b, n, c) = tile.dims3().unwrap();
+        assert_eq!((b, n, c), (1, 4, 320));
+    }
+
+    #[test]
+    fn pack_fill_2d_tile_at_offset_matches_full_canvas_slice() {
+        // The tile at origin (4, 4) with sz=4 should produce the same
+        // 4-token packing as if we'd sliced the full-canvas packed
+        // form at the matching token offset. The token grid is
+        // lh/2 × lw/2 = 8×8 = 64 tokens; the tile's tokens at offset
+        // (2, 2) tile size 2×2 are rows 2-3 × cols 2-3 of that grid.
+        let cond = dummy_fill_cond_2d(16, 16);
+        let full = pack_fill_2d_full(&cond).unwrap();
+        let tile = pack_fill_2d_tile(&cond, 4, 4, 4).unwrap();
+
+        // Extract the matching 4 tokens from `full` by gather: token
+        // (row=2, col=2), (2, 3), (3, 2), (3, 3) in row-major.
+        let expected_indices = [2 * 8 + 2, 2 * 8 + 3, 3 * 8 + 2, 3 * 8 + 3];
+        for (out_i, &full_i) in expected_indices.iter().enumerate() {
+            let from_tile: Vec<f32> = tile.i((0, out_i, ..))
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let from_full: Vec<f32> = full.i((0, full_i, ..))
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            assert_eq!(
+                from_tile, from_full,
+                "tile token {out_i} (canvas token {full_i}) mismatch"
+            );
+        }
     }
 }
