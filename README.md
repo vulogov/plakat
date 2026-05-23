@@ -8,6 +8,36 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.15 — runtime LoRA + SD3 maturation
+
+- **Runtime per-task LoRA in scenarios**. `tasks: [{ loras: [...] }]`
+  now applies/clears LoRAs between tasks via a forward-time stack
+  (no model reload). Composes with the scenario-level LoRA set.
+  Flux (BF16 / GGUF / NF4) full support; SD3 + SD-family deferred.
+- **NF4 + ControlNet**. Closes a v0.14 deferral — NF4 Flux composes
+  with `--control-spec` via the residual-aware forward (same
+  ceil-interleave the BF16 + GGUF vendors use).
+- **SD3 / SD3.5 img2img + inpaint**. RePaint-style inpaint with
+  per-step mask blend; rectified-flow truncated schedule. Works
+  across the lineup (Medium / Large / Turbo).
+- **SD3 / SD3.5 LoRA**. Diffusers PEFT format. Same selective-
+  dequant pattern as Flux LoRA.
+- **Flux Canny-dev / Depth-dev variants**. BFL "concept" Flux
+  checkpoints with conditioning baked into the 128-channel `img_in`.
+  Pass `--concept-image PATH` with `--model flux-canny-dev`.
+- **Tiled SD3**. MultiDiffusion-style tiled denoise for MMDiT
+  (works within `pos_embed_max_size` caps per variant — 1024-px
+  tiles are well-supported on every SD3 variant).
+- **MMDiT vendor + residual hooks**. Foundation for v0.16 SD3
+  ControlNet — `forward_with_residuals` exposed.
+- **Scenario sync with `generate`**. Per-task `fast`, `concept-image`,
+  `enhance`, `tiled` overrides. Closes 4 historical gaps.
+- **Two new tutorials**:
+  [`FLUX_TUTORIAL.md`](Documentation/Tutorials/FLUX_TUTORIAL.md)
+  and
+  [`SD3_TUTORIAL.md`](Documentation/Tutorials/SD3_TUTORIAL.md)
+  cover the full v0.13–v0.15 work for their respective backbones.
+
 ## What's new in v0.14 — the SD3.5 + NF4 + Redux release
 
 - **Stable Diffusion 3 / 3.5 (MMDiT)**. New family — `sd35-medium`,
