@@ -1295,6 +1295,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     device: device.clone(),
                     loras: loras.clone(),
                     lora_scale,
+                    // SD3 ControlNet wiring into scenarios lands in
+                    // a later phase. For now scenarios load with no
+                    // SD3 CN slots; the per-task CN spec dispatch
+                    // mirrors what the existing Flux scenario path
+                    // does (max_flux_controls + scenario-wide
+                    // preload).
+                    controlnets: Vec::new(),
                 })
                 .await?,
             )
@@ -2292,6 +2299,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // pure t2i; img2img + tiled bails inside the SD3
                     // pipeline (mutually-exclusive design).
                     tiled: eff_tiled.clone(),
+                    // v0.16 phase 3: SD3 CN per-call conditioning
+                    // overrides. Empty Vec preserves whatever the
+                    // load-time conditioning paths were (which is
+                    // also empty in scenarios today — SD3 CN scenario
+                    // wiring lands in a later phase).
+                    controlnet_conditioning: Vec::new(),
                 };
                 sp.generate(&sd3_req)?;
                 if task_lora_applied {
