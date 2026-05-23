@@ -278,30 +278,27 @@ map conditioning baked into the `img_in` Linear (which becomes 128
 channels). Unlike ControlNet (separate adapter), the conditioning is
 part of the base model.
 
+Two ways to supply the conditioning map: `--concept-image PATH` for
+a pre-rendered map you already have, or `--concept-from PATH` to
+auto-annotate a photo with the matching annotator (canny for
+Canny-dev, depth for Depth-dev).
+
 ```bash
+# Auto-annotate from a reference photo. plakat runs the right
+# annotator based on which concept variant is loaded.
 plakat generate "a Victorian mansion, gothic, twilight" \
     --model flux-canny-dev \
-    --concept-image edges.png \
+    --concept-from photo.jpg \
     --guidance 30
 
 plakat generate "a polished marble statue of an angel" \
     --model flux-depth-dev \
-    --concept-image depth.png \
+    --concept-from reference.jpg \
     --guidance 30
-```
 
-You provide a pre-rendered conditioning map (canny or depth). Use
-the standard ControlNet annotator workflow to make one:
-
-```bash
-# Generate a canny map from a reference photo
-plakat generate "preview" --model sdxl \
-    --control-spec 'canny:from=./photo.jpg' \
-    --size 1024x1024
-
-# The annotator's output PNG lands in ./out/, then use it:
-plakat generate "your real prompt" --model flux-canny-dev \
-    --concept-image ./out/canny-annotator-output.png \
+# Or use a pre-rendered map you generated externally
+plakat generate "..." --model flux-canny-dev \
+    --concept-image edges.png \
     --guidance 30
 ```
 
@@ -378,10 +375,10 @@ from 1024² to 512² roughly halves VRAM.
 - **`--fast` ignores user `--steps` only if you didn't set it.**
   If you explicitly pass `--steps 28` with `--fast hyper-8`, plakat
   honors your choice. The preset only fills in defaults.
-- **Concept variants need pre-rendered maps.** `--concept-image`
-  takes a pre-rendered canny / depth map; use the ControlNet
-  annotator workflow (`plakat generate --control-spec
-  canny:from=photo.jpg`) to produce one first.
+- **Concept variants need a conditioning map.** Either supply a
+  pre-rendered canny / depth map via `--concept-image PATH`, or let
+  plakat auto-annotate a photo via `--concept-from PATH` — it picks
+  the right annotator (canny / depth) based on the loaded variant.
 
 ## What's next
 
