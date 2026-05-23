@@ -213,6 +213,14 @@ pub struct Request {
     /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
     /// canvas (phase 1a behaviour).
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.16 phase 3e: SD3 ControlNet stack to load. Each entry
+    /// carries the InstantX repo + per-instance runtime knobs
+    /// (`scale`, `conditioning`, `start`, `end`). Empty Vec means no
+    /// CN — byte-identical to the pre-phase-3 schedule. Threaded
+    /// through to `LoadRequest.controlnets`, then VAE-encoded once
+    /// per `generate` call into the cached per-slot conditioning
+    /// latents used in `predict_velocity_full`.
+    pub controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>,
 }
 
 pub struct LoadRequest {
@@ -1336,11 +1344,11 @@ pub async fn run(req: Request) -> Result<()> {
         device: req.device,
         loras: req.loras,
         lora_scale: req.lora_scale,
-        // The single-shot `t2i::run → sd3::run` entry point doesn't
-        // surface SD3 ControlNet — that's driven via the
-        // CLI-on-`plakat generate` dispatch which builds an
-        // sd3::Pipeline directly with `LoadRequest.controlnets`.
-        controlnets: Vec::new(),
+        // v0.16 phase 3e: wired through t2i::run from CLI
+        // --control-spec flags. Scenarios build sd3::Pipeline
+        // directly and bypass `run` (set_controlnet_conditioning /
+        // set_controlnet_call_params drive per-task changes).
+        controlnets: req.controlnets,
     })
     .await?;
     p.generate(&GenRequest {
@@ -1505,5 +1513,75 @@ mod tests {
         assert!((ts[ts.len() - 1] - 0.0).abs() < 1e-12);
         // Sanity: result is non-empty and well-formed.
         assert!(full_steps_count >= 2);
+    }
+
+    // v0.16 phase 3e — merge_residuals (multi-CN composition).
+
+    fn cpu_tensor(v: &[f32]) -> Tensor {
+        Tensor::from_slice(v, (v.len(),), &Device::Cpu).unwrap()
+    }
+
+    fn tensor_to_vec(t: &Tensor) -> Vec<f32> {
+        t.to_vec1::<f32>().unwrap()
+    }
+
+    #[test]
+    fn merge_residuals_none_acc_passes_new_through() {
+        // First CN's residuals become the seed accumulator. The merge
+        // is a no-op pass-through when nothing was there before.
+        let new = vec![cpu_tensor(&[1.0, 2.0]), cpu_tensor(&[3.0, 4.0])];
+        let merged = merge_residuals(None, new).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![1.0, 2.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn merge_residuals_sums_same_length_lists() {
+        // Two CNs producing equal-length residual stacks compose by
+        // element-wise sum across each block index.
+        let a = vec![cpu_tensor(&[1.0, 2.0]), cpu_tensor(&[3.0, 4.0])];
+        let b = vec![cpu_tensor(&[10.0, 20.0]), cpu_tensor(&[30.0, 40.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![11.0, 22.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![33.0, 44.0]);
+    }
+
+    #[test]
+    fn merge_residuals_appends_when_new_is_longer() {
+        // A longer new-list extends the accumulator. (Won't happen in
+        // practice with sibling CNs targeting the same MMDiT — every
+        // slot produces num_layers residuals — but the helper handles
+        // the case for symmetry with the flux.rs sibling.)
+        let a = vec![cpu_tensor(&[1.0])];
+        let b = vec![cpu_tensor(&[2.0]), cpu_tensor(&[5.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![3.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![5.0]);
+    }
+
+    #[test]
+    fn merge_residuals_preserves_tail_when_new_is_shorter() {
+        // Shorter new-list contributes to the first N entries; the
+        // accumulator's tail passes through unchanged.
+        let a = vec![cpu_tensor(&[1.0]), cpu_tensor(&[2.0]), cpu_tensor(&[3.0])];
+        let b = vec![cpu_tensor(&[10.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 3);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![11.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![2.0]);
+        assert_eq!(tensor_to_vec(&merged[2]), vec![3.0]);
+    }
+
+    #[test]
+    fn merge_residuals_handles_empty_new() {
+        // Defensive: an empty new-list (no CN-residuals contributed
+        // this step) leaves the accumulator untouched.
+        let a = vec![cpu_tensor(&[1.0, 2.0])];
+        let merged = merge_residuals(Some(a), Vec::new()).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![1.0, 2.0]);
     }
 }

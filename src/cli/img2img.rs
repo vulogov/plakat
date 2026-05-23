@@ -741,6 +741,11 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // pipeline bails if both are set. Drop tiled here so the
         // CLI surfaces a clear error on incompatible combos.
         tiled: None,
+        // v0.16 phase 3e: SD3 img2img path doesn't take
+        // --control-spec — the CN integration lives on the t2i
+        // dispatch only. The img2img CLI doesn't surface --control*,
+        // so an empty Vec here is the only valid value.
+        controlnets: Vec::new(),
     })
     .await
 }
