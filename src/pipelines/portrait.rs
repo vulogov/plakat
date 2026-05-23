@@ -245,6 +245,10 @@ impl Pipeline {
                 device: req.device.clone(),
                 loras: resolved_loras,
                 lora_scale: req.lora_scale,
+                // v0.16 phase 9: portrait pipeline doesn't yet take
+                // --embedding (sd_core bails loud when set). Pass
+                // empty to stay byte-compatible with pre-phase-9.
+                embeddings: Vec::new(),
             },
         )
         .await

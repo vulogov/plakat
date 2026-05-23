@@ -109,6 +109,21 @@ pub struct Request {
     /// `--clip-skip > 1` on SDXL logs a warning and is ignored.
     /// Flux / SD3 use T5 + CLIP-pooled and ignore this flag.
     pub clip_skip: usize,
+
+    /// v0.16 phase 9: Textual Inversion embedding specs to register
+    /// in the SD CLIP-L tokenizer + token_embedding matrix. Each
+    /// entry is a CLI spec resolved at load time via
+    /// [`crate::pipelines::embedding::resolve`] + `parse_safetensors`.
+    /// Empty disables — byte-identical to pre-phase-9 behaviour.
+    ///
+    /// Routing: SD-family only. SDXL dual-encoder TIs bail in the
+    /// parser; Flux / SD3 don't honour the flag. Runtime injection
+    /// into the encoder is currently gated by candle 0.8's private
+    /// `clip::Config.vocab_size` — `sd_core::load` bails loud when
+    /// this is non-empty. The parser + merger ship as foundation
+    /// for the future wiring (see `plakat embedding info` to
+    /// inspect TI files today).
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -121,6 +136,9 @@ pub struct LoadRequest {
     /// `stabilityai/stable-diffusion-xl-refiner-1.0` UNet for a two-pass
     /// schedule. Adds a ~6 GB download on first run.
     pub use_refiner: bool,
+    /// v0.16 phase 9: TI embedding specs to resolve + register at
+    /// load time. See `Request.embeddings` for the runtime gating.
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 /// Stuff that can vary per `Pipeline::generate` call.
@@ -609,12 +627,33 @@ impl Pipeline {
         // t2i's SdxlTurbo→Sdxl mapping (same architecture; only
         // scheduler defaults differ, which we don't carry through
         // SdCore).
+        // v0.16 phase 9: resolve TI specs into ResolvedEmbedding
+        // before handing off to sd_core. Loading the safetensors
+        // here surfaces parse errors at the t2i load step (not
+        // mid-generate). sd_core itself bails loud when the
+        // resolved list is non-empty until the candle vocab_size
+        // API blocker lifts.
+        let resolved_embeddings: Vec<crate::pipelines::embedding::ResolvedEmbedding>
+            = if req.embeddings.is_empty() {
+                Vec::new()
+            } else {
+                let mut v = Vec::with_capacity(req.embeddings.len());
+                for spec in &req.embeddings {
+                    let path = crate::pipelines::embedding::resolve(spec).await?;
+                    let resolved = crate::pipelines::embedding::parse_safetensors(
+                        &path, spec, &req.device,
+                    )?;
+                    v.push(resolved);
+                }
+                v
+            };
         let core = crate::pipelines::sd_core::SdCore::load(
             crate::pipelines::sd_core::SdLoadRequest {
                 model: req.model.clone(),
                 device: req.device.clone(),
                 loras: resolved_loras,
                 lora_scale: req.lora_scale,
+                embeddings: resolved_embeddings,
             },
         )
         .await
@@ -1912,6 +1951,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         loras: req.loras,
         lora_scale: req.lora_scale,
         use_refiner: req.use_refiner,
+        embeddings: req.embeddings,
     })
     .await?;
 
