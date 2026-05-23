@@ -57,8 +57,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use candle_core::Module;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+// v0.15 phase 6a: route MMDiT through the vendored module
+// (`mmdit_inner`) instead of candle's upstream. The vendor exposes
+// `forward_with_residuals` for the v0.16 SD3 ControlNet integration.
+// Pre-phase-6 callers see identical behaviour — the vendor's
+// `forward(...)` delegates to `forward_with_residuals(... None)`.
+use crate::pipelines::mmdit_inner as mmdit;
 use candle_transformers::models::{
-    mmdit, stable_diffusion::clip as sdclip, stable_diffusion::vae as sdvae, t5,
+    stable_diffusion::clip as sdclip, stable_diffusion::vae as sdvae, t5,
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -96,13 +102,13 @@ pub enum Variant {
 }
 
 impl Variant {
-    fn mmdit_config(self) -> mmdit::model::Config {
+    fn mmdit_config(self) -> mmdit::Config {
         match self {
-            Self::Sd3Medium => mmdit::model::Config::sd3_medium(),
-            Self::Sd35Medium => mmdit::model::Config::sd3_5_medium(),
+            Self::Sd3Medium => mmdit::Config::sd3_medium(),
+            Self::Sd35Medium => mmdit::Config::sd3_5_medium(),
             // SD3.5 Large + Turbo share the same MMDiT shape; the
             // turbo distillation only changes the sampling schedule.
-            Self::Sd35Large | Self::Sd35LargeTurbo => mmdit::model::Config::sd3_5_large(),
+            Self::Sd35Large | Self::Sd35LargeTurbo => mmdit::Config::sd3_5_large(),
         }
     }
 
@@ -258,7 +264,7 @@ pub struct Pipeline {
     clip_g_tok: Tokenizer,
     t5_enc: t5::T5EncoderModel,
     t5_tok: Tokenizer,
-    mmdit_model: mmdit::model::MMDiT,
+    mmdit_model: mmdit::MMDiT,
     vae: sdvae::AutoEncoderKL,
 }
 
@@ -437,7 +443,7 @@ impl Pipeline {
                 &[effective_mmdit_path], dtype, &req.device,
             )?
         };
-        let mmdit_model = mmdit::model::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
+        let mmdit_model = mmdit::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
 
         // SD3 VAE: 4 down-blocks (128, 256, 512, 512), 2 layers each,
         // 16 latent channels, no quant/post-quant convs (diffusers
