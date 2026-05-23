@@ -48,14 +48,16 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-schnell` | `black-forest-labs/FLUX.1-schnell` | 1024² typical. 4 steps. ~31 GB. |
 | `flux-dev` | `black-forest-labs/FLUX.1-dev` | Gated — needs `HF_TOKEN`. 20–50 steps. |
 | `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | **v0.13**: BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
+| `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | **v0.15**: BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
+| `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | **v0.15**: BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
 | `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | **v0.13**: 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | **v0.13**: 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | **v0.13**: 4-bit quantized Flux Fill. |
-| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | **v0.14 phase 2**: NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras` (v0.14 phase 8b). |
-| `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | **v0.14 phase 1a**: Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
-| `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | **v0.14 phase 8a**: SD3.5 Large flagship. 8B-param MMDiT. Gated. |
-| `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | **v0.14 phase 8a**: 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
-| `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | **v0.14 phase 8a**: original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
+| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | **v0.14**: NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras`. |
+| `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | **v0.14**: Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
+| `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | **v0.14**: SD3.5 Large flagship. 8B-param MMDiT. Gated. |
+| `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | **v0.14**: 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
+| `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | **v0.14**: original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
 
 Custom HF repos: pass the full `org/name`. For SD-family the repo must
 have the diffusers layout (`unet/`, `vae/`, `text_encoder[_2]/`,
@@ -250,7 +252,8 @@ for the last 20%, then a polish pass on top).
 
 #### `--lora <SPEC>` (repeatable)
 
-Apply a LoRA. SD-family only — Flux ignores LoRAs with a warning.
+Apply a LoRA. Supported on SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo),
+Flux (BF16 / GGUF / NF4), and **SD3 / SD3.5**.
 
 The `<SPEC>` accepts three forms:
 
@@ -348,7 +351,7 @@ particular).
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
 
-### Tiled hi-res generation (v0.12 SDXL, v0.13 Flux)
+### Tiled hi-res generation
 
 For outputs above the model's trained working resolution (4K SDXL,
 2K–4K Flux) without OOM, use MultiDiffusion-style tiled denoise:
@@ -356,13 +359,21 @@ For outputs above the model's trained working resolution (4K SDXL,
 | Flag | Default | Description |
 |---|---|---|
 | `--tiled` | off | Enable tiled denoise. The transformer/UNet only ever sees `--tile-size` worth of tokens per call; per-step noise predictions are blended via a 2D Hann window. |
-| `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux). |
+| `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux + SD3). |
 | `--tile-stride <PX>` | `768` | Stride between tile origins. Smaller = more overlap = smoother seams + more compute. |
 
-Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both SDXL
-(SDXL+CN tiled is a v0.12 follow-up) and Flux (v0.13 phase 9 — each
-tile gets its CN conditioning cropped to its region). Does **not**
-compose with the SDXL refiner or Flux.1-Fill-dev.
+Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both
+SDXL and Flux (each tile gets its CN conditioning cropped to its
+region). Does **not** compose with the SDXL refiner,
+Flux.1-Fill-dev, Flux concept variants (Canny-dev / Depth-dev), or
+SD3 img2img / inpaint.
+
+SD3 / SD3.5 join the tiled lineup. MMDiT's `pos_embed_max_size`
+caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
+(SD3.5-Medium); the default 1024-px tile patches to 64×64, well
+within either cap. Each per-step prediction is the post-CFG
+velocity per tile, Hann-blended into a full-canvas update applied
+via the Euler step.
 
 ```bash
 # 4K SDXL
@@ -372,6 +383,10 @@ plakat generate "ultra-detailed architectural diagram" \
 # 2K Flux with depth-guided structure across every tile
 plakat generate "..." --model flux-dev --size 2048x2048 \
     --tiled --control-spec 'depth:from=ref.jpg'
+
+# 2K SD3.5-Medium
+plakat generate "..." --model sd35-medium --size 2048x2048 \
+    --tiled --tile-size 1024 --tile-stride 768
 ```
 
 ### Artefact compositing
@@ -391,7 +406,7 @@ walkthrough: [`examples/tutorials/ZONES/`](../examples/tutorials/ZONES/).
 
 ---
 
-### `--redux-image <SPEC>` (v0.14 phase 3)
+### `--redux-image <SPEC>`
 
 Repeatable image-conditioning input for Flux Redux. Each spec is a
 path (weight = 1.0) or `path:weight=F.F` (custom weight; 0.0 turns
@@ -414,7 +429,38 @@ Composes with: BF16 / GGUF / NF4 Flux, LoRA, ControlNet, img2img,
 tiled denoise. **Does not** compose with `flux-fill-dev` (Fill's
 384ch `img_in` is incompatible).
 
-### `--fast <PRESET>` (v0.14 phase 6)
+### `--concept-image <PATH>`
+
+Pre-rendered conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev.
+Pass a canny edge map (with `--model flux-canny-dev`) or a depth map
+(with `--model flux-depth-dev`) at the target output resolution. The
+image is VAE-encoded and packed alongside the noise tokens — the
+"concept" checkpoint's `img_in` Linear is 128 channels wide (64
+noise + 64 conditioning).
+
+```bash
+# Canny-guided generation. Recommended guidance ~30.
+plakat generate "a Victorian mansion, gothic, twilight" \
+    --model flux-canny-dev --concept-image edges.png --guidance 30
+
+# Depth-guided. Same shape; different conditioning modality.
+plakat generate "a polished marble statue of an angel" \
+    --model flux-depth-dev --concept-image depth.png --guidance 30
+```
+
+Caveats:
+* Doesn't compose with `--tiled`, `--init-image` / `--mask`,
+  `--redux-image`, or `--control-spec` — pairing raises an explicit
+  error.
+* Pass a pre-rendered conditioning map. Generate one via
+  `plakat generate --control-spec canny:from=photo.jpg` (which writes
+  the annotated conditioning to the output dir) or with `cv2.Canny`
+  / a depth model externally.
+* `--guidance 30` is BFL's recommendation per their model cards.
+  Lower values (3-7) underrespect the conditioning; higher
+  oversharpen.
+
+### `--fast <PRESET>`
 
 Bundles a published distillation LoRA + recommended step + guidance
 in one flag. Presets:
@@ -700,10 +746,10 @@ from `h94/IP-Adapter`) to map the CLIP-H image embedding of REF into the
 text-token space, then concats those tokens onto the (empty) text prompt
 for the UNet.
 
-The **reference IP-Adapter** also adds decoupled cross-attention (separate
-`to_k_ip`/`to_v_ip` projections per UNet layer) — this isn't wired in
-plakat because candle's UNet has no attention hook. Quality is roughly
-50–70% of the reference implementation.
+The **reference IP-Adapter** also adds decoupled cross-attention
+(separate `to_k_ip`/`to_v_ip` projections per UNet layer) — plakat
+doesn't implement that path because candle's UNet has no attention
+hook. Quality is roughly 50–70% of the reference implementation.
 
 For consistent results: REF should have a clear visual style (painting,
 sketch, distinctive photo). REFs that are themselves stylistically neutral

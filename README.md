@@ -8,6 +8,32 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.15 — runtime LoRA + SD3 maturation
+
+- **Per-task LoRA in scenarios**. `tasks: [{ loras: [...] }]` applies
+  and clears LoRAs between tasks at runtime — no model reload.
+  Composes with the scenario-level LoRA set. Flux (BF16 / GGUF / NF4).
+- **NF4 + ControlNet**. NF4 Flux composes with `--control-spec` via
+  the residual-aware forward — same residual interleave the BF16 and
+  GGUF backbones use, so a single CN checkpoint works on all three.
+- **SD3 / SD3.5 img2img + inpaint**. RePaint-style inpaint with
+  per-step mask blend, rectified-flow truncated schedule. Works
+  across the lineup (Medium / Large / Turbo).
+- **SD3 / SD3.5 LoRA**. Diffusers PEFT format, MMDiT-targeted keys.
+- **Flux Canny-dev / Depth-dev variants**. BFL "concept" Flux
+  checkpoints with conditioning baked into the 128-channel `img_in`.
+  Pass `--concept-image PATH` with `--model flux-canny-dev`.
+- **Tiled SD3**. MultiDiffusion-style tiled denoise for MMDiT —
+  1024-px tiles work on every SD3 variant within the variant's
+  `pos_embed_max_size` cap.
+- **Scenario ↔ generate sync**. Per-task `fast`, `concept-image`,
+  `enhance`, `tiled` overrides.
+- **Two new tutorials**:
+  [`FLUX_TUTORIAL.md`](Documentation/Tutorials/FLUX_TUTORIAL.md)
+  walks through the Flux feature set end-to-end;
+  [`SD3_TUTORIAL.md`](Documentation/Tutorials/SD3_TUTORIAL.md) does
+  the same for the SD3 / SD3.5 family.
+
 ## What's new in v0.14 — the SD3.5 + NF4 + Redux release
 
 - **Stable Diffusion 3 / 3.5 (MMDiT)**. New family — `sd35-medium`,
@@ -27,9 +53,9 @@ HuggingFace and cached locally.
   LoRA, ControlNet, img2img, tiled.
 - **Tiled SD 1.5 / 2.1**. `--tiled` now supported on the smaller
   SD backbones too (was SDXL-only in v0.12).
-- **Flux Fill + ControlNet**. The CLI gap from v0.13 phase 2 closed:
-  `plakat img2img --model flux-fill-dev --mask ... --control-spec
-  depth:from=...` composes with auto-annotator + multi-CN.
+- **Flux Fill + ControlNet**. `plakat img2img --model flux-fill-dev
+  --mask ... --control-spec depth:from=...` composes with the
+  auto-annotator and multi-CN.
 - **Hyper-FLUX / FLUX-Turbo presets**. `--fast hyper-8 | hyper-16 |
   turbo-alpha` bundles the matching distillation LoRA + recommended
   step count + guidance in one flag.

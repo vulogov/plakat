@@ -484,6 +484,38 @@ impl SdCore {
     pub fn cfg(&self) -> &StableDiffusionConfig {
         &self.cfg
     }
+
+    /// v0.15 phase 7b-6: scenario per-task LoRA dispatch surface for
+    /// the SD-family backbone. Delegates to `SdUNet::apply_loras`,
+    /// which bails loud for SD-family (the UNet's Linears aren't yet
+    /// wrapped as `LoraLinear` — full vendor deferred). Provided for
+    /// API uniformity with the Flux / SD3 backbones; the scenario
+    /// dispatcher (7b-7) can call this for any variant.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+    ) -> Result<usize> {
+        // sd_core uses anyhow::Result; SdUNet returns candle_core::Result.
+        // Bridge via `?` + `into`/`with_context`.
+        Ok(self.unet.apply_loras(specs).map_err(anyhow::Error::from)?)
+    }
+
+    /// v0.15 phase 7b-6: no-op for SD-family (no runtime stack
+    /// exists). Mirrors the Flux / SD3 API.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        self.unet.clear_all_loras().map_err(anyhow::Error::from)?;
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-6: zero for SD-family. Mirrors the Flux / SD3
+    /// API so the dispatcher can query without backbone-specific
+    /// branches.
+    pub fn n_registered_linears(&self) -> usize {
+        self.unet.n_registered_linears()
+    }
 }
 
 #[cfg(test)]

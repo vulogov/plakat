@@ -57,6 +57,18 @@ If you're new to plakat, work through these in order:
    [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
    (six shell scripts + a procedurally-drawn sample depth map).
 
+8. [`FLUX_TUTORIAL.md`](FLUX_TUTORIAL.md) — Black Forest Labs'
+   Flux family. Covers quantization (GGUF + NF4), LoRA, img2img +
+   Fill inpaint, ControlNet, tiled hi-res, Redux image conditioning,
+   the "concept" variants (Canny-dev / Depth-dev), and the `--fast`
+   distillation presets. Memory tiers for picking the right backbone
+   on your GPU.
+
+9. [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — Stable Diffusion 3 / 3.5
+   family. MMDiT architecture, the four variants (SD3 / SD3.5
+   Medium / SD3.5 Large / SD3.5 Large Turbo), the rectified-flow
+   sampler, LoRA, img2img + RePaint-style inpaint, tiled hi-res.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -84,6 +96,8 @@ feature:
 | `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
 | `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
 | `ARTEFACTS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. (No external assets required — uses the bundled placeholder set.) |
+| `FLUX_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (NF4) / ≥16 GB (GGUF) / ≥24 GB (BF16). HuggingFace token for gated `flux-dev` / `flux-fill-dev` repos. |
+| `SD3_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (Medium) / ≥24 GB (Large). HuggingFace token — all Stability SD3 repos are gated. |
 
 ## When to use a reference manual instead
 

@@ -285,7 +285,7 @@ single weight set covering canny / softedge / openpose / depth /
 lineart via a mode index. The CLI grammar is identical to SD:
 
 ```bash
-# Auto-annotate a reference photo (v0.13 phase 8)
+# Auto-annotate a reference photo
 plakat generate "..." --model flux-dev \
     --control-spec 'depth:from=ref.jpg'
 
@@ -293,7 +293,7 @@ plakat generate "..." --model flux-dev \
 plakat generate "..." --model flux-dev \
     --control-spec 'canny:image=edges.png:strength=0.6'
 
-# Step gating: lock structure early, release later (v0.13 phase 6)
+# Step gating: lock structure early, release later
 plakat generate "..." --model flux-dev \
     --control-spec 'depth:from=ref.jpg:start=0.0:end=0.4'
 
@@ -308,12 +308,11 @@ plakat generate "..." --model flux-dev-gguf --size 2048x2048 \
     --control-spec 'depth:from=ref.jpg'
 ```
 
-Flux ControlNet composes with LoRA (PEFT + AI-Toolkit), GGUF
-quantization (per-tile residuals still work on the 4-bit backbone),
-tiled denoise (each tile gets its own cropped conditioning), img2img
-init images, and **Flux.1-Fill-dev** (v0.14 phase 5 — Fill's 384ch
-concat happens inside the Flux forward only; the CN sees the 64ch
-noise tokens and its residuals add at the 3072d hidden state).
+Flux ControlNet composes with LoRA (PEFT + AI-Toolkit), GGUF and
+NF4 quantization, tiled denoise (each tile gets its own cropped
+conditioning), img2img init images, and **Flux.1-Fill-dev** (Fill's
+384ch concat happens inside the Flux forward only; the CN sees the
+64ch noise tokens and its residuals add at the 3072d hidden state).
 
 ```bash
 # Inpaint a region with Flux.1-Fill-dev + structure-preserving CN
@@ -322,8 +321,13 @@ plakat img2img photo.png --mask region.png --model flux-fill-dev \
     --control-spec 'depth:from=photo.png:strength=0.7'
 ```
 
-Still NOT composing: tiled + Fill (per-tile mask slicing is its own
-gap, distinct from CN cropping) and NF4 + ControlNet.
+NF4 + ControlNet composes — a single CN checkpoint trained against
+BF16 / GGUF / NF4 Flux works on all three (same residual interleave
+across the vendors). Tiled + NF4 + CN composes too.
+
+Not currently composing: tiled + Fill (per-tile mask slicing isn't
+supported), Flux Fill + Redux (incompatible text-side input
+layout), SD3 + ControlNet (SD3 CN model isn't shipped).
 
 ## Limits
 
@@ -334,7 +338,7 @@ gap, distinct from CN cropping) and NF4 + ControlNet.
   down-blocks replacing cross-attn ones) that doesn't match candle's
   standard SDXL UNet config.
 - **Flux ControlNet ships as Union Pro v2 only.** Specialised Flux
-  CN repos (e.g. InstantX depth-only) aren't wired up — the Union
+  CN repos (e.g. InstantX depth-only) aren't supported — the Union
   model covers all five kinds via mode index.
 - **Conditioners shipped.** SD/SDXL: depth, canny, openpose,
   lineart, softedge. Flux: same five via Union Pro v2 (canny and
@@ -342,18 +346,15 @@ gap, distinct from CN cropping) and NF4 + ControlNet.
 - **Timestep windowing is supported** via `--control-start` /
   `--control-end` (or per-spec `start=…:end=…`). Diffusers
   convention: progress is measured against the **full** schedule.
-  Works on both SD and Flux (v0.13 phase 6).
-- **Multi-ControlNet** is supported on both SD (since v0.11) and
-  Flux (since v0.12) via repeatable `--control-spec`. Residuals sum
-  per block.
-- **Tiled + Flux CN** composes (v0.13 phase 9). Each tile sees its
-  cropped conditioning; tiled + SD CN is still a v0.12 follow-up.
-- **Flux Fill + CN** composes (v0.14 phase 5). The CN sees the 64ch
-  noise tokens; Fill's 384ch concat happens inside the Flux forward
-  only. Residuals add at the 3072d hidden state (post `img_in`) the
-  same way they do on standard Flux. Still **not composing**: tiled
-  + Flux Fill (per-tile mask slicing) and Flux Fill + Redux
-  (incompatible text-side input layout) — both deferred.
+  Works on both SD and Flux.
+- **Multi-ControlNet** is supported on both SD and Flux via
+  repeatable `--control-spec`. Residuals sum per block.
+- **Tiled + Flux CN** composes. Each tile sees its cropped
+  conditioning.
+- **Flux Fill + CN** composes. The CN sees the 64ch noise tokens;
+  Fill's 384ch concat happens inside the Flux forward only.
+  Residuals add at the 3072d hidden state (post `img_in`) the
+  same way they do on standard Flux.
 - **Multi-persona scenarios** apply control only to the base layout
   pass, not the per-persona inpaint passes.
 

@@ -54,6 +54,14 @@ pub struct NF4Linear {
     /// this, keeping the 4× weight-memory savings on the bulk of
     /// the model.
     dense_override: Option<Tensor>,
+    /// v0.15 phase 7b-2: runtime LoRA stack. Empty by default; updated
+    /// in-place via `set_loras` / `clear_loras`. Forward applies the
+    /// stack after the base (dequant or dense_override) matmul.
+    /// Composes with `dense_override`: when both are set, the override
+    /// is the "base" the LoRA delta adds onto.
+    slots: std::sync::Arc<
+        std::sync::RwLock<Vec<crate::pipelines::lora_linear::LoraSlot>>,
+    >,
 }
 
 impl NF4Linear {
@@ -73,6 +81,7 @@ impl NF4Linear {
             in_dim,
             out_dtype,
             dense_override: None,
+            slots: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -101,7 +110,28 @@ impl NF4Linear {
             in_dim,
             out_dtype,
             dense_override: Some(dense_weight),
+            slots: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         }
+    }
+
+    /// v0.15 phase 7b-2: hand out a cheap handle to this Linear's
+    /// runtime LoRA stack. The registry built by `Nf4LinearLoader`
+    /// keeps one of these per (full safetensors key) so the model's
+    /// `apply_loras` method can update slots without walking the
+    /// model structure.
+    pub fn slots_handle(
+        &self,
+    ) -> std::sync::Arc<
+        std::sync::RwLock<Vec<crate::pipelines::lora_linear::LoraSlot>>,
+    > {
+        self.slots.clone()
+    }
+
+    pub fn out_dim(&self) -> usize {
+        self.out_dim
+    }
+    pub fn in_dim(&self) -> usize {
+        self.in_dim
     }
 
     fn dequant_weight(&self) -> Result<Tensor> {
@@ -123,12 +153,27 @@ impl NF4Linear {
 
 impl Module for NF4Linear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // Base path: dequant (or dense_override) + matmul + optional bias.
         let w = self.dequant_weight()?;
-        let y = x.broadcast_matmul(&w.t()?)?;
-        match &self.bias {
-            None => Ok(y),
-            Some(b) => y.broadcast_add(b),
+        let mut y = x.broadcast_matmul(&w.t()?)?;
+        if let Some(b) = &self.bias {
+            y = y.broadcast_add(b)?;
         }
+        // v0.15 phase 7b-2: apply the runtime LoRA stack on top of
+        // the base output. Identical math to `LoraLinear::forward` —
+        // y += scale * (B @ A @ x) per slot. The stack is uncontended
+        // single-threaded read in practice, so the lock cost is
+        // negligible. Empty stack short-circuits via the iterator.
+        let slots = self.slots.read().map_err(|_| {
+            candle_core::Error::Msg("NF4Linear slots poisoned".into())
+        })?;
+        for slot in slots.iter() {
+            let lo = x.broadcast_matmul(&slot.a.t()?)?;
+            let delta = lo.broadcast_matmul(&slot.b.t()?)?;
+            let delta = (delta * slot.scale as f64)?;
+            y = y.broadcast_add(&delta)?;
+        }
+        Ok(y)
     }
 }
 
@@ -143,12 +188,25 @@ impl Module for NF4Linear {
 /// returns an `NF4Linear` with `dense_override` set — same selective
 /// dequant pattern the GGUF vendor uses (v0.13 phase 1e). Empty map
 /// = phase-2 behaviour, every Linear stays packed.
+// v0.15 phase 7b-3: registry types live in `lora_linear` now and are
+// shared across every backbone with runtime LoRA support. The local
+// aliases below preserve the existing call sites in this file.
+pub use crate::pipelines::lora_linear::LoraRegistry as SlotRegistry;
+pub use crate::pipelines::lora_linear::LoraRegistryEntry as SlotRegistryEntry;
+
 #[derive(Clone)]
 pub struct Nf4LinearLoader<'a> {
     pub store: &'a Nf4Store,
     pub path: String,
     pub dtype: DType,
     pub overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
+    /// v0.15 phase 7b-2: each constructed NF4Linear registers its
+    /// slots handle under `<path>.weight` here so the parent `Flux`
+    /// can drive `apply_loras` without walking the model structure.
+    /// Shared across the loader chain via `Arc` so nested `pp()`
+    /// clones all see the same map.
+    pub slot_registry:
+        std::sync::Arc<std::sync::RwLock<SlotRegistry>>,
 }
 
 impl<'a> Nf4LinearLoader<'a> {
@@ -169,11 +227,30 @@ impl<'a> Nf4LinearLoader<'a> {
         dtype: DType,
         overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
     ) -> Self {
+        Self::with_overrides_and_registry(
+            store,
+            dtype,
+            overrides,
+            std::sync::Arc::new(std::sync::RwLock::new(SlotRegistry::new())),
+        )
+    }
+
+    /// v0.15 phase 7b-2: build a loader that captures every
+    /// constructed NF4Linear's slot handle into `slot_registry`
+    /// (keyed by `"path.weight"`). Cloned across nested `pp` calls so
+    /// every sub-loader writes into the same registry.
+    pub fn with_overrides_and_registry(
+        store: &'a Nf4Store,
+        dtype: DType,
+        overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
+        slot_registry: std::sync::Arc<std::sync::RwLock<SlotRegistry>>,
+    ) -> Self {
         Self {
             store,
             path: String::new(),
             dtype,
             overrides,
+            slot_registry,
         }
     }
 
@@ -189,6 +266,7 @@ impl<'a> Nf4LinearLoader<'a> {
             path,
             dtype: self.dtype,
             overrides: self.overrides.clone(),
+            slot_registry: self.slot_registry.clone(),
         }
     }
 
@@ -248,7 +326,7 @@ impl<'a> Nf4LinearLoader<'a> {
                 );
             }
             let dense_aligned = dense.to_dtype(self.dtype)?;
-            return Ok(NF4Linear::new_with_dense_override(
+            let nf4 = NF4Linear::new_with_dense_override(
                 packed,
                 absmax,
                 bias_t,
@@ -256,9 +334,39 @@ impl<'a> Nf4LinearLoader<'a> {
                 in_dim,
                 self.dtype,
                 dense_aligned,
-            ));
+            );
+            // v0.15 phase 7b-2: register the slots handle so a future
+            // `apply_loras` call can find this Linear by its full key.
+            self.slot_registry
+                .write()
+                .map_err(|_| anyhow::anyhow!("NF4 slot registry poisoned"))?
+                .insert(
+                    weight_path,
+                    SlotRegistryEntry {
+                        handle: nf4.slots_handle(),
+                        out_dim,
+                        in_dim,
+                    },
+                );
+            return Ok(nf4);
         }
-        Ok(NF4Linear::new(packed, absmax, bias_t, out_dim, in_dim, self.dtype))
+        let nf4 = NF4Linear::new(packed, absmax, bias_t, out_dim, in_dim, self.dtype);
+        // v0.15 phase 7b-2: register the slots handle on the plain
+        // (non-override) path too. Every Linear in the model becomes
+        // discoverable by its full safetensors key for runtime LoRA
+        // dispatch.
+        self.slot_registry
+            .write()
+            .map_err(|_| anyhow::anyhow!("NF4 slot registry poisoned"))?
+            .insert(
+                weight_path,
+                SlotRegistryEntry {
+                    handle: nf4.slots_handle(),
+                    out_dim,
+                    in_dim,
+                },
+            );
+        Ok(nf4)
     }
 
     fn linear(&self, in_dim: usize, out_dim: usize) -> AnyResult<NF4Linear> {
@@ -647,6 +755,11 @@ pub struct Flux {
     pub double_blocks: Vec<DoubleStreamBlock>,
     pub single_blocks: Vec<SingleStreamBlock>,
     final_layer: LastLayer,
+    /// v0.15 phase 7b-2: path → NF4Linear slot handle map populated
+    /// during construction by `Nf4LinearLoader`. Consumed by
+    /// `apply_loras` at scenario per-task dispatch time so we can
+    /// update slots by safetensors path without re-walking blocks.
+    slot_registry: SlotRegistry,
 }
 
 impl Flux {
@@ -670,7 +783,20 @@ impl Flux {
         dtype: DType,
         overrides: std::sync::Arc<std::collections::HashMap<String, Tensor>>,
     ) -> AnyResult<Self> {
-        let root = Nf4LinearLoader::with_overrides(store, dtype, overrides);
+        // v0.15 phase 7b-2: shared slot registry — every constructed
+        // NF4Linear writes its slots handle into this map. After all
+        // sub-loaders go out of scope at the end of construction, we
+        // unwrap the Arc and move the inner HashMap into the Flux
+        // struct.
+        let registry_arc = std::sync::Arc::new(std::sync::RwLock::new(
+            SlotRegistry::new(),
+        ));
+        let root = Nf4LinearLoader::with_overrides_and_registry(
+            store,
+            dtype,
+            overrides,
+            registry_arc.clone(),
+        );
         let img_in = root.pp("img_in").linear(cfg.in_channels, cfg.hidden_size)?;
         let txt_in = root.pp("txt_in").linear(cfg.context_in_dim, cfg.hidden_size)?;
         let mut double_blocks = Vec::with_capacity(cfg.depth);
@@ -694,6 +820,22 @@ impl Flux {
             LastLayer::new(cfg.hidden_size, 1, cfg.in_channels, &root.pp("final_layer"))?;
         let pe_dim = cfg.hidden_size / cfg.num_heads;
         let pe_embedder = EmbedNd::new(pe_dim, cfg.theta, cfg.axes_dim.to_vec());
+        // Drop the loader chain so the registry Arc count returns
+        // to 1 — `try_unwrap` then succeeds. The local `root` plus
+        // every `pp()` clone go out of scope here.
+        drop(d_root);
+        drop(s_root);
+        drop(root);
+        let slot_registry = std::sync::Arc::try_unwrap(registry_arc)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "NF4 slot registry still has outstanding refs after construction"
+                )
+            })?
+            .into_inner()
+            .map_err(|_| {
+                anyhow::anyhow!("NF4 slot registry RwLock poisoned at construction")
+            })?;
         Ok(Self {
             img_in,
             txt_in,
@@ -704,11 +846,90 @@ impl Flux {
             double_blocks,
             single_blocks,
             final_layer,
+            slot_registry,
         })
     }
 
-    /// Standard forward — no ControlNet residuals (composition with
-    /// CN is deferred for the NF4 backbone).
+    /// v0.15 phase 7b-2: replace the runtime LoRA stack on every
+    /// affected NF4Linear at once. `specs` is path-keyed (full
+    /// safetensors key including `.weight`); each entry's `row_slice`
+    /// pre-pads to the registered `out_dim` of the target Linear.
+    ///
+    /// Paths not present in the registry (e.g. typos, LoRA targeting
+    /// a tensor that isn't a Linear) log at debug and skip.
+    /// Returns the number of slots successfully applied.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+        dtype: DType,
+        device: &candle_core::Device,
+    ) -> AnyResult<usize> {
+        let mut applied = 0usize;
+        for (key, slot_specs) in specs {
+            let Some(entry) = self.slot_registry.get(&key) else {
+                tracing::debug!(
+                    target: "plakat",
+                    "NF4 apply_loras: no Linear registered at {key} — skipping"
+                );
+                continue;
+            };
+            let mut new_slots =
+                Vec::<crate::pipelines::lora_linear::LoraSlot>::with_capacity(
+                    slot_specs.len(),
+                );
+            for spec in slot_specs {
+                let b_padded = crate::pipelines::lora_linear::pad_b_to_out_dim(
+                    &spec.b,
+                    spec.row_slice,
+                    entry.out_dim,
+                    dtype,
+                    device,
+                )?;
+                new_slots.push(crate::pipelines::lora_linear::LoraSlot {
+                    a: spec.a.to_dtype(dtype)?,
+                    b: b_padded,
+                    scale: spec.scale,
+                });
+            }
+            *entry.handle.write().map_err(|_| {
+                anyhow::anyhow!("NF4 slot handle for {key} poisoned")
+            })? = new_slots;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
+    /// v0.15 phase 7b-2: clear every active LoRA on every NF4Linear.
+    /// Reset to the as-loaded weights (or the dense-merged weights,
+    /// for Linears that had a phase-8b load-time override applied).
+    pub fn clear_all_loras(&self) -> AnyResult<()> {
+        for entry in self.slot_registry.values() {
+            entry
+                .handle
+                .write()
+                .map_err(|_| anyhow::anyhow!("NF4 slot handle poisoned"))?
+                .clear();
+        }
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-2: how many NF4Linears were registered at
+    /// construction time. Sanity-check for tests.
+    pub fn n_registered_linears(&self) -> usize {
+        self.slot_registry.len()
+    }
+
+    /// v0.15 phase 7b-2: read a snapshot of registered safetensors
+    /// keys. Useful for verifying the loader walked the whole model.
+    pub fn registered_keys(&self) -> Vec<String> {
+        self.slot_registry.keys().cloned().collect()
+    }
+
+    /// Standard forward — no ControlNet residuals. Delegates to
+    /// `forward_with_residuals` with both lists `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
@@ -719,6 +940,31 @@ impl Flux {
         timesteps: &Tensor,
         y: &Tensor,
         guidance: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        self.forward_with_residuals(
+            img, img_ids, txt, txt_ids, timesteps, y, guidance, None, None,
+        )
+    }
+
+    /// v0.15 phase 1: Forward with optional per-block ControlNet
+    /// residuals — same signature + interleave semantics as the BF16
+    /// vendor (`flux_inner::Flux::forward_with_residuals`) and the
+    /// GGUF vendor (`flux_quantized_inner::Flux::forward_with_residuals`).
+    /// Both lists `None` reproduces upstream byte-for-byte. The
+    /// `ceil(blocks / residuals)` interleave is identical to the GGUF
+    /// vendor's so the same CN model composes with NF4, GGUF, and BF16.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_with_residuals(
+        &self,
+        img: &Tensor,
+        img_ids: &Tensor,
+        txt: &Tensor,
+        txt_ids: &Tensor,
+        timesteps: &Tensor,
+        y: &Tensor,
+        guidance: Option<&Tensor>,
+        double_residuals: Option<&[Tensor]>,
+        single_residuals: Option<&[Tensor]>,
     ) -> Result<Tensor> {
         if txt.rank() != 3 {
             candle_core::bail!("unexpected shape for txt {:?}", txt.shape())
@@ -740,12 +986,50 @@ impl Flux {
         };
         let vec_ = (vec_ + y.apply(&self.vector_in))?;
 
-        for block in self.double_blocks.iter() {
+        // DoubleStream residual interleave — `ceil(blocks/residuals)`
+        // step. Matches the BF16 + GGUF vendors so a single CN
+        // checkpoint trained against any of them composes with NF4.
+        let double_interval = match double_residuals {
+            Some(r) if !r.is_empty() => {
+                ((self.double_blocks.len() + r.len() - 1) / r.len()).max(1)
+            }
+            _ => 1,
+        };
+        for (i, block) in self.double_blocks.iter().enumerate() {
             (img, txt) = block.forward(&img, &txt, &vec_, &pe)?;
+            if let Some(residuals) = double_residuals {
+                let idx = i / double_interval;
+                if idx < residuals.len() {
+                    img = (&img + &residuals[idx])?;
+                }
+            }
         }
+
         let mut img = Tensor::cat(&[&txt, &img], 1)?;
-        for block in self.single_blocks.iter() {
+        let txt_len = txt.dim(1)?;
+        let single_interval = match single_residuals {
+            Some(r) if !r.is_empty() => {
+                ((self.single_blocks.len() + r.len() - 1) / r.len()).max(1)
+            }
+            _ => 1,
+        };
+        for (i, block) in self.single_blocks.iter().enumerate() {
             img = block.forward(&img, &vec_, &pe)?;
+            if let Some(residuals) = single_residuals {
+                let idx = i / single_interval;
+                if idx < residuals.len() {
+                    // Single-stream residuals only touch the img tail
+                    // (the txt prefix is rebuilt at the end). Slice,
+                    // add, re-cat — same shape contract as the GGUF
+                    // vendor.
+                    let img_tail = img.narrow(1, txt_len, img.dim(1)? - txt_len)?;
+                    let img_tail_updated = (img_tail + &residuals[idx])?;
+                    img = Tensor::cat(
+                        &[&img.narrow(1, 0, txt_len)?, &img_tail_updated],
+                        1,
+                    )?;
+                }
+            }
         }
         let img = img.i((.., txt.dim(1)?..))?;
         self.final_layer.forward(&img, &vec_)
@@ -765,5 +1049,122 @@ impl candle_transformers::models::flux::WithForward for Flux {
         guidance: Option<&Tensor>,
     ) -> Result<Tensor> {
         Self::forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance)
+    }
+}
+
+#[cfg(test)]
+mod nf4_lora_tests {
+    use super::*;
+    use crate::pipelines::lora_linear::LoraSlot;
+
+    fn cpu() -> candle_core::Device {
+        candle_core::Device::Cpu
+    }
+
+    /// Build a 2x2 NF4Linear whose dense_override is the identity
+    /// matrix. The packed + absmax tensors are dummy (NF4Linear's
+    /// forward short-circuits through `dense_override` so the NF4
+    /// codec is never invoked). Lets us test the runtime LoRA stack
+    /// math without needing real NF4 safetensors.
+    fn identity_nf4_2x2() -> NF4Linear {
+        // packed: dummy `(out*in/2,) = (2,)` u8
+        let packed = Tensor::from_vec(vec![0u8, 0], (2,), &cpu()).unwrap();
+        // absmax: dummy `(out*in/64,)` -- but 2*2/64 = 0 entries.
+        // Use a single-element placeholder; the override path skips it.
+        let absmax = Tensor::from_vec(vec![1.0f32], (1,), &cpu()).unwrap();
+        let dense = Tensor::from_vec(
+            vec![1.0f32, 0.0, 0.0, 1.0],
+            (2, 2),
+            &cpu(),
+        )
+        .unwrap();
+        NF4Linear::new_with_dense_override(
+            packed,
+            absmax,
+            None,
+            2,
+            2,
+            DType::F32,
+            dense,
+        )
+    }
+
+    #[test]
+    fn nf4_linear_empty_stack_uses_dense_override() {
+        // Identity base, no LoRAs → forward(x) = x.
+        let nf4 = identity_nf4_2x2();
+        let x = Tensor::from_vec(vec![3.0f32, 5.0], (1, 2), &cpu()).unwrap();
+        let y = nf4.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 3.0).abs() < 1e-5);
+        assert!((yv[1] - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nf4_linear_with_identity_lora_doubles_output() {
+        // Identity base + identity LoRA scale=1 → y = x + x = 2x.
+        let nf4 = identity_nf4_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        // Write directly into the slots — same pattern Flux::apply_loras
+        // uses internally.
+        *nf4.slots_handle().write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        let x = Tensor::from_vec(vec![3.0f32, 5.0], (1, 2), &cpu()).unwrap();
+        let y = nf4.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 6.0).abs() < 1e-5, "row 0 got {}", yv[0]);
+        assert!((yv[1] - 10.0).abs() < 1e-5, "row 1 got {}", yv[1]);
+    }
+
+    #[test]
+    fn nf4_linear_clear_returns_to_base() {
+        let nf4 = identity_nf4_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        *nf4.slots_handle().write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        // Now clear via the slot handle directly (mirrors what
+        // Flux::clear_all_loras does across every Linear in the
+        // registry).
+        nf4.slots_handle().write().unwrap().clear();
+        let x = Tensor::from_vec(vec![3.0f32, 5.0], (1, 2), &cpu()).unwrap();
+        let y = nf4.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        // Back to identity output.
+        assert!((yv[0] - 3.0).abs() < 1e-5);
+        assert!((yv[1] - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nf4_linear_two_loras_compose() {
+        // Two identity LoRAs scale=0.5 each → delta = x; y = x + x = 2x.
+        let nf4 = identity_nf4_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        *nf4.slots_handle().write().unwrap() = vec![
+            LoraSlot {
+                a: id.clone(),
+                b: id.clone(),
+                scale: 0.5,
+            },
+            LoraSlot {
+                a: id.clone(),
+                b: id.clone(),
+                scale: 0.5,
+            },
+        ];
+        let x = Tensor::from_vec(vec![4.0f32, 8.0], (1, 2), &cpu()).unwrap();
+        let y = nf4.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        // 4 + 0.5*4 + 0.5*4 = 8; 8 + 0.5*8 + 0.5*8 = 16.
+        assert!((yv[0] - 8.0).abs() < 1e-5);
+        assert!((yv[1] - 16.0).abs() < 1e-5);
     }
 }

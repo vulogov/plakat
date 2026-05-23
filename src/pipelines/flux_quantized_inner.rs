@@ -40,25 +40,80 @@ use crate::pipelines::flux_inner::{attention, timestep_embedding, Config, EmbedN
 /// runs as a regular matmul; `QMatMul::QTensor(arc)` runs as 4-bit dequant.
 /// Forward and storage cost are identical to upstream when the weight is
 /// quantized; LoRA-targeted layers carry a dense tensor (BF16) instead.
+///
+/// v0.15 phase 7b-4: gains a runtime LoRA stack (`slots`). Forward
+/// applies `y += scale · (B @ A @ x)` per slot after the base matmul,
+/// matching `LoraLinear`'s math. Composes with the load-time dense
+/// override path (v0.13 phase 1e): when both are set, the override
+/// is the "base" the runtime LoRA adds onto.
 #[derive(Debug, Clone)]
 pub struct Linear {
     weight: QMatMul,
     bias: Option<Tensor>,
+    out_dim: usize,
+    in_dim: usize,
+    /// Runtime LoRA stack — empty by default; updated in-place via
+    /// the handle from `slots_handle()`. The handle is also what the
+    /// loader registers in the shared `LoraRegistry` keyed by
+    /// `<path>.weight` so the parent `Flux::apply_loras` can update
+    /// slots by safetensors path without walking the model.
+    slots: std::sync::Arc<
+        std::sync::RwLock<Vec<crate::pipelines::lora_linear::LoraSlot>>,
+    >,
 }
 
 impl Linear {
-    pub fn new(weight: QMatMul, bias: Option<Tensor>) -> Self {
-        Self { weight, bias }
+    pub fn new(weight: QMatMul, bias: Option<Tensor>, out_dim: usize, in_dim: usize) -> Self {
+        Self {
+            weight,
+            bias,
+            out_dim,
+            in_dim,
+            slots: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+        }
+    }
+
+    /// v0.15 phase 7b-4: cheap Arc handle to this Linear's runtime
+    /// LoRA stack. Used by `LinearLoader` to register the path in
+    /// the shared registry.
+    pub fn slots_handle(
+        &self,
+    ) -> std::sync::Arc<
+        std::sync::RwLock<Vec<crate::pipelines::lora_linear::LoraSlot>>,
+    > {
+        self.slots.clone()
+    }
+
+    pub fn out_dim(&self) -> usize {
+        self.out_dim
+    }
+    pub fn in_dim(&self) -> usize {
+        self.in_dim
     }
 }
 
 impl Module for Linear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let y = x.apply(&self.weight)?;
-        match &self.bias {
-            None => Ok(y),
-            Some(b) => y.broadcast_add(b),
+        // Base matmul: QMatMul handles QTensor (dequant per call) or
+        // Tensor (dense, the LoRA-merged override path).
+        let mut y = x.apply(&self.weight)?;
+        if let Some(b) = &self.bias {
+            y = y.broadcast_add(b)?;
         }
+        // v0.15 phase 7b-4: runtime LoRA stack. Same math as
+        // `LoraLinear::forward`: y += scale · (B @ A @ x) per slot.
+        // Empty stack short-circuits via the iterator (zero overhead
+        // when no LoRAs are active).
+        let slots = self.slots.read().map_err(|_| {
+            candle_core::Error::Msg("Flux GGUF Linear slots poisoned".into())
+        })?;
+        for slot in slots.iter() {
+            let lo = x.broadcast_matmul(&slot.a.t()?)?;
+            let delta = lo.broadcast_matmul(&slot.b.t()?)?;
+            let delta = (delta * slot.scale as f64)?;
+            y = y.broadcast_add(&delta)?;
+        }
+        Ok(y)
     }
 }
 
@@ -88,14 +143,43 @@ pub struct LinearLoader {
     pub vb: VarBuilder,
     pub path: String,
     pub overrides: Arc<HashMap<String, Tensor>>,
+    /// v0.15 phase 7b-4: shared LoRA registry — every constructed
+    /// `Linear` registers its slots handle under `<path>.weight`.
+    /// `Arc<RwLock<...>>` so the chain of `pp()` clones all write
+    /// into the same map. After construction, the parent `Flux`
+    /// `try_unwrap`s the Arc and stores the inner HashMap.
+    pub slot_registry: Arc<
+        std::sync::RwLock<crate::pipelines::lora_linear::LoraRegistry>,
+    >,
 }
 
 impl LinearLoader {
     pub fn new(vb: VarBuilder, overrides: Arc<HashMap<String, Tensor>>) -> Self {
+        Self::with_registry(
+            vb,
+            overrides,
+            Arc::new(std::sync::RwLock::new(
+                crate::pipelines::lora_linear::LoraRegistry::new(),
+            )),
+        )
+    }
+
+    /// v0.15 phase 7b-4: build a loader that captures every
+    /// constructed `Linear`'s slot handle into `slot_registry`.
+    /// Cloned across nested `pp` calls so every sub-loader writes
+    /// into the same registry.
+    pub fn with_registry(
+        vb: VarBuilder,
+        overrides: Arc<HashMap<String, Tensor>>,
+        slot_registry: Arc<
+            std::sync::RwLock<crate::pipelines::lora_linear::LoraRegistry>,
+        >,
+    ) -> Self {
         Self {
             vb,
             path: String::new(),
             overrides,
+            slot_registry,
         }
     }
 
@@ -110,6 +194,7 @@ impl LinearLoader {
             vb: self.vb.pp(&name),
             path,
             overrides: self.overrides.clone(),
+            slot_registry: self.slot_registry.clone(),
         }
     }
 
@@ -130,7 +215,7 @@ impl LinearLoader {
             None
         };
         let weight_path = format!("{}.weight", self.path);
-        if let Some(merged) = self.overrides.get(&weight_path) {
+        let linear = if let Some(merged) = self.overrides.get(&weight_path) {
             // Sanity check shape — protects against a LoRA targeting a
             // mismatched layer (e.g. SD-family LoRA fed at a Flux model).
             let want = (out_dim, in_dim);
@@ -144,11 +229,30 @@ impl LinearLoader {
                     "LoRA override {weight_path}: shape mismatch (got {got:?}, expected {want:?})"
                 );
             }
-            return Ok(Linear::new(QMatMul::Tensor(merged.clone()), bias_t));
-        }
-        let weight = self.vb.get((out_dim, in_dim), "weight")?;
-        let qmm = QMatMul::from_arc(weight)?;
-        Ok(Linear::new(qmm, bias_t))
+            Linear::new(QMatMul::Tensor(merged.clone()), bias_t, out_dim, in_dim)
+        } else {
+            let weight = self.vb.get((out_dim, in_dim), "weight")?;
+            let qmm = QMatMul::from_arc(weight)?;
+            Linear::new(qmm, bias_t, out_dim, in_dim)
+        };
+        // v0.15 phase 7b-4: register the slots handle so the parent
+        // Flux can drive `apply_loras` without walking the model.
+        self.slot_registry
+            .write()
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "Flux GGUF LoRA registry poisoned during construction".into(),
+                )
+            })?
+            .insert(
+                weight_path,
+                crate::pipelines::lora_linear::LoraRegistryEntry {
+                    handle: linear.slots_handle(),
+                    out_dim,
+                    in_dim,
+                },
+            );
+        Ok(linear)
     }
 
     fn linear(&self, in_dim: usize, out_dim: usize) -> Result<Linear> {
@@ -527,6 +631,10 @@ pub struct Flux {
     pub double_blocks: Vec<DoubleStreamBlock>,
     pub single_blocks: Vec<SingleStreamBlock>,
     final_layer: LastLayer,
+    /// v0.15 phase 7b-4: path → Linear slots handle map populated
+    /// during construction. Consumed by `apply_loras` at scenario
+    /// per-task dispatch time.
+    lora_registry: crate::pipelines::lora_linear::LoraRegistry,
 }
 
 impl Flux {
@@ -551,7 +659,14 @@ impl Flux {
         vb: VarBuilder,
         overrides: Arc<HashMap<String, Tensor>>,
     ) -> Result<Self> {
-        let root = LinearLoader::new(vb, overrides);
+        // v0.15 phase 7b-4: shared LoRA registry — every constructed
+        // Linear writes its slot handle into this map. After all
+        // sub-loaders go out of scope at the end of construction, we
+        // unwrap the Arc and move the inner HashMap into Flux.
+        let registry_arc = Arc::new(std::sync::RwLock::new(
+            crate::pipelines::lora_linear::LoraRegistry::new(),
+        ));
+        let root = LinearLoader::with_registry(vb, overrides, registry_arc.clone());
         let img_in = root.pp("img_in").linear(cfg.in_channels, cfg.hidden_size)?;
         let txt_in = root.pp("txt_in").linear(cfg.context_in_dim, cfg.hidden_size)?;
         let mut double_blocks = Vec::with_capacity(cfg.depth);
@@ -575,6 +690,23 @@ impl Flux {
             LastLayer::new(cfg.hidden_size, 1, cfg.in_channels, &root.pp("final_layer"))?;
         let pe_dim = cfg.hidden_size / cfg.num_heads;
         let pe_embedder = EmbedNd::new(pe_dim, cfg.theta, cfg.axes_dim.to_vec());
+        // Drop the loader chain so the registry Arc count returns to 1.
+        drop(d_root);
+        drop(s_root);
+        drop(root);
+        let lora_registry = Arc::try_unwrap(registry_arc)
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "Flux GGUF LoRA registry still has outstanding refs after construction"
+                        .into(),
+                )
+            })?
+            .into_inner()
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "Flux GGUF LoRA registry RwLock poisoned at construction".into(),
+                )
+            })?;
         Ok(Self {
             img_in,
             txt_in,
@@ -585,7 +717,92 @@ impl Flux {
             double_blocks,
             single_blocks,
             final_layer,
+            lora_registry,
         })
+    }
+
+    /// v0.15 phase 7b-4: replace the runtime LoRA stack on every
+    /// affected Linear at once. Same shape as the NF4 and BF16
+    /// versions — path-keyed dispatch, pre-pads LoRA-B matrices to
+    /// the registered `out_dim`. Returns the number of slots
+    /// successfully applied.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+        dtype: DType,
+        device: &candle_core::Device,
+    ) -> Result<usize> {
+        let mut applied = 0usize;
+        for (key, slot_specs) in specs {
+            let Some(entry) = self.lora_registry.get(&key) else {
+                tracing::debug!(
+                    target: "plakat",
+                    "Flux GGUF apply_loras: no Linear registered at {key} — skipping"
+                );
+                continue;
+            };
+            let mut new_slots = Vec::<crate::pipelines::lora_linear::LoraSlot>::with_capacity(
+                slot_specs.len(),
+            );
+            for spec in slot_specs {
+                let b_padded = crate::pipelines::lora_linear::pad_b_to_out_dim(
+                    &spec.b,
+                    spec.row_slice,
+                    entry.out_dim,
+                    dtype,
+                    device,
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!(
+                        "Flux GGUF apply_loras pad_b at {key}: {e}"
+                    ))
+                })?;
+                let a = spec.a.to_dtype(dtype)?;
+                new_slots.push(crate::pipelines::lora_linear::LoraSlot {
+                    a,
+                    b: b_padded,
+                    scale: spec.scale,
+                });
+            }
+            *entry.handle.write().map_err(|_| {
+                candle_core::Error::Msg(format!(
+                    "Flux GGUF LoRA slot handle for {key} poisoned"
+                ))
+            })? = new_slots;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
+    /// v0.15 phase 7b-4: clear every active LoRA. Resets every Linear
+    /// to its as-loaded contribution (GGUF dequant or BF16 dense
+    /// override from the v0.13 phase 1e merge).
+    pub fn clear_all_loras(&self) -> Result<()> {
+        for entry in self.lora_registry.values() {
+            entry
+                .handle
+                .write()
+                .map_err(|_| {
+                    candle_core::Error::Msg(
+                        "Flux GGUF LoRA slot handle poisoned".into(),
+                    )
+                })?
+                .clear();
+        }
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-4: snapshot of registered safetensors keys.
+    pub fn registered_keys(&self) -> Vec<String> {
+        self.lora_registry.keys().cloned().collect()
+    }
+
+    /// v0.15 phase 7b-4: how many Linears were registered.
+    pub fn n_registered_linears(&self) -> usize {
+        self.lora_registry.len()
     }
 
     /// Standard forward — no ControlNet residuals.
@@ -703,6 +920,101 @@ impl candle_transformers::models::flux::WithForward for Flux {
         guidance: Option<&Tensor>,
     ) -> Result<Tensor> {
         Self::forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance)
+    }
+}
+
+#[cfg(test)]
+mod gguf_lora_tests {
+    use super::*;
+    use crate::pipelines::lora_linear::LoraSlot;
+
+    fn cpu() -> candle_core::Device {
+        candle_core::Device::Cpu
+    }
+
+    /// Build a 2x2 GGUF Linear with an identity dense override (so the
+    /// base path is a regular matmul through `QMatMul::Tensor`). No
+    /// real GGUF file needed.
+    fn identity_quantized_linear_2x2() -> Linear {
+        let dense = Tensor::from_vec(
+            vec![1.0f32, 0.0, 0.0, 1.0],
+            (2, 2),
+            &cpu(),
+        )
+        .unwrap();
+        Linear::new(QMatMul::Tensor(dense), None, 2, 2)
+    }
+
+    #[test]
+    fn gguf_linear_empty_stack_passes_through() {
+        // Identity base, no LoRAs → forward(x) = x.
+        let lin = identity_quantized_linear_2x2();
+        let x = Tensor::from_vec(vec![2.0f32, 9.0], (1, 2), &cpu()).unwrap();
+        let y = lin.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 2.0).abs() < 1e-5);
+        assert!((yv[1] - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gguf_linear_with_identity_lora_doubles_output() {
+        // Identity base + identity LoRA scale=1 → y = x + x = 2x.
+        let lin = identity_quantized_linear_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        *lin.slots_handle().write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        let x = Tensor::from_vec(vec![2.0f32, 9.0], (1, 2), &cpu()).unwrap();
+        let y = lin.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 4.0).abs() < 1e-5);
+        assert!((yv[1] - 18.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gguf_linear_clear_returns_to_base() {
+        let lin = identity_quantized_linear_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        *lin.slots_handle().write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        lin.slots_handle().write().unwrap().clear();
+        let x = Tensor::from_vec(vec![2.0f32, 9.0], (1, 2), &cpu()).unwrap();
+        let y = lin.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 2.0).abs() < 1e-5);
+        assert!((yv[1] - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gguf_linear_two_loras_compose() {
+        // Two identity LoRAs scale=0.5 → delta = x; y = x + x = 2x.
+        let lin = identity_quantized_linear_2x2();
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        *lin.slots_handle().write().unwrap() = vec![
+            LoraSlot {
+                a: id.clone(),
+                b: id.clone(),
+                scale: 0.5,
+            },
+            LoraSlot {
+                a: id.clone(),
+                b: id.clone(),
+                scale: 0.5,
+            },
+        ];
+        let x = Tensor::from_vec(vec![3.0f32, 6.0], (1, 2), &cpu()).unwrap();
+        let y = lin.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 6.0).abs() < 1e-5);
+        assert!((yv[1] - 12.0).abs() < 1e-5);
     }
 }
 
