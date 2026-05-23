@@ -6,10 +6,10 @@ family. plakat supports the full lineup: SD3 Medium, SD3.5 Medium,
 SD3.5 Large, and SD3.5 Large Turbo.
 
 This tutorial walks through the variants, prompt encoding,
-rectified-flow sampler, LoRA, img2img, and tiled hi-res. ControlNet
-support for SD3 isn't shipped — plakat raises an explicit error if
-you pass `--control-spec` with an SD3 model. Use Flux or SDXL for
-ControlNet-guided workflows.
+rectified-flow sampler, LoRA, img2img, tiled hi-res, and
+ControlNet. SD3 ControlNet (InstantX-pattern) lands in v0.16 —
+the resolver maps `--control-spec kind=...` to the matching
+InstantX checkpoint per variant; see §11 below.
 
 ## Prerequisites
 
@@ -151,7 +151,9 @@ keeps unmasked pixels on the init's flow trajectory.
 Output naming reflects the mode: `plakat-sd3-{img2img,inpaint}-<seed>.png`.
 
 **Caveats**:
-- SD3 ControlNet (`--control*`) isn't supported.
+- SD3 ControlNet works on t2i only — the img2img CLI doesn't
+  forward `--control-spec`. Use `plakat generate` for CN-guided
+  outputs.
 - Tiled + img2img doesn't compose — drop one or the other.
 
 ## 7. Tiled hi-res
@@ -259,7 +261,61 @@ of the scenario-merged baseline, then cleared at end-of-task so the
 next task isn't contaminated. Per-task `init-image:` + img2img works
 the same way it does for Flux.
 
-## 11. Common gotchas
+## 11. SD3 ControlNet
+
+plakat's SD3 ControlNet uses the [InstantX](https://huggingface.co/InstantX)
+checkpoints — a small 12-layer transformer that consumes a
+VAE-encoded conditioning latent and produces per-block residuals
+added to the base MMDiT's joint-block hidden states.
+
+```bash
+# Single ControlNet — auto-annotate from a reference photo.
+# Canny works on every SD3 variant.
+plakat generate "a fantasy castle" \
+    --model sd35-medium --size 1024x1024 \
+    --control-spec 'canny:from=ref.jpg'
+
+# Strength + step-gating window (active for the first 60% only):
+plakat generate "..." --model sd35-large \
+    --control-spec 'depth:from=room.jpg:strength=0.8:start=0.0:end=0.6'
+
+# Multi-CN stack: two specs compose at residual level.
+plakat generate "..." --model sd35-medium \
+    --control-spec 'canny:from=edges.jpg:strength=0.7' \
+    --control-spec 'openpose:from=pose.jpg:strength=0.5'
+```
+
+**Resolver matrix** (which InstantX repo each `kind=` resolves to,
+per variant):
+
+| Variant | Canny | Lineart | SoftEdge | OpenPose | Depth |
+|---|---|---|---|---|---|
+| `sd35-large` / `-turbo` | Canny | → Canny | Blur | (not released) | Depth |
+| `sd35-medium` / `sd3-medium` | Canny | → Canny | → Canny | Pose | (not released) |
+
+Combos marked `(not released)` bail loud with a clear error
+suggesting the alternate variant. Lineart / SoftEdge fall back to
+Canny on Medium (same pattern Flux Union Pro v2 uses — close-enough
+edge channel).
+
+**Composition**:
+- Composes with `--lora` (CN residuals are added after LoRA-merged
+  forward).
+- Composes with multi-CN: each spec's residuals are summed
+  block-wise before being fed to the MMDiT.
+- Does **not** compose with `--tiled` — the per-tile conditioning
+  slice isn't wired yet. plakat bails loud rather than ship
+  silent-garbage.
+- The img2img CLI doesn't carry `--control-spec` — CN-guided img2img
+  is a future phase.
+
+**Tip**: SD3 follows long prompts well, but ControlNet pulls the
+geometry hard. Start at `strength=0.7` — full `1.0` often
+over-constrains the output and the model can't deliver the
+prompt's content. The step-gating window (`start=0.0:end=0.4`) is
+the gentler dial: structure pull early, free composition late.
+
+## 12. Common gotchas
 
 - **Gated everywhere.** Every Stability SD3 repo requires accepting
   the license terms. If a download fails with 401, check that
@@ -276,10 +332,9 @@ the same way it does for Flux.
   = smoother seams + more compute. Default 768 (with default
   `--tile-size 1024`, giving 256-px overlap) is the SDXL/Flux
   precedent and works well for SD3 too.
-- **SD3 ControlNet.** Not supported — plakat returns a clear error
-  if you pass `--control-spec` with an SD3 model. Use Flux
-  (`flux-dev` + Union Pro v2 ControlNet) or SDXL for ControlNet-
-  guided workflows.
+- **SD3 ControlNet.** Supported as of v0.16 via the InstantX
+  family. See §11 for the resolver matrix and composition rules.
+  Tiled + CN isn't wired — drop `--tiled` if you also want CN.
 
 ## What's next
 

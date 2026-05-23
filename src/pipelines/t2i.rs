@@ -330,6 +330,93 @@ pub(crate) fn flux_controlnet_load_for(
     })
 }
 
+/// v0.16 phase 3e: pick an InstantX SD3 ControlNet repo + config
+/// for the user's requested `--control-spec kind=…`. InstantX is the
+/// canonical SD3 CN publisher (they trained the original SD3 batch
+/// alongside Alimama). plakat ships the InstantX-pattern arch
+/// (`pos_embed_input.proj` Conv2d producing per-block residuals)
+/// in [`sd3_controlnet`].
+///
+/// Repo selection follows the InstantX release naming:
+///
+/// * SD3.5 Large → `InstantX/SD3.5-Large-Controlnet-{Canny,Depth,Blur}`
+/// * SD3 / SD3.5 Medium → `InstantX/SD3-Controlnet-{Canny,Pose,Tile}`
+///
+/// The Medium-tier CNs were trained on original SD3 Medium and
+/// transfer cleanly to SD3.5 Medium (same arch: 12-layer joint
+/// transformer, hidden=1536). The Large-tier CNs target SD3.5
+/// Large only.
+///
+/// Returns a clear error for combos InstantX hasn't released
+/// (e.g. SoftEdge on Large, OpenPose on Large). For SoftEdge on
+/// Medium plakat falls through to InstantX/SD3-Controlnet-Canny
+/// (which produces close-enough HED-style structure under the
+/// same conditioning input — the Flux Union Pro v2 plays the same
+/// canny-as-softedge fallback).
+pub(crate) fn sd3_controlnet_load_for(
+    kind: crate::pipelines::controlnet::ControlKind,
+    svar: crate::pipelines::sd3::Variant,
+    strength: f32,
+) -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
+    use crate::pipelines::controlnet::ControlKind;
+    use crate::pipelines::sd3::Variant as SV;
+    use crate::pipelines::sd3_controlnet::{Config, Sd3ControlNetLoad};
+    let file = "diffusion_pytorch_model.safetensors".to_string();
+    let (repo, cfg) = match svar {
+        SV::Sd35Large | SV::Sd35LargeTurbo => {
+            // SD3.5 Large CN family. Three known InstantX releases.
+            let repo = match kind {
+                ControlKind::Canny | ControlKind::Lineart => {
+                    "InstantX/SD3.5-Large-Controlnet-Canny"
+                }
+                ControlKind::Depth => "InstantX/SD3.5-Large-Controlnet-Depth",
+                ControlKind::SoftEdge => "InstantX/SD3.5-Large-Controlnet-Blur",
+                ControlKind::OpenPose => {
+                    anyhow::bail!(
+                        "SD3.5-Large InstantX ControlNet family doesn't include \
+                         an OpenPose checkpoint. Use --model sd35-medium for \
+                         pose conditioning, or switch to Canny / Depth / SoftEdge."
+                    )
+                }
+            };
+            (repo, Config::instantx_sd35_large())
+        }
+        SV::Sd3Medium | SV::Sd35Medium => {
+            // Original SD3 + SD3.5 Medium share the InstantX SD3 CN
+            // family. Same 12-layer / hidden=1536 arch as the diffusers
+            // `SD3ControlNetModel` default.
+            let repo = match kind {
+                ControlKind::Canny => "InstantX/SD3-Controlnet-Canny",
+                // Lineart routes through Canny like Flux Union does —
+                // closely-related edge channels.
+                ControlKind::Lineart => "InstantX/SD3-Controlnet-Canny",
+                // SoftEdge fallback: Canny again. InstantX's SD3 batch
+                // didn't ship a HED-trained CN; Canny on a HED-style
+                // softedge input gives a usable structure pull.
+                ControlKind::SoftEdge => "InstantX/SD3-Controlnet-Canny",
+                ControlKind::OpenPose => "InstantX/SD3-Controlnet-Pose",
+                ControlKind::Depth => {
+                    anyhow::bail!(
+                        "SD3 / SD3.5-Medium InstantX ControlNet family doesn't \
+                         include a Depth checkpoint. Use --model sd35-large for \
+                         depth conditioning, or switch to Canny / Pose."
+                    )
+                }
+            };
+            (repo, Config::instantx_sd35_medium())
+        }
+    };
+    Ok(Sd3ControlNetLoad {
+        repo: repo.to_string(),
+        file,
+        cfg,
+        scale: strength,
+        conditioning: None,
+        start: 0.0,
+        end: 1.0,
+    })
+}
+
 /// v0.13 phase 8: take the `(1, 3, H, W)` `[0, 1]` tensor a
 /// ControlNet auto-annotator produces and write it as an 8-bit RGB
 /// PNG. The Flux ControlNet path consumes its conditioning via a path
@@ -1354,10 +1441,21 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // now since those code paths don't yet know about MMDiT.
     if variant.is_sd3() {
         use crate::pipelines::sd3;
-        if !req.controls.is_empty() {
+        let sd3_variant = match variant {
+            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+            Variant::Sd35Large => sd3::Variant::Sd35Large,
+            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        };
+        // v0.16 phase 3e: SD3 ControlNet stack. Each --control-spec
+        // resolves to one InstantX CN load. Tiled + SD3 CN is gated
+        // inside `predict_velocity_tiled` (bails loud); the rest
+        // composes with t2i + LoRA + img2img.
+        if !req.controls.is_empty() && req.tiled.is_some() {
             anyhow::bail!(
-                "SD3 ControlNet isn't wired yet (v0.14 phase 1a t2i only). \
-                 Drop --control-spec or switch to an SDXL / Flux model."
+                "SD3 ControlNet + --tiled doesn't compose yet. Per-tile \
+                 conditioning slicing lands in a follow-up. Drop one."
             );
         }
         // v0.15 phase 5: SD3 + --tiled composes. Plumbed via the new
@@ -1368,13 +1466,81 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                 "SD3 --quantize-t5 isn't wired yet (Flux-only in v0.13)."
             );
         }
-        let sd3_variant = match variant {
-            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
-            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
-            Variant::Sd35Large => sd3::Variant::Sd35Large,
-            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
-            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        // v0.16 phase 3e: build the SD3 CN stack + per-spec
+        // conditioning images. Auto-annotate `from=PATH` specs the
+        // same way Flux does, writing PNGs into a tempdir that lives
+        // until `sd3::run` returns.
+        let sd3_anno_dtype = if matches!(req.device, Device::Cpu) {
+            DType::F32
+        } else {
+            DType::BF16
         };
+        let sd3_anno_tmp = tempfile::Builder::new()
+            .prefix("plakat-sd3-anno-")
+            .tempdir()
+            .context("creating tempdir for SD3 ControlNet auto-annotator output")?;
+        let mut sd3_controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>
+            = Vec::with_capacity(req.controls.len());
+        for (cn_idx, spec) in req.controls.iter().enumerate() {
+            let cond_path: PathBuf = match (spec.image.as_ref(), spec.from.as_ref()) {
+                (Some(p), None) => p.clone(),
+                (None, Some(from_path)) => {
+                    let spin = progress::spinner(&format!(
+                        "Auto-annotating SD3 ControlNet #{} ({})",
+                        cn_idx + 1,
+                        spec.kind.slug()
+                    ));
+                    let anno = crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind,
+                        from_path,
+                        req.width,
+                        req.height,
+                        &req.device,
+                        sd3_anno_dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "auto-annotating {} for SD3 ControlNet (--control-spec {}:from={})",
+                            spec.kind.slug(),
+                            spec.kind.slug(),
+                            from_path.display()
+                        )
+                    })?;
+                    let out_path = sd3_anno_tmp.path().join(format!(
+                        "cn{}-{}.png",
+                        cn_idx,
+                        spec.kind.slug()
+                    ));
+                    write_annotator_tensor_as_png(&anno, &out_path).with_context(|| {
+                        format!(
+                            "writing auto-annotated {} → {}",
+                            spec.kind.slug(),
+                            out_path.display()
+                        )
+                    })?;
+                    spin.finish_with_message(format!(
+                        "✓ auto-annotated {} → {}",
+                        spec.kind.slug(),
+                        out_path.display()
+                    ));
+                    out_path
+                }
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                    spec.kind
+                ),
+                (None, None) => anyhow::bail!(
+                    "--control-spec for kind={:?}: requires image=PATH or from=PATH on SD3",
+                    spec.kind
+                ),
+            };
+            let mut cn_load = sd3_controlnet_load_for(spec.kind, sd3_variant, spec.strength)?;
+            cn_load.conditioning = Some(cond_path);
+            cn_load.start = spec.start;
+            cn_load.end = spec.end;
+            sd3_controlnets.push(cn_load);
+        }
         sd3::run(sd3::Request {
             prompt: req.prompt,
             negative: req.negative,
@@ -1412,8 +1578,18 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // standard t2i path only — img2img/inpaint + tiled bail
             // in sd3::Pipeline::generate.
             tiled: req.tiled,
+            // v0.16 phase 3e: SD3 ControlNet stack built above from
+            // `req.controls` (Vec<ControlSpec>). Each load entry
+            // carries the resolved InstantX repo + per-spec
+            // conditioning path + gating window. Empty Vec = no CN
+            // (byte-identical to phase 1a path).
+            controlnets: sd3_controlnets,
         })
         .await?;
+        // The auto-annotation tempdir lives until here so the SD3
+        // pipeline's `encode_cn_conditioning` can read the written
+        // PNGs before they're cleaned up.
+        drop(sd3_anno_tmp);
         return Ok(None);
     }
 
@@ -1779,5 +1955,71 @@ mod tests {
         assert!(!Variant::FluxDev.is_flux_concept());
         assert!(!Variant::FluxFillDev.is_flux_concept());
         assert!(!Variant::Sd15.is_flux_concept());
+    }
+
+    // v0.16 phase 3e — SD3 ControlNet resolver.
+
+    #[test]
+    fn sd3_cn_resolver_large_canny() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Canny, SV::Sd35Large, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3.5-Large-Controlnet-Canny");
+        // InstantX SD3.5-Large CN is a 12-layer hidden=2432 small
+        // transformer producing 12 residuals — not a full 38-layer
+        // mirror of the base MMDiT.
+        assert_eq!(load.cfg.num_layers, 12);
+        assert_eq!(load.cfg.hidden_size, 2432);
+        assert_eq!(load.scale, 1.0);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_large_depth() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Depth, SV::Sd35Large, 0.7).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3.5-Large-Controlnet-Depth");
+        assert_eq!(load.scale, 0.7);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_pose() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::OpenPose, SV::Sd35Medium, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3-Controlnet-Pose");
+        assert_eq!(load.cfg.num_layers, 12);
+        assert_eq!(load.cfg.hidden_size, 1536);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_lineart_falls_back_to_canny() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Lineart, SV::Sd3Medium, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3-Controlnet-Canny");
+    }
+
+    #[test]
+    fn sd3_cn_resolver_large_rejects_pose() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        // InstantX didn't release an SD3.5-Large pose CN. The
+        // resolver bails clearly instead of silently producing
+        // garbage from a 404 download.
+        let err = sd3_controlnet_load_for(ControlKind::OpenPose, SV::Sd35Large, 1.0).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("OpenPose"), "expected OpenPose mention, got: {msg}");
+        assert!(msg.contains("sd35-medium"), "expected sd35-medium hint, got: {msg}");
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_rejects_depth() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let err = sd3_controlnet_load_for(ControlKind::Depth, SV::Sd35Medium, 1.0).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Depth"), "expected Depth mention, got: {msg}");
+        assert!(msg.contains("sd35-large"), "expected sd35-large hint, got: {msg}");
     }
 }
