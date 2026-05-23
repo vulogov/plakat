@@ -39,6 +39,22 @@ pub fn println(msg: &str) {
     }
 }
 
+/// v0.16 phase 7: bytes-counted progress bar for file downloads.
+/// Same shared MultiProgress as `step_bar` / `spinner`. `total` is
+/// the content length in bytes; the label is rendered as the prefix.
+pub fn bytes_bar(total: u64, label: &str) -> ProgressBar {
+    let pb = shared().add(ProgressBar::new(total));
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{prefix:>12} [{bar:30.cyan/blue}] {bytes}/{total_bytes} {wide_msg} {elapsed_precise}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb.set_prefix(label.to_string());
+    pb
+}
+
 /// Add a new spinner to the shared MultiProgress.
 pub fn spinner(msg: &str) -> ProgressBar {
     let pb = shared().add(ProgressBar::new_spinner());

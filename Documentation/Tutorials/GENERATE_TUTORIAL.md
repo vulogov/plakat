@@ -535,7 +535,65 @@ Without one of these, `--adetailer` bails loud.
 - Composes with `--lora`, `--scheduler`, `--seed`. The face pass
   reuses the t2i SdCore so there's no extra model load.
 
-## 15. Common issues
+## 15. Browsing Civitai (v0.16+)
+
+[Civitai](https://civitai.com) is the major community hub for SD
+checkpoints, LoRAs, embeddings, and ControlNet variants. plakat
+ships a built-in browser so you don't have to copy URLs around.
+
+**Search**:
+
+```bash
+# Top 10 LoRAs matching "watercolor"
+plakat civitai search "watercolor" --type lora
+
+# Checkpoints, page 2 of 20
+plakat civitai search "anime" --type checkpoint --limit 20 --page 2
+```
+
+Each result shows the model ID, name, type, base model, trigger
+words (for LoRAs), and the available files marked with `★` for
+the primary (recommended) file.
+
+**Info** — drill into one model:
+
+```bash
+plakat civitai info 12345
+plakat civitai info https://civitai.com/models/12345
+plakat civitai info "https://civitai.com/models/12345?modelVersionId=789"
+```
+
+**Download**:
+
+```bash
+# Download the latest version's primary file
+plakat civitai download 12345
+
+# Pin a specific version via URL
+plakat civitai download "https://civitai.com/models/12345?modelVersionId=789"
+
+# Pick a non-primary file by name
+plakat civitai download 12345 --file "config.yaml"
+```
+
+The file lands at `<plakat-cache>/civitai/model-<id>/version-<id>/<filename>`
+with a `metadata.json` alongside. plakat prints the absolute path —
+drop it into `--lora` or `--model`:
+
+```bash
+plakat civitai download 12345
+# → ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
+
+plakat generate "..." --model sd15 \
+    --lora ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
+```
+
+**Gated assets**: some Civitai models require an account. Set
+`CIVITAI_API_KEY` from
+<https://civitai.com/user/account> (API Keys section). Public
+models work without one.
+
+## 16. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

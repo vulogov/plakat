@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 pub mod artefact;
+pub mod civitai;
 pub mod doctor;
 pub mod generate;
 pub mod img2img;
@@ -75,6 +76,10 @@ pub enum Command {
     /// named zones of a generated image.
     #[command(subcommand_value_name = "OP")]
     Artefact(artefact::ArtefactArgs),
+    /// Browse + download Civitai models, LoRAs, and embeddings.
+    /// See `plakat civitai --help` for sub-actions.
+    #[command(subcommand_value_name = "OP")]
+    Civitai(civitai::CivitaiArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -116,5 +121,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             style::run(args, device).await
         }
         Command::Artefact(args) => artefact::run(args).await,
+        Command::Civitai(args) => civitai::run(args).await,
     }
 }
