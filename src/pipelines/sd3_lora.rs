@@ -167,6 +167,105 @@ fn apply_one_sd3_lora(
     Ok((n_mod, total))
 }
 
+/// v0.15 phase 7b-7: build a path-keyed runtime LoRA spec map for
+/// the SD3 MMDiT backbone. Same shape as
+/// `flux_lora::compute_runtime_specs` but uses the SD3 resolver
+/// (`sd3_lora::resolve_target`) and threads the variant's
+/// `hidden_size` for QKV row-slice math.
+///
+/// Returns `(specs, modified_groups, total_groups)`. `specs` is
+/// keyed by full MMDiT safetensors path (with `.weight`); each
+/// value is the stack of runtime LoRA spec entries that target
+/// that Linear.
+pub fn compute_runtime_specs(
+    loras: &[ResolvedLora],
+    default_scale: f32,
+    hidden_size: usize,
+    device: &candle_core::Device,
+) -> anyhow::Result<(
+    std::collections::HashMap<
+        String,
+        Vec<crate::pipelines::lora_linear::LoraSpec>,
+    >,
+    usize,
+    usize,
+)> {
+    use crate::pipelines::flux_lora::{RowSlice, group_peft_keys};
+    use crate::pipelines::lora_linear::LoraSpec as RtSpec;
+    use anyhow::Context;
+    use candle_core::DType;
+
+    let mut specs: std::collections::HashMap<String, Vec<RtSpec>> =
+        std::collections::HashMap::new();
+    let mut modified = 0usize;
+    let mut total_groups = 0usize;
+
+    for lora in loras {
+        let lora_tensors: std::collections::HashMap<String, candle_core::Tensor> =
+            candle_core::safetensors::load(&lora.path, device)
+                .with_context(|| format!("loading SD3 LoRA {}", lora.display))?;
+        let effective_scale_base = lora.scale * default_scale;
+        let groups = group_peft_keys(&lora_tensors);
+        total_groups += groups.len();
+        for (logical, group) in groups {
+            let (Some(a), Some(b)) = (group.a.as_ref(), group.b.as_ref()) else {
+                continue;
+            };
+            let target = match resolve_target(&logical, hidden_size) {
+                Some(t) => t,
+                None => {
+                    tracing::debug!(
+                        target: "plakat",
+                        "SD3 runtime LoRA: skipping unresolvable target {logical}"
+                    );
+                    continue;
+                }
+            };
+            let rank = a.dim(0)? as f32;
+            let alpha_f32 = match group.alpha.as_ref() {
+                Some(t) => {
+                    let t = t.to_dtype(DType::F32)?;
+                    match t.dims().len() {
+                        0 => t.to_scalar::<f32>()?,
+                        _ => t
+                            .flatten_all()?
+                            .to_vec1::<f32>()
+                            .ok()
+                            .and_then(|v| v.first().copied())
+                            .unwrap_or(rank),
+                    }
+                }
+                None => rank,
+            };
+            let scaling = (alpha_f32 / rank.max(1.0)) * effective_scale_base;
+            let row_slice = match target.slice {
+                RowSlice::Full => None,
+                RowSlice::Partial { start, end } => Some((start, end)),
+            };
+            specs
+                .entry(target.base_key.clone())
+                .or_default()
+                .push(RtSpec {
+                    a: a.clone(),
+                    b: b.clone(),
+                    scale: scaling,
+                    row_slice,
+                });
+            modified += 1;
+        }
+        if total_groups > 0 {
+            tracing::info!(
+                target: "plakat",
+                "SD3 runtime LoRA {} → {modified}/{total_groups} targets staged (scale {:.2})",
+                lora.display,
+                effective_scale_base
+            );
+        }
+    }
+
+    Ok((specs, modified, total_groups))
+}
+
 /// Resolve a SD3 LoRA logical name (PEFT) to the MMDiT base tensor
 /// key + row slice. Strips an optional `transformer.` prefix to
 /// match diffusers' SD3 LoRA convention.
