@@ -188,28 +188,11 @@ impl Module for NF4Linear {
 /// returns an `NF4Linear` with `dense_override` set — same selective
 /// dequant pattern the GGUF vendor uses (v0.13 phase 1e). Empty map
 /// = phase-2 behaviour, every Linear stays packed.
-/// v0.15 phase 7b-2: one slot-registry entry — handle into the
-/// target NF4Linear's runtime LoRA stack plus the metadata needed to
-/// pad LoRA-B matrices to the right size in `apply_loras`. Storing
-/// `out_dim` here avoids walking the model structure at LoRA
-/// application time.
-///
-/// `Clone` clones the `Arc<RwLock<...>>` handle (cheap, shared
-/// reference). `Debug` is derived because `Flux` derives `Debug` and
-/// every field needs the bound.
-#[derive(Debug, Clone)]
-pub struct SlotRegistryEntry {
-    pub handle: std::sync::Arc<
-        std::sync::RwLock<Vec<crate::pipelines::lora_linear::LoraSlot>>,
-    >,
-    pub out_dim: usize,
-    pub in_dim: usize,
-}
-
-/// v0.15 phase 7b-2: per-Linear slot handle keyed by full safetensors
-/// path (including `.weight`). Built up during model construction and
-/// consumed by `Flux::apply_loras` at scenario per-task dispatch time.
-pub type SlotRegistry = std::collections::HashMap<String, SlotRegistryEntry>;
+// v0.15 phase 7b-3: registry types live in `lora_linear` now and are
+// shared across every backbone with runtime LoRA support. The local
+// aliases below preserve the existing call sites in this file.
+pub use crate::pipelines::lora_linear::LoraRegistry as SlotRegistry;
+pub use crate::pipelines::lora_linear::LoraRegistryEntry as SlotRegistryEntry;
 
 #[derive(Clone)]
 pub struct Nf4LinearLoader<'a> {
