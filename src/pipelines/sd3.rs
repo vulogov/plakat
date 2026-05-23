@@ -228,6 +228,11 @@ pub struct LoadRequest {
     /// LoRA's own `:scale` suffix. Same semantics as Flux/SD LoRA's
     /// `--lora-scale`. 1.0 is the default.
     pub lora_scale: f32,
+    /// v0.16 phase 3: zero or more SD3 ControlNets to preload alongside
+    /// the MMDiT backbone. Each load spec carries the InstantX repo +
+    /// per-instance runtime knobs (scale, conditioning, step-gating).
+    /// Empty disables CN entirely (byte-identical to pre-3 behaviour).
+    pub controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>,
 }
 
 pub struct GenRequest {
@@ -249,6 +254,12 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.16 phase 3: per-call conditioning override for the loaded
+    /// SD3 ControlNets. Indexed parallel to
+    /// `LoadRequest::controlnets`. An entry of `None` keeps the path
+    /// from the load request (used when one scenario task has no CN
+    /// conditioning to swap to). Empty Vec = preserve all paths.
+    pub controlnet_conditioning: Vec<Option<PathBuf>>,
 }
 
 pub struct Pipeline {
@@ -266,6 +277,11 @@ pub struct Pipeline {
     t5_tok: Tokenizer,
     mmdit_model: mmdit::MMDiT,
     vae: sdvae::AutoEncoderKL,
+    /// v0.16 phase 3: loaded SD3 ControlNets. Each entry carries a
+    /// `Sd3ControlNet` + the per-instance runtime knobs (scale,
+    /// conditioning path, step-gating window). Empty when no CN
+    /// was passed in the LoadRequest.
+    controlnets: Vec<crate::pipelines::sd3_controlnet::LoadedSd3ControlNet>,
 }
 
 impl Pipeline {
@@ -462,6 +478,36 @@ impl Pipeline {
         let vae = sdvae::AutoEncoderKL::new(vae_vb, 3, 3, vae_cfg)?;
         load.finish_with_message("✓ MMDiT + VAE loaded");
 
+        // v0.16 phase 3: preload SD3 ControlNets, one per LoadRequest
+        // entry. Each download is ~2-3 GB on cold cache.
+        let mut controlnets = Vec::with_capacity(req.controlnets.len());
+        for (i, spec) in req.controlnets.iter().enumerate() {
+            let cn_spin = progress::spinner(&format!(
+                "Loading SD3 ControlNet [{}/{}] {}",
+                i + 1,
+                req.controlnets.len(),
+                spec.repo
+            ));
+            let net = crate::pipelines::sd3_controlnet::load_from_hf(
+                &spec.repo, &spec.file, &spec.cfg, &req.device, dtype,
+            )
+            .await
+            .with_context(|| {
+                format!("loading SD3 ControlNet from {}/{}", spec.repo, spec.file)
+            })?;
+            cn_spin.finish_with_message(format!(
+                "✓ SD3 ControlNet loaded ({} joint blocks)",
+                net.n_residuals()
+            ));
+            controlnets.push(crate::pipelines::sd3_controlnet::LoadedSd3ControlNet {
+                net,
+                scale: spec.scale,
+                conditioning_path: spec.conditioning.clone(),
+                start: spec.start,
+                end: spec.end,
+            });
+        }
+
         Ok(Self {
             variant: req.variant,
             repo: req.repo,
@@ -476,7 +522,66 @@ impl Pipeline {
             t5_tok,
             mmdit_model,
             vae,
+            controlnets,
         })
+    }
+
+    /// v0.16 phase 3: are any ControlNets loaded? Cheap check used
+    /// by the dispatcher to skip CN-specific code paths when the
+    /// scenario / call doesn't use CN.
+    pub fn has_controlnets(&self) -> bool {
+        !self.controlnets.is_empty()
+    }
+
+    /// v0.16 phase 3: number of loaded ControlNet slots. The
+    /// dispatcher uses this to validate per-task conditioning lists
+    /// against the load-time slot count.
+    pub fn n_controlnets(&self) -> usize {
+        self.controlnets.len()
+    }
+
+    /// v0.16 phase 3: swap the conditioning path for a single CN
+    /// slot between `generate` calls. `None` clears the path so the
+    /// CN contributes no residuals on the next call (used when a
+    /// scenario task has fewer CNs than the scenario's max slot
+    /// count). Same shape as `flux::Pipeline::set_controlnet_conditioning`.
+    pub fn set_controlnet_conditioning(
+        &mut self,
+        idx: usize,
+        path: Option<PathBuf>,
+    ) -> Result<()> {
+        let n = self.controlnets.len();
+        let cn = self.controlnets.get_mut(idx).ok_or_else(|| {
+            anyhow!(
+                "sd3::Pipeline::set_controlnet_conditioning: slot {idx} out of \
+                 range (have {n} loaded CN(s))"
+            )
+        })?;
+        cn.conditioning_path = path;
+        Ok(())
+    }
+
+    /// v0.16 phase 3: per-call CN runtime knobs (scale + step-gating
+    /// window). Lets the scenario dispatcher set per-task strengths
+    /// without re-loading the model.
+    pub fn set_controlnet_call_params(
+        &mut self,
+        idx: usize,
+        scale: f32,
+        start: f32,
+        end: f32,
+    ) -> Result<()> {
+        let n = self.controlnets.len();
+        let cn = self.controlnets.get_mut(idx).ok_or_else(|| {
+            anyhow!(
+                "sd3::Pipeline::set_controlnet_call_params: slot {idx} out of \
+                 range (have {n} loaded CN(s))"
+            )
+        })?;
+        cn.scale = scale;
+        cn.start = start;
+        cn.end = end;
+        Ok(())
     }
 
     /// v0.16 phase 2: replace the runtime LoRA stack on the MMDiT
@@ -1056,6 +1161,11 @@ pub async fn run(req: Request) -> Result<()> {
         device: req.device,
         loras: req.loras,
         lora_scale: req.lora_scale,
+        // The single-shot `t2i::run → sd3::run` entry point doesn't
+        // surface SD3 ControlNet — that's driven via the
+        // CLI-on-`plakat generate` dispatch which builds an
+        // sd3::Pipeline directly with `LoadRequest.controlnets`.
+        controlnets: Vec::new(),
     })
     .await?;
     p.generate(&GenRequest {
@@ -1074,6 +1184,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask_invert: req.mask_invert,
         strength: req.strength,
         tiled: req.tiled,
+        controlnet_conditioning: Vec::new(),
     })
 }
 
