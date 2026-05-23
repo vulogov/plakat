@@ -63,28 +63,53 @@ pub enum Variant {
     /// Always runs in inpainting mode — caller must supply an init
     /// image + mask.
     FillDev,
+    /// v0.15 phase 4: Flux.1-Canny-dev. Full BFL "concept" checkpoint
+    /// with canny-edge conditioning baked into `img_in` (128 channels =
+    /// 64 noise + 64 conditioning latent). Caller supplies a canny
+    /// edge map (or a photo that gets auto-annotated).
+    CannyDev,
+    /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
+    /// trained on depth maps instead of canny edges.
+    DepthDev,
 }
 
 impl Variant {
     pub fn is_dev(self) -> bool {
-        matches!(self, Self::Dev | Self::FillDev)
+        matches!(self, Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev)
     }
     /// v0.13 phase 2: does this variant expect inpainting inputs?
     pub fn is_fill(self) -> bool {
         matches!(self, Self::FillDev)
+    }
+    /// v0.15 phase 4: BFL "concept" variants with conditioning baked
+    /// into a 128-channel `img_in`. Canny-dev or Depth-dev.
+    pub fn is_concept(self) -> bool {
+        matches!(self, Self::CannyDev | Self::DepthDev)
+    }
+    /// v0.15 phase 4: which concept conditioner does the variant expect?
+    /// `None` for non-concept variants.
+    pub fn concept_kind(self) -> Option<&'static str> {
+        match self {
+            Self::CannyDev => Some("canny"),
+            Self::DepthDev => Some("depth"),
+            _ => None,
+        }
     }
     fn main_filename(self) -> &'static str {
         match self {
             Self::Schnell => "flux1-schnell.safetensors",
             Self::Dev => "flux1-dev.safetensors",
             Self::FillDev => "flux1-fill-dev.safetensors",
+            Self::CannyDev => "flux1-canny-dev.safetensors",
+            Self::DepthDev => "flux1-depth-dev.safetensors",
         }
     }
     fn t5_seq_len(self) -> usize {
         match self {
             Self::Schnell => 256,
-            // Fill uses the same 512-token T5 budget as Dev.
-            Self::Dev | Self::FillDev => 512,
+            // Fill / Canny / Depth all use the same 512-token T5
+            // budget as Dev.
+            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 512,
         }
     }
     fn flux_config(self) -> fmodel::Config {
@@ -92,30 +117,36 @@ impl Variant {
             Self::Schnell => fmodel::Config::schnell(),
             Self::Dev => fmodel::Config::dev(),
             Self::FillDev => fmodel::Config::fill_dev(),
+            // Canny + Depth share the 128-channel `img_in` config.
+            Self::CannyDev | Self::DepthDev => fmodel::Config::canny_or_depth_dev(),
         }
     }
     fn ae_config(self) -> fae::Config {
         match self {
-            // Fill shares Dev's autoencoder.
+            // Fill / Canny / Depth all share Dev's autoencoder.
             Self::Schnell => fae::Config::schnell(),
-            Self::Dev | Self::FillDev => fae::Config::dev(),
+            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => fae::Config::dev(),
         }
     }
     pub fn default_guidance(self) -> f64 {
         match self {
             Self::Schnell => 1.0,
+            Self::Dev => 3.5,
             // BFL's Fill model card recommends guidance ~30 (much
             // higher than standard Flux.1-dev's 3.5) — the mask signal
             // needs a stronger guidance to actually respect the
             // conditioning. Callers can override via `--guidance`.
-            Self::Dev => 3.5,
             Self::FillDev => 30.0,
+            // BFL's Canny + Depth model cards recommend guidance ~30
+            // for the same reason — the conditioning latent needs
+            // strong guidance to actually steer the output.
+            Self::CannyDev | Self::DepthDev => 30.0,
         }
     }
     pub fn default_steps(self) -> usize {
         match self {
             Self::Schnell => 4,
-            Self::Dev | Self::FillDev => 28,
+            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 28,
         }
     }
 }
@@ -174,6 +205,10 @@ pub struct Request {
     /// the pipeline default (~0.85). 1.0 ≈ ignore the init image
     /// entirely; 0.0 ≈ no change.
     pub strength: Option<f32>,
+    /// v0.15 phase 4: conditioning image for Flux.1-Canny-dev /
+    /// Flux.1-Depth-dev. Pre-rendered canny edges or depth map.
+    /// Required for the concept variants; ignored otherwise.
+    pub concept_conditioning: Option<PathBuf>,
     /// v0.13 phase 4: tiled (MultiDiffusion-style) denoise. When set,
     /// the full canvas is split into overlapping `tile_size`-pixel
     /// windows; each step runs Flux per-tile and blends noise
@@ -324,6 +359,9 @@ pub struct GenRequest {
     pub mask: Option<PathBuf>,
     /// v0.13 phase 3: img2img strength. See `Request::strength`.
     pub strength: Option<f32>,
+    /// v0.15 phase 4: conditioning for concept variants. See
+    /// `Request::concept_conditioning`.
+    pub concept_conditioning: Option<PathBuf>,
     /// v0.13 phase 4: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
     /// v0.14 phase 3 / 3c: reference images for Flux Redux. See
@@ -552,6 +590,12 @@ impl Pipeline {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
                 Variant::Schnell => "black-forest-labs/FLUX.1-schnell".to_string(),
                 Variant::FillDev => "black-forest-labs/FLUX.1-Fill-dev".to_string(),
+                // v0.15 phase 4: no community GGUF / NF4 packs for the
+                // concept variants exist yet; the bail in Pipeline::load
+                // for is_gguf / is_nf4 + concept variant short-circuits
+                // before we reach this match. Keep the arms exhaustive.
+                Variant::CannyDev => "black-forest-labs/FLUX.1-Canny-dev".to_string(),
+                Variant::DepthDev => "black-forest-labs/FLUX.1-Depth-dev".to_string(),
             }
         } else {
             req.repo.clone()
@@ -575,6 +619,10 @@ impl Pipeline {
                 Variant::Dev => "flux1-dev",
                 Variant::Schnell => "flux1-schnell",
                 Variant::FillDev => "flux1-fill-dev",
+                // No GGUF for concept variants — gated below in
+                // is_gguf check, this arm is unreachable in practice.
+                Variant::CannyDev => "flux1-canny-dev",
+                Variant::DepthDev => "flux1-depth-dev",
             };
             let gguf_file = format!("{stem}-{level}.gguf");
             crate::hf::download::get_file(&req.repo, &gguf_file)
@@ -1083,6 +1131,75 @@ impl Pipeline {
             None
         };
 
+        // ---------- v0.15 phase 4: concept-variant prep ----------
+        // Flux.1-Canny-dev / Flux.1-Depth-dev have `img_in` widened to
+        // 128 channels = 64 noise + 64 conditioning. The conditioning
+        // is VAE-encoded just like a ControlNet conditioning image
+        // (and reuses `encode_conditioning_2d` for that). Packed once
+        // outside the per-step loop; cat'd into `flux_input` per step
+        // alongside the noise tokens.
+        //
+        // Defensive bails on cross-feature combos that aren't yet
+        // validated (tiled, img2img, Redux, Fill, ControlNet). These
+        // can be relaxed once we've tested against real workflows.
+        let concept_cond_packed: Option<Tensor> = if self.variant.is_concept() {
+            if req.tiled.is_some() {
+                bail!(
+                    "Flux concept variants (Canny-dev / Depth-dev) don't compose with \
+                     --tiled yet (v0.15 phase 4 deferral — per-tile conditioning slicing \
+                     isn't wired)."
+                );
+            }
+            if req.init_image.is_some() || req.mask.is_some() {
+                bail!(
+                    "Flux concept variants don't accept --init-image / --mask — they \
+                     denoise from pure noise + the conditioning map. Use \
+                     --concept-image PATH for the canny/depth conditioning."
+                );
+            }
+            if !req.redux_images.is_empty() {
+                bail!(
+                    "Flux concept variants don't yet compose with --redux-image \
+                     (v0.15 phase 4 deferral)."
+                );
+            }
+            if !self.controlnets.is_empty() {
+                bail!(
+                    "Flux concept variants ship their own canny/depth conditioning \
+                     baked in — pairing with --control-spec would double-condition. \
+                     Drop --control-spec or switch to flux-dev for ControlNet."
+                );
+            }
+            let cond_path = req.concept_conditioning.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Flux.1-{}-dev requires a conditioning map — pass it via \
+                     --concept-image PATH.",
+                    self.variant.concept_kind().unwrap_or("Canny/Depth")
+                )
+            })?;
+            let spin = progress::spinner(&format!(
+                "Encoding {} conditioning",
+                self.variant.concept_kind().unwrap_or("concept")
+            ));
+            let z2d = self.encode_conditioning_2d(cond_path, h, w)?;
+            let packed = pack_latent_to_tokens(&z2d)?;
+            spin.finish_with_message(format!(
+                "✓ {} conditioning encoded ({} tokens × 64ch)",
+                self.variant.concept_kind().unwrap_or("concept"),
+                packed.dim(1)?
+            ));
+            Some(packed)
+        } else {
+            if req.concept_conditioning.is_some() {
+                tracing::warn!(
+                    target: "plakat",
+                    "--concept-image supplied but model is not a concept variant \
+                     (Canny-dev / Depth-dev) — input ignored."
+                );
+            }
+            None
+        };
+
         // ---------- Flux Fill inpainting prep (v0.13 phase 2) -------
         // Fill-dev's `img_in` takes 384 channels = 64 noise + 64 masked-
         // latent + 256 image-space-mask. The first 64 are filled per
@@ -1259,6 +1376,7 @@ impl Pipeline {
                     guidance,
                     &conditioning_packed,
                     fill_cond.as_ref(),
+                    concept_cond_packed.as_ref(),
                     &bar,
                 )?;
                 sampling::unpack(&denoised, h, w)?
@@ -1383,6 +1501,7 @@ impl Pipeline {
         guidance: f64,
         conditioning_packed: &[Option<Tensor>],
         fill_cond: Option<&Tensor>,
+        concept_cond: Option<&Tensor>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
@@ -1445,11 +1564,14 @@ impl Pipeline {
             };
 
             // Build the Flux-forward input. Standard Flux: img is 64ch
-            // noise. Fill: prepend nothing — Fill `img_in` expects the
-            // 384ch concat we build right before the forward call.
-            let flux_input: Tensor = match fill_cond {
-                Some(c) => Tensor::cat(&[&img, c], D::Minus1)?,
-                None => img.clone(),
+            // noise. Fill: cat 320ch conditioning → 384ch. Concept
+            // (Canny-dev / Depth-dev): cat 64ch conditioning → 128ch.
+            // Fill + concept are mutually exclusive variants so only
+            // one of these branches fires per call.
+            let flux_input: Tensor = match (fill_cond, concept_cond) {
+                (Some(c), _) => Tensor::cat(&[&img, c], D::Minus1)?,
+                (None, Some(c)) => Tensor::cat(&[&img, c], D::Minus1)?,
+                (None, None) => img.clone(),
             };
 
             // v0.13 phase 1c: both backbones expose the same
@@ -1920,6 +2042,7 @@ pub async fn run(req: Request) -> Result<()> {
         init_image: req.init_image,
         mask: req.mask,
         strength: req.strength,
+        concept_conditioning: req.concept_conditioning,
         tiled: req.tiled,
         redux_images: req.redux_images,
     })

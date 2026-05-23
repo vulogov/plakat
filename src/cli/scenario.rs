@@ -2167,6 +2167,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // the encoder is available iff any task uses
                         // it.
                         redux_images: task_redux_specs.clone(),
+                        // v0.15 phase 4: concept variants aren't yet
+                        // exposed in the scenario surface (a future
+                        // task-level `concept-image:` field would
+                        // plug in here). Always None for now; the
+                        // Pipeline bails loud if a concept variant
+                        // is loaded without conditioning.
+                        concept_conditioning: None,
                     })?;
                 }
                 // Dry-run path doesn't reach here.

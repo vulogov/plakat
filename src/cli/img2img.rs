@@ -538,6 +538,10 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
         // Redux + Fill don't compose (different forward shape).
         redux: false,
         redux_images: Vec::new(),
+        // Concept variants (Canny-dev / Depth-dev) aren't routed
+        // through the img2img CLI — they go via `plakat generate
+        // --model flux-canny-dev --concept-image ...`.
+        concept_conditioning: None,
     })
     .await?;
     // Tempdir held until after the awaited generate completes —
@@ -650,6 +654,8 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // image-conditioned generation).
         redux: false,
         redux_images: Vec::new(),
+        // Concept variants aren't routed through img2img.
+        concept_conditioning: None,
     })
     .await?;
     Ok(())

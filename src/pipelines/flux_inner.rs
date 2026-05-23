@@ -115,6 +115,19 @@ impl Config {
         cfg.in_channels = 384;
         cfg
     }
+
+    /// v0.15 phase 4: Flux.1-Canny-dev / Flux.1-Depth-dev share an
+    /// `img_in` layout that concatenates the 64-channel noise latent
+    /// with a 64-channel VAE-encoded conditioning latent (canny edges
+    /// or depth map). So `in_channels = 128`. Everything else
+    /// (DoubleStream/SingleStream blocks, AE, T5/CLIP encoders,
+    /// guidance schedule) is identical to Flux.1-dev — only the
+    /// wider `img_in` Linear differs.
+    pub fn canny_or_depth_dev() -> Self {
+        let mut cfg = Self::dev();
+        cfg.in_channels = 128;
+        cfg
+    }
 }
 
 // ---------------------------------------------------------------------
