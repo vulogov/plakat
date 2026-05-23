@@ -3,6 +3,7 @@ pub mod artefact_blend;
 pub mod controlnet;
 pub mod controlnet_annotator;
 pub mod depth;
+pub mod embedding;
 pub mod hed;
 pub mod lineart;
 pub mod openpose;

@@ -138,6 +138,14 @@ pub struct SdLoadRequest {
     pub device: Device,
     pub loras: Vec<ResolvedLora>,
     pub lora_scale: f32,
+    /// v0.16 phase 9: zero or more Textual Inversion embeddings to
+    /// register at load time. Each is parsed via
+    /// [`crate::pipelines::embedding::parse_safetensors`] and merged
+    /// into the CLIP-L text encoder weights via a tempfile (same
+    /// pattern LoRA uses). The tokenizer is mutated to add the new
+    /// trigger token IDs. SD 1.5 / SD 2.1 only — SDXL dual-encoder
+    /// TIs bail loud in the parser.
+    pub embeddings: Vec<crate::pipelines::embedding::ResolvedEmbedding>,
 }
 
 /// The shared SD backbone. Held behind `Arc` by every task-specific
@@ -219,6 +227,30 @@ impl SdCore {
         let variant = SdVariant::detect(&base_repo);
         let is_inpaint = detect_inpaint(&base_repo);
         let cfg = variant.config(512, 512);
+        // v0.16 phase 9: Textual Inversion runtime injection is
+        // gated at load time. The parser + merger
+        // (`pipelines::embedding`) are ready, but candle 0.8's
+        // `clip::Config.vocab_size` is private — we can't bump it
+        // to accept the extended `token_embedding.weight` matrix
+        // without forking the text encoder. Tracking item: revisit
+        // when candle exposes a public `Config` builder, or
+        // alongside a vendored CLIP path (likely combined with
+        // phase 11 SD UNet vendor work).
+        //
+        // Until then: bail loud with the `plakat embedding info`
+        // pointer so users can still inspect their TI files via
+        // the parser path that IS shipped.
+        if !req.embeddings.is_empty() {
+            bail!(
+                "Textual Inversion runtime injection isn't wired yet — candle 0.8's \
+                 clip::Config.vocab_size is private, blocking the in-place vocab \
+                 extension. The parser + merger ship (see `plakat embedding info \
+                 PATH` to inspect your TI file). Runtime wiring lands alongside a \
+                 vendored CLIP path in a follow-up phase. For now: drop --embedding \
+                 or convert the TI to a LoRA via the kohya-ss conversion script \
+                 and use --lora."
+            );
+        }
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {

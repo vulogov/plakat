@@ -1263,6 +1263,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras: loras.clone(),
                 lora_scale,
                 use_refiner: s.refiner,
+                // v0.16 phase 9: scenarios don't surface --embedding
+                // (TI runtime injection is still gated by candle).
+                embeddings: Vec::new(),
             })
             .await?,
         )

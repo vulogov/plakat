@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub mod artefact;
 pub mod civitai;
 pub mod doctor;
+pub mod embedding;
 pub mod generate;
 pub mod img2img;
 pub mod inspect;
@@ -80,6 +81,11 @@ pub enum Command {
     /// See `plakat civitai --help` for sub-actions.
     #[command(subcommand_value_name = "OP")]
     Civitai(civitai::CivitaiArgs),
+    /// Inspect Textual Inversion (embedding) `.safetensors` files.
+    /// Currently `info` only — runtime injection into the SD
+    /// pipeline lands when candle exposes `clip::Config.vocab_size`.
+    #[command(subcommand_value_name = "OP")]
+    Embedding(embedding::EmbeddingArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -122,5 +128,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Artefact(args) => artefact::run(args).await,
         Command::Civitai(args) => civitai::run(args).await,
+        Command::Embedding(args) => embedding::run(args).await,
     }
 }

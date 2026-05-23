@@ -457,6 +457,26 @@ pub struct GenerateArgs {
     /// pass. Defaults to the main `--steps`.
     #[arg(long = "hires-steps", value_name = "N")]
     pub hires_steps: Option<usize>,
+
+    /// v0.16 phase 9: Textual Inversion (embedding) spec. Repeatable.
+    /// Format: `PATH_OR_REPO[:trigger][:scale]`.
+    ///
+    /// Examples:
+    ///   `--embedding ./my-style.safetensors`
+    ///   `--embedding ./my-style.safetensors:custom-trigger`
+    ///   `--embedding ./my-style.safetensors:custom-trigger:0.7`
+    ///   `--embedding sd-concepts-library/cat-toy`
+    ///
+    /// SD 1.5 / SD 2.1 only — SDXL dual-encoder TIs bail loud in
+    /// the parser. Use `plakat embedding info PATH` to inspect a
+    /// TI file's trigger word + dims before generating.
+    ///
+    /// **Status**: parser + merger ship; runtime injection is gated
+    /// by candle 0.8's private `clip::Config.vocab_size` (sd_core
+    /// bails loud when set). Wiring lands alongside a vendored
+    /// CLIP path in a follow-up phase.
+    #[arg(long = "embedding", value_name = "SPEC")]
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -665,6 +685,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         flux_concept_image: args.concept_image,
         // v0.16 phase 5: CLIP-skip. SD 1.5 / SD 2.1 only.
         clip_skip: args.clip_skip,
+        // v0.16 phase 9: TI specs. sd_core::load bails loud when
+        // these are non-empty (candle vocab_size API blocker).
+        embeddings: args.embeddings,
     })
     .await?;
 

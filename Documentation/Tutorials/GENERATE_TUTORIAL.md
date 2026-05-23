@@ -651,7 +651,46 @@ plakat generate "a vintage travel poster of Tokyo at night" \
     --adetailer
 ```
 
-## 17. Common issues
+## 17. Textual Inversion (v0.16+, partial)
+
+Textual Inversion (TI, sometimes called "embeddings") learns new
+"words" by training one or more embedding vectors against a small
+image set. The output is a tiny `.safetensors` file (typically
+5–50 KB) — much smaller than a LoRA.
+
+**Inspect a TI file** with `plakat embedding info`:
+
+```bash
+plakat embedding info ./my-style.safetensors
+# trigger: my-style
+# shape:   1 vector(s) × 768 dim   [SD 1.5 (CLIP-L 768)]
+# usage:   `my-style` once per prompt; ...
+
+# Civitai TIs are also resolvable via HF:
+plakat embedding info sd-concepts-library/cat-toy
+```
+
+The inspector reports the trigger word, vector count (1 for most
+TIs, 2–8 for multi-vector concepts), embedding dim (768 for SD 1.5,
+1024 for SD 2.1, 1280 for SDXL CLIP-G), and matches it against the
+SD variant.
+
+**Runtime injection** — passing `--embedding PATH:trigger:scale`
+to `plakat generate` — is **not wired in v0.16**. The parser +
+merger ship (lib tests pin the contract), but candle 0.8 keeps
+`clip::Config.vocab_size` private, blocking the in-place vocab
+extension needed to register the new tokens. Wiring lands in a
+follow-up phase alongside a vendored CLIP path.
+
+In the meantime:
+- Use `plakat embedding info` to verify TI files you've downloaded.
+- For Civitai TIs that ship a LoRA equivalent: prefer the LoRA
+  variant — `plakat generate --lora` works today.
+- For TI-only concepts: convert via the [kohya-ss
+  conversion script](https://github.com/kohya-ss/sd-scripts) and
+  use as a LoRA.
+
+## 18. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
