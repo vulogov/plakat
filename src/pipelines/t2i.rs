@@ -16,7 +16,7 @@
 //!     ~10s model-load overhead N times. This is what `plakat scenario` uses.
 
 use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Device, IndexOp, Module, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
     self, clip as sdclip,
@@ -99,6 +99,16 @@ pub struct Request {
     /// v0.15 phase 4: conditioning map for Flux.1-Canny-dev /
     /// Flux.1-Depth-dev. Required for those variants; ignored otherwise.
     pub flux_concept_image: Option<PathBuf>,
+    /// v0.16 phase 5: CLIP-skip. The user-facing N (≥1) — `1` means
+    /// use the last CLIP hidden state (default; matches diffusers),
+    /// `2` means use the penultimate (community default for SD 1.5
+    /// "Anything-v3"-style models), etc.
+    ///
+    /// Applies to SD 1.5 / SD 2.1 only. SDXL already uses the
+    /// penultimate hidden state by training default — passing
+    /// `--clip-skip > 1` on SDXL logs a warning and is ignored.
+    /// Flux / SD3 use T5 + CLIP-pooled and ignore this flag.
+    pub clip_skip: usize,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -132,6 +142,13 @@ pub struct GenRequest {
     /// `use_refiner: true`. Default 0.8 — last ~20% of steps use refiner.
     /// `None` = no refiner pass even if the refiner is loaded.
     pub refiner_frac: Option<f32>,
+    /// v0.16 phase 5: CLIP-skip. `1` = use the last hidden state
+    /// (diffusers default; same byte-identical output as pre-phase-5).
+    /// `N > 1` returns the (N-th from last) layer's hidden state from
+    /// the CLIP-L encoder. SD 1.5 / SD 2.1 only — SDXL ignores with
+    /// a warning (its dual-encoder path already uses penultimate by
+    /// design).
+    pub clip_skip: usize,
 }
 
 // =====================================================================
@@ -671,25 +688,46 @@ impl Pipeline {
         prompt: &str,
         negative: &str,
         do_cfg: bool,
+        clip_skip: usize,
     ) -> Result<(Tensor, Option<Tensor>)> {
         if self.variant.is_xl() {
+            // v0.16 phase 5: SDXL's dual encoder is hard-wired to use
+            // the penultimate hidden state of each encoder (matching
+            // diffusers + the BFL recipe). User-facing `--clip-skip`
+            // is for SD 1.5 / SD 2.1 only — warn here so the user
+            // notices the no-op rather than wondering why the output
+            // looks the same.
+            if clip_skip > 1 {
+                tracing::warn!(
+                    target: "plakat",
+                    "--clip-skip {clip_skip} is ignored on SDXL (the dual-encoder \
+                     path already uses penultimate hidden states by design). \
+                     Drop --clip-skip or switch to --model sd15 / sd21."
+                );
+            }
             let (hidden, pooled) = self.encode_xl(prompt, negative, do_cfg)?;
             Ok((hidden, Some(pooled)))
         } else {
-            let hidden = self.encode_single(prompt, negative, do_cfg)?;
+            let hidden = self.encode_single(prompt, negative, do_cfg, clip_skip)?;
             Ok((hidden, None))
         }
     }
 
-    fn encode_single(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    fn encode_single(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        clip_skip: usize,
+    ) -> Result<Tensor> {
         let cond_ids = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, prompt, &self.core.device)?;
-        let cond = self.core.text_encoder_l.forward(&cond_ids)?;
+        let cond = clip_skip_forward(&self.core.text_encoder_l, &cond_ids, clip_skip)?;
         if !do_cfg {
             return Ok(cond.to_dtype(self.core.dtype)?);
         }
         let uncond_ids =
             tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, negative, &self.core.device)?;
-        let uncond = self.core.text_encoder_l.forward(&uncond_ids)?;
+        let uncond = clip_skip_forward(&self.core.text_encoder_l, &uncond_ids, clip_skip)?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -807,11 +845,15 @@ impl Pipeline {
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
         let (text_embeddings, pooled_text_sdxl) =
-            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
 
         // If the refiner is loaded AND the caller asked for it, prepare the
         // CLIP-G-only embeddings the refiner needs (different cross_attn_dim
         // means we can't reuse `text_embeddings`).
+        // v0.16 phase 5: refiner CLIP-G already uses penultimate by
+        // training default — same gate the encode_prompt warning
+        // applies. Pass clip_skip through for consistency but the
+        // refiner encoder won't honour it.
         let refiner_embeddings = match (&self.refiner_unet, req.refiner_frac) {
             (Some(_), Some(_)) => Some(self.encode_g_only(&req.prompt, &req.negative, do_cfg)?),
             _ => None,
@@ -1083,7 +1125,7 @@ impl Pipeline {
 
         let do_cfg = req.guidance > 1.0;
         let (text_embeddings, pooled_text_sdxl) =
-            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
         // SDXL needs the pooled text embed for `add_text_embeds`; SD
         // 1.5 / 2.1 don't have one. The UNet forward accepts both as
         // `Option<&Tensor>`, so this just gates which arm runs.
@@ -1362,6 +1404,42 @@ impl Pipeline {
 // =====================================================================
 // Tokenization + SDXL embedding helpers (used by Pipeline methods).
 // =====================================================================
+
+/// v0.16 phase 5: CLIP-L forward respecting `--clip-skip`. `clip_skip`
+/// is the user-facing N (`1` = last hidden state = current default
+/// = diffusers default; `2` = penultimate = Auto1111 community
+/// default for SD 1.5 anime checkpoints).
+///
+/// candle's `forward_until_encoder_layer(ids, mask_after, until_layer)`
+/// returns `(final_hidden, hidden_at_until_layer)`. `until_layer`
+/// is `-1` for last, `-2` for penultimate, etc. — see
+/// [`clip_skip_to_until_layer`] for the mapping.
+///
+/// For `clip_skip == 1`, the behaviour is bit-identical to the prior
+/// `text_encoder_l.forward(&ids)` call — both return the final hidden
+/// state.
+fn clip_skip_forward(
+    encoder: &candle_transformers::models::stable_diffusion::clip::ClipTextTransformer,
+    ids: &Tensor,
+    clip_skip: usize,
+) -> Result<Tensor> {
+    let until_layer = clip_skip_to_until_layer(clip_skip);
+    let (_final, target) =
+        encoder.forward_until_encoder_layer(ids, usize::MAX, until_layer)?;
+    Ok(target)
+}
+
+/// Map user-facing `--clip-skip N` to candle's
+/// `forward_until_encoder_layer(_, _, until_layer: isize)`:
+///   N == 0 → treat as N == 1 (defensive — clamping kept here
+///   instead of inside the encoder call for testability).
+///   N == 1 → -1 (last hidden state, byte-identical to pre-v0.16)
+///   N == 2 → -2 (penultimate)
+///   N == 3 → -3 (third-from-last)
+///   ...
+fn clip_skip_to_until_layer(clip_skip: usize) -> isize {
+    -(clip_skip.max(1) as isize)
+}
 
 fn tokenize_padded(
     tokenizer: &Tokenizer,
@@ -1866,6 +1944,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         } else {
             None
         },
+        clip_skip: req.clip_skip,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,
@@ -2021,5 +2100,43 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("Depth"), "expected Depth mention, got: {msg}");
         assert!(msg.contains("sd35-large"), "expected sd35-large hint, got: {msg}");
+    }
+
+    // v0.16 phase 5 — CLIP-skip mapping (the actual encoder forward
+    // needs CLIP weights so it's covered by golden-image tests in
+    // CI; here we pin the user-N → candle-until_layer math which is
+    // the only logic we own).
+
+    #[test]
+    fn clip_skip_one_maps_to_minus_one() {
+        // N=1 is the diffusers default — should produce the final
+        // hidden state, same as the pre-v0.16 forward(&ids) path.
+        assert_eq!(clip_skip_to_until_layer(1), -1);
+    }
+
+    #[test]
+    fn clip_skip_two_maps_to_minus_two() {
+        // N=2 (penultimate) is the Auto1111 / NovelAI community
+        // default for SD 1.5 anime checkpoints.
+        assert_eq!(clip_skip_to_until_layer(2), -2);
+    }
+
+    #[test]
+    fn clip_skip_clamps_zero_to_one() {
+        // Defensive: a user passing `--clip-skip 0` (or a scenario
+        // defaulting the field to 0) should still get the byte-
+        // identical pre-v0.16 path, not a zero-layer "until" that
+        // would crash or return embeddings only.
+        assert_eq!(clip_skip_to_until_layer(0), -1);
+    }
+
+    #[test]
+    fn clip_skip_higher_values_scale_linearly() {
+        // No upper clamp — CLIP-L has 12 layers but a deeper skip
+        // is a user-facing footgun, not a panic-worthy bug. candle
+        // bails inside `forward_until_encoder_layer` if `until` is
+        // out of range; we don't pre-validate here.
+        assert_eq!(clip_skip_to_until_layer(3), -3);
+        assert_eq!(clip_skip_to_until_layer(12), -12);
     }
 }

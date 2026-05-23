@@ -58,6 +58,25 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub enhance: Option<String>,
 
+    /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
+    /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
+    /// works without this flag. When set, file wildcards in the
+    /// prompt and negative prompt resolve to a random non-empty,
+    /// non-comment line. Wildcard RNG is seeded from `--seed` when
+    /// set (reproducible expansion) and from the OS RNG otherwise.
+    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    pub wildcard_dir: Option<PathBuf>,
+
+    /// v0.16 phase 5: CLIP-skip. `1` (default) uses the last hidden
+    /// state — diffusers default, byte-identical to pre-v0.16 output.
+    /// `2` uses the penultimate hidden state — the Auto1111 / NovelAI
+    /// community default for SD 1.5 anime checkpoints (Anything-v3,
+    /// AnyLoRA, ...). SD 1.5 / SD 2.1 only — SDXL ignores with a
+    /// warning (already uses penultimate by training default).
+    /// Flux / SD3 ignore entirely.
+    #[arg(long = "clip-skip", default_value_t = 1, value_name = "N")]
+    pub clip_skip: usize,
+
     /// Output directory.
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
@@ -363,6 +382,12 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         apply_style(&mut args, &device).await?;
     }
 
+    // v0.16 phase 5: wildcard expansion. Runs BEFORE the enhancer
+    // so the enhancer sees a concrete prompt — `{red|blue}` →
+    // `red` first, then "improve this prompt" works. The wildcard
+    // RNG is seeded from `--seed` for reproducibility when set.
+    expand_prompt_wildcards(&mut args)?;
+
     if let Some(provider) = args.enhance.clone() {
         let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
@@ -554,6 +579,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         redux_images: args.redux_images,
         // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
         flux_concept_image: args.concept_image,
+        // v0.16 phase 5: CLIP-skip. SD 1.5 / SD 2.1 only.
+        clip_skip: args.clip_skip,
     })
     .await?;
 
@@ -630,6 +657,39 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             shared_core,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// v0.16 phase 5: expand `{a|b|c}` and `__name__` wildcards in both
+/// the prompt and negative prompt. The wildcard RNG is seeded from
+/// `--seed` when set (so the same seed reproduces the same picks);
+/// otherwise OS entropy. `--wildcard-dir` is only required for
+/// file wildcards (inline `{a|b|c}` works without it).
+fn expand_prompt_wildcards(args: &mut GenerateArgs) -> Result<()> {
+    use rand::SeedableRng;
+    let dir = args.wildcard_dir.as_deref();
+    let mut rng: rand::rngs::StdRng = match args.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+    let new_prompt = crate::prompt::wildcards::expand(&args.prompt, dir, &mut rng)?;
+    if new_prompt != args.prompt {
+        tracing::info!(
+            target: "plakat",
+            "Wildcard-expanded prompt: {new_prompt}"
+        );
+        args.prompt = new_prompt;
+    }
+    if !args.negative.is_empty() {
+        let new_neg = crate::prompt::wildcards::expand(&args.negative, dir, &mut rng)?;
+        if new_neg != args.negative {
+            tracing::info!(
+                target: "plakat",
+                "Wildcard-expanded negative: {new_neg}"
+            );
+            args.negative = new_neg;
+        }
     }
     Ok(())
 }

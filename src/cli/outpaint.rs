@@ -235,6 +235,10 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         artefact_blend: false,
         artefact_blend_strength: 0.0,
         smart_zones: false,
+        // v0.16 phase 5: outpaint's prompt is built from the user's
+        // outpaint args — already concrete. No wildcard expansion
+        // needed at this level.
+        wildcard_dir: None,
     };
     crate::cli::img2img::run(img2img_args, device).await
 }

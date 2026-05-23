@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 
 pub mod deepseek;
 pub mod gemini;
+pub mod wildcards;
 
 pub async fn enhance(provider: &str, prompt: &str) -> Result<String> {
     match provider.to_lowercase().as_str() {

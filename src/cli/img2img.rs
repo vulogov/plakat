@@ -84,6 +84,12 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
+    /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
+    /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
+    /// works without this flag. RNG is seeded from `--seed` when set.
+    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    pub wildcard_dir: Option<PathBuf>,
+
     /// LoRA spec(s). Same grammar as `plakat generate --loras`.
     #[arg(long = "loras", value_delimiter = ',')]
     pub loras: Vec<LoraSpec>,
@@ -177,7 +183,11 @@ pub struct Img2ImgArgs {
     pub smart_zones: bool,
 }
 
-pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
+pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.16 phase 5: wildcard expansion before dispatching to any
+    // model-specific path. Same RNG-seeding rules as the generate
+    // CLI — seeded from `--seed` when set, OS entropy otherwise.
+    expand_img2img_wildcards(&mut args)?;
     // v0.13 phase 2: Flux.1-Fill-dev is an inpainting-only model.
     // When the user picks it via `--model flux-fill-dev`, route to
     // the Flux pipeline instead of the SD img2img path. The Fill
@@ -754,6 +764,37 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
 /// the nearest multiple of 8 (the VAE downsample factor). Avoids
 /// silently introducing fractional-pixel resizes the user didn't
 /// ask for.
+/// v0.16 phase 5: expand `{a|b|c}` + `__name__` wildcards in the
+/// img2img prompt + negative. Shared by every img2img dispatch arm
+/// (SD-family, Flux, Flux Fill, SD3) via the single entry point.
+fn expand_img2img_wildcards(args: &mut Img2ImgArgs) -> Result<()> {
+    use rand::SeedableRng;
+    let dir = args.wildcard_dir.as_deref();
+    let mut rng: rand::rngs::StdRng = match args.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+    let new_prompt = crate::prompt::wildcards::expand(&args.prompt, dir, &mut rng)?;
+    if new_prompt != args.prompt {
+        tracing::info!(
+            target: "plakat",
+            "Wildcard-expanded prompt: {new_prompt}"
+        );
+        args.prompt = new_prompt;
+    }
+    if !args.negative.is_empty() {
+        let new_neg = crate::prompt::wildcards::expand(&args.negative, dir, &mut rng)?;
+        if new_neg != args.negative {
+            tracing::info!(
+                target: "plakat",
+                "Wildcard-expanded negative: {new_neg}"
+            );
+            args.negative = new_neg;
+        }
+    }
+    Ok(())
+}
+
 fn detect_input_size(path: &std::path::Path) -> Result<(u32, u32)> {
     let (w, h) = image::image_dimensions(path)
         .with_context(|| format!("reading dimensions of {}", path.display()))?;
