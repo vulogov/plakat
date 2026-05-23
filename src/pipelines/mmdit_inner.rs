@@ -30,6 +30,45 @@
 
 use candle_core::{Module, Result, Tensor, D, bail, DType};
 use candle_nn as nn;
+// v0.15 phase 7b-5: every Linear in the vendored MMDiT becomes a
+// `LoraLinear` so the model can apply a runtime LoRA stack at forward
+// time. Stack starts empty (byte-identical to nn::Linear) and updates
+// via `MMDiT::apply_loras` at scenario per-task dispatch time.
+use crate::pipelines::lora_linear::{
+    LoraLinear, LoraRegistry, LoraRegistryEntry, LoraSlot, LoraSpec,
+};
+use std::sync::{Arc, RwLock};
+
+/// v0.15 phase 7b-5: wrap a candle Linear, register the slots handle
+/// in `<vb.prefix()>.weight` of the shared LoRA registry, return the
+/// LoraLinear ready to plug into a struct field. Same pattern as the
+/// helper in `flux_inner`.
+fn wrap_linear(
+    in_dim: usize,
+    out_dim: usize,
+    vb: nn::VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = nn::linear(in_dim, out_dim, vb.clone())?;
+    let ll = LoraLinear::from_linear(base).map_err(|e| {
+        candle_core::Error::Msg(format!("MMDiT wrap_linear at {}: {e}", vb.prefix()))
+    })?;
+    let key = format!("{}.weight", vb.prefix());
+    registry
+        .write()
+        .map_err(|_| {
+            candle_core::Error::Msg("MMDiT LoRA registry poisoned during construction".into())
+        })?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim,
+                in_dim,
+            },
+        );
+    Ok(ll)
+}
 
 // =====================================================================
 // embedding.rs — copied verbatim from candle.
@@ -143,7 +182,11 @@ impl PositionEmbedder {
 }
 
 pub struct TimestepEmbedder {
-    mlp: nn::Sequential,
+    // v0.15 phase 7b-5: split the `nn::Sequential` into named
+    // `LoraLinear` fields so each can register its slot handle in
+    // the LoRA registry. Forward chains them manually with SiLU.
+    mlp_0: LoraLinear,
+    mlp_2: LoraLinear,
     frequency_embedding_size: usize,
 }
 
@@ -152,17 +195,18 @@ impl TimestepEmbedder {
         hidden_size: usize,
         frequency_embedding_size: usize,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        let mlp = nn::seq()
-            .add(nn::linear(
-                frequency_embedding_size,
-                hidden_size,
-                vb.pp("mlp.0"),
-            )?)
-            .add(nn::Activation::Silu)
-            .add(nn::linear(hidden_size, hidden_size, vb.pp("mlp.2"))?);
+        let mlp_0 = wrap_linear(
+            frequency_embedding_size,
+            hidden_size,
+            vb.pp("mlp.0"),
+            registry,
+        )?;
+        let mlp_2 = wrap_linear(hidden_size, hidden_size, vb.pp("mlp.2"), registry)?;
         Ok(Self {
-            mlp,
+            mlp_0,
+            mlp_2,
             frequency_embedding_size,
         })
     }
@@ -195,27 +239,35 @@ impl TimestepEmbedder {
 impl Module for TimestepEmbedder {
     fn forward(&self, t: &Tensor) -> Result<Tensor> {
         let t_freq = Self::timestep_embedding(t, self.frequency_embedding_size, 10000.0)?;
-        self.mlp.forward(&t_freq)
+        // Manual mlp.0 → SiLU → mlp.2 chain (replaces nn::Sequential).
+        t_freq.apply(&self.mlp_0)?.silu()?.apply(&self.mlp_2)
     }
 }
 
 pub struct VectorEmbedder {
-    mlp: nn::Sequential,
+    // v0.15 phase 7b-5: same Sequential-to-explicit-fields refactor
+    // as TimestepEmbedder so each Linear can register in the LoRA
+    // registry.
+    mlp_0: LoraLinear,
+    mlp_2: LoraLinear,
 }
 
 impl VectorEmbedder {
-    pub fn new(input_dim: usize, hidden_size: usize, vb: nn::VarBuilder) -> Result<Self> {
-        let mlp = nn::seq()
-            .add(nn::linear(input_dim, hidden_size, vb.pp("mlp.0"))?)
-            .add(nn::Activation::Silu)
-            .add(nn::linear(hidden_size, hidden_size, vb.pp("mlp.2"))?);
-        Ok(Self { mlp })
+    pub fn new(
+        input_dim: usize,
+        hidden_size: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
+        let mlp_0 = wrap_linear(input_dim, hidden_size, vb.pp("mlp.0"), registry)?;
+        let mlp_2 = wrap_linear(hidden_size, hidden_size, vb.pp("mlp.2"), registry)?;
+        Ok(Self { mlp_0, mlp_2 })
     }
 }
 
 impl Module for VectorEmbedder {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.mlp.forward(x)
+        x.apply(&self.mlp_0)?.silu()?.apply(&self.mlp_2)
     }
 }
 
@@ -230,9 +282,9 @@ pub struct Qkv {
 }
 
 pub struct Mlp {
-    fc1: nn::Linear,
+    fc1: LoraLinear,
     act: nn::Activation,
-    fc2: nn::Linear,
+    fc2: LoraLinear,
 }
 
 impl Mlp {
@@ -240,10 +292,11 @@ impl Mlp {
         in_features: usize,
         hidden_features: usize,
         vb: candle_nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        let fc1 = nn::linear(in_features, hidden_features, vb.pp("fc1"))?;
+        let fc1 = wrap_linear(in_features, hidden_features, vb.pp("fc1"), registry)?;
         let act = nn::Activation::GeluPytorchTanh;
-        let fc2 = nn::linear(hidden_features, in_features, vb.pp("fc2"))?;
+        let fc2 = wrap_linear(hidden_features, in_features, vb.pp("fc2"), registry)?;
         Ok(Self { fc1, act, fc2 })
     }
 }
@@ -257,14 +310,19 @@ impl Module for Mlp {
 }
 
 pub struct QkvOnlyAttnProjections {
-    qkv: nn::Linear,
+    qkv: LoraLinear,
     head_dim: usize,
 }
 
 impl QkvOnlyAttnProjections {
-    pub fn new(dim: usize, num_heads: usize, vb: nn::VarBuilder) -> Result<Self> {
+    pub fn new(
+        dim: usize,
+        num_heads: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let head_dim = dim / num_heads;
-        let qkv = nn::linear(dim, dim * 3, vb.pp("qkv"))?;
+        let qkv = wrap_linear(dim, dim * 3, vb.pp("qkv"), registry)?;
         Ok(Self { qkv, head_dim })
     }
 
@@ -276,17 +334,22 @@ impl QkvOnlyAttnProjections {
 
 pub struct AttnProjections {
     head_dim: usize,
-    qkv: nn::Linear,
+    qkv: LoraLinear,
     ln_k: Option<candle_nn::RmsNorm>,
     ln_q: Option<candle_nn::RmsNorm>,
-    proj: nn::Linear,
+    proj: LoraLinear,
 }
 
 impl AttnProjections {
-    pub fn new(dim: usize, num_heads: usize, vb: nn::VarBuilder) -> Result<Self> {
+    pub fn new(
+        dim: usize,
+        num_heads: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let head_dim = dim / num_heads;
-        let qkv = nn::linear(dim, dim * 3, vb.pp("qkv"))?;
-        let proj = nn::linear(dim, dim, vb.pp("proj"))?;
+        let qkv = wrap_linear(dim, dim * 3, vb.pp("qkv"), registry)?;
+        let proj = wrap_linear(dim, dim, vb.pp("proj"), registry)?;
         let (ln_k, ln_q) = if vb.contains_tensor("ln_k.weight") {
             let ln_k = candle_nn::rms_norm(head_dim, 1e-6, vb.pp("ln_k"))?;
             let ln_q = candle_nn::rms_norm(head_dim, 1e-6, vb.pp("ln_q"))?;
@@ -358,7 +421,11 @@ pub struct DiTBlock {
     attn: AttnProjections,
     norm2: LayerNormNoAffine,
     mlp: Mlp,
-    ada_ln_modulation: nn::Sequential,
+    // v0.15 phase 7b-5: split the `nn::Sequential` SiLU + Linear into
+    // explicit fields so the `adaLN_modulation.1` Linear can register
+    // in the LoRA registry. SD3 PEFT LoRAs target it as
+    // `norm1.linear`.
+    ada_ln_modulation_1: LoraLinear,
 }
 
 pub struct LayerNormNoAffine {
@@ -378,29 +445,41 @@ impl Module for LayerNormNoAffine {
 }
 
 impl DiTBlock {
-    pub fn new(hidden_size: usize, num_heads: usize, vb: nn::VarBuilder) -> Result<Self> {
+    pub fn new(
+        hidden_size: usize,
+        num_heads: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let norm1 = LayerNormNoAffine::new(1e-6);
-        let attn = AttnProjections::new(hidden_size, num_heads, vb.pp("attn"))?;
+        let attn = AttnProjections::new(hidden_size, num_heads, vb.pp("attn"), registry)?;
         let norm2 = LayerNormNoAffine::new(1e-6);
         let mlp_ratio = 4;
-        let mlp = Mlp::new(hidden_size, hidden_size * mlp_ratio, vb.pp("mlp"))?;
+        let mlp = Mlp::new(
+            hidden_size,
+            hidden_size * mlp_ratio,
+            vb.pp("mlp"),
+            registry,
+        )?;
         let n_mods = 6;
-        let ada_ln_modulation = nn::seq().add(nn::Activation::Silu).add(nn::linear(
+        let ada_ln_modulation_1 = wrap_linear(
             hidden_size,
             n_mods * hidden_size,
             vb.pp("adaLN_modulation.1"),
-        )?);
+            registry,
+        )?;
         Ok(Self {
             norm1,
             attn,
             norm2,
             mlp,
-            ada_ln_modulation,
+            ada_ln_modulation_1,
         })
     }
 
     pub fn pre_attention(&self, x: &Tensor, c: &Tensor) -> Result<(Qkv, ModulateIntermediates)> {
-        let modulation = self.ada_ln_modulation.forward(c)?;
+        // Manual SiLU + Linear (replaces nn::Sequential).
+        let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(6, D::Minus1)?;
         let (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) = (
             chunks[0].clone(),
@@ -454,30 +533,41 @@ pub struct SelfAttnDiTBlock {
     attn2: AttnProjections,
     norm2: LayerNormNoAffine,
     mlp: Mlp,
-    ada_ln_modulation: nn::Sequential,
+    ada_ln_modulation_1: LoraLinear,
 }
 
 impl SelfAttnDiTBlock {
-    pub fn new(hidden_size: usize, num_heads: usize, vb: nn::VarBuilder) -> Result<Self> {
+    pub fn new(
+        hidden_size: usize,
+        num_heads: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let norm1 = LayerNormNoAffine::new(1e-6);
-        let attn = AttnProjections::new(hidden_size, num_heads, vb.pp("attn"))?;
-        let attn2 = AttnProjections::new(hidden_size, num_heads, vb.pp("attn2"))?;
+        let attn = AttnProjections::new(hidden_size, num_heads, vb.pp("attn"), registry)?;
+        let attn2 = AttnProjections::new(hidden_size, num_heads, vb.pp("attn2"), registry)?;
         let norm2 = LayerNormNoAffine::new(1e-6);
         let mlp_ratio = 4;
-        let mlp = Mlp::new(hidden_size, hidden_size * mlp_ratio, vb.pp("mlp"))?;
+        let mlp = Mlp::new(
+            hidden_size,
+            hidden_size * mlp_ratio,
+            vb.pp("mlp"),
+            registry,
+        )?;
         let n_mods = 9;
-        let ada_ln_modulation = nn::seq().add(nn::Activation::Silu).add(nn::linear(
+        let ada_ln_modulation_1 = wrap_linear(
             hidden_size,
             n_mods * hidden_size,
             vb.pp("adaLN_modulation.1"),
-        )?);
+            registry,
+        )?;
         Ok(Self {
             norm1,
             attn,
             attn2,
             norm2,
             mlp,
-            ada_ln_modulation,
+            ada_ln_modulation_1,
         })
     }
 
@@ -486,7 +576,7 @@ impl SelfAttnDiTBlock {
         x: &Tensor,
         c: &Tensor,
     ) -> Result<(Qkv, Qkv, SelfAttnModulateIntermediates)> {
-        let modulation = self.ada_ln_modulation.forward(c)?;
+        let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(9, D::Minus1)?;
         let (
             shift_msa,
@@ -549,28 +639,34 @@ impl SelfAttnDiTBlock {
 pub struct QkvOnlyDiTBlock {
     norm1: LayerNormNoAffine,
     attn: QkvOnlyAttnProjections,
-    ada_ln_modulation: nn::Sequential,
+    ada_ln_modulation_1: LoraLinear,
 }
 
 impl QkvOnlyDiTBlock {
-    pub fn new(hidden_size: usize, num_heads: usize, vb: nn::VarBuilder) -> Result<Self> {
+    pub fn new(
+        hidden_size: usize,
+        num_heads: usize,
+        vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let norm1 = LayerNormNoAffine::new(1e-6);
-        let attn = QkvOnlyAttnProjections::new(hidden_size, num_heads, vb.pp("attn"))?;
+        let attn = QkvOnlyAttnProjections::new(hidden_size, num_heads, vb.pp("attn"), registry)?;
         let n_mods = 2;
-        let ada_ln_modulation = nn::seq().add(nn::Activation::Silu).add(nn::linear(
+        let ada_ln_modulation_1 = wrap_linear(
             hidden_size,
             n_mods * hidden_size,
             vb.pp("adaLN_modulation.1"),
-        )?);
+            registry,
+        )?;
         Ok(Self {
             norm1,
             attn,
-            ada_ln_modulation,
+            ada_ln_modulation_1,
         })
     }
 
     pub fn pre_attention(&self, x: &Tensor, c: &Tensor) -> Result<Qkv> {
-        let modulation = self.ada_ln_modulation.forward(c)?;
+        let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(2, D::Minus1)?;
         let (shift_msa, scale_msa) = (chunks[0].clone(), chunks[1].clone());
         let norm_x = self.norm1.forward(x)?;
@@ -581,8 +677,8 @@ impl QkvOnlyDiTBlock {
 
 pub struct FinalLayer {
     norm_final: LayerNormNoAffine,
-    linear: nn::Linear,
-    ada_ln_modulation: nn::Sequential,
+    linear: LoraLinear,
+    ada_ln_modulation_1: LoraLinear,
 }
 
 impl FinalLayer {
@@ -591,27 +687,30 @@ impl FinalLayer {
         patch_size: usize,
         out_channels: usize,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let norm_final = LayerNormNoAffine::new(1e-6);
-        let linear = nn::linear(
+        let linear = wrap_linear(
             hidden_size,
             patch_size * patch_size * out_channels,
             vb.pp("linear"),
+            registry,
         )?;
-        let ada_ln_modulation = nn::seq().add(nn::Activation::Silu).add(nn::linear(
+        let ada_ln_modulation_1 = wrap_linear(
             hidden_size,
             2 * hidden_size,
             vb.pp("adaLN_modulation.1"),
-        )?);
+            registry,
+        )?;
         Ok(Self {
             norm_final,
             linear,
-            ada_ln_modulation,
+            ada_ln_modulation_1,
         })
     }
 
     pub fn forward(&self, x: &Tensor, c: &Tensor) -> Result<Tensor> {
-        let modulation = self.ada_ln_modulation.forward(c)?;
+        let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(2, D::Minus1)?;
         let (shift, scale) = (chunks[0].clone(), chunks[1].clone());
         let norm_x = self.norm_final.forward(x)?;
@@ -644,9 +743,12 @@ impl MMDiTJointBlock {
         num_heads: usize,
         use_flash_attn: bool,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        let x_block = DiTBlock::new(hidden_size, num_heads, vb.pp("x_block"))?;
-        let context_block = DiTBlock::new(hidden_size, num_heads, vb.pp("context_block"))?;
+        let x_block =
+            DiTBlock::new(hidden_size, num_heads, vb.pp("x_block"), registry)?;
+        let context_block =
+            DiTBlock::new(hidden_size, num_heads, vb.pp("context_block"), registry)?;
         Ok(Self {
             x_block,
             context_block,
@@ -683,9 +785,12 @@ impl MMDiTXJointBlock {
         num_heads: usize,
         use_flash_attn: bool,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        let x_block = SelfAttnDiTBlock::new(hidden_size, num_heads, vb.pp("x_block"))?;
-        let context_block = DiTBlock::new(hidden_size, num_heads, vb.pp("context_block"))?;
+        let x_block =
+            SelfAttnDiTBlock::new(hidden_size, num_heads, vb.pp("x_block"), registry)?;
+        let context_block =
+            DiTBlock::new(hidden_size, num_heads, vb.pp("context_block"), registry)?;
         Ok(Self {
             x_block,
             context_block,
@@ -725,9 +830,13 @@ impl ContextQkvOnlyJointBlock {
         num_heads: usize,
         use_flash_attn: bool,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        let x_block = DiTBlock::new(hidden_size, num_heads, vb.pp("x_block"))?;
-        let context_block = QkvOnlyDiTBlock::new(hidden_size, num_heads, vb.pp("context_block"))?;
+        let x_block =
+            DiTBlock::new(hidden_size, num_heads, vb.pp("x_block"), registry)?;
+        let context_block = QkvOnlyDiTBlock::new(
+            hidden_size, num_heads, vb.pp("context_block"), registry,
+        )?;
         Ok(Self {
             x_block,
             context_block,
@@ -875,13 +984,23 @@ pub struct MMDiT {
     pos_embedder: PositionEmbedder,
     timestep_embedder: TimestepEmbedder,
     vector_embedder: VectorEmbedder,
-    context_embedder: nn::Linear,
+    context_embedder: LoraLinear,
     unpatchifier: Unpatchifier,
+    /// v0.15 phase 7b-5: path → LoraLinear slot handle map populated
+    /// during construction. Consumed by `apply_loras` at scenario
+    /// per-task dispatch time so we can update slots by safetensors
+    /// path without re-walking joint blocks.
+    lora_registry: LoraRegistry,
 }
 
 impl MMDiT {
     pub fn new(cfg: &Config, use_flash_attn: bool, vb: nn::VarBuilder) -> Result<Self> {
         let hidden_size = cfg.head_size * cfg.depth;
+        // v0.15 phase 7b-5: shared LoRA registry — every constructed
+        // LoraLinear writes its slot handle into this map. After all
+        // sub-loaders go out of scope at the end of construction, we
+        // unwrap the Arc and move the inner HashMap into MMDiT.
+        let registry_arc = Arc::new(RwLock::new(LoraRegistry::new()));
         let core = MMDiTCore::new(
             cfg.depth,
             hidden_size,
@@ -890,6 +1009,7 @@ impl MMDiT {
             cfg.out_channels,
             use_flash_attn,
             vb.clone(),
+            &registry_arc,
         )?;
         let patch_embedder = PatchEmbedder::new(
             cfg.patch_size,
@@ -907,15 +1027,36 @@ impl MMDiT {
             hidden_size,
             cfg.frequency_embedding_size,
             vb.pp("t_embedder"),
+            &registry_arc,
         )?;
-        let vector_embedder =
-            VectorEmbedder::new(cfg.adm_in_channels, hidden_size, vb.pp("y_embedder"))?;
-        let context_embedder = nn::linear(
+        let vector_embedder = VectorEmbedder::new(
+            cfg.adm_in_channels,
+            hidden_size,
+            vb.pp("y_embedder"),
+            &registry_arc,
+        )?;
+        let context_embedder = wrap_linear(
             cfg.context_embed_size,
             hidden_size,
             vb.pp("context_embedder"),
+            &registry_arc,
         )?;
         let unpatchifier = Unpatchifier::new(cfg.patch_size, cfg.out_channels)?;
+        // Move the registry out of the Arc — `core` and all the sub-
+        // loaders are dropped at function exit; ref count goes to 1.
+        let lora_registry = Arc::try_unwrap(registry_arc)
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "MMDiT LoRA registry still has outstanding refs after construction"
+                        .into(),
+                )
+            })?
+            .into_inner()
+            .map_err(|_| {
+                candle_core::Error::Msg(
+                    "MMDiT LoRA registry RwLock poisoned at construction".into(),
+                )
+            })?;
         Ok(Self {
             core,
             patch_embedder,
@@ -924,7 +1065,83 @@ impl MMDiT {
             vector_embedder,
             context_embedder,
             unpatchifier,
+            lora_registry,
         })
+    }
+
+    /// v0.15 phase 7b-5: replace the runtime LoRA stack on every
+    /// affected LoraLinear at once. Same shape as the NF4 / BF16 /
+    /// GGUF versions. Returns the number of slots successfully
+    /// applied.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<String, Vec<LoraSpec>>,
+        dtype: DType,
+        device: &candle_core::Device,
+    ) -> Result<usize> {
+        let mut applied = 0usize;
+        for (key, slot_specs) in specs {
+            let Some(entry) = self.lora_registry.get(&key) else {
+                tracing::debug!(
+                    target: "plakat",
+                    "MMDiT apply_loras: no Linear registered at {key} — skipping"
+                );
+                continue;
+            };
+            let mut new_slots = Vec::<LoraSlot>::with_capacity(slot_specs.len());
+            for spec in slot_specs {
+                let b_padded = crate::pipelines::lora_linear::pad_b_to_out_dim(
+                    &spec.b,
+                    spec.row_slice,
+                    entry.out_dim,
+                    dtype,
+                    device,
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!(
+                        "MMDiT apply_loras pad_b at {key}: {e}"
+                    ))
+                })?;
+                let a = spec.a.to_dtype(dtype)?;
+                new_slots.push(LoraSlot {
+                    a,
+                    b: b_padded,
+                    scale: spec.scale,
+                });
+            }
+            *entry.handle.write().map_err(|_| {
+                candle_core::Error::Msg(format!(
+                    "MMDiT LoRA slot handle for {key} poisoned"
+                ))
+            })? = new_slots;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
+    /// v0.15 phase 7b-5: clear every active LoRA. Resets MMDiT to its
+    /// as-loaded weights.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        for entry in self.lora_registry.values() {
+            entry
+                .handle
+                .write()
+                .map_err(|_| {
+                    candle_core::Error::Msg("MMDiT LoRA slot handle poisoned".into())
+                })?
+                .clear();
+        }
+        Ok(())
+    }
+
+    /// v0.15 phase 7b-5: snapshot of registered safetensors keys.
+    pub fn registered_keys(&self) -> Vec<String> {
+        self.lora_registry.keys().cloned().collect()
+    }
+
+    /// v0.15 phase 7b-5: how many LoraLinears were registered.
+    pub fn n_registered_linears(&self) -> usize {
+        self.lora_registry.len()
     }
 
     /// Standard forward — no ControlNet residuals. Byte-identical to
@@ -996,6 +1213,7 @@ impl MMDiTCore {
         out_channels: usize,
         use_flash_attn: bool,
         vb: nn::VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let mut joint_blocks = Vec::with_capacity(depth - 1);
         for i in 0..depth - 1 {
@@ -1007,6 +1225,7 @@ impl MMDiTCore {
                         num_heads,
                         use_flash_attn,
                         vb.pp(&joint_block_vb_pp),
+                        registry,
                     )?)
                 } else {
                     Box::new(MMDiTJointBlock::new(
@@ -1014,6 +1233,7 @@ impl MMDiTCore {
                         num_heads,
                         use_flash_attn,
                         vb.pp(&joint_block_vb_pp),
+                        registry,
                     )?)
                 };
             joint_blocks.push(joint_block);
@@ -1025,12 +1245,14 @@ impl MMDiTCore {
                 num_heads,
                 use_flash_attn,
                 vb.pp(format!("joint_blocks.{}", depth - 1)),
+                registry,
             )?,
             final_layer: FinalLayer::new(
                 hidden_size,
                 patch_size,
                 out_channels,
                 vb.pp("final_layer"),
+                registry,
             )?,
         })
     }
@@ -1139,5 +1361,70 @@ mod tests {
         for i in 0..n_blocks {
             assert!(i < n_res);
         }
+    }
+
+    // v0.15 phase 7b-5 — verify the wrap_linear helper registers in the
+    // shared LoRA registry and the resulting LoraLinear applies the
+    // runtime stack correctly. Standing up a full MMDiT requires real
+    // safetensors (depth-24 / depth-38 blocks loaded from disk); the
+    // helper test covers the substantive new infrastructure here.
+
+    fn cpu() -> candle_core::Device {
+        candle_core::Device::Cpu
+    }
+
+    fn zero_wrapped(prefix: &str) -> (LoraLinear, Arc<RwLock<LoraRegistry>>) {
+        let vmap = candle_nn::VarMap::new();
+        vmap.get(
+            (2, 2),
+            &format!("{prefix}.weight"),
+            candle_nn::Init::Const(0.0),
+            DType::F32,
+            &cpu(),
+        )
+        .unwrap();
+        vmap.get(
+            (2,),
+            &format!("{prefix}.bias"),
+            candle_nn::Init::Const(0.0),
+            DType::F32,
+            &cpu(),
+        )
+        .unwrap();
+        let vb = nn::VarBuilder::from_varmap(&vmap, DType::F32, &cpu());
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
+        let ll = wrap_linear(2, 2, vb.pp(prefix), &registry).unwrap();
+        (ll, registry)
+    }
+
+    #[test]
+    fn mmdit_wrap_linear_registers_at_full_path() {
+        let (_ll, reg) = zero_wrapped("joint_blocks.0.x_block.attn.qkv");
+        let map = reg.read().unwrap();
+        assert!(map.contains_key("joint_blocks.0.x_block.attn.qkv.weight"));
+        let entry = &map["joint_blocks.0.x_block.attn.qkv.weight"];
+        assert_eq!(entry.out_dim, 2);
+        assert_eq!(entry.in_dim, 2);
+    }
+
+    #[test]
+    fn mmdit_runtime_lora_via_registry_handle() {
+        // Apply identity LoRA via the registry handle (mimicking what
+        // MMDiT::apply_loras does internally) and verify forward
+        // adds the delta to the (zero) base output.
+        let (ll, reg) = zero_wrapped("test");
+        let id =
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (2, 2), &cpu()).unwrap();
+        let entry = reg.read().unwrap()["test.weight"].clone();
+        *entry.handle.write().unwrap() = vec![LoraSlot {
+            a: id.clone(),
+            b: id.clone(),
+            scale: 1.0,
+        }];
+        let x = Tensor::from_vec(vec![3.0f32, 7.0], (1, 2), &cpu()).unwrap();
+        let y = ll.forward(&x).unwrap();
+        let yv = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!((yv[0] - 3.0).abs() < 1e-5);
+        assert!((yv[1] - 7.0).abs() < 1e-5);
     }
 }
