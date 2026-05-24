@@ -1164,6 +1164,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         effective_negative = combine_negative(&effective_negative, &prep.negative_extras);
     }
 
+    // v0.16 phase 11: preflight check — when running SD-family with
+    // per-task LoRA stacks, surface the hint NOW rather than at the
+    // first task's apply_loras bail. Includes the "all per-task
+    // LoRAs identical → fold into scenario.loras" suggestion when
+    // applicable, with the exact YAML to copy.
+    sd_per_task_lora_preflight(&s, &model)?;
+
     // -------- execution plan summary --------
     let total_images = (s.tasks.len() as u32) * count;
     println!(
@@ -2700,6 +2707,74 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     Ok(())
 }
 
+/// v0.16 phase 11: surface SD-family per-task LoRA incompatibility
+/// upfront with actionable guidance. Catches three patterns:
+///
+/// 1. **All task LoRA stacks identical** → suggest folding to
+///    scenario-level `loras:` (zero-cost fix, applied once at load).
+/// 2. **Stacks vary across tasks** → suggest Flux / SD3.5 switch or
+///    splitting the scenario.
+/// 3. **SD3 / Flux model** → no-op (those support runtime LoRA).
+///
+/// Runs ONCE at scenario start, before any model load. Cheap.
+fn sd_per_task_lora_preflight(
+    s: &ScenarioFile,
+    model: &str,
+) -> Result<()> {
+    use crate::pipelines::t2i::Variant;
+    let variant = Variant::detect(model);
+    // SD3 + Flux support runtime per-task LoRA; nothing to warn.
+    if variant.is_flux() || variant.is_sd3() {
+        return Ok(());
+    }
+    // Collect tasks that declare per-task loras.
+    let with_loras: Vec<&TaskDef> = s
+        .tasks
+        .iter()
+        .filter(|t| !t.loras.is_empty())
+        .collect();
+    if with_loras.is_empty() {
+        return Ok(());
+    }
+    // Pattern 1: every task with loras has the same stack.
+    let first = &with_loras[0].loras;
+    let all_same = with_loras.iter().all(|t| t.loras == *first);
+    if all_same && with_loras.len() == s.tasks.len() {
+        // Every task uses the same loras AND no task omits them.
+        // Folding to scenario-level is byte-equivalent.
+        crate::ui::progress::println(&format!(
+            "  {} every task uses the same per-task `loras:` stack ({} entries). \
+             On SD-family models per-task LoRA runtime swap isn't wired \
+             (vendor work — see phase 11 notes). The stack is identical across \
+             tasks, so it can be folded to scenario-level `loras:` for the same \
+             result without the per-task swap requirement:",
+            console::style("hint:").yellow().bold(),
+            first.len(),
+        ));
+        crate::ui::progress::println(&format!("    loras: {first:?}"));
+        crate::ui::progress::println(&format!(
+            "    {} drop the per-task `loras:` from every task block",
+            console::style("then").dim(),
+        ));
+        return Ok(());
+    }
+    // Pattern 2: stacks vary. Bail clearly upfront so the user
+    // doesn't watch model load for 30s before hitting the per-task
+    // apply_loras bail.
+    anyhow::bail!(
+        "scenario uses SD-family model `{model}` with per-task LoRA stacks that \
+         vary across {} task(s) — SD UNet runtime per-task LoRA swap isn't \
+         wired yet (vendor work; see phase 11). Workarounds:\n  \
+         1. Switch to a Flux / SD3.5 model (instant per-task LoRA swap via the \
+         runtime stack).\n  \
+         2. Split into multiple scenarios, one per LoRA stack — each pays the \
+         SD UNet load once.\n  \
+         3. If you only need ONE per-task LoRA combination, move it to the \
+         scenario-level `loras:` block and drop the per-task overrides.",
+        with_loras.len()
+    );
+}
+
 fn validate_enhancer_keys(enhancer: &str) -> Result<()> {
     let cfg = crate::config::Config::load()?;
     match enhancer.to_lowercase().as_str() {
@@ -3179,10 +3254,20 @@ async fn apply_task_loras_for_dispatch(
 
     if sd_pipeline.is_some() {
         anyhow::bail!(
-            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) isn't wired \
-             in v0.15 — the SD UNet's Linears aren't yet wrapped as `LoraLinear` \
-             (vendor work deferred from phase 7b-6). Use scenario-level `loras:` for \
-             SD models.",
+            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) needs a \
+             runtime-swappable UNet. The proper fix vendors candle's UNet model so \
+             every internal `nn::Linear` can be wrapped as `LoraLinear` (same pattern \
+             Flux + SD3 use — see `pipelines::flux_lora` / `pipelines::sd3_lora`). \
+             Without that, each per-task LoRA swap would require reloading the UNet \
+             from disk (~15-30s overhead per task on SDXL), defeating the runtime \
+             stack's purpose. Workarounds:\n  \
+             1. Move per-task LoRAs to the scenario's `loras:` block when they're \
+             the same across every task — applied once at load time, no per-task \
+             cost.\n  \
+             2. Switch to Flux / SD3.5 models — they support instant per-task LoRA \
+             swap via the runtime LoraLinear stack (v0.15 phase 7b + v0.16 phase 2).\n  \
+             3. Split into multiple scenarios, one per LoRA stack — the SD UNet \
+             load is a one-time cost per scenario.",
             task.name
         );
     }
@@ -3439,5 +3524,116 @@ mod tests {
             s.concept_image.as_deref().map(|p| p.to_string_lossy().into_owned()),
             Some("./edges.png".to_string())
         );
+    }
+
+    // v0.16 phase 11 — SD per-task LoRA preflight.
+
+    /// Minimal scenario builder via direct struct construction —
+    /// HJSON's brace+newline rules make programmatic scenarios
+    /// fiddly. The preflight only reads `tasks[*].loras`, so we
+    /// fill those + defaults for the rest.
+    fn scenario_with_task_loras(task_loras: &[&[&str]]) -> ScenarioFile {
+        let tasks: Vec<TaskDef> = task_loras
+            .iter()
+            .enumerate()
+            .map(|(i, ls)| {
+                // Parse a minimal valid task via HJSON to pick up
+                // serde defaults on every field we don't set, then
+                // override `loras` directly.
+                let src = format!(r#"{{
+            name: t{i}
+            scene: s
+            weather: w
+            prompt: p
+        }}"#);
+                let mut t: TaskDef = deser_hjson::from_str(&src)
+                    .expect("task parses");
+                t.loras = ls.iter().map(|s| s.to_string()).collect();
+                t
+            })
+            .collect();
+        // Empty scenario picks up all-default fields.
+        let mut s: ScenarioFile = deser_hjson::from_str(
+            r#"{
+            lora-header: ""
+        }"#,
+        )
+        .expect("scenario parses");
+        s.tasks = tasks;
+        s
+    }
+
+    #[test]
+    fn preflight_no_per_task_loras_passes() {
+        // Tasks declare no per-task LoRAs → preflight is silent.
+        let s = scenario_with_task_loras(&[&[], &[], &[]]);
+        sd_per_task_lora_preflight(&s, "sd15").expect("no LoRAs → ok");
+        sd_per_task_lora_preflight(&s, "sdxl").expect("no LoRAs → ok");
+    }
+
+    #[test]
+    fn preflight_uniform_per_task_loras_emits_hint_but_passes() {
+        // Every task uses the SAME LoRA stack. The preflight prints a
+        // hint to fold to scenario-level loras: but doesn't bail —
+        // the user's scenario is salvageable by moving the per-task
+        // block up; we don't want to block them from doing that
+        // themselves.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["foo/lora-a:0.7"],
+            &["foo/lora-a:0.7"],
+        ]);
+        sd_per_task_lora_preflight(&s, "sd15").expect("uniform stacks → hint only");
+    }
+
+    #[test]
+    fn preflight_varying_per_task_loras_bails() {
+        // Two tasks with different LoRA stacks → bail loud upfront
+        // with the three-option workaround.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        let err = sd_per_task_lora_preflight(&s, "sdxl").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("vary across"), "got {msg}");
+        assert!(msg.contains("Flux"), "got {msg}");
+        assert!(msg.contains("Split"), "got {msg}");
+    }
+
+    #[test]
+    fn preflight_partial_per_task_loras_bails() {
+        // Some tasks declare LoRAs, others don't. Even if the
+        // declaring tasks all use the same stack, the asymmetry
+        // means we can't fold cleanly — bail.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &[],
+            &["foo/lora-a:0.7"],
+        ]);
+        let err = sd_per_task_lora_preflight(&s, "sd15").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("vary across"), "got {msg}");
+    }
+
+    #[test]
+    fn preflight_flux_model_skips() {
+        // Flux supports runtime per-task LoRA — preflight is a
+        // silent no-op even with varying stacks.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        sd_per_task_lora_preflight(&s, "flux-dev").expect("Flux supports runtime LoRA");
+    }
+
+    #[test]
+    fn preflight_sd3_model_skips() {
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        sd_per_task_lora_preflight(&s, "sd35-medium")
+            .expect("SD3 supports runtime LoRA");
     }
 }
