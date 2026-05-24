@@ -361,6 +361,17 @@ viewers (A1111 Web UI, Civitai upload, ComfyUI drag-to-load,
 sd-prompt-reader) surface it. Pass `--no-metadata` when you want
 anonymous PNGs.
 
+#### `--grid` / `--grid-cols <N>` / `--grid-padding <PX>` (default off / sqrt / 0)
+
+When `--count N > 1`, also write a single
+`plakat-grid-<base-seed>.png` combining all N outputs in a
+near-square grid. Per-image PNGs are still written individually.
+`--grid-cols` overrides the default `ceil(sqrt(count))`;
+`--grid-padding` inserts a white separator between cells. The
+grid is composed AFTER artefact composite, ADetailer, and
+Hires-fix passes, so the cells reflect the final post-processed
+images.
+
 ### Tiled hi-res generation
 
 For outputs above the model's trained working resolution (4K SDXL,
