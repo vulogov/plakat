@@ -16,7 +16,7 @@
 //!     ~10s model-load overhead N times. This is what `plakat scenario` uses.
 
 use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Device, IndexOp, Module, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
     self, clip as sdclip,
@@ -99,6 +99,31 @@ pub struct Request {
     /// v0.15 phase 4: conditioning map for Flux.1-Canny-dev /
     /// Flux.1-Depth-dev. Required for those variants; ignored otherwise.
     pub flux_concept_image: Option<PathBuf>,
+    /// v0.16 phase 5: CLIP-skip. The user-facing N (≥1) — `1` means
+    /// use the last CLIP hidden state (default; matches diffusers),
+    /// `2` means use the penultimate (community default for SD 1.5
+    /// "Anything-v3"-style models), etc.
+    ///
+    /// Applies to SD 1.5 / SD 2.1 only. SDXL already uses the
+    /// penultimate hidden state by training default — passing
+    /// `--clip-skip > 1` on SDXL logs a warning and is ignored.
+    /// Flux / SD3 use T5 + CLIP-pooled and ignore this flag.
+    pub clip_skip: usize,
+
+    /// v0.16 phase 9: Textual Inversion embedding specs to register
+    /// in the SD CLIP-L tokenizer + token_embedding matrix. Each
+    /// entry is a CLI spec resolved at load time via
+    /// [`crate::pipelines::embedding::resolve`] + `parse_safetensors`.
+    /// Empty disables — byte-identical to pre-phase-9 behaviour.
+    ///
+    /// Routing: SD-family only. SDXL dual-encoder TIs bail in the
+    /// parser; Flux / SD3 don't honour the flag. Runtime injection
+    /// into the encoder is currently gated by candle 0.8's private
+    /// `clip::Config.vocab_size` — `sd_core::load` bails loud when
+    /// this is non-empty. The parser + merger ship as foundation
+    /// for the future wiring (see `plakat embedding info` to
+    /// inspect TI files today).
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -111,6 +136,9 @@ pub struct LoadRequest {
     /// `stabilityai/stable-diffusion-xl-refiner-1.0` UNet for a two-pass
     /// schedule. Adds a ~6 GB download on first run.
     pub use_refiner: bool,
+    /// v0.16 phase 9: TI embedding specs to resolve + register at
+    /// load time. See `Request.embeddings` for the runtime gating.
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 /// Stuff that can vary per `Pipeline::generate` call.
@@ -132,6 +160,13 @@ pub struct GenRequest {
     /// `use_refiner: true`. Default 0.8 — last ~20% of steps use refiner.
     /// `None` = no refiner pass even if the refiner is loaded.
     pub refiner_frac: Option<f32>,
+    /// v0.16 phase 5: CLIP-skip. `1` = use the last hidden state
+    /// (diffusers default; same byte-identical output as pre-phase-5).
+    /// `N > 1` returns the (N-th from last) layer's hidden state from
+    /// the CLIP-L encoder. SD 1.5 / SD 2.1 only — SDXL ignores with
+    /// a warning (its dual-encoder path already uses penultimate by
+    /// design).
+    pub clip_skip: usize,
 }
 
 // =====================================================================
@@ -330,6 +365,93 @@ pub(crate) fn flux_controlnet_load_for(
     })
 }
 
+/// v0.16 phase 3e: pick an InstantX SD3 ControlNet repo + config
+/// for the user's requested `--control-spec kind=…`. InstantX is the
+/// canonical SD3 CN publisher (they trained the original SD3 batch
+/// alongside Alimama). plakat ships the InstantX-pattern arch
+/// (`pos_embed_input.proj` Conv2d producing per-block residuals)
+/// in [`sd3_controlnet`].
+///
+/// Repo selection follows the InstantX release naming:
+///
+/// * SD3.5 Large → `InstantX/SD3.5-Large-Controlnet-{Canny,Depth,Blur}`
+/// * SD3 / SD3.5 Medium → `InstantX/SD3-Controlnet-{Canny,Pose,Tile}`
+///
+/// The Medium-tier CNs were trained on original SD3 Medium and
+/// transfer cleanly to SD3.5 Medium (same arch: 12-layer joint
+/// transformer, hidden=1536). The Large-tier CNs target SD3.5
+/// Large only.
+///
+/// Returns a clear error for combos InstantX hasn't released
+/// (e.g. SoftEdge on Large, OpenPose on Large). For SoftEdge on
+/// Medium plakat falls through to InstantX/SD3-Controlnet-Canny
+/// (which produces close-enough HED-style structure under the
+/// same conditioning input — the Flux Union Pro v2 plays the same
+/// canny-as-softedge fallback).
+pub(crate) fn sd3_controlnet_load_for(
+    kind: crate::pipelines::controlnet::ControlKind,
+    svar: crate::pipelines::sd3::Variant,
+    strength: f32,
+) -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
+    use crate::pipelines::controlnet::ControlKind;
+    use crate::pipelines::sd3::Variant as SV;
+    use crate::pipelines::sd3_controlnet::{Config, Sd3ControlNetLoad};
+    let file = "diffusion_pytorch_model.safetensors".to_string();
+    let (repo, cfg) = match svar {
+        SV::Sd35Large | SV::Sd35LargeTurbo => {
+            // SD3.5 Large CN family. Three known InstantX releases.
+            let repo = match kind {
+                ControlKind::Canny | ControlKind::Lineart => {
+                    "InstantX/SD3.5-Large-Controlnet-Canny"
+                }
+                ControlKind::Depth => "InstantX/SD3.5-Large-Controlnet-Depth",
+                ControlKind::SoftEdge => "InstantX/SD3.5-Large-Controlnet-Blur",
+                ControlKind::OpenPose => {
+                    anyhow::bail!(
+                        "SD3.5-Large InstantX ControlNet family doesn't include \
+                         an OpenPose checkpoint. Use --model sd35-medium for \
+                         pose conditioning, or switch to Canny / Depth / SoftEdge."
+                    )
+                }
+            };
+            (repo, Config::instantx_sd35_large())
+        }
+        SV::Sd3Medium | SV::Sd35Medium => {
+            // Original SD3 + SD3.5 Medium share the InstantX SD3 CN
+            // family. Same 12-layer / hidden=1536 arch as the diffusers
+            // `SD3ControlNetModel` default.
+            let repo = match kind {
+                ControlKind::Canny => "InstantX/SD3-Controlnet-Canny",
+                // Lineart routes through Canny like Flux Union does —
+                // closely-related edge channels.
+                ControlKind::Lineart => "InstantX/SD3-Controlnet-Canny",
+                // SoftEdge fallback: Canny again. InstantX's SD3 batch
+                // didn't ship a HED-trained CN; Canny on a HED-style
+                // softedge input gives a usable structure pull.
+                ControlKind::SoftEdge => "InstantX/SD3-Controlnet-Canny",
+                ControlKind::OpenPose => "InstantX/SD3-Controlnet-Pose",
+                ControlKind::Depth => {
+                    anyhow::bail!(
+                        "SD3 / SD3.5-Medium InstantX ControlNet family doesn't \
+                         include a Depth checkpoint. Use --model sd35-large for \
+                         depth conditioning, or switch to Canny / Pose."
+                    )
+                }
+            };
+            (repo, Config::instantx_sd35_medium())
+        }
+    };
+    Ok(Sd3ControlNetLoad {
+        repo: repo.to_string(),
+        file,
+        cfg,
+        scale: strength,
+        conditioning: None,
+        start: 0.0,
+        end: 1.0,
+    })
+}
+
 /// v0.13 phase 8: take the `(1, 3, H, W)` `[0, 1]` tensor a
 /// ControlNet auto-annotator produces and write it as an 8-bit RGB
 /// PNG. The Flux ControlNet path consumes its conditioning via a path
@@ -479,6 +601,12 @@ impl Pipeline {
                 "Pipeline::load is SD-only; Flux models use pipelines::flux::run"
             );
         }
+        if variant.is_sd3() {
+            anyhow::bail!(
+                "Pipeline::load is SD-only; SD3 / SD3.5 models use \
+                 pipelines::sd3::Pipeline::load"
+            );
+        }
         let repo = resolve_repo(&req.model);
 
         // Resolve user LoRAs (t2i has no auto-LoRAs; that's a
@@ -499,12 +627,33 @@ impl Pipeline {
         // t2i's SdxlTurbo→Sdxl mapping (same architecture; only
         // scheduler defaults differ, which we don't carry through
         // SdCore).
+        // v0.16 phase 9: resolve TI specs into ResolvedEmbedding
+        // before handing off to sd_core. Loading the safetensors
+        // here surfaces parse errors at the t2i load step (not
+        // mid-generate). sd_core itself bails loud when the
+        // resolved list is non-empty until the candle vocab_size
+        // API blocker lifts.
+        let resolved_embeddings: Vec<crate::pipelines::embedding::ResolvedEmbedding>
+            = if req.embeddings.is_empty() {
+                Vec::new()
+            } else {
+                let mut v = Vec::with_capacity(req.embeddings.len());
+                for spec in &req.embeddings {
+                    let path = crate::pipelines::embedding::resolve(spec).await?;
+                    let resolved = crate::pipelines::embedding::parse_safetensors(
+                        &path, spec, &req.device,
+                    )?;
+                    v.push(resolved);
+                }
+                v
+            };
         let core = crate::pipelines::sd_core::SdCore::load(
             crate::pipelines::sd_core::SdLoadRequest {
                 model: req.model.clone(),
                 device: req.device.clone(),
                 loras: resolved_loras,
                 lora_scale: req.lora_scale,
+                embeddings: resolved_embeddings,
             },
         )
         .await
@@ -578,25 +727,46 @@ impl Pipeline {
         prompt: &str,
         negative: &str,
         do_cfg: bool,
+        clip_skip: usize,
     ) -> Result<(Tensor, Option<Tensor>)> {
         if self.variant.is_xl() {
+            // v0.16 phase 5: SDXL's dual encoder is hard-wired to use
+            // the penultimate hidden state of each encoder (matching
+            // diffusers + the BFL recipe). User-facing `--clip-skip`
+            // is for SD 1.5 / SD 2.1 only — warn here so the user
+            // notices the no-op rather than wondering why the output
+            // looks the same.
+            if clip_skip > 1 {
+                tracing::warn!(
+                    target: "plakat",
+                    "--clip-skip {clip_skip} is ignored on SDXL (the dual-encoder \
+                     path already uses penultimate hidden states by design). \
+                     Drop --clip-skip or switch to --model sd15 / sd21."
+                );
+            }
             let (hidden, pooled) = self.encode_xl(prompt, negative, do_cfg)?;
             Ok((hidden, Some(pooled)))
         } else {
-            let hidden = self.encode_single(prompt, negative, do_cfg)?;
+            let hidden = self.encode_single(prompt, negative, do_cfg, clip_skip)?;
             Ok((hidden, None))
         }
     }
 
-    fn encode_single(&self, prompt: &str, negative: &str, do_cfg: bool) -> Result<Tensor> {
+    fn encode_single(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        clip_skip: usize,
+    ) -> Result<Tensor> {
         let cond_ids = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, prompt, &self.core.device)?;
-        let cond = self.core.text_encoder_l.forward(&cond_ids)?;
+        let cond = clip_skip_forward(&self.core.text_encoder_l, &cond_ids, clip_skip)?;
         if !do_cfg {
             return Ok(cond.to_dtype(self.core.dtype)?);
         }
         let uncond_ids =
             tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, negative, &self.core.device)?;
-        let uncond = self.core.text_encoder_l.forward(&uncond_ids)?;
+        let uncond = clip_skip_forward(&self.core.text_encoder_l, &uncond_ids, clip_skip)?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -714,11 +884,15 @@ impl Pipeline {
         let (w, h) = (req.width as usize, req.height as usize);
         let do_cfg = req.guidance > 1.0;
         let (text_embeddings, pooled_text_sdxl) =
-            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
 
         // If the refiner is loaded AND the caller asked for it, prepare the
         // CLIP-G-only embeddings the refiner needs (different cross_attn_dim
         // means we can't reuse `text_embeddings`).
+        // v0.16 phase 5: refiner CLIP-G already uses penultimate by
+        // training default — same gate the encode_prompt warning
+        // applies. Pass clip_skip through for consistency but the
+        // refiner encoder won't honour it.
         let refiner_embeddings = match (&self.refiner_unet, req.refiner_frac) {
             (Some(_), Some(_)) => Some(self.encode_g_only(&req.prompt, &req.negative, do_cfg)?),
             _ => None,
@@ -990,7 +1164,7 @@ impl Pipeline {
 
         let do_cfg = req.guidance > 1.0;
         let (text_embeddings, pooled_text_sdxl) =
-            self.encode_prompt(&req.prompt, &req.negative, do_cfg)?;
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
         // SDXL needs the pooled text embed for `add_text_embeds`; SD
         // 1.5 / 2.1 don't have one. The UNet forward accepts both as
         // `Option<&Tensor>`, so this just gates which arm runs.
@@ -1270,6 +1444,42 @@ impl Pipeline {
 // Tokenization + SDXL embedding helpers (used by Pipeline methods).
 // =====================================================================
 
+/// v0.16 phase 5: CLIP-L forward respecting `--clip-skip`. `clip_skip`
+/// is the user-facing N (`1` = last hidden state = current default
+/// = diffusers default; `2` = penultimate = Auto1111 community
+/// default for SD 1.5 anime checkpoints).
+///
+/// candle's `forward_until_encoder_layer(ids, mask_after, until_layer)`
+/// returns `(final_hidden, hidden_at_until_layer)`. `until_layer`
+/// is `-1` for last, `-2` for penultimate, etc. — see
+/// [`clip_skip_to_until_layer`] for the mapping.
+///
+/// For `clip_skip == 1`, the behaviour is bit-identical to the prior
+/// `text_encoder_l.forward(&ids)` call — both return the final hidden
+/// state.
+fn clip_skip_forward(
+    encoder: &candle_transformers::models::stable_diffusion::clip::ClipTextTransformer,
+    ids: &Tensor,
+    clip_skip: usize,
+) -> Result<Tensor> {
+    let until_layer = clip_skip_to_until_layer(clip_skip);
+    let (_final, target) =
+        encoder.forward_until_encoder_layer(ids, usize::MAX, until_layer)?;
+    Ok(target)
+}
+
+/// Map user-facing `--clip-skip N` to candle's
+/// `forward_until_encoder_layer(_, _, until_layer: isize)`:
+///   N == 0 → treat as N == 1 (defensive — clamping kept here
+///   instead of inside the encoder call for testability).
+///   N == 1 → -1 (last hidden state, byte-identical to pre-v0.16)
+///   N == 2 → -2 (penultimate)
+///   N == 3 → -3 (third-from-last)
+///   ...
+fn clip_skip_to_until_layer(clip_skip: usize) -> isize {
+    -(clip_skip.max(1) as isize)
+}
+
 fn tokenize_padded(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
@@ -1348,16 +1558,21 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // now since those code paths don't yet know about MMDiT.
     if variant.is_sd3() {
         use crate::pipelines::sd3;
-        if !req.loras.is_empty() {
+        let sd3_variant = match variant {
+            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+            Variant::Sd35Large => sd3::Variant::Sd35Large,
+            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        };
+        // v0.16 phase 3e: SD3 ControlNet stack. Each --control-spec
+        // resolves to one InstantX CN load. Tiled + SD3 CN is gated
+        // inside `predict_velocity_tiled` (bails loud); the rest
+        // composes with t2i + LoRA + img2img.
+        if !req.controls.is_empty() && req.tiled.is_some() {
             anyhow::bail!(
-                "SD3 LoRAs aren't wired yet (v0.14 phase 1a t2i only). \
-                 Drop --loras or switch to an SDXL / Flux model."
-            );
-        }
-        if !req.controls.is_empty() {
-            anyhow::bail!(
-                "SD3 ControlNet isn't wired yet (v0.14 phase 1a t2i only). \
-                 Drop --control-spec or switch to an SDXL / Flux model."
+                "SD3 ControlNet + --tiled doesn't compose yet. Per-tile \
+                 conditioning slicing lands in a follow-up. Drop one."
             );
         }
         // v0.15 phase 5: SD3 + --tiled composes. Plumbed via the new
@@ -1368,13 +1583,81 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
                 "SD3 --quantize-t5 isn't wired yet (Flux-only in v0.13)."
             );
         }
-        let sd3_variant = match variant {
-            Variant::Sd3Medium => sd3::Variant::Sd3Medium,
-            Variant::Sd35Medium => sd3::Variant::Sd35Medium,
-            Variant::Sd35Large => sd3::Variant::Sd35Large,
-            Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
-            _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+        // v0.16 phase 3e: build the SD3 CN stack + per-spec
+        // conditioning images. Auto-annotate `from=PATH` specs the
+        // same way Flux does, writing PNGs into a tempdir that lives
+        // until `sd3::run` returns.
+        let sd3_anno_dtype = if matches!(req.device, Device::Cpu) {
+            DType::F32
+        } else {
+            DType::BF16
         };
+        let sd3_anno_tmp = tempfile::Builder::new()
+            .prefix("plakat-sd3-anno-")
+            .tempdir()
+            .context("creating tempdir for SD3 ControlNet auto-annotator output")?;
+        let mut sd3_controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>
+            = Vec::with_capacity(req.controls.len());
+        for (cn_idx, spec) in req.controls.iter().enumerate() {
+            let cond_path: PathBuf = match (spec.image.as_ref(), spec.from.as_ref()) {
+                (Some(p), None) => p.clone(),
+                (None, Some(from_path)) => {
+                    let spin = progress::spinner(&format!(
+                        "Auto-annotating SD3 ControlNet #{} ({})",
+                        cn_idx + 1,
+                        spec.kind.slug()
+                    ));
+                    let anno = crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind,
+                        from_path,
+                        req.width,
+                        req.height,
+                        &req.device,
+                        sd3_anno_dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "auto-annotating {} for SD3 ControlNet (--control-spec {}:from={})",
+                            spec.kind.slug(),
+                            spec.kind.slug(),
+                            from_path.display()
+                        )
+                    })?;
+                    let out_path = sd3_anno_tmp.path().join(format!(
+                        "cn{}-{}.png",
+                        cn_idx,
+                        spec.kind.slug()
+                    ));
+                    write_annotator_tensor_as_png(&anno, &out_path).with_context(|| {
+                        format!(
+                            "writing auto-annotated {} → {}",
+                            spec.kind.slug(),
+                            out_path.display()
+                        )
+                    })?;
+                    spin.finish_with_message(format!(
+                        "✓ auto-annotated {} → {}",
+                        spec.kind.slug(),
+                        out_path.display()
+                    ));
+                    out_path
+                }
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                    spec.kind
+                ),
+                (None, None) => anyhow::bail!(
+                    "--control-spec for kind={:?}: requires image=PATH or from=PATH on SD3",
+                    spec.kind
+                ),
+            };
+            let mut cn_load = sd3_controlnet_load_for(spec.kind, sd3_variant, spec.strength)?;
+            cn_load.conditioning = Some(cond_path);
+            cn_load.start = spec.start;
+            cn_load.end = spec.end;
+            sd3_controlnets.push(cn_load);
+        }
         sd3::run(sd3::Request {
             prompt: req.prompt,
             negative: req.negative,
@@ -1412,8 +1695,18 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // standard t2i path only — img2img/inpaint + tiled bail
             // in sd3::Pipeline::generate.
             tiled: req.tiled,
+            // v0.16 phase 3e: SD3 ControlNet stack built above from
+            // `req.controls` (Vec<ControlSpec>). Each load entry
+            // carries the resolved InstantX repo + per-spec
+            // conditioning path + gating window. Empty Vec = no CN
+            // (byte-identical to phase 1a path).
+            controlnets: sd3_controlnets,
         })
         .await?;
+        // The auto-annotation tempdir lives until here so the SD3
+        // pipeline's `encode_cn_conditioning` can read the written
+        // PNGs before they're cleaned up.
+        drop(sd3_anno_tmp);
         return Ok(None);
     }
 
@@ -1658,6 +1951,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         loras: req.loras,
         lora_scale: req.lora_scale,
         use_refiner: req.use_refiner,
+        embeddings: req.embeddings,
     })
     .await?;
 
@@ -1690,6 +1984,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         } else {
             None
         },
+        clip_skip: req.clip_skip,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,
@@ -1779,5 +2074,109 @@ mod tests {
         assert!(!Variant::FluxDev.is_flux_concept());
         assert!(!Variant::FluxFillDev.is_flux_concept());
         assert!(!Variant::Sd15.is_flux_concept());
+    }
+
+    // v0.16 phase 3e — SD3 ControlNet resolver.
+
+    #[test]
+    fn sd3_cn_resolver_large_canny() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Canny, SV::Sd35Large, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3.5-Large-Controlnet-Canny");
+        // InstantX SD3.5-Large CN is a 12-layer hidden=2432 small
+        // transformer producing 12 residuals — not a full 38-layer
+        // mirror of the base MMDiT.
+        assert_eq!(load.cfg.num_layers, 12);
+        assert_eq!(load.cfg.hidden_size, 2432);
+        assert_eq!(load.scale, 1.0);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_large_depth() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Depth, SV::Sd35Large, 0.7).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3.5-Large-Controlnet-Depth");
+        assert_eq!(load.scale, 0.7);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_pose() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::OpenPose, SV::Sd35Medium, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3-Controlnet-Pose");
+        assert_eq!(load.cfg.num_layers, 12);
+        assert_eq!(load.cfg.hidden_size, 1536);
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_lineart_falls_back_to_canny() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let load = sd3_controlnet_load_for(ControlKind::Lineart, SV::Sd3Medium, 1.0).unwrap();
+        assert_eq!(load.repo, "InstantX/SD3-Controlnet-Canny");
+    }
+
+    #[test]
+    fn sd3_cn_resolver_large_rejects_pose() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        // InstantX didn't release an SD3.5-Large pose CN. The
+        // resolver bails clearly instead of silently producing
+        // garbage from a 404 download.
+        let err = sd3_controlnet_load_for(ControlKind::OpenPose, SV::Sd35Large, 1.0).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("OpenPose"), "expected OpenPose mention, got: {msg}");
+        assert!(msg.contains("sd35-medium"), "expected sd35-medium hint, got: {msg}");
+    }
+
+    #[test]
+    fn sd3_cn_resolver_medium_rejects_depth() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::sd3::Variant as SV;
+        let err = sd3_controlnet_load_for(ControlKind::Depth, SV::Sd35Medium, 1.0).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Depth"), "expected Depth mention, got: {msg}");
+        assert!(msg.contains("sd35-large"), "expected sd35-large hint, got: {msg}");
+    }
+
+    // v0.16 phase 5 — CLIP-skip mapping (the actual encoder forward
+    // needs CLIP weights so it's covered by golden-image tests in
+    // CI; here we pin the user-N → candle-until_layer math which is
+    // the only logic we own).
+
+    #[test]
+    fn clip_skip_one_maps_to_minus_one() {
+        // N=1 is the diffusers default — should produce the final
+        // hidden state, same as the pre-v0.16 forward(&ids) path.
+        assert_eq!(clip_skip_to_until_layer(1), -1);
+    }
+
+    #[test]
+    fn clip_skip_two_maps_to_minus_two() {
+        // N=2 (penultimate) is the Auto1111 / NovelAI community
+        // default for SD 1.5 anime checkpoints.
+        assert_eq!(clip_skip_to_until_layer(2), -2);
+    }
+
+    #[test]
+    fn clip_skip_clamps_zero_to_one() {
+        // Defensive: a user passing `--clip-skip 0` (or a scenario
+        // defaulting the field to 0) should still get the byte-
+        // identical pre-v0.16 path, not a zero-layer "until" that
+        // would crash or return embeddings only.
+        assert_eq!(clip_skip_to_until_layer(0), -1);
+    }
+
+    #[test]
+    fn clip_skip_higher_values_scale_linearly() {
+        // No upper clamp — CLIP-L has 12 layers but a deeper skip
+        // is a user-facing footgun, not a panic-worthy bug. candle
+        // bails inside `forward_until_encoder_layer` if `until` is
+        // out of range; we don't pre-validate here.
+        assert_eq!(clip_skip_to_until_layer(3), -3);
+        assert_eq!(clip_skip_to_until_layer(12), -12);
     }
 }

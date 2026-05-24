@@ -1164,6 +1164,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         effective_negative = combine_negative(&effective_negative, &prep.negative_extras);
     }
 
+    // v0.16 phase 11: preflight check — when running SD-family with
+    // per-task LoRA stacks, surface the hint NOW rather than at the
+    // first task's apply_loras bail. Includes the "all per-task
+    // LoRAs identical → fold into scenario.loras" suggestion when
+    // applicable, with the exact YAML to copy.
+    sd_per_task_lora_preflight(&s, &model)?;
+
     // -------- execution plan summary --------
     let total_images = (s.tasks.len() as u32) * count;
     println!(
@@ -1250,9 +1257,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
 
     // -------- load pipeline once (skipped for dry-run) --------
-    // Two parallel pipeline types; exactly one is populated for non-dry-run.
+    // Three parallel pipeline types; exactly one is populated for
+    // non-dry-run runs (SD-family / Flux / SD3-family).
     let variant = Variant::detect(&model);
-    let pipeline: Option<Pipeline> = if args.dry_run || variant.is_flux() {
+    let pipeline: Option<Pipeline> = if args.dry_run || variant.is_flux() || variant.is_sd3() {
         None
     } else {
         Some(
@@ -1262,10 +1270,52 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 loras: loras.clone(),
                 lora_scale,
                 use_refiner: s.refiner,
+                // v0.16 phase 9: scenarios don't surface --embedding
+                // (TI runtime injection is still gated by candle).
+                embeddings: Vec::new(),
             })
             .await?,
         )
     };
+    // v0.16 phase 2: SD3 / SD3.5 backbone loaded once for the whole
+    // scenario (previously the scenario fell through to t2i::Pipeline
+    // which bailed on SD3). Per-task LoRA dispatches via
+    // `sd3::Pipeline::apply_loras` between tasks.
+    let mut sd3_pipeline: Option<crate::pipelines::sd3::Pipeline> =
+        if args.dry_run || !variant.is_sd3() {
+            None
+        } else {
+            use crate::pipelines::sd3;
+            let sd3_variant = match variant {
+                Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+                Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+                Variant::Sd35Large => sd3::Variant::Sd35Large,
+                Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+                _ => unreachable!("is_sd3() implies one of the SD3 variants"),
+            };
+            let resolved_repo = if model.contains('/') {
+                model.clone()
+            } else {
+                crate::hf::resolve_alias(&model).to_string()
+            };
+            Some(
+                sd3::Pipeline::load(sd3::LoadRequest {
+                    variant: sd3_variant,
+                    repo: resolved_repo,
+                    device: device.clone(),
+                    loras: loras.clone(),
+                    lora_scale,
+                    // SD3 ControlNet wiring into scenarios lands in
+                    // a later phase. For now scenarios load with no
+                    // SD3 CN slots; the per-task CN spec dispatch
+                    // mirrors what the existing Flux scenario path
+                    // does (max_flux_controls + scenario-wide
+                    // preload).
+                    controlnets: Vec::new(),
+                })
+                .await?,
+            )
+        };
     // -------- preload the stylize pipeline if any task uses `style` --------
     let any_style = s.tasks.iter().any(|t| t.style.is_some());
 
@@ -2196,21 +2246,21 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 refine: eff_refine,
                 refine_strength: eff_refine_strength,
                 refiner_frac: if s.refiner { Some(eff_refiner_frac) } else { None },
+                // v0.16 phase 5: scenarios don't surface per-task
+                // clip-skip yet. Default `1` = bit-identical to
+                // pre-phase-5 behaviour.
+                clip_skip: 1,
             };
 
-            // v0.15 phase 7b-7: per-task runtime LoRA. Applied BEFORE
-            // the per-task generate, cleared AFTER (so the next task
-            // starts from the scenario-merged baseline).
+            // Per-task runtime LoRA. Applied BEFORE the per-task
+            // generate, cleared AFTER (so the next task starts from
+            // the scenario-merged baseline).
             //
             // Backbone routing:
-            //   * Flux (BF16 / GGUF / NF4) → flux_pipeline backbone's
-            //     apply_loras driven by flux_lora::compute_runtime_specs
-            //   * SD3 / SD3.5            → handled inside sd3 dispatch
-            //     (the sd3 path builds the pipeline per-task today; LoRAs
-            //     stay scenario-level until that path shares the SdCore-
-            //     equivalent across tasks). Bails loud on per-task here.
-            //   * SD-family (sd15 / sd21 / sdxl)  → loud bail (7b-6
-            //     skeleton — vendor work deferred).
+            //   * Flux (BF16 / GGUF / NF4) → flux_pipeline backbone
+            //   * SD3 / SD3.5              → sd3_pipeline
+            //   * SD-family                → bails (SD UNet runtime
+            //     LoRA support not yet wired)
             //
             // Empty task.loras = no-op for every backbone.
             let task_lora_applied = if !task.loras.is_empty() {
@@ -2220,6 +2270,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     task.lora_scale.unwrap_or(lora_scale),
                     flux_pipeline.as_mut(),
                     &pipeline,
+                    sd3_pipeline.as_mut(),
                     &model,
                     &device,
                 )
@@ -2228,6 +2279,57 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 false
             };
 
+            // v0.16 phase 2: SD3 dispatch arm. Routes per-task tasks
+            // through the scenario-cached `sd3::Pipeline` rather than
+            // building a fresh pipeline per task. Keeps SD3-family
+            // LoRA / Tiled wiring intact for runtime per-task LoRA.
+            // Falls through to the SD/Flux match for non-SD3 tasks.
+            if let Some(sp) = sd3_pipeline.as_mut() {
+                use crate::pipelines::sd3;
+                // Mirrors the field mapping in t2i.rs's SD3 dispatch.
+                // Only forwards steps / guidance when the user moved
+                // them off plakat's defaults so SD3's variant-specific
+                // recommendations stay in play otherwise.
+                let sd3_req = sd3::GenRequest {
+                    prompt: final_prompt.clone(),
+                    negative: eff_negative.clone(),
+                    width: eff_w,
+                    height: eff_h,
+                    count: eff_count,
+                    steps: if eff_steps == 28 { None } else { Some(eff_steps) },
+                    guidance: if (eff_guidance - 7.5).abs() < f64::EPSILON {
+                        None
+                    } else {
+                        Some(eff_guidance)
+                    },
+                    seed: Some(task_seed),
+                    out_dir: task_out.clone(),
+                    init_image: eff_init_image.clone(),
+                    mask: eff_mask.clone(),
+                    mask_feather: task.mask_feather.unwrap_or(8),
+                    mask_invert: task.mask_invert.unwrap_or(false),
+                    strength: task.strength,
+                    // v0.15 phase 5: tiled denoise. Composes with
+                    // pure t2i; img2img + tiled bails inside the SD3
+                    // pipeline (mutually-exclusive design).
+                    tiled: eff_tiled.clone(),
+                    // v0.16 phase 3: SD3 CN per-call conditioning
+                    // overrides. Empty Vec preserves whatever the
+                    // load-time conditioning paths were (which is
+                    // also empty in scenarios today — SD3 CN scenario
+                    // wiring lands in a later phase).
+                    controlnet_conditioning: Vec::new(),
+                };
+                sp.generate(&sd3_req)?;
+                if task_lora_applied {
+                    sp.clear_all_loras()?;
+                    tracing::debug!(
+                        target: "plakat",
+                        "task {:?}: cleared runtime LoRA stack on SD3 backbone",
+                        task.name
+                    );
+                }
+            } else {
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
                 // v0.13 phase 10: dispatch to the tiled SDXL path when
@@ -2443,6 +2545,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     );
                 }
             }
+            } // close `else` (v0.16 phase 2 SD3 dispatch branch)
             }
         }
 
@@ -2602,6 +2705,74 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         out_root.display()
     );
     Ok(())
+}
+
+/// v0.16 phase 11: surface SD-family per-task LoRA incompatibility
+/// upfront with actionable guidance. Catches three patterns:
+///
+/// 1. **All task LoRA stacks identical** → suggest folding to
+///    scenario-level `loras:` (zero-cost fix, applied once at load).
+/// 2. **Stacks vary across tasks** → suggest Flux / SD3.5 switch or
+///    splitting the scenario.
+/// 3. **SD3 / Flux model** → no-op (those support runtime LoRA).
+///
+/// Runs ONCE at scenario start, before any model load. Cheap.
+fn sd_per_task_lora_preflight(
+    s: &ScenarioFile,
+    model: &str,
+) -> Result<()> {
+    use crate::pipelines::t2i::Variant;
+    let variant = Variant::detect(model);
+    // SD3 + Flux support runtime per-task LoRA; nothing to warn.
+    if variant.is_flux() || variant.is_sd3() {
+        return Ok(());
+    }
+    // Collect tasks that declare per-task loras.
+    let with_loras: Vec<&TaskDef> = s
+        .tasks
+        .iter()
+        .filter(|t| !t.loras.is_empty())
+        .collect();
+    if with_loras.is_empty() {
+        return Ok(());
+    }
+    // Pattern 1: every task with loras has the same stack.
+    let first = &with_loras[0].loras;
+    let all_same = with_loras.iter().all(|t| t.loras == *first);
+    if all_same && with_loras.len() == s.tasks.len() {
+        // Every task uses the same loras AND no task omits them.
+        // Folding to scenario-level is byte-equivalent.
+        crate::ui::progress::println(&format!(
+            "  {} every task uses the same per-task `loras:` stack ({} entries). \
+             On SD-family models per-task LoRA runtime swap isn't wired \
+             (vendor work — see phase 11 notes). The stack is identical across \
+             tasks, so it can be folded to scenario-level `loras:` for the same \
+             result without the per-task swap requirement:",
+            console::style("hint:").yellow().bold(),
+            first.len(),
+        ));
+        crate::ui::progress::println(&format!("    loras: {first:?}"));
+        crate::ui::progress::println(&format!(
+            "    {} drop the per-task `loras:` from every task block",
+            console::style("then").dim(),
+        ));
+        return Ok(());
+    }
+    // Pattern 2: stacks vary. Bail clearly upfront so the user
+    // doesn't watch model load for 30s before hitting the per-task
+    // apply_loras bail.
+    anyhow::bail!(
+        "scenario uses SD-family model `{model}` with per-task LoRA stacks that \
+         vary across {} task(s) — SD UNet runtime per-task LoRA swap isn't \
+         wired yet (vendor work; see phase 11). Workarounds:\n  \
+         1. Switch to a Flux / SD3.5 model (instant per-task LoRA swap via the \
+         runtime stack).\n  \
+         2. Split into multiple scenarios, one per LoRA stack — each pays the \
+         SD UNet load once.\n  \
+         3. If you only need ONE per-task LoRA combination, move it to the \
+         scenario-level `loras:` block and drop the per-task overrides.",
+        with_loras.len()
+    );
 }
 
 fn validate_enhancer_keys(enhancer: &str) -> Result<()> {
@@ -2976,15 +3147,17 @@ fn safe_name(s: &str) -> String {
 /// Backbone routing:
 /// * Flux (BF16 / GGUF / NF4): resolves user specs via
 ///   `flux_lora::compute_runtime_specs` and calls
-///   `FluxBackbone::apply_loras`. Returns `true` so the caller clears
-///   the stack at end-of-task.
-/// * SD3 / SD3.5: bails — the scenario SD3 dispatch builds a fresh
-///   pipeline per task today, so per-task LoRA is best handled via
-///   scenario-level LoRAs for now. (Hooking 7b-5's runtime LoRA into
-///   the per-task SD3 path is a follow-up; the infrastructure is
-///   already in place inside `sd3::Pipeline`.)
-/// * SD-family (sd15 / sd21 / sdxl): bails with the v0.15 phase 7b-6
-///   skeleton message — UNet vendor work deferred.
+///   `FluxBackbone::apply_loras`.
+/// * SD3 / SD3.5: resolves via `sd3_lora::compute_runtime_specs` and
+///   calls `sd3::Pipeline::apply_loras`. The scenario caches the
+///   `sd3::Pipeline` across tasks so the runtime LoRA stack is the
+///   per-task delta on top of the scenario-merged baseline.
+/// * SD-family (sd15 / sd21 / sdxl): bails — the SD UNet's Linears
+///   aren't yet wrapped as `LoraLinear`. Use scenario-level `loras:`
+///   for SD models.
+///
+/// Returns `true` when a stack was applied (caller clears at
+/// end-of-task), `false` when no application happened.
 ///
 /// Returns `Ok(true)` when a stack was successfully applied (caller
 /// must clear after the task) and `Ok(false)` when no application
@@ -2996,6 +3169,7 @@ async fn apply_task_loras_for_dispatch(
     task_lora_scale: f32,
     flux_pipeline: Option<&mut crate::pipelines::flux::Pipeline>,
     sd_pipeline: &Option<crate::pipelines::t2i::Pipeline>,
+    sd3_pipeline: Option<&mut crate::pipelines::sd3::Pipeline>,
     model: &str,
     device: &Device,
 ) -> Result<bool> {
@@ -3048,20 +3222,52 @@ async fn apply_task_loras_for_dispatch(
     }
 
     if variant.is_sd3() {
-        anyhow::bail!(
-            "task {:?}: per-task LoRA on SD3 / SD3.5 isn't wired in v0.15 yet — \
-             the scenario SD3 dispatch builds a pipeline per task. Use \
-             scenario-level `loras:` for SD3 models.",
-            task.name
+        let sp = sd3_pipeline.ok_or_else(|| {
+            anyhow::anyhow!(
+                "task {:?}: declared SD3 task LoRAs but no SD3 pipeline loaded",
+                task.name
+            )
+        })?;
+        // v0.16 phase 2: per-task SD3 LoRA via the runtime stack.
+        // Mirrors the Flux dispatch — `compute_runtime_specs` builds
+        // the path-keyed map, then `apply_loras` updates every
+        // registered LoraLinear in MMDiT.
+        let hidden_size = sp.variant().mmdit_hidden_size();
+        let (specs, modified, total) =
+            crate::pipelines::sd3_lora::compute_runtime_specs(
+                &resolved, task_lora_scale, hidden_size, device,
+            )?;
+        tracing::info!(
+            target: "plakat",
+            "task {:?}: staging {} per-task SD3 runtime LoRA target(s) ({modified}/{total} groups)",
+            task.name,
+            specs.len()
         );
+        let applied = sp.apply_loras(specs)?;
+        tracing::debug!(
+            target: "plakat",
+            "task {:?}: applied {} per-task runtime LoRA target(s) to SD3 backbone",
+            task.name, applied
+        );
+        return Ok(true);
     }
 
     if sd_pipeline.is_some() {
         anyhow::bail!(
-            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) isn't wired \
-             in v0.15 — the SD UNet's Linears aren't yet wrapped as `LoraLinear` \
-             (vendor work deferred from phase 7b-6). Use scenario-level `loras:` for \
-             SD models.",
+            "task {:?}: per-task LoRA on SD-family (SD 1.5 / 2.1 / SDXL) needs a \
+             runtime-swappable UNet. The proper fix vendors candle's UNet model so \
+             every internal `nn::Linear` can be wrapped as `LoraLinear` (same pattern \
+             Flux + SD3 use — see `pipelines::flux_lora` / `pipelines::sd3_lora`). \
+             Without that, each per-task LoRA swap would require reloading the UNet \
+             from disk (~15-30s overhead per task on SDXL), defeating the runtime \
+             stack's purpose. Workarounds:\n  \
+             1. Move per-task LoRAs to the scenario's `loras:` block when they're \
+             the same across every task — applied once at load time, no per-task \
+             cost.\n  \
+             2. Switch to Flux / SD3.5 models — they support instant per-task LoRA \
+             swap via the runtime LoraLinear stack (v0.15 phase 7b + v0.16 phase 2).\n  \
+             3. Split into multiple scenarios, one per LoRA stack — the SD UNet \
+             load is a one-time cost per scenario.",
             task.name
         );
     }
@@ -3318,5 +3524,116 @@ mod tests {
             s.concept_image.as_deref().map(|p| p.to_string_lossy().into_owned()),
             Some("./edges.png".to_string())
         );
+    }
+
+    // v0.16 phase 11 — SD per-task LoRA preflight.
+
+    /// Minimal scenario builder via direct struct construction —
+    /// HJSON's brace+newline rules make programmatic scenarios
+    /// fiddly. The preflight only reads `tasks[*].loras`, so we
+    /// fill those + defaults for the rest.
+    fn scenario_with_task_loras(task_loras: &[&[&str]]) -> ScenarioFile {
+        let tasks: Vec<TaskDef> = task_loras
+            .iter()
+            .enumerate()
+            .map(|(i, ls)| {
+                // Parse a minimal valid task via HJSON to pick up
+                // serde defaults on every field we don't set, then
+                // override `loras` directly.
+                let src = format!(r#"{{
+            name: t{i}
+            scene: s
+            weather: w
+            prompt: p
+        }}"#);
+                let mut t: TaskDef = deser_hjson::from_str(&src)
+                    .expect("task parses");
+                t.loras = ls.iter().map(|s| s.to_string()).collect();
+                t
+            })
+            .collect();
+        // Empty scenario picks up all-default fields.
+        let mut s: ScenarioFile = deser_hjson::from_str(
+            r#"{
+            lora-header: ""
+        }"#,
+        )
+        .expect("scenario parses");
+        s.tasks = tasks;
+        s
+    }
+
+    #[test]
+    fn preflight_no_per_task_loras_passes() {
+        // Tasks declare no per-task LoRAs → preflight is silent.
+        let s = scenario_with_task_loras(&[&[], &[], &[]]);
+        sd_per_task_lora_preflight(&s, "sd15").expect("no LoRAs → ok");
+        sd_per_task_lora_preflight(&s, "sdxl").expect("no LoRAs → ok");
+    }
+
+    #[test]
+    fn preflight_uniform_per_task_loras_emits_hint_but_passes() {
+        // Every task uses the SAME LoRA stack. The preflight prints a
+        // hint to fold to scenario-level loras: but doesn't bail —
+        // the user's scenario is salvageable by moving the per-task
+        // block up; we don't want to block them from doing that
+        // themselves.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["foo/lora-a:0.7"],
+            &["foo/lora-a:0.7"],
+        ]);
+        sd_per_task_lora_preflight(&s, "sd15").expect("uniform stacks → hint only");
+    }
+
+    #[test]
+    fn preflight_varying_per_task_loras_bails() {
+        // Two tasks with different LoRA stacks → bail loud upfront
+        // with the three-option workaround.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        let err = sd_per_task_lora_preflight(&s, "sdxl").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("vary across"), "got {msg}");
+        assert!(msg.contains("Flux"), "got {msg}");
+        assert!(msg.contains("Split"), "got {msg}");
+    }
+
+    #[test]
+    fn preflight_partial_per_task_loras_bails() {
+        // Some tasks declare LoRAs, others don't. Even if the
+        // declaring tasks all use the same stack, the asymmetry
+        // means we can't fold cleanly — bail.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &[],
+            &["foo/lora-a:0.7"],
+        ]);
+        let err = sd_per_task_lora_preflight(&s, "sd15").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("vary across"), "got {msg}");
+    }
+
+    #[test]
+    fn preflight_flux_model_skips() {
+        // Flux supports runtime per-task LoRA — preflight is a
+        // silent no-op even with varying stacks.
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        sd_per_task_lora_preflight(&s, "flux-dev").expect("Flux supports runtime LoRA");
+    }
+
+    #[test]
+    fn preflight_sd3_model_skips() {
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        sd_per_task_lora_preflight(&s, "sd35-medium")
+            .expect("SD3 supports runtime LoRA");
     }
 }

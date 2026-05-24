@@ -235,6 +235,18 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         artefact_blend: false,
         artefact_blend_strength: 0.0,
         smart_zones: false,
+        // v0.16 phase 5: outpaint's prompt is built from the user's
+        // outpaint args — already concrete. No wildcard expansion
+        // needed at this level.
+        wildcard_dir: None,
+        // v0.16 phase 10: outpaint runs full-canvas img2img (no
+        // tiled). Outpaint's "stretch the canvas + inpaint the
+        // new region" recipe doesn't compose with the per-tile
+        // velocity blend — drop here, surface clearly if the
+        // user wants tiled.
+        tiled: false,
+        tile_size: 1024,
+        tile_stride: 768,
     };
     crate::cli::img2img::run(img2img_args, device).await
 }

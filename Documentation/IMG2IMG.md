@@ -47,7 +47,7 @@ plakat img2img photo.jpg --prompt "..." --strength 0.4
 | `--steps <N>` | 28 | Denoising steps. Tutorial recommends 20 with `euler-a`. |
 | `--guidance <F>` | 7.5 | Classifier-free guidance scale. |
 | `--scheduler <K>` | `default` | Scheduler name. Same set as `plakat generate`. |
-| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img (v0.13); `flux-fill-dev` for Flux inpainting (v0.13). |
+| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting. |
 | `--size <WxH>` | input dims | Override working resolution. Input is resized to match. Must be a multiple of 8. |
 | `--out <DIR>` | `./out` | Output directory. Created if absent. |
 
@@ -87,16 +87,16 @@ feathered.
 noise schedule the denoise starts:
 
 - `0.0` — degenerate; returns the input unchanged (after a clean
-  VAE roundtrip).
+ VAE roundtrip).
 - `0.15–0.25` — subtle. Useful for "preserve composition, change
-  texture / palette."
+ texture / palette."
 - `0.30–0.50` — moderate. Most common range for img2img refinement.
 - **0.6 (img2img default)** — model has real creative room without
-  abandoning the source.
+ abandoning the source.
 - `0.7–0.9` — heavy. The source becomes more of a layout hint.
 - `1.0` — full re-noise. Equivalent to t2i from scratch with the
-  same prompt. **Default for inpaint mode** — you usually want full
-  freedom inside the masked region.
+ same prompt. **Default for inpaint mode** — you usually want full
+ freedom inside the masked region.
 
 For inpaint, lower strengths can be useful when the source contains
 detail you want to **refine** rather than **replace** (e.g. fixing
@@ -133,7 +133,7 @@ With `--count N`, files are `plakat-img2img-<base>.png`,
 identically to `plakat generate`. The denoise is the same modulo
 the partial-strength starting point.
 
-## Flux img2img and inpaint (v0.13)
+## Flux img2img and inpaint
 
 `plakat img2img --model flux-dev` (or `flux-schnell`, `flux-dev-gguf`)
 runs rectified-flow img2img: the init image is VAE-encoded and mixed
@@ -148,23 +148,25 @@ denoise directly rather than being a RePaint-style overlay, so
 Default `--guidance 30` per BFL's recommendation.
 
 Both Flux paths compose with LoRA (PEFT + AI-Toolkit formats), GGUF
-quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`), and
-ControlNet via the standard `--control-spec` grammar.
+quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`),
+ControlNet via the standard `--control-spec` grammar, and — as of
+**** — `--tiled` on Flux.1-Fill-dev for 4K+ inpaint via
+per-tile masked-latent + mask packing.
 
 ```bash
 # Flux img2img: re-imagine an init image, 70% strength
 plakat img2img init.png --model flux-dev \
-    --prompt "the same scene in a stained glass window" \
-    --strength 0.7
+ --prompt "the same scene in a stained glass window" \
+ --strength 0.7
 
 # Flux inpaint (Fill model): only the masked region changes
 plakat img2img init.png --mask region.png --model flux-fill-dev \
-    --prompt "ornate carved stone arch"
+ --prompt "ornate carved stone arch"
 
 # Flux on a 16 GB GPU via GGUF
 plakat img2img init.png --model flux-fill-dev-gguf \
-    --mask region.png --quant-level Q5_K_M --quantize-t5 \
-    --prompt "..."
+ --mask region.png --quant-level Q5_K_M --quantize-t5 \
+ --prompt "..."
 ```
 
 ## SD3 / SD3.5 img2img and inpaint
@@ -189,16 +191,16 @@ when no mask, `plakat-sd3-inpaint-<seed>.png` when masked.
 ```bash
 # SD3.5 img2img — re-imagine the input at 60% strength
 plakat img2img photo.png --model sd35-medium \
-    --prompt "the same scene rendered as a watercolor"
+ --prompt "the same scene rendered as a watercolor"
 
 # SD3.5 Large inpaint — replace just the masked region
 plakat img2img photo.png --model sd35-large \
-    --mask sky.png \
-    --prompt "dramatic stormy sky, lightning"
+ --mask sky.png \
+ --prompt "dramatic stormy sky, lightning"
 
 # sd35-large-turbo + img2img — 4-step distilled, no CFG
 plakat img2img photo.png --model sd35-large-turbo \
-    --prompt "..." --guidance 0
+ --prompt "..." --guidance 0
 ```
 
 SD3 LoRA (`--loras`) composes with img2img and inpaint. Diffusers
@@ -206,9 +208,28 @@ PEFT format is the supported convention (keys under
 `transformer.transformer_blocks.{i}.attn.*` / `ff.*` / `norm1*`).
 Affected Linears are merged into the MMDiT weights at load time.
 
-Not supported on SD3 img2img: ControlNet (`--control*`) and tiled
-denoise (`--tiled` works for SD3 t2i but doesn't compose with
-img2img/inpaint). Passing those flags raises an explicit error.
+Not supported on SD3 img2img: ControlNet (`--control*`). Passing
+those flags raises an explicit error.
+
+**Tiled SD3 img2img + inpaint** composes as of **** —
+`plakat img2img --tiled --tile-size 1024 --tile-stride 768` runs
+the rectified-flow init lerp + RePaint mask blend on the
+per-tile velocity prediction. The Hann blend doesn't know about
+the mask, so sharp mask boundaries can produce tile seams — use
+`--mask-feather PX` to smooth them.
+
+```bash
+# 2K SD3.5 img2img
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+ --prompt "rendered as a watercolor" \
+ --tiled --tile-size 1024 --tile-stride 768
+
+# 2K SD3.5 inpaint with a feathered mask
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+ --mask sky.png --mask-feather 16 \
+ --prompt "dramatic stormy sky" \
+ --tiled --tile-size 1024
+```
 
 ## Outpaint
 
@@ -218,11 +239,11 @@ canvas + new-region mask and hands off to the same inpaint flow:
 
 ```bash
 plakat outpaint photo.png --prompt "wide landscape, panorama" \
-    --left 512 --right 512 --model sdxl-inpaint
+ --left 512 --right 512 --model sdxl-inpaint
 
 # All four sides, Flux Fill model
 plakat outpaint photo.png --prompt "..." --expand 256 \
-    --model flux-fill-dev
+ --model flux-fill-dev
 ```
 
 `plakat outpaint` snaps padding to the model's VAE / patch constraint
@@ -233,21 +254,23 @@ new region (better seam continuity than flat gray), and pins
 ## Limits
 
 - **Mask resolution is downsampled.** The latent-space mask is
-  `image/8 × image/8`, so very fine mask boundaries lose precision.
-  Use `--mask-feather` to absorb the quantisation instead of fighting
-  it.
+ `image/8 × image/8`, so very fine mask boundaries lose precision.
+ Use `--mask-feather` to absorb the quantisation instead of fighting
+ it.
 - **Scenarios** support per-task `init-image:` / `mask:` / `strength:`
-  / `outpaint:` for both SD and Flux models as of v0.13. SD inpaint
-  tasks in scenarios reload the pipeline per task (img2img doesn't yet
-  share the t2i `Pipeline::load`-once shape).
+ / `outpaint:` for both SD and Flux models. SD inpaint
+ tasks in scenarios reload the pipeline per task (img2img doesn't yet
+ share the t2i `Pipeline::load`-once shape). Flux scenarios share a
+ single pipeline across tasks ( SD3 scenarios share a
+ single pipeline as of 
 
 ## See also
 
 - [Runnable tutorial](../examples/tutorials/IMG2IMG/) — four scripts
-  + a sample landscape + sky mask.
+ + a sample landscape + sky mask.
 - [`GENERATE.md`](GENERATE.md) — most flags are shared with
-  `plakat generate`.
+ `plakat generate`.
 - [`ARTEFACTS.md`](ARTEFACTS.md) — the v2 artefact-blend pipeline
-  uses the same underlying denoise primitives.
+ uses the same underlying denoise primitives.
 - [`APPLE_REQUIREMENTS.md`](APPLE_REQUIREMENTS.md) — expected
-  speeds + memory tiers.
+ speeds + memory tiers.

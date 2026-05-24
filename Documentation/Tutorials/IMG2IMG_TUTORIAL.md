@@ -11,12 +11,12 @@ how to think about masks. For the runnable companion, see
 ## Prerequisites
 
 - Finished [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md). You should
-  be comfortable with `--prompt`, `--seed`, `--steps`, `--guidance`,
-  and the idea that diffusion models start from noise and denoise
-  toward an image.
+ be comfortable with `--prompt`, `--seed`, `--steps`, `--guidance`,
+ and the idea that diffusion models start from noise and denoise
+ toward an image.
 - A `plakat` binary with GPU support
-  ([`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md) lists tiers).
-  CPU works but is uncomfortably slow for img2img.
+ ([`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md) lists tiers).
+ CPU works but is uncomfortably slow for img2img.
 
 ## 1. What img2img is
 
@@ -34,9 +34,9 @@ shares structure with the input but follows the new prompt.
 The relationship between `--strength` and the trajectory:
 
 ```
-strength=0.0:   image → encode → no noise → decode → same image out
-strength=0.5:   image → encode → mid-noise → denoise from mid → mixed
-strength=1.0:   image → encode → max noise → full denoise → text-driven
+strength=0.0: image → encode → no noise → decode → same image out
+strength=0.5: image → encode → mid-noise → denoise from mid → mixed
+strength=1.0: image → encode → max noise → full denoise → text-driven
 ```
 
 At strength 1.0, img2img is equivalent to t2i — the input is
@@ -46,19 +46,19 @@ discarded.
 
 ```bash
 plakat img2img photo.jpg \
-    --prompt "watercolor painting of the same scene" \
-    --seed 42
+ --prompt "watercolor painting of the same scene" \
+ --seed 42
 ```
 
 What this does:
 
 1. Reads `photo.jpg`; snaps dimensions to a multiple of 8 (VAE
-   constraint).
+ constraint).
 2. Loads SD 1.5 (downloaded on first use).
 3. VAE-encodes the image; adds noise corresponding to `--strength 0.6`
-   (the img2img default).
+ (the img2img default).
 4. Runs 28 denoising steps under the prompt, producing latents that
-   blend the source structure with the watercolor aesthetic.
+ blend the source structure with the watercolor aesthetic.
 5. VAE-decodes; saves as `out/plakat-img2img-42.png`.
 
 Try increasing `--strength` toward 0.9 to see the source matter
@@ -67,13 +67,13 @@ less, or decreasing toward 0.3 to keep the source dominant.
 ## 3. When to use img2img vs t2i
 
 - **t2i (`plakat generate`)** when you have a description but no
-  starting image — the model invents everything.
+ starting image — the model invents everything.
 - **img2img** when you have a starting point you want to refine,
-  restyle, or use as a composition lock. Common uses:
-  - Take a rough sketch → polished painting (high strength).
-  - Take a photo → matching painted style (medium strength).
-  - Take a generated image → variation with tweaked details (low
-    strength, same seed).
+ restyle, or use as a composition lock. Common uses:
+ - Take a rough sketch → polished painting (high strength).
+ - Take a photo → matching painted style (medium strength).
+ - Take a generated image → variation with tweaked details (low
+ strength, same seed).
 
 If your starting point matters at all, img2img is the right tool.
 If it doesn't, save the inference time and use `plakat generate`.
@@ -84,8 +84,8 @@ Add `--mask`:
 
 ```bash
 plakat img2img photo.jpg \
-    --mask sky_mask.png \
-    --prompt "stormy sky, dark clouds, lightning"
+ --mask sky_mask.png \
+ --prompt "stormy sky, dark clouds, lightning"
 ```
 
 Now plakat treats the mask as a per-pixel "edit here" map:
@@ -104,15 +104,15 @@ replace.
 You have three options:
 
 1. **Paint one in an editor.** Photoshop / GIMP / Krita: create a
-   new grayscale image the same size as your input, paint the
-   regions you want to inpaint in white. Save as PNG.
+ new grayscale image the same size as your input, paint the
+ regions you want to inpaint in white. Save as PNG.
 
 2. **Export a selection as alpha.** Select the region, save as PNG
-   with alpha. plakat reads the alpha channel as the mask.
+ with alpha. plakat reads the alpha channel as the mask.
 
 3. **Generate one programmatically.** Anything the `image` crate
-   can write. The runnable tutorial uses a procedural script:
-   `examples/draw_img2img_sample.rs`.
+ can write. The runnable tutorial uses a procedural script:
+ `examples/draw_img2img_sample.rs`.
 
 White = inpaint is the **AUTOMATIC1111 / diffusers convention**.
 If your tools use the opposite convention, add `--mask-invert`.
@@ -163,9 +163,9 @@ than for t2i because you often want to:
 
 - Lock the seed while sweeping `--strength` to isolate the dial.
 - Lock the seed while editing the prompt to compare changes
-  cleanly.
+ cleanly.
 - Sweep seeds (`--count 4 --seed 100`) to get four variations of
-  the same edit and pick the best.
+ the same edit and pick the best.
 
 Reproducibility tip: with a fixed seed + same prompt + same
 strength, img2img is fully deterministic. Use this to do "what if
@@ -201,29 +201,46 @@ is lossless.
 
 ## 9. Limits
 
-- **Flux** isn't supported for img2img in v0.8. SD 1.5, SD 2.1,
-  SDXL all work.
-- **No outpainting.** img2img can't extend the canvas. If you need
-  to add new pixels beyond the input frame, that's outpainting,
-  which is on the roadmap as a separate subcommand.
-- **No scenario integration in v0.8.** You can't run img2img as
-  part of a `plakat scenario` batch yet. CLI-only.
 - **Mask resolution is quantised** to the latent grid
-  (`image_w/8 × image_h/8`). Very fine mask boundaries lose
-  precision — use feathering to absorb the quantisation rather
-  than fight it.
+ (`image_w/8 × image_h/8`). Very fine mask boundaries lose
+ precision — use feathering to absorb the quantisation rather
+ than fight it.
+- **SD3 img2img doesn't compose with ControlNet** —
+ `--control-spec` on `plakat img2img --model sd35-*` bails
+ loud. Use `plakat generate` for SD3 CN-guided outputs.
+- **SD-family img2img + tiled** isn't wired — `plakat img2img
+ --tiled` is SD3 only. For SD 1.5 / SDXL high-res
+ workflows, prefer `plakat generate --tiled` or chain
+ `plakat upscale` after a smaller t2i.
+
+What HAS been wired since the earlier " limitations" of this
+tutorial:
+
+- **Flux img2img + inpaint** — `plakat img2img --model
+ flux-dev`, `flux-fill-dev` (inpaint), GGUF variants. See §
+ "Flux img2img and inpaint" in [`IMG2IMG.md`](../IMG2IMG.md).
+- **SD3 / SD3.5 img2img + inpaint** — RePaint-style
+ per-step mask blend. Tiled composes.
+- **Outpaint** — `plakat outpaint` subcommand expands
+ the canvas + builds the new-region mask, hands off to inpaint.
+- **Scenario integration** — per-task `init-image:` /
+ `mask:` / `strength:` / `outpaint:` for both SD and Flux.
+- **Tiled + Flux Fill** — `plakat img2img --model
+ flux-fill-dev --tiled` for 4K+ inpaint.
+- **Tiled + SD3 img2img / inpaint** — `plakat img2img
+ --model sd35-* --tiled` for 2K+ outputs.
 
 ## Where to next
 
 - **Runnable companion**: four self-contained scripts +
-  a procedurally-generated sample input + mask
-  ([`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)).
+ a procedurally-generated sample input + mask
+ ([`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)).
 - **Full reference**: every flag, every edge case
-  ([`Documentation/IMG2IMG.md`](../IMG2IMG.md)).
+ ([`Documentation/IMG2IMG.md`](../IMG2IMG.md)).
 - **Combining with style transfer**: `--style` and `--style-ref`
-  work on img2img the same as on `plakat generate`
-  ([`STYLES.md`](../STYLES.md)).
+ work on img2img the same as on `plakat generate`
+ ([`STYLES.md`](../STYLES.md)).
 - **Combining with artefacts**: artefact compositing happens
-  *before* any post-processing — you can composite, then img2img
-  the result for further polish. See
-  [`ARTEFACTS.md`](../ARTEFACTS.md).
+ *before* any post-processing — you can composite, then img2img
+ the result for further polish. See
+ [`ARTEFACTS.md`](../ARTEFACTS.md).

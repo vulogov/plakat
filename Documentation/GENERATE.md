@@ -47,17 +47,17 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `sdxl-turbo` | `stabilityai/sdxl-turbo` | 512–1024. Requires `--steps 4 --guidance 0`. |
 | `flux-schnell` | `black-forest-labs/FLUX.1-schnell` | 1024² typical. 4 steps. ~31 GB. |
 | `flux-dev` | `black-forest-labs/FLUX.1-dev` | Gated — needs `HF_TOKEN`. 20–50 steps. |
-| `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | **v0.13**: BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
-| `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | **v0.15**: BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
-| `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | **v0.15**: BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
-| `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | **v0.13**: 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
-| `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | **v0.13**: 4-bit quantized FLUX.1-schnell. |
-| `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | **v0.13**: 4-bit quantized Flux Fill. |
-| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | **v0.14**: NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras`. |
-| `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | **v0.14**: Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
-| `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | **v0.14**: SD3.5 Large flagship. 8B-param MMDiT. Gated. |
-| `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | **v0.14**: 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
-| `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | **v0.14**: original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
+| `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
+| `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
+| `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
+| `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
+| `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | 4-bit quantized FLUX.1-schnell. |
+| `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | 4-bit quantized Flux Fill. |
+| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras`. |
+| `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
+| `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | SD3.5 Large flagship. 8B-param MMDiT. Gated. |
+| `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
+| `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
 
 Custom HF repos: pass the full `org/name`. For SD-family the repo must
 have the diffusers layout (`unet/`, `vae/`, `text_encoder[_2]/`,
@@ -67,7 +67,7 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
 `ae.safetensors` + text encoders come from the original BFL repo
 ("donor") on first run.
 
-#### `--quant-level <LEVEL>` (default `Q4_K_S`, v0.13)
+#### `--quant-level <LEVEL>` (default `Q4_K_S`)
 
 GGUF quant level for the Flux transformer when running a `flux-*-gguf`
 model. city96 publishes Q2_K through Q8_0 plus F16. Common picks:
@@ -82,7 +82,7 @@ model. city96 publishes Q2_K through Q8_0 plus F16. Common picks:
 
 Ignored on BF16 Flux and SD-family models.
 
-#### `--quantize-t5` (default off, v0.13)
+#### `--quantize-t5` (default off)
 
 Load T5-XXL via city96's GGUF mirror instead of the BF16 sharded
 safetensors. Drops T5 from ~10 GB to ~3 GB (Q4_K_M default).
@@ -101,7 +101,7 @@ Generating outside the trained band introduces specific artifacts:
 
 - Too small → blurry, low detail, sometimes simplified subjects.
 - Too large → duplication (two heads, two faces, repeated structure), or
-  "ribboning" at boundaries.
+ "ribboning" at boundaries.
 
 Stay near each model's native resolution unless you have a reason not to.
 
@@ -171,7 +171,7 @@ CFG.
 Random seed. Same seed + same prompt + same model = same image. Use this
 to:
 - Iterate prompts deterministically (find one composition you like, vary
-  prompt at the same seed).
+ prompt at the same seed).
 - Reproduce a result you already generated.
 - Sweep over seeds (`--seed 0 -n 4` tries 0, 1, 2, 3).
 
@@ -230,9 +230,9 @@ first `frac×N` steps; the refiner UNet handles the remaining
 `(1−frac)×N` on the same latents.
 
 - **`--refiner-frac 0.8`** (default) — last 20% of steps run on refiner.
-  Diffusers reference uses this.
+ Diffusers reference uses this.
 - Lower values (0.6) give the refiner more responsibility — different
-  trade-off, sometimes better for portraits / fine textures.
+ trade-off, sometimes better for portraits / fine textures.
 - Higher values (0.9) keep more of the base's composition.
 
 SDXL / SDXL-Turbo only — errors on SD 1.5/2.1 or Flux. Adds **~6 GB
@@ -268,11 +268,11 @@ Append `:0.7` for per-LoRA scale: `--lora foo.safetensors:0.7`. Multiple
 
 **Quality dependencies**:
 - The LoRA must target the same base model as `--model`. An SDXL LoRA on
-  SD 1.5 will mismatch every cross-attention layer; plakat detects this,
-  prints the right "use `--model sdxl`" message, and either errors (if
-  zero targets match) or warns (if some match).
+ SD 1.5 will mismatch every cross-attention layer; plakat detects this,
+ prints the right "use `--model sdxl`" message, and either errors (if
+ zero targets match) or warns (if some match).
 - Most LoRA trigger tokens need to appear in the prompt to activate. Read
-  the LoRA's README on HF.
+ the LoRA's README on HF.
 
 **Memory**: peak ~3.4 GB on SD 1.5 during merge, ~10 GB on SDXL. Merge
 happens once per `generate` call.
@@ -362,11 +362,14 @@ For outputs above the model's trained working resolution (4K SDXL,
 | `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux + SD3). |
 | `--tile-stride <PX>` | `768` | Stride between tile origins. Smaller = more overlap = smoother seams + more compute. |
 
-Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both
+Composes with: GGUF + LoRA + img2img on Flux; ControlNet on
 SDXL and Flux (each tile gets its CN conditioning cropped to its
-region). Does **not** compose with the SDXL refiner,
-Flux.1-Fill-dev, Flux concept variants (Canny-dev / Depth-dev), or
-SD3 img2img / inpaint.
+region); **Flux.1-Fill-dev** (per-tile masked-latent + mask
+packing); **SD3 / SD3.5 img2img + inpaint** (the rectified-flow
+init lerp + RePaint mask blend compose with the per-tile
+velocity blend). Does **not** compose with the SDXL refiner,
+Flux concept variants (Canny-dev / Depth-dev), SD3 ControlNet,
+or `--hires-fix`.
 
 SD3 / SD3.5 join the tiled lineup. MMDiT's `pos_embed_max_size`
 caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
@@ -375,18 +378,22 @@ within either cap. Each per-step prediction is the post-CFG
 velocity per tile, Hann-blended into a full-canvas update applied
 via the Euler step.
 
+Inpaint + tiled note: tile seams can become visible near sharp
+mask boundaries because the Hann blend doesn't know about the
+mask. Pass `--mask-feather PX` to smooth the transition.
+
 ```bash
 # 4K SDXL
 plakat generate "ultra-detailed architectural diagram" \
-    --model sdxl --size 3072x2048 --tiled
+ --model sdxl --size 3072x2048 --tiled
 
 # 2K Flux with depth-guided structure across every tile
-plakat generate "..." --model flux-dev --size 2048x2048 \
-    --tiled --control-spec 'depth:from=ref.jpg'
+plakat generate ".." --model flux-dev --size 2048x2048 \
+ --tiled --control-spec 'depth:from=ref.jpg'
 
 # 2K SD3.5-Medium
-plakat generate "..." --model sd35-medium --size 2048x2048 \
-    --tiled --tile-size 1024 --tile-stride 768
+plakat generate ".." --model sd35-medium --size 2048x2048 \
+ --tiled --tile-size 1024 --tile-stride 768
 ```
 
 ### Artefact compositing
@@ -417,48 +424,61 @@ typical.
 ```bash
 # Single ref
 plakat generate "in this style" --model flux-dev \
-    --redux-image style.png
+ --redux-image style.png
 
 # Multi-ref with weights
-plakat generate "..." --model flux-dev \
-    --redux-image style.png:weight=0.8 \
-    --redux-image subject.png:weight=0.4
+plakat generate ".." --model flux-dev \
+ --redux-image style.png:weight=0.8 \
+ --redux-image subject.png:weight=0.4
 ```
 
 Composes with: BF16 / GGUF / NF4 Flux, LoRA, ControlNet, img2img,
 tiled denoise. **Does not** compose with `flux-fill-dev` (Fill's
 384ch `img_in` is incompatible).
 
-### `--concept-image <PATH>`
+### `--concept-image <PATH>` / `--concept-from <PATH>`
 
-Pre-rendered conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev.
-Pass a canny edge map (with `--model flux-canny-dev`) or a depth map
-(with `--model flux-depth-dev`) at the target output resolution. The
-image is VAE-encoded and packed alongside the noise tokens — the
-"concept" checkpoint's `img_in` Linear is 128 channels wide (64
-noise + 64 conditioning).
+Conditioning map for Flux.1-Canny-dev / Flux.1-Depth-dev. Pass a
+canny edge map (with `--model flux-canny-dev`) or a depth map (with
+`--model flux-depth-dev`) at the target output resolution. The image
+is VAE-encoded and packed alongside the noise tokens — the "concept"
+checkpoint's `img_in` Linear is 128 channels wide (64 noise + 64
+conditioning).
+
+Two ways to supply the map:
+
+* **`--concept-image PATH`** — a pre-rendered canny / depth map you
+ already have on disk.
+* **`--concept-from PATH`** — a source photo to auto-annotate. Plakat
+ runs Canny edge detection (for `flux-canny-dev`) or
+ Depth-Anything-V2 (for `flux-depth-dev`) on the source, writes the
+ result to a temporary PNG, and feeds it to the model the same way
+ `--concept-image` would.
 
 ```bash
-# Canny-guided generation. Recommended guidance ~30.
+# Auto-annotate a reference photo with the matching annotator
 plakat generate "a Victorian mansion, gothic, twilight" \
-    --model flux-canny-dev --concept-image edges.png --guidance 30
+ --model flux-canny-dev --concept-from photo.jpg --guidance 30
 
-# Depth-guided. Same shape; different conditioning modality.
 plakat generate "a polished marble statue of an angel" \
-    --model flux-depth-dev --concept-image depth.png --guidance 30
+ --model flux-depth-dev --concept-from photo.jpg --guidance 30
+
+# Or supply a pre-rendered map
+plakat generate ".." --model flux-canny-dev \
+ --concept-image edges.png --guidance 30
 ```
+
+The two flags are mutually exclusive. `--concept-from` is only valid
+with the two concept variants — passing it with `flux-dev` or any
+other model raises an explicit error.
 
 Caveats:
 * Doesn't compose with `--tiled`, `--init-image` / `--mask`,
-  `--redux-image`, or `--control-spec` — pairing raises an explicit
-  error.
-* Pass a pre-rendered conditioning map. Generate one via
-  `plakat generate --control-spec canny:from=photo.jpg` (which writes
-  the annotated conditioning to the output dir) or with `cv2.Canny`
-  / a depth model externally.
+ `--redux-image`, or `--control-spec` — pairing raises an explicit
+ error.
 * `--guidance 30` is BFL's recommendation per their model cards.
-  Lower values (3-7) underrespect the conditioning; higher
-  oversharpen.
+ Lower values (3-7) underrespect the conditioning; higher
+ oversharpen.
 
 ### `--fast <PRESET>`
 
@@ -470,16 +490,135 @@ in one flag. Presets:
 * `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
 
 ```bash
-plakat generate "..." --model flux-dev --fast hyper-8
+plakat generate ".." --model flux-dev --fast hyper-8
 ```
 
 The preset LoRA gets prepended to `--loras`; `--steps` / `--guidance`
 are overridden **only** when you didn't pass them explicitly.
 Requires a non-Fill Flux model.
 
+### Wildcards
+
+Inline alternation + file-backed random picks in the prompt.
+Auto1111 / NovelAI / ComfyUI grammar.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--wildcard-dir <DIR>` | (none) | Directory holding `<name>.txt` wildcard files for `__name__` expansion. |
+
+* **Inline alternation**: `{red|blue|green}` picks one of the three
+ at random. Nestable: `{a {b|c}|d}` → `a b`, `a c`, or `d`. Works
+ without `--wildcard-dir`.
+* **File wildcards**: `__name__` reads
+ `<wildcard-dir>/<name>.txt` and picks a uniformly-random
+ non-empty, non-comment (`#`) line. Names accept letters, digits,
+ `-`, and `_` (so `__warm-colors__` and `__warm_colors__` both
+ work).
+
+```bash
+plakat generate "a {red|blue|green} {fox|cat|owl}" \
+ --model sd15 --count 4 --seed 42
+
+mkdir -p wildcards
+echo -e "ruby\ncrimson\namber" > wildcards/warm-colors.txt
+plakat generate "a __warm-colors__ fox" \
+ --wildcard-dir ./wildcards --model sd15
+```
+
+The wildcard RNG is seeded from `--seed` when set (reproducible
+expansion) and from OS entropy otherwise. Expansion runs **before**
+`--enhance` so the enhancer sees a concrete prompt.
+
+### CLIP-skip (SD 1.5 / SD 2.1)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--clip-skip <N>` | `1` | Use the N-th-from-last CLIP-L hidden state. `1` = last (diffusers default; byte-identical to). `2` = penultimate (community default for SD 1.5 anime checkpoints). |
+
+SDXL ignores `--clip-skip > 1` with a warning (the dual-encoder
+path already uses penultimate by training default). Flux / SD3
+ignore the flag entirely.
+
+### ADetailer face refinement (SD-family)
+
+After the t2i pass, runs SCRFD on each output to detect faces,
+crops + img2img-refines each face, and feather-composites the
+refined crop back. Reuses the t2i SdCore — no second model load.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--adetailer` | off | Enable the post-t2i face refinement pass. |
+| `--adetailer-strength <F>` | `0.4` | img2img strength on each face crop. Lower preserves identity + colour; `0.6+` re-imagines. |
+| `--adetailer-padding <F>` | `0.25` | Bbox expansion per side. More = better blending, less res per face. |
+| `--adetailer-feather <F>` | `0.25` | Outer fraction of the bbox that fades to 0 opacity at the edge. |
+| `--adetailer-confidence <F>` | `0.5` | SCRFD score threshold. Faces below are skipped. |
+| `--adetailer-size <PX>` | `512` | Working resolution for the face img2img (square, snapped to /8). |
+| `--adetailer-prompt <STR>` | (generic) | Override the face-pass prompt. Default: "detailed face, sharp focus, high quality". |
+
+**Required setup**: SCRFD weights via `PLAKAT_SCRFD_WEIGHTS` (local
+path) or `PLAKAT_SCRFD_HF` (HF spec). Same env vars the FaceID
+portrait flow uses.
+
+**Restrictions**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux /
+SD3 bail loud. Composes with `--lora`, `--seed`, and `--hires-fix`
+(ADetailer runs after hires fix so face refinement operates on the
+upscaled image).
+
+```bash
+plakat generate "a woman walking through a forest, full body shot" \
+ --model sd15 --size 768x1024 --adetailer
+```
+
+### Hires fix (SD-family)
+
+Mitigates the "multi-head problem" SD/SDXL produce when sampled
+above their trained resolution. Generate at the trained res, then
+upscale + img2img-refine.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--hires-fix` | off | Enable the post-t2i upscale + refine pass. |
+| `--hires-scale <F>` | `2.0` | Upscale factor for classical upscalers. ML upscalers (Real-ESRGAN) use native scale and ignore this. |
+| `--hires-strength <F>` | `0.5` | img2img strength on the upscaled image. Lower preserves composition; `0.7+` allows more reinterpretation. |
+| `--hires-upscaler <MODE>` | `lanczos` | `lanczos / bicubic / bilinear / nearest / real-esrgan-x2 / real-esrgan-x4 / real-esrgan-anime-x4`. |
+| `--hires-steps <N>` | (main `--steps`) | Step count for the refine pass. |
+
+**Restrictions**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux /
+SD3 already have `--tiled` for high-res output and bail loud. Does
+**not** compose with `--artefact*` (upscale changes dims; the
+artefact compositor reads the original t2i dims).
+
+```bash
+# 1.5k SD 1.5 via 2x Lanczos + img2img
+plakat generate "an astronaut on a beach" \
+ --model sd15 --size 768x768 --hires-fix
+
+# 4K poster: hires-fix + ADetailer
+plakat generate "a vintage travel poster of Tokyo at night" \
+ --model sd15 --size 768x768 --steps 30 \
+ --hires-fix --hires-upscaler real-esrgan-x2 --hires-strength 0.45 \
+ --adetailer
+```
+
+### Textual Inversion (partial)
+
+| Flag | Description |
+|---|---|
+| `--embedding <SPEC>` (repeatable) | Textual Inversion `.safetensors`. Format: `PATH_OR_REPO[:trigger][:scale]`. |
+
+**Status**: parser + `plakat embedding info` inspector ship and
+work today. Runtime injection into the SD CLIP-L tokenizer +
+token_embedding matrix is gated by candle 0.8's private
+`clip::Config.vocab_size` — `--embedding` plumbs end-to-end and
+bails loud at SD load with a deferral message + the "convert TI
+to LoRA via kohya-ss" workaround. SD 1.5 / SD 2.1 only when the
+runtime path opens; SDXL dual-encoder TIs bail in the parser.
+
+Use `plakat embedding info PATH` to inspect a TI file today.
+
 ---
 
-## `plakat outpaint` (v0.13)
+## `plakat outpaint`
 
 Extend an input image past its borders. A thin wrapper around the
 inpaint pipeline: expand the canvas, replicate-fill the new region
@@ -489,15 +628,15 @@ img2img --mask`.
 
 ```bash
 # 256 px on every side, default sdxl-inpaint
-plakat outpaint photo.png --prompt "..." --expand 256
+plakat outpaint photo.png --prompt ".." --expand 256
 
 # Panoramic: extend only horizontally
 plakat outpaint photo.png --prompt "wide mountain valley" \
-    --left 512 --right 512
+ --left 512 --right 512
 
 # Flux Fill outpaint
-plakat outpaint photo.png --prompt "..." --expand 256 \
-    --model flux-fill-dev
+plakat outpaint photo.png --prompt ".." --expand 256 \
+ --model flux-fill-dev
 ```
 
 | Flag | Default | Description |
@@ -530,7 +669,7 @@ face/anatomy negatives baked in) with no extra download.
 
 ```bash
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
-    --photo face.jpg --face-strength 0.8
+ --photo face.jpg --face-strength 0.8
 ```
 
 #### `<PROMPT>` (positional, required)
@@ -552,17 +691,17 @@ Identity strategy. Must match the `--model` you pass (the validator
 refuses cross-attn-dim mismatches at load):
 
 - `plus-face` — IP-Adapter-Plus-Face, SD 1.5. Use with `--model sd15`
-  (or any HF SD 1.5 repo).
+ (or any HF SD 1.5 repo).
 - `plus-face-sdxl` (aliases: `plusface-sdxl`, `plus-face-xl`,
-  `sdxl-plus-face`) — IP-Adapter-Plus-Face SDXL via the `vit-h` variant
-  (reuses the SD 1.5 CLIP-H image encoder). Use with `--model sdxl`.
+ `sdxl-plus-face`) — IP-Adapter-Plus-Face SDXL via the `vit-h` variant
+ (reuses the SD 1.5 CLIP-H image encoder). Use with `--model sdxl`.
 - `faceid` — IP-Adapter-FaceID, SD 1.5. Uses the InsightFace ArcFace
-  IR-ResNet50 embedding for stronger identity preservation than
-  CLIP-H-based strategies. Requires ArcFace weights (set via
-  `PLAKAT_ARCFACE_WEIGHTS` or `PLAKAT_ARCFACE_HF`). See PERSONA.md
-  "FaceID setup".
+ IR-ResNet50 embedding for stronger identity preservation than
+ CLIP-H-based strategies. Requires ArcFace weights (set via
+ `PLAKAT_ARCFACE_WEIGHTS` or `PLAKAT_ARCFACE_HF`). See PERSONA.md
+ "FaceID setup".
 - `faceid-sdxl` — IP-Adapter-FaceID on SDXL. Same ArcFace backbone;
-  SDXL UNet target. Use with `--model sdxl`.
+ SDXL UNet target. Use with `--model sdxl`.
 - `instantid` — roadmap; not yet implemented.
 
 #### `--face-strength <FLOAT>` (default `0.8`)
@@ -574,7 +713,7 @@ IP-Adapter `scale` parameter equivalent.
 - `0.5` — light influence, prompt dominates.
 - `0.8` — default; strong likeness while keeping prompt steering.
 - `1.0+` — over-amplifies the face; useful for tough photos but the prompt
-  can start losing control.
+ can start losing control.
 
 Ignored without `--photo`.
 
@@ -721,7 +860,7 @@ plakat stylize --in landscape.jpg --ref ukiyoe.jpg --out styled.png --for scene
 plakat stylize --in photo.jpg --ref gradient.jpg --out graded.png --for grading
 
 # Preset + explicit override → explicit wins (warns about the conflict).
-plakat stylize ... --for portrait --strength 0.45   # uses 0.45
+plakat stylize .. --for portrait --strength 0.45 # uses 0.45
 ```
 
 #### `--steps <N>` (default `30`)
@@ -828,7 +967,7 @@ edges and similar shades.
 
 ```bash
 plakat transparent --in logo.png --out logo-alpha.png --tolerance 12
-# → ✓  key #ffffff  •  512×512  •  238921/262144 pixels transparent (91.1%)
+# → ✓ key #ffffff • 512×512 • 238921/262144 pixels transparent (91.1%)
 ```
 
 ---
@@ -844,7 +983,57 @@ Browse HuggingFace and manage the local cache.
 | `models size <REPO>` | Total Hub size + the subset plakat would actually download. |
 | `models pull <REPO>` | Pre-download SD/Flux weight files for a repo. |
 | `models ls` | List cached models with disk usage. |
-| `models rm <REPO>... [--yes]` | Delete cached models (with size + confirmation by default). |
+| `models rm <REPO>.. [--yes]` | Delete cached models (with size + confirmation by default). |
+
+---
+
+## `plakat civitai`
+
+Browse + download Civitai assets — community LoRAs, checkpoints,
+embeddings, ControlNet variants.
+
+| Subcommand | Purpose |
+|---|---|
+| `civitai search <QUERY> [--type lora\|checkpoint\|ti\|controlnet\|vae] [--limit N] [--page P] [--include-nsfw]` | Free-text search. Filters NSFW by default; pages 1-indexed. |
+| `civitai info <REF>` | Show model/version details — trigger words, base model, files. |
+| `civitai download <REF> [--file NAME]` | Fetch the asset into the local cache. Prints the absolute path. |
+
+`<REF>` accepts: bare integer model ID (`123456`), `civitai:`
+shorthand (`civitai:123456`), or any of the `https://civitai.com/`
+URL shapes (`/models/<id>`, `/models/<id>/<slug>`,
+`?modelVersionId=..`, and the `/api/download/models/<vid>`
+direct-download form).
+
+Downloads stream into
+`<plakat-cache>/civitai/model-<id>/version-<id>/`. Cache-hit
+short-circuits on matching size. Authenticated downloads use
+`CIVITAI_API_KEY` from the env. Drop the printed path into
+`--lora` or `--model`.
+
+```bash
+plakat civitai search "watercolor" --type lora --limit 10
+plakat civitai info 12345
+plakat civitai download "https://civitai.com/models/12345?modelVersionId=789"
+```
+
+---
+
+## `plakat embedding`
+
+Inspect Textual Inversion (`.safetensors`) files + Flux IP-Adapter
+weights. Runtime injection lands when candle exposes the seam —
+parsers + inspectors ship today.
+
+| Subcommand | Purpose |
+|---|---|
+| `embedding info <PATH_OR_REPO> [--trigger NAME]` | Inspect a TI file: trigger word, vector count × dim, matching SD variant. |
+| `embedding flux-ip-adapter-info <PATH_OR_REPO>` | Inspect an XLabs Flux IP-Adapter: SigLIP feature dim, Flux hidden dim, per-block attention count. |
+
+```bash
+plakat embedding info ./my-style.safetensors
+plakat embedding info sd-concepts-library/cat-toy
+plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
+```
 
 ---
 
@@ -887,13 +1076,13 @@ details.
 
 ```bash
 plakat generate "a tranquil koi pond, soft light" \
-    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
-    --seed 42
+ --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+ --seed 42
 
 # Now tweak just the prompt:
 plakat generate "a tranquil koi pond, soft light, autumn leaves" \
-    --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
-    --seed 42
+ --model sdxl --size 1024x1024 --steps 30 --scheduler euler-a \
+ --seed 42
 ```
 
 ### Sample many seeds, then refine the best
@@ -901,14 +1090,14 @@ plakat generate "a tranquil koi pond, soft light, autumn leaves" \
 ```bash
 # Step 1 — sample 4 candidates
 plakat generate "a tranquil koi pond, soft light" \
-    --model sdxl --size 1024x1024 --seed 0 -n 4
+ --model sdxl --size 1024x1024 --seed 0 -n 4
 
 # Step 2 — pick seed=2 (say), refine with extra polish
 plakat generate "a tranquil koi pond, soft light" \
-    --model sdxl --size 1024x1024 \
-    --steps 35 --scheduler euler-a \
-    --refine 8 --refine-strength 0.25 \
-    --seed 2
+ --model sdxl --size 1024x1024 \
+ --steps 35 --scheduler euler-a \
+ --refine 8 --refine-strength 0.25 \
+ --seed 2
 ```
 
 ### Fast generation with LCM-LoRA
@@ -918,10 +1107,10 @@ any device.
 
 ```bash
 plakat generate "a serene mountain landscape at sunset" \
-    --model sd15 --size 512x512 \
-    --steps 4 --guidance 1.5 \
-    --scheduler lcm \
-    --lora latent-consistency/lcm-lora-sdv1-5
+ --model sd15 --size 512x512 \
+ --steps 4 --guidance 1.5 \
+ --scheduler lcm \
+ --lora latent-consistency/lcm-lora-sdv1-5
 ```
 
 ### Style transfer that mostly preserves IN
@@ -931,19 +1120,19 @@ REF's style.
 
 ```bash
 plakat stylize \
-    --in photo.jpg \
-    --ref reference_painting.jpg \
-    --out styled.png \
-    --strength 0.4 --steps 30
+ --in photo.jpg \
+ --ref reference_painting.jpg \
+ --out styled.png \
+ --strength 0.4 --steps 30
 ```
 
 ### Img2img / inpaint / outpaint
 
 For prompt-driven transforms of an existing image (with or without a
-region mask), use the dedicated `plakat img2img` subcommand. Both SD
-1.5 / 2.1 / SDXL and Flux (`flux-dev` for img2img, `flux-fill-dev`
-for inpaint, both available as GGUF variants — all v0.13) work. To
-extend a canvas past its borders, use `plakat outpaint` (v0.13). Full
+region mask), use the dedicated `plakat img2img` subcommand. SD
+1.5 / 2.1 / SDXL, Flux (`flux-dev` for img2img, `flux-fill-dev`
+for inpaint, both available as GGUF variants), and SD3 / SD3.5
+all work. To extend a canvas past its borders, use `plakat outpaint`. Full
 reference: [`IMG2IMG.md`](IMG2IMG.md). Runnable walkthrough:
 [`examples/tutorials/IMG2IMG/`](../examples/tutorials/IMG2IMG/).
 
@@ -954,13 +1143,16 @@ every SD-family subcommand accepts:
 
 ```bash
 --control <depth|canny>
---control-image PATH    # pre-rendered conditioning
---control-from  PATH    # OR auto-annotate any image
---control-strength F    # default 1.0
+--control-image PATH # pre-rendered conditioning
+--control-from PATH # OR auto-annotate any image
+--control-strength F # default 1.0
 ```
 
-Works on both SD 1.5 and SDXL — the architecture is auto-detected
-from `--model`. Full reference:
+Works on SD 1.5, SD 2.1, SDXL, **Flux** (BF16 / GGUF / NF4, via
+Shakker-Labs Union Pro v2), and **SD3 / SD3.5** (via the
+InstantX adapter family). The architecture is
+auto-detected from `--model` and the resolver picks the matching
+adapter repo per variant. Full reference:
 [`CONTROLNET.md`](CONTROLNET.md). Runnable walkthrough:
 [`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
 
@@ -968,10 +1160,10 @@ from `--model`. Full reference:
 
 ```bash
 plakat generate "an isometric tiny diorama of a forest cabin" \
-    --model sd15 --size 512x512 --seed 7 --out ./out
+ --model sd15 --size 512x512 --seed 7 --out ./out
 
 plakat upscale --in ./out/plakat-7.png --out ./out/plakat-7-4x.png \
-    --method real-esrgan-x4 --device metal
+ --method real-esrgan-x4 --device metal
 # 512×512 → 2048×2048
 ```
 
@@ -984,9 +1176,7 @@ subcommand assembles per-task prompts from a catalog of scenes and
 weather, runs the per-image pipeline, and reuses loaded weights across
 every task.
 
-#### Scenario fields (v0.13)
-
-v0.13 adds the following scenario-level + per-task fields. All are
+#### Scenario fieldsAll are
 optional; existing scenarios keep working unchanged.
 
 **Scenario-level (top of the HJSON):**
@@ -998,7 +1188,7 @@ optional; existing scenarios keep working unchanged.
 | `t5-quant-level:` | string | T5 GGUF quant level. Defaults to `Q4_K_M`. |
 | `tiled:` | `{ size, stride }` | MultiDiffusion-style tiled denoise for every task. Defaults: `1024` / `768`. |
 
-**Per-task (inside each `tasks: [...]` entry):**
+**Per-task (inside each `tasks: [..]` entry):**
 
 | Field | Type | Description |
 |---|---|---|
@@ -1012,28 +1202,41 @@ optional; existing scenarios keep working unchanged.
 
 ```hjson
 {
-  model: flux-dev-gguf,
-  quant-level: Q5_K_M,
-  quantize-t5: true,
-  tiled: { size: 1024, stride: 768 },
-  tasks: [
-    // Multi-CN, depth + canny stacked
-    { name: gen1, prompt: "...", controls: [
-        { kind: depth, image: ./d.png, strength: 0.8 },
-        { kind: canny, auto-from: ./ref.jpg, strength: 0.5, end: 0.5 },
-    ]},
-    // Outpaint via Flux Fill
-    { name: panorama, prompt: "wide landscape", model: flux-fill-dev,
-      init-image: ./photo.png, outpaint: { left: 512, right: 512 } },
-    // SD inpaint
-    { name: fix-sky, model: sdxl-inpaint, prompt: "blue sky",
-      init-image: ./in.png, mask: ./sky-mask.png,
-      mask-feather: 16, strength: 1.0 },
-  ]
+ model: flux-dev-gguf,
+ quant-level: Q5_K_M,
+ quantize-t5: true,
+ tiled: { size: 1024, stride: 768 },
+ tasks: [
+ // Multi-CN, depth + canny stacked
+ { name: gen1, prompt: "..", controls: [
+ { kind: depth, image: ./d.png, strength: 0.8 },
+ { kind: canny, auto-from: ./ref.jpg, strength: 0.5, end: 0.5 },
+ ]},
+ // Outpaint via Flux Fill
+ { name: panorama, prompt: "wide landscape", model: flux-fill-dev,
+ init-image: ./photo.png, outpaint: { left: 512, right: 512 } },
+ // SD inpaint
+ { name: fix-sky, model: sdxl-inpaint, prompt: "blue sky",
+ init-image: ./in.png, mask: ./sky-mask.png,
+ mask-feather: 16, strength: 1.0 },
+ ]
 }
 ```
 
-Note: SD img2img/inpaint tasks reload the SD pipeline per task —
-img2img doesn't yet share the t2i `Pipeline::load`-once shape.
-Acceptable for v0.13 batch-rarely-img2img workflows; a follow-up
-could share the SdCore between the two paths.
+Notes on scenario pipeline caching:
+
+* **SD 1.5 / 2.1 / SDXL** — t2i tasks share a single `Arc<SdCore>`;
+  img2img/inpaint tasks within the same scenario still reload the
+  SD pipeline per task (the img2img dispatcher doesn't yet share
+  the t2i SdCore).
+* **Flux** (BF16 / GGUF / NF4) — one pipeline shared across every
+  task. Per-task `loras:` swap at runtime via the LoraLinear stack.
+* **SD3 / SD3.5** — one MMDiT pipeline shared across every task.
+  Per-task `loras:` swap at runtime via the MMDiT LoraLinear stack.
+
+For **SD-family per-task LoRA** (different LoRA stacks per task),
+plakat runs a preflight at scenario start and either prints a hint
+to fold uniform stacks to scenario-level `loras:` or bails loud
+with three concrete workarounds (switch to Flux/SD3.5, split
+scenarios, or fold). The SD UNet runtime LoraLinear vendor is
+deferred — candle 0.8's UNet internals are private.
