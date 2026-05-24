@@ -1489,6 +1489,12 @@ impl Pipeline {
     /// Encode a single prompt into (clip_pooled, t5_emb).
     /// - clip_pooled: (1, 768)   — CLIP-L pooled at the EOT-token position
     /// - t5_emb:      (1, seq, 4096) — T5-XXL last hidden states
+    ///
+    /// v0.18 phase 3: T5 hidden states are per-token-row weighted by
+    /// the A1111 attention syntax (e.g. `(red:1.4)`). CLIP-L on Flux
+    /// is pooled-only — only the EOT position is read out, so per-
+    /// token weights don't change the pooled vector and the CLIP-L
+    /// path is left untouched.
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
         // CLIP-L: tokenize to 77, run, pool at EOT.
         let mut clip_ids = self
@@ -1505,16 +1511,46 @@ impl Pipeline {
 
         // T5: tokenize to variant.t5_seq_len(), pad with id 0, run encoder.
         let t5_seq_len = self.variant.t5_seq_len();
-        let mut t5_ids = self
-            .t5_tok
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("T5 encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        t5_ids.truncate(t5_seq_len);
-        t5_ids.resize(t5_seq_len, 0);
-        let t5_ids_t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let t5_emb = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
+        let t5_emb = if crate::prompt::a1111::has_attention_syntax(prompt) {
+            // v0.18 phase 3: weighted path. Per-token-row broadcast
+            // of A1111 attention weights onto T5's hidden states.
+            // T5 has no BOS; `</s>` (id 1 in T5-XXL) is EOS; pad is
+            // 0. Look the IDs up rather than hardcoding so a future
+            // tokenizer variant doesn't silently drift.
+            let t5_eos = self
+                .t5_tok
+                .token_to_id("</s>")
+                .ok_or_else(|| anyhow!("T5 tokenizer missing </s>"))?;
+            let t5_pad = self.t5_tok.token_to_id("<pad>").unwrap_or(0);
+            let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+                tokenizer: &self.t5_tok,
+                max_len: t5_seq_len,
+                bos_id: None,
+                eos_id: t5_eos,
+                pad_id: t5_pad,
+            };
+            let (ids, weights) = crate::prompt::weighted_encoding::tokenize_with_attention(
+                &wcfg,
+                prompt,
+                &self.device,
+                self.dtype,
+            )?;
+            let hidden = self.t5_enc.forward(&ids)?.to_dtype(self.dtype)?;
+            let weights = weights.to_dtype(hidden.dtype())?;
+            hidden.broadcast_mul(&weights)?
+        } else {
+            // Fast path — byte-identical to pre-phase-3 behaviour.
+            let mut t5_ids = self
+                .t5_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("T5 encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            t5_ids.truncate(t5_seq_len);
+            t5_ids.resize(t5_seq_len, 0);
+            let t5_ids_t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?
+        };
         Ok((clip_pooled, t5_emb))
     }
 

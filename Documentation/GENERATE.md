@@ -582,12 +582,12 @@ The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
 
-### Attention emphasis (SD-family)
+### Attention emphasis (all backbones)
 
 A1111 / NovelAI-style prompt grammar — used by virtually every
 Civitai LoRA card. plakat parses these inline and applies the
-per-token weight to the CLIP hidden state (per-row scale on the
-penultimate output, before cross-attention).
+per-token weight to the encoder's hidden state (per-row scale on
+the penultimate output, before cross-attention).
 
 | Syntax | Weight |
 |---|---|
@@ -602,11 +602,31 @@ penultimate output, before cross-attention).
 plakat generate \
     "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
     --model sd15
+
+# Works on Flux too — Civitai Flux LoRA cards rely on it.
+plakat generate \
+    "a (cyberpunk:1.4) street market, [muted colors]" \
+    --model flux-dev
+
+# And SD3 / SD3.5 — broadcasts on CLIP-L, CLIP-G, and T5 hidden states.
+plakat generate \
+    "a (cinematic:1.3) portrait, [shallow depth of field]" \
+    --model sd35-medium
 ```
 
-SD 1.5 / SD 2.1 / SDXL only. Flux + SD3 ignore (T5-based encoders
-don't share the CLIP per-token weighting hook). Unbalanced parens
-are treated as literal characters — no error, just no emphasis.
+**Supported**: SD 1.5 / SD 2.1 / SDXL (CLIP-L + CLIP-G penultimate),
+Flux (T5-XXL hidden states — CLIP-L on Flux is pooled-only, so per-
+token weighting is a no-op there), SD3 / SD3.5 (CLIP-L penult,
+CLIP-G penult, and T5 hidden — pooled CLIP-{L,G} stays unweighted).
+
+**Sentencepiece caveat (Flux + SD3)**: T5's sentencepiece tokenizer
+may produce a slightly different subtoken split for a segment in
+isolation vs the same text inside a longer string (the leading
+word-boundary marker depends on the previous character). The weight-
+per-resulting-subtoken contract is preserved either way — the visual
+effect of `(token:1.5)` matches A1111 even when the subtoken count
+drifts by one. Unbalanced parens are treated as literal characters —
+no error, just no emphasis.
 
 ### CLIP-skip (SD 1.5 / SD 2.1)
 

@@ -1643,7 +1643,11 @@ fn tokenize_weighted(
     device: &Device,
     dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
-    let max_pos = cfg.max_position_embeddings;
+    // v0.18 phase 3: delegate to the shared sentencepiece-/BPE-
+    // agnostic helper. The CLIP-specific bits live here (lookup the
+    // BOS / EOT / pad IDs from this tokenizer's vocabulary, read
+    // max_len out of sdclip::Config) so callers can keep their
+    // current `(tokenizer, cfg, ...)` signature.
     let pad_id: u32 = match &cfg.pad_with {
         Some(s) => tokenizer
             .token_to_id(s)
@@ -1658,45 +1662,14 @@ fn tokenize_weighted(
     let eot_id = tokenizer
         .token_to_id("<|endoftext|>")
         .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?;
-
-    // Collect per-segment tokens (no special tokens added — we
-    // bracket the whole sequence ourselves below).
-    let mut ids: Vec<u32> = Vec::with_capacity(max_pos);
-    let mut weights: Vec<f32> = Vec::with_capacity(max_pos);
-    // BOS at position 0, weight 1.0.
-    ids.push(bos_id);
-    weights.push(1.0);
-    let body_budget = max_pos.saturating_sub(2); // reserve for BOS + EOT
-    for seg in segments {
-        let seg_ids = tokenizer
-            .encode(seg.text.as_str(), false)
-            .map_err(|e| anyhow!("encode segment {:?}: {e}", seg.text))?
-            .get_ids()
-            .to_vec();
-        for id in seg_ids {
-            if ids.len() - 1 >= body_budget {
-                break; // hard-truncate at 77-2 body tokens
-            }
-            ids.push(id);
-            weights.push(seg.weight);
-        }
-        if ids.len() - 1 >= body_budget {
-            break;
-        }
-    }
-    // EOT.
-    ids.push(eot_id);
-    weights.push(1.0);
-    // Pad.
-    while ids.len() < max_pos {
-        ids.push(pad_id);
-        weights.push(1.0);
-    }
-
-    let ids_t = Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?;
-    let weights_t = Tensor::from_vec(weights, (1, max_pos, 1), device)?
-        .to_dtype(dtype)?;
-    Ok((ids_t, weights_t))
+    let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+        tokenizer,
+        max_len: cfg.max_position_embeddings,
+        bos_id: Some(bos_id),
+        eos_id: eot_id,
+        pad_id,
+    };
+    crate::prompt::weighted_encoding::tokenize_weighted(&wcfg, segments, device, dtype)
 }
 
 /// v0.17 phase 2: convenience that wraps `tokenize_weighted` for
