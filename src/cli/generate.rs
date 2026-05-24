@@ -477,6 +477,53 @@ pub struct GenerateArgs {
     /// CLIP path in a follow-up phase.
     #[arg(long = "embedding", value_name = "SPEC")]
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+
+    /// Disable the v0.17 PNG `parameters` tEXt-chunk metadata + the
+    /// sibling `.json` sidecar. By default plakat writes
+    /// Auto1111-compatible recipe metadata into every output so
+    /// any viewer (A1111 Web UI, Civitai upload, ComfyUI
+    /// drag-to-load, sd-prompt-reader, ...) can surface the
+    /// prompt, seed, sampler, LoRAs, etc. Pass `--no-metadata` to
+    /// get anonymous PNGs identical to pre-v0.17 plakat.
+    #[arg(long = "no-metadata", default_value_t = false)]
+    pub no_metadata: bool,
+
+    /// v0.17 phase 4: with `--count N > 1`, also write a single
+    /// `plakat-grid-<base-seed>.png` combining all N outputs in a
+    /// near-square grid. Per-image PNGs are written as usual
+    /// alongside.
+    #[arg(long = "grid", default_value_t = false)]
+    pub grid: bool,
+
+    /// v0.17 phase 4: column count for `--grid`. Default is
+    /// `ceil(sqrt(count))` — 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-cols", value_name = "N")]
+    pub grid_cols: Option<usize>,
+
+    /// v0.17 phase 4: padding (px) between grid cells. Default 0
+    /// (flush). Higher values insert a white border between cells
+    /// for clearer per-cell separation. Ignored when `--grid` is
+    /// off.
+    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    pub grid_padding: u32,
+
+    /// v0.17 phase D: write a low-cost latent-projection preview
+    /// PNG every N denoise steps so you can monitor progress
+    /// without waiting for the full run. Output goes to
+    /// `<out>/plakat-<seed>-preview.png` and is overwritten each
+    /// step. `0` disables. Uses the community latent → RGB
+    /// projection (microseconds — no VAE decode), so the preview
+    /// adds no meaningful runtime cost. SD 1.5 / 2.1 / SDXL /
+    /// SDXL-Turbo only; Flux / SD3 ignore.
+    #[arg(long = "preview-every", default_value_t = 0, value_name = "N")]
+    pub preview_every: u32,
+
+    /// v0.17 phase D: longer-side dimension (px) of the preview
+    /// PNG. Default 384. Smaller = faster writes; larger = more
+    /// detail in the live preview.
+    #[arg(long = "preview-size", default_value_t = 384, value_name = "PX")]
+    pub preview_size: u32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -511,32 +558,59 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // documented defaults — `steps == 28` and `guidance == 7.5`).
     if let Some(fast) = args.fast.take() {
         let preset = fast.0;
-        // Bail loud on incompatible model targets. Detection mirrors
-        // t2i::Variant::detect so the failure mode is consistent.
         let m = args.model.to_lowercase();
-        if !m.contains("flux") {
-            anyhow::bail!(
-                "--fast {} requires a Flux model (got --model {:?}). Hyper-FLUX / \
-                 FLUX-Turbo LoRAs are Flux-family only.",
-                preset.name,
-                args.model
-            );
-        }
-        if m.contains("fill") {
-            anyhow::bail!(
-                "--fast {} doesn't compose with flux-fill-dev. Use the standard \
-                 flux-dev model with the distillation LoRA, then handle inpainting \
-                 separately.",
-                preset.name
-            );
-        }
-        if m.contains("nf4") {
-            anyhow::bail!(
-                "--fast {} bails on NF4 — NF4 + LoRA composition isn't wired \
-                 (deferred from v0.14 phase 2). Use --model flux-dev or \
-                 flux-dev-gguf with the preset.",
-                preset.name
-            );
+        match preset.target {
+            crate::pipelines::flux_fast::FastTarget::Flux => {
+                if !m.contains("flux") {
+                    anyhow::bail!(
+                        "--fast {} requires a Flux model (got --model {:?}). \
+                         Hyper-FLUX / FLUX-Turbo LoRAs are Flux-family only.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if m.contains("fill") {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with flux-fill-dev. Use the \
+                         standard flux-dev model with the distillation LoRA, then \
+                         handle inpainting separately.",
+                        preset.name
+                    );
+                }
+                if m.contains("nf4") {
+                    anyhow::bail!(
+                        "--fast {} bails on NF4 — NF4 + LoRA composition isn't \
+                         wired. Use --model flux-dev or flux-dev-gguf with the \
+                         preset.",
+                        preset.name
+                    );
+                }
+            }
+            crate::pipelines::flux_fast::FastTarget::Sdxl => {
+                // SDXL family covers both `sdxl` and `sdxl-turbo`.
+                let is_sdxl = m == "sdxl"
+                    || m == "sdxl-turbo"
+                    || m.contains("xl-base")
+                    || m.contains("sdxl-base")
+                    || m.contains("stable-diffusion-xl");
+                if !is_sdxl {
+                    anyhow::bail!(
+                        "--fast {} (Latent Consistency LoRA for SDXL) requires an \
+                         SDXL model (got --model {:?}). Use --model sdxl or \
+                         --model sdxl-turbo.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if args.refiner {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with the SDXL refiner — the \
+                         refiner runs a non-LCM scheduler on the late steps which \
+                         conflicts with the 4-step LCM schedule. Drop --refiner.",
+                        preset.name
+                    );
+                }
+            }
         }
         // Prepend so the preset LoRA loads BEFORE user LoRAs — user
         // LoRAs override at merge time when keys collide.
@@ -549,9 +623,29 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         if (args.guidance - 7.5).abs() < f64::EPSILON {
             args.guidance = preset.guidance;
         }
+        // v0.17 phase I: presets that target a specific scheduler
+        // (e.g. LCM-LoRA → `lcm`) override the user's --scheduler
+        // when it's still the default. Explicit non-default
+        // `--scheduler` values stay honoured — power users know
+        // what they're doing.
+        if let Some(sched_hint) = preset.scheduler_hint {
+            use crate::pipelines::scheduler::SchedulerKind;
+            use std::str::FromStr;
+            if matches!(args.scheduler, SchedulerKind::Default) {
+                args.scheduler = SchedulerKind::from_str(sched_hint)
+                    .unwrap_or(SchedulerKind::Default);
+            }
+        }
         crate::ui::progress::println(&format!(
-            "  fast preset '{}': +{} LoRA, steps={}, guidance={}",
-            preset.name, preset.lora_repo, args.steps, args.guidance
+            "  fast preset '{}': +{} LoRA, steps={}, guidance={}{}",
+            preset.name,
+            preset.lora_repo,
+            args.steps,
+            args.guidance,
+            preset
+                .scheduler_hint
+                .map(|s| format!(", scheduler={s}"))
+                .unwrap_or_default(),
         ));
     }
 
@@ -688,6 +782,19 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // v0.16 phase 9: TI specs. sd_core::load bails loud when
         // these are non-empty (candle vocab_size API blocker).
         embeddings: args.embeddings,
+        // v0.17 phase 3: embed A1111-compatible PNG metadata +
+        // write a sibling JSON sidecar. Default on; --no-metadata
+        // flips it off.
+        write_metadata: !args.no_metadata,
+        // v0.17 phase D: latent-projection preview cadence. `0`
+        // (default) → no previews; downstream pipeline treats
+        // `Some(0)` the same way.
+        preview_every: if args.preview_every > 0 {
+            Some(args.preview_every)
+        } else {
+            None
+        },
+        preview_size: Some(args.preview_size),
     })
     .await?;
 
@@ -911,6 +1018,37 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             shared_core,
         )
         .await?;
+    }
+
+    // v0.17 phase 4: --grid bundles the per-image outputs into one
+    // shareable grid PNG. Runs LAST so artefacts + blend + face
+    // refinement are all reflected in the grid cells. No-op when
+    // --count is 1 (a 1-cell "grid" is just a copy).
+    if args.grid && count > 1 {
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if files.len() >= 2 {
+            let base_seed = seed.unwrap_or(0);
+            let grid_path = out_dir.join(format!("plakat-grid-{base_seed}.png"));
+            let spin = crate::ui::progress::spinner(&format!(
+                "Composing {}-cell grid", files.len()
+            ));
+            let (gw, gh) = crate::imaging::grid::write_grid(
+                &files,
+                &grid_path,
+                args.grid_cols,
+                args.grid_padding,
+            )?;
+            spin.finish_with_message(format!(
+                "✓ grid {gw}x{gh} → {}",
+                grid_path.display()
+            ));
+        }
     }
     Ok(())
 }

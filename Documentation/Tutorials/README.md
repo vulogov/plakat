@@ -81,6 +81,12 @@ If you're new to plakat, work through these in order:
     cache layout, `CIVITAI_API_KEY` setup for gated assets, and
     inspecting downloaded Textual Inversion files.
 
+11. [`ANIMATE_TUTORIAL.md`](ANIMATE_TUTORIAL.md) — prompt-morph
+    animations via `plakat animate`. Linearly interpolate the
+    CLIP encoding between two prompts to produce a smooth
+    N-frame sequence at a fixed seed. Optional GIF bundling.
+    SD 1.5 / SD 2.1 only in this release.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific

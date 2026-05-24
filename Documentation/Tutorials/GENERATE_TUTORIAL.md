@@ -207,6 +207,34 @@ produces solid output.
 (See `STYLES_TUTORIAL.md` for a higher-level way of applying styles
 without picking individual LoRAs.)
 
+### Pulling LoRAs straight from Civitai
+
+Instead of `plakat civitai download <ID>` + copy the printed
+path, `--lora` accepts a `civitai:` shorthand that downloads on
+first use and caches for every subsequent run:
+
+```bash
+# Model ID → latest version, primary file
+plakat generate "..." --model sd15 --lora civitai:12345
+
+# Model ID + scale
+plakat generate "..." --model sd15 --lora civitai:12345:0.7
+
+# Pin to a specific older version
+plakat generate "..." --model sd15 --lora civitai-version:67890:0.6
+
+# Pick a non-primary file inside the version
+plakat generate "..." --model sd15 \
+    --lora "civitai:12345#alternate-weights.safetensors:0.5"
+```
+
+The first run downloads to
+`<plakat-cache>/civitai/model-<id>/version-<id>/`; subsequent runs
+short-circuit on the cache. Gated assets require
+`CIVITAI_API_KEY` from
+<https://civitai.com/user/account> — the
+plain `--lora civitai:...` works for public LoRAs without one.
+
 ---
 
 ## 8. From one-off commands to scenarios
@@ -317,6 +345,37 @@ plakat scenario my_first_scenario.hjson
 ```
 
 This generates 2 images (one per task).
+
+### Resuming a crashed / interrupted scenario
+
+When a scenario with many tasks crashes partway (or you Ctrl-C
+it), restart with `--resume` to pick up where it stopped:
+
+```bash
+plakat scenario my_big_scenario.hjson --resume
+#   ↺ task1: all 4 output(s) already on disk — skipping
+#   ↺ task2: all 4 output(s) already on disk — skipping
+#   ▶ task3: generating ...
+```
+
+A task counts as "already done" when **every** expected output
+PNG exists at the expected seed under the task's output
+directory. Per-task seed numbering is reproducible across runs
+(it derives from the scenario `seed:` + task index, not from
+random state), so re-running the scenario lands the surviving
+tasks on the same filenames the first run would have produced.
+
+If you instead want to **regenerate everything from scratch**
+(say, you re-trained a LoRA and want fresh outputs at the same
+seeds), pass `--force`:
+
+```bash
+plakat scenario my_big_scenario.hjson --force
+```
+
+`--resume` and `--force` are mutually exclusive — clap rejects
+both at once. Neither flag preserves the default behaviour:
+existing files get silently overwritten.
 
 ### What's the enhancer for?
 
@@ -456,7 +515,52 @@ are skipped. Names accept letters, digits, `-`, and `_` (so
 Wildcards compose with the prompt enhancer (`--enhance`) — expansion
 runs first, then the enhancer sees the concrete prompt.
 
-## 13. CLIP-skip (+, SD 1.5 / SD 2.1)
+## 13. Attention emphasis: `(red:1.2)` / `[blue]` (SD-family)
+
+plakat accepts the Auto1111 / NovelAI prompt grammar — the same
+`(emphasis)` / `[de-emphasis]` syntax that every Civitai LoRA card
+uses in its example prompts. The model gets a strong directional
+nudge at the tokens you bracket, without your needing to retrain
+or pick different schedulers.
+
+| Syntax | Effect |
+|---|---|
+| `(token)` | Boost weight by `×1.1`. Stack with nesting. |
+| `((token))` | `×1.21` (1.1 × 1.1). |
+| `(token:1.5)` | Boost weight to `×1.5` exactly. |
+| `[token]` | Reduce weight by `×1/1.1 ≈ 0.909`. |
+| `[[token]]` | `×0.826`. |
+| `[token:0.6]` | Set weight to `×0.6` exactly. |
+| `\(`, `\)`, `\[`, `\]` | Literal punctuation — escape when you actually mean the character. |
+
+```bash
+# Push the model toward "red" while gently down-weighting "small"
+plakat generate "a (red:1.4) fox in a [small] meadow" \
+    --model sd15
+
+# Realistic Civitai-style prompt with multiple emphases
+plakat generate \
+    "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
+    --model sd15
+```
+
+Implementation: the parser splits your prompt into weighted
+segments, each segment tokenizes independently, and after the CLIP
+forward pass plakat scales each token's hidden-state row by its
+segment weight. The pooled CLIP-G output that SDXL feeds into
+`add_embedding` is left unweighted (pooling collapses to one row,
+so per-token weights have no meaningful target there).
+
+**Compatibility**:
+- SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux + SD3 use
+  T5 + CLIP-pooled; the weighting hook isn't wired for them in
+  this release.
+- Unbalanced parens (`a ( red fox` with no closing `)`) pass
+  through as literal characters — no error, just no emphasis.
+- Composes with `--clip-skip`, `--lora`, wildcards, ADetailer,
+  Hires fix.
+
+## 14. CLIP-skip (SD 1.5 / SD 2.1)
 
 The Auto1111 / NovelAI community default for SD 1.5 anime checkpoints
 (Anything-v3, AnyLoRA, ...) is to read the **penultimate** CLIP
@@ -476,7 +580,7 @@ penultimate by training default — plakat logs a warning if you pass
 `--clip-skip > 1` on SDXL). Flux / SD3 don't use this flag at all
 (T5 + CLIP-pooled architecture).
 
-## 14. ADetailer — face refinement (+, SD-family)
+## 15. ADetailer — face refinement (SD-family)
 
 SD/SDXL often produce lo-fi faces at non-face working resolutions
 (small face in a big canvas — the model only had ~64² of latent for
@@ -535,7 +639,7 @@ Without one of these, `--adetailer` bails loud.
 - Composes with `--lora`, `--scheduler`, `--seed`. The face pass
  reuses the t2i SdCore so there's no extra model load.
 
-## 15. Browsing Civitai
+## 16. Browsing Civitai
 
 [Civitai](https://civitai.com) is the major community hub for SD
 checkpoints, LoRAs, embeddings, and ControlNet variants. plakat
@@ -593,7 +697,7 @@ plakat generate "..." --model sd15 \
 <https://civitai.com/user/account> (API Keys section). Public
 models work without one.
 
-## 16. Hires fix — escape the trained-resolution ceiling
+## 17. Hires fix — escape the trained-resolution ceiling
 
 SD 1.5 was trained at 512², SDXL at 1024². Sampling much past
 those introduces the "multi-head problem": the model loses track of
@@ -651,7 +755,7 @@ plakat generate "a vintage travel poster of Tokyo at night" \
  --adetailer
 ```
 
-## 17. Textual Inversion (partial)
+## 18. Textual Inversion (partial)
 
 Textual Inversion (TI, sometimes called "embeddings") learns new
 "words" by training one or more embedding vectors against a small
@@ -690,7 +794,128 @@ In the meantime:
  conversion script](https://github.com/kohya-ss/sd-scripts) and
  use as a LoRA.
 
-## 18. Common issues
+## 19. Grid output — bundle a sweep into one image
+
+With `--count N > 1`, `--grid` writes an additional
+`plakat-grid-<base-seed>.png` next to the per-image files,
+combining the N outputs in a near-square layout. Great for
+prompt-iteration sweeps where you want to see all variations at
+a glance.
+
+```bash
+plakat generate "a fox in {tall|short} grass at {dawn|noon|dusk}" \
+    --wildcard-dir wildcards/ --count 6 --seed 1000 --grid
+# → out/plakat-1000.png ... out/plakat-1005.png
+# → out/plakat-grid-1000.png   (3×2 layout)
+```
+
+Knobs:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--grid` | off | Enable grid composition. No-op when `--count == 1`. |
+| `--grid-cols N` | `ceil(sqrt(count))` | Force column count. 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4. |
+| `--grid-padding PX` | `0` | White-padding strip between cells. Higher = clearer cell separation; `0` = flush. |
+
+The grid runs **last** in the post-processing pipeline so any
+artefacts, ADetailer face refinement, or Hires-fix upscaling
+land in the per-image files first and are reflected in the grid
+cells.
+
+## 20. Reproducibility — PNG metadata + JSON sidecar
+
+Every `plakat generate` output ships with an A1111-compatible
+`parameters` PNG tEXt chunk plus a sibling `<filename>.json`
+sidecar. The chunk carries the recipe in the format any image
+viewer in the SD ecosystem recognises — Auto1111 Web UI, Civitai
+image uploader, ComfyUI drag-to-load, sd-prompt-reader, and the
+various browser extensions all surface it inline.
+
+```text
+a fox in tall grass
+Negative prompt: blurry
+Steps: 28, Sampler: euler-a, CFG scale: 7.5, Seed: 42, Size: 512x512, Model: sd15, Generator: plakat 0.17.0
+```
+
+The JSON sidecar carries the same info in structured form — the
+full LoRA list, ControlNet stack, refiner config, etc. Use it
+when scripting around the recipe (e.g. "regenerate every PNG in
+this directory at higher steps"):
+
+```bash
+plakat generate "a fox in tall grass" --seed 42
+# → ./out/plakat-42.png
+# → ./out/plakat-42.json    (sibling JSON sidecar)
+
+cat ./out/plakat-42.json
+# {
+#   "prompt": "a fox in tall grass",
+#   "model": "sd15",
+#   "seed": 42,
+#   "steps": 28,
+#   ...
+# }
+```
+
+To opt out entirely (e.g. you're shipping outputs externally and
+don't want the recipe embedded), pass `--no-metadata`:
+
+```bash
+plakat generate "a fox" --no-metadata
+# → ./out/plakat-<seed>.png   (no tEXt chunk, no sidecar)
+```
+
+## 21. Live preview during denoise
+
+Long denoise runs are a black box — you click `plakat generate`
+and wait. `--preview-every N` writes a low-cost latent
+projection to `plakat-<seed>-preview.png` every N steps so you
+can watch progress in any auto-refreshing image viewer.
+
+```bash
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sd15 --steps 28 --preview-every 4
+# → ./out/plakat-<seed>-preview.png   (updated at steps 4, 8, 12, ...)
+# → ./out/plakat-<seed>.png            (final, after step 28)
+```
+
+Knobs:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--preview-every N` | `0` (off) | Write a preview every N denoise steps. `1` is per-step (lots of file churn); `4`-`8` is the typical setting. |
+| `--preview-size PX` | `384` | Longer-side dimension of the preview PNG. Smaller = faster writes; larger = more detail visible. |
+
+**How it works**: the preview is **not** a full VAE decode (that
+would add hundreds of milliseconds per write). Instead, plakat
+projects the partial latent through a community-derived
+4-channel → RGB matrix (the same one A1111 and ComfyUI use for
+their "approx" previews). Microseconds per write — adds no
+meaningful runtime cost to the generation.
+
+**Trade-off**: colours are recognisable but slightly off, edges
+are blurry vs the final VAE-decoded output. Good enough for "is
+the generation going the right direction?" feedback. The final
+saved PNG always uses the full VAE decode.
+
+**Compatibility**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only.
+Flux and SD3 use 16-channel latents with a different projection
+matrix that isn't wired in this release — they ignore
+`--preview-every`. The final output PNG is unaffected.
+
+**Tip for live monitoring**:
+
+```bash
+# Linux / WSL — feh auto-reloads when the file changes
+feh --reload 1 ./out/plakat-42-preview.png &
+plakat generate "..." --seed 42 --preview-every 2 --steps 50
+
+# macOS — Quick Look updates if you keep it open
+qlmanage -p ./out/plakat-42-preview.png &
+plakat generate "..." --seed 42 --preview-every 2 --steps 50
+```
+
+## 22. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

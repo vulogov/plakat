@@ -238,12 +238,14 @@ first `frac×N` steps; the refiner UNet handles the remaining
 SDXL / SDXL-Turbo only — errors on SD 1.5/2.1 or Flux. Adds **~6 GB
 download** for the refiner UNet on first run.
 
-**Known limitation in plakat's refiner port** — candle 0.8's UNet has no
-`add_embedding` projection, so the refiner's pooled-CLIP-G + time_ids
-micro-conditioning is unused. The refiner still runs and produces
-recognizably better output than base alone, but the gap to the diffusers
-reference is real (~70–90% of reference quality). The same gap already
-applies to plakat's base SDXL.
+**Refiner micro-conditioning** — the refiner's
+`addition_embed_type: text_time` (pooled CLIP-G + 5-id time_ids:
+orig_size, crops_coords_top_left, aesthetic_score) is fully
+wired via plakat's vendored `SdxlUNet2DConditionModel`. CFG
+splits the aesthetic_score across the [cond, uncond] branches
+(pos = 6.0, neg = 2.5 by default) so the refiner pulls toward
+higher-aesthetic outputs — matches diffusers' reference
+recipe.
 
 `--refiner` and `--refine` are independent — you can stack both (refiner
 for the last 20%, then a polish pass on top).
@@ -350,6 +352,40 @@ particular).
 
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
+
+#### `--no-metadata` (default off)
+
+Skip the Auto1111-compatible PNG `parameters` tEXt chunk + the
+sibling `<filename>.json` sidecar. By default every output ships
+with the recipe (prompt, negative, seed, sampler, CFG, model,
+LoRAs, ControlNet stack, refiner config) embedded so the standard
+viewers (A1111 Web UI, Civitai upload, ComfyUI drag-to-load,
+sd-prompt-reader) surface it. Pass `--no-metadata` when you want
+anonymous PNGs.
+
+#### `--grid` / `--grid-cols <N>` / `--grid-padding <PX>` (default off / sqrt / 0)
+
+When `--count N > 1`, also write a single
+`plakat-grid-<base-seed>.png` combining all N outputs in a
+near-square grid. Per-image PNGs are still written individually.
+`--grid-cols` overrides the default `ceil(sqrt(count))`;
+`--grid-padding` inserts a white separator between cells. The
+grid is composed AFTER artefact composite, ADetailer, and
+Hires-fix passes, so the cells reflect the final post-processed
+images.
+
+#### `--preview-every <N>` / `--preview-size <PX>` (default 0 / 384)
+
+Write a low-cost latent-projection preview PNG every N denoise
+steps so long runs aren't a black box. Output goes to
+`<out>/plakat-<seed>-preview.png` and is overwritten each
+update. `0` (default) disables the previews. The preview path
+uses the community 4-channel → RGB approximation
+(microseconds — no VAE decode), so previews add no meaningful
+runtime cost. SD 1.5 / 2.1 / SDXL / SDXL-Turbo only — Flux /
+SD3 use 16-channel latents with a different projection matrix
+not wired in this release. The final saved PNG always uses the
+full VAE decode regardless of `--preview-every`.
 
 ### Tiled hi-res generation
 
@@ -483,19 +519,30 @@ Caveats:
 ### `--fast <PRESET>`
 
 Bundles a published distillation LoRA + recommended step + guidance
-in one flag. Presets:
++ (where applicable) scheduler in one flag. Presets:
 
-* `hyper-8` — ByteDance Hyper-FLUX 8-step (CFG-free)
-* `hyper-16` — ByteDance Hyper-FLUX 16-step (CFG-free)
-* `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
+| Preset | Target | LoRA | Steps | Guidance | Scheduler |
+|---|---|---|---|---|---|
+| `hyper-8` | Flux | ByteDance Hyper-FLUX 8-step (CFG-free) | 8 | 1.0 | (default) |
+| `hyper-16` | Flux | ByteDance Hyper-FLUX 16-step (CFG-free) | 16 | 1.0 | (default) |
+| `turbo-alpha` | Flux | alimama-creative FLUX.1-Turbo-Alpha | 8 | 3.5 | (default) |
+| `lcm-sdxl` | SDXL | Latent Consistency LoRA for SDXL | 4 | 1.5 | `lcm` |
 
 ```bash
-plakat generate ".." --model flux-dev --fast hyper-8
+# Flux distillation — Hyper-FLUX 8-step
+plakat generate "..." --model flux-dev --fast hyper-8
+
+# SDXL Latent Consistency — 4-step inference, ~5x speedup over base SDXL
+plakat generate "..." --model sdxl --fast lcm-sdxl
 ```
 
-The preset LoRA gets prepended to `--loras`; `--steps` / `--guidance`
-are overridden **only** when you didn't pass them explicitly.
-Requires a non-Fill Flux model.
+The preset LoRA gets prepended to `--loras`; `--steps`,
+`--guidance`, and (for `lcm-sdxl`) `--scheduler` are overridden
+**only** when you didn't pass them explicitly. Flux presets
+require a non-Fill Flux model; `lcm-sdxl` requires an SDXL /
+SDXL-Turbo model and bails if `--refiner` is also set (the
+refiner's late-step non-LCM scheduler conflicts with the 4-step
+LCM schedule).
 
 ### Wildcards
 
@@ -528,6 +575,32 @@ plakat generate "a __warm-colors__ fox" \
 The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
+
+### Attention emphasis (SD-family)
+
+A1111 / NovelAI-style prompt grammar — used by virtually every
+Civitai LoRA card. plakat parses these inline and applies the
+per-token weight to the CLIP hidden state (per-row scale on the
+penultimate output, before cross-attention).
+
+| Syntax | Weight |
+|---|---|
+| `(token)` | `× 1.1` (default emphasis). |
+| `((token))` | `× 1.21` (nested). |
+| `(token:1.5)` | `× 1.5` (explicit). |
+| `[token]` | `× 1/1.1 ≈ 0.909` (default de-emphasis). |
+| `[token:0.6]` | `× 0.6` (explicit). |
+| `\(`, `\)`, `\[`, `\]` | escaped — literal punctuation. |
+
+```bash
+plakat generate \
+    "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
+    --model sd15
+```
+
+SD 1.5 / SD 2.1 / SDXL only. Flux + SD3 ignore (T5-based encoders
+don't share the CLIP per-token weighting hook). Unbalanced parens
+are treated as literal characters — no error, just no emphasis.
 
 ### CLIP-skip (SD 1.5 / SD 2.1)
 
@@ -1034,6 +1107,42 @@ plakat embedding info ./my-style.safetensors
 plakat embedding info sd-concepts-library/cat-toy
 plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
 ```
+
+---
+
+## `plakat animate`
+
+Frame-by-frame prompt-morph animation. Encodes two prompts
+through CLIP-L once, then runs the denoise loop N times with
+linearly-lerped hidden states. The shared seed keeps the initial
+noise constant so the morph is smooth rather than flickery.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from <STR>` | (required) | Frame 0's prompt. |
+| `--to <STR>` | (required) | Frame N-1's prompt. |
+| `--frames <N>` | `16` | Frame count (≥ 2). |
+| `--seed <U64>` | (random) | Shared seed for every frame. Locking it produces smooth morphs. |
+| `--model <ALIAS>` | `sd15` | SD-family only. SDXL / Flux / SD3 bail loud. |
+| `--size <WxH>` | `512x512` | Output dims; must be /8. |
+| `--steps <N>` | `20` | Steps per frame. Lower OK for animations. |
+| `--guidance <F>` | `7.5` | CFG, shared across frames. |
+| `--negative <STR>` | `""` | Negative prompt, shared. |
+| `--scheduler <KIND>` | `default` | Same options as `plakat generate`. |
+| `--out <DIR>` | `./out` | Frames land as `frame-NNNN.png`. |
+| `--gif` | off | Bundle frames into `<out>/animation.gif`. |
+| `--gif-delay-ms <N>` | `100` | GIF frame delay. 100=10fps, 41≈24fps, 33≈30fps. |
+
+```bash
+plakat animate \
+    --from "a photo of a fox in a meadow" \
+    --to "a photo of a cat in a meadow" \
+    --frames 24 --seed 42 \
+    --model sd15 --out ./fox_to_cat --gif
+```
+
+Full walkthrough + composition tips:
+[`Documentation/Tutorials/ANIMATE_TUTORIAL.md`](Tutorials/ANIMATE_TUTORIAL.md).
 
 ---
 

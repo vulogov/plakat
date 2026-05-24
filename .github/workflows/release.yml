@@ -230,8 +230,15 @@ jobs:
         run: |
           strip "target/${{ matrix.target }}/release/plakat${{ matrix.bin_suffix }}"
 
+      # CUDA-feature builds dynamically link `libcuda.so.1` (the NVIDIA
+      # driver shim), which is shipped by the driver — NOT the toolkit.
+      # GitHub-hosted runners install the SDK but have no GPU and no
+      # driver, so the binary fails to load before it can print --version.
+      # The binary is correct for any host that does have NVIDIA drivers;
+      # we just can't validate it here. (candle 0.10 resolves libcuda
+      # eagerly at startup, which is what newly tripped this in v0.17.)
       - name: Smoke-test --version
-        if: '!matrix.cross_linux'
+        if: '!matrix.cross_linux && !contains(matrix.features, ''cuda'')'
         shell: bash
         run: |
           "target/${{ matrix.target }}/release/plakat${{ matrix.bin_suffix }}" --version
