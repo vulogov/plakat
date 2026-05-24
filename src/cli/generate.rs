@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use candle_core::Device;
 use clap::Args as ClapArgs;
 
@@ -57,6 +57,25 @@ pub struct GenerateArgs {
     /// Optional prompt enhancer: deepseek | gemini.
     #[arg(long)]
     pub enhance: Option<String>,
+
+    /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
+    /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
+    /// works without this flag. When set, file wildcards in the
+    /// prompt and negative prompt resolve to a random non-empty,
+    /// non-comment line. Wildcard RNG is seeded from `--seed` when
+    /// set (reproducible expansion) and from the OS RNG otherwise.
+    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    pub wildcard_dir: Option<PathBuf>,
+
+    /// v0.16 phase 5: CLIP-skip. `1` (default) uses the last hidden
+    /// state — diffusers default, byte-identical to pre-v0.16 output.
+    /// `2` uses the penultimate hidden state — the Auto1111 / NovelAI
+    /// community default for SD 1.5 anime checkpoints (Anything-v3,
+    /// AnyLoRA, ...). SD 1.5 / SD 2.1 only — SDXL ignores with a
+    /// warning (already uses penultimate by training default).
+    /// Flux / SD3 ignore entirely.
+    #[arg(long = "clip-skip", default_value_t = 1, value_name = "N")]
+    pub clip_skip: usize,
 
     /// Output directory.
     #[arg(long, default_value = "./out")]
@@ -325,19 +344,139 @@ pub struct GenerateArgs {
     #[arg(long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 
-    /// **v0.15 phase 4**: conditioning map for the BFL Flux "concept"
+    /// Pre-rendered conditioning map for the BFL Flux "concept"
     /// checkpoints (`--model flux-canny-dev` or `flux-depth-dev`). The
-    /// path is a pre-rendered canny edge map (for Canny-dev) or depth
-    /// map (for Depth-dev) at the target output resolution. The image
-    /// is VAE-encoded and concat'd onto the noise tokens at every
+    /// path is a canny edge map (for Canny-dev) or depth map (for
+    /// Depth-dev) at the target output resolution. The image is
+    /// VAE-encoded and concat'd onto the noise tokens at every
     /// denoise step — the model's `img_in` Linear is widened to
     /// 128 channels to consume it.
     ///
-    /// Required for the concept variants; ignored on other models.
-    /// Auto-annotation (synthesise the conditioning from a photo) is
-    /// not yet wired — pass a pre-rendered map.
-    #[arg(long = "concept-image", value_name = "PATH")]
+    /// Required for the concept variants when `--concept-from` isn't
+    /// supplied; ignored on other models. Mutually exclusive with
+    /// `--concept-from`.
+    #[arg(
+        long = "concept-image",
+        value_name = "PATH",
+        conflicts_with = "concept_from"
+    )]
     pub concept_image: Option<PathBuf>,
+
+    /// Auto-annotate this source photo into the conditioning map the
+    /// loaded concept variant expects. With `--model flux-canny-dev`
+    /// the source is run through the canny edge detector; with
+    /// `--model flux-depth-dev` it's run through Depth-Anything-V2.
+    /// The annotated PNG is written to a temporary file and fed to
+    /// the model the same way `--concept-image` would.
+    ///
+    /// Mutually exclusive with `--concept-image`. Only valid with
+    /// `--model flux-canny-dev` / `flux-depth-dev`.
+    #[arg(long = "concept-from", value_name = "PATH")]
+    pub concept_from: Option<PathBuf>,
+
+    /// v0.16 phase 6: enable ADetailer-style face refinement. After
+    /// the main t2i pass, plakat runs SCRFD on each output image,
+    /// then for each detected face: crops an expanded bounding box,
+    /// runs img2img on the crop with the same SD model + LoRAs, and
+    /// feather-composites the refined crop back onto the original.
+    /// Needs SCRFD weights configured via `PLAKAT_SCRFD_WEIGHTS` or
+    /// `PLAKAT_SCRFD_HF` (same env vars the FaceID portrait flow
+    /// uses). SD 1.5 / SDXL only — Flux / SD3 bail loud.
+    #[arg(long = "adetailer", default_value_t = false)]
+    pub adetailer: bool,
+
+    /// v0.16 phase 6: img2img strength for the face refinement pass.
+    /// `0.4` (default) preserves identity + colour, only crisps
+    /// detail. `0.6+` can change the face significantly.
+    #[arg(long = "adetailer-strength", default_value_t = 0.4, value_name = "F")]
+    pub adetailer_strength: f32,
+
+    /// v0.16 phase 6: bbox expansion factor for the face crop.
+    /// `0.25` (default) adds 25% on each side — gives the inpaint
+    /// pass enough surrounding context to match colour + skin tone.
+    #[arg(long = "adetailer-padding", default_value_t = 0.25, value_name = "F")]
+    pub adetailer_padding: f32,
+
+    /// v0.16 phase 6: feather fraction for the composite. `0.25`
+    /// fades the outer 25% of the bbox from full opacity → 0 at the
+    /// edge. Larger feather = softer seam, smaller = sharper detail
+    /// near the edge but more visible boundary.
+    #[arg(long = "adetailer-feather", default_value_t = 0.25, value_name = "F")]
+    pub adetailer_feather: f32,
+
+    /// v0.16 phase 6: SCRFD confidence threshold. Faces below this
+    /// score are skipped. `0.5` is the InsightFace deploy default.
+    #[arg(long = "adetailer-confidence", default_value_t = 0.5, value_name = "F")]
+    pub adetailer_confidence: f32,
+
+    /// v0.16 phase 6: working resolution for the face img2img pass
+    /// (square, snapped to multiples of 8). `512` (default) suits
+    /// SD 1.5; `1024` matches SDXL. Larger = more VRAM + slower per
+    /// face.
+    #[arg(long = "adetailer-size", default_value_t = 512, value_name = "PX")]
+    pub adetailer_size: u32,
+
+    /// v0.16 phase 6: optional prompt override for the face pass.
+    /// When unset, plakat uses a generic "detailed face, sharp
+    /// focus, high quality". Override when you want a specific style
+    /// (e.g. "ethereal portrait, soft lighting").
+    #[arg(long = "adetailer-prompt", value_name = "STR")]
+    pub adetailer_prompt: Option<String>,
+
+    /// v0.16 phase 8: enable Hires fix workflow. After the t2i pass,
+    /// upscales each output by `--hires-scale` and runs img2img at
+    /// `--hires-strength` to recover small-scale detail. Standard
+    /// mitigation for the "multi-head problem" when sampling SD 1.5
+    /// or SDXL above their trained resolution. SD-family only;
+    /// Flux / SD3 bail loud.
+    #[arg(long = "hires-fix", default_value_t = false)]
+    pub hires_fix: bool,
+
+    /// v0.16 phase 8: upscale factor for the hires-fix pass. `2.0`
+    /// (default) doubles each axis. Ignored for ML upscalers
+    /// (Real-ESRGAN) which use their native fixed scale (2× / 4×).
+    #[arg(long = "hires-scale", default_value_t = 2.0, value_name = "F")]
+    pub hires_scale: f32,
+
+    /// v0.16 phase 8: img2img strength on the upscaled image. `0.5`
+    /// (default) preserves the t2i composition + adds refinement;
+    /// `0.7+` allows more reinterpretation.
+    #[arg(long = "hires-strength", default_value_t = 0.5, value_name = "F")]
+    pub hires_strength: f32,
+
+    /// v0.16 phase 8: upscaler for the hires-fix pass. Accepts the
+    /// same tokens as `plakat upscale --method`:
+    /// `lanczos | bicubic | bilinear | nearest | real-esrgan-x2 |
+    /// real-esrgan-x4 | real-esrgan-anime-x4`.
+    /// Classical filters are fast + sharp; Real-ESRGAN reconstructs
+    /// high-frequency detail at extra compute cost.
+    #[arg(long = "hires-upscaler", default_value = "lanczos", value_name = "MODE")]
+    pub hires_upscaler: String,
+
+    /// v0.16 phase 8: optional step-count override for the refine
+    /// pass. Defaults to the main `--steps`.
+    #[arg(long = "hires-steps", value_name = "N")]
+    pub hires_steps: Option<usize>,
+
+    /// v0.16 phase 9: Textual Inversion (embedding) spec. Repeatable.
+    /// Format: `PATH_OR_REPO[:trigger][:scale]`.
+    ///
+    /// Examples:
+    ///   `--embedding ./my-style.safetensors`
+    ///   `--embedding ./my-style.safetensors:custom-trigger`
+    ///   `--embedding ./my-style.safetensors:custom-trigger:0.7`
+    ///   `--embedding sd-concepts-library/cat-toy`
+    ///
+    /// SD 1.5 / SD 2.1 only — SDXL dual-encoder TIs bail loud in
+    /// the parser. Use `plakat embedding info PATH` to inspect a
+    /// TI file's trigger word + dims before generating.
+    ///
+    /// **Status**: parser + merger ship; runtime injection is gated
+    /// by candle 0.8's private `clip::Config.vocab_size` (sd_core
+    /// bails loud when set). Wiring lands alongside a vendored
+    /// CLIP path in a follow-up phase.
+    #[arg(long = "embedding", value_name = "SPEC")]
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -346,6 +485,12 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     if args.style_ref.is_some() || args.style.is_some() {
         apply_style(&mut args, &device).await?;
     }
+
+    // v0.16 phase 5: wildcard expansion. Runs BEFORE the enhancer
+    // so the enhancer sees a concrete prompt — `{red|blue}` →
+    // `red` first, then "improve this prompt" works. The wildcard
+    // RNG is seeded from `--seed` for reproducibility when set.
+    expand_prompt_wildcards(&mut args)?;
 
     if let Some(provider) = args.enhance.clone() {
         let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
@@ -409,6 +554,69 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             preset.name, preset.lora_repo, args.steps, args.guidance
         ));
     }
+
+    // v0.16 phase 1: auto-annotation for the Flux "concept" variants.
+    // When `--concept-from PATH` is set on `--model flux-canny-dev` /
+    // `flux-depth-dev`, run the matching annotator (canny or depth)
+    // on the source photo, write the result to a tempdir PNG, and
+    // hand that path to the downstream pipeline the same way
+    // `--concept-image` would.
+    //
+    // The tempdir must outlive the t2i::run call (the pipeline reads
+    // the file inside `Pipeline::generate`), so we hold it in
+    // `_concept_anno_tmp` for the rest of this function.
+    let _concept_anno_tmp = if let Some(src) = args.concept_from.as_ref() {
+        use crate::pipelines::controlnet::ControlKind;
+        use crate::pipelines::t2i::Variant as TVariant;
+        let variant = TVariant::detect(&args.model);
+        if !variant.is_flux_concept() {
+            anyhow::bail!(
+                "--concept-from requires a Flux concept variant (--model \
+                 flux-canny-dev or flux-depth-dev), got --model {:?}",
+                args.model
+            );
+        }
+        // Resolve target size: explicit --size wins; otherwise default
+        // to 1024² (BFL's reference resolution for the concept models).
+        let (anno_w, anno_h) = match &args.size {
+            Some(sz) => (sz.w, sz.h),
+            None => (1024, 1024),
+        };
+        // Pick the kind that matches the loaded variant. Canny-dev
+        // wants edges; Depth-dev wants depth.
+        let kind = if matches!(variant, TVariant::FluxCannyDev) {
+            ControlKind::Canny
+        } else {
+            ControlKind::Depth
+        };
+        let anno_dtype = if matches!(device, Device::Cpu) {
+            candle_core::DType::F32
+        } else {
+            candle_core::DType::BF16
+        };
+        let spin = crate::ui::progress::spinner(&format!(
+            "Auto-annotating concept-from with {kind:?}"
+        ));
+        let anno = crate::pipelines::controlnet_annotator::annotate(
+            kind, src, anno_w, anno_h, &device, anno_dtype,
+        )
+        .await?;
+        let tmp = tempfile::Builder::new()
+            .prefix("plakat-concept-anno-")
+            .tempdir()?;
+        let out_path = tmp.path().join(format!("concept-{}.png", kind.slug()));
+        crate::pipelines::t2i::write_annotator_tensor_as_png(&anno, &out_path)?;
+        spin.finish_with_message(format!(
+            "✓ auto-annotated to {}", out_path.display()
+        ));
+        // Promote the auto-annotated PNG into `args.concept_image` so
+        // the downstream code path is identical to the pre-rendered
+        // case.
+        args.concept_image = Some(out_path);
+        Some(tmp)
+    } else {
+        None
+    };
 
     let out_dir = args.out.clone();
     let count = args.count;
@@ -475,6 +683,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         redux_images: args.redux_images,
         // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
         flux_concept_image: args.concept_image,
+        // v0.16 phase 5: CLIP-skip. SD 1.5 / SD 2.1 only.
+        clip_skip: args.clip_skip,
+        // v0.16 phase 9: TI specs. sd_core::load bails loud when
+        // these are non-empty (candle vocab_size API blocker).
+        embeddings: args.embeddings,
     })
     .await?;
 
@@ -501,6 +714,153 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     } else {
         None
     };
+
+    // v0.16 phase 8: Hires fix runs BEFORE ADetailer + artefacts so
+    // the face refinement and artefact placement operate on the
+    // upscaled image (refined faces, correctly-sized stamps).
+    //
+    // Gated against `--artefacts` / `--artefact-blend` since those
+    // pipelines reference the original t2i dimensions and would
+    // misplace stamps after the upscale changes dims. Drop one or
+    // the other — Auto1111 has similar mutual-exclusivity quirks.
+    if args.hires_fix {
+        let variant = crate::pipelines::t2i::Variant::detect(&model);
+        if variant.is_flux() || variant.is_sd3() {
+            anyhow::bail!(
+                "--hires-fix requires an SD-family model (SD 1.5 / SD 2.1 / SDXL / \
+                 SDXL-Turbo). Got --model {} which routes through the {} pipeline. \
+                 SD-family models can run the post-t2i hires-fix refine pass; Flux \
+                 / SD3 already have native tiled paths for high-res output \
+                 (--tiled).",
+                model,
+                if variant.is_flux() { "Flux" } else { "SD3" }
+            );
+        }
+        if !args.artefacts.is_empty() || args.artefact_blend {
+            anyhow::bail!(
+                "--hires-fix doesn't compose with --artefact / --artefact-blend \
+                 yet. The hires upscale changes image dims; the artefact compositor \
+                 reads them from the t2i config and would misplace stamps. Drop one \
+                 or the other."
+            );
+        }
+        let upscaler: crate::imaging::upscale::Method = args
+            .hires_upscaler
+            .parse()
+            .with_context(|| format!("parsing --hires-upscaler {:?}", args.hires_upscaler))?;
+        if upscaler.is_ml() && (args.hires_scale - 2.0).abs() > f32::EPSILON {
+            // Honour the user's choice silently if they're using a
+            // classical upscaler at non-2x. The ML branch is fixed by
+            // the model, so log when the user passed something else.
+            tracing::info!(
+                target: "plakat",
+                "--hires-scale {} ignored for ML upscaler (uses native {}×)",
+                args.hires_scale,
+                upscaler.native_scale().unwrap_or(0.0),
+            );
+        }
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if !files.is_empty() {
+            let hires_cfg = crate::pipelines::hires_fix::Config {
+                model: model.clone(),
+                loras: loras.clone(),
+                lora_scale,
+                prompt: prompt.clone(),
+                negative: negative.clone(),
+                scale: args.hires_scale,
+                upscaler,
+                strength: args.hires_strength,
+                steps: args.hires_steps.unwrap_or(steps),
+                guidance,
+                scheduler,
+                device: device.clone(),
+            };
+            let spin = crate::ui::progress::spinner(&format!(
+                "Hires fix over {} image(s)", files.len()
+            ));
+            let n = crate::pipelines::hires_fix::refine_files(
+                &hires_cfg,
+                &files,
+                shared_core.clone(),
+            )
+            .await?;
+            spin.finish_with_message(format!(
+                "✓ Hires fix refined {n} image(s)"
+            ));
+        }
+    }
+
+    // v0.16 phase 6: ADetailer-style face refinement runs BEFORE the
+    // artefact composite + blend. Order matters: face refinement is
+    // a content fix, artefacts are intentional overlays — running
+    // refinement first means the user's stamps land on faces that
+    // already look right. The shared_core gets Arc-cloned so the
+    // later artefact-blend pass can still consume it.
+    if args.adetailer {
+        let variant = crate::pipelines::t2i::Variant::detect(&model);
+        if variant.is_flux() || variant.is_sd3() {
+            anyhow::bail!(
+                "--adetailer requires an SD-family model (SD 1.5 / SD 2.1 / SDXL / \
+                 SDXL-Turbo). Got --model {} which routes through the {} pipeline. \
+                 SD-family models can run the post-t2i face refinement pass; \
+                 Flux / SD3 portrait support is a future phase.",
+                model,
+                if variant.is_flux() { "Flux" } else { "SD3" }
+            );
+        }
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if !files.is_empty() {
+            let adetailer_cfg = crate::pipelines::adetailer::Config {
+                model: model.clone(),
+                loras: loras.clone(),
+                lora_scale,
+                prompt: args.adetailer_prompt
+                    .clone()
+                    .unwrap_or_else(|| {
+                        "detailed face, sharp focus, high quality".to_string()
+                    }),
+                negative: if negative.is_empty() {
+                    "lowres, bad anatomy, blurry, deformed".to_string()
+                } else {
+                    negative.clone()
+                },
+                strength: args.adetailer_strength,
+                working_size: args.adetailer_size,
+                steps,
+                guidance,
+                scheduler,
+                confidence: args.adetailer_confidence,
+                padding: args.adetailer_padding,
+                feather: args.adetailer_feather,
+                device: device.clone(),
+            };
+            let spin = crate::ui::progress::spinner(&format!(
+                "Running ADetailer over {} image(s)", files.len()
+            ));
+            let n = crate::pipelines::adetailer::refine_files(
+                &adetailer_cfg,
+                &files,
+                shared_core.clone(),
+            )
+            .await?;
+            spin.finish_with_message(format!(
+                "✓ ADetailer refined {n} face(s) across {} image(s)",
+                files.len()
+            ));
+        }
+    }
 
     crate::artefacts::composite_onto_seed_range(
         &args.artefacts,
@@ -551,6 +911,39 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             shared_core,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// v0.16 phase 5: expand `{a|b|c}` and `__name__` wildcards in both
+/// the prompt and negative prompt. The wildcard RNG is seeded from
+/// `--seed` when set (so the same seed reproduces the same picks);
+/// otherwise OS entropy. `--wildcard-dir` is only required for
+/// file wildcards (inline `{a|b|c}` works without it).
+fn expand_prompt_wildcards(args: &mut GenerateArgs) -> Result<()> {
+    use rand::SeedableRng;
+    let dir = args.wildcard_dir.as_deref();
+    let mut rng: rand::rngs::StdRng = match args.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+    let new_prompt = crate::prompt::wildcards::expand(&args.prompt, dir, &mut rng)?;
+    if new_prompt != args.prompt {
+        tracing::info!(
+            target: "plakat",
+            "Wildcard-expanded prompt: {new_prompt}"
+        );
+        args.prompt = new_prompt;
+    }
+    if !args.negative.is_empty() {
+        let new_neg = crate::prompt::wildcards::expand(&args.negative, dir, &mut rng)?;
+        if new_neg != args.negative {
+            tracing::info!(
+                target: "plakat",
+                "Wildcard-expanded negative: {new_neg}"
+            );
+            args.negative = new_neg;
+        }
     }
     Ok(())
 }

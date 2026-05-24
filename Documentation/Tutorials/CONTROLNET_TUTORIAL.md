@@ -5,16 +5,16 @@ prompt still controls what appears in the image; the ControlNet
 conditioning controls **where** it appears and **how** it's
 arranged.
 
-This tutorial covers plakat's ControlNet integration in v0.10:
+This tutorial covers plakat's ControlNet integration:
 
 - Two conditioners: **depth** (Depth-Anything-V2) and **canny**
-  (Sobel + non-maximum suppression edge detection).
+ (Sobel + non-maximum suppression edge detection).
 - Two architectures: **SD 1.5** and **SDXL**. Auto-detected from
-  `--model`; no extra flag.
+ `--model`; no extra flag.
 - Three ways to supply the conditioning image:
-  `--control-image PATH` (pre-rendered), `--control-from PATH`
-  (auto-annotate any image), or — for `plakat img2img` — let
-  the source image auto-annotate by default.
+ `--control-image PATH` (pre-rendered), `--control-from PATH`
+ (auto-annotate any image), or — for `plakat img2img` — let
+ the source image auto-annotate by default.
 
 For the runnable companion, see
 [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/).
@@ -22,10 +22,10 @@ For the runnable companion, see
 ## Prerequisites
 
 - Finished [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md). You
-  should be comfortable with `--prompt`, `--seed`, `--steps`, and
-  the idea of starting from noise.
+ should be comfortable with `--prompt`, `--seed`, `--steps`, and
+ the idea of starting from noise.
 - A `plakat` binary with GPU support
-  ([`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md) tiers).
+ ([`APPLE_REQUIREMENTS.md`](../APPLE_REQUIREMENTS.md) tiers).
 
 ## 1. The mental model
 
@@ -54,7 +54,7 @@ Each conditioner answers a different question about your image:
 | **depth** | 3-D layout — where in the frame is the foreground, mid-distance, far distance. | "I want the subject to sit *here* in the frame, with a horizon line *there*." Useful for compositional control without dictating exact shapes. Tolerant: rough depth maps work fine. |
 | **canny** | 2-D structural lines — silhouettes, edges, contours. | "I want the output to follow *these exact shapes*." Useful when shapes matter (architecture, line art, faithful re-renders of a layout). Literal: every edge in your input becomes an edge in the output. |
 
-**Rule of thumb:**
+**Rule of thumb**
 - "Where does stuff sit in 3-D?" → depth.
 - "What are the precise outlines?" → canny.
 
@@ -64,13 +64,13 @@ stays identical.
 
 ## 3. Your first control-guided generation (depth, auto-from a photo)
 
-The simplest v0.10 invocation:
+The simplest invocation:
 
 ```bash
 plakat generate "a fox sitting in tall grass, golden hour light" \
-    --control depth \
-    --control-from any_photo_with_layout.jpg \
-    --seed 42
+ --control depth \
+ --control-from any_photo_with_layout.jpg \
+ --seed 42
 ```
 
 `--control-from PATH` says: "run the matching annotator on this
@@ -83,14 +83,14 @@ What happens behind the scenes:
 1. SD 1.5 loads (downloads ~4 GB if not cached).
 2. ControlNet-Depth-SD15 loads (~1.4 GB on first use).
 3. Depth-Anything-V2-small loads (~99 MB on first use). If
-   you've used `--smart-zones` before, no extra download —
-   it's the same weights file.
+ you've used `--smart-zones` before, no extra download —
+ it's the same weights file.
 4. `any_photo_with_layout.jpg` is loaded, run through Depth-
-   Anything-V2, and packed into a `(1, 3, H, W)` conditioning
-   tensor.
+ Anything-V2, and packed into a `(1, 3, H, W)` conditioning
+ tensor.
 5. At each denoise step, ControlNet's parallel down-encoder
-   produces residuals that get added to the UNet's intermediate
-   features.
+ produces residuals that get added to the UNet's intermediate
+ features.
 6. The result lands at `out/plakat-42.png`.
 
 Wall-time overhead: ~1.3–1.5× the equivalent `--control`-free
@@ -104,35 +104,35 @@ prompts — pass the conditioning image directly:
 
 ```bash
 plakat generate "a quiet meadow at dawn" \
-    --control depth \
-    --control-image my_painted_depth.png \
-    --seed 42
+ --control depth \
+ --control-image my_painted_depth.png \
+ --seed 42
 ```
 
-This is the v0.9 path. `--control-image` and `--control-from`
+This is the path. `--control-image` and `--control-from`
 are mutually exclusive — clap enforces this at parse time.
 
 Where to source pre-rendered conditioning:
 
 - **Depth maps**: Depth-Anything-V2 on a reference photo (online
-  tools work; or use `--control-from` to skip this step), depth
-  passes from 3D rendering engines (Blender Z-pass, Unreal
-  depth buffer), or hand-painted grayscale.
+ tools work; or use `--control-from` to skip this step), depth
+ passes from 3D rendering engines (Blender Z-pass, Unreal
+ depth buffer), or hand-painted grayscale.
 - **Canny edge maps**: any image editor's edge-detect filter
-  (GIMP/Photoshop both have one), or hand-drawn line art on
-  white background then inverted.
+ (GIMP/Photoshop both have one), or hand-drawn line art on
+ white background then inverted.
 
 ## 5. `plakat img2img` default: auto-annotate the input
 
 For img2img, the most common workflow is "lock the structure
-of this image while repainting it." v0.10 makes that the
+of this image while repainting it." makes that the
 default — pass `--control` without an image or from-path:
 
 ```bash
 plakat img2img source.png \
-    --prompt "the same scene as an oil painting" \
-    --strength 0.75 \
-    --control depth
+ --prompt "the same scene as an oil painting" \
+ --strength 0.75 \
+ --control depth
 ```
 
 What plakat does: auto-annotates `source.png` (the img2img
@@ -155,9 +155,9 @@ the architecture from `--model`:
 ```bash
 # SDXL ControlNet — same flags, different model
 plakat generate "a fox, photographic, shallow depth of field" \
-    --model sdxl --size 1024x1024 \
-    --control depth --control-from photo.jpg \
-    --seed 42
+ --model sdxl --size 1024x1024 \
+ --control depth --control-from photo.jpg \
+ --seed 42
 ```
 
 Plakat downloads the matching SDXL ControlNet checkpoint
@@ -216,25 +216,25 @@ feature:
 ```hjson
 tasks:
 [
-    {
-        name: depth_guided_meadow
-        prompt: "a fox in tall grass"
-        control: {
-            kind: depth
-            auto-from: ./references/composition.jpg
-            strength: 0.9
-        }
-    }
+ {
+ name: depth_guided_meadow
+ prompt: "a fox in tall grass"
+ control: {
+ kind: depth
+ auto-from: ./references/composition.jpg
+ strength: 0.9
+ }
+ }
 
-    {
-        name: canny_guided_architecture
-        prompt: "a renaissance villa, oil painting"
-        control: {
-            kind: canny
-            image: ./hints/villa_edges.png
-            strength: 0.85
-        }
-    }
+ {
+ name: canny_guided_architecture
+ prompt: "a renaissance villa, oil painting"
+ control: {
+ kind: canny
+ image: ./hints/villa_edges.png
+ strength: 0.85
+ }
+ }
 ]
 ```
 
@@ -251,7 +251,7 @@ each trigger their own weight download (once each).
 
 ```bash
 plakat img2img reference.jpg --prompt "...new aesthetic..." \
-    --strength 0.8 --control depth
+ --strength 0.8 --control depth
 ```
 
 img2img rewrites the aesthetic; control locks the depth structure.
@@ -260,7 +260,7 @@ img2img rewrites the aesthetic; control locks the depth structure.
 
 ```bash
 plakat generate "a robot inside a Gothic cathedral, dramatic light" \
-    --control canny --control-from cathedral_photo.jpg
+ --control canny --control-from cathedral_photo.jpg
 ```
 
 Canny extracts the cathedral's structural lines; the model fills
@@ -271,9 +271,9 @@ the interior with a robot scene that respects those lines.
 ```bash
 DEPTH=depth_hint.png
 for p in "fox" "wolf" "deer" "rabbit"; do
-    plakat generate "a $p in tall grass" \
-        --control depth --control-image "$DEPTH" \
-        --seed 42 --out "out/$p"
+ plakat generate "a $p in tall grass" \
+ --control depth --control-image "$DEPTH" \
+ --seed 42 --out "out/$p"
 done
 ```
 
@@ -284,37 +284,52 @@ Identical composition across variations. Use `--control-image`
 
 ```bash
 plakat portrait "a professional headshot, soft studio lighting" \
-    --photo face.jpg --face-strength 0.85 \
-    --control depth --control-from pose_reference.png
+ --photo face.jpg --face-strength 0.85 \
+ --control depth --control-from pose_reference.png
 ```
 
 `--photo` controls who; `--control` controls how they're posed.
 Particularly useful for enforcing a specific posture (T-pose,
 contrapposto, sitting) while keeping subject identity locked.
 
-## 11. Limits
+## 11. Limits + what landed
 
-- **SD 1.5 + SDXL only.** Flux uses a different architecture and
-  isn't on the roadmap.
-- **Depth + Canny only in v0.10.** Scribble, pose, MLSD, normal,
-  openpose, segmentation, InstantID face — all on the roadmap.
+What changed since this tutorial first shipped:
+
+- **All four model families supported.** SD 1.5 / SD 2.1 / SDXL
+ (since ), Flux ( BF16 + GGUF + NF4 via
+ Shakker-Labs Union Pro v2), and **SD3 / SD3.5** ( via the
+ InstantX adapter family).
+- **Five conditioners.** Canny, Depth, OpenPose, Lineart, SoftEdge
+ — all with auto-annotators. The resolver picks the matching
+ adapter repo per `--model`.
+- **Multi-ControlNet via repeatable `--control-spec`.** Stack
+ depth + canny + pose; residuals sum per step. Per-spec
+ `strength=`, `start=`, `end=`, `image=`/`from=`.
+- **Composes with**: LoRA, GGUF/NF4 Flux, img2img, tiled (SDXL +
+ Flux), Flux.1-Fill-dev, Flux Redux.
 - **Timestep windowing** via `--control-start` / `--control-end`
-  works on every subcommand. Common pattern: `--control-end 0.5`
-  locks composition early then lets the prompt drive late
-  texture / atmosphere.
-- **No multi-controlnet.** Stacking multiple conditioners
-  (depth + canny in one generation) isn't exposed via the CLI.
-  v0.11 candidate.
+ (or per-spec `start=…:end=…`) works on every subcommand.
+ Common pattern: `--control-end 0.5` locks composition early
+ then lets the prompt drive late texture / atmosphere.
+
+Still doesn't compose:
+
+- **SD3 + tiled** — `predict_velocity_tiled` bails (the SD3 CN's
+ `pos_embed_input` operates on the full-canvas latent, not tile
+ slices). Drop `--tiled` or `--control-spec`.
+- **SDXL refiner + ControlNet** — the refiner switch mid-stream
+ is incompatible with per-tile residual concat.
 
 ## Where to next
 
 - **Runnable companion**: six self-contained scripts demonstrating
-  every feature ([`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)).
+ every feature ([`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)).
 - **Full reference**: every flag, every edge case
-  ([`Documentation/CONTROLNET.md`](../CONTROLNET.md)).
+ ([`Documentation/CONTROLNET.md`](../CONTROLNET.md)).
 - **Composing with img2img**:
-  [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md).
+ [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md).
 - **Composing with artefacts**:
-  [`ARTEFACTS_TUTORIAL.md`](ARTEFACTS_TUTORIAL.md).
+ [`ARTEFACTS_TUTORIAL.md`](ARTEFACTS_TUTORIAL.md).
 - **Composing with style transfer**:
-  [`STYLES_TUTORIAL.md`](STYLES_TUTORIAL.md).
+ [`STYLES_TUTORIAL.md`](STYLES_TUTORIAL.md).

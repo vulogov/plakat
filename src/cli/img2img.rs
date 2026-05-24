@@ -84,6 +84,32 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
+    /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
+    /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
+    /// works without this flag. RNG is seeded from `--seed` when set.
+    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    pub wildcard_dir: Option<PathBuf>,
+
+    /// v0.16 phase 10: tiled MultiDiffusion-style denoise for SD3
+    /// img2img / inpaint. Composes with `--tiled` only on SD3
+    /// variants — SD 1.5 / SDXL img2img doesn't share the SD3
+    /// rectified-flow tile path. Drop `--tiled` on SD-family
+    /// models or wait for a follow-up phase.
+    #[arg(long = "tiled", default_value_t = false)]
+    pub tiled: bool,
+
+    /// v0.16 phase 10: tile side length in pixels. Default 1024.
+    /// Must be a multiple of 16 (SD3 patch-2 × VAE-8). See the
+    /// SD3 tutorial §7 for per-variant pos_embed_max_size limits.
+    #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
+    pub tile_size: u32,
+
+    /// v0.16 phase 10: stride between tile origins in pixels.
+    /// Default 768 — 256 px overlap with 1024 px tiles. Smaller
+    /// stride = more overlap = smoother seams = more compute.
+    #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
+    pub tile_stride: u32,
+
     /// LoRA spec(s). Same grammar as `plakat generate --loras`.
     #[arg(long = "loras", value_delimiter = ',')]
     pub loras: Vec<LoraSpec>,
@@ -177,7 +203,33 @@ pub struct Img2ImgArgs {
     pub smart_zones: bool,
 }
 
-pub async fn run(args: Img2ImgArgs, device: Device) -> Result<()> {
+pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.16 phase 5: wildcard expansion before dispatching to any
+    // model-specific path. Same RNG-seeding rules as the generate
+    // CLI — seeded from `--seed` when set, OS entropy otherwise.
+    expand_img2img_wildcards(&mut args)?;
+    // v0.16 phase 10: --tiled is SD3 img2img / inpaint only. SD 1.5
+    // / SDXL img2img uses a different (UNet) backbone and doesn't
+    // share the rectified-flow tiled path. Flux Fill ignores
+    // tiled at the dispatcher boundary too. Catch the combo
+    // before either backbone gets a confusing partial config.
+    if args.tiled {
+        let variant = crate::pipelines::t2i::Variant::detect(&args.model);
+        if !variant.is_sd3() {
+            anyhow::bail!(
+                "`plakat img2img --tiled` is wired for SD3 / SD3.5 variants only. \
+                 Got --model {} which routes through the {} backbone — drop \
+                 --tiled, or switch to --model sd35-medium / sd35-large for \
+                 tiled rectified-flow img2img + inpaint.",
+                args.model,
+                if variant.is_flux() {
+                    "Flux"
+                } else {
+                    "SD UNet"
+                }
+            );
+        }
+    }
     // v0.13 phase 2: Flux.1-Fill-dev is an inpainting-only model.
     // When the user picks it via `--model flux-fill-dev`, route to
     // the Flux pipeline instead of the SD img2img path. The Fill
@@ -737,10 +789,23 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // the phase-2 behaviour).
         loras: args.loras,
         lora_scale: args.lora_scale,
-        // v0.15 phase 5: img2img + tiled isn't wired yet; the
-        // pipeline bails if both are set. Drop tiled here so the
-        // CLI surfaces a clear error on incompatible combos.
-        tiled: None,
+        // v0.16 phase 10: SD3 tiled img2img / inpaint. Composes
+        // with the rectified-flow init lerp + per-step RePaint
+        // mask blend. Drop `--tiled` to get the single-pass path
+        // (~25-50 % faster on canvases that fit a single tile).
+        tiled: if args.tiled {
+            Some(crate::pipelines::tiled::TiledConfig {
+                tile_size: args.tile_size,
+                stride: args.tile_stride,
+            })
+        } else {
+            None
+        },
+        // v0.16 phase 3e: SD3 img2img path doesn't take
+        // --control-spec — the CN integration lives on the t2i
+        // dispatch only. The img2img CLI doesn't surface --control*,
+        // so an empty Vec here is the only valid value.
+        controlnets: Vec::new(),
     })
     .await
 }
@@ -749,6 +814,37 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
 /// the nearest multiple of 8 (the VAE downsample factor). Avoids
 /// silently introducing fractional-pixel resizes the user didn't
 /// ask for.
+/// v0.16 phase 5: expand `{a|b|c}` + `__name__` wildcards in the
+/// img2img prompt + negative. Shared by every img2img dispatch arm
+/// (SD-family, Flux, Flux Fill, SD3) via the single entry point.
+fn expand_img2img_wildcards(args: &mut Img2ImgArgs) -> Result<()> {
+    use rand::SeedableRng;
+    let dir = args.wildcard_dir.as_deref();
+    let mut rng: rand::rngs::StdRng = match args.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+    let new_prompt = crate::prompt::wildcards::expand(&args.prompt, dir, &mut rng)?;
+    if new_prompt != args.prompt {
+        tracing::info!(
+            target: "plakat",
+            "Wildcard-expanded prompt: {new_prompt}"
+        );
+        args.prompt = new_prompt;
+    }
+    if !args.negative.is_empty() {
+        let new_neg = crate::prompt::wildcards::expand(&args.negative, dir, &mut rng)?;
+        if new_neg != args.negative {
+            tracing::info!(
+                target: "plakat",
+                "Wildcard-expanded negative: {new_neg}"
+            );
+            args.negative = new_neg;
+        }
+    }
+    Ok(())
+}
+
 fn detect_input_size(path: &std::path::Path) -> Result<(u32, u32)> {
     let (w, h) = image::image_dimensions(path)
         .with_context(|| format!("reading dimensions of {}", path.display()))?;

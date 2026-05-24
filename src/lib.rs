@@ -8,6 +8,7 @@
 //! non-trivial code like CLIP-H preprocessing or model loading.
 
 pub mod artefacts;
+pub mod civitai;
 pub mod cli;
 pub mod config;
 pub mod device;

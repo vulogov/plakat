@@ -10,16 +10,16 @@ prior text-to-image experience assumed.
 - What the most common flags mean (and which ones to ignore at first)
 - How to make the same image twice (seeds)
 - How to switch from one-off commands to a **scenario file** that
-  runs many variants in one go
+ runs many variants in one go
 - Where the output files land and how plakat names them
 
 ## Before you start
 
 - You have `plakat` installed and runnable. If `plakat --help` prints
-  the help screen, you're set. If not, see the main `README.md`.
+ the help screen, you're set. If not, see the main `README.md`.
 - You have ~6 GB of disk space free. The first time plakat runs it
-  downloads a model from HuggingFace (~4 GB for SD 1.5) and caches
-  it. Future runs reuse the cache.
+ downloads a model from HuggingFace (~4 GB for SD 1.5) and caches
+ it. Future runs reuse the cache.
 - You have a few minutes of patience for the first model download.
 
 The tutorial uses **SD 1.5** (Stable Diffusion 1.5) throughout because
@@ -131,7 +131,7 @@ You can tell the model what to avoid:
 
 ```bash
 plakat generate "a fox in tall grass" \
-    --negative "blurry, deformed, low quality, watermark"
+ --negative "blurry, deformed, low quality, watermark"
 ```
 
 This won't always remove every blurry/deformed result, but it nudges
@@ -192,7 +192,7 @@ You can apply one or more to a generation:
 
 ```bash
 plakat generate "a fox in tall grass" \
-    --lora "Arczisan/ink-watercolor:0.8"
+ --lora "Arczisan/ink-watercolor:0.8"
 ```
 
 The format is `<repo>:<scale>`. `0.8` means "apply this LoRA at 80%
@@ -226,60 +226,60 @@ Create a file `my_first_scenario.hjson`:
 
 ```hjson
 {
-    # Global settings for the whole batch.
-    model: sd15
-    base: 512
-    steps: 28
-    count: 1            # how many images per task
-    out: ./out
+ # Global settings for the whole batch.
+ model: sd15
+ base: 512
+ steps: 28
+ count: 1 # how many images per task
+ out: ./out
 
-    # The "enhancer" is a language model that polishes your prompt.
-    # plakat requires this field; if you don't want enhancement, leave
-    # it as `deepseek` and run with --dry-run for now.
-    enhancer: deepseek
+ # The "enhancer" is a language model that polishes your prompt.
+ # plakat requires this field; if you don't want enhancement, leave
+ # it as `deepseek` and run with --dry-run for now.
+ enhancer: deepseek
 
-    # Scenes are reusable prompt fragments naming a place.
-    scene:
-    [
-        {
-            name: forest
-            prompt: "an ancient mossy forest with shafts of light through the canopy"
-        }
-        {
-            name: meadow
-            prompt: "a wide open grass meadow with wildflowers"
-        }
-    ]
+ # Scenes are reusable prompt fragments naming a place.
+ scene:
+ [
+ {
+ name: forest
+ prompt: "an ancient mossy forest with shafts of light through the canopy"
+ }
+ {
+ name: meadow
+ prompt: "a wide open grass meadow with wildflowers"
+ }
+ ]
 
-    # Weather is another reusable fragment.
-    weather:
-    [
-        {
-            name: dawn
-            prompt: "soft early dawn light, golden tones, low mist"
-        }
-        {
-            name: rainy
-            prompt: "heavy summer rain, dark grey clouds, wet ground"
-        }
-    ]
+ # Weather is another reusable fragment.
+ weather:
+ [
+ {
+ name: dawn
+ prompt: "soft early dawn light, golden tones, low mist"
+ }
+ {
+ name: rainy
+ prompt: "heavy summer rain, dark grey clouds, wet ground"
+ }
+ ]
 
-    # Tasks combine scene + weather + a task-specific prompt.
-    tasks:
-    [
-        {
-            name: fox_forest_dawn
-            scene: forest
-            weather: dawn
-            prompt: "a fox at the edge of the trees"
-        }
-        {
-            name: fox_meadow_rain
-            scene: meadow
-            weather: rainy
-            prompt: "a fox sheltering under a fallen log"
-        }
-    ]
+ # Tasks combine scene + weather + a task-specific prompt.
+ tasks:
+ [
+ {
+ name: fox_forest_dawn
+ scene: forest
+ weather: dawn
+ prompt: "a fox at the edge of the trees"
+ }
+ {
+ name: fox_meadow_rain
+ scene: meadow
+ weather: rainy
+ prompt: "a fox sheltering under a fallen log"
+ }
+ ]
 }
 ```
 
@@ -295,10 +295,10 @@ You'll see plakat assemble:
 
 ```
 ▶ [1/2] fox_forest_dawn (scene=forest, weather=dawn)
-  pre-enhance: an ancient mossy forest with shafts of light through the canopy,
-               soft early dawn light, golden tones, low mist,
-               a fox at the edge of the trees
-  ...
+ pre-enhance: an ancient mossy forest with shafts of light through the canopy,
+ soft early dawn light, golden tones, low mist,
+ a fox at the edge of the trees
+ ...
 ```
 
 Each task's pre-enhance prompt is the concatenation of:
@@ -337,33 +337,33 @@ The real power of scenarios is when you want to cover *all combinations*:
 
 ```hjson
 {
-    # ... same global settings ...
+ # ... same global settings ...
 
-    scene:
-    [
-        { name: forest, prompt: "..." }
-        { name: meadow, prompt: "..." }
-        { name: harbor, prompt: "..." }
-    ]
-    weather:
-    [
-        { name: dawn,   prompt: "..." }
-        { name: rainy,  prompt: "..." }
-        { name: snowy,  prompt: "..." }
-    ]
+ scene:
+ [
+ { name: forest, prompt: "..." }
+ { name: meadow, prompt: "..." }
+ { name: harbor, prompt: "..." }
+ ]
+ weather:
+ [
+ { name: dawn, prompt: "..." }
+ { name: rainy, prompt: "..." }
+ { name: snowy, prompt: "..." }
+ ]
 
-    # 3 scenes × 3 weather × 2 count = 18 images in one run.
-    count: 2
-    tasks:
-    [
-        { name: forest_dawn,   scene: forest, weather: dawn,  prompt: "a fox" }
-        { name: forest_rainy,  scene: forest, weather: rainy, prompt: "a fox" }
-        { name: forest_snowy,  scene: forest, weather: snowy, prompt: "a fox" }
-        { name: meadow_dawn,   scene: meadow, weather: dawn,  prompt: "a fox" }
-        { name: meadow_rainy,  scene: meadow, weather: rainy, prompt: "a fox" }
-        { name: meadow_snowy,  scene: meadow, weather: snowy, prompt: "a fox" }
-        # ... and so on for harbor ...
-    ]
+ # 3 scenes × 3 weather × 2 count = 18 images in one run.
+ count: 2
+ tasks:
+ [
+ { name: forest_dawn, scene: forest, weather: dawn, prompt: "a fox" }
+ { name: forest_rainy, scene: forest, weather: rainy, prompt: "a fox" }
+ { name: forest_snowy, scene: forest, weather: snowy, prompt: "a fox" }
+ { name: meadow_dawn, scene: meadow, weather: dawn, prompt: "a fox" }
+ { name: meadow_rainy, scene: meadow, weather: rainy, prompt: "a fox" }
+ { name: meadow_snowy, scene: meadow, weather: snowy, prompt: "a fox" }
+ # ... and so on for harbor ...
+ ]
 }
 ```
 
@@ -380,16 +380,16 @@ A task can override almost any global field for itself:
 ```hjson
 tasks:
 [
-    {
-        name: high_quality_one
-        scene: forest
-        weather: dawn
-        prompt: "a fox"
-        steps: 50              # this task uses 50 steps instead of 28
-        guidance: 8.5          # and stronger guidance
-        size: 768x768          # and a larger output
-        seed: 42               # and a fixed seed
-    }
+ {
+ name: high_quality_one
+ scene: forest
+ weather: dawn
+ prompt: "a fox"
+ steps: 50 # this task uses 50 steps instead of 28
+ guidance: 8.5 # and stronger guidance
+ size: 768x768 # and a larger output
+ seed: 42 # and a fixed seed
+ }
 ]
 ```
 
@@ -410,11 +410,11 @@ tree:
 ```
 out/
 ├── fox_forest_dawn/
-│   ├── plakat-1000.png
-│   └── plakat-1001.png   # second image (because count: 2)
+│ ├── plakat-1000.png
+│ └── plakat-1001.png # second image (because count: 2)
 ├── fox_forest_rainy/
-│   ├── plakat-1002.png
-│   └── plakat-1003.png
+│ ├── plakat-1002.png
+│ └── plakat-1003.png
 └── ...
 ```
 
@@ -425,7 +425,272 @@ gets 1002-1003, and so on.
 
 ---
 
-## 12. Common issues
+## 12. Wildcards
+
+Two ways to add randomness to a prompt without re-typing it:
+
+**Inline alternation** — pick one of N options at random:
+
+```bash
+plakat generate "a {red|blue|green} {fox|cat|owl}" \
+ --model sd15 --count 4 --seed 42
+```
+
+Each run with `--seed 42` reproduces the same picks. With no
+`--seed`, OS entropy seeds the wildcard RNG (different output each
+run).
+
+**File wildcards** — pick a random line from a text file:
+
+```bash
+mkdir -p wildcards
+echo -e "red\nblue\nemerald\ngolden" > wildcards/colors.txt
+plakat generate "a __colors__ fox" \
+ --wildcard-dir ./wildcards --model sd15
+```
+
+Files live under `<dir>/<name>.txt`. Comments (`#`) and blank lines
+are skipped. Names accept letters, digits, `-`, and `_` (so
+`__warm-colors__` and `__warm_colors__` both work).
+
+Wildcards compose with the prompt enhancer (`--enhance`) — expansion
+runs first, then the enhancer sees the concrete prompt.
+
+## 13. CLIP-skip (+, SD 1.5 / SD 2.1)
+
+The Auto1111 / NovelAI community default for SD 1.5 anime checkpoints
+(Anything-v3, AnyLoRA, ...) is to read the **penultimate** CLIP
+hidden state rather than the last. plakat exposes this as
+`--clip-skip N`:
+
+```bash
+# Default — last layer (diffusers default, byte-identical to previous releases):
+plakat generate "..." --model sd15
+
+# Penultimate — community-standard SD 1.5 anime path:
+plakat generate "..." --model sd15 --clip-skip 2
+```
+
+SDXL ignores `--clip-skip` (its dual-encoder path already uses
+penultimate by training default — plakat logs a warning if you pass
+`--clip-skip > 1` on SDXL). Flux / SD3 don't use this flag at all
+(T5 + CLIP-pooled architecture).
+
+## 14. ADetailer — face refinement (+, SD-family)
+
+SD/SDXL often produce lo-fi faces at non-face working resolutions
+(small face in a big canvas — the model only had ~64² of latent for
+the actual face). ADetailer is a post-pass that fixes this:
+
+1. Detect each face with SCRFD.
+2. Crop an expanded bounding box around the face (default +25% on
+ each side).
+3. Run img2img on the crop at a higher working resolution.
+4. Feather-composite the refined crop back onto the original.
+
+Enable it with `--adetailer`:
+
+```bash
+# SD 1.5 portrait — default 0.4 strength, 25% bbox padding, 512²
+# working resolution per face.
+plakat generate "a woman walking through a forest, full body shot" \
+ --model sd15 --size 768x1024 --adetailer
+
+# SDXL — 1024² working resolution per face matches SDXL native.
+plakat generate "..." --model sdxl --size 1280x1920 \
+ --adetailer --adetailer-size 1024
+```
+
+**Required setup**: ADetailer needs SCRFD weights. Same env vars
+the FaceID portrait flow uses — either a local path:
+
+```bash
+export PLAKAT_SCRFD_WEIGHTS=/path/to/scrfd_10g_bnkps.safetensors
+```
+
+…or an HF spec:
+
+```bash
+export PLAKAT_SCRFD_HF="immich-app/SCRFD#scrfd_10g_bnkps.safetensors"
+```
+
+Without one of these, `--adetailer` bails loud.
+
+**Knobs**:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--adetailer-strength F` | `0.4` | img2img strength on each face crop. Lower = preserve identity, higher = re-imagine. `0.6+` will change the face. |
+| `--adetailer-padding F` | `0.25` | Bbox expansion per side. More = better blending, less res per face. |
+| `--adetailer-feather F` | `0.25` | Outer fraction of bbox that fades to 0. Softer seam vs sharper detail near edge. |
+| `--adetailer-confidence F` | `0.5` | SCRFD score threshold. Faces below skipped. |
+| `--adetailer-size N` | `512` | Working res for the face img2img (square, snapped /8). |
+| `--adetailer-prompt STR` | (generic) | Override the face pass prompt. Default: "detailed face, sharp focus, high quality". |
+
+**Restrictions**:
+- SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux / SD3 bail loud
+ (their portrait paths aren't shipped yet).
+- Runs once per output image — `--count 4` triggers four ADetailer
+ passes total. Each face within an image runs separately.
+- Composes with `--lora`, `--scheduler`, `--seed`. The face pass
+ reuses the t2i SdCore so there's no extra model load.
+
+## 15. Browsing Civitai
+
+[Civitai](https://civitai.com) is the major community hub for SD
+checkpoints, LoRAs, embeddings, and ControlNet variants. plakat
+ships a built-in browser so you don't have to copy URLs around.
+
+**Search**:
+
+```bash
+# Top 10 LoRAs matching "watercolor"
+plakat civitai search "watercolor" --type lora
+
+# Checkpoints, page 2 of 20
+plakat civitai search "anime" --type checkpoint --limit 20 --page 2
+```
+
+Each result shows the model ID, name, type, base model, trigger
+words (for LoRAs), and the available files marked with `★` for
+the primary (recommended) file.
+
+**Info** — drill into one model:
+
+```bash
+plakat civitai info 12345
+plakat civitai info https://civitai.com/models/12345
+plakat civitai info "https://civitai.com/models/12345?modelVersionId=789"
+```
+
+**Download**:
+
+```bash
+# Download the latest version's primary file
+plakat civitai download 12345
+
+# Pin a specific version via URL
+plakat civitai download "https://civitai.com/models/12345?modelVersionId=789"
+
+# Pick a non-primary file by name
+plakat civitai download 12345 --file "config.yaml"
+```
+
+The file lands at `<plakat-cache>/civitai/model-<id>/version-<id>/<filename>`
+with a `metadata.json` alongside. plakat prints the absolute path —
+drop it into `--lora` or `--model`:
+
+```bash
+plakat civitai download 12345
+# → ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
+
+plakat generate "..." --model sd15 \
+ --lora ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
+```
+
+**Gated assets**: some Civitai models require an account. Set
+`CIVITAI_API_KEY` from
+<https://civitai.com/user/account> (API Keys section). Public
+models work without one.
+
+## 16. Hires fix — escape the trained-resolution ceiling
+
+SD 1.5 was trained at 512², SDXL at 1024². Sampling much past
+those introduces the "multi-head problem": the model loses track of
+global composition across more tokens than it saw at train time and
+produces repeated faces / doubled limbs / malformed crowds.
+
+The standard mitigation: generate at the trained resolution, then
+upscale + img2img-refine. plakat exposes this as `--hires-fix`:
+
+```bash
+# SD 1.5 → 1.5k canvas via 2x hires-fix (Lanczos upscale, 0.5
+# refine strength).
+plakat generate "an astronaut on a beach, full body shot" \
+ --model sd15 --size 768x768 \
+ --hires-fix
+
+# SDXL → 4K via 2x ESRGAN upscale + img2img refine.
+plakat generate "an architectural drawing of a cathedral" \
+ --model sdxl --size 1024x1024 \
+ --hires-fix --hires-upscaler real-esrgan-x2
+
+# Aggressive refine — let the model rework small detail more.
+plakat generate "..." --model sd15 --size 768x768 \
+ --hires-fix --hires-strength 0.7 --hires-scale 2.0
+```
+
+**Knobs**:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--hires-scale F` | `2.0` | Multiplier for classical upscalers. ML upscalers ignore (use native scale). |
+| `--hires-strength F` | `0.5` | img2img strength on the upscaled image. Lower = preserve composition; higher = re-imagine. |
+| `--hires-upscaler MODE` | `lanczos` | `lanczos / bicubic / bilinear / nearest / real-esrgan-x2 / real-esrgan-x4 / real-esrgan-anime-x4`. |
+| `--hires-steps N` | (main `--steps`) | Step count for the refine pass. |
+
+**Composition**:
+- Composes with `--lora` (refine uses the same stack).
+- Composes with `--adetailer` (face refinement runs on the upscaled
+ image — gives better results than refining at the small res).
+- Does **not** compose with `--artefact*` (the upscale changes
+ image dims; the artefact compositor would misplace stamps —
+ plakat bails loud).
+- Does **not** compose with `--tiled` (tiled has its own 4K
+ workflow; combining is redundant).
+
+**SD-family only**: Flux / SD3 already have native tiled paths
+(`--tiled`) for high-res output. `--hires-fix` on Flux / SD3 bails
+loud — use `--tiled` instead.
+
+**Recipe — 4K poster**:
+```bash
+plakat generate "a vintage travel poster of Tokyo at night" \
+ --model sd15 --size 768x768 --steps 30 \
+ --hires-fix --hires-upscaler real-esrgan-x2 --hires-strength 0.45 \
+ --adetailer
+```
+
+## 17. Textual Inversion (partial)
+
+Textual Inversion (TI, sometimes called "embeddings") learns new
+"words" by training one or more embedding vectors against a small
+image set. The output is a tiny `.safetensors` file (typically
+5–50 KB) — much smaller than a LoRA.
+
+**Inspect a TI file** with `plakat embedding info`:
+
+```bash
+plakat embedding info ./my-style.safetensors
+# trigger: my-style
+# shape: 1 vector(s) × 768 dim [SD 1.5 (CLIP-L 768)]
+# usage: `my-style` once per prompt; ...
+
+# Civitai TIs are also resolvable via HF:
+plakat embedding info sd-concepts-library/cat-toy
+```
+
+The inspector reports the trigger word, vector count (1 for most
+TIs, 2–8 for multi-vector concepts), embedding dim (768 for SD 1.5,
+1024 for SD 2.1, 1280 for SDXL CLIP-G), and matches it against the
+SD variant.
+
+**Runtime injection** — passing `--embedding PATH:trigger:scale`
+to `plakat generate` — is **not wired**. The parser + merger ship
+(lib tests pin the contract), but candle 0.8 keeps
+`clip::Config.vocab_size` private, blocking the in-place vocab
+extension needed to register the new tokens. The wiring lands
+when the candle API surface opens, alongside a vendored CLIP path.
+
+In the meantime:
+- Use `plakat embedding info` to verify TI files you've downloaded.
+- For Civitai TIs that ship a LoRA equivalent: prefer the LoRA
+ variant — `plakat generate --lora` works today.
+- For TI-only concepts: convert via the [kohya-ss
+ conversion script](https://github.com/kohya-ss/sd-scripts) and
+ use as a LoRA.
+
+## 18. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
@@ -464,4 +729,4 @@ flags → identical bytes.
 - **Build your own style catalog** → `HOW_TO_CREATE_MY_OWN_STYLE.md`
 - **Full reference of every CLI flag** → `Documentation/GENERATE.md`
 - **More on scenarios, upscaling, refiner pipelines** →
-  `Documentation/GENERATE.md`
+ `Documentation/GENERATE.md`

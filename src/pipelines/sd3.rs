@@ -213,6 +213,14 @@ pub struct Request {
     /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
     /// canvas (phase 1a behaviour).
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.16 phase 3e: SD3 ControlNet stack to load. Each entry
+    /// carries the InstantX repo + per-instance runtime knobs
+    /// (`scale`, `conditioning`, `start`, `end`). Empty Vec means no
+    /// CN — byte-identical to the pre-phase-3 schedule. Threaded
+    /// through to `LoadRequest.controlnets`, then VAE-encoded once
+    /// per `generate` call into the cached per-slot conditioning
+    /// latents used in `predict_velocity_full`.
+    pub controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>,
 }
 
 pub struct LoadRequest {
@@ -228,6 +236,11 @@ pub struct LoadRequest {
     /// LoRA's own `:scale` suffix. Same semantics as Flux/SD LoRA's
     /// `--lora-scale`. 1.0 is the default.
     pub lora_scale: f32,
+    /// v0.16 phase 3: zero or more SD3 ControlNets to preload alongside
+    /// the MMDiT backbone. Each load spec carries the InstantX repo +
+    /// per-instance runtime knobs (scale, conditioning, step-gating).
+    /// Empty disables CN entirely (byte-identical to pre-3 behaviour).
+    pub controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>,
 }
 
 pub struct GenRequest {
@@ -249,6 +262,12 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.16 phase 3: per-call conditioning override for the loaded
+    /// SD3 ControlNets. Indexed parallel to
+    /// `LoadRequest::controlnets`. An entry of `None` keeps the path
+    /// from the load request (used when one scenario task has no CN
+    /// conditioning to swap to). Empty Vec = preserve all paths.
+    pub controlnet_conditioning: Vec<Option<PathBuf>>,
 }
 
 pub struct Pipeline {
@@ -266,6 +285,11 @@ pub struct Pipeline {
     t5_tok: Tokenizer,
     mmdit_model: mmdit::MMDiT,
     vae: sdvae::AutoEncoderKL,
+    /// v0.16 phase 3: loaded SD3 ControlNets. Each entry carries a
+    /// `Sd3ControlNet` + the per-instance runtime knobs (scale,
+    /// conditioning path, step-gating window). Empty when no CN
+    /// was passed in the LoadRequest.
+    controlnets: Vec<crate::pipelines::sd3_controlnet::LoadedSd3ControlNet>,
 }
 
 impl Pipeline {
@@ -462,6 +486,36 @@ impl Pipeline {
         let vae = sdvae::AutoEncoderKL::new(vae_vb, 3, 3, vae_cfg)?;
         load.finish_with_message("✓ MMDiT + VAE loaded");
 
+        // v0.16 phase 3: preload SD3 ControlNets, one per LoadRequest
+        // entry. Each download is ~2-3 GB on cold cache.
+        let mut controlnets = Vec::with_capacity(req.controlnets.len());
+        for (i, spec) in req.controlnets.iter().enumerate() {
+            let cn_spin = progress::spinner(&format!(
+                "Loading SD3 ControlNet [{}/{}] {}",
+                i + 1,
+                req.controlnets.len(),
+                spec.repo
+            ));
+            let net = crate::pipelines::sd3_controlnet::load_from_hf(
+                &spec.repo, &spec.file, &spec.cfg, &req.device, dtype,
+            )
+            .await
+            .with_context(|| {
+                format!("loading SD3 ControlNet from {}/{}", spec.repo, spec.file)
+            })?;
+            cn_spin.finish_with_message(format!(
+                "✓ SD3 ControlNet loaded ({} joint blocks)",
+                net.n_residuals()
+            ));
+            controlnets.push(crate::pipelines::sd3_controlnet::LoadedSd3ControlNet {
+                net,
+                scale: spec.scale,
+                conditioning_path: spec.conditioning.clone(),
+                start: spec.start,
+                end: spec.end,
+            });
+        }
+
         Ok(Self {
             variant: req.variant,
             repo: req.repo,
@@ -476,7 +530,112 @@ impl Pipeline {
             t5_tok,
             mmdit_model,
             vae,
+            controlnets,
         })
+    }
+
+    /// v0.16 phase 3: are any ControlNets loaded? Cheap check used
+    /// by the dispatcher to skip CN-specific code paths when the
+    /// scenario / call doesn't use CN.
+    pub fn has_controlnets(&self) -> bool {
+        !self.controlnets.is_empty()
+    }
+
+    /// v0.16 phase 3: number of loaded ControlNet slots. The
+    /// dispatcher uses this to validate per-task conditioning lists
+    /// against the load-time slot count.
+    pub fn n_controlnets(&self) -> usize {
+        self.controlnets.len()
+    }
+
+    /// v0.16 phase 3: swap the conditioning path for a single CN
+    /// slot between `generate` calls. `None` clears the path so the
+    /// CN contributes no residuals on the next call (used when a
+    /// scenario task has fewer CNs than the scenario's max slot
+    /// count). Same shape as `flux::Pipeline::set_controlnet_conditioning`.
+    pub fn set_controlnet_conditioning(
+        &mut self,
+        idx: usize,
+        path: Option<PathBuf>,
+    ) -> Result<()> {
+        let n = self.controlnets.len();
+        let cn = self.controlnets.get_mut(idx).ok_or_else(|| {
+            anyhow!(
+                "sd3::Pipeline::set_controlnet_conditioning: slot {idx} out of \
+                 range (have {n} loaded CN(s))"
+            )
+        })?;
+        cn.conditioning_path = path;
+        Ok(())
+    }
+
+    /// v0.16 phase 3: per-call CN runtime knobs (scale + step-gating
+    /// window). Lets the scenario dispatcher set per-task strengths
+    /// without re-loading the model.
+    pub fn set_controlnet_call_params(
+        &mut self,
+        idx: usize,
+        scale: f32,
+        start: f32,
+        end: f32,
+    ) -> Result<()> {
+        let n = self.controlnets.len();
+        let cn = self.controlnets.get_mut(idx).ok_or_else(|| {
+            anyhow!(
+                "sd3::Pipeline::set_controlnet_call_params: slot {idx} out of \
+                 range (have {n} loaded CN(s))"
+            )
+        })?;
+        cn.scale = scale;
+        cn.start = start;
+        cn.end = end;
+        Ok(())
+    }
+
+    /// v0.16 phase 2: replace the runtime LoRA stack on the MMDiT
+    /// backbone. Mirrors `flux::FluxBackbone::apply_loras`. The
+    /// scenario dispatcher uses this between tasks to apply each
+    /// task's per-task LoRA additions on top of the scenario-merged
+    /// baseline; followed by `clear_all_loras()` at end-of-task to
+    /// avoid bleed.
+    pub fn apply_loras(
+        &self,
+        specs: std::collections::HashMap<
+            String,
+            Vec<crate::pipelines::lora_linear::LoraSpec>,
+        >,
+    ) -> Result<usize> {
+        let applied = self
+            .mmdit_model
+            .apply_loras(specs, self.dtype, &self.device)
+            .map_err(|e| anyhow!("SD3 apply_loras: {e}"))?;
+        Ok(applied)
+    }
+
+    /// v0.16 phase 2: clear every runtime LoRA on the MMDiT.
+    pub fn clear_all_loras(&self) -> Result<()> {
+        self.mmdit_model
+            .clear_all_loras()
+            .map_err(|e| anyhow!("SD3 clear_all_loras: {e}"))?;
+        Ok(())
+    }
+
+    /// v0.16 phase 2: runtime dtype the MMDiT uses (BF16 on GPU,
+    /// F32 on CPU). Exposed for the scenario dispatcher's LoRA spec
+    /// builder.
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    /// v0.16 phase 2: device the pipeline lives on.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// v0.16 phase 2: variant accessor. Used by the dispatcher to
+    /// look up the MMDiT hidden size for LoRA-B row-slice padding.
+    pub fn variant(&self) -> Variant {
+        self.variant
     }
 
     /// Generate `req.count` images. Reuses the loaded weights across
@@ -492,16 +651,23 @@ impl Pipeline {
         if w == 0 || h == 0 {
             bail!("SD3 requires width and height divisible by 16, both ≥ 16");
         }
-        // v0.15 phase 5: img2img + tiled isn't validated yet. The
-        // start-latent lerp + truncated schedule path doesn't compose
-        // cleanly with the per-step tile blending — defer to a future
-        // phase. Catch the combo early before the CN-style bails.
-        if req.tiled.is_some() && req.init_image.is_some() {
-            bail!(
-                "SD3 --tiled doesn't compose with --init-image / --mask yet \
-                 (v0.15 phase 5 deferral). Drop one or the other."
-            );
-        }
+        // v0.16 phase 10: --tiled now composes with --init-image
+        // (img2img + inpaint). The math is straightforward: the
+        // start-latent lerp builds a full-canvas `x`, tiled
+        // velocity prediction blends per-tile Hann-weighted
+        // contributions into a full-canvas `pred`, and the
+        // Euler step + the optional RePaint mask blend operate
+        // unchanged on the full canvas. ControlNet + tiled is
+        // still bail-loud inside `predict_velocity_tiled` (the
+        // CN's `pos_embed_input` works on full-canvas latents,
+        // not tile slices) — combinations with --init-image are
+        // unaffected.
+        //
+        // Inpaint + tiled note: tile seams can become visible near
+        // sharp mask boundaries because the Hann blend smooths
+        // across tile edges without knowing about the mask. Use
+        // a feathered mask (`--mask-feather`) to smooth the
+        // transition.
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
@@ -580,6 +746,56 @@ impl Pipeline {
                 None
             };
 
+        // v0.16 phase 3d: pre-encode the ControlNet conditioning
+        // image(s) into VAE latents (one per loaded CN slot). The
+        // encode runs once per `generate` call — every step within
+        // the count loop reuses the cached latents.
+        //
+        // Per-call `req.controlnet_conditioning` overrides the
+        // load-time path when set (used by the scenario dispatcher
+        // to swap conditioning between tasks). An entry of `None`
+        // keeps the load-time path; an empty Vec preserves all
+        // load-time paths.
+        let cn_conditionings: Vec<Option<Tensor>> = if self.controlnets.is_empty() {
+            Vec::new()
+        } else {
+            let mut v = Vec::with_capacity(self.controlnets.len());
+            for (i, cn) in self.controlnets.iter().enumerate() {
+                let path: Option<&std::path::Path> = req
+                    .controlnet_conditioning
+                    .get(i)
+                    .and_then(|p| p.as_deref())
+                    .or(cn.conditioning_path.as_deref());
+                match path {
+                    Some(p) => {
+                        let spin = progress::spinner(&format!(
+                            "Encoding SD3 CN[{}/{}] conditioning",
+                            i + 1,
+                            self.controlnets.len()
+                        ));
+                        let enc = self.encode_cn_conditioning(p, h, w)?;
+                        spin.finish_with_message(format!(
+                            "✓ SD3 CN[{}/{}] conditioning encoded",
+                            i + 1,
+                            self.controlnets.len()
+                        ));
+                        v.push(Some(enc));
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "plakat",
+                            "SD3 CN[{}/{}] loaded but no conditioning image — \
+                             this CN won't contribute residuals.",
+                            i + 1,
+                            self.controlnets.len()
+                        );
+                        v.push(None);
+                    }
+                }
+            }
+            v
+        };
+
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -625,12 +841,14 @@ impl Pipeline {
                 (timesteps.len().saturating_sub(1)) as u64,
                 &format!("img {}/{}", idx + 1, req.count),
             );
-            let mode_tag = match (req.init_image.is_some(), req.mask.is_some()) {
-                (true, true) => "inpaint",
-                (true, false) => "img2img",
-                _ if req.tiled.is_some() => "tiled",
-                _ => "denoise",
-            };
+            // v0.16 phase 10: mode tags now compose. `tiled inpaint`
+            // / `tiled img2img` surface the new combinations
+            // explicitly in the progress bar.
+            let mode_tag = sd3_mode_tag(
+                req.tiled.is_some(),
+                req.init_image.is_some(),
+                req.mask.is_some(),
+            );
             bar.set_message(format!(
                 "{mode_tag} flow-match, {} steps, seed={seed}",
                 timesteps.len().saturating_sub(1)
@@ -644,12 +862,30 @@ impl Pipeline {
                 // v0.15 phase 5: dispatch to tiled or single-pass.
                 // Both return the post-CFG velocity prediction at
                 // full canvas resolution; the Euler step is identical.
+                // v0.16 phase 3d: thread the pre-encoded CN
+                // conditioning latents + the schedule progress through
+                // so the CN forwards can run + step-gating works.
+                let num_steps = timesteps.windows(2).count().max(1);
+                let progress = step_i as f32 / num_steps as f32;
                 let pred = match req.tiled.as_ref() {
                     None => self.predict_velocity_full(
-                        &x, t_curr, &cfg_y, &cfg_ctx, guidance,
+                        &x,
+                        t_curr,
+                        &cfg_y,
+                        &cfg_ctx,
+                        guidance,
+                        &cn_conditionings,
+                        progress,
                     )?,
                     Some(cfg) => self.predict_velocity_tiled(
-                        &x, t_curr, &cfg_y, &cfg_ctx, guidance, cfg,
+                        &x,
+                        t_curr,
+                        &cfg_y,
+                        &cfg_ctx,
+                        guidance,
+                        cfg,
+                        &cn_conditionings,
+                        progress,
                     )?,
                 };
                 x = (x + pred * (t_prev - t_curr))?;
@@ -704,6 +940,14 @@ impl Pipeline {
     /// the two predictions, and blends with `guidance`. Same math as
     /// the inline path in `generate` — factored out so the tiled
     /// dispatch can reuse it inside the per-tile loop.
+    ///
+    /// v0.16 phase 3d: `cn_conditionings` carries the pre-encoded
+    /// (VAE-encoded + normalised) conditioning latents for each
+    /// loaded SD3 ControlNet, indexed parallel to `self.controlnets`.
+    /// `progress` is the fraction of the denoise schedule in
+    /// `[0, 1)`; each CN's `active_at` window gates whether its
+    /// residuals contribute. When no CN is active for this step the
+    /// forward path is identical to the pre-3d call.
     fn predict_velocity_full(
         &self,
         x: &Tensor,
@@ -711,12 +955,42 @@ impl Pipeline {
         cfg_y: &Tensor,
         cfg_ctx: &Tensor,
         guidance: f64,
+        cn_conditionings: &[Option<Tensor>],
+        progress: f32,
     ) -> Result<Tensor> {
         let x_doubled = Tensor::cat(&[x, x], 0)?;
         let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
-        let pred_doubled =
-            self.mmdit_model
-                .forward(&x_doubled, &t_vec, cfg_y, cfg_ctx, None)?;
+
+        // v0.16 phase 3d: build the SD3 CN residual sum for this
+        // step. Each active CN forwards once on the doubled batch
+        // (the CN's pos_embed_input broadcast-adds the (1,16,h,w)
+        // conditioning across both CFG branches). Residuals are
+        // scaled per-CN and summed across slots.
+        let mut summed_residuals: Option<Vec<Tensor>> = None;
+        for (cn, cond_opt) in self.controlnets.iter().zip(cn_conditionings.iter()) {
+            if !cn.active_at(progress) {
+                continue;
+            }
+            let cond = match cond_opt.as_ref() {
+                Some(c) => c,
+                None => continue,
+            };
+            let res = cn
+                .net
+                .forward(&x_doubled, cond, cfg_ctx, cfg_y, &t_vec)
+                .map_err(|e| anyhow!("SD3 CN forward: {e}"))?;
+            let scaled: Vec<Tensor> = res
+                .into_iter()
+                .map(|t| t * cn.scale as f64)
+                .collect::<core::result::Result<_, _>>()
+                .map_err(|e| anyhow!("SD3 CN residual scale: {e}"))?;
+            summed_residuals = Some(merge_residuals(summed_residuals, scaled)?);
+        }
+        let residuals = summed_residuals.as_deref();
+
+        let pred_doubled = self
+            .mmdit_model
+            .forward_with_residuals(&x_doubled, &t_vec, cfg_y, cfg_ctx, None, residuals)?;
         let pred_neg = pred_doubled.i(0..1)?;
         let pred_pos = pred_doubled.i(1..2)?;
         Ok((&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?)
@@ -749,7 +1023,21 @@ impl Pipeline {
         cfg_ctx: &Tensor,
         guidance: f64,
         tcfg: &crate::pipelines::tiled::TiledConfig,
+        cn_conditionings: &[Option<Tensor>],
+        progress: f32,
     ) -> Result<Tensor> {
+        // v0.16 phase 3d: SD3 CN + tiled composition isn't wired
+        // (per-tile conditioning slicing would mirror Flux's tiled-CN
+        // path but the SD3 CN's `pos_embed_input` operates on the
+        // full-canvas latent, not a tile). Bail cleanly so users see
+        // a clear message rather than silently-wrong outputs.
+        if cn_conditionings.iter().any(|c| c.is_some()) {
+            bail!(
+                "SD3 tiled denoise doesn't compose with ControlNet yet — drop \
+                 `--tiled` or `--control-spec`."
+            );
+        }
+        let _ = progress;
         let (_b, c, lat_h, lat_w) = x.dims4()?;
         // VAE downsample 8 — same factor the rest of the SD3 pipeline
         // uses. Pixel-to-latent conversion for the tile + stride.
@@ -781,7 +1069,9 @@ impl Pipeline {
         // Single-tile fast path: latent fits within the tile. Skips
         // the Hann blend overhead.
         if lat_h <= tile_lat && lat_w <= tile_lat {
-            return self.predict_velocity_full(x, t_curr, cfg_y, cfg_ctx, guidance);
+            return self.predict_velocity_full(
+                x, t_curr, cfg_y, cfg_ctx, guidance, &[], 0.0,
+            );
         }
         let positions = crate::pipelines::tiled::tile_positions(
             lat_h, lat_w, tile_lat, stride_lat,
@@ -807,8 +1097,9 @@ impl Pipeline {
             // narrow extracts a tile; both axes use the same size since
             // tile_positions always emits square tiles.
             let x_tile = x.narrow(2, pos.y, pos.size)?.narrow(3, pos.x, pos.size)?;
-            let pred_tile =
-                self.predict_velocity_full(&x_tile, t_curr, cfg_y, cfg_ctx, guidance)?;
+            let pred_tile = self.predict_velocity_full(
+                &x_tile, t_curr, cfg_y, cfg_ctx, guidance, &[], 0.0,
+            )?;
             // Weighted contribution: pred_tile * hann broadcast over
             // (B, C, tile, tile).
             let weighted = pred_tile.broadcast_mul(&win)?;
@@ -842,6 +1133,37 @@ impl Pipeline {
     ///   `[CLIP-G_pooled (1280) || CLIP-L_pooled (768)]`.
     /// * `context` — `(1, 77 + t5_seq, 4096)` text hidden states =
     ///   `[ pad([CLIP-L_hidden || CLIP-G_hidden], 2048→4096), T5_hidden ]`.
+    /// v0.16 phase 3d: VAE-encode a ControlNet conditioning image
+    /// path into the `(1, 16, h/8, w/8)` latent the SD3 CN's
+    /// `pos_embed_input.proj` consumes. Same normalisation as the
+    /// main pipeline's `init_norm` path:
+    ///
+    /// ```text
+    ///     z_norm = (vae.encode(x).sample() - VAE_SHIFT) * VAE_SCALE
+    /// ```
+    ///
+    /// so the CN sees a conditioning latent in the same numerical
+    /// range as the noise it's added to.
+    fn encode_cn_conditioning(
+        &self,
+        path: &std::path::Path,
+        h: usize,
+        w: usize,
+    ) -> Result<Tensor> {
+        let pixels = crate::imaging::preprocess::sd_image_tensor(
+            path,
+            w as u32,
+            h as u32,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| format!("loading SD3 CN conditioning {}", path.display()))?;
+        let dist = self.vae.encode(&pixels)?;
+        let z = dist.sample()?;
+        let z_norm = ((z - VAE_SHIFT)? * VAE_SCALE)?;
+        Ok(z_norm)
+    }
+
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
         // ---------- CLIP-L ----------
         let mut clip_l_ids = self
@@ -965,6 +1287,52 @@ fn pad_tile_to_canvas(
     Ok(Tensor::cat(&[&top, &row, &bot], 2)?)
 }
 
+/// v0.16 phase 3d: element-wise sum of two residual lists for the
+/// SD3 ControlNet multi-CN composition path. Mirrors the same-named
+/// helper in `flux.rs`. When the accumulator is shorter than the new
+/// list, the new entries are appended; when longer, missing entries
+/// from the new list contribute zero (so the longer list's tail
+/// passes through unchanged).
+fn merge_residuals(
+    acc: Option<Vec<Tensor>>,
+    new: Vec<Tensor>,
+) -> Result<Vec<Tensor>> {
+    let mut acc = acc.unwrap_or_default();
+    for (i, t) in new.into_iter().enumerate() {
+        if i < acc.len() {
+            acc[i] = (&acc[i] + &t)?;
+        } else {
+            acc.push(t);
+        }
+    }
+    Ok(acc)
+}
+
+/// v0.16 phase 10: derive the progress-bar mode tag from the SD3
+/// pipeline's active feature flags. Pure function so the test suite
+/// can pin every combination without needing real weights.
+///
+/// Truth table:
+/// ```text
+///   tiled  init  mask  → tag
+///   T      T     T     → "tiled inpaint"
+///   T      T     F     → "tiled img2img"
+///   T      F     _     → "tiled"
+///   F      T     T     → "inpaint"
+///   F      T     F     → "img2img"
+///   F      F     _     → "denoise"
+/// ```
+fn sd3_mode_tag(tiled: bool, init: bool, mask: bool) -> &'static str {
+    match (tiled, init, mask) {
+        (true, true, true) => "tiled inpaint",
+        (true, true, false) => "tiled img2img",
+        (true, false, _) => "tiled",
+        (false, true, true) => "inpaint",
+        (false, true, false) => "img2img",
+        _ => "denoise",
+    }
+}
+
 fn shift_t(t: f64, shift: f64) -> f64 {
     if shift == 1.0 {
         t
@@ -1010,6 +1378,11 @@ pub async fn run(req: Request) -> Result<()> {
         device: req.device,
         loras: req.loras,
         lora_scale: req.lora_scale,
+        // v0.16 phase 3e: wired through t2i::run from CLI
+        // --control-spec flags. Scenarios build sd3::Pipeline
+        // directly and bypass `run` (set_controlnet_conditioning /
+        // set_controlnet_call_params drive per-task changes).
+        controlnets: req.controlnets,
     })
     .await?;
     p.generate(&GenRequest {
@@ -1028,6 +1401,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask_invert: req.mask_invert,
         strength: req.strength,
         tiled: req.tiled,
+        controlnet_conditioning: Vec::new(),
     })
 }
 
@@ -1173,5 +1547,111 @@ mod tests {
         assert!((ts[ts.len() - 1] - 0.0).abs() < 1e-12);
         // Sanity: result is non-empty and well-formed.
         assert!(full_steps_count >= 2);
+    }
+
+    // v0.16 phase 3e — merge_residuals (multi-CN composition).
+
+    fn cpu_tensor(v: &[f32]) -> Tensor {
+        Tensor::from_slice(v, (v.len(),), &Device::Cpu).unwrap()
+    }
+
+    fn tensor_to_vec(t: &Tensor) -> Vec<f32> {
+        t.to_vec1::<f32>().unwrap()
+    }
+
+    #[test]
+    fn merge_residuals_none_acc_passes_new_through() {
+        // First CN's residuals become the seed accumulator. The merge
+        // is a no-op pass-through when nothing was there before.
+        let new = vec![cpu_tensor(&[1.0, 2.0]), cpu_tensor(&[3.0, 4.0])];
+        let merged = merge_residuals(None, new).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![1.0, 2.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn merge_residuals_sums_same_length_lists() {
+        // Two CNs producing equal-length residual stacks compose by
+        // element-wise sum across each block index.
+        let a = vec![cpu_tensor(&[1.0, 2.0]), cpu_tensor(&[3.0, 4.0])];
+        let b = vec![cpu_tensor(&[10.0, 20.0]), cpu_tensor(&[30.0, 40.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![11.0, 22.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![33.0, 44.0]);
+    }
+
+    #[test]
+    fn merge_residuals_appends_when_new_is_longer() {
+        // A longer new-list extends the accumulator. (Won't happen in
+        // practice with sibling CNs targeting the same MMDiT — every
+        // slot produces num_layers residuals — but the helper handles
+        // the case for symmetry with the flux.rs sibling.)
+        let a = vec![cpu_tensor(&[1.0])];
+        let b = vec![cpu_tensor(&[2.0]), cpu_tensor(&[5.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![3.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![5.0]);
+    }
+
+    #[test]
+    fn merge_residuals_preserves_tail_when_new_is_shorter() {
+        // Shorter new-list contributes to the first N entries; the
+        // accumulator's tail passes through unchanged.
+        let a = vec![cpu_tensor(&[1.0]), cpu_tensor(&[2.0]), cpu_tensor(&[3.0])];
+        let b = vec![cpu_tensor(&[10.0])];
+        let merged = merge_residuals(Some(a), b).unwrap();
+        assert_eq!(merged.len(), 3);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![11.0]);
+        assert_eq!(tensor_to_vec(&merged[1]), vec![2.0]);
+        assert_eq!(tensor_to_vec(&merged[2]), vec![3.0]);
+    }
+
+    #[test]
+    fn merge_residuals_handles_empty_new() {
+        // Defensive: an empty new-list (no CN-residuals contributed
+        // this step) leaves the accumulator untouched.
+        let a = vec![cpu_tensor(&[1.0, 2.0])];
+        let merged = merge_residuals(Some(a), Vec::new()).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(tensor_to_vec(&merged[0]), vec![1.0, 2.0]);
+    }
+
+    // v0.16 phase 10 — mode tag truth table for SD3
+    // tiled / img2img / inpaint combinations.
+
+    #[test]
+    fn mode_tag_tiled_inpaint() {
+        assert_eq!(sd3_mode_tag(true, true, true), "tiled inpaint");
+    }
+
+    #[test]
+    fn mode_tag_tiled_img2img() {
+        assert_eq!(sd3_mode_tag(true, true, false), "tiled img2img");
+    }
+
+    #[test]
+    fn mode_tag_plain_tiled() {
+        // Mask without init is ignored — img2img requires init too.
+        assert_eq!(sd3_mode_tag(true, false, false), "tiled");
+        assert_eq!(sd3_mode_tag(true, false, true), "tiled");
+    }
+
+    #[test]
+    fn mode_tag_non_tiled_inpaint() {
+        assert_eq!(sd3_mode_tag(false, true, true), "inpaint");
+    }
+
+    #[test]
+    fn mode_tag_non_tiled_img2img() {
+        assert_eq!(sd3_mode_tag(false, true, false), "img2img");
+    }
+
+    #[test]
+    fn mode_tag_plain_denoise() {
+        assert_eq!(sd3_mode_tag(false, false, false), "denoise");
+        assert_eq!(sd3_mode_tag(false, false, true), "denoise");
     }
 }
