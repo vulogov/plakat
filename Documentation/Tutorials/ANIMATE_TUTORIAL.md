@@ -171,6 +171,15 @@ each frame manually via `plakat generate` and bundle into a GIF
 externally (the `image` crate's GIF encoder is what plakat uses
 internally).
 
+**Frame metadata** (v0.18). Every `frame-NNNN.png` carries an
+Auto1111-compatible `parameters` PNG tEXt chunk plus a sibling
+`frame-NNNN.json` sidecar. The chunk's prompt field reads
+`lerp(0.4375): "from prompt" | "to prompt"` so dragging a frame
+into A1111 / Civitai / ComfyUI shows the morph state at that point;
+the JSON sidecar carries the structured `Lerp t` / `Animate from`
+/ `Animate to` extras so you can re-render any frame standalone.
+Pass `--no-metadata` to skip both.
+
 ## 8. Limitations
 
 - **SD-family only** (SD 1.5 / SD 2.1 / SDXL). SDXL animate (added
