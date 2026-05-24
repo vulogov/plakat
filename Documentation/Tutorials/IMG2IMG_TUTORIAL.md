@@ -201,17 +201,34 @@ is lossless.
 
 ## 9. Limits
 
-- **Flux** isn't supported for img2img in v0.8. SD 1.5, SD 2.1,
-  SDXL all work.
-- **No outpainting.** img2img can't extend the canvas. If you need
-  to add new pixels beyond the input frame, that's outpainting,
-  which is on the roadmap as a separate subcommand.
-- **No scenario integration in v0.8.** You can't run img2img as
-  part of a `plakat scenario` batch yet. CLI-only.
 - **Mask resolution is quantised** to the latent grid
   (`image_w/8 × image_h/8`). Very fine mask boundaries lose
   precision — use feathering to absorb the quantisation rather
   than fight it.
+- **SD3 img2img doesn't compose with ControlNet** —
+  `--control-spec` on `plakat img2img --model sd35-*` bails
+  loud. Use `plakat generate` for SD3 CN-guided outputs.
+- **SD-family img2img + tiled** isn't wired — `plakat img2img
+  --tiled` is SD3 only (v0.16). For SD 1.5 / SDXL high-res
+  workflows, prefer `plakat generate --tiled` or chain
+  `plakat upscale` after a smaller t2i.
+
+What HAS been wired since the earlier "v0.8 limitations" of this
+tutorial:
+
+- **Flux img2img + inpaint** (v0.13) — `plakat img2img --model
+  flux-dev`, `flux-fill-dev` (inpaint), GGUF variants. See §
+  "Flux img2img and inpaint" in [`IMG2IMG.md`](../IMG2IMG.md).
+- **SD3 / SD3.5 img2img + inpaint** (v0.15) — RePaint-style
+  per-step mask blend. Tiled composes as of v0.16.
+- **Outpaint** (v0.13) — `plakat outpaint` subcommand expands
+  the canvas + builds the new-region mask, hands off to inpaint.
+- **Scenario integration** (v0.13) — per-task `init-image:` /
+  `mask:` / `strength:` / `outpaint:` for both SD and Flux.
+- **Tiled + Flux Fill** (v0.16) — `plakat img2img --model
+  flux-fill-dev --tiled` for 4K+ inpaint.
+- **Tiled + SD3 img2img / inpaint** (v0.16) — `plakat img2img
+  --model sd35-* --tiled` for 2K+ outputs.
 
 ## Where to next
 

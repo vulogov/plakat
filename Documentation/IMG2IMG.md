@@ -148,8 +148,10 @@ denoise directly rather than being a RePaint-style overlay, so
 Default `--guidance 30` per BFL's recommendation.
 
 Both Flux paths compose with LoRA (PEFT + AI-Toolkit formats), GGUF
-quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`), and
-ControlNet via the standard `--control-spec` grammar.
+quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`),
+ControlNet via the standard `--control-spec` grammar, and — as of
+**v0.16** — `--tiled` on Flux.1-Fill-dev for 4K+ inpaint via
+per-tile masked-latent + mask packing.
 
 ```bash
 # Flux img2img: re-imagine an init image, 70% strength
@@ -206,9 +208,28 @@ PEFT format is the supported convention (keys under
 `transformer.transformer_blocks.{i}.attn.*` / `ff.*` / `norm1*`).
 Affected Linears are merged into the MMDiT weights at load time.
 
-Not supported on SD3 img2img: ControlNet (`--control*`) and tiled
-denoise (`--tiled` works for SD3 t2i but doesn't compose with
-img2img/inpaint). Passing those flags raises an explicit error.
+Not supported on SD3 img2img: ControlNet (`--control*`). Passing
+those flags raises an explicit error.
+
+**Tiled SD3 img2img + inpaint** composes as of **v0.16** —
+`plakat img2img --tiled --tile-size 1024 --tile-stride 768` runs
+the rectified-flow init lerp + RePaint mask blend on the
+per-tile velocity prediction. The Hann blend doesn't know about
+the mask, so sharp mask boundaries can produce tile seams — use
+`--mask-feather PX` to smooth them.
+
+```bash
+# 2K SD3.5 img2img
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+    --prompt "rendered as a watercolor" \
+    --tiled --tile-size 1024 --tile-stride 768
+
+# 2K SD3.5 inpaint with a feathered mask
+plakat img2img photo.png --model sd35-medium --size 2048x2048 \
+    --mask sky.png --mask-feather 16 \
+    --prompt "dramatic stormy sky" \
+    --tiled --tile-size 1024
+```
 
 ## Outpaint
 
@@ -239,7 +260,9 @@ new region (better seam continuity than flat gray), and pins
 - **Scenarios** support per-task `init-image:` / `mask:` / `strength:`
   / `outpaint:` for both SD and Flux models as of v0.13. SD inpaint
   tasks in scenarios reload the pipeline per task (img2img doesn't yet
-  share the t2i `Pipeline::load`-once shape).
+  share the t2i `Pipeline::load`-once shape). Flux scenarios share a
+  single pipeline across tasks (v0.15 phase 7b); SD3 scenarios share a
+  single pipeline as of v0.16 phase 2.
 
 ## See also
 

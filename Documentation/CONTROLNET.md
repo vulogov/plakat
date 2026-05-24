@@ -325,9 +325,61 @@ NF4 + ControlNet composes — a single CN checkpoint trained against
 BF16 / GGUF / NF4 Flux works on all three (same residual interleave
 across the vendors). Tiled + NF4 + CN composes too.
 
-Not currently composing: tiled + Fill (per-tile mask slicing isn't
-supported), Flux Fill + Redux (incompatible text-side input
-layout), SD3 + ControlNet (SD3 CN model isn't shipped).
+Not currently composing: Flux Fill + Redux (incompatible
+text-side input layout).
+
+## SD3 / SD3.5 ControlNet (v0.16)
+
+ControlNet on SD3 / SD3.5 uses the [InstantX](https://huggingface.co/InstantX)
+adapter family — a small 12-layer transformer that consumes a
+VAE-encoded conditioning latent and produces per-block residuals
+added to the base MMDiT's joint-block hidden states.
+
+```bash
+# Auto-annotate from a reference photo. Canny works on every SD3 variant.
+plakat generate "a fantasy castle" \
+    --model sd35-medium --size 1024x1024 \
+    --control-spec 'canny:from=ref.jpg'
+
+# Strength + step-gating window (active for the first 60% only)
+plakat generate "..." --model sd35-large \
+    --control-spec 'depth:from=room.jpg:strength=0.8:start=0.0:end=0.6'
+
+# Multi-CN stack — residuals from both CNs sum per step
+plakat generate "..." --model sd35-medium \
+    --control-spec 'canny:from=edges.jpg:strength=0.7' \
+    --control-spec 'openpose:from=pose.jpg:strength=0.5'
+```
+
+**Resolver matrix** (which InstantX repo each `kind=` resolves to
+per variant):
+
+| Variant | Canny | Lineart | SoftEdge | OpenPose | Depth |
+|---|---|---|---|---|---|
+| `sd35-large` / `-turbo` | Canny | → Canny | Blur | (not released) | Depth |
+| `sd35-medium` / `sd3-medium` | Canny | → Canny | → Canny | Pose | (not released) |
+
+Combos marked `(not released)` bail loud with a clear error
+pointing to the matching variant. Lineart / SoftEdge fall back to
+Canny on Medium (same pattern Flux Union Pro v2 uses for the close
+edge channels).
+
+**Composition**:
+- Composes with `--lora` (SD3 LoRA stack — CN residuals add after
+  LoRA-merged forward).
+- Composes with multi-CN: each spec's residuals are summed
+  block-wise before being fed to the MMDiT.
+- Does **not** compose with `--tiled` — `predict_velocity_tiled`
+  bails loud (the CN's `pos_embed_input` operates on the
+  full-canvas latent, not tile slices).
+- The img2img CLI doesn't carry `--control-spec` — SD3 CN runs on
+  `plakat generate` only.
+
+**Recommended strength**: SD3 follows long prompts well, but
+ControlNet pulls the geometry hard. Start at `strength=0.7` —
+`1.0` often over-constrains the model. The step-gating window
+(`start=0.0:end=0.4`) is the gentler dial: structure pull early,
+free composition late.
 
 ## Limits
 
@@ -355,6 +407,9 @@ layout), SD3 + ControlNet (SD3 CN model isn't shipped).
   Fill's 384ch concat happens inside the Flux forward only.
   Residuals add at the 3072d hidden state (post `img_in`) the
   same way they do on standard Flux.
+- **SD3 / SD3.5 ControlNet** ships in v0.16 via the InstantX
+  adapter family. Multi-CN composes; `--tiled` doesn't (the CN
+  reads the full-canvas latent).
 - **Multi-persona scenarios** apply control only to the base layout
   pass, not the per-persona inpaint passes.
 
