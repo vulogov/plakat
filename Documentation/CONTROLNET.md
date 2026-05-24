@@ -1,7 +1,6 @@
 # `--control` — ControlNet conditioning
 
-Reference for plakat's ControlNet integration (introduced v0.9, SDXL
-added v0.10, auto-annotation added v0.10). For a runnable
+Reference for plakat's ControlNet integration. For a runnable
 walkthrough, see [`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
 
 ControlNet adds an extra layer of **structural guidance** to a
@@ -34,34 +33,34 @@ depth map controls **where** it sits in the frame.
 
 ```bash
 plakat generate "a cat sitting in a meadow, golden hour" \
-    --control depth \
-    --control-image scene_depth.png
+ --control depth \
+ --control-image scene_depth.png
 ```
 
 ```bash
 # Compose with portrait (the conditioner shapes the body pose):
 plakat portrait "a confident professional headshot" \
-    --photo face.jpg \
-    --control depth --control-image pose_depth.png
+ --photo face.jpg \
+ --control depth --control-image pose_depth.png
 ```
 
 ```bash
 # Compose with img2img (use the source as both starting point and
 # control signal):
 plakat img2img sketch.png --prompt "polished oil painting" \
-    --control depth --control-image sketch.png
+ --control depth --control-image sketch.png
 ```
 
 ## Flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--control <KIND>` | (off) | Conditioner kind. Shipped: `depth`, `canny`, `softedge`, `lineart`, `openpose`. Triggers ControlNet activation. Works on SD 1.5, SDXL, and Flux (v0.12+); the architecture is auto-detected from `--model`. |
+| `--control <KIND>` | (off) | Conditioner kind. Shipped: `depth`, `canny`, `softedge`, `lineart`, `openpose`. Triggers ControlNet activation. Works on SD 1.5, SDXL, Flux, and SD3 / SD3.5; the architecture is auto-detected from `--model`. |
 | `--control-image <PATH>` | — | Path to a **pre-rendered** conditioning image (a real depth map, edge map, etc.). Mutually exclusive with `--control-from`. |
-| `--control-from <PATH>` | — | **v0.10**: path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
+| `--control-from <PATH>` | — | Path to an **ordinary image** to auto-annotate via the matching annotator (e.g. Depth-Anything-V2 for `--control depth`). Mutually exclusive with `--control-image`. |
 | `--control-strength <F>` | `1.0` | Multiplier applied to ControlNet residuals before adding to the UNet. Range `[0.0, ~2.0]`. Sweet spot 0.6–1.1. |
-| `--control-start <F>` | `0.0` | **v0.10**: fractional timestep at which ControlNet becomes active. `0.0` = active from the start. |
-| `--control-end <F>` | `1.0` | **v0.10**: fractional timestep at which ControlNet stops applying. `1.0` = active through to the end. Common pattern: `--control-end 0.5` locks composition early, then lets the prompt drive late texture / atmosphere passes. |
+| `--control-start <F>` | `0.0` | Fractional timestep at which ControlNet becomes active. `0.0` = active from the start. |
+| `--control-end <F>` | `1.0` | Fractional timestep at which ControlNet stops applying. `1.0` = active through to the end. Common pattern: `--control-end 0.5` locks composition early, then lets the prompt drive late texture / atmosphere passes. |
 
 All four flags work on `plakat generate`, `plakat portrait`, and
 `plakat img2img`. They also have a scenario-level equivalent (see
@@ -79,39 +78,39 @@ the depth structure of the source.
 For `--control depth`, the conditioning image is a depth map:
 
 - **Brightness = depth.** White = near (foreground); black = far
-  (sky, background); intermediate grey = mid-distance.
+ (sky, background); intermediate grey = mid-distance.
 - **Same resolution as your generation** (or close — plakat resizes
-  with a triangle filter; the actual model resolution is the latent
-  grid you're generating at).
+ with a triangle filter; the actual model resolution is the latent
+ grid you're generating at).
 - **Grayscale, RGB, or RGBA accepted.** RGB inputs are read as RGB
-  directly. Grayscale gets replicated across all three channels.
-  RGBA: the RGB channels are used; alpha is ignored.
+ directly. Grayscale gets replicated across all three channels.
+ RGBA: the RGB channels are used; alpha is ignored.
 
 ### Where to get a depth map
 
-The simplest path, new in v0.10: **don't generate one manually**.
+The simplest path: **don't generate one manually**.
 Use `--control-from PATH` and plakat runs Depth-Anything-V2 on
 the source image for you, then feeds the result to ControlNet.
 
 ```bash
 # Auto-annotate a reference photo:
 plakat generate "a fox in tall grass" \
-    --control depth --control-from photo_with_layout.jpg
+ --control depth --control-from photo_with_layout.jpg
 ```
 
 When you need a pre-rendered map (more control, repeatable
 output), the manual options:
 
 1. **Run a depth estimator yourself.** [Depth-Anything-V2 online](https://huggingface.co/spaces/LiheYoung/Depth-Anything-V2)
-   or any MiDaS/DPT tool. Save the depth output as PNG; pass via
-   `--control-image`.
+ or any MiDaS/DPT tool. Save the depth output as PNG; pass via
+ `--control-image`.
 2. **Use a rendering engine's depth pass.** Blender, Unreal,
-   etc. expose a depth-buffer output. Save as PNG; pass via
-   `--control-image`.
+ etc. expose a depth-buffer output. Save as PNG; pass via
+ `--control-image`.
 3. **Paint one by hand.** A grayscale painter's interpretation of
-   "near = white, far = black" works surprisingly well.
+ "near = white, far = black" works surprisingly well.
 4. **Generate one procedurally.** The runnable tutorial does this
-   in 80 lines of Rust — see `examples/draw_control_sample.rs`.
+ in 80 lines of Rust — see `examples/draw_control_sample.rs`.
 
 ControlNet-Depth is trained on proper depth maps but tolerates
 fairly rough approximations.
@@ -125,20 +124,20 @@ and uses the binary edge map as the conditioner.
 
 ```bash
 plakat generate "an oil painting of a stylised landscape" \
-    --control canny --control-from photo.jpg
+ --control canny --control-from photo.jpg
 ```
 
 When you need a pre-rendered edge map (e.g. for repeatable
 identical edges across many prompts):
 
 - **Run Canny in any image editor.** GIMP: Filters → Edge-Detect
-  → Edge. Photoshop: Filter → Stylize → Find Edges. Output should
-  be black background with white edges (invert if your tool emits
-  the opposite).
+ → Edge. Photoshop: Filter → Stylize → Find Edges. Output should
+ be black background with white edges (invert if your tool emits
+ the opposite).
 - **Sketch by hand.** Line art works directly — black lines on
-  white background, then invert in your editor.
+ white background, then invert in your editor.
 - **Use a 3D engine's edge pass.** Blender's Freestyle render,
-  Unreal's stylized post-process.
+ Unreal's stylized post-process.
 
 ControlNet-Canny is far more literal than Depth — it pins the
 output's structural lines very tightly to the input edges. Loose,
@@ -183,7 +182,7 @@ plakat feature:
 | `--photo` (portrait) | Composes — portrait IP-Adapter and ControlNet operate at different attention layers. |
 | `--mask` (img2img inpaint) | Composes — control applies inside the mask only (since the mask gates where denoise actually runs). |
 | Multi-persona scenarios | Control applies to the base layout pass only; per-persona inpaint passes skip it to avoid double-conditioning. |
-| Flux | Supported via Shakker-Labs Union Pro v2 (v0.12 + v0.13). See the "Flux ControlNet" section below for the canny/depth/openpose/lineart/softedge map. Composes with Flux LoRA, GGUF, tiled denoise, and img2img init images. |
+| Flux | Supported via Shakker-Labs Union Pro v2. See the "Flux ControlNet" section below for the canny/depth/openpose/lineart/softedge map. Composes with Flux LoRA, GGUF, tiled denoise, and img2img init images. |
 
 ## Scenarios
 
@@ -194,31 +193,31 @@ source is either `image:` (pre-rendered map) or `auto-from:`
 ```hjson
 tasks:
 [
-    {
-        name: depth_guided_meadow_prerendered
-        scene: meadow
-        weather: golden_hour
-        prompt: "a fox in tall grass"
-        control: {
-            kind: depth
-            image: ./hints/meadow_depth.png
-            strength: 0.85       # optional, defaults to 1.0
-        }
-    }
+ {
+ name: depth_guided_meadow_prerendered
+ scene: meadow
+ weather: golden_hour
+ prompt: "a fox in tall grass"
+ control: {
+ kind: depth
+ image: ./hints/meadow_depth.png
+ strength: 0.85 # optional, defaults to 1.0
+ }
+ }
 
-    {
-        # v0.10: auto-annotate any image — depth is estimated by
-        # Depth-Anything-V2-small at task time.
-        name: depth_guided_from_photo
-        scene: meadow
-        weather: golden_hour
-        prompt: "a fox in tall grass"
-        control: {
-            kind: depth
-            auto-from: ./references/composition.jpg
-            strength: 0.9
-        }
-    }
+ {
+ # Auto-annotate any image — depth is estimated by
+ # Depth-Anything-V2-small at task time.
+ name: depth_guided_from_photo
+ scene: meadow
+ weather: golden_hour
+ prompt: "a fox in tall grass"
+ control: {
+ kind: depth
+ auto-from: ./references/composition.jpg
+ strength: 0.9
+ }
+ }
 ]
 ```
 
@@ -227,10 +226,9 @@ scenario run — the first task that needs `kind: depth` triggers a
 weight download; subsequent tasks reuse the loaded network. Same
 lazy-load pattern as `--smart-zones` uses for Depth-Anything-V2.
 
-Different kinds in the same scenario load independently (so if
-v0.10 adds canny, you can have one task with `kind: depth` and
-another with `kind: canny` in the same file, each loading its
-own weights once).
+Different kinds in the same scenario load independently — you can
+have one task with `kind: depth` and another with `kind: canny` in
+the same file, each loading its own weights once.
 
 ## Cost and first-run behaviour
 
@@ -278,7 +276,7 @@ All are diffusers-format. WebUI-format ControlNet checkpoints (with
 `control_model.input_blocks.…` key naming) are not currently
 supported — they'd need a key remapping layer we don't ship.
 
-## Flux ControlNet (v0.12 + v0.13)
+## Flux ControlNet
 
 ControlNet on Flux uses Shakker-Labs Union Pro v2 by default — a
 single weight set covering canny / softedge / openpose / depth /
@@ -287,25 +285,25 @@ lineart via a mode index. The CLI grammar is identical to SD:
 ```bash
 # Auto-annotate a reference photo
 plakat generate "..." --model flux-dev \
-    --control-spec 'depth:from=ref.jpg'
+ --control-spec 'depth:from=ref.jpg'
 
 # Pre-rendered conditioning map
 plakat generate "..." --model flux-dev \
-    --control-spec 'canny:image=edges.png:strength=0.6'
+ --control-spec 'canny:image=edges.png:strength=0.6'
 
 # Step gating: lock structure early, release later
 plakat generate "..." --model flux-dev \
-    --control-spec 'depth:from=ref.jpg:start=0.0:end=0.4'
+ --control-spec 'depth:from=ref.jpg:start=0.0:end=0.4'
 
 # Multi-Flux-CN — residuals from both CNs sum per step
 plakat generate "..." --model flux-dev \
-    --control-spec 'depth:from=scene.jpg:strength=0.8' \
-    --control-spec 'canny:image=edges.png:strength=0.5'
+ --control-spec 'depth:from=scene.jpg:strength=0.8' \
+ --control-spec 'canny:image=edges.png:strength=0.5'
 
 # Composes with GGUF + tiled hi-res
 plakat generate "..." --model flux-dev-gguf --size 2048x2048 \
-    --tiled --tile-size 1024 --tile-stride 768 \
-    --control-spec 'depth:from=ref.jpg'
+ --tiled --tile-size 1024 --tile-stride 768 \
+ --control-spec 'depth:from=ref.jpg'
 ```
 
 Flux ControlNet composes with LoRA (PEFT + AI-Toolkit), GGUF and
@@ -317,8 +315,8 @@ conditioning), img2img init images, and **Flux.1-Fill-dev** (Fill's
 ```bash
 # Inpaint a region with Flux.1-Fill-dev + structure-preserving CN
 plakat img2img photo.png --mask region.png --model flux-fill-dev \
-    --prompt "ornate stained glass window" \
-    --control-spec 'depth:from=photo.png:strength=0.7'
+ --prompt "ornate stained glass window" \
+ --control-spec 'depth:from=photo.png:strength=0.7'
 ```
 
 NF4 + ControlNet composes — a single CN checkpoint trained against
@@ -328,7 +326,7 @@ across the vendors). Tiled + NF4 + CN composes too.
 Not currently composing: Flux Fill + Redux (incompatible
 text-side input layout).
 
-## SD3 / SD3.5 ControlNet (v0.16)
+## SD3 / SD3.5 ControlNet
 
 ControlNet on SD3 / SD3.5 uses the [InstantX](https://huggingface.co/InstantX)
 adapter family — a small 12-layer transformer that consumes a
@@ -338,17 +336,17 @@ added to the base MMDiT's joint-block hidden states.
 ```bash
 # Auto-annotate from a reference photo. Canny works on every SD3 variant.
 plakat generate "a fantasy castle" \
-    --model sd35-medium --size 1024x1024 \
-    --control-spec 'canny:from=ref.jpg'
+ --model sd35-medium --size 1024x1024 \
+ --control-spec 'canny:from=ref.jpg'
 
 # Strength + step-gating window (active for the first 60% only)
 plakat generate "..." --model sd35-large \
-    --control-spec 'depth:from=room.jpg:strength=0.8:start=0.0:end=0.6'
+ --control-spec 'depth:from=room.jpg:strength=0.8:start=0.0:end=0.6'
 
 # Multi-CN stack — residuals from both CNs sum per step
 plakat generate "..." --model sd35-medium \
-    --control-spec 'canny:from=edges.jpg:strength=0.7' \
-    --control-spec 'openpose:from=pose.jpg:strength=0.5'
+ --control-spec 'canny:from=edges.jpg:strength=0.7' \
+ --control-spec 'openpose:from=pose.jpg:strength=0.5'
 ```
 
 **Resolver matrix** (which InstantX repo each `kind=` resolves to
@@ -366,14 +364,14 @@ edge channels).
 
 **Composition**:
 - Composes with `--lora` (SD3 LoRA stack — CN residuals add after
-  LoRA-merged forward).
+ LoRA-merged forward).
 - Composes with multi-CN: each spec's residuals are summed
-  block-wise before being fed to the MMDiT.
+ block-wise before being fed to the MMDiT.
 - Does **not** compose with `--tiled` — `predict_velocity_tiled`
-  bails loud (the CN's `pos_embed_input` operates on the
-  full-canvas latent, not tile slices).
+ bails loud (the CN's `pos_embed_input` operates on the
+ full-canvas latent, not tile slices).
 - The img2img CLI doesn't carry `--control-spec` — SD3 CN runs on
-  `plakat generate` only.
+ `plakat generate` only.
 
 **Recommended strength**: SD3 follows long prompts well, but
 ControlNet pulls the geometry hard. Start at `strength=0.7` —
@@ -384,45 +382,45 @@ free composition late.
 ## Limits
 
 - **SDXL ControlNet weights are heavy.** Plakat loads the full-size
-  `diffusers/controlnet-depth-sdxl-1.0` (or `-canny-`) as the primary
-  SDXL mirror — ~2.5 GB fp16 per checkpoint. We do NOT use diffusers'
-  `-small` variant, which ships a reduced architecture (basic
-  down-blocks replacing cross-attn ones) that doesn't match candle's
-  standard SDXL UNet config.
+ `diffusers/controlnet-depth-sdxl-1.0` (or `-canny-`) as the primary
+ SDXL mirror — ~2.5 GB fp16 per checkpoint. We do NOT use diffusers'
+ `-small` variant, which ships a reduced architecture (basic
+ down-blocks replacing cross-attn ones) that doesn't match candle's
+ standard SDXL UNet config.
 - **Flux ControlNet ships as Union Pro v2 only.** Specialised Flux
-  CN repos (e.g. InstantX depth-only) aren't supported — the Union
-  model covers all five kinds via mode index.
+ CN repos (e.g. InstantX depth-only) aren't supported — the Union
+ model covers all five kinds via mode index.
 - **Conditioners shipped.** SD/SDXL: depth, canny, openpose,
-  lineart, softedge. Flux: same five via Union Pro v2 (canny and
-  lineart both map to Union mode 0).
+ lineart, softedge. Flux: same five via Union Pro v2 (canny and
+ lineart both map to Union mode 0).
 - **Timestep windowing is supported** via `--control-start` /
-  `--control-end` (or per-spec `start=…:end=…`). Diffusers
-  convention: progress is measured against the **full** schedule.
-  Works on both SD and Flux.
+ `--control-end` (or per-spec `start=…:end=…`). Diffusers
+ convention: progress is measured against the **full** schedule.
+ Works on both SD and Flux.
 - **Multi-ControlNet** is supported on both SD and Flux via
-  repeatable `--control-spec`. Residuals sum per block.
+ repeatable `--control-spec`. Residuals sum per block.
 - **Tiled + Flux CN** composes. Each tile sees its cropped
-  conditioning.
+ conditioning.
 - **Flux Fill + CN** composes. The CN sees the 64ch noise tokens;
-  Fill's 384ch concat happens inside the Flux forward only.
-  Residuals add at the 3072d hidden state (post `img_in`) the
-  same way they do on standard Flux.
-- **SD3 / SD3.5 ControlNet** ships in v0.16 via the InstantX
-  adapter family. Multi-CN composes; `--tiled` doesn't (the CN
-  reads the full-canvas latent).
+ Fill's 384ch concat happens inside the Flux forward only.
+ Residuals add at the 3072d hidden state (post `img_in`) the
+ same way they do on standard Flux.
+- **SD3 / SD3.5 ControlNet** ships via the InstantX adapter
+ family. Multi-CN composes; `--tiled` doesn't (the CN reads the
+ full-canvas latent).
 - **Multi-persona scenarios** apply control only to the base layout
-  pass, not the per-persona inpaint passes.
+ pass, not the per-persona inpaint passes.
 
 ## See also
 
 - [Runnable tutorial](../examples/tutorials/CONTROL/) — three
-  scripts + a procedurally-drawn depth map.
+ scripts + a procedurally-drawn depth map.
 - [`Documentation/Tutorials/CONTROLNET_TUTORIAL.md`](Tutorials/CONTROLNET_TUTORIAL.md)
-  — narrative walkthrough.
+ — narrative walkthrough.
 - [`GENERATE.md`](GENERATE.md) — most flags are shared with `plakat
-  generate`.
+ generate`.
 - [`IMG2IMG.md`](IMG2IMG.md) — img2img reference (composes cleanly
-  with `--control`).
+ with `--control`).
 - [`PERSONA.md`](PERSONA.md) — for portrait conditioning.
 - [`APPLE_REQUIREMENTS.md`](APPLE_REQUIREMENTS.md) — chip + memory
-  tiers and expected per-image speeds.
+ tiers and expected per-image speeds.

@@ -13,67 +13,66 @@ If you're new to plakat, work through these in order:
 
 1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **start here.**
    Your first generation, the flags that matter, seeds for
-   reproducibility, and moving from one-off CLI commands to batch
-   scenarios. The foundation everything else builds on. **v0.16
-   additions:** wildcards (§12), CLIP-skip (§13), ADetailer face
-   refinement (§14), Civitai browser (§15), Hires fix (§16),
-   Textual Inversion inspector (§17).
+   reproducibility, prompt wildcards, CLIP-skip, ADetailer face
+   refinement, Civitai browser + downloader, Hires fix, Textual
+   Inversion inspector, and moving from one-off CLI commands to
+   batch scenarios. The foundation everything else builds on.
 
 2. [`PORTRAIT_TUTORIAL.md`](PORTRAIT_TUTORIAL.md) — making portraits,
-   including identity preservation (rendering a specific person from
-   a reference photo), putting portraits into broader scenes via
-   scenarios, and multi-persona compositions.
+ including identity preservation (rendering a specific person from
+ a reference photo), putting portraits into broader scenes via
+ scenarios, and multi-persona compositions.
 
 3. [`STYLES_TUTORIAL.md`](STYLES_TUTORIAL.md) — applying art styles
-   to your generations: pick by name, detect from a reference photo,
-   combine styles with portraits, use styles in scenarios.
+ to your generations: pick by name, detect from a reference photo,
+ combine styles with portraits, use styles in scenarios.
 
 4. [`HOW_TO_CREATE_MY_OWN_STYLE.md`](HOW_TO_CREATE_MY_OWN_STYLE.md) —
-   build your own style catalog from a folder of images. Covers the
-   end-to-end pipeline (organize → init → build → use) and adding
-   LoRAs to make detection turn into real style transfer.
+ build your own style catalog from a folder of images. Covers the
+ end-to-end pipeline (organize → init → build → use) and adding
+ LoRAs to make detection turn into real style transfer.
 
 5. [`ARTEFACTS_TUTORIAL.md`](ARTEFACTS_TUTORIAL.md) — composite named
-   PNG cutouts (trees, sky elements, houses) into named zones of
-   your generated images. Useful when you need specific objects in
-   specific places, or for consistent visual elements across many
-   scenes. The hands-on runnable companion lives at
-   [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
-   (seven shell scripts + an HJSON scenario, end-to-end).
+ PNG cutouts (trees, sky elements, houses) into named zones of
+ your generated images. Useful when you need specific objects in
+ specific places, or for consistent visual elements across many
+ scenes. The hands-on runnable companion lives at
+ [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
+ (seven shell scripts + an HJSON scenario, end-to-end).
 
 6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
-   image with a prompt (img2img), or repaint just a masked region
-   (inpaint). Same `plakat img2img` subcommand drives both modes —
-   adding `--mask PATH` flips img2img into inpaint. The hands-on
-   companion lives at
-   [`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)
-   (four shell scripts + a procedurally-drawn sample input + mask).
+ image with a prompt (img2img), or repaint just a masked region
+ (inpaint). Same `plakat img2img` subcommand drives both modes —
+ adding `--mask PATH` flips img2img into inpaint. The hands-on
+ companion lives at
+ [`examples/tutorials/IMG2IMG/`](../../examples/tutorials/IMG2IMG/)
+ (four shell scripts + a procedurally-drawn sample input + mask).
 
 7. [`CONTROLNET_TUTORIAL.md`](CONTROLNET_TUTORIAL.md) — add
-   structural guidance to any generation. v0.10 ships two
-   conditioners (depth + canny) on both SD 1.5 and SDXL. Three
-   ways to supply the conditioning image: `--control-image PATH`
-   (pre-rendered), `--control-from PATH` (auto-annotate any
-   image), or — on `plakat img2img` — let the source image
-   annotate itself by default. Composes cleanly with generate /
-   portrait / img2img / scenarios. The hands-on companion lives at
-   [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
-   (six shell scripts + a procedurally-drawn sample depth map).
+ structural guidance to any generation. ships two
+ conditioners (depth + canny) on both SD 1.5 and SDXL. Three
+ ways to supply the conditioning image: `--control-image PATH`
+ (pre-rendered), `--control-from PATH` (auto-annotate any
+ image), or — on `plakat img2img` — let the source image
+ annotate itself by default. Composes cleanly with generate /
+ portrait / img2img / scenarios. The hands-on companion lives at
+ [`examples/tutorials/CONTROL/`](../../examples/tutorials/CONTROL/)
+ (six shell scripts + a procedurally-drawn sample depth map).
 
 8. [`FLUX_TUTORIAL.md`](FLUX_TUTORIAL.md) — Black Forest Labs'
    Flux family. Covers quantization (GGUF + NF4), LoRA, img2img +
-   Fill inpaint, ControlNet, tiled hi-res, Redux image conditioning,
-   the "concept" variants (Canny-dev / Depth-dev), and the `--fast`
-   distillation presets. Memory tiers for picking the right backbone
-   on your GPU. **v0.16:** Tiled + Flux.1-Fill-dev composes for
-   4K+ inpaint.
+   Fill inpaint (including tiled Flux Fill for 4K+ inpaint),
+   ControlNet, tiled hi-res, Redux image conditioning, the
+   "concept" variants (Canny-dev / Depth-dev), and the `--fast`
+   distillation presets. Memory tiers for picking the right
+   backbone on your GPU.
 
 9. [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — Stable Diffusion 3 / 3.5
    family. MMDiT architecture, the four variants (SD3 / SD3.5
    Medium / SD3.5 Large / SD3.5 Large Turbo), the rectified-flow
-   sampler, LoRA, img2img + RePaint-style inpaint, tiled hi-res.
-   **v0.16:** SD3 ControlNet via the InstantX adapter family,
-   Tiled + img2img / inpaint composition.
+   sampler, LoRA, img2img + RePaint-style inpaint, tiled hi-res
+   (including tiled img2img / inpaint), and SD3 ControlNet via
+   the InstantX adapter family.
 
 ## Specialized portrait techniques
 
@@ -82,14 +81,14 @@ creative applications of plakat's weighted multi-reference portrait
 feature:
 
 - [`PORTRAIT_HOW_TO_AGE.md`](PORTRAIT_HOW_TO_AGE.md) — interpolate a
-  person across ages using photos of the same person at different
-  ages and weighted merging. Render plausible portraits at any
-  intermediate age.
+ person across ages using photos of the same person at different
+ ages and weighted merging. Render plausible portraits at any
+ intermediate age.
 
 - [`PORTRAIT_CHILD_PHOTO.md`](PORTRAIT_CHILD_PHOTO.md) — blend two
-  parent photos into a plausible child portrait. Combines identity-
-  space merging with age-appropriate prompt cues to produce "average
-  child" or "looks more like X" variants.
+ parent photos into a plausible child portrait. Combines identity-
+ space merging with age-appropriate prompt cues to produce "average
+ child" or "looks more like X" variants.
 
 ## What each tutorial assumes
 

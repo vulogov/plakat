@@ -30,13 +30,13 @@ your environment.
 - [Quick start](#quick-start)
 - [HJSON schema](#hjson-schema)
 - [Persona fields](#persona-fields)
-  - [`name`](#name)
-  - [`photo`](#photo)
-  - [`identity`](#identity)
-  - [`face-strength`](#face-strength)
-  - [`face-bbox`](#face-bbox)
-  - [`face-landmarks`](#face-landmarks)
-  - [`negative`](#negative-on-persona)
+ - [`name`](#name)
+ - [`photo`](#photo)
+ - [`identity`](#identity)
+ - [`face-strength`](#face-strength)
+ - [`face-bbox`](#face-bbox)
+ - [`face-landmarks`](#face-landmarks)
+ - [`negative`](#negative-on-persona)
 - [Task usage: `task.personas`](#task-usage-taskpersonas)
 - [The per-image pipeline with personas](#the-per-image-pipeline-with-personas)
 - [Output file naming](#output-file-naming)
@@ -59,48 +59,48 @@ your environment.
 
 ```hjson
 {
-    enhancer: deepseek
-    model:    sd15
-    out:      ./out/scenario
+ enhancer: deepseek
+ model: sd15
+ out: ./out/scenario
 
-    personas:
-    [
-        {
-            name: alice
-            photo: ./refs/alice.jpg
-            face-strength: 0.85
-        }
-    ]
+ personas:
+ [
+ {
+ name: alice
+ photo: ./refs/alice.jpg
+ face-strength: 0.85
+ }
+ ]
 
-    scene:
-    [
-        {
-            name: cafe
-            prompt: "a small Parisian cafe, marble tables, brass fixtures"
-        }
-    ]
+ scene:
+ [
+ {
+ name: cafe
+ prompt: "a small Parisian cafe, marble tables, brass fixtures"
+ }
+ ]
 
-    weather:
-    [
-        {
-            name: morning
-            prompt: "soft golden morning light through a side window"
-        }
-    ]
+ weather:
+ [
+ {
+ name: morning
+ prompt: "soft golden morning light through a side window"
+ }
+ ]
 
-    tasks:
-    [
-        {
-            name: alice_at_cafe
-            scene: cafe
-            weather: morning
-            prompt: "having an espresso, looking thoughtful"
-            personas:
-            [
-                alice
-            ]
-        }
-    ]
+ tasks:
+ [
+ {
+ name: alice_at_cafe
+ scene: cafe
+ weather: morning
+ prompt: "having an espresso, looking thoughtful"
+ personas:
+ [
+ alice
+ ]
+ }
+ ]
 }
 ```
 
@@ -123,67 +123,66 @@ The full persona-related surface looks like this:
 
 ```hjson
 {
-    # ===== top-level (alongside scene / weather / tasks) =====
-    personas:
-    [
-        {
-            name:          alice                    # required, unique
-            photo:         ./refs/alice.jpg         # required; PNG/JPEG/WebP
-            identity:      plus-face                # plus-face | plus-face-sdxl | faceid | faceid-sdxl
-            face-strength: 0.85                     # default 0.8 (0..2)
-            negative:      "smiling, mustache"      # optional; prepended to task negative
-        }
-        # … more personas
-    ]
+ # ===== top-level (alongside scene / weather / tasks) =====
+ personas:
+ [
+ {
+ name: alice # required, unique
+ photo: ./refs/alice.jpg # required; PNG/JPEG/WebP
+ identity: plus-face # plus-face | plus-face-sdxl | faceid | faceid-sdxl
+ face-strength: 0.85 # default 0.8 (0..2)
+ negative: "smiling, mustache" # optional; prepended to task negative
+ }
+ # … more personas
+ ]
 
-    # ===== inside a task: two accepted forms =====
-    tasks:
-    [
-        # --- Form 1: bare-name. One persona fills the whole image.
-        {
-            name:    alice_at_cafe
-            scene:   cafe
-            weather: morning
-            prompt:  "having an espresso"
-            personas:
-            [
-                alice
-            ]
-        }
+ # ===== inside a task: two accepted forms =====
+ tasks:
+ [
+ # --- Form 1: bare-name. One persona fills the whole image.
+ {
+ name: alice_at_cafe
+ scene: cafe
+ weather: morning
+ prompt: "having an espresso"
+ personas:
+ [
+ alice
+ ]
+ }
 
-        # --- Form 2: {name, bbox}. One or more personas, each
-        # composited into a region. `bbox: [x0, y0, x1, y1]` is normalised
-        # to [0, 1] in image space (0,0 = top-left).
-        {
-            name:    alice_and_bob_meeting
-            scene:   boardroom
-            weather: indoor
-            prompt:  "two colleagues discussing a document"
-            personas:
-            [
-                {
-                    name: alice
-                    bbox: [0.0, 0.1, 0.45, 0.9]
-                }
-                {
-                    name: bob
-                    bbox: [0.55, 0.1, 1.0, 0.9]
-                }
-            ]
-        }
-    ]
+ # --- Form 2: {name, bbox}. One or more personas, each
+ # composited into a region. `bbox: [x0, y0, x1, y1]` is normalised
+ # to [0, 1] in image space (0,0 = top-left).
+ {
+ name: alice_and_bob_meeting
+ scene: boardroom
+ weather: indoor
+ prompt: "two colleagues discussing a document"
+ personas:
+ [
+ {
+ name: alice
+ bbox: [0.0, 0.1, 0.45, 0.9]
+ }
+ {
+ name: bob
+ bbox: [0.55, 0.1, 1.0, 0.9]
+ }
+ ]
+ }
+ ]
 }
 ```
 
-**Form rules:**
-
+**Form rules**
 - Within one task you must pick one form — bare names OR `{name, bbox}`
-  objects. Mixing the two within a single task is rejected at load time.
+ objects. Mixing the two within a single task is rejected at load time.
 - Bare form is limited to **exactly 1 persona** (it has no way to place
-  multiple personas without bboxes).
+ multiple personas without bboxes).
 - Bbox form accepts 1 or more personas. A single-persona bbox task is
-  legal and useful when you want finer control over where the face lands
-  than "whole image".
+ legal and useful when you want finer control over where the face lands
+ than "whole image".
 
 > ⚠️ HJSON inline-list-inside-inline-object (`{ personas: [alice] }` on
 > one line) fails to parse with deser-hjson. Always use the multi-line
@@ -206,7 +205,7 @@ Validation:
 
 - Duplicate names error at load time: `duplicate persona name "alice"`.
 - A task referring to a name that isn't defined errors with the list of
-  valid names: `task "..." references unknown persona "ghost" (defined: [alice, bob])`.
+ valid names: `task "..." references unknown persona "ghost" (defined: [alice, bob])`.
 
 ### `photo` (single) or `photos` (multi-reference)
 
@@ -228,12 +227,12 @@ A list of reference photos whose facial features are merged at the
 encoder's embedding-space level (not pixel-blended). Use this when:
 
 - You have **multiple photos of the same person** — averaging across them
-  dampens single-photo noise (lighting, pose) and produces a more
-  representative identity embedding.
+ dampens single-photo noise (lighting, pose) and produces a more
+ representative identity embedding.
 - You want to **blend two people** for a fictional likeness or family-
-  resemblance look.
+ resemblance look.
 - You want to **weight traits across look-alikes** (e.g. 70% one
-  reference + 30% another).
+ reference + 30% another).
 
 Two HJSON forms accepted (mix freely within a list — both parse):
 
@@ -241,47 +240,45 @@ Two HJSON forms accepted (mix freely within a list — both parse):
 # Shorthand strings: "path:weight" (CLI grammar). Weight optional.
 photos:
 [
-    "./refs/alice_smile.jpg:0.5"
-    "./refs/alice_neutral.jpg:0.3"
-    "./refs/alice_serious.jpg:0.2"
+ "./refs/alice_smile.jpg:0.5"
+ "./refs/alice_neutral.jpg:0.3"
+ "./refs/alice_serious.jpg:0.2"
 ]
 
 # Full-object form: explicit path + weight fields.
 photos:
 [
-    {
-        path: ./refs/alice_smile.jpg
-        weight: 0.5
-    }
-    {
-        path: ./refs/alice_neutral.jpg
-        weight: 0.3
-    }
-    {
-        path: ./refs/alice_serious.jpg
-        weight: 0.2
-    }
+ {
+ path: ./refs/alice_smile.jpg
+ weight: 0.5
+ }
+ {
+ path: ./refs/alice_neutral.jpg
+ weight: 0.3
+ }
+ {
+ path: ./refs/alice_serious.jpg
+ weight: 0.2
+ }
 ]
 ```
 
-**Weight semantics:**
-
+**Weight semantics**
 - Weights are **proportions**, normalized to sum to 1.0 internally. The
-  total identity influence is independently controlled by
-  `face-strength` (same as for single-photo).
+ total identity influence is independently controlled by
+ `face-strength` (same as for single-photo).
 - **Missing weights split the remainder equally.** With three photos and
-  weights `[0.6, _, _]`, the unweighted entries each get `(1.0 − 0.6) / 2 = 0.2`.
-  With all weights missing, every photo gets `1/N`.
+ weights `[0.6, _, _]`, the unweighted entries each get `(1.0 − 0.6) / 2 = 0.2`.
+ With all weights missing, every photo gets `1/N`.
 - **All-explicit weights are renormalized** if they don't already sum to
-  1.0 — `[7, 3]` is treated the same as `[0.7, 0.3]`.
+ 1.0 — `[7, 3]` is treated the same as `[0.7, 0.3]`.
 - **Explicit overflow + auto-weights** errors at load time: if explicit
-  weights already exceed 1.0 and at least one entry is auto-weighted,
-  there's no room for the auto entries. The error message tells you to
-  rebalance or drop the auto entries.
+ weights already exceed 1.0 and at least one entry is auto-weighted,
+ there's no room for the auto entries. The error message tells you to
+ rebalance or drop the auto entries.
 - Negative or NaN weights error at load time.
 
-**How merging works:**
-
+**How merging works**
 Plus-Face strategies (`plus-face`, `plus-face-sdxl`) weighted-sum the
 per-photo CLIP-H penultimate hidden states, then run one resampler pass.
 FaceID strategies (`faceid`, `faceid-sdxl`) weighted-sum the per-photo
@@ -295,28 +292,27 @@ Pixel-blending produces a ghosted/blurry composite that the encoder
 reads as a single bad photo; embedding-space merging composes coherent
 identity signals from each photo.
 
-**Alignment for multi-photo mode:**
-
+**Alignment for multi-photo mode**
 - Manual `face-bbox` / `face-landmarks` apply **uniformly to all
-  photos**. If you set them with `photos: [...]`, plakat applies the
-  same bbox/landmarks to every photo, which is rarely the right
-  alignment for multiple photos.
+ photos**. If you set them with `photos: [...]`, plakat applies the
+ same bbox/landmarks to every photo, which is rarely the right
+ alignment for multiple photos.
 - **SCRFD auto-detection is strongly recommended** for multi-photo
-  personas — it detects each photo's face independently. Configure via
-  `PLAKAT_SCRFD_WEIGHTS` / `PLAKAT_SCRFD_HF` (see "Optional SCRFD
-  auto-detection" below).
+ personas — it detects each photo's face independently. Configure via
+ `PLAKAT_SCRFD_WEIGHTS` / `PLAKAT_SCRFD_HF` (see "Optional SCRFD
+ auto-detection" below).
 - Without SCRFD and without manual alignment, each photo falls back to
-  per-photo centre-crop. Acceptable for tight head-shots, mediocre for
-  loose photos.
+ per-photo centre-crop. Acceptable for tight head-shots, mediocre for
+ loose photos.
 
 **CLI equivalent:** The `--photo` flag on `plakat portrait` is
 repeatable with the same `PATH[:WEIGHT]` grammar:
 
 ```bash
 plakat portrait "..." \
-    --photo alice_smile.jpg:0.5 \
-    --photo alice_neutral.jpg:0.3 \
-    --photo alice_serious.jpg:0.2
+ --photo alice_smile.jpg:0.5 \
+ --photo alice_neutral.jpg:0.3 \
+ --photo alice_serious.jpg:0.2
 ```
 
 Validation: load-time error if any path doesn't exist:
@@ -382,17 +378,16 @@ normalised to the photo's dimensions with origin top-left.
 
 ```hjson
 {
-    name: alice
-    photo: ./refs/alice.jpg
-    identity: faceid
-    face-bbox: [0.20, 0.05, 0.80, 0.65]    # face occupies most of the upper half
+ name: alice
+ photo: ./refs/alice.jpg
+ identity: faceid
+ face-bbox: [0.20, 0.05, 0.80, 0.65] # face occupies most of the upper half
 }
 ```
 
 CLI equivalent: `--face-bbox 0.20,0.05,0.80,0.65`.
 
-**Who reads it:**
-
+**Who reads it**
 | Strategy | Uses `face-bbox`? |
 |---|---|
 | `faceid`, `faceid-sdxl` | **Yes** — crops to bbox, then resizes to 112×112 for ArcFace. Useful when the face is off-centre, or to disambiguate which face to use in a multi-face photo. |
@@ -423,24 +418,23 @@ pixel dimensions with origin top-left.
 
 ```hjson
 {
-    name: alice
-    photo: ./refs/alice.jpg
-    identity: faceid
-    face-landmarks:
-    [
-        [0.40, 0.40]   # left eye
-        [0.60, 0.40]   # right eye
-        [0.50, 0.55]   # nose
-        [0.42, 0.68]   # left mouth corner
-        [0.58, 0.68]   # right mouth corner
-    ]
+ name: alice
+ photo: ./refs/alice.jpg
+ identity: faceid
+ face-landmarks:
+ [
+ [0.40, 0.40] # left eye
+ [0.60, 0.40] # right eye
+ [0.50, 0.55] # nose
+ [0.42, 0.68] # left mouth corner
+ [0.58, 0.68] # right mouth corner
+ ]
 }
 ```
 
 CLI equivalent: `--face-landmarks 0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68`.
 
-**Who reads it:**
-
+**Who reads it**
 | Strategy | Uses `face-landmarks`? |
 |---|---|
 | `faceid`, `faceid-sdxl` | **Yes** — runs Umeyama's similarity transform to ArcFace's canonical 112×112 template before embedding. **The proper alignment**; closest we get to reference quality. |
@@ -466,9 +460,9 @@ A negative prompt that travels with the persona, not the task. Example use:
 
 ```hjson
 {
-    name: alice
-    photo: ./refs/alice.jpg
-    negative: "smiling, mustache, sunglasses, beard"
+ name: alice
+ photo: ./refs/alice.jpg
+ negative: "smiling, mustache, sunglasses, beard"
 }
 ```
 
@@ -497,14 +491,14 @@ Prepending also means that if the scenario has a baseline negative
 
 ```hjson
 {
-    name:    alice_at_cafe
-    scene:   cafe
-    weather: morning
-    prompt:  "having an espresso"
-    personas:
-    [
-        alice
-    ]
+ name: alice_at_cafe
+ scene: cafe
+ weather: morning
+ prompt: "having an espresso"
+ personas:
+ [
+ alice
+ ]
 }
 ```
 
@@ -517,21 +511,21 @@ persona's photo and tokens applied across the entire image, just like
 
 ```hjson
 {
-    name:    pair_at_table
-    scene:   bistro
-    weather: golden_hour
-    prompt:  "two friends sharing dessert"
-    personas:
-    [
-        {
-            name: alice
-            bbox: [0.0, 0.05, 0.5, 0.95]
-        }
-        {
-            name: bob
-            bbox: [0.5, 0.05, 1.0, 0.95]
-        }
-    ]
+ name: pair_at_table
+ scene: bistro
+ weather: golden_hour
+ prompt: "two friends sharing dessert"
+ personas:
+ [
+ {
+ name: alice
+ bbox: [0.0, 0.05, 0.5, 0.95]
+ }
+ {
+ name: bob
+ bbox: [0.5, 0.05, 1.0, 0.95]
+ }
+ ]
 }
 ```
 
@@ -543,14 +537,14 @@ pipeline where their face should go.
 #### How bbox compositing works
 
 1. A **text-only base image** is generated by the portrait pipeline
-   (no photo). This sets up the scene, lighting, and composition for
-   the prompt.
+ (no photo). This sets up the scene, lighting, and composition for
+ the prompt.
 2. For each persona, an **inpaint pass** runs: the masked region (the
-   persona's bbox) is re-denoised with that persona's image tokens
-   applied; the rest of the image stays pinned to the previous step's
-   output (the base, or the result of the previous persona's pass).
+ persona's bbox) is re-denoised with that persona's image tokens
+ applied; the rest of the image stays pinned to the previous step's
+ output (the base, or the result of the previous persona's pass).
 3. The final composite is decoded and written as
-   `plakat-portrait-<seed>.png`.
+ `plakat-portrait-<seed>.png`.
 
 The technique is RePaint-style latent blending: at each denoise step
 inside the loop, the unmasked region is replaced with a freshly re-noised
@@ -560,17 +554,17 @@ the masked region transitions cleanly into the surrounding image.
 #### Bbox placement guidance
 
 - `[0.0, 0.05, 0.5, 0.95]` and `[0.5, 0.05, 1.0, 0.95]` — classic
-  two-person side-by-side. Leave ~5% padding top/bottom so the prompt
-  can render hands, props, surfaces.
+ two-person side-by-side. Leave ~5% padding top/bottom so the prompt
+ can render hands, props, surfaces.
 - `[0.0, 0.0, 0.33, 1.0]` / `[0.33, 0.0, 0.67, 1.0]` / `[0.67, 0.0, 1.0, 1.0]`
-  — three-person row.
+ — three-person row.
 - `[0.25, 0.1, 0.75, 0.7]` — single centred persona with breathing room
-  for body / background. Same effect as bare-name form but more control.
+ for body / background. Same effect as bare-name form but more control.
 - Overlapping bboxes are legal but the **later persona wins** inside the
-  overlap (each inpaint pass treats the previous result as its base).
-  Use this intentionally for layered compositions; avoid it accidentally.
+ overlap (each inpaint pass treats the previous result as its base).
+ Use this intentionally for layered compositions; avoid it accidentally.
 - The validator requires `x0 < x1`, `y0 < y1`, and all four in
-  `[0.0, 1.0]`. Inverted or out-of-range bboxes fail at load time.
+ `[0.0, 1.0]`. Inverted or out-of-range bboxes fail at load time.
 
 #### Form-mixing rejection
 
@@ -602,51 +596,51 @@ the scenario's regular pipeline (t2i or Flux) — unchanged behaviour.
 For each image a task generates:
 
 1. **Generate**:
-   - No persona → existing t2i/Flux pipeline →
-     `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
-   - **Form-1 single persona** → portrait pipeline, one denoise pass,
-     persona tokens applied across the whole image →
-     `plakat-portrait-<seed>.png`.
-   - **Form-2 multi-persona (bboxes)** → portrait pipeline, multi-pass
-     compositing (described below) → `plakat-portrait-<seed>.png`.
+ - No persona → existing t2i/Flux pipeline →
+ `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
+ - **Form-1 single persona** → portrait pipeline, one denoise pass,
+ persona tokens applied across the whole image →
+ `plakat-portrait-<seed>.png`.
+ - **Form-2 multi-persona (bboxes)** → portrait pipeline, multi-pass
+ compositing (described below) → `plakat-portrait-<seed>.png`.
 2. **Stylize** (if `task.style` is set) → `<base>-styled.png`. Runs on
-   whatever the previous step produced; portrait or not.
+ whatever the previous step produced; portrait or not.
 3. **Upscale** (if `upscale.upscale: true`) → `<base>-styled-upscaled.png`
-   if step 2 ran successfully, else `<base>-upscaled.png`.
+ if step 2 ran successfully, else `<base>-upscaled.png`.
 
 ### Single-persona pipeline (Form 1)
 
 1. Resolves the persona's photo, CLIP-H-encodes it, runs the Perceiver
-   resampler → **16 image tokens** of dimension 768 (SD 1.5 cross-attn).
+ resampler → **16 image tokens** of dimension 768 (SD 1.5 cross-attn).
 2. Scales the image tokens by `face-strength`.
 3. Concatenates onto the text-token sequence:
-   - **Cond** branch: `[text_cond (77) | image_tokens (16)]` →
-     `(1, 93, 768)`.
-   - **Uncond** branch (when CFG): `[text_uncond (77) | zeros (16)]`.
+ - **Cond** branch: `[text_cond (77) | image_tokens (16)]` →
+ `(1, 93, 768)`.
+ - **Uncond** branch (when CFG): `[text_uncond (77) | zeros (16)]`.
 4. Runs the standard SD 1.5 denoise loop from pure noise with classifier-free
-   guidance.
+ guidance.
 5. Optionally a same-model `--refine` polish pass on the final latents.
 6. VAE decode + PNG save.
 
 ### Multi-persona compositing pipeline (Form 2)
 
 1. **Base pass:** generate a text-only base from the prompt (no persona).
-   Same denoise loop as Form 1 but with `face_strength = 0` — establishes
-   the scene, lighting, composition.
+ Same denoise loop as Form 1 but with `face_strength = 0` — establishes
+ the scene, lighting, composition.
 2. **Per-persona inpaint passes** (one per persona in declaration order):
-   - Build a mask from the persona's bbox at latent resolution
-     (`width / 8 × height / 8`). Mask is `1.0` inside the bbox, `0.0`
-     outside.
-   - CLIP-H-encode the persona's photo → 16 image tokens (scaled by
-     `face-strength`), concat onto the text tokens for this pass.
-   - Run **RePaint-style latent blending**: at each timestep `t`,
-     - re-noise the previous-pass latents at `t` and place them in the
-       unmasked region (preserves what's outside the bbox);
-     - run a standard denoise step on the combined latents (UNet drives
-       the masked region toward the persona's identity);
-     - at the final step, replace the unmasked region with the **clean**
-       previous-pass latents so the seam pins exactly.
-   - Output: a new set of latents with this persona's bbox filled in.
+ - Build a mask from the persona's bbox at latent resolution
+ (`width / 8 × height / 8`). Mask is `1.0` inside the bbox, `0.0`
+ outside.
+ - CLIP-H-encode the persona's photo → 16 image tokens (scaled by
+ `face-strength`), concat onto the text tokens for this pass.
+ - Run **RePaint-style latent blending**: at each timestep `t`,
+ - re-noise the previous-pass latents at `t` and place them in the
+ unmasked region (preserves what's outside the bbox);
+ - run a standard denoise step on the combined latents (UNet drives
+ the masked region toward the persona's identity);
+ - at the final step, replace the unmasked region with the **clean**
+ previous-pass latents so the seam pins exactly.
+ - Output: a new set of latents with this persona's bbox filled in.
 3. **Decode + save** the final composite.
 
 The chaining is deliberate: pass 2 treats the result of pass 1 as its
@@ -742,34 +736,32 @@ The reference photo is the single biggest quality lever for `plus-face`
 strategies — no automatic face detection or alignment is applied, so
 the input is treated as-is.
 
-**What works well:**
-
+**What works well**
 - Tight head-and-shoulders crop. Face occupies roughly 30–70% of the
-  frame's height.
+ frame's height.
 - Neutral or front-facing pose (off-axis up to ~30° is fine).
 - Even lighting. Soft daylight or studio light. Hard shadows across the
-  face leak into generated outputs as "moody lighting" the prompt can't
-  fully wash out.
+ face leak into generated outputs as "moody lighting" the prompt can't
+ fully wash out.
 - Clean background (or at least one with no other faces). The model
-  doesn't know which face is the subject.
+ doesn't know which face is the subject.
 - Resolution: 512×512 or higher on the face region. Source is rescaled
-  to 224×224 internally, but oversampling helps CLIP-H pick out features
-  cleanly.
+ to 224×224 internally, but oversampling helps CLIP-H pick out features
+ cleanly.
 - Neutral expression. Strong expressions (grin, surprise) bleed into
-  every generated frame.
+ every generated frame.
 
-**What hurts:**
-
+**What hurts**
 - Wide shots where the face is small.
 - Group photos. The model averages identities or grabs the wrong one.
 - Heavy occlusion (sunglasses, surgical mask, hat over forehead, hand
-  near face).
+ near face).
 - Profile shots. Front-facing photos generalise better.
 - Strong filters / heavy beauty retouching on the reference. The model
-  picks up the filter's artefacts as part of the identity.
+ picks up the filter's artefacts as part of the identity.
 - Very low resolution. Below ~150 px on the face, results degrade.
 - Compression artefacts. Heavily-compressed JPEGs reduce CLIP-H's ability
-  to encode subtle features.
+ to encode subtle features.
 
 When a persona produces poor results: re-check the photo first before
 tweaking `face-strength`.
@@ -784,7 +776,7 @@ or composite-looking despite a clean photo):
 1. Raise `face-strength` toward 1.0.
 2. Lower `guidance` slightly (`6.0`-`7.0` instead of `7.5+`).
 3. Try `--scheduler euler-a` if you're using DDIM — Euler-A often holds
-   identity better at low-to-medium step counts.
+ identity better at low-to-medium step counts.
 
 When the **identity overwhelms the prompt** (the model ignores wardrobe,
 pose, or lighting requests in favour of duplicating the photo's vibe):
@@ -792,7 +784,7 @@ pose, or lighting requests in favour of duplicating the photo's vibe):
 1. Lower `face-strength` to `0.5-0.7`.
 2. Raise `guidance` toward `7.5-9.0`.
 3. Use a strong, specific `prompt-header` or `task.prompt` for the
-   contested element (e.g. "in a red wool coat, three-quarter angle").
+ contested element (e.g. "in a red wool coat, three-quarter angle").
 
 When **the result barely looks like the person** at `face-strength: 1.0`:
 
@@ -818,18 +810,18 @@ reused.
 ```hjson
 personas:
 [
-    {
-        name: alice
-        photo: ./refs/alice.jpg
-        face-strength: 0.85
-    }
+ {
+ name: alice
+ photo: ./refs/alice.jpg
+ face-strength: 0.85
+ }
 ]
 
 tasks:
 [
-    { name: alice_cafe,    scene: cafe,    weather: morning,    prompt: "espresso", personas: [alice] }
-    { name: alice_forest,  scene: forest,  weather: golden_hour, prompt: "walking", personas: [alice] }
-    { name: alice_harbour, scene: harbour, weather: rain,        prompt: "lantern", personas: [alice] }
+ { name: alice_cafe, scene: cafe, weather: morning, prompt: "espresso", personas: [alice] }
+ { name: alice_forest, scene: forest, weather: golden_hour, prompt: "walking", personas: [alice] }
+ { name: alice_harbour, scene: harbour, weather: rain, prompt: "lantern", personas: [alice] }
 ]
 ```
 
@@ -845,22 +837,22 @@ variants you want to compare:
 ```hjson
 personas:
 [
-    {
-        name: alice_soft
-        photo: ./refs/alice.jpg
-        face-strength: 0.5
-    }
-    {
-        name: alice_strong
-        photo: ./refs/alice.jpg
-        face-strength: 1.0
-    }
+ {
+ name: alice_soft
+ photo: ./refs/alice.jpg
+ face-strength: 0.5
+ }
+ {
+ name: alice_strong
+ photo: ./refs/alice.jpg
+ face-strength: 1.0
+ }
 ]
 
 tasks:
 [
-    { name: a1, scene: s, weather: w, prompt: "p", personas: [alice_soft]   }
-    { name: a2, scene: s, weather: w, prompt: "p", personas: [alice_strong] }
+ { name: a1, scene: s, weather: w, prompt: "p", personas: [alice_soft] }
+ { name: a2, scene: s, weather: w, prompt: "p", personas: [alice_strong] }
 ]
 ```
 
@@ -874,16 +866,16 @@ on the portrait output:
 
 ```hjson
 {
-    name: alice_watercolor
-    scene: cafe
-    weather: morning
-    prompt: "thoughtful"
-    personas:
-    [
-        alice
-    ]
-    style: ./refs/watercolor-painting.jpg
-    style-strength: 0.45
+ name: alice_watercolor
+ scene: cafe
+ weather: morning
+ prompt: "thoughtful"
+ personas:
+ [
+ alice
+ ]
+ style: ./refs/watercolor-painting.jpg
+ style-strength: 0.45
 }
 ```
 
@@ -895,8 +887,8 @@ fine facial detail and the likeness blurs.
 ```hjson
 upscale:
 {
-    upscale: true
-    method: real-esrgan-x4
+ upscale: true
+ method: real-esrgan-x4
 }
 ```
 
@@ -917,52 +909,52 @@ main `model`. The downside is memory cost — see [Memory cost](#memory-cost).
 ```hjson
 personas:
 [
-    {
-        name: alice
-        photo: ./refs/alice.jpg
-        face-strength: 0.85
-    }
-    {
-        name: bob
-        photo: ./refs/bob.jpg
-        face-strength: 0.85
-    }
+ {
+ name: alice
+ photo: ./refs/alice.jpg
+ face-strength: 0.85
+ }
+ {
+ name: bob
+ photo: ./refs/bob.jpg
+ face-strength: 0.85
+ }
 ]
 
 tasks:
 [
-    {
-        name: meeting
-        scene: boardroom
-        weather: indoor
-        prompt: "two colleagues reviewing a printed document, three-quarter angle"
-        personas:
-        [
-            {
-                name: alice
-                bbox: [0.05, 0.1, 0.48, 0.95]
-            }
-            {
-                name: bob
-                bbox: [0.52, 0.1, 0.95, 0.95]
-            }
-        ]
-    }
+ {
+ name: meeting
+ scene: boardroom
+ weather: indoor
+ prompt: "two colleagues reviewing a printed document, three-quarter angle"
+ personas:
+ [
+ {
+ name: alice
+ bbox: [0.05, 0.1, 0.48, 0.95]
+ }
+ {
+ name: bob
+ bbox: [0.52, 0.1, 0.95, 0.95]
+ }
+ ]
+ }
 ]
 ```
 
 Tips:
 
 - **Use wider aspect ratios for multi-persona** (16:9 or 3:2 rather than
-  1:1) — gives each bbox enough room for a recognisable face.
+ 1:1) — gives each bbox enough room for a recognisable face.
 - **Leave a small gap between bboxes** (e.g. `0.48` / `0.52` above) to
-  avoid the inpaint passes fighting over the same latents.
+ avoid the inpaint passes fighting over the same latents.
 - **5–10% padding from the edges** lets the prompt render arms, hands,
-  surfaces — without padding the bbox edges become hard image edges.
+ surfaces — without padding the bbox edges become hard image edges.
 - **First persona becomes the "anchor"**: their pass runs against a
-  text-only base, so their bbox gets the cleanest result. Later personas
-  composite onto the partially-composited image. For 3+ personas,
-  declare the most-important identity first.
+ text-only base, so their bbox gets the cleanest result. Later personas
+ composite onto the partially-composited image. For 3+ personas,
+ declare the most-important identity first.
 
 ### Single-persona with explicit placement (Form 2)
 
@@ -971,17 +963,17 @@ high / low / off-centre for your composition:
 
 ```hjson
 {
-    name: alice_at_window
-    scene: kitchen
-    weather: morning
-    prompt: "looking out the window, holding a coffee mug"
-    personas:
-    [
-        {
-            name: alice
-            bbox: [0.55, 0.2, 0.95, 0.85]
-        }
-    ]
+ name: alice_at_window
+ scene: kitchen
+ weather: morning
+ prompt: "looking out the window, holding a coffee mug"
+ personas:
+ [
+ {
+ name: alice
+ bbox: [0.55, 0.2, 0.95, 0.85]
+ }
+ ]
 }
 ```
 
@@ -1015,9 +1007,9 @@ In `--dry-run`, each persona task additionally prints a line per persona
 summarising what would happen:
 
 ```
-  (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85, ok)
-  (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85 bbox=[0.00,0.10,0.45,0.90], ok)
-  (dry-run) would impose persona "bob"   via portrait pipeline (photo /refs/bob.jpg,   strength 0.80 bbox=[0.55,0.10,1.00,0.90], ok)
+ (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85, ok)
+ (dry-run) would impose persona "alice" via portrait pipeline (photo /refs/alice.jpg, strength 0.85 bbox=[0.00,0.10,0.45,0.90], ok)
+ (dry-run) would impose persona "bob" via portrait pipeline (photo /refs/bob.jpg, strength 0.80 bbox=[0.55,0.10,1.00,0.90], ok)
 ```
 
 The trailing `ok` or `MISSING` reflects a final-recheck against the
@@ -1089,25 +1081,25 @@ Before stuffing a new persona into a scenario, sanity-check the photo
 ```bash
 # SD 1.5
 plakat portrait "studio portrait, neutral expression, soft lighting" \
-    --photo ./refs/alice.jpg \
-    --face-strength 0.85 \
-    --size 768x1024 \
-    --steps 30 \
-    --seed 42 \
-    --out ./out/persona-test
+ --photo ./refs/alice.jpg \
+ --face-strength 0.85 \
+ --size 768x1024 \
+ --steps 30 \
+ --seed 42 \
+ --out ./out/persona-test
 
 # SDXL — pair --model sdxl with --identity plus-face-sdxl. Use a wider
 # size (1024×1024 or 1024×1366) to let SDXL render the full detail it's
 # trained for.
 plakat portrait "studio portrait, neutral expression, soft lighting" \
-    --photo ./refs/alice.jpg \
-    --model sdxl \
-    --identity plus-face-sdxl \
-    --face-strength 0.85 \
-    --size 1024x1366 \
-    --steps 30 \
-    --seed 42 \
-    --out ./out/persona-test
+ --photo ./refs/alice.jpg \
+ --model sdxl \
+ --identity plus-face-sdxl \
+ --face-strength 0.85 \
+ --size 1024x1366 \
+ --steps 30 \
+ --seed 42 \
+ --out ./out/persona-test
 ```
 
 If the result looks like the person at one of `0.6 / 0.8 / 1.0 / 1.2`,
@@ -1155,12 +1147,12 @@ substantially). InstantID would push further but isn't implemented yet.
 
 Workarounds without switching strategies:
 - Use a realistic-portrait LoRA (e.g. `*Realistic*` SD 1.5 LoRA) at
-  `lora-scale: 0.7`. The LoRA shapes the rendering style; the persona
-  shapes the identity. They stack additively.
+ `lora-scale: 0.7`. The LoRA shapes the rendering style; the persona
+ shapes the identity. They stack additively.
 - Add a Real-ESRGAN upscale pass (`real-esrgan-x4`). Fine-detail recovery
-  often pushes the face closer to "photo-like".
+ often pushes the face closer to "photo-like".
 - Add a same-model polish (`refine: 6, refine-strength: 0.3`). Sharpens
-  details and removes some AI artefacts.
+ details and removes some AI artefacts.
 
 **"`Error: parsing HJSON ... UnexpectedChar at N:M`"**
 
@@ -1170,7 +1162,7 @@ write `task.personas` as:
 ```hjson
 personas:
 [
-    alice
+ alice
 ]
 ```
 
@@ -1181,12 +1173,12 @@ not `personas: [alice]` on a single line. Same constraint applies to
 
 Possible causes:
 - The photo path doesn't resolve from the **current working directory**
-  where you ran `plakat`. Use absolute paths to verify, then convert
-  back to relative paths once it works.
+ where you ran `plakat`. Use absolute paths to verify, then convert
+ back to relative paths once it works.
 - `face-strength` was accidentally set to 0.0 (or very low).
 - The `task.personas` list is empty (`[]`) — this counts as "no
-  persona". Needs at least one entry (bare name or `{name, bbox}`) to
-  engage the portrait pipeline.
+ persona". Needs at least one entry (bare name or `{name, bbox}`) to
+ engage the portrait pipeline.
 
 ---
 
@@ -1195,38 +1187,38 @@ Possible causes:
 Honest, documented constraints — not bugs:
 
 1. **One base model per scenario.** Within one scenario, every persona's
-   `identity` must target the same model variant (all SD 1.5 or all SDXL).
-   Mixing is rejected at load time because the portrait pipeline loads
-   exactly one base model.
+ `identity` must target the same model variant (all SD 1.5 or all SDXL).
+ Mixing is rejected at load time because the portrait pipeline loads
+ exactly one base model.
 2. **No automatic face crop on `plus-face*` strategies.** Curate the
-   reference photo or use `--face-bbox`. (FaceID strategies *can* use
-   optional SCRFD auto-detection — see [Optional SCRFD auto-detection](#optional-scrfd-auto-detection).)
+ reference photo or use `--face-bbox`. (FaceID strategies *can* use
+ optional SCRFD auto-detection — see [Optional SCRFD auto-detection](#optional-scrfd-auto-detection).)
 3. **No per-task override of persona parameters.** Define a second persona
-   if you need a strength variant (e.g. `alice-soft` vs `alice-strong`).
+ if you need a strength variant (e.g. `alice-soft` vs `alice-strong`).
 4. **No persona-level LoRAs.** Use scenario-level `loras`. The merged
-   UNet is reused across all persona passes within a task.
+ UNet is reused across all persona passes within a task.
 5. **Identity quality ceiling for `plus-face*` strategies: ~50–70% of
-   diffusers reference.** candle 0.8's UNet exposes no cross-attention
-   hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` /
-   `to_v_ip` per block) is not wired up — identity tokens travel via
-   the same cross-attention as text. `faceid` / `faceid-sdxl` strategies
-   bypass this ceiling by using ArcFace embeddings + an automatically-
-   applied UNet LoRA from h94, landing closer to ~80–90% of reference.
+ diffusers reference.** candle 0.8's UNet exposes no cross-attention
+ hooks, so the *decoupled* IP-Adapter path (separate `to_k_ip` /
+ `to_v_ip` per block) is not wired up — identity tokens travel via
+ the same cross-attention as text. `faceid` / `faceid-sdxl` strategies
+ bypass this ceiling by using ArcFace embeddings + an automatically-
+ applied UNet LoRA from h94, landing closer to ~80–90% of reference.
 6. **SDXL micro-conditioning is unused.** SDXL's `add_embedding` (pooled
-   CLIP-G + size/crop time-ids) is not wired up because candle 0.8's UNet
-   doesn't expose the projection. Same gap as the base SDXL t2i path —
-   the model loads and runs but doesn't benefit from size conditioning.
+ CLIP-G + size/crop time-ids) is not wired up because candle 0.8's UNet
+ doesn't expose the projection. Same gap as the base SDXL t2i path —
+ the model loads and runs but doesn't benefit from size conditioning.
 7. **Multi-persona compositing has visible bbox seams** at high contrast.
-   The RePaint-style blend hides most transitions, but a face inpainted
-   onto a strongly-coloured background can show a faint rectangular
-   boundary. Workarounds: pad the bbox slightly so the face sits inside
-   it; pick a prompt where each persona's neighbourhood is visually
-   similar (same lighting, same surface).
+ The RePaint-style blend hides most transitions, but a face inpainted
+ onto a strongly-coloured background can show a faint rectangular
+ boundary. Workarounds: pad the bbox slightly so the face sits inside
+ it; pick a prompt where each persona's neighbourhood is visually
+ similar (same lighting, same surface).
 8. **Multi-persona wall time scales linearly with persona count.** A
-   2-persona task runs 3 denoise loops (base + 2 inpaints); a 3-persona
-   task runs 4. Each loop is full `--steps` long.
+ 2-persona task runs 3 denoise loops (base + 2 inpaints); a 3-persona
+ task runs 4. Each loop is full `--steps` long.
 9. **InstantID is not implemented.** Listed in the `identity` schema as
-   a placeholder; the underlying ControlNet integration isn't ported yet.
+ a placeholder; the underlying ControlNet integration isn't ported yet.
 
 ---
 
@@ -1235,7 +1227,7 @@ Honest, documented constraints — not bugs:
 The `faceid` and `faceid-sdxl` strategies need two weight sources:
 
 1. **IP-Adapter-FaceID image-proj + UNet LoRA** — auto-downloaded from
-   `h94/IP-Adapter-FaceID` on first use. Nothing for you to do.
+ `h94/IP-Adapter-FaceID` on first use. Nothing for you to do.
 2. **ArcFace IR-ResNet50** — supply via one of two routes below.
 
 ### Route A — local file (`PLAKAT_ARCFACE_WEIGHTS`)
@@ -1243,8 +1235,8 @@ The `faceid` and `faceid-sdxl` strategies need two weight sources:
 ```bash
 # 1. Download the antelopev2 bundle from InsightFace:
 curl -L -o antelopev2.zip \
-    https://github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip
-unzip antelopev2.zip                       # → antelopev2/
+ https://github.com/deepinsight/insightface/releases/download//antelopev2.zip
+unzip antelopev2.zip # → antelopev2/
 
 # 2. Convert the ONNX to safetensors (one-time, ~250 MB output):
 python -c "import onnx, torch
@@ -1274,7 +1266,7 @@ the ONNX-to-safetensors conversion. Discover candidates at
 Either route works. Local file wins if both are set. Verify any time:
 
 ```bash
-plakat doctor          # offline check — parses + verifies local file existence
+plakat doctor # offline check — parses + verifies local file existence
 plakat doctor --verify # active — attempts the HF download to confirm
 ```
 
@@ -1283,48 +1275,48 @@ plakat doctor --verify # active — attempts the HF download to confirm
 ```bash
 # SD 1.5 FaceID with centre-crop alignment + auto-applied UNet LoRA.
 plakat --device metal portrait \
-    --photo ./refs/alice.jpg \
-    --identity faceid \
-    --face-strength 1.0 \
-    --steps 30 \
-    "studio portrait, cinematic lighting"
+ --photo ./refs/alice.jpg \
+ --identity faceid \
+ --face-strength 1.0 \
+ --steps 30 \
+ "studio portrait, cinematic lighting"
 
 # User-supplied bbox — useful when the face is off-centre or the
 # photo isn't a tight head-and-shoulders crop.
 plakat --device metal portrait \
-    --photo ./refs/alice.jpg \
-    --identity faceid \
-    --face-bbox 0.20,0.05,0.80,0.65 \
-    --face-strength 1.0 \
-    "studio portrait, cinematic lighting"
+ --photo ./refs/alice.jpg \
+ --identity faceid \
+ --face-bbox 0.20,0.05,0.80,0.65 \
+ --face-strength 1.0 \
+ "studio portrait, cinematic lighting"
 
 # SDXL FaceID — same ArcFace weights, different image-proj.
 # UNet LoRA applied automatically.
 plakat --device metal portrait \
-    --photo ./refs/alice.jpg \
-    --model sdxl --identity faceid-sdxl \
-    --face-bbox 0.20,0.05,0.80,0.65 \
-    --face-strength 1.0 \
-    --size 832x1216 \
-    "studio portrait, cinematic lighting"
+ --photo ./refs/alice.jpg \
+ --model sdxl --identity faceid-sdxl \
+ --face-bbox 0.20,0.05,0.80,0.65 \
+ --face-strength 1.0 \
+ --size 832x1216 \
+ "studio portrait, cinematic lighting"
 
 # Disable the auto-applied FaceID UNet LoRA. Useful for A/B testing
 # whether a particular prompt suffers under the shared-cross-attention
 # application of the LoRA.
 PLAKAT_FACEID_LORA=off plakat --device metal portrait \
-    --photo ./refs/alice.jpg --identity faceid \
-    --face-bbox 0.20,0.05,0.80,0.65 --face-strength 1.0 \
-    "studio portrait"
+ --photo ./refs/alice.jpg --identity faceid \
+ --face-bbox 0.20,0.05,0.80,0.65 --face-strength 1.0 \
+ "studio portrait"
 
 # Best alignment available: 5-point ArcFace canonical similarity
 # transform. Order: left_eye, right_eye, nose, left_mouth_corner,
 # right_mouth_corner. Normalised to [0, 1] in the photo's space.
 plakat --device metal portrait \
-    --photo ./refs/alice.jpg \
-    --identity faceid \
-    --face-landmarks 0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68 \
-    --face-strength 1.0 \
-    "studio portrait, soft natural lighting"
+ --photo ./refs/alice.jpg \
+ --identity faceid \
+ --face-landmarks 0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68 \
+ --face-strength 1.0 \
+ "studio portrait, soft natural lighting"
 ```
 
 ---
@@ -1341,7 +1333,7 @@ landmarks the aligner already consumes, so `--face-bbox` /
 ```bash
 # Download SCRFD-500MF from InsightFace releases
 curl -L -o scrfd_500m_bnkps.onnx \
-    https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_500m_bnkps.onnx
+ https://github.com/deepinsight/insightface/releases/download//scrfd_500m_bnkps.onnx
 
 # Convert ONNX → safetensors
 python -c "import onnx, torch
@@ -1377,17 +1369,17 @@ When multiple alignment sources are configured, the encoder picks the
 richest available:
 
 1. **5-point landmarks** (`--face-landmarks` / persona `face-landmarks`)
-   — proper alignment via similarity transform. Captures ~95% of
-   ArcFace's discriminative power.
+ — proper alignment via similarity transform. Captures ~95% of
+ ArcFace's discriminative power.
 2. **SCRFD auto-detected landmarks** (when `PLAKAT_SCRFD_*` is set and
-   no manual landmarks were supplied) — same alignment quality as (1)
-   without you having to type the coordinates.
+ no manual landmarks were supplied) — same alignment quality as (1)
+ without you having to type the coordinates.
 3. **Bbox crop** (`--face-bbox` / persona `face-bbox`) — crop to the
-   bbox, then resize to 112×112. No rotation/scale correction.
-   ~75–85% of full power.
+ bbox, then resize to 112×112. No rotation/scale correction.
+ ~75–85% of full power.
 4. **Centre-crop fallback** — shorter-side resize + centre-crop. Works
-   for tight head-and-shoulders photos; degrades on off-centre inputs.
-   ~70–80% of full power.
+ for tight head-and-shoulders photos; degrades on off-centre inputs.
+ ~70–80% of full power.
 
 ### Where to get landmarks (when not using SCRFD)
 
@@ -1395,15 +1387,15 @@ richest available:
 `left_eye, right_eye, nose, left_mouth_corner, right_mouth_corner`.
 
 1. **InsightFace's `face_analysis.get()`** (Python) publishes 5
-   landmarks per detected face in this exact order — copy them out.
+ landmarks per detected face in this exact order — copy them out.
 2. **MediaPipe / dlib / similar** — subset to the 5 ArcFace points.
-   For dlib's 68-point output: indices 36, 45, 30, 48, 54.
+ For dlib's 68-point output: indices 36, 45, 30, 48, 54.
 3. **Eyeball them.** For a head-and-shoulders portrait, rough guesses
-   in normalised coords usually land within a few pixels of true:
-   - eyes typically at `y ≈ 0.35–0.45`, separation `Δx ≈ 0.20`
-   - nose at `y ≈ 0.50–0.60`, centred
-   - mouth corners at `y ≈ 0.65–0.75`, separation `Δx ≈ 0.15`
+ in normalised coords usually land within a few pixels of true:
+ - eyes typically at `y ≈ 0.35–0.45`, separation `Δx ≈ 0.20`
+ - nose at `y ≈ 0.50–0.60`, centred
+ - mouth corners at `y ≈ 0.65–0.75`, separation `Δx ≈ 0.15`
 
-   The similarity transform absorbs reasonable estimation noise — a
-   few percent error in landmark position produces visually similar
-   alignment.
+ The similarity transform absorbs reasonable estimation noise — a
+ few percent error in landmark position produces visually similar
+ alignment.
