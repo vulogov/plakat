@@ -275,6 +275,22 @@ impl SimpleBackend for StubMissingHead {
         }
         SimpleBackend::contains_tensor(&self.inner, name)
     }
+
+    /// candle 0.9+ added `get_unchecked` to `SimpleBackend` for the
+    /// hot path that doesn't validate shape against the request.
+    /// The head-stripping logic only matters for shape-checked reads
+    /// (the `.head.*` tensors are looked up by name + shape in
+    /// `SimpleBackend::get`), so the unchecked variant just delegates
+    /// to the inner mmap and lets candle propagate any missing-key
+    /// error.
+    fn get_unchecked(
+        &self,
+        name: &str,
+        dtype: DType,
+        dev: &Device,
+    ) -> candle_core::Result<Tensor> {
+        <MmapedSafetensors as SimpleBackend>::get_unchecked(&self.inner, name, dtype, dev)
+    }
 }
 
 fn is_unused_head_tensor(name: &str) -> bool {

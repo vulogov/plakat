@@ -18,7 +18,7 @@
 //! No diffusion involved. v2's inpaint blend will run after this
 //! pass to smooth edges and unify palette.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 
 use super::runtime::ResolvedArtefact;

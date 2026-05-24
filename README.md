@@ -8,6 +8,55 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.17 — the prompt + reproducibility release
+
+Ten phases focused on **prompt expressiveness**, **reproducibility**,
+and **animation**. The cycle also upgrades the underlying candle ML
+framework two minor versions and adds the long-asked `--lora civitai:`
+shorthand:
+
+- **A1111 prompt syntax**. `(red:1.4)` emphasis / `[blue]`
+  de-emphasis / `((nested))` compounding / `\(escape\)` — the
+  grammar every Civitai LoRA card uses in its example prompts.
+  Applied to CLIP penultimate hidden states via per-token broadcast.
+  SD 1.5 / SD 2.1 / SDXL.
+- **PNG metadata + JSON sidecar**. Outputs ship with the
+  Auto1111-compatible `parameters` PNG tEXt chunk + a sibling
+  `<filename>.json` carrying the full recipe. A1111 / Civitai /
+  ComfyUI / sd-prompt-reader all surface the prompt + seed + LoRAs
+  + scheduler inline. `--no-metadata` opts out.
+- **`--grid` output**. `--count N > 1` + `--grid` writes a single
+  `plakat-grid-<seed>.png` combining all N outputs in a near-square
+  layout. `--grid-cols` / `--grid-padding` for fine control.
+- **`plakat animate`**. New subcommand for prompt-morph animation:
+  lerp CLIP embeddings between two prompts at a fixed seed,
+  producing a smooth N-frame sequence. `--gif` bundles into an
+  animated GIF. SD 1.5 / SD 2.1.
+- **Live preview during denoise**. `--preview-every N` writes a
+  cheap latent-projection PNG every N steps so long runs aren't a
+  black box. Microseconds per write — no meaningful runtime cost.
+- **scenario `--resume` / `--force`**. Crashed scenario picks up
+  where it left off by probing for already-existing output PNGs.
+  No more restart-from-task-0.
+- **`--lora civitai:NNNNNN`**. Skip the explicit
+  `plakat civitai download` step — the LoRA spec parser now
+  downloads + caches Civitai assets on first use via the
+  shorthand. `civitai-version:NNNNNN` pins a specific version.
+- **LCM-LoRA SDXL `--fast lcm-sdxl`**. Latent-Consistency
+  distillation for SDXL bundled with the right scheduler and
+  4-step / CFG-1.5 defaults. ~5× speedup over stock SDXL.
+- **candle 0.8 → 0.10.2 upgrade**. Single 8-line trait-impl fix
+  for `SimpleBackend::get_unchecked`. GGUF / NF4 / MMDiT /
+  vendored Flux all intact, 304 tests still green at upgrade
+  time.
+- **SDXL refiner cleanup**. The "Known limitation" about missing
+  `add_embedding` on the refiner was outdated since v0.11 phase
+  8e. Stale docs replaced; regression tests pin the 5-time-id
+  config so future refactors can't silently break the refiner's
+  `text_time` micro-conditioning.
+
+381 lib tests green; +77 new tests across the cycle.
+
 ## What's new in v0.16 — the productivity release
 
 A dozen quality-of-life landings that connect community workflows
@@ -55,10 +104,6 @@ existing plakat backbone, plus deeper SD3 integration:
   reports per-block attention count + SigLIP/Flux dims. Per-block
   injection blocked by Flux's private `double_block_forward`;
   use `--redux-image` for working image conditioning today.
-
-301 lib tests green; +88 new tests across the cycle. Every
-"partial" item ships its parser + tests so the future wiring is
-a focused diff.
 
 ## What's new in v0.15 — runtime LoRA + SD3 maturation
 
@@ -171,6 +216,10 @@ per-image speeds.
 # Text-to-image with SD 1.5
 plakat generate "a brutalist poster of a whale, watercolor" --seed 42
 
+# A1111-style attention syntax — emphasize "neon", dial down "city"
+plakat generate "a cyberpunk (neon:1.4) street market in a [city]" \
+    --model sd15 --seed 42
+
 # Photo-guided portrait (IP-Adapter-Plus-Face)
 plakat portrait "cinematic close-up, soft Rembrandt lighting" \
     --photo face.jpg --face-strength 0.8
@@ -215,6 +264,10 @@ plakat generate "in this style" --model flux-dev \
 # Hyper-FLUX / FLUX-Turbo presets — 8-step distillations
 plakat generate "..." --model flux-dev --fast hyper-8
 
+# LCM-LoRA SDXL — 4-step SDXL inference at ~5× the speed
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sdxl --fast lcm-sdxl
+
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each
 # accepts either `from=PATH` (auto-annotate any photo) or
@@ -229,31 +282,42 @@ plakat generate "knight on a stone bridge, cinematic" --model sdxl \
     --control-spec 'depth:from=scene.jpg:strength=0.8' \
     --control-spec 'openpose:from=person.jpg:strength=0.6'
 
-# Each spec also takes optional `start=` / `end=` (timestep window) and
-# `strength=` (residual scale). See `plakat generate --help` and
-# `Documentation/CONTROLNET.md` for the full grammar.
-
 # Wildcards in the prompt: `{a|b|c}` inline alternation + file-backed
 # `__name__` random picks (Auto1111 / NovelAI grammar).
 plakat generate "a {red|blue|green} fox in __warm-colors__ light" \
     --wildcard-dir ./wildcards --seed 42
 
 # ADetailer: post-t2i face refinement via SCRFD + per-face img2img.
-# Reuses the t2i backbone; SD-family only.
 plakat generate "a couple at a forest cabin" \
     --model sd15 --size 768x1024 --adetailer
 
 # Hires fix: generate at trained resolution, upscale, refine.
-# Mitigates the multi-head problem when sampling above native size.
 plakat generate "a vintage travel poster of Tokyo at night" \
     --model sd15 --size 768x768 \
     --hires-fix --hires-upscaler real-esrgan-x2 --adetailer
 
+# `--grid` bundles a `--count N` sweep into a single shareable PNG.
+plakat generate "a peaceful koi pond" \
+    --model sd15 --count 9 --seed 1000 --grid
+
+# Live preview during long denoise runs — writes plakat-<seed>-preview.png
+# every N steps (cheap latent → RGB projection; microseconds per write).
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sd15 --steps 28 --preview-every 4 --size 768x768
+
 # Civitai: browse + download community assets straight from the CLI.
 plakat civitai search "watercolor" --type lora
 plakat civitai download 12345
-# → ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
-# Drop the printed path into `--lora` or `--model`.
+
+# Or use the LoRA spec shorthand — downloads + caches on first use.
+plakat generate "a watercolor fox in tall grass" \
+    --model sd15 --lora civitai:12345:0.7
+
+# Prompt-morph animation — interpolates two prompts over N frames.
+plakat animate \
+    --from "a photo of a fox in a meadow" \
+    --to "a photo of a cat in a meadow" \
+    --frames 24 --seed 42 --gif --out ./fox_to_cat
 
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
@@ -281,9 +345,19 @@ plakat generate "a fox in tall grass" --style-ref ./inspiration.jpg
 export DEEPSEEK_API_KEY=sk-...
 plakat scenario examples/scenario.hjson
 
+# Resume a crashed batch — skips tasks whose output PNGs already exist
+plakat scenario examples/scenario.hjson --resume
+
 # Real-ESRGAN upscale to 4×
 plakat upscale --in small.png --out big.png --method real-esrgan-x4
 ```
+
+Every output PNG (from `generate`, `img2img`, `portrait`, etc.) ships
+with an A1111-compatible `parameters` tEXt chunk + a sibling
+`<filename>.json` carrying the structured recipe. Drop a PNG onto
+A1111 Web UI / Civitai / ComfyUI / sd-prompt-reader to see the
+prompt, seed, model, LoRAs inline. Pass `--no-metadata` for anonymous
+PNGs.
 
 Run `plakat <CMD> --help` for the flags on each subcommand.
 
@@ -291,15 +365,16 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4) / SD3 / SD3.5. Built-in wildcards, CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants. |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax, CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar. |
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
-| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
+| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
+| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
@@ -313,14 +388,27 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   step-by-step walkthroughs. Start here if you're new to plakat or
   text-to-image generation. See
   [Tutorials/README.md](Documentation/Tutorials/README.md) for the
-  recommended reading order. Specialized portrait recipes:
-  [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
-  and
-  [blending parents into a child portrait](Documentation/Tutorials/PORTRAIT_CHILD_PHOTO.md).
+  recommended reading order. Highlights:
+  - [`GENERATE_TUTORIAL.md`](Documentation/Tutorials/GENERATE_TUTORIAL.md) —
+    the foundation. Wildcards, A1111 attention syntax, CLIP-skip,
+    ADetailer, Hires fix, Civitai, live preview, PNG metadata,
+    grid output, Textual Inversion all sectioned within.
+  - [`FLUX_TUTORIAL.md`](Documentation/Tutorials/FLUX_TUTORIAL.md) +
+    [`SD3_TUTORIAL.md`](Documentation/Tutorials/SD3_TUTORIAL.md) —
+    the modern model families.
+  - [`CIVITAI_TUTORIAL.md`](Documentation/Tutorials/CIVITAI_TUTORIAL.md) —
+    browsing, downloading, and using Civitai community assets.
+  - [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md) —
+    prompt-morph animation via `plakat animate`.
+  - Specialized portrait recipes:
+    [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
+    and
+    [blending parents into a child portrait](Documentation/Tutorials/PORTRAIT_CHILD_PHOTO.md).
 - **[Reference manuals](Documentation/)** — exhaustive per-feature
   documentation:
   - [`GENERATE.md`](Documentation/GENERATE.md) — text-to-image,
-    schedulers, LoRAs, scenarios, upscaling, refiner.
+    schedulers, LoRAs, scenarios, upscaling, refiner, the `plakat
+    civitai` / `plakat embedding` / `plakat animate` subcommands.
   - [`PERSONA.md`](Documentation/PERSONA.md) — portraits, identity
     preservation, ArcFace / SCRFD setup, multi-persona compositing.
   - [`STYLES.md`](Documentation/STYLES.md) — style catalogs, the
@@ -332,9 +420,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
   - [`CONTROLNET.md`](Documentation/CONTROLNET.md) — ControlNet
     conditioning (depth, canny, openpose, lineart, softedge) for
     SD 1.5 / 2.1, SDXL, Flux (Union Pro v2), and SD3 / SD3.5
-    (InstantX adapter family). Auto-annotation via
-    `--control-spec 'KIND:from=PATH'`; stack multiple conditioners
-    with repeatable `--control-spec`.
+    (InstantX adapter family).
 
 ## Releases
 

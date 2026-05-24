@@ -124,6 +124,20 @@ pub struct Request {
     /// for the future wiring (see `plakat embedding info` to
     /// inspect TI files today).
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+    /// v0.17 phase 3: embed Auto1111-compatible `parameters` PNG
+    /// tEXt chunk + write a sibling `.json` sidecar carrying the
+    /// structured equivalent. Default `true` — the CLI sets this
+    /// from `--metadata / --no-metadata`. When `false`, output
+    /// PNGs are byte-identical to pre-phase-3 plakat.
+    pub write_metadata: bool,
+    /// v0.17 phase D: write a low-cost latent-projection preview
+    /// every N denoise steps to `plakat-<seed>-preview.png`.
+    /// `None` or `Some(0)` disables. SD-family only; Flux / SD3
+    /// ignore.
+    pub preview_every: Option<u32>,
+    /// v0.17 phase D: preview-PNG longer-side dim. `None` →
+    /// pipeline default (384).
+    pub preview_size: Option<u32>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -167,6 +181,24 @@ pub struct GenRequest {
     /// a warning (its dual-encoder path already uses penultimate by
     /// design).
     pub clip_skip: usize,
+    /// v0.17 phase 3: optional generation metadata to embed in the
+    /// output PNG's `parameters` tEXt chunk + write to a sibling
+    /// `.json` sidecar. `None` (legacy) skips both writes —
+    /// byte-identical to pre-phase-3 PNG output. The metadata's
+    /// `seed` is overwritten per-image inside the generate loop so
+    /// each output carries its own seed even when the metadata is
+    /// shared across a `--count N` batch.
+    pub metadata: Option<crate::imaging::metadata::GenerationMetadata>,
+    /// v0.17 phase D: live-preview cadence. `Some(N)` writes a
+    /// projected-latent RGB approximation to
+    /// `<out>/plakat-<seed>-preview.png` every `N` steps so users
+    /// can monitor progress. `None` or `Some(0)` disables.
+    pub preview_every: Option<u32>,
+    /// v0.17 phase D: longer-side dimension (px) for the preview
+    /// PNG. Lanczos-resized from the latent's native resolution
+    /// (1/8 of the final image dims). Default 384 — small enough
+    /// for an instant write, big enough to see structure.
+    pub preview_size: Option<u32>,
 }
 
 // =====================================================================
@@ -513,11 +545,12 @@ pub struct Pipeline {
     /// is SDXL/SDXL-Turbo. Not shared via SdCore — the refiner is
     /// t2i-specific.
     ///
-    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. Phase 8d
-    /// holds it as `SdUNet::Sd` (no add_embedding — quality gap
-    /// preserved from pre-v0.11 behaviour). Phase 8e switches this to
-    /// `SdUNet::Sdxl` with the refiner's 5-time-id add_embedding so the
-    /// refiner pass also gets `text_time` micro-conditioning.
+    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. The
+    /// refiner pass loads via `SdxlUNet2DConditionModel` so its
+    /// `add_embedding` Linear fires on the trained 5-time-id input
+    /// (orig_size + crops_coords_top_left + aesthetic_score), giving
+    /// the full `text_time` micro-conditioning the refiner was
+    /// trained with.
     refiner_unet: Option<crate::pipelines::sdxl_unet::SdUNet>,
 }
 
@@ -531,11 +564,15 @@ const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
 ///     have cross-attention)
 ///   * Per-block attention head dims [4, 8, 16, 16]
 ///
-/// Known limitation: the refiner is trained with `addition_embed_type:
-/// text_time` (pooled CLIP-G + time_ids micro-conditioning). candle 0.8's
-/// UNet has no `add_embedding` projection so we silently skip that. The
-/// model loads and runs, but output quality is lower than the diffusers
-/// reference. Same gap our base-SDXL path takes.
+/// The refiner's `addition_embed_type: text_time` micro-conditioning
+/// (pooled CLIP-G + time_ids → `add_embedding` Linear → time-embed
+/// summand) is loaded via plakat's vendored
+/// `SdxlUNet2DConditionModel` rather than candle's stock
+/// `UNet2DConditionModel`. The refiner uses the 5-id time vector
+/// (orig_size + crops_coords_top_left + aesthetic_score) — same
+/// `addition_time_embed_dim` (256) as base SDXL but a different
+/// final-element semantic, captured by
+/// `SdxlAddEmbedConfig::refiner()`.
 fn sdxl_refiner_unet_config() -> UNet2DConditionModelConfig {
     UNet2DConditionModelConfig {
         blocks: vec![
@@ -759,14 +796,31 @@ impl Pipeline {
         do_cfg: bool,
         clip_skip: usize,
     ) -> Result<Tensor> {
-        let cond_ids = tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, prompt, &self.core.device)?;
-        let cond = clip_skip_forward(&self.core.text_encoder_l, &cond_ids, clip_skip)?;
+        // v0.17 phase 2: weighted-attention path. The hot path
+        // (no attention syntax) falls through to the unmodified
+        // call shape; only prompts with `(...)` / `[...]` pay the
+        // per-segment tokenize cost.
+        let cond = encode_with_attention(
+            &self.core.tokenizer_l,
+            &self.core.cfg.clip,
+            &self.core.text_encoder_l,
+            prompt,
+            clip_skip,
+            &self.core.device,
+            self.core.dtype,
+        )?;
         if !do_cfg {
             return Ok(cond.to_dtype(self.core.dtype)?);
         }
-        let uncond_ids =
-            tokenize_padded(&self.core.tokenizer_l, &self.core.cfg.clip, negative, &self.core.device)?;
-        let uncond = clip_skip_forward(&self.core.text_encoder_l, &uncond_ids, clip_skip)?;
+        let uncond = encode_with_attention(
+            &self.core.tokenizer_l,
+            &self.core.cfg.clip,
+            &self.core.text_encoder_l,
+            negative,
+            clip_skip,
+            &self.core.device,
+            self.core.dtype,
+        )?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -790,11 +844,15 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("refiner encoding needs text_encoder_g"))?;
 
-        let cond = embed_g_only(prompt, tok_g, cfg_g, enc_g, &self.core.device)?;
+        let cond = embed_g_only_with_attention(
+            prompt, tok_g, cfg_g, enc_g, &self.core.device, self.core.dtype,
+        )?;
         if !do_cfg {
             return Ok(cond.to_dtype(self.core.dtype)?);
         }
-        let uncond = embed_g_only(negative, tok_g, cfg_g, enc_g, &self.core.device)?;
+        let uncond = embed_g_only_with_attention(
+            negative, tok_g, cfg_g, enc_g, &self.core.device, self.core.dtype,
+        )?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -840,6 +898,7 @@ impl Pipeline {
             &self.core.text_encoder_l,
             enc_g,
             &self.core.device,
+            self.core.dtype,
         )?;
         if !do_cfg {
             return Ok((
@@ -856,6 +915,7 @@ impl Pipeline {
             &self.core.text_encoder_l,
             enc_g,
             &self.core.device,
+            self.core.dtype,
         )?;
         let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
         let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
@@ -1037,6 +1097,35 @@ impl Pipeline {
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
+                // v0.17 phase D: live preview every N steps via
+                // the cheap latent→RGB projection (microseconds,
+                // unlike a real VAE decode). Overwrites a single
+                // file so a viewer that auto-refreshes (e.g.
+                // `feh --reload` or any IDE preview) shows the
+                // denoise evolve in real time.
+                if let Some(every) = req.preview_every {
+                    if every > 0
+                        && (step_i + 1) % every as usize == 0
+                        && step_i + 1 < total_steps
+                    {
+                        let preview_path = req
+                            .out_dir
+                            .join(format!("plakat-{seed}-preview.png"));
+                        // Best-effort: warn + continue on preview
+                        // failure so a filesystem flake never
+                        // breaks the actual generation.
+                        if let Err(e) = crate::imaging::preview::write_latent_preview_sd(
+                            &latents,
+                            &preview_path,
+                            req.preview_size.unwrap_or(384),
+                        ) {
+                            tracing::warn!(
+                                target: "plakat",
+                                "live preview write failed: {e}"
+                            );
+                        }
+                    }
+                }
             }
             bar.finish_and_clear();
 
@@ -1100,7 +1189,7 @@ impl Pipeline {
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
             let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
-            crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
+            save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
@@ -1364,7 +1453,7 @@ impl Pipeline {
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
             let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
-            crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
+            save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
@@ -1480,6 +1569,28 @@ fn clip_skip_to_until_layer(clip_skip: usize) -> isize {
     -(clip_skip.max(1) as isize)
 }
 
+/// v0.17 phase 3: PNG + sidecar save with per-image seed
+/// override. Each image in a `--count N` batch gets its own seed;
+/// the GenRequest's shared metadata gets cloned + the per-image
+/// seed substituted before write.
+fn save_with_optional_metadata(
+    buf: &[u8],
+    width: u32,
+    height: u32,
+    out_path: &std::path::Path,
+    metadata: Option<&crate::imaging::metadata::GenerationMetadata>,
+    seed: u64,
+) -> Result<()> {
+    match metadata {
+        Some(meta) => {
+            let mut per_image = meta.clone();
+            per_image.seed = seed;
+            crate::imaging::io::save_rgb_u8_with_metadata(buf, width, height, out_path, &per_image)
+        }
+        None => crate::imaging::io::save_rgb_u8(buf, width, height, out_path),
+    }
+}
+
 fn tokenize_padded(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
@@ -1503,23 +1614,170 @@ fn tokenize_padded(
     Ok(Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?)
 }
 
-/// Penultimate CLIP-G hidden states only — for the SDXL refiner UNet whose
-/// `cross_attention_dim` is 1280, not the 2048 the base UNet expects.
-fn embed_g_only(
+/// v0.17 phase 2: tokenize an A1111-weighted prompt and return both
+/// the padded `(1, max_pos)` token-id tensor and a parallel
+/// `(1, max_pos, 1)` per-token weight tensor suitable for
+/// broadcast-multiplying the encoder's hidden states.
+///
+/// Strategy:
+///   1. Parse the prompt into `Vec<WeightedSegment>`.
+///   2. Tokenize each segment independently (no special tokens) so
+///      every segment's tokens carry the segment's weight.
+///   3. Concatenate the per-segment token IDs.
+///   4. Prepend BOS (`<|startoftext|>`) and append EOT
+///      (`<|endoftext|>`) — both weight 1.0 because they're
+///      structural, not content.
+///   5. Pad to `cfg.max_position_embeddings` (77) with the pad
+///      token — weight 1.0.
+///   6. Truncate if the segment-token total overflows the BOS/EOT
+///      budget. A1111's wraparound chunking isn't implemented here;
+///      we hard-truncate and let the user shorten the prompt.
+///
+/// The returned weight tensor has the trailing 1-dim so a
+/// `hidden_state.broadcast_mul(&weights)` call applies the weight
+/// to every channel of every token row.
+fn tokenize_weighted(
+    tokenizer: &Tokenizer,
+    cfg: &sdclip::Config,
+    segments: &[crate::prompt::a1111::WeightedSegment],
+    device: &Device,
+    dtype: DType,
+) -> Result<(Tensor, Tensor)> {
+    let max_pos = cfg.max_position_embeddings;
+    let pad_id: u32 = match &cfg.pad_with {
+        Some(s) => tokenizer
+            .token_to_id(s)
+            .ok_or_else(|| anyhow!("tokenizer missing pad token {s:?}"))?,
+        None => tokenizer
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?,
+    };
+    let bos_id = tokenizer
+        .token_to_id("<|startoftext|>")
+        .ok_or_else(|| anyhow!("tokenizer missing <|startoftext|>"))?;
+    let eot_id = tokenizer
+        .token_to_id("<|endoftext|>")
+        .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?;
+
+    // Collect per-segment tokens (no special tokens added — we
+    // bracket the whole sequence ourselves below).
+    let mut ids: Vec<u32> = Vec::with_capacity(max_pos);
+    let mut weights: Vec<f32> = Vec::with_capacity(max_pos);
+    // BOS at position 0, weight 1.0.
+    ids.push(bos_id);
+    weights.push(1.0);
+    let body_budget = max_pos.saturating_sub(2); // reserve for BOS + EOT
+    for seg in segments {
+        let seg_ids = tokenizer
+            .encode(seg.text.as_str(), false)
+            .map_err(|e| anyhow!("encode segment {:?}: {e}", seg.text))?
+            .get_ids()
+            .to_vec();
+        for id in seg_ids {
+            if ids.len() - 1 >= body_budget {
+                break; // hard-truncate at 77-2 body tokens
+            }
+            ids.push(id);
+            weights.push(seg.weight);
+        }
+        if ids.len() - 1 >= body_budget {
+            break;
+        }
+    }
+    // EOT.
+    ids.push(eot_id);
+    weights.push(1.0);
+    // Pad.
+    while ids.len() < max_pos {
+        ids.push(pad_id);
+        weights.push(1.0);
+    }
+
+    let ids_t = Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?;
+    let weights_t = Tensor::from_vec(weights, (1, max_pos, 1), device)?
+        .to_dtype(dtype)?;
+    Ok((ids_t, weights_t))
+}
+
+/// v0.17 phase 2: convenience that wraps `tokenize_weighted` for
+/// the common case where the caller already has a `&str` prompt
+/// — parses to segments first, then tokenizes. Returns the
+/// padded ID tensor + per-token weight tensor.
+fn tokenize_with_attention(
+    tokenizer: &Tokenizer,
+    cfg: &sdclip::Config,
+    text: &str,
+    device: &Device,
+    dtype: DType,
+) -> Result<(Tensor, Tensor)> {
+    let segments = crate::prompt::a1111::parse(text);
+    tokenize_weighted(tokenizer, cfg, &segments, device, dtype)
+}
+
+/// v0.17 phase 2: end-to-end CLIP-L encode with A1111 attention
+/// weighting. Returns `(1, 77, embed_dim)` hidden states.
+///
+/// Fast path: prompts without any attention syntax skip both the
+/// parse and the per-token broadcast — byte-identical to the
+/// pre-phase-2 `clip_skip_forward(tokenize_padded(...))` call.
+fn encode_with_attention(
+    tokenizer: &Tokenizer,
+    cfg: &sdclip::Config,
+    encoder: &sdclip::ClipTextTransformer,
+    prompt: &str,
+    clip_skip: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    if !crate::prompt::a1111::has_attention_syntax(prompt) {
+        let ids = tokenize_padded(tokenizer, cfg, prompt, device)?;
+        return clip_skip_forward(encoder, &ids, clip_skip);
+    }
+    let (ids, weights) = tokenize_with_attention(tokenizer, cfg, prompt, device, dtype)?;
+    let hidden = clip_skip_forward(encoder, &ids, clip_skip)?;
+    // hidden: (1, 77, embed_dim); weights: (1, 77, 1) → broadcast
+    // multiplies each token row by its per-token weight without
+    // touching channels (per-channel scaling would distort the
+    // colour-vs-shape contributions encoded along the channel
+    // dim; A1111 likewise scales per-token-row only).
+    let weights = weights.to_dtype(hidden.dtype())?;
+    Ok(hidden.broadcast_mul(&weights)?)
+}
+
+/// v0.17 phase 2: end-to-end CLIP-G encode (SDXL refiner path)
+/// with A1111 attention weighting. Returns penultimate hidden
+/// states `(1, 77, 1280)`.
+fn embed_g_only_with_attention(
     text: &str,
     tok_g: &Tokenizer,
     cfg_g: &sdclip::Config,
     enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
+    dtype: DType,
 ) -> Result<Tensor> {
-    let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
-    let (_final_g, hidden_g) = enc_g.forward_until_encoder_layer(&ids_g, usize::MAX, -2)?;
-    Ok(hidden_g)
+    if !crate::prompt::a1111::has_attention_syntax(text) {
+        let ids = tokenize_padded(tok_g, cfg_g, text, device)?;
+        let (_final, hidden) = enc_g.forward_until_encoder_layer(&ids, usize::MAX, -2)?;
+        return Ok(hidden);
+    }
+    let (ids, weights) = tokenize_with_attention(tok_g, cfg_g, text, device, dtype)?;
+    let (_final, hidden) = enc_g.forward_until_encoder_layer(&ids, usize::MAX, -2)?;
+    let weights = weights.to_dtype(hidden.dtype())?;
+    Ok(hidden.broadcast_mul(&weights)?)
 }
+
+// `embed_g_only` was replaced by `embed_g_only_with_attention`
+// in v0.17 phase 2 — kept the fast path (no attention syntax)
+// byte-identical inside the new function.
 
 /// Encode one branch (cond or uncond) for SDXL base: concat'd CLIP-L
 /// penultimate + CLIP-G penultimate for cross-attention, and the
 /// pooled CLIP-G output for the UNet's `add_embedding`.
+///
+/// v0.17 phase 2: applies A1111 attention weighting per-token-row
+/// on both the L and G penultimate hidden states. The pooled CLIP-G
+/// output is left unweighted — pooling collapses to one row, so
+/// per-token weights don't have a meaningful target there.
 #[allow(clippy::too_many_arguments)]
 fn embed_xl(
     text: &str,
@@ -1530,11 +1788,25 @@ fn embed_xl(
     enc_l: &sdclip::ClipTextTransformer,
     enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
+    dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
-    let ids_l = tokenize_padded(tok_l, cfg_l, text, device)?;
-    let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
+    if !crate::prompt::a1111::has_attention_syntax(text) {
+        // Fast path — byte-identical to pre-phase-2 behaviour.
+        let ids_l = tokenize_padded(tok_l, cfg_l, text, device)?;
+        let ids_g = tokenize_padded(tok_g, cfg_g, text, device)?;
+        let (_final_l, hidden_l) = enc_l.forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
+        let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+        let cat = Tensor::cat(&[&hidden_l, &hidden_g], 2)?;
+        return Ok((cat, pooled_g));
+    }
+    let (ids_l, weights_l) = tokenize_with_attention(tok_l, cfg_l, text, device, dtype)?;
+    let (ids_g, weights_g) = tokenize_with_attention(tok_g, cfg_g, text, device, dtype)?;
     let (_final_l, hidden_l) = enc_l.forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
     let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+    let weights_l = weights_l.to_dtype(hidden_l.dtype())?;
+    let weights_g = weights_g.to_dtype(hidden_g.dtype())?;
+    let hidden_l = hidden_l.broadcast_mul(&weights_l)?;
+    let hidden_g = hidden_g.broadcast_mul(&weights_g)?;
     let cat = Tensor::cat(&[&hidden_l, &hidden_g], 2)?;
     Ok((cat, pooled_g))
 }
@@ -1934,6 +2206,54 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     } else {
         DType::F16
     };
+
+    // v0.17 phase 3: build metadata before the loras / model get
+    // moved into LoadRequest. The seed is patched per-image at
+    // save time; everything else stays constant across `--count N`.
+    let metadata = if req.write_metadata {
+        let mut m = crate::imaging::metadata::GenerationMetadata::new(
+            req.prompt.clone(),
+            req.model.clone(),
+            req.seed.unwrap_or(0),
+            req.steps,
+            req.guidance,
+            format!("{:?}", req.scheduler).to_lowercase(),
+            req.width,
+            req.height,
+        );
+        m.negative = req.negative.clone();
+        if req.clip_skip > 1 {
+            m.clip_skip = Some(req.clip_skip);
+        }
+        if !req.loras.is_empty() {
+            m.loras = req
+                .loras
+                .iter()
+                .map(|s| format!("{s:?}"))
+                .collect();
+            m.lora_scale = Some(req.lora_scale);
+        }
+        if req.use_refiner {
+            m.refiner_frac = Some(req.refiner_frac);
+        }
+        if !req.controls.is_empty() {
+            m.controls = req
+                .controls
+                .iter()
+                .map(|spec| {
+                    let kind = format!("{:?}", spec.kind).to_lowercase();
+                    format!("{kind}@{:.2}", spec.strength)
+                })
+                .collect();
+        }
+        if req.tiled.is_some() {
+            m.extras.push(("Tiled".into(), "on".into()));
+        }
+        Some(m)
+    } else {
+        None
+    };
+
     let control_owned = crate::pipelines::controlnet::load_control_stack(
         &req.controls,
         &req.model,
@@ -1966,6 +2286,9 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         })
         .collect();
 
+    // (`metadata` was built above before the moves.)
+    let preview_every = req.preview_every;
+    let preview_size = req.preview_size;
     let gen_req = GenRequest {
         prompt: req.prompt,
         negative: req.negative,
@@ -1985,6 +2308,9 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             None
         },
         clip_skip: req.clip_skip,
+        metadata,
+        preview_every,
+        preview_size,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,
