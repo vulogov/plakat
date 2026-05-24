@@ -130,6 +130,14 @@ pub struct Request {
     /// from `--metadata / --no-metadata`. When `false`, output
     /// PNGs are byte-identical to pre-phase-3 plakat.
     pub write_metadata: bool,
+    /// v0.17 phase D: write a low-cost latent-projection preview
+    /// every N denoise steps to `plakat-<seed>-preview.png`.
+    /// `None` or `Some(0)` disables. SD-family only; Flux / SD3
+    /// ignore.
+    pub preview_every: Option<u32>,
+    /// v0.17 phase D: preview-PNG longer-side dim. `None` →
+    /// pipeline default (384).
+    pub preview_size: Option<u32>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -181,6 +189,16 @@ pub struct GenRequest {
     /// each output carries its own seed even when the metadata is
     /// shared across a `--count N` batch.
     pub metadata: Option<crate::imaging::metadata::GenerationMetadata>,
+    /// v0.17 phase D: live-preview cadence. `Some(N)` writes a
+    /// projected-latent RGB approximation to
+    /// `<out>/plakat-<seed>-preview.png` every `N` steps so users
+    /// can monitor progress. `None` or `Some(0)` disables.
+    pub preview_every: Option<u32>,
+    /// v0.17 phase D: longer-side dimension (px) for the preview
+    /// PNG. Lanczos-resized from the latent's native resolution
+    /// (1/8 of the final image dims). Default 384 — small enough
+    /// for an instant write, big enough to see structure.
+    pub preview_size: Option<u32>,
 }
 
 // =====================================================================
@@ -1074,6 +1092,35 @@ impl Pipeline {
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
+                // v0.17 phase D: live preview every N steps via
+                // the cheap latent→RGB projection (microseconds,
+                // unlike a real VAE decode). Overwrites a single
+                // file so a viewer that auto-refreshes (e.g.
+                // `feh --reload` or any IDE preview) shows the
+                // denoise evolve in real time.
+                if let Some(every) = req.preview_every {
+                    if every > 0
+                        && (step_i + 1) % every as usize == 0
+                        && step_i + 1 < total_steps
+                    {
+                        let preview_path = req
+                            .out_dir
+                            .join(format!("plakat-{seed}-preview.png"));
+                        // Best-effort: warn + continue on preview
+                        // failure so a filesystem flake never
+                        // breaks the actual generation.
+                        if let Err(e) = crate::imaging::preview::write_latent_preview_sd(
+                            &latents,
+                            &preview_path,
+                            req.preview_size.unwrap_or(384),
+                        ) {
+                            tracing::warn!(
+                                target: "plakat",
+                                "live preview write failed: {e}"
+                            );
+                        }
+                    }
+                }
             }
             bar.finish_and_clear();
 
@@ -2235,6 +2282,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         .collect();
 
     // (`metadata` was built above before the moves.)
+    let preview_every = req.preview_every;
+    let preview_size = req.preview_size;
     let gen_req = GenRequest {
         prompt: req.prompt,
         negative: req.negative,
@@ -2255,6 +2304,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         },
         clip_skip: req.clip_skip,
         metadata,
+        preview_every,
+        preview_size,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,

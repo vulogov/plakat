@@ -372,6 +372,19 @@ grid is composed AFTER artefact composite, ADetailer, and
 Hires-fix passes, so the cells reflect the final post-processed
 images.
 
+#### `--preview-every <N>` / `--preview-size <PX>` (default 0 / 384)
+
+Write a low-cost latent-projection preview PNG every N denoise
+steps so long runs aren't a black box. Output goes to
+`<out>/plakat-<seed>-preview.png` and is overwritten each
+update. `0` (default) disables the previews. The preview path
+uses the community 4-channel → RGB approximation
+(microseconds — no VAE decode), so previews add no meaningful
+runtime cost. SD 1.5 / 2.1 / SDXL / SDXL-Turbo only — Flux /
+SD3 use 16-channel latents with a different projection matrix
+not wired in this release. The final saved PNG always uses the
+full VAE decode regardless of `--preview-every`.
+
 ### Tiled hi-res generation
 
 For outputs above the model's trained working resolution (4K SDXL,
