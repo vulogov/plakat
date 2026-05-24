@@ -456,7 +456,52 @@ are skipped. Names accept letters, digits, `-`, and `_` (so
 Wildcards compose with the prompt enhancer (`--enhance`) — expansion
 runs first, then the enhancer sees the concrete prompt.
 
-## 13. CLIP-skip (+, SD 1.5 / SD 2.1)
+## 13. Attention emphasis: `(red:1.2)` / `[blue]` (SD-family)
+
+plakat accepts the Auto1111 / NovelAI prompt grammar — the same
+`(emphasis)` / `[de-emphasis]` syntax that every Civitai LoRA card
+uses in its example prompts. The model gets a strong directional
+nudge at the tokens you bracket, without your needing to retrain
+or pick different schedulers.
+
+| Syntax | Effect |
+|---|---|
+| `(token)` | Boost weight by `×1.1`. Stack with nesting. |
+| `((token))` | `×1.21` (1.1 × 1.1). |
+| `(token:1.5)` | Boost weight to `×1.5` exactly. |
+| `[token]` | Reduce weight by `×1/1.1 ≈ 0.909`. |
+| `[[token]]` | `×0.826`. |
+| `[token:0.6]` | Set weight to `×0.6` exactly. |
+| `\(`, `\)`, `\[`, `\]` | Literal punctuation — escape when you actually mean the character. |
+
+```bash
+# Push the model toward "red" while gently down-weighting "small"
+plakat generate "a (red:1.4) fox in a [small] meadow" \
+    --model sd15
+
+# Realistic Civitai-style prompt with multiple emphases
+plakat generate \
+    "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
+    --model sd15
+```
+
+Implementation: the parser splits your prompt into weighted
+segments, each segment tokenizes independently, and after the CLIP
+forward pass plakat scales each token's hidden-state row by its
+segment weight. The pooled CLIP-G output that SDXL feeds into
+`add_embedding` is left unweighted (pooling collapses to one row,
+so per-token weights have no meaningful target there).
+
+**Compatibility**:
+- SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux + SD3 use
+  T5 + CLIP-pooled; the weighting hook isn't wired for them in
+  this release.
+- Unbalanced parens (`a ( red fox` with no closing `)`) pass
+  through as literal characters — no error, just no emphasis.
+- Composes with `--clip-skip`, `--lora`, wildcards, ADetailer,
+  Hires fix.
+
+## 14. CLIP-skip (SD 1.5 / SD 2.1)
 
 The Auto1111 / NovelAI community default for SD 1.5 anime checkpoints
 (Anything-v3, AnyLoRA, ...) is to read the **penultimate** CLIP
@@ -476,7 +521,7 @@ penultimate by training default — plakat logs a warning if you pass
 `--clip-skip > 1` on SDXL). Flux / SD3 don't use this flag at all
 (T5 + CLIP-pooled architecture).
 
-## 14. ADetailer — face refinement (+, SD-family)
+## 15. ADetailer — face refinement (SD-family)
 
 SD/SDXL often produce lo-fi faces at non-face working resolutions
 (small face in a big canvas — the model only had ~64² of latent for
@@ -535,7 +580,7 @@ Without one of these, `--adetailer` bails loud.
 - Composes with `--lora`, `--scheduler`, `--seed`. The face pass
  reuses the t2i SdCore so there's no extra model load.
 
-## 15. Browsing Civitai
+## 16. Browsing Civitai
 
 [Civitai](https://civitai.com) is the major community hub for SD
 checkpoints, LoRAs, embeddings, and ControlNet variants. plakat
@@ -593,7 +638,7 @@ plakat generate "..." --model sd15 \
 <https://civitai.com/user/account> (API Keys section). Public
 models work without one.
 
-## 16. Hires fix — escape the trained-resolution ceiling
+## 17. Hires fix — escape the trained-resolution ceiling
 
 SD 1.5 was trained at 512², SDXL at 1024². Sampling much past
 those introduces the "multi-head problem": the model loses track of
@@ -651,7 +696,7 @@ plakat generate "a vintage travel poster of Tokyo at night" \
  --adetailer
 ```
 
-## 17. Textual Inversion (partial)
+## 18. Textual Inversion (partial)
 
 Textual Inversion (TI, sometimes called "embeddings") learns new
 "words" by training one or more embedding vectors against a small
@@ -690,7 +735,7 @@ In the meantime:
  conversion script](https://github.com/kohya-ss/sd-scripts) and
  use as a LoRA.
 
-## 18. Common issues
+## 19. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL
