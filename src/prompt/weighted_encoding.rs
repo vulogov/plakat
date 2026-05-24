@@ -248,4 +248,93 @@ mod tests {
         assert_eq!(w_v[0], 1.5);
         assert_eq!(w_v[1], 1.0);
     }
+
+    // v0.18 phase 4 — negative-prompt regression suite. The negative
+    // branch of CFG (SD 1.5 / 2.1, SDXL, SD3 / 3.5) calls the same
+    // encode_with_attention / embed_xl / encode_prompt entry points
+    // as the conditional branch, so the same WeightedTokenConfig
+    // produces the same weight broadcast. These tests verify the
+    // helper itself doesn't have any positive-branch-specific
+    // assumption that would silently no-op the negative.
+
+    #[test]
+    fn negative_style_prompt_weights_multiple_segments() {
+        // Typical anti-pattern negative — multiple weighted bad-quality
+        // tokens. Same parse + tokenize path as positive prompts.
+        let tok = toy_tokenizer();
+        let cfg = WeightedTokenConfig {
+            tokenizer: &tok,
+            max_len: 12,
+            bos_id: Some(1),
+            eos_id: 2,
+            pad_id: 2,
+        };
+        // (a:1.5), [b:0.5], c → three segments, distinct weights.
+        let (_ids, weights) =
+            tokenize_with_attention(&cfg, "(a:1.5), [b:0.5], c", &Device::Cpu, DType::F32)
+                .unwrap();
+        let w_v: Vec<f32> = weights.flatten_all().unwrap().to_vec1().unwrap();
+        // BOS=1.0; "a"=1.5; comma+space coalesced into next seg, etc.
+        // Easier assertion: every position in w_v that decodes to id 10
+        // (token "a") must be 1.5; every position decoding to id 11
+        // ("b") must be 0.5; every position to id 12 ("c") must be 1.0.
+        let ids_v: Vec<u32> =
+            tokenize_with_attention(&cfg, "(a:1.5), [b:0.5], c", &Device::Cpu, DType::F32)
+                .unwrap()
+                .0
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+        for (i, id) in ids_v.iter().enumerate() {
+            match id {
+                10 => assert!((w_v[i] - 1.5).abs() < 1e-6, "a at {i} should be 1.5"),
+                11 => assert!((w_v[i] - 0.5).abs() < 1e-6, "b at {i} should be 0.5"),
+                12 => assert!((w_v[i] - 1.0).abs() < 1e-6, "c at {i} should be 1.0"),
+                _ => {} // BOS / EOS / pad — weight 1.0 by helper contract
+            }
+        }
+    }
+
+    #[test]
+    fn empty_negative_yields_no_body_only_bos_eos_pads() {
+        // The most common production case: --negative defaulted to "".
+        // Must produce a valid (1, max_len) sequence with body length 0
+        // — every position carries weight 1.0 — without panicking.
+        let tok = toy_tokenizer();
+        let cfg = WeightedTokenConfig {
+            tokenizer: &tok,
+            max_len: 6,
+            bos_id: Some(1),
+            eos_id: 2,
+            pad_id: 2,
+        };
+        let (ids, weights) =
+            tokenize_with_attention(&cfg, "", &Device::Cpu, DType::F32).unwrap();
+        let ids_v: Vec<u32> = ids.flatten_all().unwrap().to_vec1().unwrap();
+        // BOS(1), EOS(2), pad(2), pad(2), pad(2), pad(2).
+        assert_eq!(ids_v, vec![1, 2, 2, 2, 2, 2]);
+        let w_v: Vec<f32> = weights.flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(w_v, vec![1.0; 6]);
+    }
+
+    #[test]
+    fn empty_negative_t5_style_no_bos() {
+        // Same coverage on the T5 side — no BOS, pad=0.
+        let tok = toy_tokenizer();
+        let cfg = WeightedTokenConfig {
+            tokenizer: &tok,
+            max_len: 5,
+            bos_id: None,
+            eos_id: 2,
+            pad_id: 3,
+        };
+        let (ids, weights) =
+            tokenize_with_attention(&cfg, "", &Device::Cpu, DType::F32).unwrap();
+        let ids_v: Vec<u32> = ids.flatten_all().unwrap().to_vec1().unwrap();
+        // EOS at position 0 (no BOS), pads to max_len.
+        assert_eq!(ids_v, vec![2, 3, 3, 3, 3]);
+        let w_v: Vec<f32> = weights.flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(w_v, vec![1.0; 5]);
+    }
 }

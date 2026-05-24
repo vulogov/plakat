@@ -619,6 +619,17 @@ Flux (T5-XXL hidden states — CLIP-L on Flux is pooled-only, so per-
 token weighting is a no-op there), SD3 / SD3.5 (CLIP-L penult,
 CLIP-G penult, and T5 hidden — pooled CLIP-{L,G} stays unweighted).
 
+**Negative prompts**: `--negative` accepts the same syntax. The
+uncond branch of CFG goes through the same encoder entry points as
+the positive branch, so `(blurry:1.5), [low quality]` weights the
+"blurry" cluster more than other negative tokens.
+
+```bash
+plakat generate "portrait, soft light" \
+    --negative "(blurry:1.6), (low quality:1.4), [oversharp]" \
+    --model sdxl
+```
+
 **Sentencepiece caveat (Flux + SD3)**: T5's sentencepiece tokenizer
 may produce a slightly different subtoken split for a segment in
 isolation vs the same text inside a longer string (the leading
