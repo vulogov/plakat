@@ -380,7 +380,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
-| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1. |
+| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |

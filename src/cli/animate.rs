@@ -7,10 +7,11 @@
 //!
 //! Scope notes:
 //!
-//! * SD 1.5 / SD 2.1 only in this release. SDXL has dual encoders
-//!   + pooled add_embedding that complicate the lerp; Flux + SD3
-//!   use T5 + rectified flow that need their own machinery.
-//!   The CLI dispatch bails loud if the model isn't SD-family.
+//! * SD 1.5 / SD 2.1 / SDXL in this release. SDXL uses dual encoders
+//!   (CLIP-L penult + CLIP-G penult concat → 2048d) plus a pooled
+//!   `add_embedding` and `add_time_ids` micro-conditioning vector;
+//!   the lerp runs across all three at frame time. Flux + SD3 use
+//!   T5 + rectified flow that need their own machinery.
 //! * No `--lora` / `--control` / `--refiner` plumbing — animate
 //!   keeps the pipeline narrow on purpose. Bake LoRAs into the
 //!   prompts via wildcards or use the standard `plakat generate`
@@ -51,8 +52,9 @@ pub struct AnimateArgs {
     #[arg(long)]
     pub seed: Option<u64>,
 
-    /// SD-family model. Defaults to `sd15`. SDXL / Flux / SD3
-    /// bail loud — see module docs.
+    /// SD 1.5 / SD 2.1 / SDXL model. Defaults to `sd15`. Flux / SD3
+    /// bail loud — they use T5 + rectified-flow and need separate
+    /// animate machinery (deferred).
     #[arg(long, default_value = "sd15")]
     pub model: String,
 
@@ -121,12 +123,12 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         };
         SdVariant::detect(&repo)
     };
-    if !matches!(variant, SdVariant::Sd15 | SdVariant::Sd21) {
+    if !matches!(variant, SdVariant::Sd15 | SdVariant::Sd21 | SdVariant::Sdxl) {
         anyhow::bail!(
-            "`plakat animate` is SD 1.5 / SD 2.1 only in this release \
-             (got --model {} = {:?}). SDXL / Flux / SD3 animation lands \
-             in a follow-up — the per-frame embedding lerp needs \
-             different machinery for those families.",
+            "`plakat animate` is SD 1.5 / SD 2.1 / SDXL only in this \
+             release (got --model {} = {:?}). Flux / SD3 animation \
+             lands in a follow-up — the per-frame embedding lerp \
+             needs separate machinery for those families.",
             args.model,
             variant
         );
@@ -138,7 +140,7 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         match variant {
             SdVariant::Sd15 => "SD 1.5",
             SdVariant::Sd21 => "SD 2.1",
-            _ => unreachable!(),
+            SdVariant::Sdxl => "SDXL",
         }
     ));
     let core = SdCore::load(SdLoadRequest {
@@ -155,15 +157,28 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
     let dtype = core.dtype;
 
     // Encode the two endpoint prompts + (optionally) the negative
-    // once each. Frame-time work is just (a) lerp two existing
-    // tensors and (b) run the denoise loop.
+    // once each. Frame-time work is just (a) lerp the cached tensors
+    // and (b) run the denoise loop.
     let encode_spin = crate::ui::progress::spinner("Encoding endpoint prompts");
-    let cond_a = encode_branch(&core, &args.from, dtype)?;
-    let cond_b = encode_branch(&core, &args.to, dtype)?;
-    let uncond = if do_cfg {
-        Some(encode_branch(&core, &args.negative, dtype)?)
-    } else {
-        None
+    let endpoints = match variant {
+        SdVariant::Sdxl => Endpoints::Sdxl(SdxlEndpoints::encode(
+            &core,
+            &args.from,
+            &args.to,
+            &args.negative,
+            do_cfg,
+            width,
+            height,
+            dtype,
+        )?),
+        _ => Endpoints::Sd(SdEndpoints::encode(
+            &core,
+            &args.from,
+            &args.to,
+            &args.negative,
+            do_cfg,
+            dtype,
+        )?),
     };
     encode_spin.finish_with_message("✓ endpoint embeddings ready");
 
@@ -182,16 +197,11 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         } else {
             frame_i as f64 / (args.frames - 1) as f64
         };
-        let lerped_cond = lerp_tensors(&cond_a, &cond_b, t)?;
-        let text_embeddings = match uncond.as_ref() {
-            Some(u) => Tensor::cat(&[u, &lerped_cond], 0)?,
-            None => lerped_cond,
-        };
-
         let frame_path = args.out.join(format!("frame-{frame_i:04}.png"));
+        let frame = endpoints.lerp_at(t)?;
         denoise_one_frame(
             &core,
-            &text_embeddings,
+            &frame,
             width,
             height,
             args.steps,
@@ -251,6 +261,234 @@ fn encode_branch(core: &SdCore, text: &str, dtype: DType) -> Result<Tensor> {
     Ok(hidden.to_dtype(dtype)?)
 }
 
+/// v0.18 phase 5: SDXL single-branch encode. Returns
+/// `(hidden_concat_2048d, pooled_g_1280d)` — the dual-encoder
+/// penultimate stack ready for cross-attention, and the pooled
+/// CLIP-G output that drives SDXL's `add_text_embeds`.
+///
+/// Mirrors `t2i::embed_xl` for a single branch (no CFG concat).
+/// Animate-XL uses the unweighted CLIP tokenize path; per-prompt
+/// attention syntax in animate prompts is uncommon enough that the
+/// extra branch isn't worth the complexity here. The plain `--from`
+/// / `--to` prompts still benefit from the full SDXL micro-
+/// conditioning chain at frame time.
+fn encode_branch_xl(core: &SdCore, text: &str, dtype: DType) -> Result<(Tensor, Tensor)> {
+    use candle_transformers::models::stable_diffusion::clip::ClipTextTransformer;
+
+    let tok_g = core
+        .tokenizer_g
+        .as_ref()
+        .ok_or_else(|| anyhow!("SDXL animate needs tokenizer_g"))?;
+    let enc_g = core
+        .text_encoder_g
+        .as_ref()
+        .ok_or_else(|| anyhow!("SDXL animate needs text_encoder_g"))?;
+    let cfg_g = core
+        .cfg
+        .clip2
+        .as_ref()
+        .ok_or_else(|| anyhow!("SDXL config missing clip2"))?;
+
+    // CLIP-L tokenize + penultimate hidden state.
+    let pad_l: u32 = match &core.cfg.clip.pad_with {
+        Some(s) => core
+            .tokenizer_l
+            .token_to_id(s)
+            .ok_or_else(|| anyhow!("CLIP-L tokenizer missing pad token {s:?}"))?,
+        None => core
+            .tokenizer_l
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow!("CLIP-L tokenizer missing <|endoftext|>"))?,
+    };
+    let mut ids_l = core
+        .tokenizer_l
+        .encode(text, true)
+        .map_err(|e| anyhow!("CLIP-L encode of {text:?}: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids_l.resize(core.cfg.clip.max_position_embeddings, pad_l);
+    let ids_l_t = Tensor::new(ids_l.as_slice(), &core.device)?.unsqueeze(0)?;
+    let (_final_l, hidden_l) = ClipTextTransformer::forward_until_encoder_layer(
+        &core.text_encoder_l,
+        &ids_l_t,
+        usize::MAX,
+        -2,
+    )?;
+    let hidden_l = hidden_l.to_dtype(dtype)?;
+
+    // CLIP-G tokenize + (penult, pooled).
+    let pad_g: u32 = match &cfg_g.pad_with {
+        Some(s) => tok_g
+            .token_to_id(s)
+            .ok_or_else(|| anyhow!("CLIP-G tokenizer missing pad token {s:?}"))?,
+        None => tok_g
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow!("CLIP-G tokenizer missing <|endoftext|>"))?,
+    };
+    let mut ids_g = tok_g
+        .encode(text, true)
+        .map_err(|e| anyhow!("CLIP-G encode of {text:?}: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids_g.resize(cfg_g.max_position_embeddings, pad_g);
+    let ids_g_t = Tensor::new(ids_g.as_slice(), &core.device)?.unsqueeze(0)?;
+    let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g_t)?;
+    let hidden_g = hidden_g.to_dtype(dtype)?;
+    let pooled_g = pooled_g.to_dtype(dtype)?;
+
+    // Concat CLIP-L penult (768) + CLIP-G penult (1280) along channel
+    // dim → (1, 77, 2048). Matches the SDXL UNet's cross-attention
+    // expectation.
+    let hidden = Tensor::cat(&[&hidden_l, &hidden_g], candle_core::D::Minus1)?;
+    Ok((hidden, pooled_g))
+}
+
+/// Per-frame inputs to the denoise loop. SD-family carries only the
+/// cross-attention hidden state. SDXL additionally needs the pooled
+/// `add_text_embeds` and the `add_time_ids` micro-conditioning
+/// vector (CFG-stacked if guidance > 1).
+struct Frame {
+    text_embeddings: Tensor,
+    add_text_embeds: Option<Tensor>,
+    add_time_ids: Option<Tensor>,
+}
+
+enum Endpoints {
+    Sd(SdEndpoints),
+    Sdxl(SdxlEndpoints),
+}
+
+impl Endpoints {
+    fn lerp_at(&self, t: f64) -> Result<Frame> {
+        match self {
+            Endpoints::Sd(e) => e.lerp_at(t),
+            Endpoints::Sdxl(e) => e.lerp_at(t),
+        }
+    }
+}
+
+struct SdEndpoints {
+    cond_a: Tensor,
+    cond_b: Tensor,
+    uncond: Option<Tensor>,
+}
+
+impl SdEndpoints {
+    fn encode(
+        core: &SdCore,
+        from: &str,
+        to: &str,
+        negative: &str,
+        do_cfg: bool,
+        dtype: DType,
+    ) -> Result<Self> {
+        Ok(Self {
+            cond_a: encode_branch(core, from, dtype)?,
+            cond_b: encode_branch(core, to, dtype)?,
+            uncond: if do_cfg {
+                Some(encode_branch(core, negative, dtype)?)
+            } else {
+                None
+            },
+        })
+    }
+
+    fn lerp_at(&self, t: f64) -> Result<Frame> {
+        let lerped = lerp_tensors(&self.cond_a, &self.cond_b, t)?;
+        let text_embeddings = match self.uncond.as_ref() {
+            Some(u) => Tensor::cat(&[u, &lerped], 0)?,
+            None => lerped,
+        };
+        Ok(Frame {
+            text_embeddings,
+            add_text_embeds: None,
+            add_time_ids: None,
+        })
+    }
+}
+
+struct SdxlEndpoints {
+    cond_a_hidden: Tensor,
+    cond_a_pooled: Tensor,
+    cond_b_hidden: Tensor,
+    cond_b_pooled: Tensor,
+    uncond_hidden: Option<Tensor>,
+    uncond_pooled: Option<Tensor>,
+    /// Pre-built (CFG-stacked when do_cfg) add_time_ids vector.
+    /// Constant across frames so building it once amortises the cost
+    /// across the loop.
+    add_time_ids: Tensor,
+    do_cfg: bool,
+}
+
+impl SdxlEndpoints {
+    #[allow(clippy::too_many_arguments)]
+    fn encode(
+        core: &SdCore,
+        from: &str,
+        to: &str,
+        negative: &str,
+        do_cfg: bool,
+        width: u32,
+        height: u32,
+        dtype: DType,
+    ) -> Result<Self> {
+        let (a_h, a_p) = encode_branch_xl(core, from, dtype)?;
+        let (b_h, b_p) = encode_branch_xl(core, to, dtype)?;
+        let (u_h, u_p) = if do_cfg {
+            let (h, p) = encode_branch_xl(core, negative, dtype)?;
+            (Some(h), Some(p))
+        } else {
+            (None, None)
+        };
+        // add_time_ids: 6 floats per row for SDXL base —
+        // [orig_h, orig_w, crop_top, crop_left, target_h, target_w].
+        // build_add_time_ids_base builds (1, 6); CFG stacks
+        // uncond + cond identically (diffusers does the same).
+        let one = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+            height,
+            width,
+            &core.device,
+            dtype,
+        )?;
+        let add_time_ids = if do_cfg {
+            Tensor::cat(&[&one, &one], 0)?
+        } else {
+            one
+        };
+        Ok(Self {
+            cond_a_hidden: a_h,
+            cond_a_pooled: a_p,
+            cond_b_hidden: b_h,
+            cond_b_pooled: b_p,
+            uncond_hidden: u_h,
+            uncond_pooled: u_p,
+            add_time_ids,
+            do_cfg,
+        })
+    }
+
+    fn lerp_at(&self, t: f64) -> Result<Frame> {
+        let hidden = lerp_tensors(&self.cond_a_hidden, &self.cond_b_hidden, t)?;
+        let pooled = lerp_tensors(&self.cond_a_pooled, &self.cond_b_pooled, t)?;
+        let (text_embeddings, add_text_embeds) = if self.do_cfg {
+            let uh = self.uncond_hidden.as_ref().unwrap();
+            let up = self.uncond_pooled.as_ref().unwrap();
+            (
+                Tensor::cat(&[uh, &hidden], 0)?,
+                Tensor::cat(&[up, &pooled], 0)?,
+            )
+        } else {
+            (hidden, pooled)
+        };
+        Ok(Frame {
+            text_embeddings,
+            add_text_embeds: Some(add_text_embeds),
+            add_time_ids: Some(self.add_time_ids.clone()),
+        })
+    }
+}
+
 /// Linear interpolation between two same-shape tensors at scalar
 /// `t` ∈ [0, 1]. `t = 0` → all `a`; `t = 1` → all `b`.
 fn lerp_tensors(a: &Tensor, b: &Tensor, t: f64) -> Result<Tensor> {
@@ -261,13 +499,14 @@ fn lerp_tensors(a: &Tensor, b: &Tensor, t: f64) -> Result<Tensor> {
 }
 
 /// Run a minimal denoise loop using `core`'s UNet + scheduler +
-/// VAE. SD 1.5 / SD 2.1 only (no SDXL pooled / add_time_ids
-/// handling). Saves the result to `out_path`. Caller has already
-/// CFG-cat'd the embeddings if needed.
+/// VAE. SD 1.5 / SD 2.1 / SDXL — the unified `SdUNet::forward`
+/// wrapper handles either variant; the caller passes the SDXL
+/// extras (`add_text_embeds`, `add_time_ids`) via `Frame` when
+/// they apply. Saves the result to `out_path`.
 #[allow(clippy::too_many_arguments)]
 fn denoise_one_frame(
     core: &SdCore,
-    text_embeddings: &Tensor,
+    frame: &Frame,
     width: u32,
     height: u32,
     steps: usize,
@@ -276,8 +515,6 @@ fn denoise_one_frame(
     seed: u64,
     out_path: &std::path::Path,
 ) -> Result<()> {
-    use crate::pipelines::sdxl_unet::SdUNet;
-
     let do_cfg = guidance > 1.0;
     let w = width as usize;
     let h = height as usize;
@@ -311,19 +548,13 @@ fn denoise_one_frame(
             latents.clone()
         };
         let model_input = scheduler.scale_model_input(model_input, timestep)?;
-        let noise_pred = match &core.unet {
-            SdUNet::Sd(unet) => unet.forward(&model_input, timestep as f64, text_embeddings)?,
-            SdUNet::Sdxl(_) => {
-                // animate is SD 1.5 / SD 2.1 only — gated at the
-                // CLI boundary above. This arm is unreachable in
-                // practice; bail loud so a future refactor can't
-                // silently hit it.
-                anyhow::bail!(
-                    "plakat animate doesn't support SDXL backbones — \
-                     guard at the CLI entry should have caught this."
-                );
-            }
-        };
+        let noise_pred = core.unet.forward(
+            &model_input,
+            timestep as f64,
+            &frame.text_embeddings,
+            frame.add_text_embeds.as_ref(),
+            frame.add_time_ids.as_ref(),
+        )?;
         let noise_pred = if do_cfg {
             let pieces = noise_pred.chunk(2, 0)?;
             let uncond = &pieces[0];
@@ -336,7 +567,10 @@ fn denoise_one_frame(
     }
 
     // VAE decode + save (same recipe t2i::Pipeline::generate uses).
-    let image = core.vae.decode(&(&latents / 0.18215)?)?;
+    // SDXL's VAE was trained with scaling_factor 0.13025 vs SD 1.5/2.1
+    // at 0.18215 — using the wrong constant produces washed-out output.
+    let vae_scale = core.variant.vae_scale();
+    let image = core.vae.decode(&(&latents / vae_scale)?)?;
     let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
     let image = (image * 255.0)?
         .to_dtype(DType::U8)?
@@ -457,5 +691,43 @@ mod tests {
         assert!(parse_size("nonsense").is_err());
         assert!(parse_size("512").is_err());
         assert!(parse_size("axb").is_err());
+    }
+
+    // v0.18 phase 5 — SDXL animate exercises lerp on tensors of two
+    // distinct shapes per frame: (1, 77, 2048) hidden and (1, 1280)
+    // pooled add_text_embeds. Verify the pooled shape doesn't trip
+    // the lerp (different rank, same broadcast semantics).
+
+    #[test]
+    fn lerp_on_pooled_shape_1_1280() {
+        let a = Tensor::zeros((1, 1280), DType::F32, &Device::Cpu).unwrap();
+        let b = (Tensor::ones((1, 1280), DType::F32, &Device::Cpu).unwrap() * 4.0).unwrap();
+        let out = lerp_tensors(&a, &b, 0.25).unwrap();
+        // 0 * 0.75 + 4 * 0.25 = 1.0 everywhere.
+        let flat: Vec<f32> = out.flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(flat.len(), 1280);
+        for v in &flat {
+            assert!((v - 1.0).abs() < 1e-5, "expected ~1.0, got {v}");
+        }
+    }
+
+    #[test]
+    fn lerp_on_hidden_shape_1_77_2048() {
+        // Same broadcast contract for the cross-attention shape.
+        let a = Tensor::zeros((1, 77, 2048), DType::F32, &Device::Cpu).unwrap();
+        let b = (Tensor::ones((1, 77, 2048), DType::F32, &Device::Cpu).unwrap() * 8.0).unwrap();
+        let out = lerp_tensors(&a, &b, 0.5).unwrap();
+        let mid: Vec<f32> = out
+            .i(0)
+            .unwrap()
+            .i(38)
+            .unwrap()
+            .i(1024)
+            .unwrap()
+            .to_vec0::<f32>()
+            .map(|v| vec![v])
+            .unwrap_or_default();
+        assert!((mid[0] - 4.0).abs() < 1e-5);
+        assert_eq!(out.dims(), &[1, 77, 2048]);
     }
 }
