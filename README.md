@@ -268,6 +268,10 @@ plakat generate "..." --model flux-dev --fast hyper-8
 plakat generate "a fantasy castle on a misty mountaintop" \
     --model sdxl --fast lcm-sdxl
 
+# Same recipe for SD 1.5 — 4-step inference on the smaller backbone
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sd15 --fast lcm-sd15
+
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each
 # accepts either `from=PATH` (auto-annotate any photo) or

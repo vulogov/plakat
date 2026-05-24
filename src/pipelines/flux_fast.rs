@@ -45,6 +45,8 @@ pub enum FastTarget {
     Flux,
     /// SDXL / SDXL-Turbo — LCM-LoRA-SDXL.
     Sdxl,
+    /// Stable Diffusion 1.5 — LCM-LoRA-SDv1.5.
+    Sd15,
 }
 
 /// One curated distillation preset. `lora_repo` + `lora_file` point at
@@ -147,6 +149,22 @@ pub const PRESETS: &[FastPreset] = &[
         lora_repo: "latent-consistency/lcm-lora-sdxl",
         // Repo ships `pytorch_lora_weights.safetensors` as the
         // canonical filename; let the auto-discover pick.
+        lora_file: None,
+        lora_scale: 1.0,
+        steps: 4,
+        guidance: 1.5,
+        scheduler_hint: Some("lcm"),
+    },
+    // v0.18 phase 1: LCM-LoRA for SD 1.5. Same distillation recipe
+    // as the SDXL preset, against the v1.5 base. The model card
+    // (`latent-consistency/lcm-lora-sdv1-5`) recommends 4-8 steps
+    // with CFG in [1.0, 2.0]; we pick the same midpoint as lcm-sdxl
+    // for muscle-memory consistency.
+    FastPreset {
+        name: "lcm-sd15",
+        description: "Latent Consistency LoRA for SD 1.5 — 4-step inference at CFG 1.5",
+        target: FastTarget::Sd15,
+        lora_repo: "latent-consistency/lcm-lora-sdv1-5",
         lora_file: None,
         lora_scale: 1.0,
         steps: 4,
@@ -298,14 +316,31 @@ mod tests {
         // flow works with any sampler); only LCM-LoRA needs to pin
         // the scheduler at preset-apply time.
         for p in PRESETS {
-            match p.name {
-                "lcm-sdxl" => assert!(p.scheduler_hint.is_some()),
-                _ => assert!(
+            if p.name.starts_with("lcm-") {
+                assert!(
+                    p.scheduler_hint == Some("lcm"),
+                    "{} must pin scheduler to lcm",
+                    p.name
+                );
+            } else {
+                assert!(
                     p.scheduler_hint.is_none(),
                     "{} unexpectedly carries a scheduler hint",
                     p.name
-                ),
+                );
             }
         }
+    }
+
+    // v0.18 phase 1 — LCM-LoRA SD 1.5 preset.
+
+    #[test]
+    fn lcm_sd15_preset_registered() {
+        let p = lookup("lcm-sd15").expect("lcm-sd15 preset registered");
+        assert_eq!(p.target, FastTarget::Sd15);
+        assert_eq!(p.lora_repo, "latent-consistency/lcm-lora-sdv1-5");
+        assert_eq!(p.steps, 4);
+        assert!((p.guidance - 1.5).abs() < f64::EPSILON);
+        assert_eq!(p.scheduler_hint, Some("lcm"));
     }
 }
