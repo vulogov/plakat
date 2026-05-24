@@ -15,11 +15,11 @@ This tutorial focuses on the *why* and the trade-offs.
 
 - Finished [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md).
 - A GPU with at least 16 GB VRAM (see "memory tiers" below for
-  how plakat lets you run Flux on less).
+ how plakat lets you run Flux on less).
 - A HuggingFace account + token for the gated `FLUX.1-dev` and
-  `FLUX.1-Fill-dev` repos. `FLUX.1-schnell` is ungated.
+ `FLUX.1-Fill-dev` repos. `FLUX.1-schnell` is ungated.
 - `HF_TOKEN` environment variable set, or `~/.cache/huggingface/token`
-  from `huggingface-cli login`.
+ from `huggingface-cli login`.
 
 ## 1. The Flux variants
 
@@ -41,7 +41,7 @@ pre-rendered conditioning map.
 
 ```bash
 plakat generate "a Victorian mansion at twilight, cinematic" \
-    --model flux-dev --seed 42 --size 1024x1024
+ --model flux-dev --seed 42 --size 1024x1024
 ```
 
 First run downloads ~24 GB. Subsequent runs use the cached weights.
@@ -96,7 +96,7 @@ codebook. plakat runs NF4 via per-call dequant (no fused
 dequant+matmul kernel like GGUF), so step time is slower than
 GGUF, but the model loads faster.
 
-**When to pick which:**
+**When to pick which**
 - GGUF for speed on capable GPUs (16+ GB).
 - NF4 for the smallest possible memory footprint (works on 12 GB).
 - NF4 for first-time users — single-file download, no quant level to pick.
@@ -112,16 +112,16 @@ from HuggingFace or local paths.
 ```bash
 # Single LoRA from HF
 plakat generate "..." --model flux-dev \
-    --lora "alvdansen/frosting_lane_flux"
+ --lora "alvdansen/frosting_lane_flux"
 
 # Local file with custom strength
 plakat generate "..." --model flux-dev \
-    --lora "./my-style.safetensors:0.75"
+ --lora "./my-style.safetensors:0.75"
 
 # Stack multiple
 plakat generate "..." --model flux-dev \
-    --lora "user/style-lora:0.8" \
-    --lora "user/character-lora:0.6"
+ --lora "user/style-lora:0.8" \
+ --lora "user/character-lora:0.6"
 ```
 
 LoRA composes with quantization. The merge happens at load time —
@@ -132,10 +132,10 @@ quantized. Memory savings preserved.
 ```bash
 # LoRA on quantized Flux — works fine
 plakat generate "..." --model flux-dev-gguf --quant-level Q5_K_M \
-    --lora "user/style-lora:0.8"
+ --lora "user/style-lora:0.8"
 
 plakat generate "..." --model flux-dev-nf4 \
-    --lora "user/style-lora:0.8"
+ --lora "user/style-lora:0.8"
 ```
 
 ## 5. The `--fast` distillation presets
@@ -161,7 +161,7 @@ your own LoRAs alongside:
 
 ```bash
 plakat generate "..." --model flux-dev --fast hyper-8 \
-    --lora "user/style-lora:0.8"
+ --lora "user/style-lora:0.8"
 ```
 
 `--fast` doesn't compose with `flux-fill-dev` (Fill's inpaint math
@@ -177,20 +177,20 @@ edge, OpenPose, depth, and lineart via a mode index.
 ```bash
 # Canny-guided generation. Provide a pre-rendered map:
 plakat generate "..." --model flux-dev \
-    --control-spec 'canny:image=./edges.png:strength=0.7'
+ --control-spec 'canny:image=./edges.png:strength=0.7'
 
 # Or let plakat auto-annotate from a photo:
 plakat generate "..." --model flux-dev \
-    --control-spec 'canny:from=./photo.jpg:strength=0.7'
+ --control-spec 'canny:from=./photo.jpg:strength=0.7'
 
 # Stack multiple ControlNets (residuals sum):
 plakat generate "..." --model flux-dev \
-    --control-spec 'depth:from=./scene.jpg:strength=0.8' \
-    --control-spec 'openpose:from=./pose.jpg:strength=0.6'
+ --control-spec 'depth:from=./scene.jpg:strength=0.8' \
+ --control-spec 'openpose:from=./pose.jpg:strength=0.6'
 
 # Step gating — apply only during the first half of the denoise:
 plakat generate "..." --model flux-dev \
-    --control-spec 'canny:from=./photo.jpg:strength=0.7:start=0.0:end=0.5'
+ --control-spec 'canny:from=./photo.jpg:strength=0.7:start=0.0:end=0.5'
 ```
 
 Flux ControlNet works on Dev, Fill, GGUF, and NF4. It does **not**
@@ -204,8 +204,8 @@ Same `plakat img2img` subcommand, just pass `--model flux-dev`:
 
 ```bash
 plakat img2img photo.jpg --model flux-dev \
-    --prompt "the same scene rendered as a stained glass window" \
-    --strength 0.7
+ --prompt "the same scene rendered as a stained glass window" \
+ --strength 0.7
 ```
 
 The math: VAE-encode the input, lerp with fresh noise at
@@ -217,14 +217,14 @@ For inpaint — replacing just a masked region — use Flux.1-Fill-dev:
 
 ```bash
 plakat img2img init.png --mask region.png \
-    --model flux-fill-dev \
-    --prompt "ornate carved stone window"
+ --model flux-fill-dev \
+ --prompt "ornate carved stone window"
 ```
 
 Fill's `img_in` is 384 channels (64 noise + 64 masked-latent + 256
 image-space mask). The mask drives the denoise directly — no
 RePaint-style strength blending. Default `--guidance 30` per BFL's
-model card. Fill composes with ControlNet, and — as of v0.16 —
+model card. Fill composes with ControlNet, and — —
 with `--tiled` (per-tile masked-latent + mask slicing inside the
 denoise loop; same Hann-blend the standard tiled path uses).
 
@@ -235,8 +235,8 @@ runs MultiDiffusion-style overlapping tiles:
 
 ```bash
 plakat generate "ultra-detailed architectural diagram" \
-    --model flux-dev --size 3072x2048 \
-    --tiled --tile-size 1024 --tile-stride 768
+ --model flux-dev --size 3072x2048 \
+ --tiled --tile-size 1024 --tile-stride 768
 ```
 
 Each step splits the canvas into 1024-px tiles (stride 768 means
@@ -245,16 +245,16 @@ Each step splits the canvas into 1024-px tiles (stride 768 means
 
 Composes with: GGUF / NF4, LoRA, ControlNet (per-tile residuals
 sliced correctly), img2img, **Fill** (per-tile masked-latent + mask
-packing, v0.16+). Does **not** compose with: the concept variants
+packing, +). Does **not** compose with: the concept variants
 (Canny-dev / Depth-dev), Redux.
 
 ```bash
 # 4K tiled inpaint — Fill at canvas sizes that wouldn't fit
 # whole-canvas in 24GB VRAM.
 plakat generate "ornate carved stone window" \
-    --model flux-fill-dev --size 2048x2048 \
-    --image room.png --mask wall.png \
-    --tiled --tile-size 1024 --tile-stride 768
+ --model flux-fill-dev --size 2048x2048 \
+ --image room.png --mask wall.png \
+ --tiled --tile-size 1024 --tile-stride 768
 ```
 
 ## 9. Flux Redux (image conditioning)
@@ -267,12 +267,12 @@ Different from ControlNet (which guides structure) — Redux carries
 ```bash
 # One reference image
 plakat generate "in this style" --model flux-dev \
-    --redux-image style.png
+ --redux-image style.png
 
 # Multi-image with weights
 plakat generate "..." --model flux-dev \
-    --redux-image style.png:weight=0.8 \
-    --redux-image subject.png:weight=0.4
+ --redux-image style.png:weight=0.8 \
+ --redux-image subject.png:weight=0.4
 ```
 
 Up to 4 reference images. Higher weights pull harder toward the
@@ -297,19 +297,19 @@ Canny-dev, depth for Depth-dev).
 # Auto-annotate from a reference photo. plakat runs the right
 # annotator based on which concept variant is loaded.
 plakat generate "a Victorian mansion, gothic, twilight" \
-    --model flux-canny-dev \
-    --concept-from photo.jpg \
-    --guidance 30
+ --model flux-canny-dev \
+ --concept-from photo.jpg \
+ --guidance 30
 
 plakat generate "a polished marble statue of an angel" \
-    --model flux-depth-dev \
-    --concept-from reference.jpg \
-    --guidance 30
+ --model flux-depth-dev \
+ --concept-from reference.jpg \
+ --guidance 30
 
 # Or use a pre-rendered map you generated externally
 plakat generate "..." --model flux-canny-dev \
-    --concept-image edges.png \
-    --guidance 30
+ --concept-image edges.png \
+ --guidance 30
 ```
 
 BFL recommends guidance ~30 for the concept variants — much higher
@@ -329,25 +329,25 @@ scenario-level LoRAs:
 
 ```hjson
 {
-    model: flux-dev
-    loras: [ "user/global-style-lora:0.5" ]
-    enhancer: deepseek
+ model: flux-dev
+ loras: [ "user/global-style-lora:0.5" ]
+ enhancer: deepseek
 
-    scene: [{ name: forest, prompt: "deep forest, sunbeams" }]
-    weather: [{ name: golden, prompt: "golden hour" }]
+ scene: [{ name: forest, prompt: "deep forest, sunbeams" }]
+ weather: [{ name: golden, prompt: "golden hour" }]
 
-    tasks: [
-        {
-            name: portrait, scene: forest, weather: golden,
-            prompt: "a hooded figure",
-            loras: [ "user/character-lora:0.7" ],
-        },
-        {
-            name: landscape, scene: forest, weather: golden,
-            prompt: "wide panorama, no figures",
-            loras: [ "user/landscape-lora:0.8" ],
-        },
-    ]
+ tasks: [
+ {
+ name: portrait, scene: forest, weather: golden,
+ prompt: "a hooded figure",
+ loras: [ "user/character-lora:0.7" ],
+ },
+ {
+ name: landscape, scene: forest, weather: golden,
+ prompt: "wide panorama, no figures",
+ loras: [ "user/landscape-lora:0.8" ],
+ },
+ ]
 }
 ```
 
@@ -374,30 +374,30 @@ from 1024² to 512² roughly halves VRAM.
 ## 13. Common gotchas
 
 - **First-run downloads are slow.** Flux.1-dev is ~24 GB BF16, ~9 GB
-  T5, ~250 MB CLIP. Plan for 30-45 GB of disk + matching download
-  time on first use of each variant.
+ T5, ~250 MB CLIP. Plan for 30-45 GB of disk + matching download
+ time on first use of each variant.
 - **HF gate.** `flux-dev` / `flux-fill-dev` / `flux-canny-dev` /
-  `flux-depth-dev` require accepting BFL's license terms on
-  HuggingFace and exporting `HF_TOKEN`.
+ `flux-depth-dev` require accepting BFL's license terms on
+ HuggingFace and exporting `HF_TOKEN`.
 - **Guidance scales differ.** Standard Flux: 3.5. Fill / Canny /
-  Depth: 30. Schnell: 1.0. plakat defaults to the variant's
-  recommended value if you don't pass `--guidance`.
+ Depth: 30. Schnell: 1.0. plakat defaults to the variant's
+ recommended value if you don't pass `--guidance`.
 - **`--fast` ignores user `--steps` only if you didn't set it.**
-  If you explicitly pass `--steps 28` with `--fast hyper-8`, plakat
-  honors your choice. The preset only fills in defaults.
+ If you explicitly pass `--steps 28` with `--fast hyper-8`, plakat
+ honors your choice. The preset only fills in defaults.
 - **Concept variants need a conditioning map.** Either supply a
-  pre-rendered canny / depth map via `--concept-image PATH`, or let
-  plakat auto-annotate a photo via `--concept-from PATH` — it picks
-  the right annotator (canny / depth) based on the loaded variant.
+ pre-rendered canny / depth map via `--concept-image PATH`, or let
+ plakat auto-annotate a photo via `--concept-from PATH` — it picks
+ the right annotator (canny / depth) based on the loaded variant.
 
 ## What's next
 
 - [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) covers the broader
-  img2img / inpaint flow (SD-family and Flux side-by-side).
+ img2img / inpaint flow (SD-family and Flux side-by-side).
 - [`CONTROLNET_TUTORIAL.md`](CONTROLNET_TUTORIAL.md) goes deep on
-  ControlNet structural guidance on SD; everything there transfers
-  to Flux via `--model flux-dev` + the same flags.
+ ControlNet structural guidance on SD; everything there transfers
+ to Flux via `--model flux-dev` + the same flags.
 - [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — for the Stability AI MMDiT
-  family. Different architecture from Flux but covers similar
-  ground (variants, LoRA, img2img, tiled, ControlNet).
+ family. Different architecture from Flux but covers similar
+ ground (variants, LoRA, img2img, tiled, ControlNet).
 - [`GENERATE.md`](../GENERATE.md) — full flag reference.

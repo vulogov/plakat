@@ -17,52 +17,47 @@ existing plakat backbone, plus deeper SD3 integration:
 - **SD3 ControlNet (InstantX)**. `--control-spec` works on SD3 /
   SD3.5 via the InstantX adapter family. Multi-CN composition,
   step-gating, auto-annotation from a reference photo — same
-  ergonomics SDXL + Flux ControlNet ship. (phase 3)
+  ergonomics SDXL + Flux ControlNet ship.
 - **Tiled Flux Fill**. `--tiled` composes with Flux.1-Fill-dev for
-  4K+ inpaint. Per-tile masked-latent + mask packing. (phase 4)
+  4K+ inpaint. Per-tile masked-latent + mask packing.
 - **Tiled SD3 img2img + inpaint**. The rectified-flow init lerp +
   RePaint mask blend compose with the per-tile Hann blend.
-  (phase 10)
 - **Wildcards**. `{red|blue|green}` inline alternation +
   `__name__` file wildcards (Auto1111 / NovelAI grammar). Seeded
-  from `--seed` for reproducibility. (phase 5)
+  from `--seed` for reproducibility.
 - **CLIP-skip**. `--clip-skip N` for SD 1.5 / SD 2.1 — N=2 is the
-  community default for anime checkpoints. (phase 5)
+  community default for anime checkpoints.
 - **ADetailer-style face refinement**. `--adetailer` runs SCRFD
   on each output, crops + img2img-refines each face, feather-
   composites back. Reuses the t2i SdCore — no extra model load.
-  (phase 6)
 - **Hires fix**. `--hires-fix` escapes the trained-resolution
   ceiling: upscale (Lanczos / Real-ESRGAN) + img2img-refine.
   Composes with `--adetailer` for a 4K → fixed faces pipeline.
-  (phase 8)
 - **Civitai browser + downloader**. `plakat civitai search`,
   `info`, `download` — drop the resulting path into `--lora` /
   `--model`. Atomic streaming downloads with cache-hit
-  short-circuit. (phase 7)
+  short-circuit.
 - **Auto-annotation for Flux concept variants**. `--concept-from
   PATH` auto-annotates a photo through Canny / Depth before feeding
-  Flux.1-Canny-dev / Flux.1-Depth-dev. (phase 1)
+  Flux.1-Canny-dev / Flux.1-Depth-dev.
 - **SD3 pipeline caching + per-task LoRA**. Scenarios with
   `--model sd35-*` now share one SD3 pipeline across tasks; per-
-  task `loras:` swap at runtime via the LoraLinear stack. (phase 2)
+  task `loras:` swap at runtime via the LoraLinear stack.
 - **Textual Inversion** *(partial)*. Parser + `plakat embedding
   info` inspector. Runtime injection blocked by candle 0.8's
   private `clip::Config.vocab_size` — wiring lands when the
   candle API surface opens or alongside a vendored CLIP path.
-  (phase 9)
 - **SD UNet per-task LoRA preflight** *(partial)*. Detects the
   blocker upfront and emits actionable YAML-fold hints; bails
   loud with three concrete workarounds. Full UNet vendoring
-  deferred — same candle private-internals blocker. (phase 11)
+  deferred — same candle private-internals blocker.
 - **XLabs Flux IP-Adapter parser** *(partial)*. Inspector that
   reports per-block attention count + SigLIP/Flux dims. Per-block
   injection blocked by Flux's private `double_block_forward`;
   use `--redux-image` for working image conditioning today.
-  (phase 12)
 
 301 lib tests green; +88 new tests across the cycle. Every
-"partial" phase ships its parser + tests so the future wiring is
+"partial" item ships its parser + tests so the future wiring is
 a focused diff.
 
 ## What's new in v0.15 — runtime LoRA + SD3 maturation
@@ -204,26 +199,27 @@ plakat generate "ultra-detailed architectural diagram" \
     --model flux-dev --size 3072x2048 \
     --tiled --tile-size 1024 --tile-stride 768
 
-# Stable Diffusion 3.5 (v0.14) — Stability's MMDiT family
+# Stable Diffusion 3.5 — Stability's MMDiT family
 plakat generate "..." --model sd35-medium  # 2.5B params
 plakat generate "..." --model sd35-large   # 8B params, the flagship
 plakat generate "..." --model sd35-large-turbo  # 4-step distillation
 
-# NF4 Flux (v0.14) — bitsandbytes 4-bit quantization. ~6 GB transformer.
+# NF4 Flux — bitsandbytes 4-bit quantization. ~6 GB transformer.
 plakat generate "..." --model flux-dev-nf4
 
-# Flux Redux (v0.14) — image-conditioned Flux via SigLIP. Stack up to 4 refs.
+# Flux Redux — image-conditioned Flux via SigLIP. Stack up to 4 refs.
 plakat generate "in this style" --model flux-dev \
     --redux-image style.png:weight=0.7 \
     --redux-image subject.png:weight=0.4
 
-# Hyper-FLUX / FLUX-Turbo presets (v0.14) — 8-step distillations
+# Hyper-FLUX / FLUX-Turbo presets — 8-step distillations
 plakat generate "..." --model flux-dev --fast hyper-8
 
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each
 # accepts either `from=PATH` (auto-annotate any photo) or
-# `image=PATH` (use a pre-rendered map).
+# `image=PATH` (use a pre-rendered map). Works on SD 1.5 / 2.1 /
+# SDXL, Flux (Union Pro v2), and SD3 / SD3.5 (InstantX family).
 plakat generate "a fox in tall grass" \
     --control-spec 'depth:from=reference_photo.jpg'
 
@@ -236,6 +232,28 @@ plakat generate "knight on a stone bridge, cinematic" --model sdxl \
 # Each spec also takes optional `start=` / `end=` (timestep window) and
 # `strength=` (residual scale). See `plakat generate --help` and
 # `Documentation/CONTROLNET.md` for the full grammar.
+
+# Wildcards in the prompt: `{a|b|c}` inline alternation + file-backed
+# `__name__` random picks (Auto1111 / NovelAI grammar).
+plakat generate "a {red|blue|green} fox in __warm-colors__ light" \
+    --wildcard-dir ./wildcards --seed 42
+
+# ADetailer: post-t2i face refinement via SCRFD + per-face img2img.
+# Reuses the t2i backbone; SD-family only.
+plakat generate "a couple at a forest cabin" \
+    --model sd15 --size 768x1024 --adetailer
+
+# Hires fix: generate at trained resolution, upscale, refine.
+# Mitigates the multi-head problem when sampling above native size.
+plakat generate "a vintage travel poster of Tokyo at night" \
+    --model sd15 --size 768x768 \
+    --hires-fix --hires-upscaler real-esrgan-x2 --adetailer
+
+# Civitai: browse + download community assets straight from the CLI.
+plakat civitai search "watercolor" --type lora
+plakat civitai download 12345
+# → ~/.cache/plakat/civitai/model-12345/version-789/lora.safetensors
+# Drop the printed path into `--lora` or `--model`.
 
 # Weighted multi-reference portrait: merge facial features
 # from several photos (averaging, aging, blending)
@@ -273,13 +291,15 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux. |
-| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL / Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint). |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4) / SD3 / SD3.5. Built-in wildcards, CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants. |
+| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
+| `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
+| `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
@@ -311,7 +331,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     inpaint via `plakat img2img`.
   - [`CONTROLNET.md`](Documentation/CONTROLNET.md) — ControlNet
     conditioning (depth, canny, openpose, lineart, softedge) for
-    SD 1.5 + SDXL. Auto-annotation via
+    SD 1.5 / 2.1, SDXL, Flux (Union Pro v2), and SD3 / SD3.5
+    (InstantX adapter family). Auto-annotation via
     `--control-spec 'KIND:from=PATH'`; stack multiple conditioners
     with repeatable `--control-spec`.
 
