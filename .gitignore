@@ -29,3 +29,11 @@ target
 
 # Downloaded model weights (often exceed GitHub's 100 MB limit)
 /models/
+
+# Tutorial-script generation outputs. The scripts under
+# `examples/tutorials/*/` write PNGs into a sibling `out/`
+# directory. Those are reproducible from the scripts + bundled
+# inputs, so we don't track them. Same for any macOS metadata
+# files the OS sprinkles around.
+examples/tutorials/*/out/
+**/.DS_Store
