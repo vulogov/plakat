@@ -2250,6 +2250,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // clip-skip yet. Default `1` = bit-identical to
                 // pre-phase-5 behaviour.
                 clip_skip: 1,
+                // v0.17 phase 3: scenarios skip per-task PNG
+                // metadata for now. Adding it cleanly would require
+                // threading task name + scenario file path into the
+                // metadata extras; deferred to keep the surface
+                // small. None = no tEXt chunk, no sidecar.
+                metadata: None,
             };
 
             // Per-task runtime LoRA. Applied BEFORE the per-task

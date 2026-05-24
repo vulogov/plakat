@@ -351,6 +351,16 @@ particular).
 Directory for generated images. Created if absent. Files are named
 `plakat-<seed>.png` (or `plakat-flux-<seed>.png` for Flux).
 
+#### `--no-metadata` (default off)
+
+Skip the Auto1111-compatible PNG `parameters` tEXt chunk + the
+sibling `<filename>.json` sidecar. By default every output ships
+with the recipe (prompt, negative, seed, sampler, CFG, model,
+LoRAs, ControlNet stack, refiner config) embedded so the standard
+viewers (A1111 Web UI, Civitai upload, ComfyUI drag-to-load,
+sd-prompt-reader) surface it. Pass `--no-metadata` when you want
+anonymous PNGs.
+
 ### Tiled hi-res generation
 
 For outputs above the model's trained working resolution (4K SDXL,
