@@ -1110,6 +1110,42 @@ plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
 
 ---
 
+## `plakat animate`
+
+Frame-by-frame prompt-morph animation. Encodes two prompts
+through CLIP-L once, then runs the denoise loop N times with
+linearly-lerped hidden states. The shared seed keeps the initial
+noise constant so the morph is smooth rather than flickery.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from <STR>` | (required) | Frame 0's prompt. |
+| `--to <STR>` | (required) | Frame N-1's prompt. |
+| `--frames <N>` | `16` | Frame count (≥ 2). |
+| `--seed <U64>` | (random) | Shared seed for every frame. Locking it produces smooth morphs. |
+| `--model <ALIAS>` | `sd15` | SD-family only. SDXL / Flux / SD3 bail loud. |
+| `--size <WxH>` | `512x512` | Output dims; must be /8. |
+| `--steps <N>` | `20` | Steps per frame. Lower OK for animations. |
+| `--guidance <F>` | `7.5` | CFG, shared across frames. |
+| `--negative <STR>` | `""` | Negative prompt, shared. |
+| `--scheduler <KIND>` | `default` | Same options as `plakat generate`. |
+| `--out <DIR>` | `./out` | Frames land as `frame-NNNN.png`. |
+| `--gif` | off | Bundle frames into `<out>/animation.gif`. |
+| `--gif-delay-ms <N>` | `100` | GIF frame delay. 100=10fps, 41≈24fps, 33≈30fps. |
+
+```bash
+plakat animate \
+    --from "a photo of a fox in a meadow" \
+    --to "a photo of a cat in a meadow" \
+    --frames 24 --seed 42 \
+    --model sd15 --out ./fox_to_cat --gif
+```
+
+Full walkthrough + composition tips:
+[`Documentation/Tutorials/ANIMATE_TUTORIAL.md`](Tutorials/ANIMATE_TUTORIAL.md).
+
+---
+
 ## Global flags (every subcommand)
 
 #### `-v` / `-vv` (default off)

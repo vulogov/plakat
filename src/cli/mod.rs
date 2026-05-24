@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+pub mod animate;
 pub mod artefact;
 pub mod civitai;
 pub mod doctor;
@@ -86,6 +87,10 @@ pub enum Command {
     /// pipeline lands when candle exposes `clip::Config.vocab_size`.
     #[command(subcommand_value_name = "OP")]
     Embedding(embedding::EmbeddingArgs),
+    /// Animate between two prompts via CLIP-embedding lerp — N
+    /// frames, fixed seed, optional GIF bundling. SD 1.5 / SD 2.1
+    /// only in this release.
+    Animate(animate::AnimateArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -129,5 +134,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Artefact(args) => artefact::run(args).await,
         Command::Civitai(args) => civitai::run(args).await,
         Command::Embedding(args) => embedding::run(args).await,
+        Command::Animate(args) => {
+            let device = crate::device::select(&cli.device)?;
+            animate::run(args, device).await
+        }
     }
 }

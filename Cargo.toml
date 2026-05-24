@@ -69,6 +69,7 @@ image = { version = "0.25", default-features = false, features = [
   "png",
   "jpeg",
   "webp",
+  "gif",
 ] }
 # Direct PNG access for tEXt-chunk metadata writes (PNG metadata +
 # JSON sidecar workflow). `image` doesn't expose the chunk API.
