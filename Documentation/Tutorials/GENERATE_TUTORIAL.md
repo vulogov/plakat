@@ -735,7 +735,35 @@ In the meantime:
  conversion script](https://github.com/kohya-ss/sd-scripts) and
  use as a LoRA.
 
-## 19. Reproducibility — PNG metadata + JSON sidecar
+## 19. Grid output — bundle a sweep into one image
+
+With `--count N > 1`, `--grid` writes an additional
+`plakat-grid-<base-seed>.png` next to the per-image files,
+combining the N outputs in a near-square layout. Great for
+prompt-iteration sweeps where you want to see all variations at
+a glance.
+
+```bash
+plakat generate "a fox in {tall|short} grass at {dawn|noon|dusk}" \
+    --wildcard-dir wildcards/ --count 6 --seed 1000 --grid
+# → out/plakat-1000.png ... out/plakat-1005.png
+# → out/plakat-grid-1000.png   (3×2 layout)
+```
+
+Knobs:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--grid` | off | Enable grid composition. No-op when `--count == 1`. |
+| `--grid-cols N` | `ceil(sqrt(count))` | Force column count. 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4. |
+| `--grid-padding PX` | `0` | White-padding strip between cells. Higher = clearer cell separation; `0` = flush. |
+
+The grid runs **last** in the post-processing pipeline so any
+artefacts, ADetailer face refinement, or Hires-fix upscaling
+land in the per-image files first and are reflected in the grid
+cells.
+
+## 20. Reproducibility — PNG metadata + JSON sidecar
 
 Every `plakat generate` output ships with an A1111-compatible
 `parameters` PNG tEXt chunk plus a sibling `<filename>.json`
@@ -778,7 +806,7 @@ plakat generate "a fox" --no-metadata
 # → ./out/plakat-<seed>.png   (no tEXt chunk, no sidecar)
 ```
 
-## 20. Common issues
+## 21. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

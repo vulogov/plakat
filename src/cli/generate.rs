@@ -487,6 +487,26 @@ pub struct GenerateArgs {
     /// get anonymous PNGs identical to pre-v0.17 plakat.
     #[arg(long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
+
+    /// v0.17 phase 4: with `--count N > 1`, also write a single
+    /// `plakat-grid-<base-seed>.png` combining all N outputs in a
+    /// near-square grid. Per-image PNGs are written as usual
+    /// alongside.
+    #[arg(long = "grid", default_value_t = false)]
+    pub grid: bool,
+
+    /// v0.17 phase 4: column count for `--grid`. Default is
+    /// `ceil(sqrt(count))` — 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-cols", value_name = "N")]
+    pub grid_cols: Option<usize>,
+
+    /// v0.17 phase 4: padding (px) between grid cells. Default 0
+    /// (flush). Higher values insert a white border between cells
+    /// for clearer per-cell separation. Ignored when `--grid` is
+    /// off.
+    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    pub grid_padding: u32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -925,6 +945,37 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             shared_core,
         )
         .await?;
+    }
+
+    // v0.17 phase 4: --grid bundles the per-image outputs into one
+    // shareable grid PNG. Runs LAST so artefacts + blend + face
+    // refinement are all reflected in the grid cells. No-op when
+    // --count is 1 (a 1-cell "grid" is just a copy).
+    if args.grid && count > 1 {
+        let files: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let s = seed.unwrap_or(0).wrapping_add(i as u64);
+                out_dir.join(format!("plakat-{s}.png"))
+            })
+            .filter(|p| p.exists())
+            .collect();
+        if files.len() >= 2 {
+            let base_seed = seed.unwrap_or(0);
+            let grid_path = out_dir.join(format!("plakat-grid-{base_seed}.png"));
+            let spin = crate::ui::progress::spinner(&format!(
+                "Composing {}-cell grid", files.len()
+            ));
+            let (gw, gh) = crate::imaging::grid::write_grid(
+                &files,
+                &grid_path,
+                args.grid_cols,
+                args.grid_padding,
+            )?;
+            spin.finish_with_message(format!(
+                "✓ grid {gw}x{gh} → {}",
+                grid_path.display()
+            ));
+        }
     }
     Ok(())
 }
