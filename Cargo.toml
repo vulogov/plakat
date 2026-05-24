@@ -17,9 +17,19 @@ keywords = [
   "candle",
 ]
 categories = ["command-line-utilities", "multimedia::images"]
-# Don't ship local test outputs / scratch with the crate. cargo also excludes
-# target/ and gitignored files automatically.
-exclude = ["out/", "*.png", ".github/", ".vscode/"]
+# Don't ship local test outputs / scratch / large test fixtures with the
+# crate. cargo also excludes target/ and gitignored files automatically.
+# tests/fixtures/style_catalog/ is ~9 MB of JPEGs used by integration
+# tests that run from the repo working tree; not needed by downstream
+# users and would push the package past the 10 MB crates.io ceiling.
+exclude = [
+    "out/",
+    "*.png",
+    ".github/",
+    ".vscode/",
+    "tests/fixtures/",
+    "**/.DS_Store",
+]
 
 [features]
 # No backend selected by default. `cargo install plakat` builds a CPU-only
