@@ -735,7 +735,50 @@ In the meantime:
  conversion script](https://github.com/kohya-ss/sd-scripts) and
  use as a LoRA.
 
-## 19. Common issues
+## 19. Reproducibility — PNG metadata + JSON sidecar
+
+Every `plakat generate` output ships with an A1111-compatible
+`parameters` PNG tEXt chunk plus a sibling `<filename>.json`
+sidecar. The chunk carries the recipe in the format any image
+viewer in the SD ecosystem recognises — Auto1111 Web UI, Civitai
+image uploader, ComfyUI drag-to-load, sd-prompt-reader, and the
+various browser extensions all surface it inline.
+
+```text
+a fox in tall grass
+Negative prompt: blurry
+Steps: 28, Sampler: euler-a, CFG scale: 7.5, Seed: 42, Size: 512x512, Model: sd15, Generator: plakat 0.17.0
+```
+
+The JSON sidecar carries the same info in structured form — the
+full LoRA list, ControlNet stack, refiner config, etc. Use it
+when scripting around the recipe (e.g. "regenerate every PNG in
+this directory at higher steps"):
+
+```bash
+plakat generate "a fox in tall grass" --seed 42
+# → ./out/plakat-42.png
+# → ./out/plakat-42.json    (sibling JSON sidecar)
+
+cat ./out/plakat-42.json
+# {
+#   "prompt": "a fox in tall grass",
+#   "model": "sd15",
+#   "seed": 42,
+#   "steps": 28,
+#   ...
+# }
+```
+
+To opt out entirely (e.g. you're shipping outputs externally and
+don't want the recipe embedded), pass `--no-metadata`:
+
+```bash
+plakat generate "a fox" --no-metadata
+# → ./out/plakat-<seed>.png   (no tEXt chunk, no sidecar)
+```
+
+## 20. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

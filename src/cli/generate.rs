@@ -477,6 +477,16 @@ pub struct GenerateArgs {
     /// CLIP path in a follow-up phase.
     #[arg(long = "embedding", value_name = "SPEC")]
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+
+    /// Disable the v0.17 PNG `parameters` tEXt-chunk metadata + the
+    /// sibling `.json` sidecar. By default plakat writes
+    /// Auto1111-compatible recipe metadata into every output so
+    /// any viewer (A1111 Web UI, Civitai upload, ComfyUI
+    /// drag-to-load, sd-prompt-reader, ...) can surface the
+    /// prompt, seed, sampler, LoRAs, etc. Pass `--no-metadata` to
+    /// get anonymous PNGs identical to pre-v0.17 plakat.
+    #[arg(long = "no-metadata", default_value_t = false)]
+    pub no_metadata: bool,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -688,6 +698,10 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // v0.16 phase 9: TI specs. sd_core::load bails loud when
         // these are non-empty (candle vocab_size API blocker).
         embeddings: args.embeddings,
+        // v0.17 phase 3: embed A1111-compatible PNG metadata +
+        // write a sibling JSON sidecar. Default on; --no-metadata
+        // flips it off.
+        write_metadata: !args.no_metadata,
     })
     .await?;
 

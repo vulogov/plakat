@@ -124,6 +124,12 @@ pub struct Request {
     /// for the future wiring (see `plakat embedding info` to
     /// inspect TI files today).
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+    /// v0.17 phase 3: embed Auto1111-compatible `parameters` PNG
+    /// tEXt chunk + write a sibling `.json` sidecar carrying the
+    /// structured equivalent. Default `true` — the CLI sets this
+    /// from `--metadata / --no-metadata`. When `false`, output
+    /// PNGs are byte-identical to pre-phase-3 plakat.
+    pub write_metadata: bool,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -167,6 +173,14 @@ pub struct GenRequest {
     /// a warning (its dual-encoder path already uses penultimate by
     /// design).
     pub clip_skip: usize,
+    /// v0.17 phase 3: optional generation metadata to embed in the
+    /// output PNG's `parameters` tEXt chunk + write to a sibling
+    /// `.json` sidecar. `None` (legacy) skips both writes —
+    /// byte-identical to pre-phase-3 PNG output. The metadata's
+    /// `seed` is overwritten per-image inside the generate loop so
+    /// each output carries its own seed even when the metadata is
+    /// shared across a `--count N` batch.
+    pub metadata: Option<crate::imaging::metadata::GenerationMetadata>,
 }
 
 // =====================================================================
@@ -1123,7 +1137,7 @@ impl Pipeline {
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
             let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
-            crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
+            save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
@@ -1387,7 +1401,7 @@ impl Pipeline {
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
             let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
-            crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
+            save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
         Ok(())
@@ -1501,6 +1515,28 @@ fn clip_skip_forward(
 ///   ...
 fn clip_skip_to_until_layer(clip_skip: usize) -> isize {
     -(clip_skip.max(1) as isize)
+}
+
+/// v0.17 phase 3: PNG + sidecar save with per-image seed
+/// override. Each image in a `--count N` batch gets its own seed;
+/// the GenRequest's shared metadata gets cloned + the per-image
+/// seed substituted before write.
+fn save_with_optional_metadata(
+    buf: &[u8],
+    width: u32,
+    height: u32,
+    out_path: &std::path::Path,
+    metadata: Option<&crate::imaging::metadata::GenerationMetadata>,
+    seed: u64,
+) -> Result<()> {
+    match metadata {
+        Some(meta) => {
+            let mut per_image = meta.clone();
+            per_image.seed = seed;
+            crate::imaging::io::save_rgb_u8_with_metadata(buf, width, height, out_path, &per_image)
+        }
+        None => crate::imaging::io::save_rgb_u8(buf, width, height, out_path),
+    }
 }
 
 fn tokenize_padded(
@@ -2118,6 +2154,54 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     } else {
         DType::F16
     };
+
+    // v0.17 phase 3: build metadata before the loras / model get
+    // moved into LoadRequest. The seed is patched per-image at
+    // save time; everything else stays constant across `--count N`.
+    let metadata = if req.write_metadata {
+        let mut m = crate::imaging::metadata::GenerationMetadata::new(
+            req.prompt.clone(),
+            req.model.clone(),
+            req.seed.unwrap_or(0),
+            req.steps,
+            req.guidance,
+            format!("{:?}", req.scheduler).to_lowercase(),
+            req.width,
+            req.height,
+        );
+        m.negative = req.negative.clone();
+        if req.clip_skip > 1 {
+            m.clip_skip = Some(req.clip_skip);
+        }
+        if !req.loras.is_empty() {
+            m.loras = req
+                .loras
+                .iter()
+                .map(|s| format!("{s:?}"))
+                .collect();
+            m.lora_scale = Some(req.lora_scale);
+        }
+        if req.use_refiner {
+            m.refiner_frac = Some(req.refiner_frac);
+        }
+        if !req.controls.is_empty() {
+            m.controls = req
+                .controls
+                .iter()
+                .map(|spec| {
+                    let kind = format!("{:?}", spec.kind).to_lowercase();
+                    format!("{kind}@{:.2}", spec.strength)
+                })
+                .collect();
+        }
+        if req.tiled.is_some() {
+            m.extras.push(("Tiled".into(), "on".into()));
+        }
+        Some(m)
+    } else {
+        None
+    };
+
     let control_owned = crate::pipelines::controlnet::load_control_stack(
         &req.controls,
         &req.model,
@@ -2150,6 +2234,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         })
         .collect();
 
+    // (`metadata` was built above before the moves.)
     let gen_req = GenRequest {
         prompt: req.prompt,
         negative: req.negative,
@@ -2169,6 +2254,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             None
         },
         clip_skip: req.clip_skip,
+        metadata,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,

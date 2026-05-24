@@ -70,6 +70,9 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "webp",
 ] }
+# Direct PNG access for tEXt-chunk metadata writes (PNG metadata +
+# JSON sidecar workflow). `image` doesn't expose the chunk API.
+png = "0.18"
 # imageproc: ControlNet Canny + future canny/sobel/HED annotators.
 # default-features off to skip the optional rusttype/dynimage frills
 # we don't need.

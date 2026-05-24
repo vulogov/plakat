@@ -2234,6 +2234,7 @@ dependencies = [
  "image",
  "imageproc",
  "indicatif",
+ "png",
  "rand 0.8.6",
  "reqwest",
  "serde",
