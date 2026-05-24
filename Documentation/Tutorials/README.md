@@ -74,6 +74,13 @@ If you're new to plakat, work through these in order:
    (including tiled img2img / inpaint), and SD3 ControlNet via
    the InstantX adapter family.
 
+10. [`CIVITAI_TUTORIAL.md`](CIVITAI_TUTORIAL.md) — browsing,
+    downloading, and using Civitai community assets from the
+    command line. `plakat civitai search` / `info` / `download`,
+    pairing downloaded LoRAs with the right base model, the
+    cache layout, `CIVITAI_API_KEY` setup for gated assets, and
+    inspecting downloaded Textual Inversion files.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -100,6 +107,7 @@ feature:
 | `HOW_TO_CREATE_MY_OWN_STYLE.md` | Above + finished `STYLES_TUTORIAL.md`. Plus a corpus of images you want to teach plakat. |
 | `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
 | `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
+| `CIVITAI_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Plus an internet connection. An optional `CIVITAI_API_KEY` if you want gated assets. |
 | `ARTEFACTS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. (No external assets required — uses the bundled placeholder set.) |
 | `FLUX_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (NF4) / ≥16 GB (GGUF) / ≥24 GB (BF16). HuggingFace token for gated `flux-dev` / `flux-fill-dev` repos. |
 | `SD3_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (Medium) / ≥24 GB (Large). HuggingFace token — all Stability SD3 repos are gated. |
