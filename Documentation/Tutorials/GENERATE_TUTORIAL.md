@@ -207,6 +207,34 @@ produces solid output.
 (See `STYLES_TUTORIAL.md` for a higher-level way of applying styles
 without picking individual LoRAs.)
 
+### Pulling LoRAs straight from Civitai
+
+Instead of `plakat civitai download <ID>` + copy the printed
+path, `--lora` accepts a `civitai:` shorthand that downloads on
+first use and caches for every subsequent run:
+
+```bash
+# Model ID → latest version, primary file
+plakat generate "..." --model sd15 --lora civitai:12345
+
+# Model ID + scale
+plakat generate "..." --model sd15 --lora civitai:12345:0.7
+
+# Pin to a specific older version
+plakat generate "..." --model sd15 --lora civitai-version:67890:0.6
+
+# Pick a non-primary file inside the version
+plakat generate "..." --model sd15 \
+    --lora "civitai:12345#alternate-weights.safetensors:0.5"
+```
+
+The first run downloads to
+`<plakat-cache>/civitai/model-<id>/version-<id>/`; subsequent runs
+short-circuit on the cache. Gated assets require
+`CIVITAI_API_KEY` from
+<https://civitai.com/user/account> — the
+plain `--lora civitai:...` works for public LoRAs without one.
+
 ---
 
 ## 8. From one-off commands to scenarios

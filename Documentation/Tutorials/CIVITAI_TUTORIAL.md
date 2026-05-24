@@ -201,6 +201,34 @@ plakat generate "..." \
     --model ~/.cache/plakat/civitai/model-12345/version-67890/the_checkpoint.safetensors
 ```
 
+### Skipping the explicit download — `--lora civitai:...`
+
+You don't have to run `plakat civitai download` first.
+`--lora` natively accepts the `civitai:` shorthand and pulls
+the file on first use (then caches it for every subsequent
+run):
+
+```bash
+# Latest version of model 2595428, primary file
+plakat generate "..." --model sd15 --lora civitai:2595428
+
+# At a custom scale
+plakat generate "..." --model sd15 --lora civitai:2595428:0.7
+
+# Pinned to a specific older version
+plakat generate "..." --model sd15 --lora civitai-version:2614696:0.6
+
+# Pick a non-primary file inside the version
+plakat generate "..." --model sd15 \
+    --lora "civitai:2595428#alternate-weights.safetensors:0.5"
+```
+
+The download lands at the same
+`<plakat-cache>/civitai/model-<id>/version-<id>/` path the explicit
+`civitai download` writes to, so the two workflows share a cache.
+Gated assets require `CIVITAI_API_KEY` to be set; public LoRAs
+work without one.
+
 For Textual Inversion files (`--type ti`):
 
 ```bash
