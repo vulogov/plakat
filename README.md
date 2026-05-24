@@ -301,6 +301,8 @@ plakat generate "a vintage travel poster of Tokyo at night" \
     --hires-fix --hires-upscaler real-esrgan-x2 --adetailer
 
 # `--grid` bundles a `--count N` sweep into a single shareable PNG.
+# Also works on `plakat img2img` / `plakat portrait` / `plakat outpaint`
+# (v0.18); the grid filename tracks the backbone prefix.
 plakat generate "a peaceful koi pond" \
     --model sd15 --count 9 --seed 1000 --grid
 
