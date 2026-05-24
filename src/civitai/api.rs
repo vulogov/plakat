@@ -103,6 +103,17 @@ pub struct SearchMetadata {
     pub total_items: Option<u32>,
     #[serde(rename = "totalPages")]
     pub total_pages: Option<u32>,
+    /// Cursor for the next page when the API is in cursor-paged
+    /// mode (active when `query=` is set — Civitai rejects the
+    /// `page=` param in that case). Empty when there are no more
+    /// results.
+    #[serde(rename = "nextCursor", default)]
+    pub next_cursor: Option<String>,
+    /// The API also surfaces `nextPage` as a fully-formed URL
+    /// (cursor already embedded). We deserialize it for symmetry
+    /// but the search helper drives off `next_cursor` directly.
+    #[serde(rename = "nextPage", default)]
+    pub next_page: Option<String>,
 }
 
 /// One model (top-level container; one model can ship many
@@ -222,6 +233,18 @@ fn client() -> Result<reqwest::Client> {
 /// tags + description). `asset_type` filters to one category
 /// (e.g. LoRA only). `limit` caps the page size — Civitai's
 /// max is 100; we clamp at 100 here too.
+///
+/// Pagination shape depends on whether `query` is set:
+///
+/// * **Browse mode** (`query` empty) — Civitai accepts the standard
+///   `page=N` query parameter. `page > 1` issues one request.
+/// * **Search mode** (`query` non-empty) — Civitai rejects `page=`
+///   with a 400 ("Cannot use page param with query search. Use
+///   cursor-based pagination."). To preserve the `--page N` UX, we
+///   walk cursors `page - 1` times from page 1, then return the
+///   final page's response. Each cursor walk is one HTTP round-trip
+///   — fine for typical `--page 2`/`--page 3` browsing; brittle for
+///   deep paging where it'd be cheaper to refine the query.
 pub async fn search(
     query: &str,
     asset_type: Option<AssetType>,
@@ -230,17 +253,70 @@ pub async fn search(
 ) -> Result<SearchResponse> {
     let limit = limit.clamp(1, 100);
     let page = page.max(1);
+    let client = client()?;
+
+    if query.is_empty() {
+        // Browse mode — page-based pagination still works.
+        let url = build_search_url(query, asset_type, limit, None, Some(page))?;
+        return fetch_search_page(&client, &url).await;
+    }
+
+    // Search mode — first page is page=N=1, subsequent pages walk
+    // the `metadata.nextCursor` chain. Civitai's response includes
+    // the cursor for whatever the *next* request needs.
+    let mut url = build_search_url(query, asset_type, limit, None, None)?;
+    let mut resp = fetch_search_page(&client, &url).await?;
+    for _ in 1..page {
+        let cursor = match resp.metadata.next_cursor.as_deref() {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => {
+                // Ran out of pages before reaching the requested
+                // `--page`. Return the last successful page so the
+                // CLI can show an empty / partial result rather than
+                // erroring — matches the "no more results" UX.
+                return Ok(resp);
+            }
+        };
+        url = build_search_url(query, asset_type, limit, Some(&cursor), None)?;
+        resp = fetch_search_page(&client, &url).await?;
+    }
+    Ok(resp)
+}
+
+/// Build the search URL with the right pagination knobs. Exactly
+/// one of `cursor` / `page` should be `Some` (matches Civitai's
+/// either-or constraint); both `None` means "first page, default
+/// shape".
+fn build_search_url(
+    query: &str,
+    asset_type: Option<AssetType>,
+    limit: u32,
+    cursor: Option<&str>,
+    page: Option<u32>,
+) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(&format!("{BASE_URL}/models"))?;
     {
         let mut q = url.query_pairs_mut();
-        q.append_pair("query", query);
+        if !query.is_empty() {
+            q.append_pair("query", query);
+        }
         q.append_pair("limit", &limit.to_string());
-        q.append_pair("page", &page.to_string());
+        if let Some(c) = cursor {
+            q.append_pair("cursor", c);
+        } else if let Some(p) = page {
+            q.append_pair("page", &p.to_string());
+        }
         if let Some(t) = asset_type {
             q.append_pair("types", t.as_query());
         }
     }
-    let client = client()?;
+    Ok(url)
+}
+
+async fn fetch_search_page(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+) -> Result<SearchResponse> {
     let resp = client
         .get(url.clone())
         .send()
@@ -254,11 +330,9 @@ pub async fn search(
             .unwrap_or_else(|_| "(no body)".to_string());
         bail!("Civitai search failed: {status}: {body}");
     }
-    let parsed: SearchResponse = resp
-        .json()
+    resp.json()
         .await
-        .context("parsing Civitai search response")?;
-    Ok(parsed)
+        .context("parsing Civitai search response")
 }
 
 /// Fetch one model by its top-level ID. Returns the full record
@@ -446,5 +520,56 @@ mod tests {
         let err = AssetType::from_str("crystal-ball").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("crystal-ball"), "got {msg}");
+    }
+
+    // Search URL builder — Civitai rejects `page=` with `query=`
+    // (cursor-based pagination instead); make sure we never send
+    // both, and that browse mode (no query) keeps using `page=`.
+
+    fn query_pairs(url: &reqwest::Url) -> std::collections::HashMap<String, String> {
+        url.query_pairs()
+            .into_owned()
+            .collect()
+    }
+
+    #[test]
+    fn search_url_browse_mode_uses_page() {
+        // No query → page-based pagination works.
+        let url = build_search_url("", Some(AssetType::Lora), 10, None, Some(2)).unwrap();
+        let q = query_pairs(&url);
+        assert_eq!(q.get("page").map(String::as_str), Some("2"));
+        assert!(q.get("query").is_none(), "browse mode shouldn't send query=");
+        assert!(q.get("cursor").is_none());
+        assert_eq!(q.get("limit").map(String::as_str), Some("10"));
+        assert_eq!(q.get("types").map(String::as_str), Some("LORA"));
+    }
+
+    #[test]
+    fn search_url_query_first_page_omits_page() {
+        // Query + page 1 → no `page=` (Civitai rejects `page=` with
+        // `query=`). The CLI default `--page 1` must not trigger the
+        // 400-bad-request the old code path produced.
+        let url = build_search_url("watercolor", Some(AssetType::Lora), 10, None, None).unwrap();
+        let q = query_pairs(&url);
+        assert!(q.get("page").is_none(), "query + first page must not send page=");
+        assert!(q.get("cursor").is_none());
+        assert_eq!(q.get("query").map(String::as_str), Some("watercolor"));
+    }
+
+    #[test]
+    fn search_url_cursor_paging() {
+        // Query + cursor walk → no `page=`, only `cursor=`.
+        let url = build_search_url(
+            "watercolor",
+            Some(AssetType::Lora),
+            10,
+            Some("abc123"),
+            None,
+        )
+        .unwrap();
+        let q = query_pairs(&url);
+        assert!(q.get("page").is_none());
+        assert_eq!(q.get("cursor").map(String::as_str), Some("abc123"));
+        assert_eq!(q.get("query").map(String::as_str), Some("watercolor"));
     }
 }

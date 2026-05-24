@@ -54,6 +54,13 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 10, value_name = "N")]
     pub limit: u32,
     /// Page number (1-indexed). Default 1.
+    ///
+    /// Civitai's API uses page-based pagination when browsing by
+    /// type (`--page 2 --type lora`) and cursor-based pagination
+    /// when searching by query (`--page 2 --type lora "watercolor"`
+    /// walks the cursor chain once from page 1). Deep paging with
+    /// a query string costs one round-trip per intermediate page —
+    /// refine the query instead of paging past ~5 for typical use.
     #[arg(long, default_value_t = 1, value_name = "P")]
     pub page: u32,
     /// When set, include NSFW results in the output. Default: filter
