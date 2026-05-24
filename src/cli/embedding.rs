@@ -36,6 +36,11 @@ pub enum EmbeddingCmd {
     /// trigger word, vector count, embedding dim, and the matching
     /// SD variant.
     Info(InfoArgs),
+    /// v0.16 phase 12: inspect an XLabs Flux IP-Adapter
+    /// `.safetensors` file. Reports the SigLIP feature dim, the
+    /// Flux hidden dim, the number of per-block IP attention
+    /// modules, and the matching Flux variant.
+    FluxIpAdapterInfo(InfoArgs),
 }
 
 #[derive(Args, Debug)]
@@ -51,7 +56,72 @@ pub struct InfoArgs {
 pub async fn run(args: EmbeddingArgs) -> Result<()> {
     match args.cmd {
         EmbeddingCmd::Info(a) => run_info(a).await,
+        EmbeddingCmd::FluxIpAdapterInfo(a) => run_flux_ip_adapter_info(a).await,
     }
+}
+
+async fn run_flux_ip_adapter_info(args: InfoArgs) -> Result<()> {
+    use crate::pipelines::flux_ip_adapter::FluxIpAdapter;
+
+    // Reuse the embedding resolver — same shape (local path or HF
+    // repo with optional `#file.safetensors`).
+    let spec = EmbeddingSpec {
+        source: args.source.clone(),
+        trigger: None,
+        scale: 1.0,
+    };
+    // Don't resolve via embedding::resolve (which defaults to
+    // "learned_embeds.safetensors") — XLabs ships as
+    // "ip_adapter.safetensors". Reuse the resolver logic inline.
+    let path = if std::path::PathBuf::from(&spec.source).exists() {
+        std::path::PathBuf::from(&spec.source)
+    } else if let Some((repo, file)) = spec.source.split_once('#') {
+        crate::hf::download::get_file(repo, file).await?
+    } else {
+        crate::hf::download::get_file(
+            &spec.source,
+            FluxIpAdapter::DEFAULT_FILE,
+        )
+        .await?
+    };
+
+    let adapter = FluxIpAdapter::parse_safetensors(&path, &Device::Cpu)?;
+
+    println!("{} {}", style("file:").dim(), path.display());
+    println!(
+        "{} SigLIP feature dim = {} (expect {} for siglip-so400m-patch14-384)",
+        style("encoder:").dim(),
+        adapter.siglip_dim,
+        crate::pipelines::flux_redux::ReduxAdapter::SIGLIP_DIM,
+    );
+    println!(
+        "{} Flux hidden dim = {} (expect 3072 for Flux.1-dev / -schnell / -fill-dev)",
+        style("flux:").dim(),
+        adapter.flux_hidden,
+    );
+    println!(
+        "{} {} per-block IP attention module(s)",
+        style("blocks:").dim(),
+        adapter.num_blocks,
+    );
+    if !adapter.has_per_block_attn {
+        println!(
+            "  {} this looks like a 'lite' release with proj_in/proj_out only — \
+             the per-block injection path isn't applicable.",
+            style("note:").dim()
+        );
+    }
+    println!();
+    println!(
+        "{} XLabs IP-Adapter per-block injection isn't wired in v0.16 — Flux's \
+         per-block forward (`flux_inner::double_block_forward`) doesn't expose the \
+         attention seam, and vendoring the per-block path was scoped out of the \
+         phase 12 deferred. For working image-conditioning today use BFL Redux \
+         via `--redux-image`. See the v0.16 release notes for the architectural \
+         deferral details.",
+        style("status:").dim()
+    );
+    Ok(())
 }
 
 async fn run_info(args: InfoArgs) -> Result<()> {
