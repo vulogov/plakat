@@ -318,6 +318,37 @@ plakat scenario my_first_scenario.hjson
 
 This generates 2 images (one per task).
 
+### Resuming a crashed / interrupted scenario
+
+When a scenario with many tasks crashes partway (or you Ctrl-C
+it), restart with `--resume` to pick up where it stopped:
+
+```bash
+plakat scenario my_big_scenario.hjson --resume
+#   ↺ task1: all 4 output(s) already on disk — skipping
+#   ↺ task2: all 4 output(s) already on disk — skipping
+#   ▶ task3: generating ...
+```
+
+A task counts as "already done" when **every** expected output
+PNG exists at the expected seed under the task's output
+directory. Per-task seed numbering is reproducible across runs
+(it derives from the scenario `seed:` + task index, not from
+random state), so re-running the scenario lands the surviving
+tasks on the same filenames the first run would have produced.
+
+If you instead want to **regenerate everything from scratch**
+(say, you re-trained a LoRA and want fresh outputs at the same
+seeds), pass `--force`:
+
+```bash
+plakat scenario my_big_scenario.hjson --force
+```
+
+`--resume` and `--force` are mutually exclusive — clap rejects
+both at once. Neither flag preserves the default behaviour:
+existing files get silently overwritten.
+
 ### What's the enhancer for?
 
 The enhancer is a small language model (DeepSeek or Gemini) that

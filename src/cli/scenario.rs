@@ -35,6 +35,22 @@ pub struct ScenarioArgs {
     /// Does NOT call the enhancer (no API cost).
     #[arg(long)]
     pub dry_run: bool,
+
+    /// v0.17 phase 5: skip tasks whose **every** expected output
+    /// PNG already exists. Lets a crashed / Ctrl-C'd scenario
+    /// pick up where it left off without restarting from task 0.
+    /// Task name + seed-based filenames are checked under
+    /// `<out>/<task-name>/`. Mutually exclusive with `--force`.
+    #[arg(long, default_value_t = false, conflicts_with = "force")]
+    pub resume: bool,
+
+    /// v0.17 phase 5: regenerate every task even when outputs
+    /// already exist on disk. Default behaviour overwrites
+    /// existing files silently — `--force` makes the intent
+    /// explicit (and pairs with future safety checks). Mutually
+    /// exclusive with `--resume`.
+    #[arg(long, default_value_t = false, conflicts_with = "resume")]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1921,6 +1937,32 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
 
         let task_out = out_root.join(safe_name(&task.name));
 
+        // v0.17 phase 5: --resume skip. If every expected output
+        // PNG for this task already exists on disk, skip the
+        // task entirely (no model dispatch, no enhancer call).
+        // Backbones write a few prefixes: `plakat-<seed>.png`
+        // (SD t2i), `plakat-flux-<seed>.png` (Flux), `plakat-sd3-
+        // <seed>.png` (SD3 t2i), `plakat-img2img-<seed>.png` /
+        // `plakat-inpaint-<seed>.png` (img2img). We accept any of
+        // those prefixes when probing — gives correct skip
+        // behaviour for mixed-task scenarios without per-backbone
+        // dispatch.
+        //
+        // `seed_offset` MUST advance by the global `count`, NOT
+        // `eff_count`, to match the non-skip path (line 2739) —
+        // the global-seed scheme means re-running with the same
+        // scenario file produces the same per-task seeds whether
+        // any tasks were skipped or not.
+        if args.resume && task_outputs_all_present(&task_out, task_seed, eff_count) {
+            crate::ui::progress::println(&format!(
+                "  ↺ {}: all {} output(s) already on disk — skipping",
+                console::style(&task.name).cyan(),
+                eff_count,
+            ));
+            seed_offset += count as u64;
+            continue;
+        }
+
         // Classify the persona configuration for this task.
         //   None        — no personas; regular t2i / flux dispatch.
         //   Single(p)   — Phase-1 form: one bare-name persona, whole image.
@@ -3138,6 +3180,43 @@ fn safe_name(s: &str) -> String {
         .collect()
 }
 
+/// v0.17 phase 5: check whether every expected output PNG for
+/// a task is already on disk. Probes each of the four prefixes
+/// backbones write under (`plakat-`, `plakat-flux-`, `plakat-sd3-`,
+/// `plakat-img2img-`, `plakat-inpaint-`, `plakat-portrait-`) — if
+/// **any** prefix has all N seeds present, the task is treated as
+/// already-generated and `--resume` skips it.
+///
+/// Per-image seed: `task_seed + i`, masked to `u32::MAX` to match
+/// what the SD save sites use.
+fn task_outputs_all_present(task_out: &std::path::Path, task_seed: u64, count: u32) -> bool {
+    if count == 0 {
+        return false;
+    }
+    if !task_out.exists() {
+        return false;
+    }
+    let prefixes = [
+        "plakat-",
+        "plakat-flux-",
+        "plakat-sd3-",
+        "plakat-img2img-",
+        "plakat-inpaint-",
+        "plakat-portrait-",
+    ];
+    for prefix in prefixes {
+        let all_present = (0..count).all(|i| {
+            let seed = (task_seed + i as u64) & (u32::MAX as u64);
+            let path = task_out.join(format!("{prefix}{seed}.png"));
+            path.exists()
+        });
+        if all_present {
+            return true;
+        }
+    }
+    false
+}
+
 /// v0.13 phase 10: write a `(1, 3, H, W)` `[0, 1]` ControlNet annotator
 /// tensor as an 8-bit RGB PNG. Mirrors `t2i::write_annotator_tensor_as_png`
 /// (kept private there) so scenarios don't take a dependency on
@@ -3641,5 +3720,59 @@ mod tests {
         ]);
         sd_per_task_lora_preflight(&s, "sd35-medium")
             .expect("SD3 supports runtime LoRA");
+    }
+
+    // v0.17 phase 5 — task_outputs_all_present probe.
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn resume_probe_returns_false_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent");
+        assert!(!task_outputs_all_present(&missing, 1000, 2));
+    }
+
+    #[test]
+    fn resume_probe_returns_false_when_some_files_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "plakat-1000.png");
+        // missing plakat-1001.png
+        assert!(!task_outputs_all_present(tmp.path(), 1000, 2));
+    }
+
+    #[test]
+    fn resume_probe_matches_plakat_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "plakat-1000.png");
+        touch(tmp.path(), "plakat-1001.png");
+        assert!(task_outputs_all_present(tmp.path(), 1000, 2));
+    }
+
+    #[test]
+    fn resume_probe_matches_flux_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "plakat-flux-2000.png");
+        touch(tmp.path(), "plakat-flux-2001.png");
+        assert!(task_outputs_all_present(tmp.path(), 2000, 2));
+    }
+
+    #[test]
+    fn resume_probe_matches_sd3_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "plakat-sd3-3000.png");
+        assert!(task_outputs_all_present(tmp.path(), 3000, 1));
+    }
+
+    #[test]
+    fn resume_probe_zero_count_returns_false() {
+        // Defensive: count == 0 means "no expected outputs" — the
+        // empty `for i in 0..0` vacuously satisfies all() (returns
+        // true for an empty iterator). Skip the task body via the
+        // up-front `count == 0` guard instead.
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!task_outputs_all_present(tmp.path(), 1000, 0));
     }
 }
