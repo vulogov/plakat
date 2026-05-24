@@ -529,6 +529,32 @@ The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
 
+### Attention emphasis (SD-family)
+
+A1111 / NovelAI-style prompt grammar — used by virtually every
+Civitai LoRA card. plakat parses these inline and applies the
+per-token weight to the CLIP hidden state (per-row scale on the
+penultimate output, before cross-attention).
+
+| Syntax | Weight |
+|---|---|
+| `(token)` | `× 1.1` (default emphasis). |
+| `((token))` | `× 1.21` (nested). |
+| `(token:1.5)` | `× 1.5` (explicit). |
+| `[token]` | `× 1/1.1 ≈ 0.909` (default de-emphasis). |
+| `[token:0.6]` | `× 0.6` (explicit). |
+| `\(`, `\)`, `\[`, `\]` | escaped — literal punctuation. |
+
+```bash
+plakat generate \
+    "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
+    --model sd15
+```
+
+SD 1.5 / SD 2.1 / SDXL only. Flux + SD3 ignore (T5-based encoders
+don't share the CLIP per-token weighting hook). Unbalanced parens
+are treated as literal characters — no error, just no emphasis.
+
 ### CLIP-skip (SD 1.5 / SD 2.1)
 
 | Flag | Default | Description |
