@@ -837,7 +837,57 @@ plakat generate "a fox" --no-metadata
 # → ./out/plakat-<seed>.png   (no tEXt chunk, no sidecar)
 ```
 
-## 21. Common issues
+## 21. Live preview during denoise
+
+Long denoise runs are a black box — you click `plakat generate`
+and wait. `--preview-every N` writes a low-cost latent
+projection to `plakat-<seed>-preview.png` every N steps so you
+can watch progress in any auto-refreshing image viewer.
+
+```bash
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sd15 --steps 28 --preview-every 4
+# → ./out/plakat-<seed>-preview.png   (updated at steps 4, 8, 12, ...)
+# → ./out/plakat-<seed>.png            (final, after step 28)
+```
+
+Knobs:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--preview-every N` | `0` (off) | Write a preview every N denoise steps. `1` is per-step (lots of file churn); `4`-`8` is the typical setting. |
+| `--preview-size PX` | `384` | Longer-side dimension of the preview PNG. Smaller = faster writes; larger = more detail visible. |
+
+**How it works**: the preview is **not** a full VAE decode (that
+would add hundreds of milliseconds per write). Instead, plakat
+projects the partial latent through a community-derived
+4-channel → RGB matrix (the same one A1111 and ComfyUI use for
+their "approx" previews). Microseconds per write — adds no
+meaningful runtime cost to the generation.
+
+**Trade-off**: colours are recognisable but slightly off, edges
+are blurry vs the final VAE-decoded output. Good enough for "is
+the generation going the right direction?" feedback. The final
+saved PNG always uses the full VAE decode.
+
+**Compatibility**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only.
+Flux and SD3 use 16-channel latents with a different projection
+matrix that isn't wired in this release — they ignore
+`--preview-every`. The final output PNG is unaffected.
+
+**Tip for live monitoring**:
+
+```bash
+# Linux / WSL — feh auto-reloads when the file changes
+feh --reload 1 ./out/plakat-42-preview.png &
+plakat generate "..." --seed 42 --preview-every 2 --steps 50
+
+# macOS — Quick Look updates if you keep it open
+qlmanage -p ./out/plakat-42-preview.png &
+plakat generate "..." --seed 42 --preview-every 2 --steps 50
+```
+
+## 22. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

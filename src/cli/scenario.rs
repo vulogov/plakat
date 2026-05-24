@@ -2298,6 +2298,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // metadata extras; deferred to keep the surface
                 // small. None = no tEXt chunk, no sidecar.
                 metadata: None,
+                // v0.17 phase D: scenarios don't surface live-
+                // preview cadence — batch runs typically don't
+                // need the per-step PNG churn. None = disabled.
+                preview_every: None,
+                preview_size: None,
             };
 
             // Per-task runtime LoRA. Applied BEFORE the per-task

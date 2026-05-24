@@ -507,6 +507,23 @@ pub struct GenerateArgs {
     /// off.
     #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
+
+    /// v0.17 phase D: write a low-cost latent-projection preview
+    /// PNG every N denoise steps so you can monitor progress
+    /// without waiting for the full run. Output goes to
+    /// `<out>/plakat-<seed>-preview.png` and is overwritten each
+    /// step. `0` disables. Uses the community latent → RGB
+    /// projection (microseconds — no VAE decode), so the preview
+    /// adds no meaningful runtime cost. SD 1.5 / 2.1 / SDXL /
+    /// SDXL-Turbo only; Flux / SD3 ignore.
+    #[arg(long = "preview-every", default_value_t = 0, value_name = "N")]
+    pub preview_every: u32,
+
+    /// v0.17 phase D: longer-side dimension (px) of the preview
+    /// PNG. Default 384. Smaller = faster writes; larger = more
+    /// detail in the live preview.
+    #[arg(long = "preview-size", default_value_t = 384, value_name = "PX")]
+    pub preview_size: u32,
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
@@ -722,6 +739,15 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // write a sibling JSON sidecar. Default on; --no-metadata
         // flips it off.
         write_metadata: !args.no_metadata,
+        // v0.17 phase D: latent-projection preview cadence. `0`
+        // (default) → no previews; downstream pipeline treats
+        // `Some(0)` the same way.
+        preview_every: if args.preview_every > 0 {
+            Some(args.preview_every)
+        } else {
+            None
+        },
+        preview_size: Some(args.preview_size),
     })
     .await?;
 
