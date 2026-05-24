@@ -52,6 +52,25 @@ by the load time — Flux is genuinely big.
 If you see "out of memory" errors, jump to the quantization
 section. Flux scales down well.
 
+### Attention syntax (v0.18)
+
+Flux now respects A1111 / NovelAI-style emphasis: `(token:1.4)`,
+`[token]`, nested `((token))`. The per-token weight broadcasts onto
+T5-XXL's hidden states (CLIP-L on Flux is pooled-only, so the weight
+broadcast is a no-op there). This is the syntax every Civitai Flux
+LoRA card uses on its example prompts.
+
+```bash
+plakat generate "a (cyberpunk:1.4) night market, [muted colors]" \
+ --model flux-dev --seed 42
+```
+
+The T5 sentencepiece tokenizer may produce a slightly different
+subtoken split for a segment in isolation vs the same text inside a
+longer string. The weight-per-resulting-subtoken contract is
+preserved either way; the visual effect of `(token:1.5)` matches
+A1111's behavior even when the subtoken count drifts by one.
+
 ## 3. Quantization: GGUF vs NF4
 
 Flux's BF16 weights are ~24 GB. Most consumer GPUs can't hold that
