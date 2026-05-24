@@ -558,32 +558,59 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // documented defaults — `steps == 28` and `guidance == 7.5`).
     if let Some(fast) = args.fast.take() {
         let preset = fast.0;
-        // Bail loud on incompatible model targets. Detection mirrors
-        // t2i::Variant::detect so the failure mode is consistent.
         let m = args.model.to_lowercase();
-        if !m.contains("flux") {
-            anyhow::bail!(
-                "--fast {} requires a Flux model (got --model {:?}). Hyper-FLUX / \
-                 FLUX-Turbo LoRAs are Flux-family only.",
-                preset.name,
-                args.model
-            );
-        }
-        if m.contains("fill") {
-            anyhow::bail!(
-                "--fast {} doesn't compose with flux-fill-dev. Use the standard \
-                 flux-dev model with the distillation LoRA, then handle inpainting \
-                 separately.",
-                preset.name
-            );
-        }
-        if m.contains("nf4") {
-            anyhow::bail!(
-                "--fast {} bails on NF4 — NF4 + LoRA composition isn't wired \
-                 (deferred from v0.14 phase 2). Use --model flux-dev or \
-                 flux-dev-gguf with the preset.",
-                preset.name
-            );
+        match preset.target {
+            crate::pipelines::flux_fast::FastTarget::Flux => {
+                if !m.contains("flux") {
+                    anyhow::bail!(
+                        "--fast {} requires a Flux model (got --model {:?}). \
+                         Hyper-FLUX / FLUX-Turbo LoRAs are Flux-family only.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if m.contains("fill") {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with flux-fill-dev. Use the \
+                         standard flux-dev model with the distillation LoRA, then \
+                         handle inpainting separately.",
+                        preset.name
+                    );
+                }
+                if m.contains("nf4") {
+                    anyhow::bail!(
+                        "--fast {} bails on NF4 — NF4 + LoRA composition isn't \
+                         wired. Use --model flux-dev or flux-dev-gguf with the \
+                         preset.",
+                        preset.name
+                    );
+                }
+            }
+            crate::pipelines::flux_fast::FastTarget::Sdxl => {
+                // SDXL family covers both `sdxl` and `sdxl-turbo`.
+                let is_sdxl = m == "sdxl"
+                    || m == "sdxl-turbo"
+                    || m.contains("xl-base")
+                    || m.contains("sdxl-base")
+                    || m.contains("stable-diffusion-xl");
+                if !is_sdxl {
+                    anyhow::bail!(
+                        "--fast {} (Latent Consistency LoRA for SDXL) requires an \
+                         SDXL model (got --model {:?}). Use --model sdxl or \
+                         --model sdxl-turbo.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if args.refiner {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with the SDXL refiner — the \
+                         refiner runs a non-LCM scheduler on the late steps which \
+                         conflicts with the 4-step LCM schedule. Drop --refiner.",
+                        preset.name
+                    );
+                }
+            }
         }
         // Prepend so the preset LoRA loads BEFORE user LoRAs — user
         // LoRAs override at merge time when keys collide.
@@ -596,9 +623,29 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         if (args.guidance - 7.5).abs() < f64::EPSILON {
             args.guidance = preset.guidance;
         }
+        // v0.17 phase I: presets that target a specific scheduler
+        // (e.g. LCM-LoRA → `lcm`) override the user's --scheduler
+        // when it's still the default. Explicit non-default
+        // `--scheduler` values stay honoured — power users know
+        // what they're doing.
+        if let Some(sched_hint) = preset.scheduler_hint {
+            use crate::pipelines::scheduler::SchedulerKind;
+            use std::str::FromStr;
+            if matches!(args.scheduler, SchedulerKind::Default) {
+                args.scheduler = SchedulerKind::from_str(sched_hint)
+                    .unwrap_or(SchedulerKind::Default);
+            }
+        }
         crate::ui::progress::println(&format!(
-            "  fast preset '{}': +{} LoRA, steps={}, guidance={}",
-            preset.name, preset.lora_repo, args.steps, args.guidance
+            "  fast preset '{}': +{} LoRA, steps={}, guidance={}{}",
+            preset.name,
+            preset.lora_repo,
+            args.steps,
+            args.guidance,
+            preset
+                .scheduler_hint
+                .map(|s| format!(", scheduler={s}"))
+                .unwrap_or_default(),
         ));
     }
 

@@ -517,19 +517,30 @@ Caveats:
 ### `--fast <PRESET>`
 
 Bundles a published distillation LoRA + recommended step + guidance
-in one flag. Presets:
++ (where applicable) scheduler in one flag. Presets:
 
-* `hyper-8` — ByteDance Hyper-FLUX 8-step (CFG-free)
-* `hyper-16` — ByteDance Hyper-FLUX 16-step (CFG-free)
-* `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
+| Preset | Target | LoRA | Steps | Guidance | Scheduler |
+|---|---|---|---|---|---|
+| `hyper-8` | Flux | ByteDance Hyper-FLUX 8-step (CFG-free) | 8 | 1.0 | (default) |
+| `hyper-16` | Flux | ByteDance Hyper-FLUX 16-step (CFG-free) | 16 | 1.0 | (default) |
+| `turbo-alpha` | Flux | alimama-creative FLUX.1-Turbo-Alpha | 8 | 3.5 | (default) |
+| `lcm-sdxl` | SDXL | Latent Consistency LoRA for SDXL | 4 | 1.5 | `lcm` |
 
 ```bash
-plakat generate ".." --model flux-dev --fast hyper-8
+# Flux distillation — Hyper-FLUX 8-step
+plakat generate "..." --model flux-dev --fast hyper-8
+
+# SDXL Latent Consistency — 4-step inference, ~5x speedup over base SDXL
+plakat generate "..." --model sdxl --fast lcm-sdxl
 ```
 
-The preset LoRA gets prepended to `--loras`; `--steps` / `--guidance`
-are overridden **only** when you didn't pass them explicitly.
-Requires a non-Fill Flux model.
+The preset LoRA gets prepended to `--loras`; `--steps`,
+`--guidance`, and (for `lcm-sdxl`) `--scheduler` are overridden
+**only** when you didn't pass them explicitly. Flux presets
+require a non-Fill Flux model; `lcm-sdxl` requires an SDXL /
+SDXL-Turbo model and bails if `--refiner` is also set (the
+refiner's late-step non-LCM scheduler conflicts with the 4-step
+LCM schedule).
 
 ### Wildcards
 

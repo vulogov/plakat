@@ -37,6 +37,16 @@ use std::str::FromStr;
 
 use crate::pipelines::lora::LoraSpec;
 
+/// Model family a preset targets. Drives the dispatch's
+/// model-compatibility check in `cli::generate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastTarget {
+    /// Flux (BF16 or GGUF) — Hyper-FLUX, Turbo-Alpha.
+    Flux,
+    /// SDXL / SDXL-Turbo — LCM-LoRA-SDXL.
+    Sdxl,
+}
+
 /// One curated distillation preset. `lora_repo` + `lora_file` point at
 /// an HF safetensors; `lora_scale` is the LoRA-merge weight; `steps`
 /// + `guidance` are the recommended sampling settings for this
@@ -47,6 +57,8 @@ pub struct FastPreset {
     pub name: &'static str,
     /// One-line summary shown in `--help` and error messages.
     pub description: &'static str,
+    /// Model family this preset is wired for.
+    pub target: FastTarget,
     /// HF repo id hosting the LoRA.
     pub lora_repo: &'static str,
     /// File inside the repo. `None` = the loader picks the default.
@@ -59,6 +71,12 @@ pub struct FastPreset {
     /// inference (e.g. Hyper-FLUX) use `1.0`; those that keep CFG
     /// (e.g. Turbo-Alpha) use a normal Flux guidance.
     pub guidance: f64,
+    /// Optional scheduler name to force. The string matches
+    /// `SchedulerKind::FromStr` accepted tokens — e.g. `"lcm"` for
+    /// LCM-LoRA distillations. `None` means "leave the user's
+    /// `--scheduler` alone" (Flux defaults are fine for
+    /// Hyper / Turbo).
+    pub scheduler_hint: Option<&'static str>,
 }
 
 impl FastPreset {
@@ -84,24 +102,29 @@ pub const PRESETS: &[FastPreset] = &[
     FastPreset {
         name: "hyper-8",
         description: "ByteDance Hyper-FLUX 8-step distillation (CFG-free)",
+        target: FastTarget::Flux,
         lora_repo: "ByteDance/Hyper-SD",
         lora_file: Some("Hyper-FLUX.1-dev-8steps-lora.safetensors"),
         lora_scale: 0.125,
         steps: 8,
         guidance: 1.0,
+        scheduler_hint: None,
     },
     FastPreset {
         name: "hyper-16",
         description: "ByteDance Hyper-FLUX 16-step distillation (CFG-free)",
+        target: FastTarget::Flux,
         lora_repo: "ByteDance/Hyper-SD",
         lora_file: Some("Hyper-FLUX.1-dev-16steps-lora.safetensors"),
         lora_scale: 0.125,
         steps: 16,
         guidance: 1.0,
+        scheduler_hint: None,
     },
     FastPreset {
         name: "turbo-alpha",
         description: "alimama-creative FLUX.1-Turbo-Alpha 8-step distillation",
+        target: FastTarget::Flux,
         lora_repo: "alimama-creative/FLUX.1-Turbo-Alpha",
         // Repo ships a single safetensors at the root; let the loader
         // pick `diffusion_pytorch_model.safetensors` as the default.
@@ -109,6 +132,26 @@ pub const PRESETS: &[FastPreset] = &[
         lora_scale: 1.0,
         steps: 8,
         guidance: 3.5,
+        scheduler_hint: None,
+    },
+    // v0.17 phase I: LCM-LoRA for SDXL. Pair the LoRA with the
+    // `lcm` scheduler at 4 steps / guidance 1.5 to get the full
+    // 4-step distillation behaviour. The model card
+    // (`latent-consistency/lcm-lora-sdxl`) recommends 4-8 steps
+    // with CFG in [1.0, 2.0]. The preset picks the midpoint of
+    // that band so output stays prompt-adherent without burning.
+    FastPreset {
+        name: "lcm-sdxl",
+        description: "Latent Consistency LoRA for SDXL — 4-step inference at CFG 1.5",
+        target: FastTarget::Sdxl,
+        lora_repo: "latent-consistency/lcm-lora-sdxl",
+        // Repo ships `pytorch_lora_weights.safetensors` as the
+        // canonical filename; let the auto-discover pick.
+        lora_file: None,
+        lora_scale: 1.0,
+        steps: 4,
+        guidance: 1.5,
+        scheduler_hint: Some("lcm"),
     },
 ];
 
@@ -227,5 +270,42 @@ mod tests {
         let arg: FastPresetArg = "turbo-alpha".parse().unwrap();
         assert_eq!(arg.0.name, "turbo-alpha");
         assert_eq!(arg.0.steps, 8);
+    }
+
+    // v0.17 phase I — LCM-LoRA SDXL preset.
+
+    #[test]
+    fn lcm_sdxl_preset_registered() {
+        let p = lookup("lcm-sdxl").expect("lcm-sdxl preset registered");
+        assert_eq!(p.target, FastTarget::Sdxl);
+        assert_eq!(p.lora_repo, "latent-consistency/lcm-lora-sdxl");
+        assert_eq!(p.steps, 4);
+        assert!((p.guidance - 1.5).abs() < f64::EPSILON);
+        assert_eq!(p.scheduler_hint, Some("lcm"));
+    }
+
+    #[test]
+    fn flux_presets_carry_flux_target() {
+        for name in ["hyper-8", "hyper-16", "turbo-alpha"] {
+            let p = lookup(name).unwrap();
+            assert_eq!(p.target, FastTarget::Flux, "{name} should be Flux-targeted");
+        }
+    }
+
+    #[test]
+    fn scheduler_hint_is_only_set_for_lcm() {
+        // The Flux distillations are scheduler-agnostic (rectified
+        // flow works with any sampler); only LCM-LoRA needs to pin
+        // the scheduler at preset-apply time.
+        for p in PRESETS {
+            match p.name {
+                "lcm-sdxl" => assert!(p.scheduler_hint.is_some()),
+                _ => assert!(
+                    p.scheduler_hint.is_none(),
+                    "{} unexpectedly carries a scheduler hint",
+                    p.name
+                ),
+            }
+        }
     }
 }
