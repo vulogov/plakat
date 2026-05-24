@@ -292,19 +292,34 @@ plakat portrait "a professional headshot, soft studio lighting" \
 Particularly useful for enforcing a specific posture (T-pose,
 contrapposto, sitting) while keeping subject identity locked.
 
-## 11. Limits
+## 11. Limits + what landed since v0.10
 
-- **SD 1.5 + SDXL only.** Flux uses a different architecture and
-  isn't on the roadmap.
-- **Depth + Canny only in v0.10.** Scribble, pose, MLSD, normal,
-  openpose, segmentation, InstantID face — all on the roadmap.
+What changed since this tutorial first shipped:
+
+- **All four model families supported.** SD 1.5 / SD 2.1 / SDXL
+  (since v0.10), Flux (v0.12 BF16 + v0.13 GGUF + v0.14 NF4 via
+  Shakker-Labs Union Pro v2), and **SD3 / SD3.5** (v0.16 via the
+  InstantX adapter family).
+- **Five conditioners.** Canny, Depth, OpenPose, Lineart, SoftEdge
+  — all with auto-annotators. The resolver picks the matching
+  adapter repo per `--model`.
+- **Multi-ControlNet via repeatable `--control-spec`.** Stack
+  depth + canny + pose; residuals sum per step. Per-spec
+  `strength=`, `start=`, `end=`, `image=`/`from=`.
+- **Composes with**: LoRA, GGUF/NF4 Flux, img2img, tiled (SDXL +
+  Flux), Flux.1-Fill-dev, Flux Redux.
 - **Timestep windowing** via `--control-start` / `--control-end`
-  works on every subcommand. Common pattern: `--control-end 0.5`
-  locks composition early then lets the prompt drive late
-  texture / atmosphere.
-- **No multi-controlnet.** Stacking multiple conditioners
-  (depth + canny in one generation) isn't exposed via the CLI.
-  v0.11 candidate.
+  (or per-spec `start=…:end=…`) works on every subcommand.
+  Common pattern: `--control-end 0.5` locks composition early
+  then lets the prompt drive late texture / atmosphere.
+
+Still doesn't compose:
+
+- **SD3 + tiled** — `predict_velocity_tiled` bails (the SD3 CN's
+  `pos_embed_input` operates on the full-canvas latent, not tile
+  slices). Drop `--tiled` or `--control-spec`.
+- **SDXL refiner + ControlNet** — the refiner switch mid-stream
+  is incompatible with per-tile residual concat.
 
 ## Where to next
 

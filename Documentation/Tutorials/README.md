@@ -14,7 +14,10 @@ If you're new to plakat, work through these in order:
 1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **start here.**
    Your first generation, the flags that matter, seeds for
    reproducibility, and moving from one-off CLI commands to batch
-   scenarios. The foundation everything else builds on.
+   scenarios. The foundation everything else builds on. **v0.16
+   additions:** wildcards (§12), CLIP-skip (§13), ADetailer face
+   refinement (§14), Civitai browser (§15), Hires fix (§16),
+   Textual Inversion inspector (§17).
 
 2. [`PORTRAIT_TUTORIAL.md`](PORTRAIT_TUTORIAL.md) — making portraits,
    including identity preservation (rendering a specific person from
@@ -62,12 +65,15 @@ If you're new to plakat, work through these in order:
    Fill inpaint, ControlNet, tiled hi-res, Redux image conditioning,
    the "concept" variants (Canny-dev / Depth-dev), and the `--fast`
    distillation presets. Memory tiers for picking the right backbone
-   on your GPU.
+   on your GPU. **v0.16:** Tiled + Flux.1-Fill-dev composes for
+   4K+ inpaint.
 
 9. [`SD3_TUTORIAL.md`](SD3_TUTORIAL.md) — Stable Diffusion 3 / 3.5
    family. MMDiT architecture, the four variants (SD3 / SD3.5
    Medium / SD3.5 Large / SD3.5 Large Turbo), the rectified-flow
    sampler, LoRA, img2img + RePaint-style inpaint, tiled hi-res.
+   **v0.16:** SD3 ControlNet via the InstantX adapter family,
+   Tiled + img2img / inpaint composition.
 
 ## Specialized portrait techniques
 

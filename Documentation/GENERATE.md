@@ -362,11 +362,14 @@ For outputs above the model's trained working resolution (4K SDXL,
 | `--tile-size <PX>` | `1024` | Tile side length in pixels. Default matches SDXL's native and Flux's working scale. Must be a multiple of 8 (SD) or 16 (Flux + SD3). |
 | `--tile-stride <PX>` | `768` | Stride between tile origins. Smaller = more overlap = smoother seams + more compute. |
 
-Composes with: GGUF + LoRA + img2img on Flux; ControlNet on both
+Composes with: GGUF + LoRA + img2img on Flux; ControlNet on
 SDXL and Flux (each tile gets its CN conditioning cropped to its
-region). Does **not** compose with the SDXL refiner,
-Flux.1-Fill-dev, Flux concept variants (Canny-dev / Depth-dev), or
-SD3 img2img / inpaint.
+region); **Flux.1-Fill-dev** (v0.16 — per-tile masked-latent +
+mask packing); **SD3 / SD3.5 img2img + inpaint** (v0.16 — the
+rectified-flow init lerp + RePaint mask blend compose with the
+per-tile velocity blend). Does **not** compose with the SDXL
+refiner, Flux concept variants (Canny-dev / Depth-dev), SD3
+ControlNet, or `--hires-fix`.
 
 SD3 / SD3.5 join the tiled lineup. MMDiT's `pos_embed_max_size`
 caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
@@ -374,6 +377,10 @@ caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
 within either cap. Each per-step prediction is the post-CFG
 velocity per tile, Hann-blended into a full-canvas update applied
 via the Euler step.
+
+Inpaint + tiled note: tile seams can become visible near sharp
+mask boundaries because the Hann blend doesn't know about the
+mask. Pass `--mask-feather PX` to smooth the transition.
 
 ```bash
 # 4K SDXL
@@ -489,6 +496,125 @@ plakat generate "..." --model flux-dev --fast hyper-8
 The preset LoRA gets prepended to `--loras`; `--steps` / `--guidance`
 are overridden **only** when you didn't pass them explicitly.
 Requires a non-Fill Flux model.
+
+### Wildcards (v0.16)
+
+Inline alternation + file-backed random picks in the prompt.
+Auto1111 / NovelAI / ComfyUI grammar.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--wildcard-dir <DIR>` | (none) | Directory holding `<name>.txt` wildcard files for `__name__` expansion. |
+
+* **Inline alternation**: `{red|blue|green}` picks one of the three
+  at random. Nestable: `{a {b|c}|d}` → `a b`, `a c`, or `d`. Works
+  without `--wildcard-dir`.
+* **File wildcards**: `__name__` reads
+  `<wildcard-dir>/<name>.txt` and picks a uniformly-random
+  non-empty, non-comment (`#`) line. Names accept letters, digits,
+  `-`, and `_` (so `__warm-colors__` and `__warm_colors__` both
+  work).
+
+```bash
+plakat generate "a {red|blue|green} {fox|cat|owl}" \
+    --model sd15 --count 4 --seed 42
+
+mkdir -p wildcards
+echo -e "ruby\ncrimson\namber" > wildcards/warm-colors.txt
+plakat generate "a __warm-colors__ fox" \
+    --wildcard-dir ./wildcards --model sd15
+```
+
+The wildcard RNG is seeded from `--seed` when set (reproducible
+expansion) and from OS entropy otherwise. Expansion runs **before**
+`--enhance` so the enhancer sees a concrete prompt.
+
+### CLIP-skip (v0.16, SD 1.5 / SD 2.1)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--clip-skip <N>` | `1` | Use the N-th-from-last CLIP-L hidden state. `1` = last (diffusers default; byte-identical to pre-v0.16). `2` = penultimate (community default for SD 1.5 anime checkpoints). |
+
+SDXL ignores `--clip-skip > 1` with a warning (the dual-encoder
+path already uses penultimate by training default). Flux / SD3
+ignore the flag entirely.
+
+### ADetailer face refinement (v0.16, SD-family)
+
+After the t2i pass, runs SCRFD on each output to detect faces,
+crops + img2img-refines each face, and feather-composites the
+refined crop back. Reuses the t2i SdCore — no second model load.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--adetailer` | off | Enable the post-t2i face refinement pass. |
+| `--adetailer-strength <F>` | `0.4` | img2img strength on each face crop. Lower preserves identity + colour; `0.6+` re-imagines. |
+| `--adetailer-padding <F>` | `0.25` | Bbox expansion per side. More = better blending, less res per face. |
+| `--adetailer-feather <F>` | `0.25` | Outer fraction of the bbox that fades to 0 opacity at the edge. |
+| `--adetailer-confidence <F>` | `0.5` | SCRFD score threshold. Faces below are skipped. |
+| `--adetailer-size <PX>` | `512` | Working resolution for the face img2img (square, snapped to /8). |
+| `--adetailer-prompt <STR>` | (generic) | Override the face-pass prompt. Default: "detailed face, sharp focus, high quality". |
+
+**Required setup**: SCRFD weights via `PLAKAT_SCRFD_WEIGHTS` (local
+path) or `PLAKAT_SCRFD_HF` (HF spec). Same env vars the FaceID
+portrait flow uses.
+
+**Restrictions**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux /
+SD3 bail loud. Composes with `--lora`, `--seed`, and `--hires-fix`
+(ADetailer runs after hires fix so face refinement operates on the
+upscaled image).
+
+```bash
+plakat generate "a woman walking through a forest, full body shot" \
+    --model sd15 --size 768x1024 --adetailer
+```
+
+### Hires fix (v0.16, SD-family)
+
+Mitigates the "multi-head problem" SD/SDXL produce when sampled
+above their trained resolution. Generate at the trained res, then
+upscale + img2img-refine.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--hires-fix` | off | Enable the post-t2i upscale + refine pass. |
+| `--hires-scale <F>` | `2.0` | Upscale factor for classical upscalers. ML upscalers (Real-ESRGAN) use native scale and ignore this. |
+| `--hires-strength <F>` | `0.5` | img2img strength on the upscaled image. Lower preserves composition; `0.7+` allows more reinterpretation. |
+| `--hires-upscaler <MODE>` | `lanczos` | `lanczos / bicubic / bilinear / nearest / real-esrgan-x2 / real-esrgan-x4 / real-esrgan-anime-x4`. |
+| `--hires-steps <N>` | (main `--steps`) | Step count for the refine pass. |
+
+**Restrictions**: SD 1.5 / SD 2.1 / SDXL / SDXL-Turbo only. Flux /
+SD3 already have `--tiled` for high-res output and bail loud. Does
+**not** compose with `--artefact*` (upscale changes dims; the
+artefact compositor reads the original t2i dims).
+
+```bash
+# 1.5k SD 1.5 via 2x Lanczos + img2img
+plakat generate "an astronaut on a beach" \
+    --model sd15 --size 768x768 --hires-fix
+
+# 4K poster: hires-fix + ADetailer
+plakat generate "a vintage travel poster of Tokyo at night" \
+    --model sd15 --size 768x768 --steps 30 \
+    --hires-fix --hires-upscaler real-esrgan-x2 --hires-strength 0.45 \
+    --adetailer
+```
+
+### Textual Inversion (v0.16, partial)
+
+| Flag | Description |
+|---|---|
+| `--embedding <SPEC>` (repeatable) | Textual Inversion `.safetensors`. Format: `PATH_OR_REPO[:trigger][:scale]`. |
+
+**Status**: parser + `plakat embedding info` inspector ship and
+work today. Runtime injection into the SD CLIP-L tokenizer +
+token_embedding matrix is gated by candle 0.8's private
+`clip::Config.vocab_size` — `--embedding` plumbs end-to-end and
+bails loud at SD load with a deferral message + the "convert TI
+to LoRA via kohya-ss" workaround. SD 1.5 / SD 2.1 only when the
+runtime path opens; SDXL dual-encoder TIs bail in the parser.
+
+Use `plakat embedding info PATH` to inspect a TI file today.
 
 ---
 
@@ -861,6 +987,56 @@ Browse HuggingFace and manage the local cache.
 
 ---
 
+## `plakat civitai` (v0.16)
+
+Browse + download Civitai assets — community LoRAs, checkpoints,
+embeddings, ControlNet variants.
+
+| Subcommand | Purpose |
+|---|---|
+| `civitai search <QUERY> [--type lora\|checkpoint\|ti\|controlnet\|vae] [--limit N] [--page P] [--include-nsfw]` | Free-text search. Filters NSFW by default; pages 1-indexed. |
+| `civitai info <REF>` | Show model/version details — trigger words, base model, files. |
+| `civitai download <REF> [--file NAME]` | Fetch the asset into the local cache. Prints the absolute path. |
+
+`<REF>` accepts: bare integer model ID (`123456`), `civitai:`
+shorthand (`civitai:123456`), or any of the `https://civitai.com/`
+URL shapes (`/models/<id>`, `/models/<id>/<slug>`,
+`?modelVersionId=...`, and the `/api/download/models/<vid>`
+direct-download form).
+
+Downloads stream into
+`<plakat-cache>/civitai/model-<id>/version-<id>/`. Cache-hit
+short-circuits on matching size. Authenticated downloads use
+`CIVITAI_API_KEY` from the env. Drop the printed path into
+`--lora` or `--model`.
+
+```bash
+plakat civitai search "watercolor" --type lora --limit 10
+plakat civitai info 12345
+plakat civitai download "https://civitai.com/models/12345?modelVersionId=789"
+```
+
+---
+
+## `plakat embedding` (v0.16)
+
+Inspect Textual Inversion (`.safetensors`) files + Flux IP-Adapter
+weights. Runtime injection lands when candle exposes the seam —
+parsers + inspectors ship today.
+
+| Subcommand | Purpose |
+|---|---|
+| `embedding info <PATH_OR_REPO> [--trigger NAME]` | Inspect a TI file: trigger word, vector count × dim, matching SD variant. |
+| `embedding flux-ip-adapter-info <PATH_OR_REPO>` | Inspect an XLabs Flux IP-Adapter: SigLIP feature dim, Flux hidden dim, per-block attention count. |
+
+```bash
+plakat embedding info ./my-style.safetensors
+plakat embedding info sd-concepts-library/cat-toy
+plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
+```
+
+---
+
 ## Global flags (every subcommand)
 
 #### `-v` / `-vv` (default off)
@@ -972,8 +1148,11 @@ every SD-family subcommand accepts:
 --control-strength F    # default 1.0
 ```
 
-Works on both SD 1.5 and SDXL — the architecture is auto-detected
-from `--model`. Full reference:
+Works on SD 1.5, SD 2.1, SDXL, **Flux** (BF16 / GGUF / NF4, via
+Shakker-Labs Union Pro v2 — v0.12+), and **SD3 / SD3.5** (via the
+InstantX adapter family — v0.16). The architecture is
+auto-detected from `--model` and the resolver picks the matching
+adapter repo per variant. Full reference:
 [`CONTROLNET.md`](CONTROLNET.md). Runnable walkthrough:
 [`examples/tutorials/CONTROL/`](../examples/tutorials/CONTROL/).
 
@@ -1046,7 +1225,23 @@ optional; existing scenarios keep working unchanged.
 }
 ```
 
-Note: SD img2img/inpaint tasks reload the SD pipeline per task —
-img2img doesn't yet share the t2i `Pipeline::load`-once shape.
-Acceptable for v0.13 batch-rarely-img2img workflows; a follow-up
-could share the SdCore between the two paths.
+Notes on scenario pipeline caching:
+
+* **SD 1.5 / 2.1 / SDXL** — t2i tasks share a single `Arc<SdCore>`;
+  img2img/inpaint tasks within the same scenario still reload the
+  SD pipeline per task (the img2img dispatcher doesn't yet share
+  the t2i SdCore — same status as v0.13).
+* **Flux** (BF16 / GGUF / NF4) — one pipeline shared across every
+  task. Per-task `loras:` swap at runtime via the LoraLinear stack
+  (v0.15 phase 7b).
+* **SD3 / SD3.5** (v0.16 phase 2) — one MMDiT pipeline shared
+  across every task. Per-task `loras:` swap at runtime via the
+  MMDiT LoraLinear stack.
+
+For **SD-family per-task LoRA** (different LoRA stacks per task),
+plakat runs a preflight at scenario start (v0.16 phase 11) and
+either prints a hint to fold uniform stacks to scenario-level
+`loras:` or bails loud with three concrete workarounds (switch to
+Flux/SD3.5, split scenarios, or fold). The SD UNet runtime
+LoraLinear vendor is deferred — candle 0.8's UNet internals are
+private.
