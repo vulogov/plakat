@@ -238,12 +238,14 @@ first `frac×N` steps; the refiner UNet handles the remaining
 SDXL / SDXL-Turbo only — errors on SD 1.5/2.1 or Flux. Adds **~6 GB
 download** for the refiner UNet on first run.
 
-**Known limitation in plakat's refiner port** — candle 0.8's UNet has no
-`add_embedding` projection, so the refiner's pooled-CLIP-G + time_ids
-micro-conditioning is unused. The refiner still runs and produces
-recognizably better output than base alone, but the gap to the diffusers
-reference is real (~70–90% of reference quality). The same gap already
-applies to plakat's base SDXL.
+**Refiner micro-conditioning** — the refiner's
+`addition_embed_type: text_time` (pooled CLIP-G + 5-id time_ids:
+orig_size, crops_coords_top_left, aesthetic_score) is fully
+wired via plakat's vendored `SdxlUNet2DConditionModel`. CFG
+splits the aesthetic_score across the [cond, uncond] branches
+(pos = 6.0, neg = 2.5 by default) so the refiner pulls toward
+higher-aesthetic outputs — matches diffusers' reference
+recipe.
 
 `--refiner` and `--refine` are independent — you can stack both (refiner
 for the last 20%, then a polish pass on top).

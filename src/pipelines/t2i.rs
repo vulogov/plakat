@@ -545,11 +545,12 @@ pub struct Pipeline {
     /// is SDXL/SDXL-Turbo. Not shared via SdCore — the refiner is
     /// t2i-specific.
     ///
-    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. Phase 8d
-    /// holds it as `SdUNet::Sd` (no add_embedding — quality gap
-    /// preserved from pre-v0.11 behaviour). Phase 8e switches this to
-    /// `SdUNet::Sdxl` with the refiner's 5-time-id add_embedding so the
-    /// refiner pass also gets `text_time` micro-conditioning.
+    /// Wrapped in [`SdUNet`] for uniform denoise dispatch. The
+    /// refiner pass loads via `SdxlUNet2DConditionModel` so its
+    /// `add_embedding` Linear fires on the trained 5-time-id input
+    /// (orig_size + crops_coords_top_left + aesthetic_score), giving
+    /// the full `text_time` micro-conditioning the refiner was
+    /// trained with.
     refiner_unet: Option<crate::pipelines::sdxl_unet::SdUNet>,
 }
 
@@ -563,11 +564,15 @@ const SDXL_REFINER_REPO: &str = "stabilityai/stable-diffusion-xl-refiner-1.0";
 ///     have cross-attention)
 ///   * Per-block attention head dims [4, 8, 16, 16]
 ///
-/// Known limitation: the refiner is trained with `addition_embed_type:
-/// text_time` (pooled CLIP-G + time_ids micro-conditioning). candle 0.8's
-/// UNet has no `add_embedding` projection so we silently skip that. The
-/// model loads and runs, but output quality is lower than the diffusers
-/// reference. Same gap our base-SDXL path takes.
+/// The refiner's `addition_embed_type: text_time` micro-conditioning
+/// (pooled CLIP-G + time_ids → `add_embedding` Linear → time-embed
+/// summand) is loaded via plakat's vendored
+/// `SdxlUNet2DConditionModel` rather than candle's stock
+/// `UNet2DConditionModel`. The refiner uses the 5-id time vector
+/// (orig_size + crops_coords_top_left + aesthetic_score) — same
+/// `addition_time_embed_dim` (256) as base SDXL but a different
+/// final-element semantic, captured by
+/// `SdxlAddEmbedConfig::refiner()`.
 fn sdxl_refiner_unet_config() -> UNet2DConditionModelConfig {
     UNet2DConditionModelConfig {
         blocks: vec![
