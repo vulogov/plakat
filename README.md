@@ -8,6 +8,63 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.16 — the productivity release
+
+A dozen quality-of-life landings that connect community workflows
+(Civitai browsing, ADetailer face fix, Hires fix, wildcards) to the
+existing plakat backbone, plus deeper SD3 integration:
+
+- **SD3 ControlNet (InstantX)**. `--control-spec` works on SD3 /
+  SD3.5 via the InstantX adapter family. Multi-CN composition,
+  step-gating, auto-annotation from a reference photo — same
+  ergonomics SDXL + Flux ControlNet ship. (phase 3)
+- **Tiled Flux Fill**. `--tiled` composes with Flux.1-Fill-dev for
+  4K+ inpaint. Per-tile masked-latent + mask packing. (phase 4)
+- **Tiled SD3 img2img + inpaint**. The rectified-flow init lerp +
+  RePaint mask blend compose with the per-tile Hann blend.
+  (phase 10)
+- **Wildcards**. `{red|blue|green}` inline alternation +
+  `__name__` file wildcards (Auto1111 / NovelAI grammar). Seeded
+  from `--seed` for reproducibility. (phase 5)
+- **CLIP-skip**. `--clip-skip N` for SD 1.5 / SD 2.1 — N=2 is the
+  community default for anime checkpoints. (phase 5)
+- **ADetailer-style face refinement**. `--adetailer` runs SCRFD
+  on each output, crops + img2img-refines each face, feather-
+  composites back. Reuses the t2i SdCore — no extra model load.
+  (phase 6)
+- **Hires fix**. `--hires-fix` escapes the trained-resolution
+  ceiling: upscale (Lanczos / Real-ESRGAN) + img2img-refine.
+  Composes with `--adetailer` for a 4K → fixed faces pipeline.
+  (phase 8)
+- **Civitai browser + downloader**. `plakat civitai search`,
+  `info`, `download` — drop the resulting path into `--lora` /
+  `--model`. Atomic streaming downloads with cache-hit
+  short-circuit. (phase 7)
+- **Auto-annotation for Flux concept variants**. `--concept-from
+  PATH` auto-annotates a photo through Canny / Depth before feeding
+  Flux.1-Canny-dev / Flux.1-Depth-dev. (phase 1)
+- **SD3 pipeline caching + per-task LoRA**. Scenarios with
+  `--model sd35-*` now share one SD3 pipeline across tasks; per-
+  task `loras:` swap at runtime via the LoraLinear stack. (phase 2)
+- **Textual Inversion** *(partial)*. Parser + `plakat embedding
+  info` inspector. Runtime injection blocked by candle 0.8's
+  private `clip::Config.vocab_size` — wiring lands when the
+  candle API surface opens or alongside a vendored CLIP path.
+  (phase 9)
+- **SD UNet per-task LoRA preflight** *(partial)*. Detects the
+  blocker upfront and emits actionable YAML-fold hints; bails
+  loud with three concrete workarounds. Full UNet vendoring
+  deferred — same candle private-internals blocker. (phase 11)
+- **XLabs Flux IP-Adapter parser** *(partial)*. Inspector that
+  reports per-block attention count + SigLIP/Flux dims. Per-block
+  injection blocked by Flux's private `double_block_forward`;
+  use `--redux-image` for working image conditioning today.
+  (phase 12)
+
+301 lib tests green; +88 new tests across the cycle. Every
+"partial" phase ships its parser + tests so the future wiring is
+a focused diff.
+
 ## What's new in v0.15 — runtime LoRA + SD3 maturation
 
 - **Per-task LoRA in scenarios**. `tasks: [{ loras: [...] }]` applies
