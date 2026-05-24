@@ -527,6 +527,7 @@ Bundles a published distillation LoRA + recommended step + guidance
 | `hyper-16` | Flux | ByteDance Hyper-FLUX 16-step (CFG-free) | 16 | 1.0 | (default) |
 | `turbo-alpha` | Flux | alimama-creative FLUX.1-Turbo-Alpha | 8 | 3.5 | (default) |
 | `lcm-sdxl` | SDXL | Latent Consistency LoRA for SDXL | 4 | 1.5 | `lcm` |
+| `lcm-sd15` | SD 1.5 | Latent Consistency LoRA for SD 1.5 | 4 | 1.5 | `lcm` |
 
 ```bash
 # Flux distillation — Hyper-FLUX 8-step
@@ -534,15 +535,20 @@ plakat generate "..." --model flux-dev --fast hyper-8
 
 # SDXL Latent Consistency — 4-step inference, ~5x speedup over base SDXL
 plakat generate "..." --model sdxl --fast lcm-sdxl
+
+# SD 1.5 Latent Consistency — 4-step inference, same recipe for the
+# smaller backbone
+plakat generate "..." --model sd15 --fast lcm-sd15
 ```
 
 The preset LoRA gets prepended to `--loras`; `--steps`,
-`--guidance`, and (for `lcm-sdxl`) `--scheduler` are overridden
-**only** when you didn't pass them explicitly. Flux presets
-require a non-Fill Flux model; `lcm-sdxl` requires an SDXL /
-SDXL-Turbo model and bails if `--refiner` is also set (the
+`--guidance`, and (for the `lcm-*` presets) `--scheduler` are
+overridden **only** when you didn't pass them explicitly. Flux
+presets require a non-Fill Flux model; `lcm-sdxl` requires an
+SDXL / SDXL-Turbo model and bails if `--refiner` is also set (the
 refiner's late-step non-LCM scheduler conflicts with the 4-step
-LCM schedule).
+LCM schedule); `lcm-sd15` requires an SD 1.5 model and bails on
+the inpaint variant (mask + 4-step distillation interact poorly).
 
 ### Wildcards
 

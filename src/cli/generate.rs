@@ -611,6 +611,33 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                     );
                 }
             }
+            crate::pipelines::flux_fast::FastTarget::Sd15 => {
+                // SD 1.5 family — exclude SDXL (which contains "xl") and
+                // the inpaint variant (mask + 4-step distillation interact
+                // the same way Flux Fill + Hyper does — bail loud).
+                let is_sd15 = (m == "sd15"
+                    || m == "sd1.5"
+                    || m == "sd-1.5"
+                    || m.contains("v1-5")
+                    || m.contains("stable-diffusion-v1-5"))
+                    && !m.contains("xl");
+                if !is_sd15 {
+                    anyhow::bail!(
+                        "--fast {} (Latent Consistency LoRA for SD 1.5) requires an \
+                         SD 1.5 model (got --model {:?}). Use --model sd15.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if m.contains("inpaint") {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with SD 1.5 inpaint — the \
+                         mask-driven denoise interacts oddly with the 4-step LCM \
+                         schedule. Use --model sd15 and handle inpaint separately.",
+                        preset.name
+                    );
+                }
+            }
         }
         // Prepend so the preset LoRA loads BEFORE user LoRAs — user
         // LoRAs override at merge time when keys collide.
