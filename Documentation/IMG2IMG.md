@@ -121,11 +121,24 @@ worse than at 512² for SD 1.5. For higher resolution, use
 
 | Mode | Filename pattern |
 |---|---|
-| img2img | `plakat-img2img-<seed>.png` |
-| inpaint | `plakat-inpaint-<seed>.png` |
+| img2img (SD-family) | `plakat-img2img-<seed>.png` |
+| inpaint (SD-family) | `plakat-inpaint-<seed>.png` |
+| Flux (img2img / Fill) | `plakat-flux-<seed>.png` |
+| SD3 img2img | `plakat-sd3-img2img-<seed>.png` |
+| SD3 inpaint | `plakat-sd3-inpaint-<seed>.png` |
 
-With `--count N`, files are `plakat-img2img-<base>.png`,
-`plakat-img2img-<base+1>.png`, ... using consecutive seeds.
+With `--count N`, files are `<prefix>-<base>.png`,
+`<prefix>-<base+1>.png`, ... using consecutive seeds.
+
+### `--grid` (v0.18)
+
+With `--count N > 1`, pass `--grid` to also write a single
+`<prefix>-grid-<base-seed>.png` combining all N outputs in a
+near-square layout alongside the per-image PNGs. `--grid-cols N`
+forces a specific column count (default `ceil(sqrt(count))`);
+`--grid-padding PX` inserts a white border between cells (default
+0, flush). The grid prefix tracks the backbone, so a Flux inpaint
+sweep with `--count 4 --grid` produces `plakat-flux-grid-…`.
 
 ## Style + LoRA support
 
@@ -250,6 +263,9 @@ plakat outpaint photo.png --prompt "..." --expand 256 \
 (8 for SD, 16 for Flux), replicates the input's edge pixels into the
 new region (better seam continuity than flat gray), and pins
 `--strength 1.0` (the new region has no original content to preserve).
+`--grid` / `--grid-cols` / `--grid-padding` (v0.18) forward through to
+the underlying inpaint flow, producing a `plakat-inpaint-grid-…` PNG
+when `--count > 1`.
 
 ## Limits
 

@@ -254,6 +254,22 @@ pub struct PortraitArgs {
         ],
     )]
     pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
+
+    /// v0.18 phase 2: with `--count N > 1`, also write a single
+    /// `plakat-portrait-grid-<base-seed>.png` combining all N
+    /// portraits in a near-square layout.
+    #[arg(long = "grid", default_value_t = false)]
+    pub grid: bool,
+
+    /// v0.18 phase 2: column count for `--grid`. Default is
+    /// `ceil(sqrt(count))`. Ignored when `--grid` is off.
+    #[arg(long = "grid-cols", value_name = "N")]
+    pub grid_cols: Option<usize>,
+
+    /// v0.18 phase 2: padding (px) between grid cells. Default 0.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    pub grid_padding: u32,
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
@@ -364,6 +380,11 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
 
     let out_dir = args.out.clone();
     let count = args.count;
+    // v0.18 phase 2: grid args captured early — `args` gets partially
+    // moved into the portrait::Request below.
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
     // Pre-resolve the seed at the CLI boundary so the artefact compositor /
     // blender know which output files to read back.
     let seed = Some(args.seed.unwrap_or_else(rand::random));
@@ -492,6 +513,24 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
             Some(shared_core),
         )
         .await?;
+    }
+
+    // v0.18 phase 2: compose a grid of the per-image portrait outputs.
+    // Runs LAST so artefact composite + blend are reflected in cells.
+    if grid_enabled {
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &out_dir,
+            "plakat-portrait",
+            seed.unwrap_or(0),
+            count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
     }
     Ok(())
 }

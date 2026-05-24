@@ -201,6 +201,27 @@ pub struct Img2ImgArgs {
     /// the grid if the depth model load fails.
     #[arg(long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
+
+    /// v0.18 phase 2: with `--count N > 1`, also write a single
+    /// `<prefix>-grid-<base-seed>.png` combining all N outputs in a
+    /// near-square layout. Per-image PNGs are written as usual
+    /// alongside. The prefix tracks the backbone (e.g.
+    /// `plakat-img2img-grid-…`, `plakat-flux-grid-…`,
+    /// `plakat-sd3-inpaint-grid-…`).
+    #[arg(long = "grid", default_value_t = false)]
+    pub grid: bool,
+
+    /// v0.18 phase 2: column count for `--grid`. Default is
+    /// `ceil(sqrt(count))` — 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-cols", value_name = "N")]
+    pub grid_cols: Option<usize>,
+
+    /// v0.18 phase 2: padding (px) between grid cells. Default 0
+    /// (flush). Higher values insert a white border between cells.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    pub grid_padding: u32,
 }
 
 pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
@@ -296,6 +317,13 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     let loras = args.loras.clone();
     let lora_scale = args.lora_scale;
     let scheduler = args.scheduler;
+    // v0.18 phase 2: grid args captured early — the SD-family path
+    // moves `args` into the `img2img::Request` below, so the grid
+    // block at the end of run() needs them held aside. (Flux + SD3
+    // arms read them directly off the still-owned `args`.)
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
     let steps = args.steps;
     let guidance = args.guidance;
 
@@ -407,6 +435,25 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         .await?;
     }
 
+    // v0.18 phase 2: bundle the per-image SD-family outputs into one
+    // grid PNG. Runs LAST so the artefact composite + optional blend
+    // are reflected in the grid cells. No-op when --count is 1.
+    if grid_enabled {
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &out_dir,
+            &file_prefix,
+            seed.unwrap_or(0),
+            count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -420,7 +467,18 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
 /// `--negative` (Flux has no negative-prompt mechanism today),
 /// `--scheduler` (Flux uses flow-matching, not the SD schedulers),
 /// `--artefact*`, `--control-spec`. Warn-and-ignore rather than bail.
-async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
+async fn run_flux_fill(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.18 phase 2: pre-resolve the seed so the post-dispatch grid
+    // block can find the per-image PNGs by deterministic filename;
+    // capture grid-relevant fields before `args` gets partially moved
+    // into the flux::Request below.
+    args.seed = Some(args.seed.unwrap_or_else(rand::random));
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
+    let grid_out_dir = args.out.clone();
+    let grid_seed = args.seed.unwrap_or(0);
+    let grid_count = args.count;
     use crate::pipelines::flux;
 
     let mask = args.mask.ok_or_else(|| {
@@ -602,6 +660,23 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
     // cosmetic (would happen on scope exit anyway) but documents
     // the intent.
     drop(anno_tmp);
+
+    // v0.18 phase 2: compose a grid of the per-image flux outputs.
+    if grid_enabled {
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &grid_out_dir,
+            "plakat-flux",
+            grid_seed,
+            grid_count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -616,7 +691,16 @@ async fn run_flux_fill(args: Img2ImgArgs, device: Device) -> Result<()> {
 /// `--mask-feather`, `--mask-invert`, `--scheduler`, `--control-spec`,
 /// `--artefact*`. Keeps the entry point usable on the same CLI
 /// surface SD users already know.
-async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+async fn run_flux_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.18 phase 2: pre-resolve the seed + capture grid-relevant
+    // fields before `args` gets partially moved into flux::Request.
+    args.seed = Some(args.seed.unwrap_or_else(rand::random));
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
+    let grid_out_dir = args.out.clone();
+    let grid_seed = args.seed.unwrap_or(0);
+    let grid_count = args.count;
     use crate::pipelines::flux;
 
     if args.mask.is_some() {
@@ -710,6 +794,23 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         concept_conditioning: None,
     })
     .await?;
+
+    // v0.18 phase 2: compose a grid of the per-image flux outputs.
+    if grid_enabled {
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &grid_out_dir,
+            "plakat-flux",
+            grid_seed,
+            grid_count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -720,7 +821,18 @@ async fn run_flux_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
 /// LoRA — those land in later phases), so we explicitly bail when the
 /// user passes flags that don't apply on SD3 yet. That's friendlier
 /// than silently ignoring `--loras` on an SD3 model.
-async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.18 phase 2: pre-resolve the seed + capture grid-relevant
+    // fields (including mask presence for the filename mode tag)
+    // before `args` gets partially moved into sd3::Request.
+    args.seed = Some(args.seed.unwrap_or_else(rand::random));
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
+    let grid_out_dir = args.out.clone();
+    let grid_seed = args.seed.unwrap_or(0);
+    let grid_count = args.count;
+    let grid_mode_tag = if args.mask.is_some() { "inpaint" } else { "img2img" };
     use crate::pipelines::{sd3, t2i};
 
     if args.control.is_some()
@@ -807,7 +919,28 @@ async fn run_sd3_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         // so an empty Vec here is the only valid value.
         controlnets: Vec::new(),
     })
-    .await
+    .await?;
+
+    // v0.18 phase 2: compose a grid of the per-image SD3 outputs.
+    // Prefix tracks the pipeline's own filename convention
+    // (`plakat-sd3-{img2img|inpaint}-{seed}.png`).
+    if grid_enabled {
+        let file_prefix = format!("plakat-sd3-{grid_mode_tag}");
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &grid_out_dir,
+            &file_prefix,
+            grid_seed,
+            grid_count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Read the input's actual dimensions and round each axis DOWN to
