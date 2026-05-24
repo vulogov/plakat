@@ -95,6 +95,14 @@ pub struct AnimateArgs {
     /// 41 ms ≈ 24 fps (cinematic); 33 ms ≈ 30 fps.
     #[arg(long, default_value_t = 100)]
     pub gif_delay_ms: u16,
+
+    /// v0.18 phase 6: skip the A1111 `parameters` PNG tEXt chunk
+    /// and the `.json` sidecar that animate writes alongside each
+    /// `frame-NNNN.png`. Default off — metadata helps you re-render
+    /// any frame from its sidecar's `Lerp t` / `Animate from` /
+    /// `Animate to` entries.
+    #[arg(long = "no-metadata", default_value_t = false)]
+    pub no_metadata: bool,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
@@ -190,6 +198,13 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         args.frames, args.model, width, height,
     ));
 
+    // v0.18 phase 6: build per-frame metadata when `--no-metadata`
+    // wasn't passed. The model / seed / steps / guidance / scheduler
+    // fields stay constant across the run; only the prompt (synthetic
+    // "lerp(t): from | to" description) and the extras (structured
+    // t / from / to) change per frame.
+    let scheduler_name = format!("{:?}", args.scheduler).to_lowercase();
+
     let mut frame_paths: Vec<PathBuf> = Vec::with_capacity(args.frames as usize);
     for frame_i in 0..args.frames {
         let t = if args.frames == 1 {
@@ -199,6 +214,26 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         };
         let frame_path = args.out.join(format!("frame-{frame_i:04}.png"));
         let frame = endpoints.lerp_at(t)?;
+        let meta = if !args.no_metadata {
+            let prompt_desc =
+                format!("lerp({t:.4}): {:?} | {:?}", args.from, args.to);
+            let mut m = crate::imaging::metadata::GenerationMetadata::new(
+                prompt_desc,
+                args.model.clone(),
+                seed,
+                args.steps,
+                args.guidance,
+                scheduler_name.clone(),
+                width,
+                height,
+            );
+            m.negative = args.negative.clone();
+            m.mode = Some("animate".to_string());
+            m.with_animate_lerp(t, &args.from, &args.to);
+            Some(m)
+        } else {
+            None
+        };
         denoise_one_frame(
             &core,
             &frame,
@@ -209,6 +244,7 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
             args.scheduler,
             seed,
             &frame_path,
+            meta.as_ref(),
         )?;
         frame_paths.push(frame_path);
         crate::ui::progress::println(&format!(
@@ -502,7 +538,9 @@ fn lerp_tensors(a: &Tensor, b: &Tensor, t: f64) -> Result<Tensor> {
 /// VAE. SD 1.5 / SD 2.1 / SDXL — the unified `SdUNet::forward`
 /// wrapper handles either variant; the caller passes the SDXL
 /// extras (`add_text_embeds`, `add_time_ids`) via `Frame` when
-/// they apply. Saves the result to `out_path`.
+/// they apply. Saves the result to `out_path`. When `metadata` is
+/// `Some`, the saved PNG carries the Auto1111 `parameters` tEXt
+/// chunk and a sibling JSON sidecar.
 #[allow(clippy::too_many_arguments)]
 fn denoise_one_frame(
     core: &SdCore,
@@ -514,6 +552,7 @@ fn denoise_one_frame(
     scheduler_kind: SchedulerKind,
     seed: u64,
     out_path: &std::path::Path,
+    metadata: Option<&crate::imaging::metadata::GenerationMetadata>,
 ) -> Result<()> {
     let do_cfg = guidance > 1.0;
     let w = width as usize;
@@ -578,7 +617,16 @@ fn denoise_one_frame(
         .permute((1, 2, 0))?;
     let (oh, ow, _) = image.dims3()?;
     let buf = image.flatten_all()?.to_vec1::<u8>()?;
-    crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, out_path)?;
+    match metadata {
+        Some(meta) => crate::imaging::io::save_rgb_u8_with_metadata(
+            &buf,
+            ow as u32,
+            oh as u32,
+            out_path,
+            meta,
+        )?,
+        None => crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, out_path)?,
+    }
     Ok(())
 }
 
