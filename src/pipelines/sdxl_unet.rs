@@ -721,3 +721,63 @@ impl SdUNet {
         0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.17 phase J — guard the refiner add_embedding contract.
+    /// The micro-conditioning input width is computed as
+    /// `num_time_ids * addition_time_embed_dim + pooled_text_dim`.
+    /// Base SDXL has 6 time_ids; the refiner has 5 (final slot is
+    /// `aesthetic_score` instead of `target_size`). Both feed the
+    /// same `add_embedding` Linear shape inside the vendored UNet,
+    /// so a mismatch here would silently break the refiner forward
+    /// pass at the diffusers reference recipe.
+    #[test]
+    fn refiner_add_embed_config_has_5_time_ids() {
+        let cfg = SdxlAddEmbedConfig::refiner();
+        assert_eq!(cfg.num_time_ids, 5);
+        assert_eq!(cfg.addition_time_embed_dim, 256);
+        assert_eq!(cfg.pooled_text_dim, 1280);
+        // 5 * 256 + 1280 = 2560.
+        assert_eq!(cfg.in_dim(), 2560);
+    }
+
+    #[test]
+    fn base_add_embed_config_has_6_time_ids() {
+        let cfg = SdxlAddEmbedConfig::base();
+        assert_eq!(cfg.num_time_ids, 6);
+        assert_eq!(cfg.addition_time_embed_dim, 256);
+        // 6 * 256 + 1280 = 2816.
+        assert_eq!(cfg.in_dim(), 2816);
+    }
+
+    #[test]
+    fn refiner_aesthetic_score_endpoints_pinned() {
+        // diffusers' canonical positive / negative anchors. CFG
+        // pulls toward the positive (6.0 = "good aesthetics") and
+        // away from the negative (2.5 = "less aesthetic").
+        // Locking these here so a future refactor that drifts the
+        // constants gets caught by the test rather than the user.
+        assert!((REFINER_AESTHETIC_SCORE_POS - 6.0).abs() < f32::EPSILON);
+        assert!((REFINER_AESTHETIC_SCORE_NEG - 2.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn refiner_time_ids_have_expected_shape() {
+        use candle_core::Device;
+        let t = build_add_time_ids_refiner(
+            1024,
+            1024,
+            REFINER_AESTHETIC_SCORE_POS,
+            &Device::Cpu,
+            candle_core::DType::F32,
+        )
+        .unwrap();
+        assert_eq!(t.dims(), &[1, 5]);
+        let v: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
+        // Layout: orig_h, orig_w, crop_top, crop_left, aesthetic_score.
+        assert_eq!(v, vec![1024.0, 1024.0, 0.0, 0.0, 6.0]);
+    }
+}
