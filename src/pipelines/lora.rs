@@ -33,6 +33,27 @@ pub enum LoraSource {
         file: Option<String>,
         revision: Option<String>,
     },
+    /// v0.17 phase G: Civitai asset reference. `id_kind` distinguishes
+    /// between a model ID (Civitai resolves to the latest version)
+    /// and a pinned version ID. `file` optionally names a non-primary
+    /// file inside the version (the default picks the `★` primary).
+    ///
+    /// Resolved at `LoraSpec::resolve` time via
+    /// `civitai::download::download_version`, which writes into the
+    /// shared plakat cache and short-circuits on subsequent runs.
+    /// Honours `CIVITAI_API_KEY` env var for gated assets.
+    Civitai {
+        id_kind: CivitaiIdKind,
+        file: Option<String>,
+    },
+}
+
+/// Whether a Civitai numeric ID refers to a top-level **model**
+/// (resolves to the latest version) or a pinned **version**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CivitaiIdKind {
+    Model(u64),
+    Version(u64),
 }
 
 /// Unresolved LoRA spec from the CLI. `resolve()` turns it into a
@@ -54,7 +75,59 @@ pub struct ResolvedLora {
 impl FromStr for LoraSpec {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
-        // Strip optional trailing :SCALE.
+        // v0.17 phase G: Civitai shorthand grammar. Accepted forms:
+        //   `civitai:NNNNNN`                — model ID (latest version)
+        //   `civitai:NNNNNN:0.7`            — model ID + scale
+        //   `civitai-version:NNNNNN`        — pinned version ID
+        //   `civitai-version:NNNNNN:0.7`    — pinned version + scale
+        //   `civitai:NNNNNN#filename.safetensors[:scale]` — explicit file
+        //
+        // The prefix check runs BEFORE the general `:SCALE` strip
+        // because the prefix's own colon would otherwise get
+        // consumed (and `civitai:12345` would parse as `head=civitai
+        // scale=12345`).
+        if let Some(rest) = s.strip_prefix("civitai:").or_else(|| s.strip_prefix("civitai-version:")) {
+            let is_version = s.starts_with("civitai-version:");
+            // The remaining string has the shape
+            // `NNNNNN[#file][:scale]`. Pull off the trailing
+            // `:scale` if present, then split off any `#file`.
+            let (head_inner, scale) = match rest.rsplit_once(':') {
+                Some((h, sc)) => match sc.parse::<f32>() {
+                    Ok(v) => (h, v),
+                    Err(_) => (rest, 1.0),
+                },
+                None => (rest, 1.0),
+            };
+            let (id_part, file) = match head_inner.split_once('#') {
+                Some((id, f)) => (id, Some(f.to_string())),
+                None => (head_inner, None),
+            };
+            let id: u64 = id_part.parse().map_err(|_| {
+                if is_version {
+                    anyhow!(
+                        "civitai LoRA spec: expected numeric version ID after \
+                         `civitai-version:`, got {id_part:?}."
+                    )
+                } else {
+                    anyhow!(
+                        "civitai LoRA spec: expected numeric model ID after \
+                         `civitai:`, got {id_part:?}. Use `--lora civitai:123456` \
+                         (model id) or `--lora civitai-version:789` (pinned version)."
+                    )
+                }
+            })?;
+            let id_kind = if is_version {
+                CivitaiIdKind::Version(id)
+            } else {
+                CivitaiIdKind::Model(id)
+            };
+            return Ok(Self {
+                source: LoraSource::Civitai { id_kind, file },
+                scale,
+            });
+        }
+
+        // Strip optional trailing :SCALE for the non-civitai paths.
         let (head, scale) = match s.rsplit_once(':') {
             Some((h, sc)) => match sc.parse::<f32>() {
                 Ok(v) => (h, v),
@@ -168,6 +241,46 @@ impl LoraSpec {
                     path,
                     scale: self.scale,
                     display: format!("{repo}/{filename}{rev_note}"),
+                })
+            }
+            LoraSource::Civitai { id_kind, file } => {
+                let (model_id, version_id) = match id_kind {
+                    CivitaiIdKind::Model(m) => (Some(*m), None),
+                    CivitaiIdKind::Version(v) => (None, Some(*v)),
+                };
+                let result = crate::civitai::download::download_version(
+                    model_id,
+                    version_id,
+                    file.as_deref(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "resolving --lora civitai:{}",
+                        match id_kind {
+                            CivitaiIdKind::Model(m) => format!("{m}"),
+                            CivitaiIdKind::Version(v) => format!("version:{v}"),
+                        }
+                    )
+                })?;
+                if !result.cache_hit {
+                    tracing::info!(
+                        target: "plakat",
+                        "Civitai LoRA downloaded: {} ({} bytes)",
+                        result.path.display(),
+                        result.bytes_written
+                    );
+                }
+                Ok(ResolvedLora {
+                    path: result.path.clone(),
+                    scale: self.scale,
+                    display: format!(
+                        "civitai:{}",
+                        match id_kind {
+                            CivitaiIdKind::Model(m) => format!("{m}"),
+                            CivitaiIdKind::Version(v) => format!("version:{v}"),
+                        }
+                    ),
                 })
             }
         }
@@ -1012,4 +1125,124 @@ fn apply_one_lora(
     }
     let _ = total_targets; // total across all groups (any target); we report per-target now.
     Ok((count, total_target_groups))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn parse(s: &str) -> LoraSpec {
+        LoraSpec::from_str(s).expect("parses")
+    }
+
+    #[test]
+    fn parses_hub_repo() {
+        let s = parse("user/some-lora");
+        match s.source {
+            LoraSource::Hub { repo, file, .. } => {
+                assert_eq!(repo, "user/some-lora");
+                assert!(file.is_none());
+            }
+            other => panic!("expected Hub, got {other:?}"),
+        }
+        assert_eq!(s.scale, 1.0);
+    }
+
+    #[test]
+    fn parses_hub_repo_with_scale() {
+        let s = parse("user/some-lora:0.7");
+        assert_eq!(s.scale, 0.7);
+        assert!(matches!(s.source, LoraSource::Hub { .. }));
+    }
+
+    #[test]
+    fn parses_hub_repo_with_file_and_scale() {
+        let s = parse("user/some-lora#sub/file.safetensors:0.5");
+        match s.source {
+            LoraSource::Hub { repo, file, .. } => {
+                assert_eq!(repo, "user/some-lora");
+                assert_eq!(file.as_deref(), Some("sub/file.safetensors"));
+            }
+            other => panic!("expected Hub, got {other:?}"),
+        }
+        assert_eq!(s.scale, 0.5);
+    }
+
+    // v0.17 phase G — civitai shorthand parsing.
+
+    #[test]
+    fn parses_civitai_model_id() {
+        let s = parse("civitai:12345");
+        match s.source {
+            LoraSource::Civitai { id_kind, file } => {
+                assert_eq!(id_kind, CivitaiIdKind::Model(12345));
+                assert!(file.is_none());
+            }
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+        assert_eq!(s.scale, 1.0);
+    }
+
+    #[test]
+    fn parses_civitai_model_with_scale() {
+        let s = parse("civitai:12345:0.65");
+        match s.source {
+            LoraSource::Civitai { id_kind, .. } => {
+                assert_eq!(id_kind, CivitaiIdKind::Model(12345));
+            }
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+        assert!((s.scale - 0.65).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parses_civitai_version_id() {
+        let s = parse("civitai-version:67890:0.8");
+        match s.source {
+            LoraSource::Civitai { id_kind, file } => {
+                assert_eq!(id_kind, CivitaiIdKind::Version(67890));
+                assert!(file.is_none());
+            }
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+        assert!((s.scale - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parses_civitai_model_with_explicit_file() {
+        let s = parse("civitai:12345#alt-file.safetensors:0.5");
+        match s.source {
+            LoraSource::Civitai { id_kind, file } => {
+                assert_eq!(id_kind, CivitaiIdKind::Model(12345));
+                assert_eq!(file.as_deref(), Some("alt-file.safetensors"));
+            }
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+        assert!((s.scale - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn civitai_with_non_numeric_id_bails() {
+        let err = LoraSpec::from_str("civitai:abc").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("numeric model ID"), "got {msg}");
+    }
+
+    #[test]
+    fn civitai_version_with_non_numeric_id_bails() {
+        let err = LoraSpec::from_str("civitai-version:xyz").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("numeric version ID"), "got {msg}");
+    }
+
+    #[test]
+    fn civitai_id_kind_equality() {
+        // Sanity-check the derived `PartialEq` on the enum so future
+        // refactors that touch the variant order don't silently break
+        // probe comparisons.
+        assert_eq!(CivitaiIdKind::Model(1), CivitaiIdKind::Model(1));
+        assert_ne!(CivitaiIdKind::Model(1), CivitaiIdKind::Model(2));
+        assert_ne!(CivitaiIdKind::Model(1), CivitaiIdKind::Version(1));
+    }
 }

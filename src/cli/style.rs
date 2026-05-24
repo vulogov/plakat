@@ -617,6 +617,38 @@ async fn probe_one(client: &reqwest::Client, entry: &LoraEntry) -> ProbeOutcome 
                 },
             }
         }
+        // v0.17 phase G: Civitai LoRA specs probe via the
+        // `civitai.com/api/v1/models/<id>` endpoint. The exact
+        // URL is informational only — the probe doesn't follow
+        // the API redirect to the file CDN, just reports
+        // reachability.
+        LoraSource::Civitai { id_kind, .. } => {
+            let url = match id_kind {
+                crate::pipelines::lora::CivitaiIdKind::Model(m) => {
+                    format!("https://civitai.com/api/v1/models/{m}")
+                }
+                crate::pipelines::lora::CivitaiIdKind::Version(v) => {
+                    format!("https://civitai.com/api/v1/model-versions/{v}")
+                }
+            };
+            match client.head(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        ProbeOutcome::Ok { url }
+                    } else {
+                        ProbeOutcome::NotFound {
+                            url,
+                            status: status.as_u16(),
+                        }
+                    }
+                }
+                Err(e) => ProbeOutcome::NetworkError {
+                    url,
+                    error: e.to_string(),
+                },
+            }
+        }
     }
 }
 
