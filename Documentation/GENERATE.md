@@ -1287,6 +1287,34 @@ Browse HuggingFace and manage the local cache.
 | `models pull <REPO>` | Pre-download SD/Flux weight files for a repo. |
 | `models ls` | List cached models with disk usage. |
 | `models rm <REPO>.. [--yes]` | Delete cached models (with size + confirmation by default). |
+| `models aliases [--family F] [--repo] [--gated]` | List every `--model` alias plakat recognises, grouped by family. **v0.20.** |
+
+### `plakat models aliases`
+
+Enumerates the static alias table — the same lookup `--model` runs
+against — so you can see what short names plakat accepts before
+typing one. Three modes:
+
+```bash
+# Default: human-readable, grouped by family
+plakat models aliases
+
+# Filter to one family (substring match, case-insensitive)
+plakat models aliases --family flux
+plakat models aliases --family "sd 3"
+
+# Bare repo ids, one per line — pipes cleanly into models pull
+plakat models aliases --family flux --repo | xargs -L1 plakat models pull
+
+# Only HF_TOKEN-gated repos
+plakat models aliases --gated
+```
+
+Output rows show every alias spelling, the canonical HF repo, the
+sub-kind (`base`, `inpaint`, `GGUF`, `Kontext`, …), a `[gated]`
+marker when HF_TOKEN is required, and a one-line note. Adding a
+new alias in `src/hf/mod.rs` updates both the resolver and this
+listing.
 
 ---
 
