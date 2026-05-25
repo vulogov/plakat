@@ -1305,11 +1305,28 @@ impl Pipeline {
                      pass the reference via --concept-image PATH instead."
                 );
             }
+            // v0.19: Kontext + Redux composition. Both features extend
+            // the per-block attention sequence — Redux extends `txt`
+            // (T5 base + 729 tokens per image), Kontext extends `img`
+            // (noise + reference). They're orthogonal in implementation
+            // (Redux modifies t5_emb at the top of generate(); Kontext
+            // extends img per-step), so they compose without extra
+            // wiring. The risk is RoPE budget — Flux's position
+            // encoding was trained on a typical seq of ~1500 positions.
+            // The combined-seq budget check below warns at ~3500 and
+            // bails at 4096 (the safe upper bound for Flux RoPE).
             if !req.redux_images.is_empty() {
-                bail!(
-                    "Flux Kontext + --redux-image isn't wired yet — both extend \
-                     the sequence dimension and may exceed Flux's RoPE budget. \
-                     Use one or the other."
+                let img_seq = lat_h * lat_w / 4; // 2x2 Flux patching
+                let ref_seq = img_seq; // Kontext reference at same resolution
+                let txt_seq =
+                    self.variant.t5_seq_len() + 729 * req.redux_images.len();
+                let total_seq = txt_seq + img_seq + ref_seq;
+                kontext_redux_budget_check(total_seq)?;
+                tracing::info!(
+                    target: "plakat",
+                    "Kontext + Redux composition: effective attention seq \
+                     {txt_seq} txt + {img_seq} noise + {ref_seq} ref = {total_seq} \
+                     total"
                 );
             }
             // v0.19: Kontext + ControlNet composition. The CN runs on
@@ -2504,6 +2521,40 @@ fn pad_residual_for_kontext(residual: &Tensor, ref_seq_len: usize) -> Result<Ten
     Ok(Tensor::cat(&[residual, &zeros], 1)?)
 }
 
+/// v0.19: Flux RoPE position-encoding budget. The per-block
+/// attention runs over `txt_seq + img_seq` positions; the RoPE
+/// frequencies were trained on a typical combined seq of ~1500.
+/// Combining Kontext (+ ~1k ref tokens on img) and Redux (+729
+/// tokens per image on txt) can push past that.
+///
+/// Bail above `KONTEXT_REDUX_HARD_CAP` (4096) — output quality
+/// degrades visibly as RoPE wraps. Warn above `…_WARN_AT` (3500)
+/// so users notice rather than burning a long generation on a
+/// borderline-budgeted compose.
+const KONTEXT_REDUX_WARN_AT: usize = 3500;
+const KONTEXT_REDUX_HARD_CAP: usize = 4096;
+
+fn kontext_redux_budget_check(total_seq: usize) -> Result<()> {
+    if total_seq > KONTEXT_REDUX_HARD_CAP {
+        anyhow::bail!(
+            "Kontext + Redux effective attention seq ({total_seq}) exceeds Flux's \
+             RoPE budget ({KONTEXT_REDUX_HARD_CAP}). Reduce one of:\n\
+              * --size (smaller output → fewer noise tokens)\n\
+              * Kontext reference image dims (smaller ref → fewer ref tokens)\n\
+              * --redux-image count (each image adds 729 tokens)"
+        );
+    }
+    if total_seq > KONTEXT_REDUX_WARN_AT {
+        tracing::warn!(
+            target: "plakat",
+            "Kontext + Redux seq {total_seq} is past the {KONTEXT_REDUX_WARN_AT}-token \
+             warn threshold (RoPE may degrade). Output should still complete; \
+             quality may suffer."
+        );
+    }
+    Ok(())
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -2773,6 +2824,39 @@ mod tests {
             .unwrap();
         assert!((noise_sum - 32.0).abs() < 1e-5, "noise half should be all ones");
         assert!((ref_sum - 0.0).abs() < 1e-5, "ref half should be all zeros");
+    }
+
+    // v0.19 — Kontext + Redux RoPE budget gate.
+
+    #[test]
+    fn kontext_redux_budget_under_warn_threshold_passes_silently() {
+        // 512 T5 + 1024 noise + 1024 ref = 2560 — comfortably below
+        // the 3500 warn threshold.
+        assert!(kontext_redux_budget_check(2560).is_ok());
+    }
+
+    #[test]
+    fn kontext_redux_budget_above_hard_cap_bails() {
+        let err =
+            kontext_redux_budget_check(KONTEXT_REDUX_HARD_CAP + 1).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("RoPE budget"), "{msg}");
+        assert!(msg.contains("--size"), "{msg}");
+        assert!(msg.contains("--redux-image count"), "{msg}");
+    }
+
+    #[test]
+    fn kontext_redux_budget_at_hard_cap_passes() {
+        // Boundary: exactly at the cap is OK (the bail uses `>`).
+        assert!(kontext_redux_budget_check(KONTEXT_REDUX_HARD_CAP).is_ok());
+    }
+
+    #[test]
+    fn kontext_redux_budget_between_thresholds_warns_not_bails() {
+        // 3700 is above the warn threshold but below the hard cap —
+        // should pass (the warn fires via tracing; we don't assert
+        // on log output here).
+        assert!(kontext_redux_budget_check(3700).is_ok());
     }
 
     #[test]
