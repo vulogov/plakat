@@ -104,18 +104,24 @@ a hand by inpainting at strength 0.7 instead of 1.0).
 
 ## Resolution handling
 
-When `--size` is omitted, plakat reads the input's actual dimensions
-and rounds each axis **down** to the nearest multiple of 8 (the VAE
-downsample factor). A 1080×720 input becomes 1080×720; a 513×800
-input becomes 512×800.
+Three ways to set output dimensions, in priority order:
 
-When `--size` is set, the input is resized (triangle filter) to
-match. Same constraint: the size must be a multiple of 8 on both
-axes.
+1. **`--size WxH`** — explicit, wins over everything. Multiple of 8
+   required (VAE downsample factor).
+2. **`--aspect 16:9 --base 1024`** (v0.19) — derived. The shorter
+   side becomes `--base`; the longer side becomes
+   `base × ratio`. Both axes are then rounded **down** to the
+   nearest multiple of 8. Mutually exclusive with `--size`.
+3. **default** — the input image's actual dimensions, rounded down
+   to multiples of 8. A 1080×720 input becomes 1080×720; a 513×800
+   input becomes 512×800.
 
-Tip: SD 1.5 was trained at 512²; outputs at 1024² often look
-worse than at 512² for SD 1.5. For higher resolution, use
-`--model sdxl --size 1024x1024`.
+When `--size` or `--aspect` produces dimensions that don't match the
+input's, the input is resized (triangle filter) to match before
+denoising. Tip: SD 1.5 was trained at 512²; outputs at 1024² often
+look worse than at 512² for SD 1.5. For higher resolution, use
+`--model sdxl --size 1024x1024` (or `--model sdxl --aspect 16:9
+--base 896` for a landscape variant).
 
 ## Output naming
 
