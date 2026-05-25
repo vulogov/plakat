@@ -2779,7 +2779,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         seed_offset += count as u64;
     }
 
-    // v0.19 #3: tag the summary line so dry-run users can tell at
+    // v0.18: tag the summary line so dry-run users can tell at
     // a glance that nothing was actually written to disk. Without
     // this, "✓ done N images" misleads — they'd look in the out
     // dir, find it empty, and wonder what happened.

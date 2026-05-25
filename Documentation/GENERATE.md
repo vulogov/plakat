@@ -336,8 +336,8 @@ detail (composition, lighting, medium, style) before generation.
 
 ```bash
 plakat generate "knight" --enhance deepseek
-plakat generate "knight" --enhance local        # v0.19 — no API key
-plakat generate "knight" --enhance auto         # v0.19 — pick what's available
+plakat generate "knight" --enhance local        # v0.18 — no API key
+plakat generate "knight" --enhance auto         # v0.18 — pick what's available
 ```
 
 | Provider | Backend | Cost |
@@ -594,7 +594,7 @@ The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
 
-### Inline LoRA tags (v0.19)
+### Inline LoRA tags (v0.18)
 
 A1111 / Civitai-style `<lora:NAME[:weight]>` syntax in the prompt.
 The tag is extracted at the CLI boundary, the LoRA is prepended to
@@ -641,7 +641,7 @@ Unbalanced `<lora:` with no closing `>` is treated as a literal —
 no error, just no extraction (same robustness contract as the
 attention parser and wildcards).
 
-### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.19)
+### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
 
 CLIP's 77-token cap silently truncates long prompts. Split a long
 prompt into chunks with the literal word `BREAK` (case-sensitive,

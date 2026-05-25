@@ -1166,7 +1166,7 @@ impl Pipeline {
     }
 
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
-        // v0.19 #5: BREAK is a CLIP-77-token-cap workaround. SD3's
+        // v0.18: BREAK is a CLIP-77-token-cap workaround. SD3's
         // T5 has a 256-token budget; per-CLIP chunking isn't wired
         // here (the pooled `y` blend assumes single-chunk CLIP-L/G
         // outputs). Strip + warn so users notice rather than getting

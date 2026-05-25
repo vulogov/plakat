@@ -103,7 +103,7 @@ pub fn strip(prompt: &str) -> String {
 ///
 /// "Word char" = ASCII alphanumeric + underscore (matches Rust's
 /// `char::is_alphanumeric` ∪ `_`). UTF-8 word boundaries are out of
-/// scope for v0.19 #5 — A1111 itself uses an ASCII `\b`.
+/// scope for v0.18 — A1111 itself uses an ASCII `\b`.
 fn word_bounded_positions(prompt: &str) -> impl Iterator<Item = usize> + '_ {
     let bytes = prompt.as_bytes();
     let needle = BREAK_KEYWORD.as_bytes();

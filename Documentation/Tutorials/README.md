@@ -93,12 +93,12 @@ If you're new to plakat, work through these in order:
     for chunking past CLIP's 77-token cap, and inline `<lora:>`
     tags that load LoRAs directly from the prompt. Per-backbone
     composition matrix; all three work together. v0.17 + v0.18 +
-    v0.19.
+    v0.18.
 
 13. [`PROMPT_ENHANCER_TUTORIAL.md`](PROMPT_ENHANCER_TUTORIAL.md) —
     `--enhance` to let an LLM rewrite your prompt with concrete
     visual detail before generation. Three providers: DeepSeek /
-    Gemini (API-keyed) and `local` (v0.19, Qwen2.5-1.5B by
+    Gemini (API-keyed) and `local` (v0.18, Qwen2.5-1.5B by
     default, ~1 GB GGUF, no API key). `--enhance auto` picks
     based on what's available.
 

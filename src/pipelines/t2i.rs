@@ -817,7 +817,7 @@ impl Pipeline {
         do_cfg: bool,
         clip_skip: usize,
     ) -> Result<Tensor> {
-        // v0.19 #5: A1111 BREAK keyword path. When either branch
+        // v0.18: A1111 BREAK keyword path. When either branch
         // contains the BREAK keyword, the prompt is split into
         // chunks; each chunk gets its own 77-token CLIP encoding;
         // hidden states are sequence-concatenated. Both cond and
@@ -858,7 +858,7 @@ impl Pipeline {
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
-    /// v0.19 #5: chunked CLIP encode for prompts with A1111 BREAK.
+    /// v0.18: chunked CLIP encode for prompts with A1111 BREAK.
     /// Both cond and uncond are split on BREAK, padded with empty
     /// chunks to the max count, encoded per-chunk via
     /// `encode_with_attention`, and concatenated along seq dim.
@@ -971,7 +971,7 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
-        // v0.19 #5: A1111 BREAK keyword on SDXL. Both CLIP-L and
+        // v0.18: A1111 BREAK keyword on SDXL. Both CLIP-L and
         // CLIP-G chunk independently; pooled output comes from
         // chunk 0 only (the cond's pooled CLIP-G output drives
         // add_text_embeds — A1111 convention).
@@ -1017,7 +1017,7 @@ impl Pipeline {
         Ok((hidden, pooled))
     }
 
-    /// v0.19 #5: SDXL BREAK-chunked encode. Both encoders chunk
+    /// v0.18: SDXL BREAK-chunked encode. Both encoders chunk
     /// independently; per-chunk `embed_xl` produces a (1, 77, 2048)
     /// hidden + (1, 1280) pooled; chunk-N hidden states concatenate
     /// along seq dim; ONLY chunk-0's pooled is retained (matches

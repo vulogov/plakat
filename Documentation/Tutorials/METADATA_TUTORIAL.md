@@ -41,7 +41,7 @@ Output:
 a brutalist whale poster, watercolor on rough paper
 Negative prompt: blurry, low quality
 Steps: 28, Sampler: euler-a, CFG scale: 7.5, Seed: 42, Size: 512x768,
-Model: sd15, LoRAs: civitai:12345:0.7, Generator: plakat 0.19.0
+Model: sd15, LoRAs: civitai:12345:0.7, Generator: plakat 0.18.0
 
 # sidecar (structured JSON)
 
@@ -56,7 +56,7 @@ Model: sd15, LoRAs: civitai:12345:0.7, Generator: plakat 0.19.0
   "width": 512,
   "height": 768,
   "loras": ["civitai:12345:0.7"],
-  "generator": "plakat 0.19.0"
+  "generator": "plakat 0.18.0"
 }
 ```
 
@@ -173,7 +173,7 @@ plakat writes:
 | Refiner | `0.75` | SDXL with refiner |
 | Mode | `inpaint` / `img2img` / `animate` | non-t2i modes |
 | Strength | `0.7` | img2img |
-| Generator | `plakat 0.19.0` | yes |
+| Generator | `plakat 0.18.0` | yes |
 
 The JSON sidecar carries the same fields plus a handful of
 plakat-specific extras (e.g. `OriginalPrompt` when `--enhance`

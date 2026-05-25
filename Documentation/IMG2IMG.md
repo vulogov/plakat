@@ -108,7 +108,7 @@ Three ways to set output dimensions, in priority order:
 
 1. **`--size WxH`** — explicit, wins over everything. Multiple of 8
    required (VAE downsample factor).
-2. **`--aspect 16:9 --base 1024`** (v0.19) — derived. The shorter
+2. **`--aspect 16:9 --base 1024`** (v0.18) — derived. The shorter
    side becomes `--base`; the longer side becomes
    `base × ratio`. Both axes are then rounded **down** to the
    nearest multiple of 8. Mutually exclusive with `--size`.

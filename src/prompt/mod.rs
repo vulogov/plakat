@@ -12,7 +12,7 @@ pub async fn enhance(provider: &str, prompt: &str) -> Result<String> {
     match provider.to_lowercase().as_str() {
         "deepseek" => deepseek::enhance(prompt).await,
         "gemini" => gemini::enhance(prompt).await,
-        // v0.19 #6: local LLM-based enhance (Qwen2.5-1.5B by default).
+        // v0.18: local LLM-based enhance (Qwen2.5-1.5B by default).
         // Forms accepted:
         //   "local"             — default alias (qwen2.5-1.5b)
         //   "local:smollm2-360m" — explicit fallback alias
@@ -30,7 +30,7 @@ pub async fn enhance(provider: &str, prompt: &str) -> Result<String> {
     }
 }
 
-/// v0.19 #6: dispatch to the local LLM enhancer. Refusals + empty
+/// v0.18: dispatch to the local LLM enhancer. Refusals + empty
 /// output fall back to the original prompt with a warn log — same
 /// graceful-degrade semantics as the API-based enhancers when they
 /// hit a network error.
@@ -59,7 +59,7 @@ async fn enhance_local(alias: &str, prompt: &str) -> Result<String> {
     }
 }
 
-/// v0.19 #6: `--enhance auto` — pick a provider based on what's
+/// v0.18: `--enhance auto` — pick a provider based on what's
 /// available. Priority: DeepSeek if `DEEPSEEK_API_KEY` is set →
 /// Gemini if `GEMINI_API_KEY` is set → local. The local arm always
 /// works (no API key required), so this never errors at the
