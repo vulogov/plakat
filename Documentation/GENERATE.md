@@ -584,6 +584,53 @@ The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
 
+### Inline LoRA tags (v0.19)
+
+A1111 / Civitai-style `<lora:NAME[:weight]>` syntax in the prompt.
+The tag is extracted at the CLI boundary, the LoRA is prepended to
+the user's `--lora` stack, and the cleaned prompt (tag removed)
+flows on to the encoder. Available on `plakat generate`,
+`plakat img2img`, and `plakat portrait`.
+
+```bash
+# Inline a single LoRA — no separate --lora needed
+plakat generate "a watercolor fox <lora:civitai:12345:0.7>" \
+    --model sd15
+
+# Multiple LoRAs in the same prompt
+plakat generate "<lora:style1:0.5> a fox <lora:style2:0.3>" \
+    --model sd15
+
+# Mix inline + explicit --lora; --lora wins on key collision
+plakat generate "a fox <lora:style:0.7>" \
+    --model sd15 \
+    --lora civitai:99999:0.5
+```
+
+Grammar (everything inside `<lora:>` is whatever
+`LoraSpec::from_str` accepts — same as the `--lora` flag):
+
+| Form | Meaning |
+|---|---|
+| `<lora:NAME>` | weight = 1.0 (A1111 default) |
+| `<lora:NAME:0.7>` | explicit weight |
+| `<lora:myfile.safetensors[:weight]>` | local file |
+| `<lora:author/repo[#file.safetensors][:weight]>` | HF repo |
+| `<lora:civitai:NNNNNN[#file][:weight]>` | Civitai by model id |
+| `<lora:civitai-version:NNNNNN[:weight]>` | Civitai by version id |
+
+Ordering: wildcards → enhance → `<lora:>` extraction → attention
+syntax → encode. So `<lora:{styleA|styleB}>` resolves a single name
+via the wildcard pick BEFORE this stage sees it.
+
+Negative-prompt `<lora:>` tags are stripped silently (A1111
+convention; LoRAs apply to both the cond and uncond CLIP forwards
+regardless of which branch they appeared in).
+
+Unbalanced `<lora:` with no closing `>` is treated as a literal —
+no error, just no extraction (same robustness contract as the
+attention parser and wildcards).
+
 ### Attention emphasis (all backbones)
 
 A1111 / NovelAI-style prompt grammar — used by virtually every

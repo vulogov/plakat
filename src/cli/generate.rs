@@ -562,6 +562,35 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         args.prompt = enhanced;
     }
 
+    // v0.19 #4: A1111 inline <lora:name[:weight]> syntax. Extract
+    // tags from both the positive and negative prompts; the
+    // negatives are stripped silently (A1111 convention — LoRAs
+    // don't apply via the uncond branch). Order: wildcards (above)
+    // → enhance (above) → lora-tags (here) → attention syntax (in
+    // the encoder). LoRAs land on top of any --lora CLI args.
+    if crate::prompt::lora_tags::has_lora_tags(&args.prompt) {
+        let (cleaned, extracted) = crate::prompt::lora_tags::extract(&args.prompt)?;
+        if !extracted.is_empty() {
+            tracing::info!(
+                target: "plakat",
+                "Extracted {} inline <lora:> tag(s) from prompt",
+                extracted.len()
+            );
+            for ex in extracted.into_iter().rev() {
+                // Insert at the front so explicit --lora flags retain
+                // their relative order at the END (later entries win
+                // on key collision during merge).
+                args.loras.insert(0, ex.spec);
+            }
+            args.prompt = cleaned;
+        }
+    }
+    if crate::prompt::lora_tags::has_lora_tags(&args.negative) {
+        let (cleaned, _dropped) =
+            crate::prompt::lora_tags::extract(&args.negative)?;
+        args.negative = cleaned;
+    }
+
     let (width, height) =
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
     std::fs::create_dir_all(&args.out)?;
