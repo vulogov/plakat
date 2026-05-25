@@ -17,6 +17,27 @@ pub fn save_rgb_u8(buf: &[u8], width: u32, height: u32, path: &Path) -> Result<(
 /// emits a warning and continues so an image generation never
 /// fails for a metadata-write reason (filesystem flake, read-only
 /// out-dir, etc.).
+/// v0.19: read the Auto1111 `parameters` tEXt chunk from a PNG.
+/// Returns `None` when the PNG has no `parameters` chunk (most
+/// non-plakat PNGs) or fails to decode. Used by
+/// `plakat metadata <FILE>` and any future tooling that wants to
+/// inspect a v0.17+ output's embedded recipe.
+pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let file = std::io::BufReader::new(file);
+    let decoder = png::Decoder::new(file);
+    let reader = decoder
+        .read_info()
+        .with_context(|| format!("decoding {}", path.display()))?;
+    for chunk in &reader.info().uncompressed_latin1_text {
+        if chunk.keyword == "parameters" {
+            return Ok(Some(chunk.text.clone()));
+        }
+    }
+    Ok(None)
+}
+
 pub fn save_rgb_u8_with_metadata(
     buf: &[u8],
     width: u32,
@@ -120,20 +141,11 @@ mod tests {
     use super::*;
     use crate::imaging::metadata::GenerationMetadata;
 
-    /// Read back the `parameters` tEXt chunk from a PNG. Used by
-    /// the integration test to verify the chunk we wrote is
-    /// readable by a stock `png` decoder.
+    // Tests use the public `read_parameters_chunk` helper directly
+    // (promoted from this module-private helper in v0.19 to power
+    // `plakat metadata <FILE>`).
     fn read_parameters_chunk(path: &Path) -> Option<String> {
-        let file = std::fs::File::open(path).ok()?;
-        let file = std::io::BufReader::new(file);
-        let decoder = png::Decoder::new(file);
-        let reader = decoder.read_info().ok()?;
-        for chunk in &reader.info().uncompressed_latin1_text {
-            if chunk.keyword == "parameters" {
-                return Some(chunk.text.clone());
-            }
-        }
-        None
+        super::read_parameters_chunk(path).ok().flatten()
     }
 
     #[test]
