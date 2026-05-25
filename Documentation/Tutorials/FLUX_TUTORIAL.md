@@ -414,9 +414,22 @@ the CLI flag.
 - **No `--redux-image`** — both Redux and Kontext extend the
   sequence dimension; combining them risks exceeding the Flux RoPE
   budget. Pick one.
-- **No `--control-spec`** — the reference already drives layout;
-  layering ControlNet on top would double-condition. For pure
-  layout control use plain `flux-dev` with `--control-spec`.
+- **`--control-spec` composes** (v0.19). The ControlNet runs on the
+  noise tokens only; its per-block residuals get zero-padded for
+  the reference half (the reference is already conditioning via
+  cross-attention, so no additional CN contribution there). Use
+  case: "edit this image, preserve the depth structure" or
+  "edit this image, keep the canny edges from a different source".
+
+  ```bash
+  plakat generate "make it golden hour" \
+      --model flux-kontext-dev \
+      --concept-image input.png \
+      --control-spec 'depth:from=input.png:strength=0.7'
+  ```
+
+  The CN's `start` / `end` step gating works normally. Multi-CN
+  composes too (residuals sum per-block then pad uniformly).
 
 ## 11. Per-task LoRA in scenarios
 
