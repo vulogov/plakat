@@ -402,6 +402,31 @@ use case.
 
 ### Output
 
+#### `--format png | webp` (v0.19)
+
+Output image container. PNG (default) carries the v0.17
+Auto1111-compatible `parameters` tEXt chunk that A1111 / Civitai
+/ ComfyUI auto-read on drag-and-drop. WebP ships ~30% smaller
+files at perceptually-equivalent quality but can't carry the
+embedded tEXt chunk (WebP's EXIF / XMP slots aren't part of the
+diffusion-tools metadata convention).
+
+The JSON sidecar (`<stem>.json`) is written for both formats —
+`plakat metadata` and `plakat clone` recover the recipe from
+WebP outputs via the sidecar. Drag-and-drop interop is the only
+real cost.
+
+```bash
+plakat generate "..." --model sd15 --format webp
+# → ./out/plakat-42.webp + ./out/plakat-42.json
+```
+
+**Scope**: SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only in
+this release. Flux / SD3 outputs stay PNG; passing `--format
+webp` with those models warns and falls back. The `--grid` PNG
+itself stays `.png` regardless (combining N WebP cells into one
+shareable grid file is the common workflow).
+
 #### `--out <DIR>` (default `./out`)
 
 Directory for generated images. Created if absent. Files are named

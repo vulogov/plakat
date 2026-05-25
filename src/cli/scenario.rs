@@ -2394,6 +2394,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // need the per-step PNG churn. None = disabled.
                 preview_every: None,
                 preview_size: None,
+                // v0.19: scenarios don't surface --format yet —
+                // default to PNG (the v0.17 A1111-compat path).
+                // Per-task webp output lands in a follow-up once
+                // the scenario schema is extended.
+                output_format: crate::imaging::io::OutputFormat::Png,
             };
 
             // Per-task runtime LoRA. Applied BEFORE the per-task

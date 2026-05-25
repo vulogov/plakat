@@ -144,6 +144,14 @@ pub struct Request {
     /// v0.17 phase D: preview-PNG longer-side dim. `None` →
     /// pipeline default (384).
     pub preview_size: Option<u32>,
+    /// v0.19: output image container (png / webp). PNG is the
+    /// default + carries the v0.17 Auto1111 tEXt chunk for drag-
+    /// and-drop compatibility with A1111 / Civitai / ComfyUI;
+    /// WebP trades the chunk for ~30% smaller files. The JSON
+    /// sidecar is written for both formats either way. SD-family
+    /// (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only — Flux / SD3 force
+    /// PNG with a warn when this is set to Webp.
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -205,6 +213,10 @@ pub struct GenRequest {
     /// (1/8 of the final image dims). Default 384 — small enough
     /// for an instant write, big enough to see structure.
     pub preview_size: Option<u32>,
+    /// v0.19: output image container. SD-family only (Flux + SD3
+    /// stay PNG and warn when this is set to Webp). Defaults to
+    /// Png to preserve the v0.17 A1111 tEXt chunk behaviour.
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 // =====================================================================
@@ -1345,7 +1357,9 @@ impl Pipeline {
                 .permute((1, 2, 0))?;
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
-            let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-{seed}.{}", req.output_format.extension()));
             save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
@@ -1609,7 +1623,9 @@ impl Pipeline {
                 .permute((1, 2, 0))?;
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
-            let out_path = req.out_dir.join(format!("plakat-{seed}.png"));
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-{seed}.{}", req.output_format.extension()));
             save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
@@ -1954,6 +1970,24 @@ fn embed_xl(
 /// transformer-based backbone).
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
+
+    // v0.19: --format webp is SD-family-only in this release. Flux
+    // and SD3 still write PNG (their save sites haven't been
+    // extension-parameterised yet); warn-and-continue so users
+    // notice rather than silently getting PNG.
+    if !variant.is_sd3()
+        && !variant.is_flux()
+        && req.output_format == crate::imaging::io::OutputFormat::Webp
+    {
+        // SD-family path — supported. No-op message; honoured below.
+    } else if req.output_format == crate::imaging::io::OutputFormat::Webp {
+        tracing::warn!(
+            target: "plakat",
+            "--format webp isn't wired for {} yet — writing PNG instead. \
+             SD 1.5 / 2.1 / SDXL outputs honour --format webp today.",
+            if variant.is_flux() { "Flux" } else { "SD3" }
+        );
+    }
 
     // v0.14 phase 1a: SD3 / SD3.5 routes to the MMDiT pipeline. Phase
     // 1a is t2i only; LoRA / ControlNet / img2img are bail-loud for
@@ -2446,6 +2480,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         metadata,
         preview_every,
         preview_size,
+        output_format: req.output_format,
     };
     match req.tiled {
         None => pipeline.generate(&gen_req, &control_reqs)?,
