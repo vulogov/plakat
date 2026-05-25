@@ -57,10 +57,29 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "sd15")]
     pub model: String,
 
-    /// Output size, e.g. 512x512. If absent, the input's dimensions
-    /// are snapped to a multiple of 8 (VAE requirement) and used.
+    /// Output size, e.g. 512x512. Resolution order:
+    ///   1. `--size WxH` — explicit, wins over everything.
+    ///   2. `--aspect 16:9 --base 1024` — derived ratio + base
+    ///      resolution (the longer side becomes `base * ratio`).
+    ///   3. (default) the input image's dims snapped to /8.
+    /// Multiple-of-8 round-down is applied to (1) and (2) as well —
+    /// VAE constraint.
     #[arg(long)]
     pub size: Option<Size>,
+
+    /// v0.19 #2: aspect ratio (e.g. `16:9`, `9:16`, `1:1`, `4:3`)
+    /// paired with `--base`. Mutually exclusive with `--size`. When
+    /// neither flag is set, the input image's dimensions are used.
+    #[arg(long, conflicts_with = "size")]
+    pub aspect: Option<String>,
+
+    /// v0.19 #2: base resolution used with `--aspect` (the shorter
+    /// side; the longer side becomes `base * ratio`). Ignored when
+    /// `--size` or no aspect override is set. SD 1.5 defaults to 512
+    /// in the rest of the codebase; we pick 1024 here as the modern
+    /// default matching SDXL / Flux / SD3.
+    #[arg(long, default_value_t = 1024)]
+    pub base: u32,
 
     /// Number of variations to generate from the same input. Each
     /// gets a fresh seed.
@@ -304,10 +323,7 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     }
 
     // Working resolution: explicit --size > input dims snapped to /8.
-    let (width, height) = match args.size {
-        Some(s) => (s.w, s.h),
-        None => detect_input_size(&args.input)?,
-    };
+    let (width, height) = resolve_img2img_size(&args)?;
     if width % 8 != 0 || height % 8 != 0 {
         anyhow::bail!(
             "working size {width}x{height} must be a multiple of 8 (VAE constraint); \
@@ -498,17 +514,16 @@ async fn run_flux_fill(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     let grid_count = args.count;
     use crate::pipelines::flux;
 
+    // Resolve size BEFORE moving args.mask out (the ok_or_else
+    // partially moves args, blocking subsequent &args borrows).
+    let (width, height) = resolve_img2img_size(&args)?;
+
     let mask = args.mask.ok_or_else(|| {
         anyhow::anyhow!(
             "Flux.1-Fill-dev requires --mask. The model is inpaint-only \
              — without a mask there's nothing to vary."
         )
     })?;
-
-    let (width, height) = match args.size {
-        Some(s) => (s.w, s.h),
-        None => detect_input_size(&args.input)?,
-    };
     if width % 16 != 0 || height % 16 != 0 {
         anyhow::bail!(
             "Flux.1-Fill-dev needs dimensions divisible by 16 (got {width}x{height}); \
@@ -731,10 +746,7 @@ async fn run_flux_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         );
     }
 
-    let (width, height) = match args.size {
-        Some(s) => (s.w, s.h),
-        None => detect_input_size(&args.input)?,
-    };
+    let (width, height) = resolve_img2img_size(&args)?;
     if width % 16 != 0 || height % 16 != 0 {
         anyhow::bail!(
             "Flux img2img needs dimensions divisible by 16 (got {width}x{height}); \
@@ -884,10 +896,7 @@ async fn run_flux_kontext(mut args: Img2ImgArgs, device: Device) -> Result<()> {
 
     // Working resolution. The reference image is VAE-encoded at the
     // requested (w, h); --kontext-bucket snaps before VAE encoding.
-    let (width, height) = match args.size {
-        Some(s) => (s.w, s.h),
-        None => detect_input_size(&args.input)?,
-    };
+    let (width, height) = resolve_img2img_size(&args)?;
     if width % 16 != 0 || height % 16 != 0 {
         anyhow::bail!(
             "Flux Kontext needs dimensions divisible by 16 (got {width}x{height}); \
@@ -1005,10 +1014,7 @@ async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         _ => unreachable!("dispatch ensures variant.is_sd3()"),
     };
 
-    let (width, height) = match args.size {
-        Some(s) => (s.w, s.h),
-        None => detect_input_size(&args.input)?,
-    };
+    let (width, height) = resolve_img2img_size(&args)?;
 
     let repo = if args.model.contains('/') {
         args.model.clone()
@@ -1137,6 +1143,20 @@ fn detect_input_size(path: &std::path::Path) -> Result<(u32, u32)> {
     Ok((sw, sh))
 }
 
+/// v0.19 #2: img2img size resolution priority — `--size > --aspect
+/// + --base > input dims`. Centralises the order so the five
+/// dispatch arms (SD-family, Flux Fill, Flux img2img, Flux Kontext,
+/// SD3) all behave identically and the `--aspect` flag composes
+/// uniformly. The crate-wide `imaging::sizes::resolve` does the
+/// `--size > --aspect` decision; we wrap it with the input-fallback
+/// branch when both flags are unset.
+fn resolve_img2img_size(args: &Img2ImgArgs) -> Result<(u32, u32)> {
+    if args.size.is_none() && args.aspect.is_none() {
+        return detect_input_size(&args.input);
+    }
+    crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,5 +1170,97 @@ mod tests {
         let (w, h) = detect_input_size(&tmp).unwrap();
         // 513 → 512 (rounded down), 800 stays at 800.
         assert_eq!((w, h), (512, 800));
+    }
+
+    // v0.19 #2 — img2img --aspect resolution priority.
+
+    fn mk_args(input: PathBuf) -> Img2ImgArgs {
+        Img2ImgArgs {
+            input,
+            prompt: "test".into(),
+            negative: String::new(),
+            mask: None,
+            mask_feather: 8,
+            mask_invert: false,
+            strength: None,
+            model: "sd15".into(),
+            size: None,
+            aspect: None,
+            base: 1024,
+            count: 1,
+            steps: 28,
+            guidance: 7.5,
+            seed: None,
+            scheduler: crate::pipelines::scheduler::SchedulerKind::Default,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            out: PathBuf::from("./out"),
+            control: None,
+            control_image: None,
+            control_from: None,
+            control_strength: 1.0,
+            control_start: 0.0,
+            control_end: 1.0,
+            control_specs: Vec::new(),
+            artefacts: Vec::new(),
+            artefact_library: None,
+            artefact_blend: false,
+            artefact_blend_strength: 0.3,
+            smart_zones: false,
+            wildcard_dir: None,
+            tiled: false,
+            tile_size: 1024,
+            tile_stride: 768,
+            grid: false,
+            grid_cols: None,
+            grid_padding: 0,
+            kontext_bucket: false,
+        }
+    }
+
+    fn write_test_png(path: &std::path::Path, w: u32, h: u32) {
+        RgbImage::from_pixel(w, h, image::Rgb([0, 0, 0])).save(path).unwrap();
+    }
+
+    #[test]
+    fn resolve_img2img_size_explicit_size_wins() {
+        let tmp = std::env::temp_dir().join("plakat_aspect_test_explicit.png");
+        write_test_png(&tmp, 1024, 1024);
+        let mut args = mk_args(tmp);
+        args.size = Some(Size { w: 768, h: 512 });
+        args.aspect = Some("16:9".into()); // would normally pick if size unset
+        assert_eq!(resolve_img2img_size(&args).unwrap(), (768, 512));
+    }
+
+    #[test]
+    fn resolve_img2img_size_aspect_when_no_explicit() {
+        let tmp = std::env::temp_dir().join("plakat_aspect_test_aspect.png");
+        write_test_png(&tmp, 1024, 1024);
+        let mut args = mk_args(tmp);
+        args.aspect = Some("16:9".into());
+        // 16:9 at base=1024 → longer side 1024 * 16/9 ≈ 1820 →
+        // snapped to mult of 8 = 1816. Shorter side stays at base.
+        let (w, h) = resolve_img2img_size(&args).unwrap();
+        assert_eq!((w, h), (1816, 1024));
+    }
+
+    #[test]
+    fn resolve_img2img_size_falls_back_to_input_dims() {
+        let tmp = std::env::temp_dir().join("plakat_aspect_test_fallback.png");
+        write_test_png(&tmp, 512, 768);
+        let args = mk_args(tmp);
+        // Neither --size nor --aspect set → input dims (snapped to 8).
+        assert_eq!(resolve_img2img_size(&args).unwrap(), (512, 768));
+    }
+
+    #[test]
+    fn resolve_img2img_size_portrait_aspect() {
+        let tmp = std::env::temp_dir().join("plakat_aspect_test_portrait.png");
+        write_test_png(&tmp, 1024, 1024);
+        let mut args = mk_args(tmp);
+        args.aspect = Some("9:16".into());
+        // 9:16 at base=1024 → portrait, height longer.
+        let (w, h) = resolve_img2img_size(&args).unwrap();
+        assert_eq!((w, h), (1024, 1816));
     }
 }
