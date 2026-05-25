@@ -140,6 +140,19 @@ impl Config {
         cfg.in_channels = 128;
         cfg
     }
+
+    /// v0.18: Flux.1-Kontext-dev. Unlike Fill / Canny / Depth (which
+    /// widen `img_in`), Kontext keeps `in_channels = 64` — the
+    /// reference-image conditioning is sequence-concatenated onto
+    /// the noise tokens at the DiT input level, not channel-concat
+    /// at `img_in`. So the Config here is literally `Self::dev()`;
+    /// the architectural difference lives in the pipeline-level
+    /// `pack_kontext_reference` helper that prepends the VAE-encoded
+    /// reference's tokens with `image_ids[..., 0] = 1` to mark them
+    /// as the context half (Phase 2).
+    pub fn kontext_dev() -> Self {
+        Self::dev()
+    }
 }
 
 // ---------------------------------------------------------------------

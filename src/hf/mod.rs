@@ -53,6 +53,14 @@ pub fn resolve_alias(name: &str) -> &str {
         "flux-depth-dev" | "flux1-depth-dev" | "FLUX.1-Depth-dev" => {
             "black-forest-labs/FLUX.1-Depth-dev"
         }
+        // v0.18: FLUX.1-Kontext-dev — BFL's image-editing checkpoint.
+        // Same architecture as Flux.1-dev (`img_in` stays at 64); the
+        // difference is at the DiT input level — a reference image is
+        // VAE-encoded and sequence-concatenated onto the noise tokens.
+        // Gated repo; HF_TOKEN required.
+        "flux-kontext-dev" | "flux1-kontext-dev" | "FLUX.1-Kontext-dev" => {
+            "black-forest-labs/FLUX.1-Kontext-dev"
+        }
         // v0.13: 4-bit quantized Flux via GGUF. city96's mirrors are
         // the canonical community source. The transformer drops from
         // ~24 GB BF16 to ~7 GB Q4_K_S — Flux becomes practical on

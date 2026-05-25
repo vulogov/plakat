@@ -221,6 +221,10 @@ pub enum Variant {
     /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
     /// trained on depth-map conditioning.
     FluxDepthDev,
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant — reference
+    /// image VAE-encoded and sequence-concatenated onto the noise
+    /// tokens (not channel-concat like Fill / Canny / Depth).
+    FluxKontextDev,
     /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
     Sd35Medium,
     /// v0.14 phase 8a: SD3.5 Large (8B-param flagship MMDiT).
@@ -268,10 +272,13 @@ impl Variant {
             return Self::Sd35Medium;
         }
         if m.contains("flux") {
-            // v0.15 phase 4: Canny / Depth concept variants precede
-            // the generic "dev" check — "flux-canny-dev" contains
-            // "dev" but routes to the 128-channel `img_in` config.
-            if m.contains("canny") {
+            // v0.15 phase 4 / v0.18: Kontext / Canny / Depth / Fill
+            // concept variants precede the generic "dev" check —
+            // their model strings all contain "dev" but route to
+            // different pipeline configs.
+            if m.contains("kontext") {
+                Self::FluxKontextDev
+            } else if m.contains("canny") {
                 Self::FluxCannyDev
             } else if m.contains("depth") {
                 Self::FluxDepthDev
@@ -304,6 +311,7 @@ impl Variant {
                 | Self::FluxFillDev
                 | Self::FluxCannyDev
                 | Self::FluxDepthDev
+                | Self::FluxKontextDev
         )
     }
     /// v0.15 phase 4: BFL "concept" Flux variants (Canny-dev /
@@ -311,6 +319,13 @@ impl Variant {
     /// rather than via a separate ControlNet.
     pub fn is_flux_concept(self) -> bool {
         matches!(self, Self::FluxCannyDev | Self::FluxDepthDev)
+    }
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant — distinct
+    /// from `is_flux_concept` (Canny/Depth) because Kontext feeds
+    /// its reference via sequence-concat at the DiT input level
+    /// rather than channel-concat at `img_in`.
+    pub fn is_flux_kontext(self) -> bool {
+        matches!(self, Self::FluxKontextDev)
     }
     /// v0.14 phase 1a / 8a: any SD3 / SD3.5 variant. Routes to the
     /// MMDiT pipeline in `pipelines::sd3`.
@@ -1964,6 +1979,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             Variant::FluxFillDev => flux::Variant::FillDev,
             Variant::FluxCannyDev => flux::Variant::CannyDev,
             Variant::FluxDepthDev => flux::Variant::DepthDev,
+            Variant::FluxKontextDev => flux::Variant::KontextDev,
             _ => flux::Variant::Schnell,
         };
         // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
@@ -2349,15 +2365,45 @@ mod tests {
 
     #[test]
     fn concept_variants_preempt_dev() {
-        // "flux-canny-dev" contains "dev" — the canny/depth checks
-        // must precede the generic dev check, otherwise we'd
-        // route to plain FluxDev and the 128ch `img_in` would be
-        // mis-sized at load time.
+        // "flux-canny-dev" contains "dev" — the canny/depth/kontext
+        // checks must precede the generic dev check, otherwise we'd
+        // route to plain FluxDev and the model would be loaded with
+        // the wrong config at load time.
         assert_eq!(Variant::detect("flux-canny-dev"), Variant::FluxCannyDev);
         assert_eq!(Variant::detect("flux-depth-dev"), Variant::FluxDepthDev);
+        assert_eq!(Variant::detect("flux-kontext-dev"), Variant::FluxKontextDev);
         // Sanity: plain dev still routes to FluxDev.
         assert_eq!(Variant::detect("flux-dev"), Variant::FluxDev);
         assert_eq!(Variant::detect("flux-fill-dev"), Variant::FluxFillDev);
+    }
+
+    // v0.18 — Kontext variant detection + predicates.
+
+    #[test]
+    fn detects_flux_kontext_dev() {
+        assert_eq!(Variant::detect("flux-kontext-dev"), Variant::FluxKontextDev);
+        assert_eq!(Variant::detect("flux1-kontext-dev"), Variant::FluxKontextDev);
+        assert_eq!(
+            Variant::detect("black-forest-labs/FLUX.1-Kontext-dev"),
+            Variant::FluxKontextDev
+        );
+    }
+
+    #[test]
+    fn is_flux_includes_kontext() {
+        assert!(Variant::FluxKontextDev.is_flux());
+    }
+
+    #[test]
+    fn is_flux_kontext_excludes_concept_and_fill() {
+        // Kontext is its own conditioning shape (seq-concat) — not a
+        // 128ch concept variant nor a 384ch Fill.
+        assert!(Variant::FluxKontextDev.is_flux_kontext());
+        assert!(!Variant::FluxKontextDev.is_flux_concept());
+        assert!(!Variant::FluxCannyDev.is_flux_kontext());
+        assert!(!Variant::FluxDepthDev.is_flux_kontext());
+        assert!(!Variant::FluxFillDev.is_flux_kontext());
+        assert!(!Variant::FluxDev.is_flux_kontext());
     }
 
     #[test]
