@@ -697,20 +697,14 @@ impl Pipeline {
                  (flux-fill-dev-gguf) instead."
             );
         }
-        // v0.18: same NF4 stance for Kontext — no upstream NF4 pack
-        // ships at time of writing. GGUF lands in a follow-up phase
-        // via unsloth/FLUX.1-Kontext-dev-GGUF.
+        // v0.18: no upstream NF4 pack ships for Kontext at time of
+        // writing. GGUF is supported via unsloth/FLUX.1-Kontext-dev-GGUF
+        // (v0.18 Kontext phase 3) — bail stays for NF4 only.
         if is_nf4 && matches!(req.variant, Variant::KontextDev) {
             bail!(
                 "NF4 Flux Kontext isn't supported (no upstream NF4 pack ships yet). \
-                 Use BF16 (flux-kontext-dev) or wait for GGUF support."
-            );
-        }
-        if is_gguf && matches!(req.variant, Variant::KontextDev) {
-            bail!(
-                "GGUF Flux Kontext isn't wired yet (lands in a follow-up phase via \
-                 unsloth/FLUX.1-Kontext-dev-GGUF). Use BF16 (flux-kontext-dev) \
-                 for now."
+                 Use BF16 (--model flux-kontext-dev) or GGUF \
+                 (--model flux-kontext-dev-gguf) instead."
             );
         }
         let donor_repo: String = if is_gguf || is_nf4 {
@@ -724,9 +718,12 @@ impl Pipeline {
                 // before we reach this match. Keep the arms exhaustive.
                 Variant::CannyDev => "black-forest-labs/FLUX.1-Canny-dev".to_string(),
                 Variant::DepthDev => "black-forest-labs/FLUX.1-Depth-dev".to_string(),
-                // v0.18: Kontext GGUF (unsloth/FLUX.1-Kontext-dev-GGUF)
-                // lands in a follow-up phase; until then this arm is
-                // unreachable thanks to the bails above.
+                // v0.18 Kontext phase 3: BF16 donor for LoRA dequant.
+                // Kontext shares the Dev architecture (img_in stays 64ch)
+                // so Flux LoRAs that target Dev layer names compose
+                // unchanged; the donor's role is to supply the
+                // full-precision weights that selective-dequant copies
+                // for affected Linear layers.
                 Variant::KontextDev => "black-forest-labs/FLUX.1-Kontext-dev".to_string(),
             }
         } else {
@@ -755,8 +752,9 @@ impl Pipeline {
                 // is_gguf check, this arm is unreachable in practice.
                 Variant::CannyDev => "flux1-canny-dev",
                 Variant::DepthDev => "flux1-depth-dev",
-                // v0.18: Kontext GGUF lands in a follow-up phase;
-                // bailed upstream until then.
+                // v0.18 Kontext phase 3: matches unsloth's filename
+                // convention in unsloth/FLUX.1-Kontext-dev-GGUF
+                // (`flux1-kontext-dev-Q4_K_M.gguf` etc.).
                 Variant::KontextDev => "flux1-kontext-dev",
             };
             let gguf_file = format!("{stem}-{level}.gguf");

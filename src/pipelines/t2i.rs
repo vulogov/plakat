@@ -2404,6 +2404,28 @@ mod tests {
         assert!(Variant::FluxKontextDev.is_flux());
     }
 
+    // v0.18 Kontext phase 3 — GGUF variant resolves to KontextDev.
+
+    #[test]
+    fn detects_flux_kontext_gguf() {
+        // The GGUF alias contains both "kontext" and "gguf"; detect()
+        // routes on the variant marker (kontext) — the gguf-ness is
+        // picked up downstream from the resolved repo string.
+        assert_eq!(
+            Variant::detect("flux-kontext-dev-gguf"),
+            Variant::FluxKontextDev
+        );
+        assert_eq!(
+            Variant::detect("flux-kontext-gguf"),
+            Variant::FluxKontextDev
+        );
+        // Upstream unsloth repo name in lower-case form too.
+        assert_eq!(
+            Variant::detect("unsloth/flux.1-kontext-dev-gguf"),
+            Variant::FluxKontextDev
+        );
+    }
+
     #[test]
     fn is_flux_kontext_excludes_concept_and_fill() {
         // Kontext is its own conditioning shape (seq-concat) — not a
