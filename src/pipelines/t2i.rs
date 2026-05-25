@@ -1971,23 +1971,11 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
-    // v0.19: --format webp is SD-family-only in this release. Flux
-    // and SD3 still write PNG (their save sites haven't been
-    // extension-parameterised yet); warn-and-continue so users
-    // notice rather than silently getting PNG.
-    if !variant.is_sd3()
-        && !variant.is_flux()
-        && req.output_format == crate::imaging::io::OutputFormat::Webp
-    {
-        // SD-family path — supported. No-op message; honoured below.
-    } else if req.output_format == crate::imaging::io::OutputFormat::Webp {
-        tracing::warn!(
-            target: "plakat",
-            "--format webp isn't wired for {} yet — writing PNG instead. \
-             SD 1.5 / 2.1 / SDXL outputs honour --format webp today.",
-            if variant.is_flux() { "Flux" } else { "SD3" }
-        );
-    }
+    // v0.20: --format webp honoured across SD-family, Flux, and SD3.
+    // The previous v0.19 warn-and-fallback for Flux/SD3 was lifted
+    // when those pipelines' filename construction sites started
+    // honouring `req.output_format.extension()` (see flux.rs +
+    // sd3.rs save sites).
 
     // v0.14 phase 1a: SD3 / SD3.5 routes to the MMDiT pipeline. Phase
     // 1a is t2i only; LoRA / ControlNet / img2img are bail-loud for
@@ -2137,6 +2125,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // conditioning path + gating window. Empty Vec = no CN
             // (byte-identical to phase 1a path).
             controlnets: sd3_controlnets,
+            // v0.20: SD3 now honours --format webp end-to-end.
+            output_format: req.output_format,
         })
         .await?;
         // The auto-annotation tempdir lives until here so the SD3
@@ -2320,6 +2310,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // snap. Only honoured by `Pipeline::generate` when the
             // variant is Kontext; ignored otherwise.
             kontext_bucket: req.kontext_bucket,
+            // v0.20: Flux now honours --format webp end-to-end.
+            output_format: req.output_format,
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are

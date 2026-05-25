@@ -260,6 +260,10 @@ pub struct Request {
     /// matching diffusers' default behaviour. Ignored on every
     /// other variant.
     pub kontext_bucket: bool,
+    /// v0.20: output container (png / webp). PNG (default) carries
+    /// the v0.17 Auto1111 `parameters` tEXt chunk; WebP skips the
+    /// chunk for ~30% smaller files (the JSON sidecar still works).
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 // =====================================================================
@@ -414,6 +418,8 @@ pub struct GenRequest {
     /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. See
     /// `Request::kontext_bucket`.
     pub kontext_bucket: bool,
+    /// v0.20: output container — see `Request::output_format`.
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 pub struct Pipeline {
@@ -1645,7 +1651,9 @@ impl Pipeline {
             let (oh, ow, _) = img_u8.dims3()?;
             let buf = img_u8.flatten_all()?.to_vec1::<u8>()?;
 
-            let out_path = req.out_dir.join(format!("plakat-flux-{seed}.png"));
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-flux-{seed}.{}", req.output_format.extension()));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
@@ -2619,6 +2627,7 @@ pub async fn run(req: Request) -> Result<()> {
         tiled: req.tiled,
         redux_images: req.redux_images,
         kontext_bucket: req.kontext_bucket,
+        output_format: req.output_format,
     })
 }
 

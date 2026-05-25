@@ -421,11 +421,12 @@ plakat generate "..." --model sd15 --format webp
 # → ./out/plakat-42.webp + ./out/plakat-42.json
 ```
 
-**Scope**: SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only in
-this release. Flux / SD3 outputs stay PNG; passing `--format
-webp` with those models warns and falls back. The `--grid` PNG
+**Scope (v0.20)**: every backbone honours `--format webp` —
+SD 1.5 / 2.1 / SDXL / SDXL-Turbo, Flux (BF16 / GGUF / NF4 / Fill
+/ Canny / Depth / Kontext), and SD3 / SD3.5. The `--grid` PNG
 itself stays `.png` regardless (combining N WebP cells into one
-shareable grid file is the common workflow).
+shareable grid file is the common workflow). The v0.19 warn-and-
+fallback on Flux / SD3 is no longer needed.
 
 #### `--out <DIR>` (default `./out`)
 
