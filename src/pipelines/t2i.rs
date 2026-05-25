@@ -79,6 +79,12 @@ pub struct Request {
     /// switch mid-stream don't compose with MultiDiffusion.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 
+    /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When `true`
+    /// AND model is `--model flux-kontext-dev`, the requested
+    /// (width, height) is snapped to the nearest of 17 BFL-recommended
+    /// resolutions before VAE encoding. Ignored on every other model.
+    pub kontext_bucket: bool,
+
     /// v0.13 phase 1b: quantize T5-XXL when running Flux GGUF.
     /// Only meaningful with `--model flux-*-gguf`; bails loud on
     /// BF16 Flux. Ignored entirely on SD-family models.
@@ -2140,6 +2146,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // bails loud if a concept variant is loaded without
             // concept_conditioning set.
             concept_conditioning: req.flux_concept_image.clone(),
+            // v0.18 phase 2b: pass through the opt-in Kontext bucket
+            // snap. Only honoured by `Pipeline::generate` when the
+            // variant is Kontext; ignored otherwise.
+            kontext_bucket: req.kontext_bucket,
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are

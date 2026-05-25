@@ -380,6 +380,17 @@ pub struct GenerateArgs {
     #[arg(long = "concept-from", value_name = "PATH")]
     pub concept_from: Option<PathBuf>,
 
+    /// v0.18 phase 2b: snap `--size` to the closest of 17 BFL-
+    /// recommended Kontext resolutions before VAE encoding. Off by
+    /// default (the user's `--size` flows through verbatim — surprise-
+    /// free for non-Kontext workflows). On `--model flux-kontext-dev`,
+    /// the snap matches diffusers' default behaviour and produces the
+    /// best-trained-quality outputs. The 17 buckets span 9:21 → 21:9
+    /// at ~1M-token budgets, all multiples of 16. Ignored on every
+    /// other model.
+    #[arg(long = "kontext-bucket", default_value_t = false)]
+    pub kontext_bucket: bool,
+
     /// v0.16 phase 6: enable ADetailer-style face refinement. After
     /// the main t2i pass, plakat runs SCRFD on each output image,
     /// then for each detected face: crops an expanded bounding box,
@@ -810,6 +821,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         redux_images: args.redux_images,
         // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
         flux_concept_image: args.concept_image,
+        // v0.18 phase 2b: opt-in Kontext aspect-bucket snap. Only
+        // honoured on `--model flux-kontext-dev`; ignored elsewhere.
+        kontext_bucket: args.kontext_bucket,
         // v0.16 phase 5: CLIP-skip. SD 1.5 / SD 2.1 only.
         clip_skip: args.clip_skip,
         // v0.16 phase 9: TI specs. sd_core::load bails loud when

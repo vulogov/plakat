@@ -271,6 +271,8 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         grid: args.grid,
         grid_cols: args.grid_cols,
         grid_padding: args.grid_padding,
+        // v0.18 phase 2b: outpaint never routes through Kontext.
+        kontext_bucket: false,
     };
     crate::cli::img2img::run(img2img_args, device).await
 }

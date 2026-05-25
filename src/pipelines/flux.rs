@@ -253,6 +253,13 @@ pub struct Request {
     /// outputs without exceeding the model's working resolution per
     /// pass. Rejects ControlNet and Fill in this first cut.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.18 phase 2b: opt-in aspect-bucket snap for Flux Kontext.
+    /// When `true` AND `variant.is_kontext()`, the requested
+    /// (width, height) is snapped to the nearest of 17
+    /// BFL-recommended Kontext resolutions before VAE encoding —
+    /// matching diffusers' default behaviour. Ignored on every
+    /// other variant.
+    pub kontext_bucket: bool,
 }
 
 // =====================================================================
@@ -404,6 +411,9 @@ pub struct GenRequest {
     /// v0.14 phase 3 / 3c: reference images for Flux Redux. See
     /// `Request::redux_images`.
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
+    /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. See
+    /// `Request::kontext_bucket`.
+    pub kontext_bucket: bool,
 }
 
 pub struct Pipeline {
@@ -1099,8 +1109,26 @@ impl Pipeline {
     pub fn generate(&mut self, req: &GenRequest) -> Result<()> {
         let steps = req.steps.unwrap_or_else(|| self.variant.default_steps());
         let guidance = req.guidance.unwrap_or_else(|| self.variant.default_guidance());
-        let w = (req.width as usize / 16) * 16;
-        let h = (req.height as usize / 16) * 16;
+        // v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When
+        // active, the user's (w, h) is rounded to the nearest of the
+        // 17 BFL-recommended Kontext resolutions BEFORE the standard
+        // multiple-of-16 floor below — both the bucket sizes and the
+        // floor are already 16-multiples so the snap is idempotent.
+        let (req_width, req_height) =
+            if self.variant.is_kontext() && req.kontext_bucket {
+                let (sw, sh) = snap_to_kontext_bucket(req.width, req.height);
+                if (sw, sh) != (req.width, req.height) {
+                    crate::ui::progress::println(&format!(
+                        "  kontext-bucket: {}x{} → {sw}x{sh}",
+                        req.width, req.height
+                    ));
+                }
+                (sw, sh)
+            } else {
+                (req.width, req.height)
+            };
+        let w = (req_width as usize / 16) * 16;
+        let h = (req_height as usize / 16) * 16;
         if w == 0 || h == 0 {
             bail!("Flux requires width and height divisible by 16, both ≥ 16");
         }
@@ -2366,6 +2394,50 @@ fn pack_fill_2d_tile(
 /// Same 2×2 patching the upstream `sampling::State::new` does on the
 /// noise latent. Used by both `encode_conditioning` (whole canvas) and
 /// the tiled denoise loop (per tile).
+/// v0.18 phase 2b: the 17 BFL-recommended Kontext resolutions
+/// (target_w, target_h). Spans the full 9:21 → 21:9 aspect range
+/// at ~1M-token budgets. All entries are multiples of 16 so VAE +
+/// Flux 2x2 packing land clean. Order is conventional (tall →
+/// square → wide). Matches diffusers' `PREFERRED_KONTEXT_RESOLUTIONS`.
+pub const KONTEXT_BUCKETS: &[(u32, u32)] = &[
+    (672, 1568),
+    (688, 1504),
+    (720, 1456),
+    (752, 1392),
+    (800, 1328),
+    (832, 1248),
+    (880, 1184),
+    (944, 1104),
+    (1024, 1024),
+    (1104, 944),
+    (1184, 880),
+    (1248, 832),
+    (1328, 800),
+    (1392, 752),
+    (1456, 720),
+    (1504, 688),
+    (1568, 672),
+];
+
+/// Snap `(w, h)` to the closest Kontext bucket by aspect ratio.
+/// Used when `--kontext-bucket` is set; otherwise the user's
+/// requested size flows through unchanged.
+pub fn snap_to_kontext_bucket(w: u32, h: u32) -> (u32, u32) {
+    debug_assert!(!KONTEXT_BUCKETS.is_empty());
+    let target = w as f64 / h.max(1) as f64;
+    KONTEXT_BUCKETS
+        .iter()
+        .copied()
+        .min_by(|(aw, ah), (bw, bh)| {
+            let a_diff = (*aw as f64 / *ah as f64 - target).abs();
+            let b_diff = (*bw as f64 / *bh as f64 - target).abs();
+            a_diff
+                .partial_cmp(&b_diff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or((1024, 1024))
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -2429,6 +2501,7 @@ pub async fn run(req: Request) -> Result<()> {
         concept_conditioning: req.concept_conditioning,
         tiled: req.tiled,
         redux_images: req.redux_images,
+        kontext_bucket: req.kontext_bucket,
     })
 }
 
@@ -2596,6 +2669,63 @@ mod tests {
             Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
         let packed = pack_latent_to_tokens(&z).unwrap();
         assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    // v0.18 Kontext phase 2b — aspect-bucket snap.
+
+    #[test]
+    fn kontext_buckets_are_seventeen_and_multiple_of_sixteen() {
+        assert_eq!(KONTEXT_BUCKETS.len(), 17);
+        for (w, h) in KONTEXT_BUCKETS {
+            assert!(w % 16 == 0, "bucket width {w} not multiple of 16");
+            assert!(h % 16 == 0, "bucket height {h} not multiple of 16");
+        }
+    }
+
+    #[test]
+    fn snap_square_to_1024() {
+        // 768x768 aspect = 1.0 → closest bucket is (1024, 1024).
+        assert_eq!(snap_to_kontext_bucket(768, 768), (1024, 1024));
+        assert_eq!(snap_to_kontext_bucket(512, 512), (1024, 1024));
+        assert_eq!(snap_to_kontext_bucket(2048, 2048), (1024, 1024));
+    }
+
+    #[test]
+    fn snap_widescreen_to_landscape_bucket() {
+        // 21:9 ≈ 2.33 → closest bucket is (1568, 672) at 2.33.
+        let (w, h) = snap_to_kontext_bucket(2100, 900);
+        assert_eq!((w, h), (1568, 672));
+    }
+
+    #[test]
+    fn snap_portrait_to_portrait_bucket() {
+        // 9:21 ≈ 0.43 → closest bucket is (672, 1568) at 0.43.
+        let (w, h) = snap_to_kontext_bucket(900, 2100);
+        assert_eq!((w, h), (672, 1568));
+    }
+
+    #[test]
+    fn snap_4_3_to_nearest() {
+        // 4:3 ≈ 1.33 → closest bucket should be one of the moderate
+        // landscape entries; exact bucket depends on which has the
+        // closest ratio. (1248, 832) has ratio 1.5; (1184, 880) has
+        // ratio ~1.345. Pick whichever is closer.
+        let (w, h) = snap_to_kontext_bucket(1600, 1200);
+        // Verify the result is *one of* the published buckets, and
+        // that its aspect ratio is closer to 4/3 than any other.
+        assert!(KONTEXT_BUCKETS.contains(&(w, h)));
+        let chosen = w as f64 / h as f64;
+        let target = 4.0 / 3.0;
+        for (bw, bh) in KONTEXT_BUCKETS {
+            let other = *bw as f64 / *bh as f64;
+            if (*bw, *bh) == (w, h) {
+                continue;
+            }
+            assert!(
+                (chosen - target).abs() <= (other - target).abs(),
+                "chosen {w}x{h} (ratio {chosen}) is farther from 4:3 than {bw}x{bh} (ratio {other})"
+            );
+        }
     }
 
     #[test]
