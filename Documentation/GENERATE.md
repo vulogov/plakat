@@ -683,6 +683,34 @@ Unbalanced `<lora:` with no closing `>` is treated as a literal —
 no error, just no extraction (same robustness contract as the
 attention parser and wildcards).
 
+### `--negative-preset` (v0.19)
+
+Bundled negative-prompt presets — saves users from copy-pasting
+the same `blurry, low quality, watermark, ...` line into every
+invocation. Four entries shipped:
+
+| Preset | Curated for |
+|---|---|
+| `photo` | realistic photography — suppresses blur / jpeg artifacts / watermarks / deformities |
+| `painting` | oil / watercolor / acrylic — quality + overlay suppressors; allows anatomical liberty |
+| `anime` | anime / illustration — bad-hands + missing-fingers + lowres specifically |
+| `cinematic` | film / poster — moody compositions; preserves colour saturation |
+
+```bash
+# Preset alone
+plakat generate "a sunlit forest path" --model sd15 --negative-preset photo
+
+# Combine with explicit --negative (preset first, user appended)
+plakat generate "anime girl, masterpiece" --model sd15 \
+    --negative-preset anime --negative "purple hair"
+```
+
+Works on `plakat generate`, `plakat img2img`, and `plakat portrait`.
+The portrait subcommand normally falls back to its built-in
+DEFAULT_NEGATIVE (face / hand suppressors); `--negative-preset`
+replaces that fallback. A typo bails up front with the list of
+supported names.
+
 ### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
 
 CLIP's 77-token cap silently truncates long prompts. Split a long

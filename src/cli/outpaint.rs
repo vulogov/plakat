@@ -273,6 +273,10 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         grid_padding: args.grid_padding,
         // v0.18 phase 2b: outpaint never routes through Kontext.
         kontext_bucket: false,
+        // v0.19: outpaint inherits the same default-negative model
+        // as img2img inpaint; we don't surface --negative-preset
+        // at the outpaint CLI yet (outpaint scope is narrow).
+        negative_preset: None,
         // v0.18: outpaint controls dimension changes via per-
         // side --left/--right/--top/--bottom/--expand flags, so
         // --aspect isn't surfaced on the outpaint CLI. Pass None +

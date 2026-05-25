@@ -6,6 +6,7 @@ pub mod break_chunks;
 pub mod deepseek;
 pub mod gemini;
 pub mod lora_tags;
+pub mod negative_presets;
 pub mod weighted_encoding;
 pub mod wildcards;
 

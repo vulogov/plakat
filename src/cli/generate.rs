@@ -50,6 +50,15 @@ pub struct GenerateArgs {
     #[arg(long, default_value = "")]
     pub negative: String,
 
+    /// v0.19: bundled negative-prompt preset. One of `photo` /
+    /// `painting` / `anime` / `cinematic`. When set, the preset's
+    /// curated negative is used; if `--negative` is ALSO set, the
+    /// two are comma-joined (preset first, user negative appended).
+    /// Saves users from copy-pasting the same `blurry, low quality,
+    /// watermark, ...` line into every invocation.
+    #[arg(long = "negative-preset", value_name = "NAME")]
+    pub negative_preset: Option<String>,
+
     /// Random seed for reproducibility.
     #[arg(long)]
     pub seed: Option<u64>,
@@ -576,6 +585,16 @@ pub struct GenerateArgs {
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    // v0.19: resolve --negative-preset FIRST so the combined
+    // negative flows into every downstream step (wildcards on the
+    // negative branch, enhance call, encoder dispatch). Bails up
+    // front on a typo'd preset name — no point waiting for a
+    // 30-second model load to discover the error.
+    args.negative = crate::prompt::negative_presets::combine(
+        args.negative_preset.as_deref(),
+        &args.negative,
+    )?;
+
     // Style detection / resolution runs BEFORE the enhancer so the
     // trigger phrase carries the LoRA's training tokens unaltered.
     if args.style_ref.is_some() || args.style.is_some() {

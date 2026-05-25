@@ -126,6 +126,13 @@ pub struct PortraitArgs {
     #[arg(long)]
     pub negative: Option<String>,
 
+    /// v0.19: bundled negative-prompt preset. See
+    /// `plakat generate --negative-preset` for the full list.
+    /// Combined with `--negative` if both are set; replaces the
+    /// portrait DEFAULT_NEGATIVE if `--negative` isn't set.
+    #[arg(long = "negative-preset", value_name = "NAME")]
+    pub negative_preset: Option<String>,
+
     /// Random seed.
     #[arg(long)]
     pub seed: Option<u64>,
@@ -357,7 +364,17 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     // Resolve the effective negative prompt up front. Style detection
     // may augment it via the catalog's negative_extras, which means
     // we need a concrete String to merge into — not Option<String>.
-    let mut negative = args.negative.clone().unwrap_or_else(|| DEFAULT_NEGATIVE.to_string());
+    // v0.19: --negative-preset takes precedence over DEFAULT_NEGATIVE
+    // when `--negative` isn't set; combines with `--negative` when
+    // both are set (preset first, user appended).
+    let user_negative = args.negative.clone().unwrap_or_default();
+    let mut negative = crate::prompt::negative_presets::combine(
+        args.negative_preset.as_deref(),
+        &user_negative,
+    )?;
+    if negative.trim().is_empty() {
+        negative = DEFAULT_NEGATIVE.to_string();
+    }
 
     // Phase 7f: capture the CLIP-H encoder the style runtime may have
     // lazy-loaded so we can hand it to portrait::Pipeline below — when
