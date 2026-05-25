@@ -106,7 +106,24 @@ If you're new to plakat, work through these in order:
     metadata FILE.png` reads back the v0.17 Auto1111-compatible
     `parameters` PNG tEXt chunk + sibling JSON sidecar. Recover
     forgotten seeds, inspect Civitai downloads, audit scenario
-    batches. `--json-only` pipes cleanly to jq.
+    batches. `--json-only` pipes cleanly to jq. v0.19 adds the
+    companion `plakat clone PNG` that translates a recipe into
+    a re-runnable shell command.
+
+15. [`SCENARIOS_TUTORIAL.md`](SCENARIOS_TUTORIAL.md) — batch
+    generation via HJSON config files. Cross-product expansion
+    (scene × weather × persona), per-task overrides, per-task
+    LoRA stacks, partial-rerun filters (`--resume`, `--only`,
+    `--limit`, `--dry-run`), real-world series-production
+    examples. The power-user feature that turns plakat from a
+    one-shot CLI into a job runner.
+
+16. [`OUTPAINT_TUTORIAL.md`](OUTPAINT_TUTORIAL.md) — `plakat
+    outpaint INPUT.png` grows the canvas of an existing image.
+    Per-side flag grammar (`--left` / `--right` / `--top` /
+    `--bottom` / `--expand`), VAE-snapped dimensions, model
+    choice (`sdxl-inpaint` / `sd15-inpaint` /
+    `flux-fill-dev`), iterative-stage workflow.
 
 ## Specialized portrait techniques
 
@@ -142,6 +159,8 @@ feature:
 | `ADVANCED_PROMPTING_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Comfortable with `--lora` and the relationship between seed + reproducibility. No new assets required. |
 | `PROMPT_ENHANCER_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~1 GB free for the default Qwen2.5-1.5B GGUF (or ~230 MB for the SmolLM2 fallback). API key optional (only needed for `--enhance deepseek` / `--enhance gemini`). |
 | `METADATA_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. One or more PNGs from a previous plakat / A1111 / Civitai run. |
+| `SCENARIOS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md` and (for the persona walkthrough) `PORTRAIT_TUTORIAL.md`. Optional API key for `enhancer: deepseek` / `gemini`. |
+| `OUTPAINT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md` and `IMG2IMG_TUTORIAL.md` (outpaint is a thin wrapper around the inpaint flow). An input image to extend. |
 
 ## When to use a reference manual instead
 

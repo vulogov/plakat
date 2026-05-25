@@ -24,6 +24,12 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "")]
     pub negative: String,
 
+    /// v0.19: bundled negative-prompt preset. See
+    /// `plakat generate --negative-preset` for the full list.
+    /// Combined with `--negative` (preset first, user appended).
+    #[arg(long = "negative-preset", value_name = "NAME")]
+    pub negative_preset: Option<String>,
+
     /// Optional inpaint mask. When set, only mask=white pixels are
     /// re-painted; mask=black pixels are preserved. Grayscale, RGB
     /// (luminance), or RGBA (alpha channel) all accepted.
@@ -251,6 +257,13 @@ pub struct Img2ImgArgs {
 }
 
 pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    // v0.19: resolve --negative-preset first so the combined
+    // negative flows into wildcard expansion + every dispatch arm.
+    args.negative = crate::prompt::negative_presets::combine(
+        args.negative_preset.as_deref(),
+        &args.negative,
+    )?;
+
     // v0.16 phase 5: wildcard expansion before dispatching to any
     // model-specific path. Same RNG-seeding rules as the generate
     // CLI — seeded from `--seed` when set, OS entropy otherwise.
@@ -1203,6 +1216,7 @@ mod tests {
             input,
             prompt: "test".into(),
             negative: String::new(),
+            negative_preset: None,
             mask: None,
             mask_feather: 8,
             mask_invert: false,

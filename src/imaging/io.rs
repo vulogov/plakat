@@ -1,8 +1,46 @@
 use anyhow::{Context, Result, anyhow};
 use image::{ImageBuffer, Rgb};
 use std::path::Path;
+use std::str::FromStr;
 
 use crate::imaging::metadata::GenerationMetadata;
+
+/// v0.19: which container to write generated images into. PNG
+/// stays the default (carries the v0.17 Auto1111 tEXt chunk for
+/// drag-and-drop compatibility with A1111 / Civitai / ComfyUI);
+/// WebP is opt-in via `--format webp` and trades the embedded
+/// chunk for ~30% smaller files. The JSON sidecar is written for
+/// both formats, so the recipe is recoverable via
+/// `plakat metadata` / `plakat clone` regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    #[default]
+    Png,
+    Webp,
+}
+
+impl OutputFormat {
+    /// File extension WITHOUT the leading dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Webp => "webp",
+        }
+    }
+}
+
+impl FromStr for OutputFormat {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "png" => Ok(Self::Png),
+            "webp" => Ok(Self::Webp),
+            other => Err(anyhow!(
+                "unknown output format {other:?}; supported: png, webp"
+            )),
+        }
+    }
+}
 
 pub fn save_rgb_u8(buf: &[u8], width: u32, height: u32, path: &Path) -> Result<()> {
     save_rgb_u8_inner(buf, width, height, path, None)
@@ -86,18 +124,41 @@ fn save_rgb_u8_inner(
             height
         ));
     }
-    match metadata {
-        None => {
-            // Fast path — no metadata to embed, defer to the
-            // `image` crate. Byte-identical to the pre-phase-3
-            // output.
+    // v0.19: extension-driven format routing. `.png` (the default)
+    // takes the metadata-aware PNG tEXt chunk path; `.webp` and
+    // other extensions fall through to the image-crate save
+    // (no embedded chunk — WebP's EXIF / XMP slots aren't part
+    // of the A1111 / Civitai metadata convention). The JSON
+    // sidecar is written for both formats by the caller's
+    // `save_rgb_u8_with_metadata` wrapper, so the recipe stays
+    // recoverable via `plakat metadata` / `plakat clone`.
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    let is_png = ext.as_deref() == Some("png");
+
+    match (metadata, is_png) {
+        (None, _) | (Some(_), false) => {
+            // Fast path — no metadata embed. Defer to the `image`
+            // crate which auto-detects format from the path's
+            // extension. WebP outputs land here regardless of the
+            // metadata arg.
             let img: ImageBuffer<Rgb<u8>, _> =
                 ImageBuffer::from_raw(width, height, buf.to_vec())
                     .ok_or_else(|| anyhow!("failed to construct ImageBuffer"))?;
-            img.save(path)?;
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("creating output dir {}", parent.display())
+                    })?;
+                }
+            }
+            img.save(path)
+                .with_context(|| format!("writing {}", path.display()))?;
             Ok(())
         }
-        Some(meta) => write_png_with_text_chunk(buf, width, height, path, meta),
+        (Some(meta), true) => write_png_with_text_chunk(buf, width, height, path, meta),
     }
 }
 
@@ -200,5 +261,87 @@ mod tests {
         // No sidecar should exist.
         let json_path = png_path.with_extension("json");
         assert!(!json_path.exists());
+    }
+
+    // v0.19 — WebP output via extension-driven routing.
+
+    #[test]
+    fn output_format_from_str_round_trip() {
+        assert_eq!(
+            "png".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Png
+        );
+        assert_eq!(
+            "webp".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Webp
+        );
+        // Case-insensitive.
+        assert_eq!(
+            "WEBP".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Webp
+        );
+        // Unknown bails with the supported list.
+        let err = "jpeg".parse::<OutputFormat>().unwrap_err();
+        assert!(format!("{err}").contains("png, webp"));
+    }
+
+    #[test]
+    fn output_format_extension_matches_variant() {
+        assert_eq!(OutputFormat::Png.extension(), "png");
+        assert_eq!(OutputFormat::Webp.extension(), "webp");
+    }
+
+    #[test]
+    fn save_rgb_u8_writes_webp_when_path_has_webp_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let webp_path = tmp.path().join("plain.webp");
+        // 4×4 solid-red so the encoded file is non-trivial.
+        let buf: Vec<u8> = (0..16).flat_map(|_| [255u8, 0, 0]).collect();
+        save_rgb_u8(&buf, 4, 4, &webp_path).unwrap();
+        assert!(webp_path.exists());
+        // Round-trip read: the file is actually a WebP (image crate
+        // would error otherwise), and it decodes to the same 4×4
+        // RGB tensor we wrote.
+        let decoded = image::open(&webp_path).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (4, 4));
+        // Lossy compression — sample one pixel and confirm red is
+        // dominant. Don't insist on byte-exact (WebP at default
+        // quality isn't lossless).
+        let p = decoded.get_pixel(2, 2).0;
+        assert!(p[0] > 200, "red channel should dominate, got {p:?}");
+        assert!(p[1] < 80, "green channel should be near-zero, got {p:?}");
+        assert!(p[2] < 80, "blue channel should be near-zero, got {p:?}");
+    }
+
+    #[test]
+    fn save_with_metadata_skips_chunk_for_webp_writes_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let webp_path = tmp.path().join("test.webp");
+        let sidecar = tmp.path().join("test.json");
+        let buf: Vec<u8> = (0..4).flat_map(|_| [0u8, 128, 255]).collect();
+        let meta = GenerationMetadata::new(
+            "a fox",
+            "sd15",
+            42,
+            28,
+            7.5,
+            "euler-a",
+            2,
+            2,
+        );
+        save_rgb_u8_with_metadata(&buf, 2, 2, &webp_path, &meta).unwrap();
+        assert!(webp_path.exists());
+        // The PNG tEXt chunk path doesn't apply to WebP — but the
+        // JSON sidecar SHOULD still be written (the recipe stays
+        // recoverable via `plakat metadata --json-only`).
+        assert!(sidecar.exists());
+        // Confirm the chunk-read returns "no chunk" on the WebP.
+        // The shadowed test helper above wraps the super:: function's
+        // `Result<Option<_>>` into `Option<_>`, treating both error
+        // and "no chunk" as the absence we expect for a WebP file.
+        assert!(
+            read_parameters_chunk(&webp_path).is_none(),
+            "WebP outputs must not carry the PNG tEXt chunk"
+        );
     }
 }

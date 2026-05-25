@@ -51,6 +51,23 @@ pub struct ScenarioArgs {
     /// exclusive with `--resume`.
     #[arg(long, default_value_t = false, conflicts_with = "resume")]
     pub force: bool,
+
+    /// v0.19: run only the named tasks. Comma-separated list of task
+    /// `name:` values from the scenario file. Useful for iterating
+    /// on a single task without re-running the whole batch. Tasks
+    /// not in the list are silently skipped (no output written).
+    /// Composes with `--resume` (a named task already on disk still
+    /// gets skipped under resume semantics).
+    #[arg(long, value_delimiter = ',', value_name = "NAME[,NAME,…]")]
+    pub only: Vec<String>,
+
+    /// v0.19: run only the first N tasks (in scenario file order).
+    /// Handy for sanity-checking a long batch before launching the
+    /// full run. `0` means "no limit" (same as omitting the flag).
+    /// Composes with `--only` (the limit applies after the
+    /// name-filter; e.g. `--only a,b,c --limit 2` runs `a` and `b`).
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    pub limit: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1610,9 +1627,58 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // tasks, so the ControlNet variant is scenario-wide too.
     let cn_variant = crate::pipelines::controlnet::ControlNetVariant::detect(&model);
 
+    // v0.19: --only filters tasks by name. Validate up-front so a
+    // typo bails before the long batch starts. --limit caps the
+    // run length post-filter.
+    if !args.only.is_empty() {
+        let scenario_names: std::collections::HashSet<&str> =
+            s.tasks.iter().map(|t| t.name.as_str()).collect();
+        for requested in &args.only {
+            if !scenario_names.contains(requested.as_str()) {
+                anyhow::bail!(
+                    "--only {requested:?} not found in scenario {:?}. \
+                     Available task names: {}",
+                    args.file.display(),
+                    s.tasks
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+        }
+    }
+    let only_set: Option<std::collections::HashSet<&str>> = if args.only.is_empty() {
+        None
+    } else {
+        Some(args.only.iter().map(|s| s.as_str()).collect())
+    };
+
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
+    let mut ran_count: u32 = 0;
     for (idx, task) in s.tasks.iter().enumerate() {
+        // v0.19: skip tasks excluded by --only / --limit. The
+        // seed_offset advance still happens for skipped tasks so a
+        // partial --only run yields the same seeds as the full
+        // batch — important for reproducibility when iterating on
+        // one task in isolation.
+        if let Some(allowed) = &only_set {
+            if !allowed.contains(task.name.as_str()) {
+                seed_offset += count as u64;
+                continue;
+            }
+        }
+        if args.limit > 0 && ran_count >= args.limit {
+            crate::ui::progress::println(&format!(
+                "  {} reached --limit {} — skipping remaining tasks",
+                style("(limit)").yellow(),
+                args.limit,
+            ));
+            break;
+        }
+        ran_count += 1;
+
         let scene_prompt = scenes[task.scene.as_str()];
         let weather_prompt = weathers[task.weather.as_str()];
 
@@ -2328,6 +2394,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // need the per-step PNG churn. None = disabled.
                 preview_every: None,
                 preview_size: None,
+                // v0.19: scenarios don't surface --format yet —
+                // default to PNG (the v0.17 A1111-compat path).
+                // Per-task webp output lands in a follow-up once
+                // the scenario schema is extended.
+                output_format: crate::imaging::io::OutputFormat::Png,
             };
 
             // Per-task runtime LoRA. Applied BEFORE the per-task

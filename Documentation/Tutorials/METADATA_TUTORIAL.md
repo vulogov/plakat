@@ -210,6 +210,43 @@ through to other tools.
 - **No batch mode.** One file per invocation. Loop in shell when
   you need to process many.
 
+## 7. Companion: `plakat clone` (v0.19)
+
+Where `metadata` is read-only, `plakat clone` translates the same
+recipe into a re-runnable `plakat generate` shell command:
+
+```bash
+$ plakat clone ./out/plakat-42.png
+plakat generate 'a brutalist whale poster' \
+    --negative 'blurry, low quality' \
+    --model 'sd15' \
+    --seed 42 \
+    --size 512x768 \
+    --scheduler euler-a \
+    --lora 'civitai:12345:0.7'
+```
+
+Use it to:
+
+- Reproduce a Civitai download as a local generation (swap in your
+  own LoRA, tweak the prompt, rerun).
+- Re-render an old plakat output at a different resolution: copy
+  the command, change `--size`, run.
+- Pipe a recipe into another shell: `plakat clone foo.png
+  --one-line | ssh remote -- bash -s`.
+
+JSON sidecar (when present) is preferred — it carries every field
+losslessly. Falls back to parsing the Auto1111 chunk for non-plakat
+PNGs (Civitai uploads, A1111 Web UI outputs). The fallback covers
+the common fields (prompt, negative, Steps, Sampler, CFG, Seed,
+Size, Model, Clip skip); plakat-specific extras (ControlNet stack,
+refiner config, ADetailer flags) are sidecar-only.
+
+img2img / inpaint / animate clones lose the input-image / mask /
+animate-endpoint context (they're not in the recipe). `plakat clone`
+always emits `plakat generate` regardless of original mode and
+notes the mode mismatch in stderr.
+
 ## Where to next
 
 - **`GENERATE_TUTORIAL.md`** §22 — the write side of metadata

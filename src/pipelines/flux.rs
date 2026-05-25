@@ -1305,21 +1305,45 @@ impl Pipeline {
                      pass the reference via --concept-image PATH instead."
                 );
             }
+            // v0.19: Kontext + Redux composition. Both features extend
+            // the per-block attention sequence — Redux extends `txt`
+            // (T5 base + 729 tokens per image), Kontext extends `img`
+            // (noise + reference). They're orthogonal in implementation
+            // (Redux modifies t5_emb at the top of generate(); Kontext
+            // extends img per-step), so they compose without extra
+            // wiring. The risk is RoPE budget — Flux's position
+            // encoding was trained on a typical seq of ~1500 positions.
+            // The combined-seq budget check below warns at ~3500 and
+            // bails at 4096 (the safe upper bound for Flux RoPE).
             if !req.redux_images.is_empty() {
-                bail!(
-                    "Flux Kontext + --redux-image isn't wired yet — both extend \
-                     the sequence dimension and may exceed Flux's RoPE budget. \
-                     Use one or the other."
+                let img_seq = lat_h * lat_w / 4; // 2x2 Flux patching
+                let ref_seq = img_seq; // Kontext reference at same resolution
+                let txt_seq =
+                    self.variant.t5_seq_len() + 729 * req.redux_images.len();
+                let total_seq = txt_seq + img_seq + ref_seq;
+                kontext_redux_budget_check(total_seq)?;
+                tracing::info!(
+                    target: "plakat",
+                    "Kontext + Redux composition: effective attention seq \
+                     {txt_seq} txt + {img_seq} noise + {ref_seq} ref = {total_seq} \
+                     total"
                 );
             }
-            if !self.controlnets.is_empty() {
-                bail!(
-                    "Flux Kontext + --control-spec isn't wired yet. The reference \
-                     image already drives the layout; pairing with a ControlNet \
-                     would double-condition. Drop --control-spec or switch to \
-                     flux-dev for ControlNet."
-                );
-            }
+            // v0.19: Kontext + ControlNet composition. The CN runs on
+            // the noise tokens only (computing per-block residuals
+            // shaped to that seq length); the residuals get zero-padded
+            // for the reference half before being added to the
+            // Kontext-extended forward. Reference tokens get no
+            // residual contribution — they're already conditioning
+            // the model via cross-attention. See the
+            // `pad_residuals_for_kontext` helper.
+            //
+            // Double-conditioning concern from the original bail
+            // (now removed): in practice the ControlNet and the
+            // Kontext reference complement each other for "edit
+            // this image but preserve the depth structure" and
+            // similar layout-preserving edits. Letting users choose
+            // is the right call.
             let ref_path = req.concept_conditioning.as_ref().ok_or_else(|| {
                 anyhow!(
                     "Flux.1-Kontext-dev requires a reference image — pass it via \
@@ -1873,12 +1897,6 @@ impl Pipeline {
                 summed_double = Some(merge_residuals(summed_double, d)?);
                 summed_single = Some(merge_residuals(summed_single, s)?);
             }
-            let double_r = summed_double.as_deref();
-            let single_r = match summed_single.as_ref() {
-                Some(v) if !v.is_empty() => Some(v.as_slice()),
-                _ => None,
-            };
-
             // Build the Flux-forward input. Standard Flux: img is 64ch
             // noise. Fill: cat 320ch conditioning → 384ch. Concept
             // (Canny-dev / Depth-dev): cat 64ch conditioning → 128ch.
@@ -1905,6 +1923,37 @@ impl Pipeline {
                     (exp_img, exp_ids)
                 }
                 None => (flux_input, state.img_ids.clone()),
+            };
+
+            // v0.19: Kontext + ControlNet composition. The CN residuals
+            // computed above are shaped (B, noise_seq_len, hidden_size).
+            // When Kontext extends the seq with reference tokens, the
+            // residual shape must match the expanded length so the
+            // per-block `img + residual` add inside flux_inner doesn't
+            // shape-mismatch. Pad with zeros for the reference half —
+            // the reference tokens get no CN contribution (they're
+            // already conditioning via cross-attention, and the CN
+            // was trained on noise positions, not on a reference
+            // image's positions). The padded residual leaves the
+            // forward semantically unchanged for the reference half.
+            if let Some((ref_tokens, _)) = kontext_ref {
+                let ref_seq_len = ref_tokens.dim(1)?;
+                if let Some(d) = summed_double.as_mut() {
+                    for r in d.iter_mut() {
+                        *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                    }
+                }
+                if let Some(s) = summed_single.as_mut() {
+                    for r in s.iter_mut() {
+                        *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                    }
+                }
+            }
+
+            let double_r = summed_double.as_deref();
+            let single_r = match summed_single.as_ref() {
+                Some(v) if !v.is_empty() => Some(v.as_slice()),
+                _ => None,
             };
 
             // v0.13 phase 1c: both backbones expose the same
@@ -2456,6 +2505,56 @@ pub fn snap_to_kontext_bucket(w: u32, h: u32) -> (u32, u32) {
         .unwrap_or((1024, 1024))
 }
 
+/// v0.19: zero-pad a ControlNet residual along the seq dim to
+/// match Kontext's expanded sequence length. The CN runs on
+/// noise tokens only (shape `(B, noise_seq, hidden)`); when
+/// Kontext extends the seq with reference tokens, the per-block
+/// `img + residual` add inside flux_inner needs the residual to
+/// match the expanded length. Padding with zeros gives the
+/// reference half a no-op CN contribution — the reference is
+/// already conditioning the model via cross-attention, and the
+/// CN never saw it during training. Returns a new tensor of
+/// shape `(B, noise_seq + ref_seq, hidden)`.
+fn pad_residual_for_kontext(residual: &Tensor, ref_seq_len: usize) -> Result<Tensor> {
+    let (b, _seq, hidden) = residual.dims3()?;
+    let zeros = Tensor::zeros((b, ref_seq_len, hidden), residual.dtype(), residual.device())?;
+    Ok(Tensor::cat(&[residual, &zeros], 1)?)
+}
+
+/// v0.19: Flux RoPE position-encoding budget. The per-block
+/// attention runs over `txt_seq + img_seq` positions; the RoPE
+/// frequencies were trained on a typical combined seq of ~1500.
+/// Combining Kontext (+ ~1k ref tokens on img) and Redux (+729
+/// tokens per image on txt) can push past that.
+///
+/// Bail above `KONTEXT_REDUX_HARD_CAP` (4096) — output quality
+/// degrades visibly as RoPE wraps. Warn above `…_WARN_AT` (3500)
+/// so users notice rather than burning a long generation on a
+/// borderline-budgeted compose.
+const KONTEXT_REDUX_WARN_AT: usize = 3500;
+const KONTEXT_REDUX_HARD_CAP: usize = 4096;
+
+fn kontext_redux_budget_check(total_seq: usize) -> Result<()> {
+    if total_seq > KONTEXT_REDUX_HARD_CAP {
+        anyhow::bail!(
+            "Kontext + Redux effective attention seq ({total_seq}) exceeds Flux's \
+             RoPE budget ({KONTEXT_REDUX_HARD_CAP}). Reduce one of:\n\
+              * --size (smaller output → fewer noise tokens)\n\
+              * Kontext reference image dims (smaller ref → fewer ref tokens)\n\
+              * --redux-image count (each image adds 729 tokens)"
+        );
+    }
+    if total_seq > KONTEXT_REDUX_WARN_AT {
+        tracing::warn!(
+            target: "plakat",
+            "Kontext + Redux seq {total_seq} is past the {KONTEXT_REDUX_WARN_AT}-token \
+             warn threshold (RoPE may degrade). Output should still complete; \
+             quality may suffer."
+        );
+    }
+    Ok(())
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -2687,6 +2786,90 @@ mod tests {
             Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
         let packed = pack_latent_to_tokens(&z).unwrap();
         assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    // v0.19 — Kontext + ControlNet residual-padding helper.
+
+    #[test]
+    fn pad_residual_for_kontext_extends_seq_dim() {
+        // CN residual on noise tokens (1, noise_seq=64, hidden=3072) →
+        // Kontext extends to noise_seq + ref_seq=16 → padded shape.
+        let r = Tensor::ones((1, 64, 3072), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 16).unwrap();
+        assert_eq!(padded.dims(), &[1, 64 + 16, 3072]);
+    }
+
+    #[test]
+    fn pad_residual_for_kontext_zero_fills_ref_half() {
+        // Verify the ref half is actually zeros so the per-block
+        // `img + residual` add inside flux_inner is a no-op for the
+        // reference positions.
+        let r =
+            Tensor::ones((1, 8, 4), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 4).unwrap();
+        // First 8 rows: ones. Last 4 rows: zeros.
+        let noise_sum: f32 = padded
+            .narrow(1, 0, 8)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar()
+            .unwrap();
+        let ref_sum: f32 = padded
+            .narrow(1, 8, 4)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar()
+            .unwrap();
+        assert!((noise_sum - 32.0).abs() < 1e-5, "noise half should be all ones");
+        assert!((ref_sum - 0.0).abs() < 1e-5, "ref half should be all zeros");
+    }
+
+    // v0.19 — Kontext + Redux RoPE budget gate.
+
+    #[test]
+    fn kontext_redux_budget_under_warn_threshold_passes_silently() {
+        // 512 T5 + 1024 noise + 1024 ref = 2560 — comfortably below
+        // the 3500 warn threshold.
+        assert!(kontext_redux_budget_check(2560).is_ok());
+    }
+
+    #[test]
+    fn kontext_redux_budget_above_hard_cap_bails() {
+        let err =
+            kontext_redux_budget_check(KONTEXT_REDUX_HARD_CAP + 1).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("RoPE budget"), "{msg}");
+        assert!(msg.contains("--size"), "{msg}");
+        assert!(msg.contains("--redux-image count"), "{msg}");
+    }
+
+    #[test]
+    fn kontext_redux_budget_at_hard_cap_passes() {
+        // Boundary: exactly at the cap is OK (the bail uses `>`).
+        assert!(kontext_redux_budget_check(KONTEXT_REDUX_HARD_CAP).is_ok());
+    }
+
+    #[test]
+    fn kontext_redux_budget_between_thresholds_warns_not_bails() {
+        // 3700 is above the warn threshold but below the hard cap —
+        // should pass (the warn fires via tracing; we don't assert
+        // on log output here).
+        assert!(kontext_redux_budget_check(3700).is_ok());
+    }
+
+    #[test]
+    fn pad_residual_for_kontext_preserves_dtype_and_device() {
+        let r = Tensor::ones((1, 8, 4), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 2).unwrap();
+        assert_eq!(padded.dtype(), DType::F32);
+        // BF16 round-trip too (the candle backends use BF16 on
+        // Metal / CUDA; making sure the zeros tensor matches).
+        let r_bf16 =
+            Tensor::ones((1, 8, 4), DType::BF16, &Device::Cpu).unwrap();
+        let padded_bf16 = pad_residual_for_kontext(&r_bf16, 2).unwrap();
+        assert_eq!(padded_bf16.dtype(), DType::BF16);
     }
 
     // v0.18 Kontext phase 2b — aspect-bucket snap.

@@ -358,7 +358,74 @@ The enhancer is the cheap-but-effective way to compensate for a model
 whose prompt comprehension is weaker than you'd like (SD 1.5 / 2.1 in
 particular).
 
+#### `--enhance-system PATH` (v0.19)
+
+Override the built-in `"You rewrite text-to-image prompts..."`
+system prompt with one loaded from disk. Applies to all four
+providers (DeepSeek / Gemini / local / auto).
+
+```bash
+plakat generate "knight" --enhance local \
+    --enhance-system ./my-style-prompt.txt
+```
+
+#### `--enhance-temp F` / `--enhance-max-tokens N` (v0.19)
+
+Local-LLM only. `--enhance-temp 0.0` (default) is greedy decoding
+— reproducible: same prompt = same enhancement. Bump to `0.5`-
+`1.0` for variety at the cost of repeatability.
+`--enhance-max-tokens 96` (default) caps the rewrite length;
+raise for longer prompts at the cost of decode-loop latency.
+Ignored on DeepSeek / Gemini (they have server-side defaults).
+
+#### `--enhance-cache` (v0.19)
+
+Opt-in disk cache for the local enhancer. SHA-256 of `(alias,
+system, user, temperature, max_new_tokens)` keys an on-disk
+lookup at `~/.cache/plakat/enhance/`; cache hits skip the LLM
+forward entirely. Misses run the model and write the result on
+success (refusals + empty outputs never cache).
+
+```bash
+# First run — cache miss, runs the LLM, writes to cache.
+plakat generate "knight" --enhance local --enhance-cache
+
+# Second run with the same inputs — cache hit, no LLM forward.
+# ~3-5s faster on CPU; instantaneous compared to a model load.
+plakat generate "knight" --enhance local --enhance-cache
+```
+
+Opt-in (rather than default-on) so iterating on the system prompt
+or model alias doesn't surface stale hits. Scenarios that
+re-enhance the same prompts across multiple runs are the prime
+use case.
+
 ### Output
+
+#### `--format png | webp` (v0.19)
+
+Output image container. PNG (default) carries the v0.17
+Auto1111-compatible `parameters` tEXt chunk that A1111 / Civitai
+/ ComfyUI auto-read on drag-and-drop. WebP ships ~30% smaller
+files at perceptually-equivalent quality but can't carry the
+embedded tEXt chunk (WebP's EXIF / XMP slots aren't part of the
+diffusion-tools metadata convention).
+
+The JSON sidecar (`<stem>.json`) is written for both formats —
+`plakat metadata` and `plakat clone` recover the recipe from
+WebP outputs via the sidecar. Drag-and-drop interop is the only
+real cost.
+
+```bash
+plakat generate "..." --model sd15 --format webp
+# → ./out/plakat-42.webp + ./out/plakat-42.json
+```
+
+**Scope**: SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only in
+this release. Flux / SD3 outputs stay PNG; passing `--format
+webp` with those models warns and falls back. The `--grid` PNG
+itself stays `.png` regardless (combining N WebP cells into one
+shareable grid file is the common workflow).
 
 #### `--out <DIR>` (default `./out`)
 
@@ -640,6 +707,34 @@ regardless of which branch they appeared in).
 Unbalanced `<lora:` with no closing `>` is treated as a literal —
 no error, just no extraction (same robustness contract as the
 attention parser and wildcards).
+
+### `--negative-preset` (v0.19)
+
+Bundled negative-prompt presets — saves users from copy-pasting
+the same `blurry, low quality, watermark, ...` line into every
+invocation. Four entries shipped:
+
+| Preset | Curated for |
+|---|---|
+| `photo` | realistic photography — suppresses blur / jpeg artifacts / watermarks / deformities |
+| `painting` | oil / watercolor / acrylic — quality + overlay suppressors; allows anatomical liberty |
+| `anime` | anime / illustration — bad-hands + missing-fingers + lowres specifically |
+| `cinematic` | film / poster — moody compositions; preserves colour saturation |
+
+```bash
+# Preset alone
+plakat generate "a sunlit forest path" --model sd15 --negative-preset photo
+
+# Combine with explicit --negative (preset first, user appended)
+plakat generate "anime girl, masterpiece" --model sd15 \
+    --negative-preset anime --negative "purple hair"
+```
+
+Works on `plakat generate`, `plakat img2img`, and `plakat portrait`.
+The portrait subcommand normally falls back to its built-in
+DEFAULT_NEGATIVE (face / hand suppressors); `--negative-preset`
+replaces that fallback. A typo bails up front with the list of
+supported names.
 
 ### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
 
