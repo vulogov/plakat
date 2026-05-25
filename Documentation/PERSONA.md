@@ -1268,6 +1268,7 @@ Either route works. Local file wins if both are set. Verify any time:
 ```bash
 plakat doctor # offline check — parses + verifies local file existence
 plakat doctor --verify # active — attempts the HF download to confirm
+plakat doctor --json # v0.19 — structured report for CI / jq piping
 ```
 
 `plakat doctor` also reports your build's backend features vs the
