@@ -47,7 +47,7 @@ plakat img2img photo.jpg --prompt "..." --strength 0.4
 | `--steps <N>` | 28 | Denoising steps. Tutorial recommends 20 with `euler-a`. |
 | `--guidance <F>` | 7.5 | Classifier-free guidance scale. |
 | `--scheduler <K>` | `default` | Scheduler name. Same set as `plakat generate`. |
-| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting. |
+| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting; `flux-kontext-dev` (v0.18) for Flux image editing (input becomes the reference, prompt the edit). |
 | `--size <WxH>` | input dims | Override working resolution. Input is resized to match. Must be a multiple of 8. |
 | `--out <DIR>` | `./out` | Output directory. Created if absent. |
 
@@ -180,7 +180,24 @@ plakat img2img init.png --mask region.png --model flux-fill-dev \
 plakat img2img init.png --model flux-fill-dev-gguf \
  --mask region.png --quant-level Q5_K_M --quantize-t5 \
  --prompt "..."
+
+# Flux Kontext (v0.18) — input is the reference, prompt describes
+# the edit. Routes through Kontext's sequence-concat conditioning
+# (not the rectified-flow init lerp that flux-dev img2img uses).
+plakat img2img photo.png --model flux-kontext-dev \
+ --prompt "make the lighting golden hour, warm tones"
+
+# Same recipe via GGUF for 16 GB GPUs
+plakat img2img photo.png --model flux-kontext-dev-gguf \
+ --prompt "add snow on the rooftops" --quant-level Q5_K_M
+
+# Opt-in aspect-bucket snap (one of 17 BFL-recommended resolutions)
+plakat img2img tall_photo.png --model flux-kontext-dev \
+ --prompt "..." --kontext-bucket
 ```
+
+`--strength` is ignored on Kontext (no flow-match init lerp);
+`--mask` bails loud (use `flux-fill-dev` instead).
 
 ## SD3 / SD3.5 img2img and inpaint
 
