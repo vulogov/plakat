@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -54,6 +54,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Errors
 anyhow = "1"
 thiserror = "1"
+
+# Hashing — v0.19: SHA-256 cache keys for the local prompt enhancer
+# (--enhance-cache). Tiny dep, deterministic across rust versions /
+# platforms — exactly what a disk-persisted cache needs.
+sha2 = "0.10"
 
 # Async + HTTP
 tokio = { version = "1", features = [

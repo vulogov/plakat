@@ -50,13 +50,54 @@ pub struct GenerateArgs {
     #[arg(long, default_value = "")]
     pub negative: String,
 
+    /// v0.19: bundled negative-prompt preset. One of `photo` /
+    /// `painting` / `anime` / `cinematic`. When set, the preset's
+    /// curated negative is used; if `--negative` is ALSO set, the
+    /// two are comma-joined (preset first, user negative appended).
+    /// Saves users from copy-pasting the same `blurry, low quality,
+    /// watermark, ...` line into every invocation.
+    #[arg(long = "negative-preset", value_name = "NAME")]
+    pub negative_preset: Option<String>,
+
     /// Random seed for reproducibility.
     #[arg(long)]
     pub seed: Option<u64>,
 
-    /// Optional prompt enhancer: deepseek | gemini.
+    /// Optional prompt enhancer: deepseek | gemini | local |
+    /// local:<alias> | auto.
     #[arg(long)]
     pub enhance: Option<String>,
+
+    /// v0.19: custom system prompt path for the enhancer. Overrides
+    /// the built-in "rewrite text-to-image prompts..." system prompt
+    /// for all three providers (DeepSeek / Gemini / local). Loaded
+    /// from disk on each enhance dispatch.
+    #[arg(long = "enhance-system", value_name = "PATH")]
+    pub enhance_system: Option<PathBuf>,
+
+    /// v0.19: sampling temperature for `--enhance local`. Default
+    /// `0.0` (greedy — reproducible: same prompt = same enhancement).
+    /// Bump to `0.5`-`1.0` for variety at the cost of repeatability.
+    /// Ignored on the API providers (DeepSeek / Gemini have their own
+    /// server-side defaults).
+    #[arg(long = "enhance-temp", value_name = "F")]
+    pub enhance_temp: Option<f64>,
+
+    /// v0.19: maximum new tokens for `--enhance local`. Default 96.
+    /// Higher values let the enhancer write longer prompts at the
+    /// cost of decode-loop latency. Ignored on the API providers.
+    #[arg(long = "enhance-max-tokens", value_name = "N")]
+    pub enhance_max_tokens: Option<usize>,
+
+    /// v0.19: SHA-256 disk cache for the local enhancer. When set,
+    /// (alias, system, user, temp, max_tokens) keys an on-disk
+    /// lookup at `~/.cache/plakat/enhance/`; cache hits skip the
+    /// LLM forward entirely. Cache misses run the model and write
+    /// the result on success (refusals + empty output never cache).
+    /// Opt-in to avoid stale-hit surprises during system-prompt
+    /// iteration. Ignored on the API providers.
+    #[arg(long = "enhance-cache", default_value_t = false)]
+    pub enhance_cache: bool,
 
     /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
     /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
@@ -505,6 +546,22 @@ pub struct GenerateArgs {
     #[arg(long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
 
+    /// v0.19: output image container. `png` (default) writes the
+    /// Auto1111-compatible `parameters` tEXt chunk that A1111 /
+    /// Civitai / ComfyUI auto-read on drag-and-drop. `webp` ships
+    /// ~30% smaller files at perceptually-equivalent quality but
+    /// CAN'T carry the tEXt chunk (WebP's EXIF / XMP slots aren't
+    /// part of the diffusion-tools metadata convention). The JSON
+    /// sidecar is written for both formats — `plakat metadata` and
+    /// `plakat clone` work on WebP outputs via the sidecar.
+    ///
+    /// Currently honoured by the SD-family pipeline (SD 1.5 / SD
+    /// 2.1 / SDXL / SDXL-Turbo). Flux / SD3 outputs stay PNG-only
+    /// in this release; passing `--format webp` with those models
+    /// emits a warning and falls back to PNG.
+    #[arg(long, default_value = "png", value_name = "FORMAT")]
+    pub format: crate::imaging::io::OutputFormat,
+
     /// v0.17 phase 4: with `--count N > 1`, also write a single
     /// `plakat-grid-<base-seed>.png` combining all N outputs in a
     /// near-square grid. Per-image PNGs are written as usual
@@ -544,6 +601,16 @@ pub struct GenerateArgs {
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    // v0.19: resolve --negative-preset FIRST so the combined
+    // negative flows into every downstream step (wildcards on the
+    // negative branch, enhance call, encoder dispatch). Bails up
+    // front on a typo'd preset name — no point waiting for a
+    // 30-second model load to discover the error.
+    args.negative = crate::prompt::negative_presets::combine(
+        args.negative_preset.as_deref(),
+        &args.negative,
+    )?;
+
     // Style detection / resolution runs BEFORE the enhancer so the
     // trigger phrase carries the LoRA's training tokens unaltered.
     if args.style_ref.is_some() || args.style.is_some() {
@@ -557,7 +624,15 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     expand_prompt_wildcards(&mut args)?;
 
     if let Some(provider) = args.enhance.clone() {
-        let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
+        let enhance_args = crate::prompt::EnhanceArgs {
+            system_path: args.enhance_system.clone(),
+            temperature: args.enhance_temp,
+            max_new_tokens: args.enhance_max_tokens,
+            cache: args.enhance_cache,
+        };
+        let enhanced =
+            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
+                .await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
         args.prompt = enhanced;
     }
@@ -871,6 +946,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             None
         },
         preview_size: Some(args.preview_size),
+        // v0.19: pass through the --format flag. SD-family
+        // pipeline honours; Flux + SD3 fallback below.
+        output_format: args.format,
     })
     .await?;
 
@@ -1101,10 +1179,16 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // refinement are all reflected in the grid cells. No-op when
     // --count is 1 (a 1-cell "grid" is just a copy).
     if args.grid && count > 1 {
+        // v0.19: per-image filenames use the user's --format
+        // extension (png by default; webp when set). The grid PNG
+        // itself stays .png for compatibility — combining N WebP
+        // cells into one shareable grid file is the common
+        // workflow even when individual cells are WebP-encoded.
+        let img_ext = args.format.extension();
         let files: Vec<PathBuf> = (0..count)
             .map(|i| {
                 let s = seed.unwrap_or(0).wrapping_add(i as u64);
-                out_dir.join(format!("plakat-{s}.png"))
+                out_dir.join(format!("plakat-{s}.{img_ext}"))
             })
             .filter(|p| p.exists())
             .collect();
