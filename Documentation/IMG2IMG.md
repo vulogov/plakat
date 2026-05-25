@@ -47,7 +47,7 @@ plakat img2img photo.jpg --prompt "..." --strength 0.4
 | `--steps <N>` | 28 | Denoising steps. Tutorial recommends 20 with `euler-a`. |
 | `--guidance <F>` | 7.5 | Classifier-free guidance scale. |
 | `--scheduler <K>` | `default` | Scheduler name. Same set as `plakat generate`. |
-| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting. |
+| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting; `flux-kontext-dev` (v0.18) for Flux image editing (input becomes the reference, prompt the edit). |
 | `--size <WxH>` | input dims | Override working resolution. Input is resized to match. Must be a multiple of 8. |
 | `--out <DIR>` | `./out` | Output directory. Created if absent. |
 
@@ -104,28 +104,47 @@ a hand by inpainting at strength 0.7 instead of 1.0).
 
 ## Resolution handling
 
-When `--size` is omitted, plakat reads the input's actual dimensions
-and rounds each axis **down** to the nearest multiple of 8 (the VAE
-downsample factor). A 1080×720 input becomes 1080×720; a 513×800
-input becomes 512×800.
+Three ways to set output dimensions, in priority order:
 
-When `--size` is set, the input is resized (triangle filter) to
-match. Same constraint: the size must be a multiple of 8 on both
-axes.
+1. **`--size WxH`** — explicit, wins over everything. Multiple of 8
+   required (VAE downsample factor).
+2. **`--aspect 16:9 --base 1024`** (v0.18) — derived. The shorter
+   side becomes `--base`; the longer side becomes
+   `base × ratio`. Both axes are then rounded **down** to the
+   nearest multiple of 8. Mutually exclusive with `--size`.
+3. **default** — the input image's actual dimensions, rounded down
+   to multiples of 8. A 1080×720 input becomes 1080×720; a 513×800
+   input becomes 512×800.
 
-Tip: SD 1.5 was trained at 512²; outputs at 1024² often look
-worse than at 512² for SD 1.5. For higher resolution, use
-`--model sdxl --size 1024x1024`.
+When `--size` or `--aspect` produces dimensions that don't match the
+input's, the input is resized (triangle filter) to match before
+denoising. Tip: SD 1.5 was trained at 512²; outputs at 1024² often
+look worse than at 512² for SD 1.5. For higher resolution, use
+`--model sdxl --size 1024x1024` (or `--model sdxl --aspect 16:9
+--base 896` for a landscape variant).
 
 ## Output naming
 
 | Mode | Filename pattern |
 |---|---|
-| img2img | `plakat-img2img-<seed>.png` |
-| inpaint | `plakat-inpaint-<seed>.png` |
+| img2img (SD-family) | `plakat-img2img-<seed>.png` |
+| inpaint (SD-family) | `plakat-inpaint-<seed>.png` |
+| Flux (img2img / Fill) | `plakat-flux-<seed>.png` |
+| SD3 img2img | `plakat-sd3-img2img-<seed>.png` |
+| SD3 inpaint | `plakat-sd3-inpaint-<seed>.png` |
 
-With `--count N`, files are `plakat-img2img-<base>.png`,
-`plakat-img2img-<base+1>.png`, ... using consecutive seeds.
+With `--count N`, files are `<prefix>-<base>.png`,
+`<prefix>-<base+1>.png`, ... using consecutive seeds.
+
+### `--grid` (v0.18)
+
+With `--count N > 1`, pass `--grid` to also write a single
+`<prefix>-grid-<base-seed>.png` combining all N outputs in a
+near-square layout alongside the per-image PNGs. `--grid-cols N`
+forces a specific column count (default `ceil(sqrt(count))`);
+`--grid-padding PX` inserts a white border between cells (default
+0, flush). The grid prefix tracks the backbone, so a Flux inpaint
+sweep with `--count 4 --grid` produces `plakat-flux-grid-…`.
 
 ## Style + LoRA support
 
@@ -167,7 +186,24 @@ plakat img2img init.png --mask region.png --model flux-fill-dev \
 plakat img2img init.png --model flux-fill-dev-gguf \
  --mask region.png --quant-level Q5_K_M --quantize-t5 \
  --prompt "..."
+
+# Flux Kontext (v0.18) — input is the reference, prompt describes
+# the edit. Routes through Kontext's sequence-concat conditioning
+# (not the rectified-flow init lerp that flux-dev img2img uses).
+plakat img2img photo.png --model flux-kontext-dev \
+ --prompt "make the lighting golden hour, warm tones"
+
+# Same recipe via GGUF for 16 GB GPUs
+plakat img2img photo.png --model flux-kontext-dev-gguf \
+ --prompt "add snow on the rooftops" --quant-level Q5_K_M
+
+# Opt-in aspect-bucket snap (one of 17 BFL-recommended resolutions)
+plakat img2img tall_photo.png --model flux-kontext-dev \
+ --prompt "..." --kontext-bucket
 ```
+
+`--strength` is ignored on Kontext (no flow-match init lerp);
+`--mask` bails loud (use `flux-fill-dev` instead).
 
 ## SD3 / SD3.5 img2img and inpaint
 
@@ -250,6 +286,9 @@ plakat outpaint photo.png --prompt "..." --expand 256 \
 (8 for SD, 16 for Flux), replicates the input's edge pixels into the
 new region (better seam continuity than flat gray), and pins
 `--strength 1.0` (the new region has no original content to preserve).
+`--grid` / `--grid-cols` / `--grid-padding` (v0.18) forward through to
+the underlying inpaint flow, producing a `plakat-inpaint-grid-…` PNG
+when `--count > 1`.
 
 ## Limits
 

@@ -76,6 +76,25 @@ Practical effect: **SD3 follows detailed prompts much better than
 SD 1.5 / SDXL**. You can write paragraphs of description and SD3
 will respect them. Don't fight this — write longer prompts.
 
+### Attention syntax (v0.18)
+
+A1111 / NovelAI-style emphasis works on SD3 too: `(token:1.4)`,
+`[token]`, nested `((token))`. The per-token weight broadcasts onto
+**all three penultimate streams** that flow into the cross-attention
+context — CLIP-L penult, CLIP-G penult, and T5 hidden — while the
+pooled `y` vector stays unweighted (pooling collapses to one
+position, so per-token weights have no target there).
+
+```bash
+plakat generate "a (cinematic:1.3) portrait, (golden hour:1.2), \
+ [shallow depth of field]" \
+ --model sd35-medium --seed 42
+```
+
+Same sentencepiece alignment caveat as Flux: T5 may split a segment
+slightly differently in isolation vs in context. The weight-per-
+resulting-subtoken contract is preserved either way.
+
 ## 4. SD3 vs SD3.5 vs Large vs Turbo
 
 ```bash

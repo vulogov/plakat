@@ -171,6 +171,26 @@ impl GenerationMetadata {
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
+
+    /// v0.18 phase 6: stamp `plakat animate` frame context into
+    /// `extras`. The `prompt` field already carries the synthetic
+    /// "lerp(t): from | to" description for the A1111 tEXt chunk;
+    /// this helper records the structured `t`, `from`, and `to`
+    /// values in the JSON sidecar so callers can re-render any
+    /// frame from its sidecar alone.
+    pub fn with_animate_lerp(
+        &mut self,
+        t: f64,
+        from_prompt: &str,
+        to_prompt: &str,
+    ) -> &mut Self {
+        self.extras.push(("Lerp t".into(), format!("{t:.4}")));
+        self.extras
+            .push(("Animate from".into(), from_prompt.to_string()));
+        self.extras
+            .push(("Animate to".into(), to_prompt.to_string()));
+        self
+    }
 }
 
 /// Render a float for the A1111 parameters string. Drops trailing
@@ -312,5 +332,41 @@ mod tests {
         let s = m.to_a1111_parameters_string();
         assert!(s.contains("ADetailer: on"));
         assert!(s.contains("Hires upscaler: real-esrgan-x2"));
+    }
+
+    // v0.18 phase 6 — animate frame metadata.
+
+    #[test]
+    fn with_animate_lerp_stamps_three_extras() {
+        let mut m = mk();
+        m.with_animate_lerp(0.375, "a fox in a meadow", "a cat in a meadow");
+        // Order is t, from, to.
+        assert_eq!(m.extras.len(), 3);
+        assert_eq!(m.extras[0].0, "Lerp t");
+        assert_eq!(m.extras[0].1, "0.3750");
+        assert_eq!(m.extras[1], ("Animate from".into(), "a fox in a meadow".into()));
+        assert_eq!(m.extras[2], ("Animate to".into(), "a cat in a meadow".into()));
+    }
+
+    #[test]
+    fn with_animate_lerp_surfaces_in_a1111_chunk() {
+        let mut m = mk();
+        m.with_animate_lerp(0.5, "a", "b");
+        let s = m.to_a1111_parameters_string();
+        // The A1111 third line concatenates all the key:value pairs;
+        // the lerp entries should land there alongside Steps / Sampler.
+        assert!(s.contains("Lerp t: 0.5000"), "got: {s}");
+        assert!(s.contains("Animate from: a"));
+        assert!(s.contains("Animate to: b"));
+    }
+
+    #[test]
+    fn with_animate_lerp_json_carries_structured_extras() {
+        let mut m = mk();
+        m.with_animate_lerp(0.25, "from", "to");
+        let json = m.to_json_pretty().unwrap();
+        assert!(json.contains("\"Lerp t\""), "{json}");
+        assert!(json.contains("\"0.2500\""), "{json}");
+        assert!(json.contains("\"Animate from\""));
     }
 }

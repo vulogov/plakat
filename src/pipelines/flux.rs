@@ -71,11 +71,20 @@ pub enum Variant {
     /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
     /// trained on depth maps instead of canny edges.
     DepthDev,
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant. Architecture
+    /// matches Dev (img_in stays at 64 channels); the difference is
+    /// at the pipeline level — a reference image is VAE-encoded and
+    /// its tokens are sequence-concatenated onto the noise tokens
+    /// with `image_ids[..., 0] = 1` as the positional marker.
+    KontextDev,
 }
 
 impl Variant {
     pub fn is_dev(self) -> bool {
-        matches!(self, Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev)
+        matches!(
+            self,
+            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev | Self::KontextDev
+        )
     }
     /// v0.13 phase 2: does this variant expect inpainting inputs?
     pub fn is_fill(self) -> bool {
@@ -85,6 +94,12 @@ impl Variant {
     /// into a 128-channel `img_in`. Canny-dev or Depth-dev.
     pub fn is_concept(self) -> bool {
         matches!(self, Self::CannyDev | Self::DepthDev)
+    }
+    /// v0.18: Flux.1-Kontext-dev expects a reference image fed via
+    /// sequence-concat rather than channel-concat. Distinct from the
+    /// `is_concept` variants (Canny/Depth) which widen `img_in`.
+    pub fn is_kontext(self) -> bool {
+        matches!(self, Self::KontextDev)
     }
     /// v0.15 phase 4: which concept conditioner does the variant expect?
     /// `None` for non-concept variants.
@@ -102,14 +117,19 @@ impl Variant {
             Self::FillDev => "flux1-fill-dev.safetensors",
             Self::CannyDev => "flux1-canny-dev.safetensors",
             Self::DepthDev => "flux1-depth-dev.safetensors",
+            Self::KontextDev => "flux1-kontext-dev.safetensors",
         }
     }
     fn t5_seq_len(self) -> usize {
         match self {
             Self::Schnell => 256,
-            // Fill / Canny / Depth all use the same 512-token T5
-            // budget as Dev.
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 512,
+            // Fill / Canny / Depth / Kontext all use the same
+            // 512-token T5 budget as Dev.
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => 512,
         }
     }
     fn flux_config(self) -> fmodel::Config {
@@ -119,13 +139,20 @@ impl Variant {
             Self::FillDev => fmodel::Config::fill_dev(),
             // Canny + Depth share the 128-channel `img_in` config.
             Self::CannyDev | Self::DepthDev => fmodel::Config::canny_or_depth_dev(),
+            // Kontext keeps `img_in` at 64 — the difference is at
+            // the seq-concat level, handled by the pipeline.
+            Self::KontextDev => fmodel::Config::kontext_dev(),
         }
     }
     fn ae_config(self) -> fae::Config {
         match self {
-            // Fill / Canny / Depth all share Dev's autoencoder.
+            // Fill / Canny / Depth / Kontext all share Dev's autoencoder.
             Self::Schnell => fae::Config::schnell(),
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => fae::Config::dev(),
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => fae::Config::dev(),
         }
     }
     pub fn default_guidance(self) -> f64 {
@@ -141,12 +168,22 @@ impl Variant {
             // for the same reason — the conditioning latent needs
             // strong guidance to actually steer the output.
             Self::CannyDev | Self::DepthDev => 30.0,
+            // Kontext's model card recommends guidance 3.5 (same as
+            // Dev) — the reference signal flows through cross-attention
+            // on the sequence-concatenated tokens rather than via a
+            // channel-concat conditioning latent, so standard Dev
+            // guidance is sufficient.
+            Self::KontextDev => 3.5,
         }
     }
     pub fn default_steps(self) -> usize {
         match self {
             Self::Schnell => 4,
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 28,
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => 28,
         }
     }
 }
@@ -216,6 +253,13 @@ pub struct Request {
     /// outputs without exceeding the model's working resolution per
     /// pass. Rejects ControlNet and Fill in this first cut.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// v0.18 phase 2b: opt-in aspect-bucket snap for Flux Kontext.
+    /// When `true` AND `variant.is_kontext()`, the requested
+    /// (width, height) is snapped to the nearest of 17
+    /// BFL-recommended Kontext resolutions before VAE encoding —
+    /// matching diffusers' default behaviour. Ignored on every
+    /// other variant.
+    pub kontext_bucket: bool,
 }
 
 // =====================================================================
@@ -367,6 +411,9 @@ pub struct GenRequest {
     /// v0.14 phase 3 / 3c: reference images for Flux Redux. See
     /// `Request::redux_images`.
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
+    /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. See
+    /// `Request::kontext_bucket`.
+    pub kontext_bucket: bool,
 }
 
 pub struct Pipeline {
@@ -650,6 +697,16 @@ impl Pipeline {
                  (flux-fill-dev-gguf) instead."
             );
         }
+        // v0.18: no upstream NF4 pack ships for Kontext at time of
+        // writing. GGUF is supported via unsloth/FLUX.1-Kontext-dev-GGUF
+        // (v0.18 Kontext phase 3) — bail stays for NF4 only.
+        if is_nf4 && matches!(req.variant, Variant::KontextDev) {
+            bail!(
+                "NF4 Flux Kontext isn't supported (no upstream NF4 pack ships yet). \
+                 Use BF16 (--model flux-kontext-dev) or GGUF \
+                 (--model flux-kontext-dev-gguf) instead."
+            );
+        }
         let donor_repo: String = if is_gguf || is_nf4 {
             match req.variant {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
@@ -661,6 +718,13 @@ impl Pipeline {
                 // before we reach this match. Keep the arms exhaustive.
                 Variant::CannyDev => "black-forest-labs/FLUX.1-Canny-dev".to_string(),
                 Variant::DepthDev => "black-forest-labs/FLUX.1-Depth-dev".to_string(),
+                // v0.18 Kontext phase 3: BF16 donor for LoRA dequant.
+                // Kontext shares the Dev architecture (img_in stays 64ch)
+                // so Flux LoRAs that target Dev layer names compose
+                // unchanged; the donor's role is to supply the
+                // full-precision weights that selective-dequant copies
+                // for affected Linear layers.
+                Variant::KontextDev => "black-forest-labs/FLUX.1-Kontext-dev".to_string(),
             }
         } else {
             req.repo.clone()
@@ -688,6 +752,10 @@ impl Pipeline {
                 // is_gguf check, this arm is unreachable in practice.
                 Variant::CannyDev => "flux1-canny-dev",
                 Variant::DepthDev => "flux1-depth-dev",
+                // v0.18 Kontext phase 3: matches unsloth's filename
+                // convention in unsloth/FLUX.1-Kontext-dev-GGUF
+                // (`flux1-kontext-dev-Q4_K_M.gguf` etc.).
+                Variant::KontextDev => "flux1-kontext-dev",
             };
             let gguf_file = format!("{stem}-{level}.gguf");
             crate::hf::download::get_file(&req.repo, &gguf_file)
@@ -1039,8 +1107,26 @@ impl Pipeline {
     pub fn generate(&mut self, req: &GenRequest) -> Result<()> {
         let steps = req.steps.unwrap_or_else(|| self.variant.default_steps());
         let guidance = req.guidance.unwrap_or_else(|| self.variant.default_guidance());
-        let w = (req.width as usize / 16) * 16;
-        let h = (req.height as usize / 16) * 16;
+        // v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When
+        // active, the user's (w, h) is rounded to the nearest of the
+        // 17 BFL-recommended Kontext resolutions BEFORE the standard
+        // multiple-of-16 floor below — both the bucket sizes and the
+        // floor are already 16-multiples so the snap is idempotent.
+        let (req_width, req_height) =
+            if self.variant.is_kontext() && req.kontext_bucket {
+                let (sw, sh) = snap_to_kontext_bucket(req.width, req.height);
+                if (sw, sh) != (req.width, req.height) {
+                    crate::ui::progress::println(&format!(
+                        "  kontext-bucket: {}x{} → {sw}x{sh}",
+                        req.width, req.height
+                    ));
+                }
+                (sw, sh)
+            } else {
+                (req.width, req.height)
+            };
+        let w = (req_width as usize / 16) * 16;
+        let h = (req_height as usize / 16) * 16;
         if w == 0 || h == 0 {
             bail!("Flux requires width and height divisible by 16, both ≥ 16");
         }
@@ -1199,6 +1285,58 @@ impl Pipeline {
         // Defensive bails on cross-feature combos that aren't yet
         // validated (tiled, img2img, Redux, Fill, ControlNet). These
         // can be relaxed once we've tested against real workflows.
+        // ---------- v0.18 Kontext reference (seq-concat path) ------
+        // Build the (packed_tokens, ref_img_ids) tuple once. Unlike
+        // Fill / Concept which channel-concat, Kontext extends the
+        // sequence dimension and adds matching positional ids with
+        // axis 0 = 1 so the model's RoPE can tell reference tokens
+        // from noise tokens.
+        let kontext_ref_packed: Option<(Tensor, Tensor)> = if self.variant.is_kontext() {
+            if req.tiled.is_some() {
+                bail!(
+                    "Flux Kontext doesn't compose with --tiled in this release \
+                     (per-tile reference slicing isn't wired)."
+                );
+            }
+            if req.init_image.is_some() || req.mask.is_some() {
+                bail!(
+                    "Flux Kontext denoises from pure noise + the reference image. \
+                     --init-image / --mask aren't accepted on flux-kontext-dev — \
+                     pass the reference via --concept-image PATH instead."
+                );
+            }
+            if !req.redux_images.is_empty() {
+                bail!(
+                    "Flux Kontext + --redux-image isn't wired yet — both extend \
+                     the sequence dimension and may exceed Flux's RoPE budget. \
+                     Use one or the other."
+                );
+            }
+            if !self.controlnets.is_empty() {
+                bail!(
+                    "Flux Kontext + --control-spec isn't wired yet. The reference \
+                     image already drives the layout; pairing with a ControlNet \
+                     would double-condition. Drop --control-spec or switch to \
+                     flux-dev for ControlNet."
+                );
+            }
+            let ref_path = req.concept_conditioning.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Flux.1-Kontext-dev requires a reference image — pass it via \
+                     --concept-image PATH (the image you want to edit)."
+                )
+            })?;
+            let spin = progress::spinner("Encoding Kontext reference image");
+            let pair = self.encode_kontext_reference(ref_path, h, w)?;
+            spin.finish_with_message(format!(
+                "✓ Kontext reference encoded ({} tokens × 64ch)",
+                pair.0.dim(1)?
+            ));
+            Some(pair)
+        } else {
+            None
+        };
+
         let concept_cond_packed: Option<Tensor> = if self.variant.is_concept() {
             if req.tiled.is_some() {
                 bail!(
@@ -1247,11 +1385,14 @@ impl Pipeline {
             ));
             Some(packed)
         } else {
-            if req.concept_conditioning.is_some() {
+            // Kontext consumes its own --concept-image upstream; only
+            // warn when the variant accepts neither channel-concat nor
+            // seq-concat conditioning.
+            if req.concept_conditioning.is_some() && !self.variant.is_kontext() {
                 tracing::warn!(
                     target: "plakat",
                     "--concept-image supplied but model is not a concept variant \
-                     (Canny-dev / Depth-dev) — input ignored."
+                     (Canny-dev / Depth-dev / Kontext-dev) — input ignored."
                 );
             }
             None
@@ -1447,6 +1588,7 @@ impl Pipeline {
                     &conditioning_packed,
                     fill_cond_packed.as_ref(),
                     concept_cond_packed.as_ref(),
+                    kontext_ref_packed.as_ref(),
                     &bar,
                 )?;
                 sampling::unpack(&denoised, h, w)?
@@ -1489,7 +1631,33 @@ impl Pipeline {
     /// Encode a single prompt into (clip_pooled, t5_emb).
     /// - clip_pooled: (1, 768)   — CLIP-L pooled at the EOT-token position
     /// - t5_emb:      (1, seq, 4096) — T5-XXL last hidden states
+    ///
+    /// v0.18 phase 3: T5 hidden states are per-token-row weighted by
+    /// the A1111 attention syntax (e.g. `(red:1.4)`). CLIP-L on Flux
+    /// is pooled-only — only the EOT position is read out, so per-
+    /// token weights don't change the pooled vector and the CLIP-L
+    /// path is left untouched.
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        // v0.18: A1111 BREAK keyword. Flux's T5 has a 256/512-
+        // token budget, far past CLIP's 77-token cap — BREAK adds
+        // no value here. Strip + warn rather than silently passing
+        // a literal "BREAK" through to T5 (which would tokenize
+        // it as a normal word).
+        let prompt_stripped: String;
+        let prompt: &str = if crate::prompt::break_chunks::has_break(prompt) {
+            tracing::warn!(
+                target: "plakat",
+                "BREAK keyword ignored on Flux — T5 has a {}-token budget, \
+                 prompt chunking is a CLIP-only workaround. Strip BREAK or \
+                 switch to --model sd15 / sd21 / sdxl.",
+                self.variant.t5_seq_len()
+            );
+            prompt_stripped = crate::prompt::break_chunks::strip(prompt);
+            prompt_stripped.as_str()
+        } else {
+            prompt
+        };
+
         // CLIP-L: tokenize to 77, run, pool at EOT.
         let mut clip_ids = self
             .clip_tok
@@ -1505,16 +1673,46 @@ impl Pipeline {
 
         // T5: tokenize to variant.t5_seq_len(), pad with id 0, run encoder.
         let t5_seq_len = self.variant.t5_seq_len();
-        let mut t5_ids = self
-            .t5_tok
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("T5 encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        t5_ids.truncate(t5_seq_len);
-        t5_ids.resize(t5_seq_len, 0);
-        let t5_ids_t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let t5_emb = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
+        let t5_emb = if crate::prompt::a1111::has_attention_syntax(prompt) {
+            // v0.18 phase 3: weighted path. Per-token-row broadcast
+            // of A1111 attention weights onto T5's hidden states.
+            // T5 has no BOS; `</s>` (id 1 in T5-XXL) is EOS; pad is
+            // 0. Look the IDs up rather than hardcoding so a future
+            // tokenizer variant doesn't silently drift.
+            let t5_eos = self
+                .t5_tok
+                .token_to_id("</s>")
+                .ok_or_else(|| anyhow!("T5 tokenizer missing </s>"))?;
+            let t5_pad = self.t5_tok.token_to_id("<pad>").unwrap_or(0);
+            let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+                tokenizer: &self.t5_tok,
+                max_len: t5_seq_len,
+                bos_id: None,
+                eos_id: t5_eos,
+                pad_id: t5_pad,
+            };
+            let (ids, weights) = crate::prompt::weighted_encoding::tokenize_with_attention(
+                &wcfg,
+                prompt,
+                &self.device,
+                self.dtype,
+            )?;
+            let hidden = self.t5_enc.forward(&ids)?.to_dtype(self.dtype)?;
+            let weights = weights.to_dtype(hidden.dtype())?;
+            hidden.broadcast_mul(&weights)?
+        } else {
+            // Fast path — byte-identical to pre-phase-3 behaviour.
+            let mut t5_ids = self
+                .t5_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("T5 encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            t5_ids.truncate(t5_seq_len);
+            t5_ids.resize(t5_seq_len, 0);
+            let t5_ids_t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?
+        };
         Ok((clip_pooled, t5_emb))
     }
 
@@ -1557,6 +1755,47 @@ impl Pipeline {
         Ok(z)
     }
 
+    /// v0.18: encode a Kontext reference image into the
+    /// `(packed_tokens, ref_img_ids)` pair that gets sequence-concat'd
+    /// onto the noise tokens at each denoise step. Unlike the concept
+    /// variants (which channel-concat into a 128ch `img_in`), Kontext
+    /// keeps `img_in` at 64 channels and extends the **sequence**
+    /// dimension. The reference tokens carry `img_ids[..., 0] = 1` so
+    /// the model's RoPE positional encoding can tell them apart from
+    /// the noise tokens (which carry `img_ids[..., 0] = 0`).
+    ///
+    /// Returns `((1, ref_seq, 64), (1, ref_seq, 3))`. Caller cats both
+    /// onto the noise tokens / `state.img_ids` per step.
+    fn encode_kontext_reference(
+        &self,
+        path: &std::path::Path,
+        h: usize,
+        w: usize,
+    ) -> Result<(Tensor, Tensor)> {
+        let z2d = self.encode_conditioning_2d(path, h, w)?;
+        let packed = pack_latent_to_tokens(&z2d)?;
+        // Match the layout `sampling::State::new` builds for the noise
+        // tokens (axis 0 marker, h_id, w_id, shape (1, lh/2 * lw/2, 3))
+        // — but force axis 0 to 1 so the model recognises this half as
+        // the reference. Use the SAME dtype as `state.img_ids` so the
+        // cat at step time succeeds without explicit promotion.
+        let (_b, _c, lh, lw) = z2d.dims4()?;
+        let (h2, w2) = (lh / 2, lw / 2);
+        let dev = &self.device;
+        let ones = Tensor::full(1f32, (h2, w2), dev)?.to_dtype(self.dtype)?;
+        let h_ids = Tensor::arange(0u32, h2 as u32, dev)?
+            .reshape(((), 1))?
+            .broadcast_as((h2, w2))?
+            .to_dtype(self.dtype)?;
+        let w_ids = Tensor::arange(0u32, w2 as u32, dev)?
+            .reshape((1, ()))?
+            .broadcast_as((h2, w2))?
+            .to_dtype(self.dtype)?;
+        let ref_img_ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)?
+            .reshape((1, h2 * w2, 3))?;
+        Ok((packed, ref_img_ids))
+    }
+
     /// v0.12 phase 2b + multi: flow-matching denoise loop. For each
     /// step, every loaded ControlNet that has its conditioning ready
     /// runs once with its own (scale, mode, conditioning) tuple. The
@@ -1564,6 +1803,12 @@ impl Pipeline {
     /// across all active CNs before being fed to the main Flux's
     /// `forward_with_residuals`. Empty CN stack reduces to candle's
     /// stock `sampling::denoise` byte-for-byte.
+    ///
+    /// v0.18: Kontext reference (`kontext_ref`) seq-concats reference
+    /// tokens onto the noise tokens at each step. The full sequence
+    /// goes through the DiT; afterwards the reference tail is
+    /// stripped from the prediction so only the noise half advances
+    /// under flow-matching.
     fn denoise_with_optional_controlnet(
         &self,
         state: &sampling::State,
@@ -1572,6 +1817,7 @@ impl Pipeline {
         conditioning_packed: &[Option<Tensor>],
         fill_cond: Option<&Tensor>,
         concept_cond: Option<&Tensor>,
+        kontext_ref: Option<&(Tensor, Tensor)>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
@@ -1644,13 +1890,30 @@ impl Pipeline {
                 (None, None) => img.clone(),
             };
 
+            // v0.18 Kontext: sequence-concat reference tokens onto
+            // the noise tokens (and same for img_ids). The reference
+            // tokens are constant across steps so the cat result for
+            // img_ids could be cached at setup; we still rebuild
+            // `expanded_img` per step because the noise half varies.
+            // Tracks the noise half's length so we can slice the
+            // reference tail off the prediction.
+            let noise_seq_len = flux_input.dim(1)?;
+            let (expanded_img, expanded_img_ids) = match kontext_ref {
+                Some((ref_tokens, ref_ids)) => {
+                    let exp_img = Tensor::cat(&[&flux_input, ref_tokens], 1)?;
+                    let exp_ids = Tensor::cat(&[&state.img_ids, ref_ids], 1)?;
+                    (exp_img, exp_ids)
+                }
+                None => (flux_input, state.img_ids.clone()),
+            };
+
             // v0.13 phase 1c: both backbones expose the same
             // `forward_with_residuals` signature. ControlNet residuals
             // compose exactly the same way on BF16 and quantized.
-            let pred = match &self.flux_model {
+            let pred_full = match &self.flux_model {
                 FluxBackbone::Bf16(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1660,8 +1923,8 @@ impl Pipeline {
                     single_r,
                 )?,
                 FluxBackbone::Quantized(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1673,8 +1936,8 @@ impl Pipeline {
                 // v0.15 phase 1: NF4 vendor now exposes
                 // forward_with_residuals (same interleave as GGUF/BF16).
                 FluxBackbone::Nf4(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1684,9 +1947,15 @@ impl Pipeline {
                     single_r,
                 )?,
             };
-            // `pred` is the 64ch noise prediction regardless of Fill
-            // mode (final_layer outputs the same 64ch). The flow-match
-            // step only ever updates the noise tensor.
+            // Slice off the reference tail (when present). `pred` is the
+            // 64ch noise prediction regardless of Fill mode (final_layer
+            // outputs the same 64ch). The flow-match step only ever
+            // updates the noise tensor.
+            let pred = if kontext_ref.is_some() {
+                pred_full.narrow(1, 0, noise_seq_len)?
+            } else {
+                pred_full
+            };
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
         }
@@ -2143,6 +2412,50 @@ fn pack_fill_2d_tile(
 /// Same 2×2 patching the upstream `sampling::State::new` does on the
 /// noise latent. Used by both `encode_conditioning` (whole canvas) and
 /// the tiled denoise loop (per tile).
+/// v0.18 phase 2b: the 17 BFL-recommended Kontext resolutions
+/// (target_w, target_h). Spans the full 9:21 → 21:9 aspect range
+/// at ~1M-token budgets. All entries are multiples of 16 so VAE +
+/// Flux 2x2 packing land clean. Order is conventional (tall →
+/// square → wide). Matches diffusers' `PREFERRED_KONTEXT_RESOLUTIONS`.
+pub const KONTEXT_BUCKETS: &[(u32, u32)] = &[
+    (672, 1568),
+    (688, 1504),
+    (720, 1456),
+    (752, 1392),
+    (800, 1328),
+    (832, 1248),
+    (880, 1184),
+    (944, 1104),
+    (1024, 1024),
+    (1104, 944),
+    (1184, 880),
+    (1248, 832),
+    (1328, 800),
+    (1392, 752),
+    (1456, 720),
+    (1504, 688),
+    (1568, 672),
+];
+
+/// Snap `(w, h)` to the closest Kontext bucket by aspect ratio.
+/// Used when `--kontext-bucket` is set; otherwise the user's
+/// requested size flows through unchanged.
+pub fn snap_to_kontext_bucket(w: u32, h: u32) -> (u32, u32) {
+    debug_assert!(!KONTEXT_BUCKETS.is_empty());
+    let target = w as f64 / h.max(1) as f64;
+    KONTEXT_BUCKETS
+        .iter()
+        .copied()
+        .min_by(|(aw, ah), (bw, bh)| {
+            let a_diff = (*aw as f64 / *ah as f64 - target).abs();
+            let b_diff = (*bw as f64 / *bh as f64 - target).abs();
+            a_diff
+                .partial_cmp(&b_diff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or((1024, 1024))
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -2206,6 +2519,7 @@ pub async fn run(req: Request) -> Result<()> {
         concept_conditioning: req.concept_conditioning,
         tiled: req.tiled,
         redux_images: req.redux_images,
+        kontext_bucket: req.kontext_bucket,
     })
 }
 
@@ -2361,6 +2675,118 @@ mod tests {
                 from_tile, from_full,
                 "tile token {out_i} (canvas token {full_i}) mismatch"
             );
+        }
+    }
+
+    // v0.18 Kontext phase 2 — reference token + img_ids shape.
+
+    #[test]
+    fn pack_latent_to_tokens_matches_kontext_seq_shape() {
+        // 16ch VAE latent at 64×64 → 32×32 tokens × 64 channels.
+        let z =
+            Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
+        let packed = pack_latent_to_tokens(&z).unwrap();
+        assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    // v0.18 Kontext phase 2b — aspect-bucket snap.
+
+    #[test]
+    fn kontext_buckets_are_seventeen_and_multiple_of_sixteen() {
+        assert_eq!(KONTEXT_BUCKETS.len(), 17);
+        for (w, h) in KONTEXT_BUCKETS {
+            assert!(w % 16 == 0, "bucket width {w} not multiple of 16");
+            assert!(h % 16 == 0, "bucket height {h} not multiple of 16");
+        }
+    }
+
+    #[test]
+    fn snap_square_to_1024() {
+        // 768x768 aspect = 1.0 → closest bucket is (1024, 1024).
+        assert_eq!(snap_to_kontext_bucket(768, 768), (1024, 1024));
+        assert_eq!(snap_to_kontext_bucket(512, 512), (1024, 1024));
+        assert_eq!(snap_to_kontext_bucket(2048, 2048), (1024, 1024));
+    }
+
+    #[test]
+    fn snap_widescreen_to_landscape_bucket() {
+        // 21:9 ≈ 2.33 → closest bucket is (1568, 672) at 2.33.
+        let (w, h) = snap_to_kontext_bucket(2100, 900);
+        assert_eq!((w, h), (1568, 672));
+    }
+
+    #[test]
+    fn snap_portrait_to_portrait_bucket() {
+        // 9:21 ≈ 0.43 → closest bucket is (672, 1568) at 0.43.
+        let (w, h) = snap_to_kontext_bucket(900, 2100);
+        assert_eq!((w, h), (672, 1568));
+    }
+
+    #[test]
+    fn snap_4_3_to_nearest() {
+        // 4:3 ≈ 1.33 → closest bucket should be one of the moderate
+        // landscape entries; exact bucket depends on which has the
+        // closest ratio. (1248, 832) has ratio 1.5; (1184, 880) has
+        // ratio ~1.345. Pick whichever is closer.
+        let (w, h) = snap_to_kontext_bucket(1600, 1200);
+        // Verify the result is *one of* the published buckets, and
+        // that its aspect ratio is closer to 4/3 than any other.
+        assert!(KONTEXT_BUCKETS.contains(&(w, h)));
+        let chosen = w as f64 / h as f64;
+        let target = 4.0 / 3.0;
+        for (bw, bh) in KONTEXT_BUCKETS {
+            let other = *bw as f64 / *bh as f64;
+            if (*bw, *bh) == (w, h) {
+                continue;
+            }
+            assert!(
+                (chosen - target).abs() <= (other - target).abs(),
+                "chosen {w}x{h} (ratio {chosen}) is farther from 4:3 than {bw}x{bh} (ratio {other})"
+            );
+        }
+    }
+
+    #[test]
+    fn kontext_ref_img_ids_axis0_is_one() {
+        // Replicate the encode_kontext_reference img_ids construction
+        // standalone so we can assert the axis-0 marker without
+        // touching the VAE. h2 = w2 = 4 → 16 ref tokens.
+        let dev = Device::Cpu;
+        let dtype = DType::F32;
+        let (h2, w2) = (4usize, 4usize);
+        let ones = Tensor::full(1f32, (h2, w2), &dev).unwrap().to_dtype(dtype).unwrap();
+        let h_ids = Tensor::arange(0u32, h2 as u32, &dev)
+            .unwrap()
+            .reshape(((), 1))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let w_ids = Tensor::arange(0u32, w2 as u32, &dev)
+            .unwrap()
+            .reshape((1, ()))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let ref_ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)
+            .unwrap()
+            .reshape((1, h2 * w2, 3))
+            .unwrap();
+        assert_eq!(ref_ids.dims(), &[1, 16, 3]);
+        // Every row's axis-0 column must be 1 (the reference marker).
+        // Compare against a (1, 16) all-ones tensor.
+        let axis0: Vec<f32> = ref_ids
+            .narrow(2, 0, 1)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        for v in &axis0 {
+            assert!((v - 1.0).abs() < 1e-6, "expected axis-0=1 marker, got {v}");
         }
     }
 }

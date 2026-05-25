@@ -8,6 +8,102 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.18 — Flux Kontext, SDXL animate, BREAK, local enhancer, polish
+
+The largest single-version cycle yet. Three workstreams plus a
+follow-on wave of QoL features and three new tutorials.
+
+### Top picks + round-out (7 phases)
+
+- **A1111 attention syntax on Flux + SD3**. The v0.17 per-token
+  weight broadcast (CLIP) now applies to T5-XXL hidden states on
+  Flux and to all three penultimate streams on SD3 / SD3.5
+  (CLIP-L + CLIP-G + T5). Every Civitai Flux LoRA card already
+  embeds `(token:1.4)`-style emphasis in its example prompts;
+  these now work as written. Sentencepiece alignment caveat
+  documented.
+- **SDXL `plakat animate`**. The prompt-morph animator (v0.17)
+  extended from SD 1.5 / SD 2.1 to SDXL. Dual CLIP-L + CLIP-G
+  hidden lerp, pooled `add_text_embeds` lerp, `add_time_ids`
+  micro-conditioning threaded through.
+- **Animate frame metadata**. Each `frame-NNNN.png` carries the
+  Auto1111 `parameters` PNG tEXt chunk + a JSON sidecar with the
+  lerp `t` parameter + `Animate from` / `Animate to` extras.
+- **LCM-LoRA SD 1.5 `--fast` preset**. Same recipe as v0.17's
+  `lcm-sdxl` against the smaller backbone — `--fast lcm-sd15` for
+  4-step inference on SD 1.5 hardware.
+- **`--grid` on `img2img` / `portrait` / `outpaint`**. The v0.17
+  grid bundling now works on every `--count`-bearing subcommand.
+  Per-backbone filename prefix preserved.
+- **`--negative` attention verification**. Tests confirming the
+  per-token weight broadcast works on the uncond branch across
+  SD 1.5 / 2.1, SDXL, SD3.
+- **`plakat doctor` enhancements**. Build / runtime device match,
+  `libcuda.so.1` driver shim probe (Linux + `--features cuda`),
+  HF cache disk usage report. Catches the CI-style "binary built
+  with CUDA, no driver on host" silent fallback.
+
+### FLUX.1 Kontext (BFL image editing)
+
+Four phases bringing BFL's image-editing Flux variant online:
+
+- **`--model flux-kontext-dev`** on `plakat generate` and
+  `plakat img2img`. Reference image is VAE-encoded and
+  sequence-concatenated onto the noise tokens (with
+  `img_ids[..., 0] = 1` as the RoPE marker) — distinct mechanism
+  from Canny/Depth which widen `img_in` to 128 channels.
+- **`--concept-image PATH`** reused as the reference flag (same
+  grammar as Canny/Depth, semantically the "image to edit"). On
+  `plakat img2img`, the input positional becomes the reference
+  natively.
+- **GGUF support** via `unsloth/FLUX.1-Kontext-dev-GGUF`
+  (`--model flux-kontext-dev-gguf`). Composes with LoRA (Kontext
+  shares Dev's transformer layer names) and `--quantize-t5`.
+- **`--kontext-bucket`** opt-in flag — snaps `--size` to the
+  closest of 17 BFL-recommended Kontext resolutions before VAE
+  encoding (off by default, surprise-free for non-Kontext flows).
+
+### Follow-on wave (6 features)
+
+- **`plakat metadata FILE.png`**. New subcommand reads the v0.17
+  `parameters` PNG tEXt chunk + JSON sidecar back into the
+  terminal. `--json-only` pipes cleanly to `jq`.
+- **`--aspect`** on `plakat img2img`. Resolution priority:
+  `--size > --aspect + --base > input image dims`. Composes with
+  `--kontext-bucket`.
+- **`plakat scenario --dry-run` polish**. The summary line now
+  reads `(dry-run) would have generated …` instead of `✓ done`,
+  and per-task previews show the output directory path so you can
+  see file layout before launching a long batch.
+- **A1111 inline `<lora:NAME[:weight]>` syntax**. Civitai LoRA
+  cards embed these directly; plakat extracts them at the CLI
+  boundary, parses via the v0.17 `LoraSpec` grammar (paths /
+  HF repos / `civitai:NNN` shorthand), prepends to the LoRA
+  stack, removes from the prompt before encoding.
+- **`BREAK` keyword in prompts**. A1111 convention for chunking
+  past CLIP's 77-token cap. Each chunk gets its own 77-token
+  CLIP context; hidden states sequence-concatenate before
+  cross-attention. SD 1.5 / 2.1 / SDXL; Flux + SD3 strip + warn
+  (their T5 already has a 256/512-token budget).
+- **Local prompt enhancer**. `--enhance local` runs a small
+  instruction-tuned LLM in-process via candle's quantized
+  backends. Qwen2.5-1.5B-Instruct (Q4_K_M, ~1 GB) as default,
+  SmolLM2-360M (~230 MB) as CPU-budget fallback. Greedy decoding
+  for reproducibility; `--enhance auto` picks DeepSeek → Gemini →
+  local based on what env vars are set. No API key required for
+  the local arm.
+
+### Three new tutorials
+
+- [`ADVANCED_PROMPTING_TUTORIAL.md`](Documentation/Tutorials/ADVANCED_PROMPTING_TUTORIAL.md)
+  — attention syntax, BREAK, inline `<lora:>` as a coherent set.
+- [`PROMPT_ENHANCER_TUTORIAL.md`](Documentation/Tutorials/PROMPT_ENHANCER_TUTORIAL.md)
+  — `--enhance deepseek / gemini / local / auto`.
+- [`METADATA_TUTORIAL.md`](Documentation/Tutorials/METADATA_TUTORIAL.md)
+  — recovering recipes from PNG metadata.
+
+465 lib tests green; +84 new tests across the cycle.
+
 ## What's new in v0.17 — the prompt + reproducibility release
 
 Ten phases focused on **prompt expressiveness**, **reproducibility**,
@@ -268,6 +364,10 @@ plakat generate "..." --model flux-dev --fast hyper-8
 plakat generate "a fantasy castle on a misty mountaintop" \
     --model sdxl --fast lcm-sdxl
 
+# Same recipe for SD 1.5 — 4-step inference on the smaller backbone
+plakat generate "a fantasy castle on a misty mountaintop" \
+    --model sd15 --fast lcm-sd15
+
 # ControlNet: layout-guided generation. Five conditioners ship with
 # auto-annotators (depth, canny, openpose, lineart, softedge); each
 # accepts either `from=PATH` (auto-annotate any photo) or
@@ -297,6 +397,8 @@ plakat generate "a vintage travel poster of Tokyo at night" \
     --hires-fix --hires-upscaler real-esrgan-x2 --adetailer
 
 # `--grid` bundles a `--count N` sweep into a single shareable PNG.
+# Also works on `plakat img2img` / `plakat portrait` / `plakat outpaint`
+# (v0.18); the grid filename tracks the backbone prefix.
 plakat generate "a peaceful koi pond" \
     --model sd15 --count 9 --seed 1000 --grid
 
@@ -313,7 +415,43 @@ plakat civitai download 12345
 plakat generate "a watercolor fox in tall grass" \
     --model sd15 --lora civitai:12345:0.7
 
+# v0.18: A1111-style inline <lora:> tags in the prompt itself
+# (matches the format Civitai LoRA cards embed in their examples).
+plakat generate \
+    "a watercolor fox in tall grass <lora:civitai:12345:0.7>" \
+    --model sd15
+
+# v0.18: BREAK keyword to chunk past CLIP's 77-token cap.
+# Each chunk gets its own 77-token CLIP context.
+plakat generate \
+    "first half of an elaborate prompt with subject + composition \
+     BREAK \
+     second half with style + lighting + medium notes" \
+    --model sd15
+
+# v0.18: local LLM prompt enhancer (no API key — runs in-process).
+plakat generate "a knight" --enhance local --model sd15
+
+# v0.18: enhance auto — DeepSeek → Gemini → local based on env vars.
+plakat generate "a knight" --enhance auto --model sd15
+
+# v0.18: Flux Kontext for image editing — input is the reference,
+# prompt describes the edit. Reference is VAE-encoded and
+# sequence-concat'd onto the noise tokens.
+plakat img2img photo.png --model flux-kontext-dev \
+    --prompt "make the lighting golden hour, warm tones"
+
+# Same recipe via GGUF for 16 GB GPUs.
+plakat generate "make it sunset" --model flux-kontext-dev-gguf \
+    --concept-image photo.png --quant-level Q5_K_M
+
+# v0.18: read back the recipe (prompt, seed, LoRAs, sampler) from
+# any plakat-written PNG. Pipe --json-only to jq for scripting.
+plakat metadata ./out/plakat-42.png
+plakat metadata ./out/plakat-42.png --json-only | jq .seed
+
 # Prompt-morph animation — interpolates two prompts over N frames.
+# v0.18 adds SDXL on top of SD 1.5 / SD 2.1.
 plakat animate \
     --from "a photo of a fox in a meadow" \
     --to "a photo of a cat in a meadow" \
@@ -365,8 +503,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax, CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar. |
-| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax (all backbones in v0.18), inline `<lora:>` tags (v0.18), `BREAK` keyword (v0.18, SD-family), CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar, `--enhance local` (v0.18). |
+| `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs. |
@@ -374,13 +512,14 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
-| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1. |
+| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
 | `models {search,recommend,size,pull,ls,rm}` | Browse HuggingFace and manage the local cache. |
-| `doctor` | Health-check FaceID / SCRFD setup. |
+| `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. |
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
+| `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 
 ## Documentation
 
@@ -400,6 +539,16 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     browsing, downloading, and using Civitai community assets.
   - [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md) —
     prompt-morph animation via `plakat animate`.
+  - [`ADVANCED_PROMPTING_TUTORIAL.md`](Documentation/Tutorials/ADVANCED_PROMPTING_TUTORIAL.md) —
+    A1111 attention syntax, the `BREAK` keyword for chunking past
+    CLIP's 77-token cap, and inline `<lora:>` tags. Per-backbone
+    composition matrix.
+  - [`PROMPT_ENHANCER_TUTORIAL.md`](Documentation/Tutorials/PROMPT_ENHANCER_TUTORIAL.md) —
+    `--enhance deepseek | gemini | local | auto`. The local arm
+    runs Qwen2.5-1.5B in-process with no API key.
+  - [`METADATA_TUTORIAL.md`](Documentation/Tutorials/METADATA_TUTORIAL.md) —
+    `plakat metadata FILE.png` recovers the recipe (prompt, seed,
+    LoRAs, sampler) from any plakat / A1111 / Civitai PNG.
   - Specialized portrait recipes:
     [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
     and

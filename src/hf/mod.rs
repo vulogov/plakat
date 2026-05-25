@@ -53,6 +53,21 @@ pub fn resolve_alias(name: &str) -> &str {
         "flux-depth-dev" | "flux1-depth-dev" | "FLUX.1-Depth-dev" => {
             "black-forest-labs/FLUX.1-Depth-dev"
         }
+        // v0.18: FLUX.1-Kontext-dev — BFL's image-editing checkpoint.
+        // Same architecture as Flux.1-dev (`img_in` stays at 64); the
+        // difference is at the DiT input level — a reference image is
+        // VAE-encoded and sequence-concatenated onto the noise tokens.
+        // Gated repo; HF_TOKEN required.
+        "flux-kontext-dev" | "flux1-kontext-dev" | "FLUX.1-Kontext-dev" => {
+            "black-forest-labs/FLUX.1-Kontext-dev"
+        }
+        // v0.18 Kontext phase 3: GGUF (4-bit/6-bit/8-bit) Kontext
+        // via the unsloth mirror. Filename convention matches the
+        // city96 Flux GGUF packs (`flux1-kontext-dev-Q4_K_M.gguf`).
+        // Not gated.
+        "flux-kontext-dev-gguf" | "flux-kontext-gguf" | "flux-kontext-q4" => {
+            "unsloth/FLUX.1-Kontext-dev-GGUF"
+        }
         // v0.13: 4-bit quantized Flux via GGUF. city96's mirrors are
         // the canonical community source. The transformer drops from
         // ~24 GB BF16 to ~7 GB Q4_K_S — Flux becomes practical on
@@ -98,5 +113,50 @@ pub fn resolve_alias(name: &str) -> &str {
             "city96/FLUX.1-Fill-dev-gguf"
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v0.18 Kontext phase 3 — alias resolution for the GGUF mirror.
+
+    #[test]
+    fn resolves_flux_kontext_dev_bf16() {
+        assert_eq!(
+            resolve_alias("flux-kontext-dev"),
+            "black-forest-labs/FLUX.1-Kontext-dev"
+        );
+        assert_eq!(
+            resolve_alias("flux1-kontext-dev"),
+            "black-forest-labs/FLUX.1-Kontext-dev"
+        );
+    }
+
+    #[test]
+    fn resolves_flux_kontext_dev_gguf() {
+        assert_eq!(
+            resolve_alias("flux-kontext-dev-gguf"),
+            "unsloth/FLUX.1-Kontext-dev-GGUF"
+        );
+        assert_eq!(
+            resolve_alias("flux-kontext-gguf"),
+            "unsloth/FLUX.1-Kontext-dev-GGUF"
+        );
+        assert_eq!(
+            resolve_alias("flux-kontext-q4"),
+            "unsloth/FLUX.1-Kontext-dev-GGUF"
+        );
+    }
+
+    #[test]
+    fn unknown_alias_passes_through() {
+        // The fallthrough arm hands the input back verbatim so
+        // explicit HF repo paths flow without modification.
+        assert_eq!(
+            resolve_alias("acme-research/some-custom-flux-lora"),
+            "acme-research/some-custom-flux-lora"
+        );
     }
 }

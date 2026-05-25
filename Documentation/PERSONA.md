@@ -1270,6 +1270,15 @@ plakat doctor # offline check — parses + verifies local file existence
 plakat doctor --verify # active — attempts the HF download to confirm
 ```
 
+`plakat doctor` also reports your build's backend features vs the
+runtime-resolved device (v0.18) — useful when a CUDA binary
+silently falls back to CPU because the NVIDIA driver isn't
+installed (the driver shim `libcuda.so.1` is separate from the
+CUDA toolkit, and a Linux + `--features cuda` doctor run probes
+the well-known driver paths and flags a missing shim). The HF
+cache disk usage is reported alongside, with cleanup hints
+(`plakat models rm <repo>`) when it grows over 100 GB.
+
 ### Usage examples
 
 ```bash

@@ -74,6 +74,7 @@ use crate::ui::progress;
 
 /// CLIP EOT-token id — shared across CLIP-L and CLIP-G in diffusers.
 const CLIP_EOT: u32 = 49407;
+const CLIP_BOS: u32 = 49406;
 
 /// VAE latent normalisation constants for SD3 / SD3.5. Match the
 /// `scaling_factor` / `shift_factor` baked into the diffusers
@@ -1165,58 +1166,159 @@ impl Pipeline {
     }
 
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
-        // ---------- CLIP-L ----------
-        let mut clip_l_ids = self
-            .clip_l_tok
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("CLIP-L encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        clip_l_ids.resize(self.clip_l_cfg.max_position_embeddings, CLIP_EOT);
-        let clip_l_eot_pos = clip_l_ids.iter().position(|&t| t == CLIP_EOT).unwrap_or(0);
-        let clip_l_ids_t =
-            Tensor::new(clip_l_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        // Full hidden states from CLIP-L (forward returns
-        // `final_layer_norm` output).
+        // v0.18: BREAK is a CLIP-77-token-cap workaround. SD3's
+        // T5 has a 256-token budget; per-CLIP chunking isn't wired
+        // here (the pooled `y` blend assumes single-chunk CLIP-L/G
+        // outputs). Strip + warn so users notice rather than getting
+        // "BREAK" tokenized as a literal word.
+        let prompt_stripped: String;
+        let prompt: &str = if crate::prompt::break_chunks::has_break(prompt) {
+            tracing::warn!(
+                target: "plakat",
+                "BREAK keyword ignored on SD3 / SD3.5 — T5 has a 256-token \
+                 budget making the CLIP chunk workaround unnecessary, and SD3's \
+                 pooled y vector assumes single-chunk CLIP outputs. Strip \
+                 BREAK or switch to --model sd15 / sd21 / sdxl."
+            );
+            prompt_stripped = crate::prompt::break_chunks::strip(prompt);
+            prompt_stripped.as_str()
+        } else {
+            prompt
+        };
+
+        // v0.18 phase 3: A1111 attention syntax broadcasts per-token
+        // weights onto the three encoders that flow into the SD3
+        // cross-attention context (CLIP-L penult, CLIP-G penult,
+        // T5 hidden). Pooled outputs (l_pooled at EOT, g_pooled from
+        // forward_for_sdxl) stay unweighted — pooling collapses to a
+        // single position, so per-token weights have no target there.
+        let has_attn = crate::prompt::a1111::has_attention_syntax(prompt);
+
+        // ---------- CLIP-L tokenize (with optional weights) ----------
+        let (clip_l_ids_t, clip_l_weights) = if has_attn {
+            let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+                tokenizer: &self.clip_l_tok,
+                max_len: self.clip_l_cfg.max_position_embeddings,
+                bos_id: Some(CLIP_BOS),
+                eos_id: CLIP_EOT,
+                pad_id: CLIP_EOT,
+            };
+            let (ids, w) = crate::prompt::weighted_encoding::tokenize_with_attention(
+                &wcfg,
+                prompt,
+                &self.device,
+                self.dtype,
+            )?;
+            (ids, Some(w))
+        } else {
+            let mut clip_l_ids = self
+                .clip_l_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("CLIP-L encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            clip_l_ids.resize(self.clip_l_cfg.max_position_embeddings, CLIP_EOT);
+            let t = Tensor::new(clip_l_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            (t, None)
+        };
+
+        // ---------- CLIP-L forward → pooled + penult ----------
         let clip_l_hidden = self.clip_l.forward(&clip_l_ids_t)?;
+        // Recover the EOT position from the (possibly weighted) ID
+        // tensor. Works for both paths because both place EOS as the
+        // first CLIP_EOT in the sequence.
+        let clip_l_ids_vec: Vec<u32> = clip_l_ids_t.flatten_all()?.to_vec1()?;
+        let clip_l_eot_pos = clip_l_ids_vec
+            .iter()
+            .position(|&t| t == CLIP_EOT)
+            .unwrap_or(0);
         let clip_l_pooled = clip_l_hidden
             .i((.., clip_l_eot_pos, ..))?
             .to_dtype(self.dtype)?;
 
-        // ---------- CLIP-G (penultimate hidden + pooled via projection) ---
-        let mut clip_g_ids = self
-            .clip_g_tok
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        // CLIP-G uses the same 77-token budget as CLIP-L.
-        clip_g_ids.resize(77, CLIP_EOT);
-        let clip_g_ids_t =
-            Tensor::new(clip_g_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let (clip_g_penult, clip_g_pooled) = self.clip_g.forward_for_sdxl(&clip_g_ids_t)?;
-        let clip_g_penult = clip_g_penult.to_dtype(self.dtype)?;
-        let clip_g_pooled = clip_g_pooled.to_dtype(self.dtype)?;
+        // ---------- CLIP-G tokenize (with optional weights) ----------
+        let (clip_g_ids_t, clip_g_weights) = if has_attn {
+            let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+                tokenizer: &self.clip_g_tok,
+                max_len: 77,
+                bos_id: Some(CLIP_BOS),
+                eos_id: CLIP_EOT,
+                pad_id: CLIP_EOT,
+            };
+            let (ids, w) = crate::prompt::weighted_encoding::tokenize_with_attention(
+                &wcfg,
+                prompt,
+                &self.device,
+                self.dtype,
+            )?;
+            (ids, Some(w))
+        } else {
+            let mut clip_g_ids = self
+                .clip_g_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            clip_g_ids.resize(77, CLIP_EOT);
+            let t = Tensor::new(clip_g_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            (t, None)
+        };
 
-        // ---------- T5-XXL ----------
-        let mut t5_ids = self
-            .t5_tok
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("T5 encode: {e}"))?
-            .get_ids()
-            .to_vec();
+        // ---------- CLIP-G forward_for_sdxl → penult + pooled ----------
+        let (clip_g_penult, clip_g_pooled) = self.clip_g.forward_for_sdxl(&clip_g_ids_t)?;
+        let mut clip_g_penult = clip_g_penult.to_dtype(self.dtype)?;
+        let clip_g_pooled = clip_g_pooled.to_dtype(self.dtype)?;
+        if let Some(w) = &clip_g_weights {
+            clip_g_penult = clip_g_penult.broadcast_mul(&w.to_dtype(self.dtype)?)?;
+        }
+
+        // ---------- T5-XXL tokenize (with optional weights) ----------
         let t5_seq = self.variant.t5_seq_len();
-        t5_ids.truncate(t5_seq);
-        t5_ids.resize(t5_seq, 0);
-        let t5_ids_t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let t5_hidden = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
+        let (t5_ids_t, t5_weights) = if has_attn {
+            let t5_eos = self
+                .t5_tok
+                .token_to_id("</s>")
+                .ok_or_else(|| anyhow!("T5 tokenizer missing </s>"))?;
+            let t5_pad = self.t5_tok.token_to_id("<pad>").unwrap_or(0);
+            let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+                tokenizer: &self.t5_tok,
+                max_len: t5_seq,
+                bos_id: None,
+                eos_id: t5_eos,
+                pad_id: t5_pad,
+            };
+            let (ids, w) = crate::prompt::weighted_encoding::tokenize_with_attention(
+                &wcfg,
+                prompt,
+                &self.device,
+                self.dtype,
+            )?;
+            (ids, Some(w))
+        } else {
+            let mut t5_ids = self
+                .t5_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("T5 encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            t5_ids.truncate(t5_seq);
+            t5_ids.resize(t5_seq, 0);
+            let t = Tensor::new(t5_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            (t, None)
+        };
+
+        // ---------- T5 forward ----------
+        let mut t5_hidden = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
+        if let Some(w) = &t5_weights {
+            t5_hidden = t5_hidden.broadcast_mul(&w.to_dtype(self.dtype)?)?;
+        }
 
         // ---------- Pooled (y) ----------
         // SD3 convention: CLIP-G pooled first (1280), CLIP-L pooled
         // second (768) → (1, 2048).
         let y = Tensor::cat(&[&clip_g_pooled, &clip_l_pooled], candle_core::D::Minus1)?;
 
-        // ---------- Context ----------
+        // ---------- CLIP-L penultimate (weighted if has_attn) ----------
         // CLIP-L's penultimate hidden state is what SD3 mixes with
         // CLIP-G's penultimate. We grab CLIP-L penultimate by running
         // until layer -2 (matching SDXL's convention).
@@ -1225,7 +1327,10 @@ impl Pipeline {
                 ::forward_until_encoder_layer(&self.clip_l, &clip_l_ids_t, usize::MAX, -2)?;
             (final_h, pen_h)
         };
-        let clip_l_penult = clip_l_penult.to_dtype(self.dtype)?;
+        let mut clip_l_penult = clip_l_penult.to_dtype(self.dtype)?;
+        if let Some(w) = &clip_l_weights {
+            clip_l_penult = clip_l_penult.broadcast_mul(&w.to_dtype(self.dtype)?)?;
+        }
         // Concat CLIP halves along channel: (1, 77, 768) + (1, 77, 1280)
         //   → (1, 77, 2048).
         let clip_concat = Tensor::cat(&[&clip_l_penult, &clip_g_penult], candle_core::D::Minus1)?;

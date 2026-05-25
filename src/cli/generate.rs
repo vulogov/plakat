@@ -344,17 +344,23 @@ pub struct GenerateArgs {
     #[arg(long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 
-    /// Pre-rendered conditioning map for the BFL Flux "concept"
-    /// checkpoints (`--model flux-canny-dev` or `flux-depth-dev`). The
-    /// path is a canny edge map (for Canny-dev) or depth map (for
-    /// Depth-dev) at the target output resolution. The image is
-    /// VAE-encoded and concat'd onto the noise tokens at every
-    /// denoise step — the model's `img_in` Linear is widened to
-    /// 128 channels to consume it.
+    /// Pre-rendered conditioning map / reference image for the BFL
+    /// Flux "concept" + Kontext checkpoints. Path interpretation
+    /// depends on `--model`:
     ///
-    /// Required for the concept variants when `--concept-from` isn't
-    /// supplied; ignored on other models. Mutually exclusive with
-    /// `--concept-from`.
+    /// * `flux-canny-dev` — canny edge map at the target resolution
+    ///   (channel-concat into a 128ch `img_in`)
+    /// * `flux-depth-dev` — depth map at the target resolution
+    ///   (channel-concat into a 128ch `img_in`)
+    /// * `flux-kontext-dev` (v0.18) — the literal reference image to
+    ///   edit (VAE-encoded, sequence-concat onto the noise tokens with
+    ///   `img_ids[..., 0] = 1` as the RoPE marker; `img_in` stays at
+    ///   64 channels)
+    ///
+    /// Required on the concept variants when `--concept-from` isn't
+    /// supplied; required on Kontext (no auto-annotate equivalent —
+    /// Kontext wants the actual reference, not a derived map).
+    /// Ignored on other models. Mutually exclusive with `--concept-from`.
     #[arg(
         long = "concept-image",
         value_name = "PATH",
@@ -373,6 +379,17 @@ pub struct GenerateArgs {
     /// `--model flux-canny-dev` / `flux-depth-dev`.
     #[arg(long = "concept-from", value_name = "PATH")]
     pub concept_from: Option<PathBuf>,
+
+    /// v0.18 phase 2b: snap `--size` to the closest of 17 BFL-
+    /// recommended Kontext resolutions before VAE encoding. Off by
+    /// default (the user's `--size` flows through verbatim — surprise-
+    /// free for non-Kontext workflows). On `--model flux-kontext-dev`,
+    /// the snap matches diffusers' default behaviour and produces the
+    /// best-trained-quality outputs. The 17 buckets span 9:21 → 21:9
+    /// at ~1M-token budgets, all multiples of 16. Ignored on every
+    /// other model.
+    #[arg(long = "kontext-bucket", default_value_t = false)]
+    pub kontext_bucket: bool,
 
     /// v0.16 phase 6: enable ADetailer-style face refinement. After
     /// the main t2i pass, plakat runs SCRFD on each output image,
@@ -545,6 +562,35 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         args.prompt = enhanced;
     }
 
+    // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
+    // tags from both the positive and negative prompts; the
+    // negatives are stripped silently (A1111 convention — LoRAs
+    // don't apply via the uncond branch). Order: wildcards (above)
+    // → enhance (above) → lora-tags (here) → attention syntax (in
+    // the encoder). LoRAs land on top of any --lora CLI args.
+    if crate::prompt::lora_tags::has_lora_tags(&args.prompt) {
+        let (cleaned, extracted) = crate::prompt::lora_tags::extract(&args.prompt)?;
+        if !extracted.is_empty() {
+            tracing::info!(
+                target: "plakat",
+                "Extracted {} inline <lora:> tag(s) from prompt",
+                extracted.len()
+            );
+            for ex in extracted.into_iter().rev() {
+                // Insert at the front so explicit --lora flags retain
+                // their relative order at the END (later entries win
+                // on key collision during merge).
+                args.loras.insert(0, ex.spec);
+            }
+            args.prompt = cleaned;
+        }
+    }
+    if crate::prompt::lora_tags::has_lora_tags(&args.negative) {
+        let (cleaned, _dropped) =
+            crate::prompt::lora_tags::extract(&args.negative)?;
+        args.negative = cleaned;
+    }
+
     let (width, height) =
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
     std::fs::create_dir_all(&args.out)?;
@@ -607,6 +653,33 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                         "--fast {} doesn't compose with the SDXL refiner — the \
                          refiner runs a non-LCM scheduler on the late steps which \
                          conflicts with the 4-step LCM schedule. Drop --refiner.",
+                        preset.name
+                    );
+                }
+            }
+            crate::pipelines::flux_fast::FastTarget::Sd15 => {
+                // SD 1.5 family — exclude SDXL (which contains "xl") and
+                // the inpaint variant (mask + 4-step distillation interact
+                // the same way Flux Fill + Hyper does — bail loud).
+                let is_sd15 = (m == "sd15"
+                    || m == "sd1.5"
+                    || m == "sd-1.5"
+                    || m.contains("v1-5")
+                    || m.contains("stable-diffusion-v1-5"))
+                    && !m.contains("xl");
+                if !is_sd15 {
+                    anyhow::bail!(
+                        "--fast {} (Latent Consistency LoRA for SD 1.5) requires an \
+                         SD 1.5 model (got --model {:?}). Use --model sd15.",
+                        preset.name,
+                        args.model
+                    );
+                }
+                if m.contains("inpaint") {
+                    anyhow::bail!(
+                        "--fast {} doesn't compose with SD 1.5 inpaint — the \
+                         mask-driven denoise interacts oddly with the 4-step LCM \
+                         schedule. Use --model sd15 and handle inpaint separately.",
                         preset.name
                     );
                 }
@@ -777,6 +850,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         redux_images: args.redux_images,
         // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
         flux_concept_image: args.concept_image,
+        // v0.18 phase 2b: opt-in Kontext aspect-bucket snap. Only
+        // honoured on `--model flux-kontext-dev`; ignored elsewhere.
+        kontext_bucket: args.kontext_bucket,
         // v0.16 phase 5: CLIP-skip. SD 1.5 / SD 2.1 only.
         clip_skip: args.clip_skip,
         // v0.16 phase 9: TI specs. sd_core::load bails loud when
