@@ -2468,6 +2468,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // also empty in scenarios today — SD3 CN scenario
                     // wiring lands in a later phase).
                     controlnet_conditioning: Vec::new(),
+                    // v0.20: scenarios don't expose --format yet —
+                    // default to PNG (the v0.17 A1111-compat path).
+                    output_format: crate::imaging::io::OutputFormat::Png,
                 };
                 sp.generate(&sd3_req)?;
                 if task_lora_applied {
@@ -2677,6 +2680,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // aspect snap. Ignored when the resolved
                         // variant isn't Kontext.
                         kontext_bucket: eff_kontext_bucket,
+                        // v0.20: scenarios don't expose --format yet.
+                        output_format: crate::imaging::io::OutputFormat::Png,
                     })?;
                 }
                 // Dry-run path doesn't reach here.
