@@ -14,6 +14,7 @@ pub mod config;
 pub mod device;
 pub mod hf;
 pub mod imaging;
+pub mod llm;
 pub mod pipelines;
 pub mod prompt;
 pub mod style;
