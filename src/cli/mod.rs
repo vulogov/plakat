@@ -92,7 +92,7 @@ pub enum Command {
     /// frames, fixed seed, optional GIF bundling. SD 1.5 / SD 2.1
     /// only in this release.
     Animate(animate::AnimateArgs),
-    /// v0.19: read back the Auto1111 `parameters` PNG tEXt chunk +
+    /// v0.18: read back the Auto1111 `parameters` PNG tEXt chunk +
     /// JSON sidecar plakat writes alongside every generation.
     /// Reverse of the metadata write path — recover prompt / seed /
     /// model / LoRAs from a PNG without consulting the shell.

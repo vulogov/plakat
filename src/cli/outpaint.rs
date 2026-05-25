@@ -273,7 +273,7 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         grid_padding: args.grid_padding,
         // v0.18 phase 2b: outpaint never routes through Kontext.
         kontext_bucket: false,
-        // v0.19 #2: outpaint controls dimension changes via per-
+        // v0.18: outpaint controls dimension changes via per-
         // side --left/--right/--top/--bottom/--expand flags, so
         // --aspect isn't surfaced on the outpaint CLI. Pass None +
         // the existing 1024 base default through so the underlying

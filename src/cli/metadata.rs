@@ -98,7 +98,7 @@ mod tests {
     use super::*;
     use crate::imaging::metadata::GenerationMetadata;
 
-    // v0.19 — end-to-end round-trip: write a plakat-flavoured PNG +
+    // v0.18 — end-to-end round-trip: write a plakat-flavoured PNG +
     // sidecar via the v0.17 helpers, then verify `metadata` reads
     // both back. Smoke test rather than asserting exact stdout.
 

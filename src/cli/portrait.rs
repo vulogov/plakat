@@ -361,7 +361,7 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         args.prompt = enhanced;
     }
 
-    // v0.19 #4: A1111 inline <lora:name[:weight]> extraction.
+    // v0.18: A1111 inline <lora:name[:weight]> extraction.
     // Same ordering as generate / img2img: wildcards → enhance →
     // lora-tags → encode. Civitai LoRA prompt cards often include
     // inline tags; portrait prompts inherit the convention.

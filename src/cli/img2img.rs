@@ -67,13 +67,13 @@ pub struct Img2ImgArgs {
     #[arg(long)]
     pub size: Option<Size>,
 
-    /// v0.19 #2: aspect ratio (e.g. `16:9`, `9:16`, `1:1`, `4:3`)
+    /// v0.18: aspect ratio (e.g. `16:9`, `9:16`, `1:1`, `4:3`)
     /// paired with `--base`. Mutually exclusive with `--size`. When
     /// neither flag is set, the input image's dimensions are used.
     #[arg(long, conflicts_with = "size")]
     pub aspect: Option<String>,
 
-    /// v0.19 #2: base resolution used with `--aspect` (the shorter
+    /// v0.18: base resolution used with `--aspect` (the shorter
     /// side; the longer side becomes `base * ratio`). Ignored when
     /// `--size` or no aspect override is set. SD 1.5 defaults to 512
     /// in the rest of the codebase; we pick 1024 here as the modern
@@ -255,7 +255,7 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     // model-specific path. Same RNG-seeding rules as the generate
     // CLI — seeded from `--seed` when set, OS entropy otherwise.
     expand_img2img_wildcards(&mut args)?;
-    // v0.19 #4: A1111 inline <lora:name[:weight]> extraction. Runs
+    // v0.18: A1111 inline <lora:name[:weight]> extraction. Runs
     // AFTER wildcard expansion so `<lora:{styleA|styleB}>` resolves
     // a concrete name first, BEFORE the dispatch arms so every
     // variant (SD-family, Flux Fill, Flux img2img, Flux Kontext,
@@ -1167,7 +1167,7 @@ fn detect_input_size(path: &std::path::Path) -> Result<(u32, u32)> {
     Ok((sw, sh))
 }
 
-/// v0.19 #2: img2img size resolution priority — `--size > --aspect
+/// v0.18: img2img size resolution priority — `--size > --aspect
 /// + --base > input dims`. Centralises the order so the five
 /// dispatch arms (SD-family, Flux Fill, Flux img2img, Flux Kontext,
 /// SD3) all behave identically and the `--aspect` flag composes
@@ -1196,7 +1196,7 @@ mod tests {
         assert_eq!((w, h), (512, 800));
     }
 
-    // v0.19 #2 — img2img --aspect resolution priority.
+    // v0.18 — img2img --aspect resolution priority.
 
     fn mk_args(input: PathBuf) -> Img2ImgArgs {
         Img2ImgArgs {

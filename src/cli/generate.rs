@@ -562,7 +562,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         args.prompt = enhanced;
     }
 
-    // v0.19 #4: A1111 inline <lora:name[:weight]> syntax. Extract
+    // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
     // tags from both the positive and negative prompts; the
     // negatives are stripped silently (A1111 convention — LoRAs
     // don't apply via the uncond branch). Order: wildcards (above)

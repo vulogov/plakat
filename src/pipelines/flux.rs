@@ -1638,7 +1638,7 @@ impl Pipeline {
     /// token weights don't change the pooled vector and the CLIP-L
     /// path is left untouched.
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
-        // v0.19 #5: A1111 BREAK keyword. Flux's T5 has a 256/512-
+        // v0.18: A1111 BREAK keyword. Flux's T5 has a 256/512-
         // token budget, far past CLIP's 77-token cap — BREAK adds
         // no value here. Strip + warn rather than silently passing
         // a literal "BREAK" through to T5 (which would tokenize

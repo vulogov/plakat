@@ -11,7 +11,7 @@ instruction-tuned LLM, which rewrites it with concrete visual
 detail (composition, lighting, medium, mood, style), then feeds
 the rewritten prompt to the diffusion model.
 
-Three providers ship in v0.19:
+Three providers ship in v0.18:
 
 | Provider | Where the LLM runs | Cost | First-use setup |
 |---|---|---|---|
@@ -21,7 +21,7 @@ Three providers ship in v0.19:
 | `auto` | picks best available | varies | — |
 
 This tutorial covers all four flavours, with the `local` path
-(new in v0.19) as the focus — it's the one that needs no API key.
+(new in v0.18) as the focus — it's the one that needs no API key.
 
 ## Prerequisites
 
