@@ -1259,6 +1259,58 @@ impl Pipeline {
         // Defensive bails on cross-feature combos that aren't yet
         // validated (tiled, img2img, Redux, Fill, ControlNet). These
         // can be relaxed once we've tested against real workflows.
+        // ---------- v0.18 Kontext reference (seq-concat path) ------
+        // Build the (packed_tokens, ref_img_ids) tuple once. Unlike
+        // Fill / Concept which channel-concat, Kontext extends the
+        // sequence dimension and adds matching positional ids with
+        // axis 0 = 1 so the model's RoPE can tell reference tokens
+        // from noise tokens.
+        let kontext_ref_packed: Option<(Tensor, Tensor)> = if self.variant.is_kontext() {
+            if req.tiled.is_some() {
+                bail!(
+                    "Flux Kontext doesn't compose with --tiled in this release \
+                     (per-tile reference slicing isn't wired)."
+                );
+            }
+            if req.init_image.is_some() || req.mask.is_some() {
+                bail!(
+                    "Flux Kontext denoises from pure noise + the reference image. \
+                     --init-image / --mask aren't accepted on flux-kontext-dev — \
+                     pass the reference via --concept-image PATH instead."
+                );
+            }
+            if !req.redux_images.is_empty() {
+                bail!(
+                    "Flux Kontext + --redux-image isn't wired yet — both extend \
+                     the sequence dimension and may exceed Flux's RoPE budget. \
+                     Use one or the other."
+                );
+            }
+            if !self.controlnets.is_empty() {
+                bail!(
+                    "Flux Kontext + --control-spec isn't wired yet. The reference \
+                     image already drives the layout; pairing with a ControlNet \
+                     would double-condition. Drop --control-spec or switch to \
+                     flux-dev for ControlNet."
+                );
+            }
+            let ref_path = req.concept_conditioning.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Flux.1-Kontext-dev requires a reference image — pass it via \
+                     --concept-image PATH (the image you want to edit)."
+                )
+            })?;
+            let spin = progress::spinner("Encoding Kontext reference image");
+            let pair = self.encode_kontext_reference(ref_path, h, w)?;
+            spin.finish_with_message(format!(
+                "✓ Kontext reference encoded ({} tokens × 64ch)",
+                pair.0.dim(1)?
+            ));
+            Some(pair)
+        } else {
+            None
+        };
+
         let concept_cond_packed: Option<Tensor> = if self.variant.is_concept() {
             if req.tiled.is_some() {
                 bail!(
@@ -1307,11 +1359,14 @@ impl Pipeline {
             ));
             Some(packed)
         } else {
-            if req.concept_conditioning.is_some() {
+            // Kontext consumes its own --concept-image upstream; only
+            // warn when the variant accepts neither channel-concat nor
+            // seq-concat conditioning.
+            if req.concept_conditioning.is_some() && !self.variant.is_kontext() {
                 tracing::warn!(
                     target: "plakat",
                     "--concept-image supplied but model is not a concept variant \
-                     (Canny-dev / Depth-dev) — input ignored."
+                     (Canny-dev / Depth-dev / Kontext-dev) — input ignored."
                 );
             }
             None
@@ -1507,6 +1562,7 @@ impl Pipeline {
                     &conditioning_packed,
                     fill_cond_packed.as_ref(),
                     concept_cond_packed.as_ref(),
+                    kontext_ref_packed.as_ref(),
                     &bar,
                 )?;
                 sampling::unpack(&denoised, h, w)?
@@ -1653,6 +1709,47 @@ impl Pipeline {
         Ok(z)
     }
 
+    /// v0.18: encode a Kontext reference image into the
+    /// `(packed_tokens, ref_img_ids)` pair that gets sequence-concat'd
+    /// onto the noise tokens at each denoise step. Unlike the concept
+    /// variants (which channel-concat into a 128ch `img_in`), Kontext
+    /// keeps `img_in` at 64 channels and extends the **sequence**
+    /// dimension. The reference tokens carry `img_ids[..., 0] = 1` so
+    /// the model's RoPE positional encoding can tell them apart from
+    /// the noise tokens (which carry `img_ids[..., 0] = 0`).
+    ///
+    /// Returns `((1, ref_seq, 64), (1, ref_seq, 3))`. Caller cats both
+    /// onto the noise tokens / `state.img_ids` per step.
+    fn encode_kontext_reference(
+        &self,
+        path: &std::path::Path,
+        h: usize,
+        w: usize,
+    ) -> Result<(Tensor, Tensor)> {
+        let z2d = self.encode_conditioning_2d(path, h, w)?;
+        let packed = pack_latent_to_tokens(&z2d)?;
+        // Match the layout `sampling::State::new` builds for the noise
+        // tokens (axis 0 marker, h_id, w_id, shape (1, lh/2 * lw/2, 3))
+        // — but force axis 0 to 1 so the model recognises this half as
+        // the reference. Use the SAME dtype as `state.img_ids` so the
+        // cat at step time succeeds without explicit promotion.
+        let (_b, _c, lh, lw) = z2d.dims4()?;
+        let (h2, w2) = (lh / 2, lw / 2);
+        let dev = &self.device;
+        let ones = Tensor::full(1f32, (h2, w2), dev)?.to_dtype(self.dtype)?;
+        let h_ids = Tensor::arange(0u32, h2 as u32, dev)?
+            .reshape(((), 1))?
+            .broadcast_as((h2, w2))?
+            .to_dtype(self.dtype)?;
+        let w_ids = Tensor::arange(0u32, w2 as u32, dev)?
+            .reshape((1, ()))?
+            .broadcast_as((h2, w2))?
+            .to_dtype(self.dtype)?;
+        let ref_img_ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)?
+            .reshape((1, h2 * w2, 3))?;
+        Ok((packed, ref_img_ids))
+    }
+
     /// v0.12 phase 2b + multi: flow-matching denoise loop. For each
     /// step, every loaded ControlNet that has its conditioning ready
     /// runs once with its own (scale, mode, conditioning) tuple. The
@@ -1660,6 +1757,12 @@ impl Pipeline {
     /// across all active CNs before being fed to the main Flux's
     /// `forward_with_residuals`. Empty CN stack reduces to candle's
     /// stock `sampling::denoise` byte-for-byte.
+    ///
+    /// v0.18: Kontext reference (`kontext_ref`) seq-concats reference
+    /// tokens onto the noise tokens at each step. The full sequence
+    /// goes through the DiT; afterwards the reference tail is
+    /// stripped from the prediction so only the noise half advances
+    /// under flow-matching.
     fn denoise_with_optional_controlnet(
         &self,
         state: &sampling::State,
@@ -1668,6 +1771,7 @@ impl Pipeline {
         conditioning_packed: &[Option<Tensor>],
         fill_cond: Option<&Tensor>,
         concept_cond: Option<&Tensor>,
+        kontext_ref: Option<&(Tensor, Tensor)>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
@@ -1740,13 +1844,30 @@ impl Pipeline {
                 (None, None) => img.clone(),
             };
 
+            // v0.18 Kontext: sequence-concat reference tokens onto
+            // the noise tokens (and same for img_ids). The reference
+            // tokens are constant across steps so the cat result for
+            // img_ids could be cached at setup; we still rebuild
+            // `expanded_img` per step because the noise half varies.
+            // Tracks the noise half's length so we can slice the
+            // reference tail off the prediction.
+            let noise_seq_len = flux_input.dim(1)?;
+            let (expanded_img, expanded_img_ids) = match kontext_ref {
+                Some((ref_tokens, ref_ids)) => {
+                    let exp_img = Tensor::cat(&[&flux_input, ref_tokens], 1)?;
+                    let exp_ids = Tensor::cat(&[&state.img_ids, ref_ids], 1)?;
+                    (exp_img, exp_ids)
+                }
+                None => (flux_input, state.img_ids.clone()),
+            };
+
             // v0.13 phase 1c: both backbones expose the same
             // `forward_with_residuals` signature. ControlNet residuals
             // compose exactly the same way on BF16 and quantized.
-            let pred = match &self.flux_model {
+            let pred_full = match &self.flux_model {
                 FluxBackbone::Bf16(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1756,8 +1877,8 @@ impl Pipeline {
                     single_r,
                 )?,
                 FluxBackbone::Quantized(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1769,8 +1890,8 @@ impl Pipeline {
                 // v0.15 phase 1: NF4 vendor now exposes
                 // forward_with_residuals (same interleave as GGUF/BF16).
                 FluxBackbone::Nf4(net) => net.forward_with_residuals(
-                    &flux_input,
-                    &state.img_ids,
+                    &expanded_img,
+                    &expanded_img_ids,
                     &state.txt,
                     &state.txt_ids,
                     &t_vec,
@@ -1780,9 +1901,15 @@ impl Pipeline {
                     single_r,
                 )?,
             };
-            // `pred` is the 64ch noise prediction regardless of Fill
-            // mode (final_layer outputs the same 64ch). The flow-match
-            // step only ever updates the noise tensor.
+            // Slice off the reference tail (when present). `pred` is the
+            // 64ch noise prediction regardless of Fill mode (final_layer
+            // outputs the same 64ch). The flow-match step only ever
+            // updates the noise tensor.
+            let pred = if kontext_ref.is_some() {
+                pred_full.narrow(1, 0, noise_seq_len)?
+            } else {
+                pred_full
+            };
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
         }
@@ -2457,6 +2584,61 @@ mod tests {
                 from_tile, from_full,
                 "tile token {out_i} (canvas token {full_i}) mismatch"
             );
+        }
+    }
+
+    // v0.18 Kontext phase 2 — reference token + img_ids shape.
+
+    #[test]
+    fn pack_latent_to_tokens_matches_kontext_seq_shape() {
+        // 16ch VAE latent at 64×64 → 32×32 tokens × 64 channels.
+        let z =
+            Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
+        let packed = pack_latent_to_tokens(&z).unwrap();
+        assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    #[test]
+    fn kontext_ref_img_ids_axis0_is_one() {
+        // Replicate the encode_kontext_reference img_ids construction
+        // standalone so we can assert the axis-0 marker without
+        // touching the VAE. h2 = w2 = 4 → 16 ref tokens.
+        let dev = Device::Cpu;
+        let dtype = DType::F32;
+        let (h2, w2) = (4usize, 4usize);
+        let ones = Tensor::full(1f32, (h2, w2), &dev).unwrap().to_dtype(dtype).unwrap();
+        let h_ids = Tensor::arange(0u32, h2 as u32, &dev)
+            .unwrap()
+            .reshape(((), 1))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let w_ids = Tensor::arange(0u32, w2 as u32, &dev)
+            .unwrap()
+            .reshape((1, ()))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let ref_ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)
+            .unwrap()
+            .reshape((1, h2 * w2, 3))
+            .unwrap();
+        assert_eq!(ref_ids.dims(), &[1, 16, 3]);
+        // Every row's axis-0 column must be 1 (the reference marker).
+        // Compare against a (1, 16) all-ones tensor.
+        let axis0: Vec<f32> = ref_ids
+            .narrow(2, 0, 1)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        for v in &axis0 {
+            assert!((v - 1.0).abs() < 1e-6, "expected axis-0=1 marker, got {v}");
         }
     }
 }
