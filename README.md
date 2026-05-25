@@ -8,6 +8,104 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.19 — local enhancer polish, partial-rerun, WebP, Kontext compositions
+
+Nine features in three groups. Pairs with v0.18's larger surface
+(Flux Kontext, A1111 attention on Flux+SD3, BREAK, local prompt
+enhancer) — v0.19 sands down rough edges and unblocks the two
+Kontext compositions deferred from v0.18.
+
+### Top picks (3 features)
+
+- **Enhancer CLI flag surface + disk cache**. The v0.18 local
+  enhancer's internals get CLI flags: `--enhance-temp F` (default
+  greedy / `0.0`), `--enhance-max-tokens N` (default 96),
+  `--enhance-system PATH` (custom system prompt), and
+  `--enhance-cache` (opt-in SHA-256 disk cache at
+  `~/.cache/plakat/enhance/`). Cache hits skip the LLM forward
+  entirely — scenarios re-enhancing the same prompts across runs
+  go from ~3-5s per prompt to instant.
+- **`plakat animate --resume`**. Long animates that crash on frame
+  23 of 24 no longer require re-rendering all 24. The flag scans
+  `<out>/frame-NNNN.png`, skips frames already on disk, re-runs
+  only what's missing. Mirrors the scenario `--resume` pattern
+  added in v0.17.
+- **scenario `--only TASK[,TASK,…]` + `--limit N`**. Partial-rerun
+  affordances for long batches. `--only` runs just the named
+  tasks (typo'd names bail up front with the supported list);
+  `--limit` runs the first N. Both compose with `--resume` and
+  `--dry-run`. `seed_offset` advances on skipped tasks so a
+  partial run produces seeds identical to the full batch — no
+  drift when iterating.
+
+### Round-out (4 features)
+
+- **`plakat doctor --json`**. Structured CI / scripting output
+  alongside the v0.18 health-check sections. Covers build /
+  runtime device match, libcuda driver shim probe, HF cache disk
+  usage. `jq` consumers can assert `.device.aligned == true` or
+  `.cache.severity == "ok"`.
+- **`--negative-preset photo | painting | anime | cinematic`**.
+  Four bundled negative-prompt presets. Combine with `--negative`
+  for preset-plus-user-extras. Saves the daily-driver
+  `"blurry, low quality, watermark, ..."` copy-paste.
+- **`plakat clone PNG`**. Reverse of `plakat metadata` (v0.18):
+  reads a generated PNG's recipe + emits the `plakat generate`
+  shell command that would re-create it. JSON sidecar preferred
+  for lossless reproduction; falls back to parsing the Auto1111
+  `parameters` chunk for Civitai uploads / A1111 outputs.
+  `--one-line` for pipes.
+- **WebP output format**. `--format png | webp` on
+  `plakat generate`. WebP ships ~30% smaller files at perceptually-
+  equivalent quality. Trade-off: WebP can't carry the Auto1111
+  tEXt chunk (no drag-and-drop into A1111 / Civitai / ComfyUI);
+  the JSON sidecar still works, so `plakat metadata` / `plakat
+  clone` round-trip on WebP outputs. SD-family pipeline only in
+  this release; Flux / SD3 warn and fall back.
+
+### FLUX.1 Kontext composition unlocks (2 features)
+
+- **Kontext + ControlNet**. Lifts the v0.18 phase 2 bail.
+  ControlNet residuals (computed per-block from the CN forward on
+  noise tokens) get zero-padded along the seq dim for Kontext's
+  reference half before being added to the per-block flux
+  intermediate state. The reference tokens get no CN contribution
+  — they're already conditioning via cross-attention. Unlocks
+  "edit this image, preserve the depth/canny structure" workflows.
+
+  ```bash
+  plakat generate "make it golden hour" \
+      --model flux-kontext-dev \
+      --concept-image input.png \
+      --control-spec 'depth:from=input.png:strength=0.7'
+  ```
+
+- **Kontext + Redux**. Lifts the v0.18 phase 2 bail with a RoPE
+  budget gate. Total effective attention seq (txt + img + ref + N
+  Redux tokens) is computed at dispatch; soft warn at 3500
+  positions, hard bail at 4096 with actionable cleanup hints.
+  Unlocks "edit this image in the style of these references" —
+  Kontext provides the layout, Redux provides the aesthetic.
+
+  ```bash
+  plakat generate "the same scene at golden hour" \
+      --model flux-kontext-dev \
+      --concept-image input.png \
+      --redux-image style_ref.png:weight=0.5
+  ```
+
+### Two new tutorials
+
+- [`SCENARIOS_TUTORIAL.md`](Documentation/Tutorials/SCENARIOS_TUTORIAL.md)
+  — batch generation via HJSON. Cross-product expansion, per-task
+  overrides, partial-rerun filters, real-world series-production
+  examples.
+- [`OUTPAINT_TUTORIAL.md`](Documentation/Tutorials/OUTPAINT_TUTORIAL.md)
+  — `plakat outpaint INPUT.png`. Per-side flag grammar,
+  VAE-snapped dimensions, model choice, iterative-stage workflow.
+
+509 lib tests green; +40 new tests across the cycle.
+
 ## What's new in v0.18 — Flux Kontext, SDXL animate, BREAK, local enhancer, polish
 
 The largest single-version cycle yet. Three workstreams plus a
@@ -450,6 +548,43 @@ plakat generate "make it sunset" --model flux-kontext-dev-gguf \
 plakat metadata ./out/plakat-42.png
 plakat metadata ./out/plakat-42.png --json-only | jq .seed
 
+# v0.19: clone a PNG's recipe into a re-runnable shell command
+plakat clone ./out/plakat-42.png
+
+# v0.19: bundled negative-prompt presets
+plakat generate "a sunlit forest" --model sd15 --negative-preset photo
+plakat generate "anime girl, masterpiece" --model sd15 \
+    --negative-preset anime --negative "purple hair"
+
+# v0.19: WebP output for smaller share-ready files
+plakat generate "..." --model sd15 --format webp
+
+# v0.19: local prompt enhancer — disk cache makes repeat runs instant
+plakat generate "a knight" --enhance local --enhance-cache --model sd15
+
+# v0.19: doctor --json for CI / scripting
+plakat doctor --json | jq -e '.device.aligned == true'
+
+# v0.19: scenario --only / --limit / --dry-run for partial reruns
+plakat scenario big.hjson --dry-run                       # validate
+plakat scenario big.hjson --limit 3                       # first 3 tasks
+plakat scenario big.hjson --only forest_scene,desert_scene
+plakat scenario big.hjson --resume                        # skip done tasks
+
+# v0.19: plakat animate --resume for crash recovery on long animates
+plakat animate --from "..." --to "..." --frames 24 \
+    --out ./morph --resume
+
+# v0.19: Kontext + ControlNet composition (preserve depth structure)
+plakat generate "make the lighting golden hour" \
+    --model flux-kontext-dev --concept-image input.png \
+    --control-spec 'depth:from=input.png:strength=0.7'
+
+# v0.19: Kontext + Redux composition (edit + style transfer)
+plakat generate "the same scene at golden hour" \
+    --model flux-kontext-dev --concept-image input.png \
+    --redux-image style_ref.png:weight=0.5
+
 # Prompt-morph animation — interpolates two prompts over N frames.
 # v0.18 adds SDXL on top of SD 1.5 / SD 2.1.
 plakat animate \
@@ -503,21 +638,21 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax (all backbones in v0.18), inline `<lora:>` tags (v0.18), `BREAK` keyword (v0.18, SD-family), CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar, `--enhance local` (v0.18). |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18 — composes with ControlNet + Redux as of v0.19) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax (all backbones in v0.18), inline `<lora:>` tags (v0.18), `BREAK` keyword (v0.18, SD-family), CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar, `--negative-preset` (v0.19), `--format webp` (v0.19, SD-family), `--enhance local\|auto` + `--enhance-cache` / `-temp` / `-max-tokens` / `-system` (v0.18/v0.19). |
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
-| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs. |
+| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. |
 | `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
-| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL. |
+| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL. v0.19 adds `--resume` for crash recovery (skips already-rendered frames). |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
 | `models {search,recommend,size,pull,ls,rm}` | Browse HuggingFace and manage the local cache. |
-| `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. |
+| `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. v0.19 adds `--json` for structured CI / scripting output. |
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
 | `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 | `clone <FILE.png>` | v0.19. Translate a PNG's metadata into a re-runnable `plakat generate` shell command. JSON sidecar preferred; falls back to parsing the Auto1111 chunk (works on Civitai uploads + A1111 Web UI outputs). `--one-line` for piping. |
@@ -549,7 +684,17 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     runs Qwen2.5-1.5B in-process with no API key.
   - [`METADATA_TUTORIAL.md`](Documentation/Tutorials/METADATA_TUTORIAL.md) —
     `plakat metadata FILE.png` recovers the recipe (prompt, seed,
-    LoRAs, sampler) from any plakat / A1111 / Civitai PNG.
+    LoRAs, sampler) from any plakat / A1111 / Civitai PNG. v0.19's
+    companion `plakat clone PNG` emits a re-runnable shell command
+    from that recipe.
+  - [`SCENARIOS_TUTORIAL.md`](Documentation/Tutorials/SCENARIOS_TUTORIAL.md) —
+    batch generation via HJSON. Cross-product expansion, per-task
+    overrides, partial-rerun filters (v0.19 `--only` / `--limit`),
+    real-world series-production examples.
+  - [`OUTPAINT_TUTORIAL.md`](Documentation/Tutorials/OUTPAINT_TUTORIAL.md) —
+    `plakat outpaint INPUT.png` grows an image's canvas. Per-side
+    flag grammar, VAE-snapped dimensions, model choice, iterative-
+    stage workflow.
   - Specialized portrait recipes:
     [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
     and
