@@ -361,6 +361,30 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         args.prompt = enhanced;
     }
 
+    // v0.19 #4: A1111 inline <lora:name[:weight]> extraction.
+    // Same ordering as generate / img2img: wildcards → enhance →
+    // lora-tags → encode. Civitai LoRA prompt cards often include
+    // inline tags; portrait prompts inherit the convention.
+    if crate::prompt::lora_tags::has_lora_tags(&args.prompt) {
+        let (cleaned, extracted) = crate::prompt::lora_tags::extract(&args.prompt)?;
+        if !extracted.is_empty() {
+            tracing::info!(
+                target: "plakat",
+                "Extracted {} inline <lora:> tag(s) from portrait prompt",
+                extracted.len()
+            );
+            for ex in extracted.into_iter().rev() {
+                args.loras.insert(0, ex.spec);
+            }
+            args.prompt = cleaned;
+        }
+    }
+    if crate::prompt::lora_tags::has_lora_tags(&negative) {
+        let (cleaned, _dropped) =
+            crate::prompt::lora_tags::extract(&negative)?;
+        negative = cleaned;
+    }
+
     let (width, height) = crate::imaging::sizes::resolve(
         args.size,
         Some(args.aspect.as_str()),

@@ -255,6 +255,30 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     // model-specific path. Same RNG-seeding rules as the generate
     // CLI — seeded from `--seed` when set, OS entropy otherwise.
     expand_img2img_wildcards(&mut args)?;
+    // v0.19 #4: A1111 inline <lora:name[:weight]> extraction. Runs
+    // AFTER wildcard expansion so `<lora:{styleA|styleB}>` resolves
+    // a concrete name first, BEFORE the dispatch arms so every
+    // variant (SD-family, Flux Fill, Flux img2img, Flux Kontext,
+    // SD3) sees the same cleaned prompt + LoRA stack.
+    if crate::prompt::lora_tags::has_lora_tags(&args.prompt) {
+        let (cleaned, extracted) = crate::prompt::lora_tags::extract(&args.prompt)?;
+        if !extracted.is_empty() {
+            tracing::info!(
+                target: "plakat",
+                "Extracted {} inline <lora:> tag(s) from img2img prompt",
+                extracted.len()
+            );
+            for ex in extracted.into_iter().rev() {
+                args.loras.insert(0, ex.spec);
+            }
+            args.prompt = cleaned;
+        }
+    }
+    if crate::prompt::lora_tags::has_lora_tags(&args.negative) {
+        let (cleaned, _dropped) =
+            crate::prompt::lora_tags::extract(&args.negative)?;
+        args.negative = cleaned;
+    }
     // v0.16 phase 10: --tiled is SD3 img2img / inpaint only. SD 1.5
     // / SDXL img2img uses a different (UNet) backbone and doesn't
     // share the rectified-flow tiled path. Flux Fill ignores

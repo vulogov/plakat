@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 pub mod a1111;
 pub mod deepseek;
 pub mod gemini;
+pub mod lora_tags;
 pub mod weighted_encoding;
 pub mod wildcards;
 
