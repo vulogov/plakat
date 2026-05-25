@@ -1312,14 +1312,21 @@ impl Pipeline {
                      Use one or the other."
                 );
             }
-            if !self.controlnets.is_empty() {
-                bail!(
-                    "Flux Kontext + --control-spec isn't wired yet. The reference \
-                     image already drives the layout; pairing with a ControlNet \
-                     would double-condition. Drop --control-spec or switch to \
-                     flux-dev for ControlNet."
-                );
-            }
+            // v0.19: Kontext + ControlNet composition. The CN runs on
+            // the noise tokens only (computing per-block residuals
+            // shaped to that seq length); the residuals get zero-padded
+            // for the reference half before being added to the
+            // Kontext-extended forward. Reference tokens get no
+            // residual contribution — they're already conditioning
+            // the model via cross-attention. See the
+            // `pad_residuals_for_kontext` helper.
+            //
+            // Double-conditioning concern from the original bail
+            // (now removed): in practice the ControlNet and the
+            // Kontext reference complement each other for "edit
+            // this image but preserve the depth structure" and
+            // similar layout-preserving edits. Letting users choose
+            // is the right call.
             let ref_path = req.concept_conditioning.as_ref().ok_or_else(|| {
                 anyhow!(
                     "Flux.1-Kontext-dev requires a reference image — pass it via \
@@ -1873,12 +1880,6 @@ impl Pipeline {
                 summed_double = Some(merge_residuals(summed_double, d)?);
                 summed_single = Some(merge_residuals(summed_single, s)?);
             }
-            let double_r = summed_double.as_deref();
-            let single_r = match summed_single.as_ref() {
-                Some(v) if !v.is_empty() => Some(v.as_slice()),
-                _ => None,
-            };
-
             // Build the Flux-forward input. Standard Flux: img is 64ch
             // noise. Fill: cat 320ch conditioning → 384ch. Concept
             // (Canny-dev / Depth-dev): cat 64ch conditioning → 128ch.
@@ -1905,6 +1906,37 @@ impl Pipeline {
                     (exp_img, exp_ids)
                 }
                 None => (flux_input, state.img_ids.clone()),
+            };
+
+            // v0.19: Kontext + ControlNet composition. The CN residuals
+            // computed above are shaped (B, noise_seq_len, hidden_size).
+            // When Kontext extends the seq with reference tokens, the
+            // residual shape must match the expanded length so the
+            // per-block `img + residual` add inside flux_inner doesn't
+            // shape-mismatch. Pad with zeros for the reference half —
+            // the reference tokens get no CN contribution (they're
+            // already conditioning via cross-attention, and the CN
+            // was trained on noise positions, not on a reference
+            // image's positions). The padded residual leaves the
+            // forward semantically unchanged for the reference half.
+            if let Some((ref_tokens, _)) = kontext_ref {
+                let ref_seq_len = ref_tokens.dim(1)?;
+                if let Some(d) = summed_double.as_mut() {
+                    for r in d.iter_mut() {
+                        *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                    }
+                }
+                if let Some(s) = summed_single.as_mut() {
+                    for r in s.iter_mut() {
+                        *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                    }
+                }
+            }
+
+            let double_r = summed_double.as_deref();
+            let single_r = match summed_single.as_ref() {
+                Some(v) if !v.is_empty() => Some(v.as_slice()),
+                _ => None,
             };
 
             // v0.13 phase 1c: both backbones expose the same
@@ -2456,6 +2488,22 @@ pub fn snap_to_kontext_bucket(w: u32, h: u32) -> (u32, u32) {
         .unwrap_or((1024, 1024))
 }
 
+/// v0.19: zero-pad a ControlNet residual along the seq dim to
+/// match Kontext's expanded sequence length. The CN runs on
+/// noise tokens only (shape `(B, noise_seq, hidden)`); when
+/// Kontext extends the seq with reference tokens, the per-block
+/// `img + residual` add inside flux_inner needs the residual to
+/// match the expanded length. Padding with zeros gives the
+/// reference half a no-op CN contribution — the reference is
+/// already conditioning the model via cross-attention, and the
+/// CN never saw it during training. Returns a new tensor of
+/// shape `(B, noise_seq + ref_seq, hidden)`.
+fn pad_residual_for_kontext(residual: &Tensor, ref_seq_len: usize) -> Result<Tensor> {
+    let (b, _seq, hidden) = residual.dims3()?;
+    let zeros = Tensor::zeros((b, ref_seq_len, hidden), residual.dtype(), residual.device())?;
+    Ok(Tensor::cat(&[residual, &zeros], 1)?)
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -2687,6 +2735,57 @@ mod tests {
             Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
         let packed = pack_latent_to_tokens(&z).unwrap();
         assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    // v0.19 — Kontext + ControlNet residual-padding helper.
+
+    #[test]
+    fn pad_residual_for_kontext_extends_seq_dim() {
+        // CN residual on noise tokens (1, noise_seq=64, hidden=3072) →
+        // Kontext extends to noise_seq + ref_seq=16 → padded shape.
+        let r = Tensor::ones((1, 64, 3072), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 16).unwrap();
+        assert_eq!(padded.dims(), &[1, 64 + 16, 3072]);
+    }
+
+    #[test]
+    fn pad_residual_for_kontext_zero_fills_ref_half() {
+        // Verify the ref half is actually zeros so the per-block
+        // `img + residual` add inside flux_inner is a no-op for the
+        // reference positions.
+        let r =
+            Tensor::ones((1, 8, 4), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 4).unwrap();
+        // First 8 rows: ones. Last 4 rows: zeros.
+        let noise_sum: f32 = padded
+            .narrow(1, 0, 8)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar()
+            .unwrap();
+        let ref_sum: f32 = padded
+            .narrow(1, 8, 4)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar()
+            .unwrap();
+        assert!((noise_sum - 32.0).abs() < 1e-5, "noise half should be all ones");
+        assert!((ref_sum - 0.0).abs() < 1e-5, "ref half should be all zeros");
+    }
+
+    #[test]
+    fn pad_residual_for_kontext_preserves_dtype_and_device() {
+        let r = Tensor::ones((1, 8, 4), DType::F32, &Device::Cpu).unwrap();
+        let padded = pad_residual_for_kontext(&r, 2).unwrap();
+        assert_eq!(padded.dtype(), DType::F32);
+        // BF16 round-trip too (the candle backends use BF16 on
+        // Metal / CUDA; making sure the zeros tensor matches).
+        let r_bf16 =
+            Tensor::ones((1, 8, 4), DType::BF16, &Device::Cpu).unwrap();
+        let padded_bf16 = pad_residual_for_kontext(&r_bf16, 2).unwrap();
+        assert_eq!(padded_bf16.dtype(), DType::BF16);
     }
 
     // v0.18 Kontext phase 2b — aspect-bucket snap.
