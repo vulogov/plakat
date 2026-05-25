@@ -222,6 +222,13 @@ pub struct Img2ImgArgs {
     /// Ignored when `--grid` is off.
     #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
+
+    /// v0.18 phase 2b: on `--model flux-kontext-dev`, snap `--size`
+    /// (or the input's native dims) to the closest of 17 BFL-
+    /// recommended Kontext resolutions before VAE encoding. Off by
+    /// default. Ignored on every other model.
+    #[arg(long = "kontext-bucket", default_value_t = false)]
+    pub kontext_bucket: bool,
 }
 
 pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
@@ -264,6 +271,16 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         let variant = crate::pipelines::t2i::Variant::detect(&args.model);
         if variant == crate::pipelines::t2i::Variant::FluxFillDev {
             return run_flux_fill(args, device).await;
+        }
+        // v0.18 phase 2b: Flux.1-Kontext-dev. On `plakat img2img`,
+        // the natural mapping is "input is the reference" — the
+        // input arg flows into the pipeline's concept_conditioning
+        // slot (Kontext's seq-concat path), NOT into init_image
+        // (which feeds the rectified-flow lerp used by flux-dev
+        // img2img). Routed before the generic is_flux() arm so the
+        // Dev img2img path doesn't claim Kontext requests.
+        if variant == crate::pipelines::t2i::Variant::FluxKontextDev {
+            return run_flux_kontext(args, device).await;
         }
         if variant.is_flux() {
             return run_flux_img2img(args, device).await;
@@ -652,6 +669,9 @@ async fn run_flux_fill(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // through the img2img CLI — they go via `plakat generate
         // --model flux-canny-dev --concept-image ...`.
         concept_conditioning: None,
+        // v0.18 phase 2b: Kontext bucket only matters for Kontext;
+        // these img2img arms don't route through Kontext.
+        kontext_bucket: false,
     })
     .await?;
     // Tempdir held until after the awaited generate completes —
@@ -792,10 +812,140 @@ async fn run_flux_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         redux_images: Vec::new(),
         // Concept variants aren't routed through img2img.
         concept_conditioning: None,
+        // v0.18 phase 2b: Kontext bucket only matters for Kontext;
+        // these img2img arms don't route through Kontext.
+        kontext_bucket: false,
     })
     .await?;
 
     // v0.18 phase 2: compose a grid of the per-image flux outputs.
+    if grid_enabled {
+        if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
+            &grid_out_dir,
+            "plakat-flux",
+            grid_seed,
+            grid_count,
+            grid_cols,
+            grid_padding,
+        )? {
+            crate::ui::progress::println(&format!(
+                "✓ grid {gw}x{gh} → {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// v0.18 phase 2b: `plakat img2img --model flux-kontext-dev` → Kontext
+/// reference-image editing. The `input` positional becomes the
+/// reference image fed into Kontext's seq-concat path (NOT the
+/// rectified-flow init that `run_flux_img2img` uses). Prompt
+/// describes the edit; output appears alongside the prompt-only
+/// generate path's outputs as `plakat-flux-<seed>.png`.
+async fn run_flux_kontext(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    use crate::pipelines::flux;
+
+    // Pre-resolve seed + capture grid fields before `args` is moved.
+    args.seed = Some(args.seed.unwrap_or_else(rand::random));
+    let grid_enabled = args.grid;
+    let grid_cols = args.grid_cols;
+    let grid_padding = args.grid_padding;
+    let grid_out_dir = args.out.clone();
+    let grid_seed = args.seed.unwrap_or(0);
+    let grid_count = args.count;
+    let kontext_bucket = args.kontext_bucket;
+
+    if args.mask.is_some() {
+        anyhow::bail!(
+            "--mask isn't supported on flux-kontext-dev. Kontext is an editing model, \
+             not an inpainter — describe the edit in --prompt and let the model decide \
+             where to apply it. For region-restricted edits use --model flux-fill-dev."
+        );
+    }
+    if args.strength.is_some() {
+        crate::ui::progress::println(
+            "  warn: --strength ignored on flux-kontext-dev (Kontext has no \
+             rectified-flow init lerp — the reference flows through the seq-concat \
+             path instead).",
+        );
+    }
+    if !args.negative.is_empty() {
+        crate::ui::progress::println(
+            "  warn: --negative ignored for Flux (no negative-prompt mechanism).",
+        );
+    }
+    if !args.control_specs.is_empty() || args.control.is_some() {
+        crate::ui::progress::println(
+            "  warn: --control-spec / --control aren't wired on flux-kontext-dev \
+             yet — the reference image already drives layout. Skipping.",
+        );
+    }
+
+    // Working resolution. The reference image is VAE-encoded at the
+    // requested (w, h); --kontext-bucket snaps before VAE encoding.
+    let (width, height) = match args.size {
+        Some(s) => (s.w, s.h),
+        None => detect_input_size(&args.input)?,
+    };
+    if width % 16 != 0 || height % 16 != 0 {
+        anyhow::bail!(
+            "Flux Kontext needs dimensions divisible by 16 (got {width}x{height}); \
+             pass --size to override or use --kontext-bucket to auto-snap.",
+        );
+    }
+
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(args.loras.len());
+    for spec in &args.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+    let steps_opt = if args.steps == 28 { None } else { Some(args.steps) };
+    let guidance_opt = if (args.guidance - 7.5).abs() < f64::EPSILON {
+        None
+    } else {
+        Some(args.guidance)
+    };
+
+    flux::run(flux::Request {
+        prompt: args.prompt,
+        variant: flux::Variant::KontextDev,
+        repo,
+        width,
+        height,
+        count: args.count,
+        steps: steps_opt,
+        guidance: guidance_opt,
+        seed: args.seed,
+        out_dir: args.out,
+        device,
+        loras: resolved_loras,
+        lora_scale: args.lora_scale,
+        controlnets: Vec::new(),
+        conditioning: None,
+        quantize_t5: false,
+        // Crucial: input goes to concept_conditioning (Kontext's
+        // seq-concat path), NOT init_image (which would re-route
+        // into the rectified-flow lerp the Dev img2img uses).
+        init_image: None,
+        mask: None,
+        strength: None,
+        tiled: None,
+        flux_quant_level: None,
+        t5_quant_level: None,
+        redux: false,
+        redux_images: Vec::new(),
+        concept_conditioning: Some(args.input),
+        kontext_bucket,
+    })
+    .await?;
+
     if grid_enabled {
         if let Some((gw, gh, path)) = crate::imaging::grid::compose_grid_from_seed_range(
             &grid_out_dir,

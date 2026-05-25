@@ -2577,6 +2577,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // pipeline if the loaded variant doesn't
                         // expect this input.
                         concept_conditioning: eff_concept_image.clone(),
+                        // v0.18 phase 2b: scenarios don't expose the
+                        // Kontext bucket flag yet — defer until the
+                        // HJSON schema add lands. Pipeline ignores
+                        // this when the variant isn't Kontext.
+                        kontext_bucket: false,
                     })?;
                 }
                 // Dry-run path doesn't reach here.
