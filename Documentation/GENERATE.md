@@ -331,18 +331,28 @@ Multiplier applied to every LoRA's per-file scale. So
 
 #### `--enhance <PROVIDER>`
 
-Pass the prompt through an LLM (DeepSeek or Gemini) that rewrites it
-with concrete visual detail (composition, lighting, medium, style) before
-generation.
+Pass the prompt through an LLM that rewrites it with concrete visual
+detail (composition, lighting, medium, style) before generation.
 
-```
+```bash
 plakat generate "knight" --enhance deepseek
+plakat generate "knight" --enhance local        # v0.19 — no API key
+plakat generate "knight" --enhance auto         # v0.19 — pick what's available
 ```
 
-| Provider | Env var |
-|---|---|
-| `deepseek` | `DEEPSEEK_API_KEY` |
-| `gemini` | `GEMINI_API_KEY` |
+| Provider | Backend | Cost |
+|---|---|---|
+| `deepseek` | DeepSeek API (env `DEEPSEEK_API_KEY`) | metered API |
+| `gemini` | Gemini API (env `GEMINI_API_KEY`) | metered API |
+| `local` | quantized LLM in-process (default: Qwen2.5-1.5B-Instruct) | one-time ~1 GB download |
+| `local:<alias>` | local with explicit model — `qwen2.5-1.5b` (default) or `smollm2-360m` (CPU-budget fallback) | varies |
+| `auto` | DeepSeek if `DEEPSEEK_API_KEY` set → Gemini if `GEMINI_API_KEY` set → `local` | depends on what fires |
+
+The local enhancer runs entirely in-process via candle's quantized
+LLM backends — no API key, no network after the one-time GGUF
+download. Greedy decoding by default (reproducible: same prompt =
+same enhancement). Refusals / empty output fall back silently to
+the un-enhanced prompt rather than poisoning the diffusion encoder.
 
 The enhancer is the cheap-but-effective way to compensate for a model
 whose prompt comprehension is weaker than you'd like (SD 1.5 / 2.1 in
