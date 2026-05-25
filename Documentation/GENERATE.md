@@ -631,6 +631,44 @@ Unbalanced `<lora:` with no closing `>` is treated as a literal —
 no error, just no extraction (same robustness contract as the
 attention parser and wildcards).
 
+### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.19)
+
+CLIP's 77-token cap silently truncates long prompts. Split a long
+prompt into chunks with the literal word `BREAK` (case-sensitive,
+word-bounded); each chunk gets its own 77-token CLIP encoding, and
+the per-chunk hidden states are sequence-concatenated before the
+UNet's cross-attention consumes them. No max sequence length on
+attention — chunks just stack.
+
+```bash
+# Two-chunk prompt — 154 tokens of conditioning instead of 77
+plakat generate \
+    "a brutalist whale poster, watercolor on rough paper, \
+     dramatic lighting, cinematic composition \
+     BREAK \
+     soft pastels, hand-painted feel, no digital artifacts, \
+     1970s editorial illustration aesthetic" \
+    --model sd15
+```
+
+| Backbone | BREAK support |
+|---|---|
+| SD 1.5 / SD 2.1 | ✓ — chunks the single CLIP-L encoder |
+| SDXL / SDXL-Turbo | ✓ — chunks both CLIP-L and CLIP-G; pooled `add_text_embeds` comes from chunk 0 (A1111 convention) |
+| Flux (BF16 / GGUF / NF4) | strips + warns (T5 already has a 256/512-token budget) |
+| SD3 / SD3.5 | strips + warns (T5 budget + pooled `y` assumes single-chunk) |
+
+CFG: both cond (`--prompt`) and uncond (`--negative`) are chunked
+independently. Whichever has fewer chunks is padded with empty
+chunks so the resulting `(2 × num_chunks × 77)` cat shape lines up.
+
+Adjacent BREAKs (e.g. `BREAK BREAK`) drop empty chunks; pathological
+`BREAK BREAK` alone falls back to a single empty chunk. The keyword
+is case-sensitive — `Break` / `break` / `breakfast` are passed
+through as ordinary words. Word-boundary check is ASCII (matches
+A1111's regex behaviour) — `BREAKING`, `BREAKDOWN`, `BREAKERS_v1`
+all stay intact as words.
+
 ### Attention emphasis (all backbones)
 
 A1111 / NovelAI-style prompt grammar — used by virtually every
