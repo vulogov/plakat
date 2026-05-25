@@ -817,6 +817,19 @@ impl Pipeline {
         do_cfg: bool,
         clip_skip: usize,
     ) -> Result<Tensor> {
+        // v0.19 #5: A1111 BREAK keyword path. When either branch
+        // contains the BREAK keyword, the prompt is split into
+        // chunks; each chunk gets its own 77-token CLIP encoding;
+        // hidden states are sequence-concatenated. Both cond and
+        // uncond are padded to the max chunk count so the resulting
+        // tensors share a seq dim (required for CFG cat).
+        let cond_has_break = crate::prompt::break_chunks::has_break(prompt);
+        let uncond_has_break = do_cfg
+            && crate::prompt::break_chunks::has_break(negative);
+        if cond_has_break || uncond_has_break {
+            return self.encode_single_chunked(prompt, negative, do_cfg, clip_skip);
+        }
+
         // v0.17 phase 2: weighted-attention path. The hot path
         // (no attention syntax) falls through to the unmodified
         // call shape; only prompts with `(...)` / `[...]` pay the
@@ -842,6 +855,54 @@ impl Pipeline {
             &self.core.device,
             self.core.dtype,
         )?;
+        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
+    }
+
+    /// v0.19 #5: chunked CLIP encode for prompts with A1111 BREAK.
+    /// Both cond and uncond are split on BREAK, padded with empty
+    /// chunks to the max count, encoded per-chunk via
+    /// `encode_with_attention`, and concatenated along seq dim.
+    /// Resulting shape: `(2*num_chunks, 77, embed_dim)` (CFG batch)
+    /// or `(num_chunks, 77, embed_dim)` if `!do_cfg`. The UNet's
+    /// cross-attention has no max sequence length so longer K/V
+    /// tensors flow through unchanged.
+    fn encode_single_chunked(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        clip_skip: usize,
+    ) -> Result<Tensor> {
+        let cond_chunks = crate::prompt::break_chunks::split(prompt);
+        let uncond_chunks = if do_cfg {
+            crate::prompt::break_chunks::split(negative)
+        } else {
+            vec![String::new()]
+        };
+        let n = cond_chunks.len().max(uncond_chunks.len());
+        let encode_chunks = |chunks: &[String]| -> Result<Tensor> {
+            let mut per_chunk: Vec<Tensor> = Vec::with_capacity(n);
+            for i in 0..n {
+                let text = chunks.get(i).map(String::as_str).unwrap_or("");
+                per_chunk.push(encode_with_attention(
+                    &self.core.tokenizer_l,
+                    &self.core.cfg.clip,
+                    &self.core.text_encoder_l,
+                    text,
+                    clip_skip,
+                    &self.core.device,
+                    self.core.dtype,
+                )?);
+            }
+            // Concat along the seq dim → (1, n * 77, embed_dim).
+            let refs: Vec<&Tensor> = per_chunk.iter().collect();
+            Ok(Tensor::cat(&refs, 1)?)
+        };
+        let cond = encode_chunks(&cond_chunks)?;
+        if !do_cfg {
+            return Ok(cond.to_dtype(self.core.dtype)?);
+        }
+        let uncond = encode_chunks(&uncond_chunks)?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -910,6 +971,19 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
+        // v0.19 #5: A1111 BREAK keyword on SDXL. Both CLIP-L and
+        // CLIP-G chunk independently; pooled output comes from
+        // chunk 0 only (the cond's pooled CLIP-G output drives
+        // add_text_embeds — A1111 convention).
+        let cond_has_break = crate::prompt::break_chunks::has_break(prompt);
+        let uncond_has_break = do_cfg
+            && crate::prompt::break_chunks::has_break(negative);
+        if cond_has_break || uncond_has_break {
+            return self.encode_xl_chunked(
+                prompt, negative, do_cfg, tok_g, cfg_g, enc_g,
+            );
+        }
+
         let (cond_hidden, cond_pooled) = embed_xl(
             prompt,
             &self.core.tokenizer_l,
@@ -940,6 +1014,68 @@ impl Pipeline {
         )?;
         let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
         let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
+        Ok((hidden, pooled))
+    }
+
+    /// v0.19 #5: SDXL BREAK-chunked encode. Both encoders chunk
+    /// independently; per-chunk `embed_xl` produces a (1, 77, 2048)
+    /// hidden + (1, 1280) pooled; chunk-N hidden states concatenate
+    /// along seq dim; ONLY chunk-0's pooled is retained (matches
+    /// A1111's add_text_embeds-from-first-chunk convention).
+    #[allow(clippy::too_many_arguments)]
+    fn encode_xl_chunked(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        tok_g: &Tokenizer,
+        cfg_g: &sdclip::Config,
+        enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
+    ) -> Result<(Tensor, Tensor)> {
+        let cond_chunks = crate::prompt::break_chunks::split(prompt);
+        let uncond_chunks = if do_cfg {
+            crate::prompt::break_chunks::split(negative)
+        } else {
+            vec![String::new()]
+        };
+        let n = cond_chunks.len().max(uncond_chunks.len());
+        let encode_chunks = |chunks: &[String]| -> Result<(Tensor, Tensor)> {
+            let mut per_chunk_hidden: Vec<Tensor> = Vec::with_capacity(n);
+            let mut chunk0_pooled: Option<Tensor> = None;
+            for i in 0..n {
+                let text = chunks.get(i).map(String::as_str).unwrap_or("");
+                let (hidden, pooled) = embed_xl(
+                    text,
+                    &self.core.tokenizer_l,
+                    tok_g,
+                    &self.core.cfg.clip,
+                    cfg_g,
+                    &self.core.text_encoder_l,
+                    enc_g,
+                    &self.core.device,
+                    self.core.dtype,
+                )?;
+                if i == 0 {
+                    chunk0_pooled = Some(pooled);
+                }
+                per_chunk_hidden.push(hidden);
+            }
+            let refs: Vec<&Tensor> = per_chunk_hidden.iter().collect();
+            let hidden_concat = Tensor::cat(&refs, 1)?;
+            Ok((hidden_concat, chunk0_pooled.expect("n >= 1")))
+        };
+        let (cond_hidden, cond_pooled) = encode_chunks(&cond_chunks)?;
+        if !do_cfg {
+            return Ok((
+                cond_hidden.to_dtype(self.core.dtype)?,
+                cond_pooled.to_dtype(self.core.dtype)?,
+            ));
+        }
+        let (uncond_hidden, uncond_pooled) = encode_chunks(&uncond_chunks)?;
+        let hidden =
+            Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
+        let pooled =
+            Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
         Ok((hidden, pooled))
     }
 

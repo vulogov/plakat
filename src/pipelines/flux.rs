@@ -1638,6 +1638,26 @@ impl Pipeline {
     /// token weights don't change the pooled vector and the CLIP-L
     /// path is left untouched.
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        // v0.19 #5: A1111 BREAK keyword. Flux's T5 has a 256/512-
+        // token budget, far past CLIP's 77-token cap — BREAK adds
+        // no value here. Strip + warn rather than silently passing
+        // a literal "BREAK" through to T5 (which would tokenize
+        // it as a normal word).
+        let prompt_stripped: String;
+        let prompt: &str = if crate::prompt::break_chunks::has_break(prompt) {
+            tracing::warn!(
+                target: "plakat",
+                "BREAK keyword ignored on Flux — T5 has a {}-token budget, \
+                 prompt chunking is a CLIP-only workaround. Strip BREAK or \
+                 switch to --model sd15 / sd21 / sdxl.",
+                self.variant.t5_seq_len()
+            );
+            prompt_stripped = crate::prompt::break_chunks::strip(prompt);
+            prompt_stripped.as_str()
+        } else {
+            prompt
+        };
+
         // CLIP-L: tokenize to 77, run, pool at EOT.
         let mut clip_ids = self
             .clip_tok

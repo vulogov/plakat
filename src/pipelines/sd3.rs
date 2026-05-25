@@ -1166,6 +1166,26 @@ impl Pipeline {
     }
 
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        // v0.19 #5: BREAK is a CLIP-77-token-cap workaround. SD3's
+        // T5 has a 256-token budget; per-CLIP chunking isn't wired
+        // here (the pooled `y` blend assumes single-chunk CLIP-L/G
+        // outputs). Strip + warn so users notice rather than getting
+        // "BREAK" tokenized as a literal word.
+        let prompt_stripped: String;
+        let prompt: &str = if crate::prompt::break_chunks::has_break(prompt) {
+            tracing::warn!(
+                target: "plakat",
+                "BREAK keyword ignored on SD3 / SD3.5 — T5 has a 256-token \
+                 budget making the CLIP chunk workaround unnecessary, and SD3's \
+                 pooled y vector assumes single-chunk CLIP outputs. Strip \
+                 BREAK or switch to --model sd15 / sd21 / sdxl."
+            );
+            prompt_stripped = crate::prompt::break_chunks::strip(prompt);
+            prompt_stripped.as_str()
+        } else {
+            prompt
+        };
+
         // v0.18 phase 3: A1111 attention syntax broadcasts per-token
         // weights onto the three encoders that flow into the SD3
         // cross-attention context (CLIP-L penult, CLIP-G penult,
