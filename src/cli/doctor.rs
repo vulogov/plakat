@@ -47,11 +47,26 @@ pub struct DoctorArgs {
     /// capable host to compare backends.
     #[arg(long, value_name = "SPEC", default_value = "auto")]
     pub device: String,
+
+    /// v0.19: emit a structured JSON report instead of the
+    /// human-friendly section blocks. Covers the v0.18 health
+    /// checks (build / runtime device match, libcuda driver
+    /// shim, HF cache disk usage) plus the plakat version.
+    /// FaceID env-var sections stay human-only — they're
+    /// configuration inspection, not health checks.
+    ///
+    /// Designed for CI / scripting; pipe through `jq` for
+    /// structured queries. Mutually exclusive with `--benchmark`.
+    #[arg(long, default_value_t = false, conflicts_with = "benchmark")]
+    pub json: bool,
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
     if args.benchmark {
         return run_benchmark(&args.device);
+    }
+    if args.json {
+        return run_json();
     }
 
     println!(
@@ -455,6 +470,67 @@ mod tests {
             CacheSeverity::Warn
         );
     }
+
+    // v0.19 — doctor --json structured report.
+
+    #[test]
+    fn json_report_serializes_with_version() {
+        let report = collect_report();
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn json_report_device_section_is_consistent() {
+        let report = collect_report();
+        // Both `build_features` and `runtime` are populated.
+        // `aligned` must be `false` only when build features
+        // exist but runtime resolved to CPU.
+        if !report.device.build_features.is_empty() {
+            if report.device.runtime == "CPU" {
+                assert!(!report.device.aligned, "built-for-accel + CPU should be misaligned");
+            }
+        } else {
+            // CPU-only build → always aligned (trivially).
+            assert!(report.device.aligned);
+        }
+    }
+
+    #[test]
+    fn json_report_cuda_driver_only_applicable_on_linux_cuda() {
+        let report = collect_report();
+        let expected_applicable =
+            cfg!(all(feature = "cuda", target_os = "linux"));
+        assert_eq!(report.cuda_driver.applicable, expected_applicable);
+        if !expected_applicable {
+            assert!(report.cuda_driver.candidates.is_empty());
+            assert!(report.cuda_driver.found_at.is_none());
+        }
+    }
+
+    #[test]
+    fn json_report_cache_severity_matches_internal_bucket() {
+        let report = collect_report();
+        let expected = match report.cache.used_bytes {
+            n if n > 500 * 1024 * 1024 * 1024 => "warn",
+            n if n > 100 * 1024 * 1024 * 1024 => "note",
+            _ => "ok",
+        };
+        assert_eq!(report.cache.severity, expected);
+    }
+
+    #[test]
+    fn json_report_roundtrips_through_serde() {
+        let report = collect_report();
+        let json = serde_json::to_string_pretty(&report).unwrap();
+        // Verify we get valid JSON (parse-back).
+        let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // And the top-level keys are present.
+        assert!(json.contains("\"version\""));
+        assert!(json.contains("\"device\""));
+        assert!(json.contains("\"cuda_driver\""));
+        assert!(json.contains("\"cache\""));
+    }
 }
 
 fn section_header(label: &str) {
@@ -487,6 +563,159 @@ fn note(msg: &str) {
 /// "this hardware does X conv2d ops per second" number in a couple
 /// of seconds.
 ///
+// ============================================================
+// v0.19: --json output. Structured equivalent of the v0.18
+// section blocks (device match, libcuda driver, HF cache disk).
+// ============================================================
+
+#[derive(serde::Serialize)]
+struct DoctorReport {
+    /// plakat version that produced this report. Lets CI pin
+    /// expectations against specific releases.
+    version: String,
+    device: DeviceReport,
+    cuda_driver: CudaDriverReport,
+    cache: CacheReport,
+}
+
+#[derive(serde::Serialize)]
+struct DeviceReport {
+    /// `["cuda", "metal"]` or empty (`[]`) for the CPU-only build.
+    build_features: Vec<String>,
+    /// `"CPU"` / `"CUDA"` / `"Metal"` — whatever
+    /// `device::select("auto")` resolved on this host.
+    runtime: String,
+    /// `true` when the build features explain the runtime device,
+    /// `false` when a built-for-accelerator binary fell back to CPU.
+    aligned: bool,
+}
+
+#[derive(serde::Serialize)]
+struct CudaDriverReport {
+    /// `true` iff we actually probed (Linux + `--features cuda`).
+    /// On non-Linux or non-CUDA builds the section doesn't apply.
+    applicable: bool,
+    /// Resolved `libcuda.so.1` path on success, `null` otherwise.
+    found_at: Option<String>,
+    /// Paths searched (always populated when `applicable: true`).
+    candidates: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct CacheReport {
+    root: String,
+    /// `false` when the cache root doesn't exist yet (no models
+    /// downloaded). `used_bytes` is `0` in that case.
+    exists: bool,
+    used_bytes: u64,
+    used_human: String,
+    /// `"ok" | "note" | "warn"` matching the human section's
+    /// threshold output. Stable enum string for CI assertions.
+    severity: &'static str,
+}
+
+fn collect_report() -> DoctorReport {
+    DoctorReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        device: collect_device_report(),
+        cuda_driver: collect_cuda_driver_report(),
+        cache: collect_cache_report(),
+    }
+}
+
+fn collect_device_report() -> DeviceReport {
+    let build_features: Vec<String> = [
+        ("cuda", cfg!(feature = "cuda")),
+        ("metal", cfg!(feature = "metal")),
+    ]
+    .into_iter()
+    .filter_map(|(n, on)| if on { Some(n.to_string()) } else { None })
+    .collect();
+    let (runtime, aligned) = match crate::device::select("auto") {
+        Ok(d) => {
+            let label = describe_device(&d);
+            let runtime_is_cpu = matches!(d, candle_core::Device::Cpu);
+            let built_for_accel = !build_features.is_empty();
+            // If the binary was built CPU-only, alignment trivially holds.
+            // If it was built for an accelerator and we got CPU, that's a
+            // silent fallback — surface as misaligned.
+            let aligned = !(built_for_accel && runtime_is_cpu);
+            (label, aligned)
+        }
+        // device::select("auto") shouldn't fail (auto always returns
+        // CPU as a worst-case), but if it does, flag as unaligned.
+        Err(_) => ("unresolved".to_string(), false),
+    };
+    DeviceReport {
+        build_features,
+        runtime,
+        aligned,
+    }
+}
+
+fn collect_cuda_driver_report() -> CudaDriverReport {
+    #[cfg(all(feature = "cuda", target_os = "linux"))]
+    {
+        const CANDIDATES: &[&str] = &[
+            "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+            "/usr/lib64/libcuda.so.1",
+            "/usr/lib/libcuda.so.1",
+            "/lib/x86_64-linux-gnu/libcuda.so.1",
+        ];
+        let found = CANDIDATES
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|s| s.to_string());
+        return CudaDriverReport {
+            applicable: true,
+            found_at: found,
+            candidates: CANDIDATES.iter().map(|s| s.to_string()).collect(),
+        };
+    }
+    #[cfg(not(all(feature = "cuda", target_os = "linux")))]
+    {
+        CudaDriverReport {
+            applicable: false,
+            found_at: None,
+            candidates: Vec::new(),
+        }
+    }
+}
+
+fn collect_cache_report() -> CacheReport {
+    let root = crate::hf::cache::hf_cache_root();
+    if !root.exists() {
+        return CacheReport {
+            root: root.display().to_string(),
+            exists: false,
+            used_bytes: 0,
+            used_human: "0 B".to_string(),
+            severity: "ok",
+        };
+    }
+    let used = crate::hf::cache::dir_size(&root).unwrap_or(0);
+    let severity = match cache_usage_severity(used) {
+        CacheSeverity::Ok => "ok",
+        CacheSeverity::Note => "note",
+        CacheSeverity::Warn => "warn",
+    };
+    CacheReport {
+        root: root.display().to_string(),
+        exists: true,
+        used_bytes: used,
+        used_human: crate::hf::cache::human_bytes(used),
+        severity,
+    }
+}
+
+fn run_json() -> Result<()> {
+    let report = collect_report();
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| anyhow::anyhow!("serializing doctor report: {e}"))?;
+    println!("{json}");
+    Ok(())
+}
+
 /// Workloads (chosen to match the shape distribution of SD 1.5
 /// inference at 512²):
 /// * `conv2d`:  (1, 320, 64, 64) → (1, 320, 64, 64), 3×3 — UNet block.
