@@ -180,6 +180,26 @@ the JSON sidecar carries the structured `Lerp t` / `Animate from`
 / `Animate to` extras so you can re-render any frame standalone.
 Pass `--no-metadata` to skip both.
 
+**Crash recovery with `--resume`** (v0.19). Long animates can
+crash on frame 23 of 24 — Ctrl-C, OOM, transient I/O failure.
+Pass `--resume` on the rerun and plakat scans `<out>/frame-NNNN.png`
+over the requested range, skips the frames already on disk, and
+re-runs only what's missing. The lerp parameter `t` per frame
+index is recomputed identically, so the skipped frames stay
+consistent with the freshly-rendered ones.
+
+```bash
+# Original run; crashes on frame 23
+plakat animate --from A --to B --frames 24 --gif --out ./morph
+
+# Recovery: re-run the same command + --resume
+plakat animate --from A --to B --frames 24 --gif --out ./morph --resume
+#   ✓ skips 22 already-rendered frames, re-runs frames 23 (the
+#     crash point) and 24, bundles the GIF
+```
+
+Mirrors the scenario `--resume` semantics added in v0.17.
+
 ## 8. Limitations
 
 - **SD-family only** (SD 1.5 / SD 2.1 / SDXL). SDXL animate (added
