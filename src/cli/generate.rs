@@ -546,6 +546,22 @@ pub struct GenerateArgs {
     #[arg(long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
 
+    /// v0.19: output image container. `png` (default) writes the
+    /// Auto1111-compatible `parameters` tEXt chunk that A1111 /
+    /// Civitai / ComfyUI auto-read on drag-and-drop. `webp` ships
+    /// ~30% smaller files at perceptually-equivalent quality but
+    /// CAN'T carry the tEXt chunk (WebP's EXIF / XMP slots aren't
+    /// part of the diffusion-tools metadata convention). The JSON
+    /// sidecar is written for both formats — `plakat metadata` and
+    /// `plakat clone` work on WebP outputs via the sidecar.
+    ///
+    /// Currently honoured by the SD-family pipeline (SD 1.5 / SD
+    /// 2.1 / SDXL / SDXL-Turbo). Flux / SD3 outputs stay PNG-only
+    /// in this release; passing `--format webp` with those models
+    /// emits a warning and falls back to PNG.
+    #[arg(long, default_value = "png", value_name = "FORMAT")]
+    pub format: crate::imaging::io::OutputFormat,
+
     /// v0.17 phase 4: with `--count N > 1`, also write a single
     /// `plakat-grid-<base-seed>.png` combining all N outputs in a
     /// near-square grid. Per-image PNGs are written as usual
@@ -930,6 +946,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             None
         },
         preview_size: Some(args.preview_size),
+        // v0.19: pass through the --format flag. SD-family
+        // pipeline honours; Flux + SD3 fallback below.
+        output_format: args.format,
     })
     .await?;
 
@@ -1160,10 +1179,16 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // refinement are all reflected in the grid cells. No-op when
     // --count is 1 (a 1-cell "grid" is just a copy).
     if args.grid && count > 1 {
+        // v0.19: per-image filenames use the user's --format
+        // extension (png by default; webp when set). The grid PNG
+        // itself stays .png for compatibility — combining N WebP
+        // cells into one shareable grid file is the common
+        // workflow even when individual cells are WebP-encoded.
+        let img_ext = args.format.extension();
         let files: Vec<PathBuf> = (0..count)
             .map(|i| {
                 let s = seed.unwrap_or(0).wrapping_add(i as u64);
-                out_dir.join(format!("plakat-{s}.png"))
+                out_dir.join(format!("plakat-{s}.{img_ext}"))
             })
             .filter(|p| p.exists())
             .collect();
