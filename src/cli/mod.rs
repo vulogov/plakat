@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub mod animate;
 pub mod artefact;
 pub mod civitai;
+pub mod clone;
 pub mod doctor;
 pub mod embedding;
 pub mod generate;
@@ -97,6 +98,12 @@ pub enum Command {
     /// Reverse of the metadata write path — recover prompt / seed /
     /// model / LoRAs from a PNG without consulting the shell.
     Metadata(metadata::MetadataArgs),
+    /// v0.19: translate a generated PNG's metadata into a
+    /// re-runnable `plakat generate` shell command. Pairs with
+    /// `metadata` (inspect → translate). JSON sidecar preferred;
+    /// falls back to parsing the Auto1111 `parameters` PNG tEXt
+    /// chunk (works on Civitai uploads + A1111 Web UI outputs).
+    Clone(clone::CloneArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -145,5 +152,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             animate::run(args, device).await
         }
         Command::Metadata(args) => metadata::run(args).await,
+        Command::Clone(args) => clone::run(args).await,
     }
 }
