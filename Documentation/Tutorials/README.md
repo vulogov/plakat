@@ -85,7 +85,28 @@ If you're new to plakat, work through these in order:
     animations via `plakat animate`. Linearly interpolate the
     CLIP encoding between two prompts to produce a smooth
     N-frame sequence at a fixed seed. Optional GIF bundling.
-    SD 1.5 / SD 2.1 only in this release.
+    SD 1.5 / SD 2.1 / SDXL (v0.18).
+
+12. [`ADVANCED_PROMPTING_TUTORIAL.md`](ADVANCED_PROMPTING_TUTORIAL.md) —
+    three power-user prompt features as a coherent set: A1111
+    attention syntax `(red:1.5)` / `[blue]`, the `BREAK` keyword
+    for chunking past CLIP's 77-token cap, and inline `<lora:>`
+    tags that load LoRAs directly from the prompt. Per-backbone
+    composition matrix; all three work together. v0.17 + v0.18 +
+    v0.19.
+
+13. [`PROMPT_ENHANCER_TUTORIAL.md`](PROMPT_ENHANCER_TUTORIAL.md) —
+    `--enhance` to let an LLM rewrite your prompt with concrete
+    visual detail before generation. Three providers: DeepSeek /
+    Gemini (API-keyed) and `local` (v0.19, Qwen2.5-1.5B by
+    default, ~1 GB GGUF, no API key). `--enhance auto` picks
+    based on what's available.
+
+14. [`METADATA_TUTORIAL.md`](METADATA_TUTORIAL.md) — `plakat
+    metadata FILE.png` reads back the v0.17 Auto1111-compatible
+    `parameters` PNG tEXt chunk + sibling JSON sidecar. Recover
+    forgotten seeds, inspect Civitai downloads, audit scenario
+    batches. `--json-only` pipes cleanly to jq.
 
 ## Specialized portrait techniques
 
@@ -117,6 +138,10 @@ feature:
 | `ARTEFACTS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. (No external assets required — uses the bundled placeholder set.) |
 | `FLUX_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (NF4) / ≥16 GB (GGUF) / ≥24 GB (BF16). HuggingFace token for gated `flux-dev` / `flux-fill-dev` repos. |
 | `SD3_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (Medium) / ≥24 GB (Large). HuggingFace token — all Stability SD3 repos are gated. |
+| `ANIMATE_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~3 GB free for SD 1.5 weights, ~7 GB for SDXL. |
+| `ADVANCED_PROMPTING_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Comfortable with `--lora` and the relationship between seed + reproducibility. No new assets required. |
+| `PROMPT_ENHANCER_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~1 GB free for the default Qwen2.5-1.5B GGUF (or ~230 MB for the SmolLM2 fallback). API key optional (only needed for `--enhance deepseek` / `--enhance gemini`). |
+| `METADATA_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. One or more PNGs from a previous plakat / A1111 / Civitai run. |
 
 ## When to use a reference manual instead
 

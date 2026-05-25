@@ -407,6 +407,16 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     browsing, downloading, and using Civitai community assets.
   - [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md) —
     prompt-morph animation via `plakat animate`.
+  - [`ADVANCED_PROMPTING_TUTORIAL.md`](Documentation/Tutorials/ADVANCED_PROMPTING_TUTORIAL.md) —
+    A1111 attention syntax, the `BREAK` keyword for chunking past
+    CLIP's 77-token cap, and inline `<lora:>` tags. Per-backbone
+    composition matrix.
+  - [`PROMPT_ENHANCER_TUTORIAL.md`](Documentation/Tutorials/PROMPT_ENHANCER_TUTORIAL.md) —
+    `--enhance deepseek | gemini | local | auto`. The local arm
+    runs Qwen2.5-1.5B in-process with no API key.
+  - [`METADATA_TUTORIAL.md`](Documentation/Tutorials/METADATA_TUTORIAL.md) —
+    `plakat metadata FILE.png` recovers the recipe (prompt, seed,
+    LoRAs, sampler) from any plakat / A1111 / Civitai PNG.
   - Specialized portrait recipes:
     [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
     and
