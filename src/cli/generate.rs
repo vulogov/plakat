@@ -344,17 +344,23 @@ pub struct GenerateArgs {
     #[arg(long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 
-    /// Pre-rendered conditioning map for the BFL Flux "concept"
-    /// checkpoints (`--model flux-canny-dev` or `flux-depth-dev`). The
-    /// path is a canny edge map (for Canny-dev) or depth map (for
-    /// Depth-dev) at the target output resolution. The image is
-    /// VAE-encoded and concat'd onto the noise tokens at every
-    /// denoise step — the model's `img_in` Linear is widened to
-    /// 128 channels to consume it.
+    /// Pre-rendered conditioning map / reference image for the BFL
+    /// Flux "concept" + Kontext checkpoints. Path interpretation
+    /// depends on `--model`:
     ///
-    /// Required for the concept variants when `--concept-from` isn't
-    /// supplied; ignored on other models. Mutually exclusive with
-    /// `--concept-from`.
+    /// * `flux-canny-dev` — canny edge map at the target resolution
+    ///   (channel-concat into a 128ch `img_in`)
+    /// * `flux-depth-dev` — depth map at the target resolution
+    ///   (channel-concat into a 128ch `img_in`)
+    /// * `flux-kontext-dev` (v0.18) — the literal reference image to
+    ///   edit (VAE-encoded, sequence-concat onto the noise tokens with
+    ///   `img_ids[..., 0] = 1` as the RoPE marker; `img_in` stays at
+    ///   64 channels)
+    ///
+    /// Required on the concept variants when `--concept-from` isn't
+    /// supplied; required on Kontext (no auto-annotate equivalent —
+    /// Kontext wants the actual reference, not a derived map).
+    /// Ignored on other models. Mutually exclusive with `--concept-from`.
     #[arg(
         long = "concept-image",
         value_name = "PATH",
