@@ -411,9 +411,31 @@ the CLI flag.
 - **No `--tiled`** in this release — per-tile reference slicing
   isn't wired (the reference would have to be sliced along the
   same tile grid as the noise canvas).
-- **No `--redux-image`** — both Redux and Kontext extend the
-  sequence dimension; combining them risks exceeding the Flux RoPE
-  budget. Pick one.
+- **`--redux-image` composes** (v0.19). Redux extends the txt
+  sequence (+729 SigLIP tokens per image); Kontext extends the
+  img sequence (+~1k VAE reference tokens). They're orthogonal in
+  implementation but compound on Flux's RoPE budget. plakat
+  computes the total effective seq length and:
+  - warns at 3500 positions (RoPE may degrade);
+  - bails at 4096 positions (the safe Flux RoPE cap) with
+    actionable cleanup hints (`--size`, ref dims, `--redux-image`
+    count).
+
+  Use case: "edit this image in the style of these reference
+  images" — Kontext provides the layout, Redux provides the
+  style/aesthetic.
+
+  ```bash
+  plakat generate "the same scene at golden hour" \
+      --model flux-kontext-dev \
+      --concept-image input.png \
+      --redux-image style_ref.png:weight=0.5
+  ```
+
+  Rule of thumb for 1024×1024 outputs: ~2.5k positions baseline,
+  +729 per Redux image. 2 Redux images stays under the warn
+  threshold; 3+ pushes into the warn zone; 4 may approach the cap.
+  Smaller outputs (768×768) buy ~700 more positions of headroom.
 - **`--control-spec` composes** (v0.19). The ControlNet runs on the
   noise tokens only; its per-block residuals get zero-padded for
   the reference half (the reference is already conditioning via
