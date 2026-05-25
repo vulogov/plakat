@@ -103,6 +103,14 @@ pub struct AnimateArgs {
     /// `Animate to` entries.
     #[arg(long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
+
+    /// v0.19: skip frames already on disk. Scans `<out>/frame-NNNN.png`
+    /// over `0..frames` and re-runs only the missing ones. Crucial
+    /// when a long animate run crashes on frame 23 of 24 — without
+    /// this flag the only recovery is rerunning all 24 from frame 0.
+    /// Mirrors the scenario `--resume` semantics added in v0.17.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
@@ -205,6 +213,11 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
     // t / from / to) change per frame.
     let scheduler_name = format!("{:?}", args.scheduler).to_lowercase();
 
+    // v0.19: --resume skips frame-NNNN.png files that already exist
+    // on disk. The lerp parameter `t` is recomputed identically per
+    // frame index, so a partial run can be completed without
+    // re-rendering the frames already on disk.
+    let mut skipped = 0u32;
     let mut frame_paths: Vec<PathBuf> = Vec::with_capacity(args.frames as usize);
     for frame_i in 0..args.frames {
         let t = if args.frames == 1 {
@@ -213,6 +226,19 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
             frame_i as f64 / (args.frames - 1) as f64
         };
         let frame_path = args.out.join(format!("frame-{frame_i:04}.png"));
+        if args.resume && frame_path.exists() {
+            skipped += 1;
+            frame_paths.push(frame_path.clone());
+            crate::ui::progress::println(&format!(
+                "  frame {}/{} → {} (t={:.3}) {}",
+                frame_i + 1,
+                args.frames,
+                frame_path.display(),
+                t,
+                console::style("(resume — already on disk)").dim(),
+            ));
+            continue;
+        }
         let frame = endpoints.lerp_at(t)?;
         let meta = if !args.no_metadata {
             let prompt_desc =
@@ -253,6 +279,14 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
             args.frames,
             frame_paths.last().unwrap().display(),
             t,
+        ));
+    }
+
+    if args.resume && skipped > 0 {
+        crate::ui::progress::println(&format!(
+            "  {} skipped {skipped}/{} frame(s) that were already on disk",
+            console::style("(resume)").dim(),
+            args.frames,
         ));
     }
 
