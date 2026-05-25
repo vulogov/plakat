@@ -229,6 +229,24 @@ The download lands at the same
 Gated assets require `CIVITAI_API_KEY` to be set; public LoRAs
 work without one.
 
+### Trigger words surfaced automatically (v0.20)
+
+Whenever a Civitai LoRA is resolved (cache hit or fresh download),
+plakat prints the LoRA's trained trigger words inline, so you
+know what to add to your prompt:
+
+```text
+  ✦ Civitai LoRA 2595428 (v2614696) trigger words: watercolor_(medium), some_trigger
+    → consider adding these to your prompt for the LoRA to activate
+```
+
+These come from Civitai's `trainedWords` field on the resolved
+version — the same list shown on the LoRA's web card under
+"Trigger Words" / "Activation Phrases." Style LoRAs that activate
+purely from scale (no triggers) print nothing. The notice fires
+every run rather than once, so it travels with the LoRA across
+sessions and scenarios.
+
 For Textual Inversion files (`--type ti`):
 
 ```bash
