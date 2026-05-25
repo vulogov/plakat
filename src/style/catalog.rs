@@ -119,7 +119,8 @@ impl BaseModel {
             | Variant::FluxDev
             | Variant::FluxFillDev
             | Variant::FluxCannyDev
-            | Variant::FluxDepthDev => Self::Flux,
+            | Variant::FluxDepthDev
+            | Variant::FluxKontextDev => Self::Flux,
             Variant::Sd3Medium
             | Variant::Sd35Medium
             | Variant::Sd35Large

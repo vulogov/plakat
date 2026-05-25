@@ -79,6 +79,12 @@ pub struct Request {
     /// switch mid-stream don't compose with MultiDiffusion.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 
+    /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When `true`
+    /// AND model is `--model flux-kontext-dev`, the requested
+    /// (width, height) is snapped to the nearest of 17 BFL-recommended
+    /// resolutions before VAE encoding. Ignored on every other model.
+    pub kontext_bucket: bool,
+
     /// v0.13 phase 1b: quantize T5-XXL when running Flux GGUF.
     /// Only meaningful with `--model flux-*-gguf`; bails loud on
     /// BF16 Flux. Ignored entirely on SD-family models.
@@ -221,6 +227,10 @@ pub enum Variant {
     /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
     /// trained on depth-map conditioning.
     FluxDepthDev,
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant — reference
+    /// image VAE-encoded and sequence-concatenated onto the noise
+    /// tokens (not channel-concat like Fill / Canny / Depth).
+    FluxKontextDev,
     /// v0.14 phase 1a: Stable Diffusion 3.5 Medium (MMDiT).
     Sd35Medium,
     /// v0.14 phase 8a: SD3.5 Large (8B-param flagship MMDiT).
@@ -268,10 +278,13 @@ impl Variant {
             return Self::Sd35Medium;
         }
         if m.contains("flux") {
-            // v0.15 phase 4: Canny / Depth concept variants precede
-            // the generic "dev" check — "flux-canny-dev" contains
-            // "dev" but routes to the 128-channel `img_in` config.
-            if m.contains("canny") {
+            // v0.15 phase 4 / v0.18: Kontext / Canny / Depth / Fill
+            // concept variants precede the generic "dev" check —
+            // their model strings all contain "dev" but route to
+            // different pipeline configs.
+            if m.contains("kontext") {
+                Self::FluxKontextDev
+            } else if m.contains("canny") {
                 Self::FluxCannyDev
             } else if m.contains("depth") {
                 Self::FluxDepthDev
@@ -304,6 +317,7 @@ impl Variant {
                 | Self::FluxFillDev
                 | Self::FluxCannyDev
                 | Self::FluxDepthDev
+                | Self::FluxKontextDev
         )
     }
     /// v0.15 phase 4: BFL "concept" Flux variants (Canny-dev /
@@ -311,6 +325,13 @@ impl Variant {
     /// rather than via a separate ControlNet.
     pub fn is_flux_concept(self) -> bool {
         matches!(self, Self::FluxCannyDev | Self::FluxDepthDev)
+    }
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant — distinct
+    /// from `is_flux_concept` (Canny/Depth) because Kontext feeds
+    /// its reference via sequence-concat at the DiT input level
+    /// rather than channel-concat at `img_in`.
+    pub fn is_flux_kontext(self) -> bool {
+        matches!(self, Self::FluxKontextDev)
     }
     /// v0.14 phase 1a / 8a: any SD3 / SD3.5 variant. Routes to the
     /// MMDiT pipeline in `pipelines::sd3`.
@@ -796,6 +817,19 @@ impl Pipeline {
         do_cfg: bool,
         clip_skip: usize,
     ) -> Result<Tensor> {
+        // v0.18: A1111 BREAK keyword path. When either branch
+        // contains the BREAK keyword, the prompt is split into
+        // chunks; each chunk gets its own 77-token CLIP encoding;
+        // hidden states are sequence-concatenated. Both cond and
+        // uncond are padded to the max chunk count so the resulting
+        // tensors share a seq dim (required for CFG cat).
+        let cond_has_break = crate::prompt::break_chunks::has_break(prompt);
+        let uncond_has_break = do_cfg
+            && crate::prompt::break_chunks::has_break(negative);
+        if cond_has_break || uncond_has_break {
+            return self.encode_single_chunked(prompt, negative, do_cfg, clip_skip);
+        }
+
         // v0.17 phase 2: weighted-attention path. The hot path
         // (no attention syntax) falls through to the unmodified
         // call shape; only prompts with `(...)` / `[...]` pay the
@@ -821,6 +855,54 @@ impl Pipeline {
             &self.core.device,
             self.core.dtype,
         )?;
+        Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
+    }
+
+    /// v0.18: chunked CLIP encode for prompts with A1111 BREAK.
+    /// Both cond and uncond are split on BREAK, padded with empty
+    /// chunks to the max count, encoded per-chunk via
+    /// `encode_with_attention`, and concatenated along seq dim.
+    /// Resulting shape: `(2*num_chunks, 77, embed_dim)` (CFG batch)
+    /// or `(num_chunks, 77, embed_dim)` if `!do_cfg`. The UNet's
+    /// cross-attention has no max sequence length so longer K/V
+    /// tensors flow through unchanged.
+    fn encode_single_chunked(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        clip_skip: usize,
+    ) -> Result<Tensor> {
+        let cond_chunks = crate::prompt::break_chunks::split(prompt);
+        let uncond_chunks = if do_cfg {
+            crate::prompt::break_chunks::split(negative)
+        } else {
+            vec![String::new()]
+        };
+        let n = cond_chunks.len().max(uncond_chunks.len());
+        let encode_chunks = |chunks: &[String]| -> Result<Tensor> {
+            let mut per_chunk: Vec<Tensor> = Vec::with_capacity(n);
+            for i in 0..n {
+                let text = chunks.get(i).map(String::as_str).unwrap_or("");
+                per_chunk.push(encode_with_attention(
+                    &self.core.tokenizer_l,
+                    &self.core.cfg.clip,
+                    &self.core.text_encoder_l,
+                    text,
+                    clip_skip,
+                    &self.core.device,
+                    self.core.dtype,
+                )?);
+            }
+            // Concat along the seq dim → (1, n * 77, embed_dim).
+            let refs: Vec<&Tensor> = per_chunk.iter().collect();
+            Ok(Tensor::cat(&refs, 1)?)
+        };
+        let cond = encode_chunks(&cond_chunks)?;
+        if !do_cfg {
+            return Ok(cond.to_dtype(self.core.dtype)?);
+        }
+        let uncond = encode_chunks(&uncond_chunks)?;
         Ok(Tensor::cat(&[&uncond, &cond], 0)?.to_dtype(self.core.dtype)?)
     }
 
@@ -889,6 +971,19 @@ impl Pipeline {
             .as_ref()
             .ok_or_else(|| anyhow!("SDXL missing text_encoder_g"))?;
 
+        // v0.18: A1111 BREAK keyword on SDXL. Both CLIP-L and
+        // CLIP-G chunk independently; pooled output comes from
+        // chunk 0 only (the cond's pooled CLIP-G output drives
+        // add_text_embeds — A1111 convention).
+        let cond_has_break = crate::prompt::break_chunks::has_break(prompt);
+        let uncond_has_break = do_cfg
+            && crate::prompt::break_chunks::has_break(negative);
+        if cond_has_break || uncond_has_break {
+            return self.encode_xl_chunked(
+                prompt, negative, do_cfg, tok_g, cfg_g, enc_g,
+            );
+        }
+
         let (cond_hidden, cond_pooled) = embed_xl(
             prompt,
             &self.core.tokenizer_l,
@@ -919,6 +1014,68 @@ impl Pipeline {
         )?;
         let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
         let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
+        Ok((hidden, pooled))
+    }
+
+    /// v0.18: SDXL BREAK-chunked encode. Both encoders chunk
+    /// independently; per-chunk `embed_xl` produces a (1, 77, 2048)
+    /// hidden + (1, 1280) pooled; chunk-N hidden states concatenate
+    /// along seq dim; ONLY chunk-0's pooled is retained (matches
+    /// A1111's add_text_embeds-from-first-chunk convention).
+    #[allow(clippy::too_many_arguments)]
+    fn encode_xl_chunked(
+        &self,
+        prompt: &str,
+        negative: &str,
+        do_cfg: bool,
+        tok_g: &Tokenizer,
+        cfg_g: &sdclip::Config,
+        enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
+    ) -> Result<(Tensor, Tensor)> {
+        let cond_chunks = crate::prompt::break_chunks::split(prompt);
+        let uncond_chunks = if do_cfg {
+            crate::prompt::break_chunks::split(negative)
+        } else {
+            vec![String::new()]
+        };
+        let n = cond_chunks.len().max(uncond_chunks.len());
+        let encode_chunks = |chunks: &[String]| -> Result<(Tensor, Tensor)> {
+            let mut per_chunk_hidden: Vec<Tensor> = Vec::with_capacity(n);
+            let mut chunk0_pooled: Option<Tensor> = None;
+            for i in 0..n {
+                let text = chunks.get(i).map(String::as_str).unwrap_or("");
+                let (hidden, pooled) = embed_xl(
+                    text,
+                    &self.core.tokenizer_l,
+                    tok_g,
+                    &self.core.cfg.clip,
+                    cfg_g,
+                    &self.core.text_encoder_l,
+                    enc_g,
+                    &self.core.device,
+                    self.core.dtype,
+                )?;
+                if i == 0 {
+                    chunk0_pooled = Some(pooled);
+                }
+                per_chunk_hidden.push(hidden);
+            }
+            let refs: Vec<&Tensor> = per_chunk_hidden.iter().collect();
+            let hidden_concat = Tensor::cat(&refs, 1)?;
+            Ok((hidden_concat, chunk0_pooled.expect("n >= 1")))
+        };
+        let (cond_hidden, cond_pooled) = encode_chunks(&cond_chunks)?;
+        if !do_cfg {
+            return Ok((
+                cond_hidden.to_dtype(self.core.dtype)?,
+                cond_pooled.to_dtype(self.core.dtype)?,
+            ));
+        }
+        let (uncond_hidden, uncond_pooled) = encode_chunks(&uncond_chunks)?;
+        let hidden =
+            Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?.to_dtype(self.core.dtype)?;
+        let pooled =
+            Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?.to_dtype(self.core.dtype)?;
         Ok((hidden, pooled))
     }
 
@@ -1643,7 +1800,11 @@ fn tokenize_weighted(
     device: &Device,
     dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
-    let max_pos = cfg.max_position_embeddings;
+    // v0.18 phase 3: delegate to the shared sentencepiece-/BPE-
+    // agnostic helper. The CLIP-specific bits live here (lookup the
+    // BOS / EOT / pad IDs from this tokenizer's vocabulary, read
+    // max_len out of sdclip::Config) so callers can keep their
+    // current `(tokenizer, cfg, ...)` signature.
     let pad_id: u32 = match &cfg.pad_with {
         Some(s) => tokenizer
             .token_to_id(s)
@@ -1658,45 +1819,14 @@ fn tokenize_weighted(
     let eot_id = tokenizer
         .token_to_id("<|endoftext|>")
         .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?;
-
-    // Collect per-segment tokens (no special tokens added — we
-    // bracket the whole sequence ourselves below).
-    let mut ids: Vec<u32> = Vec::with_capacity(max_pos);
-    let mut weights: Vec<f32> = Vec::with_capacity(max_pos);
-    // BOS at position 0, weight 1.0.
-    ids.push(bos_id);
-    weights.push(1.0);
-    let body_budget = max_pos.saturating_sub(2); // reserve for BOS + EOT
-    for seg in segments {
-        let seg_ids = tokenizer
-            .encode(seg.text.as_str(), false)
-            .map_err(|e| anyhow!("encode segment {:?}: {e}", seg.text))?
-            .get_ids()
-            .to_vec();
-        for id in seg_ids {
-            if ids.len() - 1 >= body_budget {
-                break; // hard-truncate at 77-2 body tokens
-            }
-            ids.push(id);
-            weights.push(seg.weight);
-        }
-        if ids.len() - 1 >= body_budget {
-            break;
-        }
-    }
-    // EOT.
-    ids.push(eot_id);
-    weights.push(1.0);
-    // Pad.
-    while ids.len() < max_pos {
-        ids.push(pad_id);
-        weights.push(1.0);
-    }
-
-    let ids_t = Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?;
-    let weights_t = Tensor::from_vec(weights, (1, max_pos, 1), device)?
-        .to_dtype(dtype)?;
-    Ok((ids_t, weights_t))
+    let wcfg = crate::prompt::weighted_encoding::WeightedTokenConfig {
+        tokenizer,
+        max_len: cfg.max_position_embeddings,
+        bos_id: Some(bos_id),
+        eos_id: eot_id,
+        pad_id,
+    };
+    crate::prompt::weighted_encoding::tokenize_weighted(&wcfg, segments, device, dtype)
 }
 
 /// v0.17 phase 2: convenience that wraps `tokenize_weighted` for
@@ -1991,6 +2121,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             Variant::FluxFillDev => flux::Variant::FillDev,
             Variant::FluxCannyDev => flux::Variant::CannyDev,
             Variant::FluxDepthDev => flux::Variant::DepthDev,
+            Variant::FluxKontextDev => flux::Variant::KontextDev,
             _ => flux::Variant::Schnell,
         };
         // Resolve LoraSpec → ResolvedLora for Flux's API. Errors out
@@ -2151,6 +2282,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // bails loud if a concept variant is loaded without
             // concept_conditioning set.
             concept_conditioning: req.flux_concept_image.clone(),
+            // v0.18 phase 2b: pass through the opt-in Kontext bucket
+            // snap. Only honoured by `Pipeline::generate` when the
+            // variant is Kontext; ignored otherwise.
+            kontext_bucket: req.kontext_bucket,
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are
@@ -2376,15 +2511,67 @@ mod tests {
 
     #[test]
     fn concept_variants_preempt_dev() {
-        // "flux-canny-dev" contains "dev" — the canny/depth checks
-        // must precede the generic dev check, otherwise we'd
-        // route to plain FluxDev and the 128ch `img_in` would be
-        // mis-sized at load time.
+        // "flux-canny-dev" contains "dev" — the canny/depth/kontext
+        // checks must precede the generic dev check, otherwise we'd
+        // route to plain FluxDev and the model would be loaded with
+        // the wrong config at load time.
         assert_eq!(Variant::detect("flux-canny-dev"), Variant::FluxCannyDev);
         assert_eq!(Variant::detect("flux-depth-dev"), Variant::FluxDepthDev);
+        assert_eq!(Variant::detect("flux-kontext-dev"), Variant::FluxKontextDev);
         // Sanity: plain dev still routes to FluxDev.
         assert_eq!(Variant::detect("flux-dev"), Variant::FluxDev);
         assert_eq!(Variant::detect("flux-fill-dev"), Variant::FluxFillDev);
+    }
+
+    // v0.18 — Kontext variant detection + predicates.
+
+    #[test]
+    fn detects_flux_kontext_dev() {
+        assert_eq!(Variant::detect("flux-kontext-dev"), Variant::FluxKontextDev);
+        assert_eq!(Variant::detect("flux1-kontext-dev"), Variant::FluxKontextDev);
+        assert_eq!(
+            Variant::detect("black-forest-labs/FLUX.1-Kontext-dev"),
+            Variant::FluxKontextDev
+        );
+    }
+
+    #[test]
+    fn is_flux_includes_kontext() {
+        assert!(Variant::FluxKontextDev.is_flux());
+    }
+
+    // v0.18 Kontext phase 3 — GGUF variant resolves to KontextDev.
+
+    #[test]
+    fn detects_flux_kontext_gguf() {
+        // The GGUF alias contains both "kontext" and "gguf"; detect()
+        // routes on the variant marker (kontext) — the gguf-ness is
+        // picked up downstream from the resolved repo string.
+        assert_eq!(
+            Variant::detect("flux-kontext-dev-gguf"),
+            Variant::FluxKontextDev
+        );
+        assert_eq!(
+            Variant::detect("flux-kontext-gguf"),
+            Variant::FluxKontextDev
+        );
+        // Upstream unsloth repo name in lower-case form too.
+        assert_eq!(
+            Variant::detect("unsloth/flux.1-kontext-dev-gguf"),
+            Variant::FluxKontextDev
+        );
+    }
+
+    #[test]
+    fn is_flux_kontext_excludes_concept_and_fill() {
+        // Kontext is its own conditioning shape (seq-concat) — not a
+        // 128ch concept variant nor a 384ch Fill.
+        assert!(Variant::FluxKontextDev.is_flux_kontext());
+        assert!(!Variant::FluxKontextDev.is_flux_concept());
+        assert!(!Variant::FluxCannyDev.is_flux_kontext());
+        assert!(!Variant::FluxDepthDev.is_flux_kontext());
+        assert!(!Variant::FluxFillDev.is_flux_kontext());
+        assert!(!Variant::FluxDev.is_flux_kontext());
     }
 
     #[test]

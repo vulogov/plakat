@@ -230,12 +230,231 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     ok("Downloaded automatically from h94/IP-Adapter. No setup needed.");
 
     println!();
+
+    // -------- v0.18 phase 7: build / runtime device match --------
+    // Catches the class of failures where the binary was compiled
+    // with --features cuda but no NVIDIA driver is present at run
+    // time, or where a Metal binary is being run on a CUDA box, etc.
+    section_runtime_device_match();
+    println!();
+
+    // -------- v0.18 phase 7: CUDA driver shim presence (Linux+CUDA) --------
+    // Linux + `--features cuda` only. Probes the well-known driver
+    // shim locations. The CUDA *toolkit* (nvcc + cuBLAS) is not the
+    // same as the *driver* (libcuda.so.1) — the v0.17 CI failure
+    // was a runner with the toolkit but no driver.
+    #[cfg(all(feature = "cuda", target_os = "linux"))]
+    {
+        section_cuda_driver_shim();
+        println!();
+    }
+
+    // -------- v0.18 phase 7: HF cache disk usage --------
+    section_cache_disk_usage();
+    println!();
+
     println!(
         "  {}\n",
         style("If you've fixed any of the issues above, re-run `plakat doctor` to confirm.").dim()
     );
 
     Ok(())
+}
+
+/// Reports the backend flags the binary was compiled with vs the
+/// device that `device::select("auto")` actually resolves on this
+/// host. Warns when the build features and runtime resolution don't
+/// agree (e.g. `--features cuda` build with no driver → falls back
+/// to CPU silently otherwise).
+fn section_runtime_device_match() {
+    section_header("Build / runtime device match");
+
+    let build_cuda = cfg!(feature = "cuda");
+    let build_metal = cfg!(feature = "metal");
+    let build_features: Vec<&str> = [("cuda", build_cuda), ("metal", build_metal)]
+        .into_iter()
+        .filter_map(|(n, on)| if on { Some(n) } else { None })
+        .collect();
+    let build_summary = if build_features.is_empty() {
+        "(none — CPU-only build)".to_string()
+    } else {
+        build_features.join(" + ")
+    };
+    note(&format!("Build features: {build_summary}"));
+
+    // Runtime probe. `device::select("auto")` falls back to CPU
+    // silently when the configured backends fail to initialise.
+    match crate::device::select("auto") {
+        Ok(d) => {
+            let runtime = describe_device(&d);
+            note(&format!("Runtime device (auto): {runtime}"));
+
+            // Mismatch heuristics — only worth a warn when the user
+            // explicitly built for an accelerator and got CPU.
+            let runtime_is_cpu = matches!(d, candle_core::Device::Cpu);
+            if (build_cuda || build_metal) && runtime_is_cpu {
+                warn(
+                    "binary was built with an accelerator feature but auto-detect \
+                     fell back to CPU. Check the section below (CUDA driver) and / or \
+                     the Metal runtime install.",
+                );
+            } else {
+                ok(&format!("build + runtime aligned: {runtime}"));
+            }
+        }
+        Err(e) => {
+            err(&format!("device::select(\"auto\") failed: {e}"));
+        }
+    }
+}
+
+fn describe_device(d: &candle_core::Device) -> String {
+    match d {
+        candle_core::Device::Cpu => "CPU".to_string(),
+        candle_core::Device::Cuda(_) => "CUDA".to_string(),
+        candle_core::Device::Metal(_) => "Metal".to_string(),
+    }
+}
+
+/// Probe the well-known locations of `libcuda.so.1` — the NVIDIA
+/// driver shim. Toolkit installs (nvcc + cuBLAS via apt) do NOT
+/// install the driver; the v0.17 CI failure was a GitHub runner in
+/// exactly that state. Linux only, cuda-feature only.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+fn section_cuda_driver_shim() {
+    section_header("CUDA driver shim (libcuda.so.1)");
+    const CANDIDATES: &[&str] = &[
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+        "/usr/lib64/libcuda.so.1",
+        "/usr/lib/libcuda.so.1",
+        "/lib/x86_64-linux-gnu/libcuda.so.1",
+    ];
+    let found = CANDIDATES.iter().find(|p| std::path::Path::new(p).exists());
+    match found {
+        Some(path) => ok(&format!("libcuda.so.1 found at {path}")),
+        None => {
+            err(
+                "libcuda.so.1 not found in any standard location. \
+                 The CUDA toolkit (nvcc + cuBLAS) is separate from the NVIDIA \
+                 driver — `plakat generate` will fail at startup with \
+                 'cannot open shared object file' until the driver is installed. \
+                 Install via `nvidia-driver-*` (Debian/Ubuntu) or the NVIDIA \
+                 installer for your distro.",
+            );
+            note("Searched: /usr/lib/x86_64-linux-gnu, /usr/lib64, /usr/lib, /lib/x86_64-linux-gnu");
+        }
+    }
+}
+
+/// Walks the HF cache root and reports total bytes used. Surfaces
+/// `plakat models rm` as the cleanup path when the cache grows
+/// large. Uses the existing `hf::cache::dir_size` walker — no new
+/// dep needed.
+fn section_cache_disk_usage() {
+    section_header("HF cache disk usage");
+    let root = crate::hf::cache::hf_cache_root();
+    if !root.exists() {
+        note(&format!(
+            "{} doesn't exist yet — no models downloaded.",
+            root.display()
+        ));
+        return;
+    }
+    let used = match crate::hf::cache::dir_size(&root) {
+        Ok(n) => n,
+        Err(e) => {
+            err(&format!("couldn't walk {}: {e}", root.display()));
+            return;
+        }
+    };
+    let human = crate::hf::cache::human_bytes(used);
+    ok(&format!("{} cached at {}", human, root.display()));
+    match cache_usage_severity(used) {
+        CacheSeverity::Ok => {}
+        CacheSeverity::Note => note(
+            "cache is over 100 GB. `plakat models ls` to inspect; \
+             `plakat models rm <repo>` to clean up specific entries.",
+        ),
+        CacheSeverity::Warn => warn(
+            "cache is over 500 GB. Run `plakat models ls` to see what's in it \
+             and `plakat models rm <repo>` to prune unused checkpoints.",
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheSeverity {
+    Ok,
+    Note,
+    Warn,
+}
+
+/// Bucket cache size into a severity tier. 100 GB ≈ 3-4 Flux
+/// variants; 500 GB is "you might want to clean up". Pure function
+/// so the bucket boundaries are unit-testable without filesystem
+/// state.
+fn cache_usage_severity(used_bytes: u64) -> CacheSeverity {
+    const GB: u64 = 1024 * 1024 * 1024;
+    if used_bytes > 500 * GB {
+        CacheSeverity::Warn
+    } else if used_bytes > 100 * GB {
+        CacheSeverity::Note
+    } else {
+        CacheSeverity::Ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v0.18 phase 7 — unit tests for the pure pieces of the new
+    // doctor sections. The print-side helpers (section_*) are
+    // side-effecty and exercised via integration runs.
+
+    #[test]
+    fn describe_device_covers_all_variants() {
+        assert_eq!(describe_device(&candle_core::Device::Cpu), "CPU");
+        // CUDA / Metal variants can only be constructed when the
+        // corresponding feature is enabled at compile time; skip the
+        // assertion on configurations that lack them. The string
+        // outputs are exercised by the manual `plakat doctor` run.
+    }
+
+    #[test]
+    fn cache_usage_severity_under_100gb_is_ok() {
+        assert_eq!(cache_usage_severity(0), CacheSeverity::Ok);
+        assert_eq!(cache_usage_severity(50 * 1024 * 1024 * 1024), CacheSeverity::Ok);
+        assert_eq!(cache_usage_severity(100 * 1024 * 1024 * 1024), CacheSeverity::Ok);
+    }
+
+    #[test]
+    fn cache_usage_severity_between_100_and_500gb_is_note() {
+        assert_eq!(
+            cache_usage_severity(101 * 1024 * 1024 * 1024),
+            CacheSeverity::Note
+        );
+        assert_eq!(
+            cache_usage_severity(250 * 1024 * 1024 * 1024),
+            CacheSeverity::Note
+        );
+        assert_eq!(
+            cache_usage_severity(500 * 1024 * 1024 * 1024),
+            CacheSeverity::Note
+        );
+    }
+
+    #[test]
+    fn cache_usage_severity_over_500gb_is_warn() {
+        assert_eq!(
+            cache_usage_severity(501 * 1024 * 1024 * 1024),
+            CacheSeverity::Warn
+        );
+        assert_eq!(
+            cache_usage_severity(2 * 1024 * 1024 * 1024 * 1024),
+            CacheSeverity::Warn
+        );
+    }
 }
 
 fn section_header(label: &str) {

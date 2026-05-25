@@ -16,11 +16,12 @@ and the trade-offs between frame count + step count + size.
 - Finished [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md). You
   should be comfortable with `--prompt`, `--seed`, `--steps`,
   and the relationship between seed and noise.
-- A working `plakat generate` against SD 1.5 (or SD 2.1). The
-  animate path is SD-family only in this release — Flux + SD3 use
-  T5 / rectified-flow and need their own machinery, deferred to a
+- A working `plakat generate` against SD 1.5 / SD 2.1 / SDXL. The
+  animate path now supports the full SD family; Flux + SD3 use T5
+  / rectified-flow and need their own machinery, deferred to a
   follow-up.
-- ~3 GB free for the SD 1.5 weights on first run (one-time cost).
+- ~3 GB free for the SD 1.5 weights on first run (one-time cost);
+  ~7 GB for SDXL.
 
 ## 1. Your first morph
 
@@ -170,11 +171,22 @@ each frame manually via `plakat generate` and bundle into a GIF
 externally (the `image` crate's GIF encoder is what plakat uses
 internally).
 
+**Frame metadata** (v0.18). Every `frame-NNNN.png` carries an
+Auto1111-compatible `parameters` PNG tEXt chunk plus a sibling
+`frame-NNNN.json` sidecar. The chunk's prompt field reads
+`lerp(0.4375): "from prompt" | "to prompt"` so dragging a frame
+into A1111 / Civitai / ComfyUI shows the morph state at that point;
+the JSON sidecar carries the structured `Lerp t` / `Animate from`
+/ `Animate to` extras so you can re-render any frame standalone.
+Pass `--no-metadata` to skip both.
+
 ## 8. Limitations
 
-- **SD 1.5 / SD 2.1 only.** SDXL has dual encoders + pooled
-  add_embedding that complicate the lerp; the SDXL path is a
-  v0.18 candidate.
+- **SD-family only** (SD 1.5 / SD 2.1 / SDXL). SDXL animate (added
+  in v0.18) lerps the dual CLIP-L + CLIP-G hidden states plus the
+  pooled `add_text_embeds` micro-conditioning each frame; expect
+  ~2-3× the per-frame cost of SD 1.5 in exchange for SDXL's
+  trained resolution + visual quality.
 - **Flux + SD3 deferred.** Their T5 + rectified-flow paths need
   separate machinery.
 - **No CFG variations across frames.** Guidance is constant.

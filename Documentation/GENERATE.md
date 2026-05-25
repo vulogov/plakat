@@ -50,9 +50,11 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-fill-dev` | `black-forest-labs/FLUX.1-Fill-dev` | BFL's dedicated Flux inpaint checkpoint. Driven via `plakat img2img --mask`. |
 | `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
 | `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
+| `flux-kontext-dev` | `black-forest-labs/FLUX.1-Kontext-dev` | **v0.18**. BFL image-editing Flux. Reference VAE-encoded + sequence-concatenated onto the noise tokens (`img_in` stays at 64ch, unlike Canny/Depth which widen it). Pass the reference via `--concept-image PATH` on `plakat generate`, or `plakat img2img input.png --model flux-kontext-dev --prompt "..."`. Recommended guidance 3.5 (same as Dev — not 30 like Canny/Depth, since the conditioning flows through cross-attention not channel-concat). Optional `--kontext-bucket` snaps `--size` to one of 17 BFL-recommended resolutions. Gated. |
 | `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | 4-bit quantized Flux Fill. |
+| `flux-kontext-dev-gguf` | `unsloth/FLUX.1-Kontext-dev-GGUF` | **v0.18**. GGUF Kontext via the unsloth mirror. Same `--quant-level` options as `flux-dev-gguf`. Composes with `--loras` (Kontext shares Dev's transformer layer names). NF4 isn't supported (no upstream pack). |
 | `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras`. |
 | `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
 | `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | SD3.5 Large flagship. 8B-param MMDiT. Gated. |
@@ -329,18 +331,28 @@ Multiplier applied to every LoRA's per-file scale. So
 
 #### `--enhance <PROVIDER>`
 
-Pass the prompt through an LLM (DeepSeek or Gemini) that rewrites it
-with concrete visual detail (composition, lighting, medium, style) before
-generation.
+Pass the prompt through an LLM that rewrites it with concrete visual
+detail (composition, lighting, medium, style) before generation.
 
-```
+```bash
 plakat generate "knight" --enhance deepseek
+plakat generate "knight" --enhance local        # v0.18 — no API key
+plakat generate "knight" --enhance auto         # v0.18 — pick what's available
 ```
 
-| Provider | Env var |
-|---|---|
-| `deepseek` | `DEEPSEEK_API_KEY` |
-| `gemini` | `GEMINI_API_KEY` |
+| Provider | Backend | Cost |
+|---|---|---|
+| `deepseek` | DeepSeek API (env `DEEPSEEK_API_KEY`) | metered API |
+| `gemini` | Gemini API (env `GEMINI_API_KEY`) | metered API |
+| `local` | quantized LLM in-process (default: Qwen2.5-1.5B-Instruct) | one-time ~1 GB download |
+| `local:<alias>` | local with explicit model — `qwen2.5-1.5b` (default) or `smollm2-360m` (CPU-budget fallback) | varies |
+| `auto` | DeepSeek if `DEEPSEEK_API_KEY` set → Gemini if `GEMINI_API_KEY` set → `local` | depends on what fires |
+
+The local enhancer runs entirely in-process via candle's quantized
+LLM backends — no API key, no network after the one-time GGUF
+download. Greedy decoding by default (reproducible: same prompt =
+same enhancement). Refusals / empty output fall back silently to
+the un-enhanced prompt rather than poisoning the diffusion encoder.
 
 The enhancer is the cheap-but-effective way to compensate for a model
 whose prompt comprehension is weaker than you'd like (SD 1.5 / 2.1 in
@@ -527,6 +539,7 @@ Bundles a published distillation LoRA + recommended step + guidance
 | `hyper-16` | Flux | ByteDance Hyper-FLUX 16-step (CFG-free) | 16 | 1.0 | (default) |
 | `turbo-alpha` | Flux | alimama-creative FLUX.1-Turbo-Alpha | 8 | 3.5 | (default) |
 | `lcm-sdxl` | SDXL | Latent Consistency LoRA for SDXL | 4 | 1.5 | `lcm` |
+| `lcm-sd15` | SD 1.5 | Latent Consistency LoRA for SD 1.5 | 4 | 1.5 | `lcm` |
 
 ```bash
 # Flux distillation — Hyper-FLUX 8-step
@@ -534,15 +547,20 @@ plakat generate "..." --model flux-dev --fast hyper-8
 
 # SDXL Latent Consistency — 4-step inference, ~5x speedup over base SDXL
 plakat generate "..." --model sdxl --fast lcm-sdxl
+
+# SD 1.5 Latent Consistency — 4-step inference, same recipe for the
+# smaller backbone
+plakat generate "..." --model sd15 --fast lcm-sd15
 ```
 
 The preset LoRA gets prepended to `--loras`; `--steps`,
-`--guidance`, and (for `lcm-sdxl`) `--scheduler` are overridden
-**only** when you didn't pass them explicitly. Flux presets
-require a non-Fill Flux model; `lcm-sdxl` requires an SDXL /
-SDXL-Turbo model and bails if `--refiner` is also set (the
+`--guidance`, and (for the `lcm-*` presets) `--scheduler` are
+overridden **only** when you didn't pass them explicitly. Flux
+presets require a non-Fill Flux model; `lcm-sdxl` requires an
+SDXL / SDXL-Turbo model and bails if `--refiner` is also set (the
 refiner's late-step non-LCM scheduler conflicts with the 4-step
-LCM schedule).
+LCM schedule); `lcm-sd15` requires an SD 1.5 model and bails on
+the inpaint variant (mask + 4-step distillation interact poorly).
 
 ### Wildcards
 
@@ -576,12 +594,97 @@ The wildcard RNG is seeded from `--seed` when set (reproducible
 expansion) and from OS entropy otherwise. Expansion runs **before**
 `--enhance` so the enhancer sees a concrete prompt.
 
-### Attention emphasis (SD-family)
+### Inline LoRA tags (v0.18)
+
+A1111 / Civitai-style `<lora:NAME[:weight]>` syntax in the prompt.
+The tag is extracted at the CLI boundary, the LoRA is prepended to
+the user's `--lora` stack, and the cleaned prompt (tag removed)
+flows on to the encoder. Available on `plakat generate`,
+`plakat img2img`, and `plakat portrait`.
+
+```bash
+# Inline a single LoRA — no separate --lora needed
+plakat generate "a watercolor fox <lora:civitai:12345:0.7>" \
+    --model sd15
+
+# Multiple LoRAs in the same prompt
+plakat generate "<lora:style1:0.5> a fox <lora:style2:0.3>" \
+    --model sd15
+
+# Mix inline + explicit --lora; --lora wins on key collision
+plakat generate "a fox <lora:style:0.7>" \
+    --model sd15 \
+    --lora civitai:99999:0.5
+```
+
+Grammar (everything inside `<lora:>` is whatever
+`LoraSpec::from_str` accepts — same as the `--lora` flag):
+
+| Form | Meaning |
+|---|---|
+| `<lora:NAME>` | weight = 1.0 (A1111 default) |
+| `<lora:NAME:0.7>` | explicit weight |
+| `<lora:myfile.safetensors[:weight]>` | local file |
+| `<lora:author/repo[#file.safetensors][:weight]>` | HF repo |
+| `<lora:civitai:NNNNNN[#file][:weight]>` | Civitai by model id |
+| `<lora:civitai-version:NNNNNN[:weight]>` | Civitai by version id |
+
+Ordering: wildcards → enhance → `<lora:>` extraction → attention
+syntax → encode. So `<lora:{styleA|styleB}>` resolves a single name
+via the wildcard pick BEFORE this stage sees it.
+
+Negative-prompt `<lora:>` tags are stripped silently (A1111
+convention; LoRAs apply to both the cond and uncond CLIP forwards
+regardless of which branch they appeared in).
+
+Unbalanced `<lora:` with no closing `>` is treated as a literal —
+no error, just no extraction (same robustness contract as the
+attention parser and wildcards).
+
+### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
+
+CLIP's 77-token cap silently truncates long prompts. Split a long
+prompt into chunks with the literal word `BREAK` (case-sensitive,
+word-bounded); each chunk gets its own 77-token CLIP encoding, and
+the per-chunk hidden states are sequence-concatenated before the
+UNet's cross-attention consumes them. No max sequence length on
+attention — chunks just stack.
+
+```bash
+# Two-chunk prompt — 154 tokens of conditioning instead of 77
+plakat generate \
+    "a brutalist whale poster, watercolor on rough paper, \
+     dramatic lighting, cinematic composition \
+     BREAK \
+     soft pastels, hand-painted feel, no digital artifacts, \
+     1970s editorial illustration aesthetic" \
+    --model sd15
+```
+
+| Backbone | BREAK support |
+|---|---|
+| SD 1.5 / SD 2.1 | ✓ — chunks the single CLIP-L encoder |
+| SDXL / SDXL-Turbo | ✓ — chunks both CLIP-L and CLIP-G; pooled `add_text_embeds` comes from chunk 0 (A1111 convention) |
+| Flux (BF16 / GGUF / NF4) | strips + warns (T5 already has a 256/512-token budget) |
+| SD3 / SD3.5 | strips + warns (T5 budget + pooled `y` assumes single-chunk) |
+
+CFG: both cond (`--prompt`) and uncond (`--negative`) are chunked
+independently. Whichever has fewer chunks is padded with empty
+chunks so the resulting `(2 × num_chunks × 77)` cat shape lines up.
+
+Adjacent BREAKs (e.g. `BREAK BREAK`) drop empty chunks; pathological
+`BREAK BREAK` alone falls back to a single empty chunk. The keyword
+is case-sensitive — `Break` / `break` / `breakfast` are passed
+through as ordinary words. Word-boundary check is ASCII (matches
+A1111's regex behaviour) — `BREAKING`, `BREAKDOWN`, `BREAKERS_v1`
+all stay intact as words.
+
+### Attention emphasis (all backbones)
 
 A1111 / NovelAI-style prompt grammar — used by virtually every
 Civitai LoRA card. plakat parses these inline and applies the
-per-token weight to the CLIP hidden state (per-row scale on the
-penultimate output, before cross-attention).
+per-token weight to the encoder's hidden state (per-row scale on
+the penultimate output, before cross-attention).
 
 | Syntax | Weight |
 |---|---|
@@ -596,11 +699,42 @@ penultimate output, before cross-attention).
 plakat generate \
     "masterpiece, best quality, (1girl:1.2), (red hair:1.3), [low quality]" \
     --model sd15
+
+# Works on Flux too — Civitai Flux LoRA cards rely on it.
+plakat generate \
+    "a (cyberpunk:1.4) street market, [muted colors]" \
+    --model flux-dev
+
+# And SD3 / SD3.5 — broadcasts on CLIP-L, CLIP-G, and T5 hidden states.
+plakat generate \
+    "a (cinematic:1.3) portrait, [shallow depth of field]" \
+    --model sd35-medium
 ```
 
-SD 1.5 / SD 2.1 / SDXL only. Flux + SD3 ignore (T5-based encoders
-don't share the CLIP per-token weighting hook). Unbalanced parens
-are treated as literal characters — no error, just no emphasis.
+**Supported**: SD 1.5 / SD 2.1 / SDXL (CLIP-L + CLIP-G penultimate),
+Flux (T5-XXL hidden states — CLIP-L on Flux is pooled-only, so per-
+token weighting is a no-op there), SD3 / SD3.5 (CLIP-L penult,
+CLIP-G penult, and T5 hidden — pooled CLIP-{L,G} stays unweighted).
+
+**Negative prompts**: `--negative` accepts the same syntax. The
+uncond branch of CFG goes through the same encoder entry points as
+the positive branch, so `(blurry:1.5), [low quality]` weights the
+"blurry" cluster more than other negative tokens.
+
+```bash
+plakat generate "portrait, soft light" \
+    --negative "(blurry:1.6), (low quality:1.4), [oversharp]" \
+    --model sdxl
+```
+
+**Sentencepiece caveat (Flux + SD3)**: T5's sentencepiece tokenizer
+may produce a slightly different subtoken split for a segment in
+isolation vs the same text inside a longer string (the leading
+word-boundary marker depends on the previous character). The weight-
+per-resulting-subtoken contract is preserved either way — the visual
+effect of `(token:1.5)` matches A1111 even when the subtoken count
+drifts by one. Unbalanced parens are treated as literal characters —
+no error, just no emphasis.
 
 ### CLIP-skip (SD 1.5 / SD 2.1)
 

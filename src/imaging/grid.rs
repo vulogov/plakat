@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use image::{ImageBuffer, Rgb, RgbImage};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Pick a sensible column count for `n` cells. `ceil(sqrt(n))`
 /// gives near-square layouts: 4→2, 5..9→3, 10..16→4, etc.
@@ -106,6 +106,41 @@ pub fn write_grid(
     grid.save(out_path)
         .with_context(|| format!("writing grid PNG to {}", out_path.display()))?;
     Ok((grid.width(), grid.height()))
+}
+
+/// Higher-level helper used by every CLI subcommand that supports
+/// `--grid`. Scans `out_dir` for files matching
+/// `{file_prefix}-{seed}.png` over `base_seed..base_seed+count`,
+/// composes them, and writes `{file_prefix}-grid-{base_seed}.png`.
+///
+/// Returns `Ok(None)` when the grid isn't worth writing (count < 2
+/// or fewer than 2 input files actually exist on disk). Returns
+/// `Ok(Some((width, height, grid_path)))` on success so the caller
+/// can log dimensions + the final path.
+pub fn compose_grid_from_seed_range(
+    out_dir: &Path,
+    file_prefix: &str,
+    base_seed: u64,
+    count: u32,
+    cols: Option<usize>,
+    padding: u32,
+) -> Result<Option<(u32, u32, PathBuf)>> {
+    if count < 2 {
+        return Ok(None);
+    }
+    let files: Vec<PathBuf> = (0..count)
+        .map(|i| {
+            let s = base_seed.wrapping_add(i as u64);
+            out_dir.join(format!("{file_prefix}-{s}.png"))
+        })
+        .filter(|p| p.exists())
+        .collect();
+    if files.len() < 2 {
+        return Ok(None);
+    }
+    let grid_path = out_dir.join(format!("{file_prefix}-grid-{base_seed}.png"));
+    let (gw, gh) = write_grid(&files, &grid_path, cols, padding)?;
+    Ok(Some((gw, gh, grid_path)))
 }
 
 #[cfg(test)]
@@ -215,5 +250,68 @@ mod tests {
         let g = image::open(&out).unwrap().to_rgb8();
         assert_eq!(g.get_pixel(0, 0).0, [255, 0, 0]);
         assert_eq!(g.get_pixel(2, 0).0, [0, 0, 255]);
+    }
+
+    // v0.18 phase 2 — compose_grid_from_seed_range helper used by
+    // the img2img / portrait / outpaint CLI dispatch arms.
+
+    #[test]
+    fn compose_grid_from_seed_range_writes_when_all_files_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Mint three solid PNGs at the expected seed-derived paths.
+        for (i, rgb) in [[255, 0, 0], [0, 255, 0], [0, 0, 255]].iter().enumerate() {
+            let s = 100u64 + i as u64;
+            let p = tmp.path().join(format!("plakat-img2img-{s}.png"));
+            solid(4, 4, *rgb).save(&p).unwrap();
+        }
+        let result = compose_grid_from_seed_range(
+            tmp.path(),
+            "plakat-img2img",
+            100,
+            3,
+            None,
+            0,
+        )
+        .unwrap();
+        let (w, h, path) = result.expect("grid composed");
+        // default_columns(3) == 2 → 2×2 cells of 4px = 8×8.
+        assert_eq!((w, h), (8, 8));
+        assert_eq!(path, tmp.path().join("plakat-img2img-grid-100.png"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn compose_grid_from_seed_range_skips_when_count_below_two() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("plakat-portrait-42.png");
+        solid(4, 4, [128; 3]).save(&p).unwrap();
+        let result = compose_grid_from_seed_range(
+            tmp.path(),
+            "plakat-portrait",
+            42,
+            1,
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(result.is_none(), "count=1 should skip");
+    }
+
+    #[test]
+    fn compose_grid_from_seed_range_skips_when_fewer_than_two_files_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Only one of the three expected files actually exists.
+        let p = tmp.path().join("plakat-flux-7.png");
+        solid(4, 4, [255; 3]).save(&p).unwrap();
+        let result = compose_grid_from_seed_range(
+            tmp.path(),
+            "plakat-flux",
+            7,
+            3,
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(result.is_none(), "single existing file should skip");
     }
 }

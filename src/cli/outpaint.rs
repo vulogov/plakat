@@ -115,6 +115,24 @@ pub struct OutpaintArgs {
     /// Output directory.
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
+
+    /// v0.18 phase 2: with `--count N > 1`, also write a single
+    /// `plakat-inpaint-grid-<base-seed>.png` combining all N outputs
+    /// in a near-square layout. Forwarded to the underlying
+    /// `plakat img2img` pipeline (outpaint always runs through the
+    /// inpaint dispatch).
+    #[arg(long = "grid", default_value_t = false)]
+    pub grid: bool,
+
+    /// v0.18 phase 2: column count for `--grid`. Default is
+    /// `ceil(sqrt(count))`. Ignored when `--grid` is off.
+    #[arg(long = "grid-cols", value_name = "N")]
+    pub grid_cols: Option<usize>,
+
+    /// v0.18 phase 2: padding (px) between grid cells. Default 0.
+    /// Ignored when `--grid` is off.
+    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    pub grid_padding: u32,
 }
 
 pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
@@ -247,6 +265,22 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         tiled: false,
         tile_size: 1024,
         tile_stride: 768,
+        // v0.18 phase 2: pass --grid through into the img2img layer
+        // — the inpaint dispatch composes the grid on the
+        // `plakat-inpaint-{seed}.png` files outpaint produces.
+        grid: args.grid,
+        grid_cols: args.grid_cols,
+        grid_padding: args.grid_padding,
+        // v0.18 phase 2b: outpaint never routes through Kontext.
+        kontext_bucket: false,
+        // v0.18: outpaint controls dimension changes via per-
+        // side --left/--right/--top/--bottom/--expand flags, so
+        // --aspect isn't surfaced on the outpaint CLI. Pass None +
+        // the existing 1024 base default through so the underlying
+        // img2img resolver falls back to the input dims (the
+        // standard outpaint behaviour).
+        aspect: None,
+        base: 1024,
     };
     crate::cli::img2img::run(img2img_args, device).await
 }
