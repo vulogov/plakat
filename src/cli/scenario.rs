@@ -1733,12 +1733,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             // what overrides are taking effect.
             let dry_count = task.count.unwrap_or(count);
             let dry_seed = task.seed.unwrap_or(seed + seed_offset);
+            let dry_task_out = out_root.join(safe_name(&task.name));
             crate::ui::progress::println(&format!(
-                "  {} would generate {} image(s) with seeds {}..{}",
+                "  {} would generate {} image(s) with seeds {}..{} → {}",
                 style("(dry-run)").dim(),
                 dry_count,
                 dry_seed,
                 dry_seed + dry_count as u64 - 1,
+                dry_task_out.display(),
             ));
             if has_overrides(task) {
                 crate::ui::progress::println(&format!(
@@ -2777,13 +2779,28 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         seed_offset += count as u64;
     }
 
-    println!(
-        "\n{} {} task(s), {} image(s) → {}",
-        style("✓ done").green().bold(),
-        s.tasks.len(),
-        total_images,
-        out_root.display()
-    );
+    // v0.19 #3: tag the summary line so dry-run users can tell at
+    // a glance that nothing was actually written to disk. Without
+    // this, "✓ done N images" misleads — they'd look in the out
+    // dir, find it empty, and wonder what happened.
+    if args.dry_run {
+        println!(
+            "\n{} would have generated {} image(s) across {} task(s) → {} \
+             (no files written — drop --dry-run to actually generate)",
+            style("(dry-run)").yellow().bold(),
+            total_images,
+            s.tasks.len(),
+            out_root.display()
+        );
+    } else {
+        println!(
+            "\n{} {} task(s), {} image(s) → {}",
+            style("✓ done").green().bold(),
+            s.tasks.len(),
+            total_images,
+            out_root.display()
+        );
+    }
     Ok(())
 }
 
