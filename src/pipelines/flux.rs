@@ -71,11 +71,20 @@ pub enum Variant {
     /// v0.15 phase 4: Flux.1-Depth-dev. Same shape as Canny-dev but
     /// trained on depth maps instead of canny edges.
     DepthDev,
+    /// v0.18: Flux.1-Kontext-dev. Image-editing variant. Architecture
+    /// matches Dev (img_in stays at 64 channels); the difference is
+    /// at the pipeline level — a reference image is VAE-encoded and
+    /// its tokens are sequence-concatenated onto the noise tokens
+    /// with `image_ids[..., 0] = 1` as the positional marker.
+    KontextDev,
 }
 
 impl Variant {
     pub fn is_dev(self) -> bool {
-        matches!(self, Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev)
+        matches!(
+            self,
+            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev | Self::KontextDev
+        )
     }
     /// v0.13 phase 2: does this variant expect inpainting inputs?
     pub fn is_fill(self) -> bool {
@@ -85,6 +94,12 @@ impl Variant {
     /// into a 128-channel `img_in`. Canny-dev or Depth-dev.
     pub fn is_concept(self) -> bool {
         matches!(self, Self::CannyDev | Self::DepthDev)
+    }
+    /// v0.18: Flux.1-Kontext-dev expects a reference image fed via
+    /// sequence-concat rather than channel-concat. Distinct from the
+    /// `is_concept` variants (Canny/Depth) which widen `img_in`.
+    pub fn is_kontext(self) -> bool {
+        matches!(self, Self::KontextDev)
     }
     /// v0.15 phase 4: which concept conditioner does the variant expect?
     /// `None` for non-concept variants.
@@ -102,14 +117,19 @@ impl Variant {
             Self::FillDev => "flux1-fill-dev.safetensors",
             Self::CannyDev => "flux1-canny-dev.safetensors",
             Self::DepthDev => "flux1-depth-dev.safetensors",
+            Self::KontextDev => "flux1-kontext-dev.safetensors",
         }
     }
     fn t5_seq_len(self) -> usize {
         match self {
             Self::Schnell => 256,
-            // Fill / Canny / Depth all use the same 512-token T5
-            // budget as Dev.
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 512,
+            // Fill / Canny / Depth / Kontext all use the same
+            // 512-token T5 budget as Dev.
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => 512,
         }
     }
     fn flux_config(self) -> fmodel::Config {
@@ -119,13 +139,20 @@ impl Variant {
             Self::FillDev => fmodel::Config::fill_dev(),
             // Canny + Depth share the 128-channel `img_in` config.
             Self::CannyDev | Self::DepthDev => fmodel::Config::canny_or_depth_dev(),
+            // Kontext keeps `img_in` at 64 — the difference is at
+            // the seq-concat level, handled by the pipeline.
+            Self::KontextDev => fmodel::Config::kontext_dev(),
         }
     }
     fn ae_config(self) -> fae::Config {
         match self {
-            // Fill / Canny / Depth all share Dev's autoencoder.
+            // Fill / Canny / Depth / Kontext all share Dev's autoencoder.
             Self::Schnell => fae::Config::schnell(),
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => fae::Config::dev(),
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => fae::Config::dev(),
         }
     }
     pub fn default_guidance(self) -> f64 {
@@ -141,12 +168,22 @@ impl Variant {
             // for the same reason — the conditioning latent needs
             // strong guidance to actually steer the output.
             Self::CannyDev | Self::DepthDev => 30.0,
+            // Kontext's model card recommends guidance 3.5 (same as
+            // Dev) — the reference signal flows through cross-attention
+            // on the sequence-concatenated tokens rather than via a
+            // channel-concat conditioning latent, so standard Dev
+            // guidance is sufficient.
+            Self::KontextDev => 3.5,
         }
     }
     pub fn default_steps(self) -> usize {
         match self {
             Self::Schnell => 4,
-            Self::Dev | Self::FillDev | Self::CannyDev | Self::DepthDev => 28,
+            Self::Dev
+            | Self::FillDev
+            | Self::CannyDev
+            | Self::DepthDev
+            | Self::KontextDev => 28,
         }
     }
 }
@@ -650,6 +687,22 @@ impl Pipeline {
                  (flux-fill-dev-gguf) instead."
             );
         }
+        // v0.18: same NF4 stance for Kontext — no upstream NF4 pack
+        // ships at time of writing. GGUF lands in a follow-up phase
+        // via unsloth/FLUX.1-Kontext-dev-GGUF.
+        if is_nf4 && matches!(req.variant, Variant::KontextDev) {
+            bail!(
+                "NF4 Flux Kontext isn't supported (no upstream NF4 pack ships yet). \
+                 Use BF16 (flux-kontext-dev) or wait for GGUF support."
+            );
+        }
+        if is_gguf && matches!(req.variant, Variant::KontextDev) {
+            bail!(
+                "GGUF Flux Kontext isn't wired yet (lands in a follow-up phase via \
+                 unsloth/FLUX.1-Kontext-dev-GGUF). Use BF16 (flux-kontext-dev) \
+                 for now."
+            );
+        }
         let donor_repo: String = if is_gguf || is_nf4 {
             match req.variant {
                 Variant::Dev => "black-forest-labs/FLUX.1-dev".to_string(),
@@ -661,6 +714,10 @@ impl Pipeline {
                 // before we reach this match. Keep the arms exhaustive.
                 Variant::CannyDev => "black-forest-labs/FLUX.1-Canny-dev".to_string(),
                 Variant::DepthDev => "black-forest-labs/FLUX.1-Depth-dev".to_string(),
+                // v0.18: Kontext GGUF (unsloth/FLUX.1-Kontext-dev-GGUF)
+                // lands in a follow-up phase; until then this arm is
+                // unreachable thanks to the bails above.
+                Variant::KontextDev => "black-forest-labs/FLUX.1-Kontext-dev".to_string(),
             }
         } else {
             req.repo.clone()
@@ -688,6 +745,9 @@ impl Pipeline {
                 // is_gguf check, this arm is unreachable in practice.
                 Variant::CannyDev => "flux1-canny-dev",
                 Variant::DepthDev => "flux1-depth-dev",
+                // v0.18: Kontext GGUF lands in a follow-up phase;
+                // bailed upstream until then.
+                Variant::KontextDev => "flux1-kontext-dev",
             };
             let gguf_file = format!("{stem}-{level}.gguf");
             crate::hf::download::get_file(&req.repo, &gguf_file)
