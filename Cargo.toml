@@ -55,6 +55,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 thiserror = "1"
 
+# Hashing — v0.19: SHA-256 cache keys for the local prompt enhancer
+# (--enhance-cache). Tiny dep, deterministic across rust versions /
+# platforms — exactly what a disk-persisted cache needs.
+sha2 = "0.10"
+
 # Async + HTTP
 tokio = { version = "1", features = [
   "rt-multi-thread",

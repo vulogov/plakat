@@ -358,6 +358,48 @@ The enhancer is the cheap-but-effective way to compensate for a model
 whose prompt comprehension is weaker than you'd like (SD 1.5 / 2.1 in
 particular).
 
+#### `--enhance-system PATH` (v0.19)
+
+Override the built-in `"You rewrite text-to-image prompts..."`
+system prompt with one loaded from disk. Applies to all four
+providers (DeepSeek / Gemini / local / auto).
+
+```bash
+plakat generate "knight" --enhance local \
+    --enhance-system ./my-style-prompt.txt
+```
+
+#### `--enhance-temp F` / `--enhance-max-tokens N` (v0.19)
+
+Local-LLM only. `--enhance-temp 0.0` (default) is greedy decoding
+— reproducible: same prompt = same enhancement. Bump to `0.5`-
+`1.0` for variety at the cost of repeatability.
+`--enhance-max-tokens 96` (default) caps the rewrite length;
+raise for longer prompts at the cost of decode-loop latency.
+Ignored on DeepSeek / Gemini (they have server-side defaults).
+
+#### `--enhance-cache` (v0.19)
+
+Opt-in disk cache for the local enhancer. SHA-256 of `(alias,
+system, user, temperature, max_new_tokens)` keys an on-disk
+lookup at `~/.cache/plakat/enhance/`; cache hits skip the LLM
+forward entirely. Misses run the model and write the result on
+success (refusals + empty outputs never cache).
+
+```bash
+# First run — cache miss, runs the LLM, writes to cache.
+plakat generate "knight" --enhance local --enhance-cache
+
+# Second run with the same inputs — cache hit, no LLM forward.
+# ~3-5s faster on CPU; instantaneous compared to a model load.
+plakat generate "knight" --enhance local --enhance-cache
+```
+
+Opt-in (rather than default-on) so iterating on the system prompt
+or model alias doesn't surface stale hits. Scenarios that
+re-enhance the same prompts across multiple runs are the prime
+use case.
+
 ### Output
 
 #### `--out <DIR>` (default `./out`)

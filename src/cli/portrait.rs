@@ -130,9 +130,27 @@ pub struct PortraitArgs {
     #[arg(long)]
     pub seed: Option<u64>,
 
-    /// Optional prompt enhancer: deepseek | gemini.
+    /// Optional prompt enhancer: deepseek | gemini | local |
+    /// local:<alias> | auto.
     #[arg(long)]
     pub enhance: Option<String>,
+
+    /// v0.19: see `plakat generate --enhance-system` — same semantics.
+    #[arg(long = "enhance-system", value_name = "PATH")]
+    pub enhance_system: Option<PathBuf>,
+
+    /// v0.19: see `plakat generate --enhance-temp` — same semantics.
+    #[arg(long = "enhance-temp", value_name = "F")]
+    pub enhance_temp: Option<f64>,
+
+    /// v0.19: see `plakat generate --enhance-max-tokens` — same semantics.
+    #[arg(long = "enhance-max-tokens", value_name = "N")]
+    pub enhance_max_tokens: Option<usize>,
+
+    /// v0.19: opt-in disk cache for `--enhance local`. See
+    /// `plakat generate --enhance-cache` for full details.
+    #[arg(long = "enhance-cache", default_value_t = false)]
+    pub enhance_cache: bool,
 
     /// Output directory.
     #[arg(long, default_value = "./out")]
@@ -356,7 +374,15 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
     }
 
     if let Some(provider) = args.enhance.clone() {
-        let enhanced = crate::prompt::enhance(&provider, &args.prompt).await?;
+        let enhance_args = crate::prompt::EnhanceArgs {
+            system_path: args.enhance_system.clone(),
+            temperature: args.enhance_temp,
+            max_new_tokens: args.enhance_max_tokens,
+            cache: args.enhance_cache,
+        };
+        let enhanced =
+            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
+                .await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
         args.prompt = enhanced;
     }
