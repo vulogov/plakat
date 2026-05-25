@@ -385,8 +385,9 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
 | `models {search,recommend,size,pull,ls,rm}` | Browse HuggingFace and manage the local cache. |
-| `doctor` | Health-check FaceID / SCRFD setup. |
+| `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. |
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
+| `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 
 ## Documentation
 
