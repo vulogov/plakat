@@ -1404,6 +1404,42 @@ Full walkthrough + composition tips:
 
 ---
 
+## `plakat init` (v0.20)
+
+Bootstrap a starter project directory — `scenario.hjson`,
+`wildcards/` (with three example files), and a focused
+`.gitignore`. Targets `sd15` and `enhancer: local` so the
+generated scenario runs end-to-end with no API key, no HF token,
+and no model selection up front.
+
+| Flag | Default | Description |
+|---|---|---|
+| `DIR` (positional) | `.` | Target directory. Created if missing. |
+| `--minimal` | off | Write only `scenario.hjson`. Skip `wildcards/` and `.gitignore`. |
+| `--force` | off | Overwrite existing files. Default errors on conflict. |
+
+```bash
+# Fresh project in a new directory
+plakat init ./my-poster-project
+plakat scenario ./my-poster-project/scenario.hjson --dry-run
+plakat scenario ./my-poster-project/scenario.hjson
+
+# Minimal — just the scenario file (e.g. adding to an existing repo)
+plakat init . --minimal
+
+# Re-init after editing things you regret
+plakat init . --force
+```
+
+The generated `wildcards/` directory holds `subject.txt`,
+`style.txt`, and `lighting.txt` — three options each — for use
+with `plakat generate "__subject__ in a __lighting__" --wildcard-dir
+./wildcards`. The scenario file itself uses the scenario engine's
+own scene/weather catalog mechanism rather than wildcards (the two
+mechanisms are independent).
+
+---
+
 ## Global flags (every subcommand)
 
 #### `-v` / `-vv` (default off)
