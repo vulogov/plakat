@@ -113,12 +113,24 @@ struct ScenarioFile {
     #[serde(default)]
     fast: Option<String>,
 
-    /// v0.15 phase 7a: scenario-wide conditioning map for Flux concept
-    /// variants (Flux.1-Canny-dev / Flux.1-Depth-dev). Per-task
-    /// `concept-image:` overrides. Only meaningful when `model:` is
-    /// one of the concept variants.
+    /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
+    /// roles depending on `model:`:
+    ///   * `flux-canny-dev` — canny edge map (channel-concat 128ch img_in)
+    ///   * `flux-depth-dev` — depth map (channel-concat 128ch img_in)
+    ///   * `flux-kontext-dev` — reference image to edit (seq-concat,
+    ///                          img_ids[..., 0] = 1)
+    /// Per-task `concept-image:` overrides. Ignored on non-conditioning
+    /// models.
     #[serde(rename = "concept-image", default)]
     concept_image: Option<PathBuf>,
+
+    /// v0.18 Kontext phase 4: opt-in aspect-bucket snap. When `true`
+    /// AND `model:` is `flux-kontext-dev` / `flux-kontext-dev-gguf`,
+    /// `size:` snaps to the closest of 17 BFL-recommended Kontext
+    /// resolutions before VAE encoding. Per-task `kontext-bucket:`
+    /// overrides.
+    #[serde(rename = "kontext-bucket", default)]
+    kontext_bucket: Option<bool>,
 
     // ---------- prompt-assembly fragments ----------
     #[serde(rename = "lora-header", default)]
@@ -556,12 +568,18 @@ struct TaskDef {
     #[serde(default)]
     fast: Option<String>,
 
-    /// v0.15 phase 7a: per-task conditioning map for the BFL "concept"
-    /// Flux variants (Canny-dev / Depth-dev). Required when the task's
-    /// `model:` resolves to a concept variant; falls back to the
-    /// scenario-level `concept-image:` when unset here.
+    /// v0.15 phase 7a / v0.18: per-task conditioning image. Required
+    /// on Flux concept variants (Canny-dev / Depth-dev) and Kontext
+    /// (Kontext-dev). Falls back to scenario-level `concept-image:`.
     #[serde(rename = "concept-image", default)]
     concept_image: Option<PathBuf>,
+
+    /// v0.18 Kontext phase 4: per-task Kontext bucket override. When
+    /// `Some(true)`, snap `size:` to the closest of 17 BFL Kontext
+    /// resolutions before VAE encoding (Kontext models only). Falls
+    /// back to the scenario-level `kontext-bucket:` when `None`.
+    #[serde(rename = "kontext-bucket", default)]
+    kontext_bucket: Option<bool>,
 
     /// v0.15 phase 7a: per-task prompt enhancement override. Three
     /// forms:
@@ -1908,6 +1926,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .concept_image
             .clone()
             .or_else(|| s.concept_image.clone());
+        // v0.18 Kontext phase 4: task override → scenario fallback →
+        // false default. Only honoured at Pipeline::generate when the
+        // resolved model is Kontext.
+        let eff_kontext_bucket: bool =
+            task.kontext_bucket.or(s.kontext_bucket).unwrap_or(false);
         let eff_tiled: Option<crate::pipelines::tiled::TiledConfig> = match &task.tiled {
             Some(TaskTiledCfg::Toggle(false)) => None,
             Some(TaskTiledCfg::Toggle(true)) => {
@@ -2577,11 +2600,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // pipeline if the loaded variant doesn't
                         // expect this input.
                         concept_conditioning: eff_concept_image.clone(),
-                        // v0.18 phase 2b: scenarios don't expose the
-                        // Kontext bucket flag yet — defer until the
-                        // HJSON schema add lands. Pipeline ignores
-                        // this when the variant isn't Kontext.
-                        kontext_bucket: false,
+                        // v0.18 Kontext phase 4: opt-in 17-bucket
+                        // aspect snap. Ignored when the resolved
+                        // variant isn't Kontext.
+                        kontext_bucket: eff_kontext_bucket,
                     })?;
                 }
                 // Dry-run path doesn't reach here.
@@ -3511,6 +3533,39 @@ mod tests {
             t.concept_image.as_deref().map(|p| p.to_string_lossy().into_owned()),
             Some("./edges.png".to_string())
         );
+    }
+
+    // v0.18 Kontext phase 4 — kontext-bucket HJSON key at task scope.
+
+    #[test]
+    fn task_parses_kontext_bucket_true() {
+        let src = format!(r#"{{{COMMON_TASK}
+            kontext-bucket: true
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.kontext_bucket, Some(true));
+    }
+
+    #[test]
+    fn task_parses_kontext_bucket_false() {
+        let src = format!(r#"{{{COMMON_TASK}
+            kontext-bucket: false
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.kontext_bucket, Some(false));
+    }
+
+    #[test]
+    fn task_kontext_bucket_defaults_to_none() {
+        // Task without kontext-bucket: parses None → scenario-level
+        // value applies; both unset → false. Use the concept-image
+        // template as the "non-empty body" so the HJSON parser is
+        // happy.
+        let src = format!(r#"{{{COMMON_TASK}
+            concept-image: ./ref.png
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.kontext_bucket, None);
     }
 
     #[test]

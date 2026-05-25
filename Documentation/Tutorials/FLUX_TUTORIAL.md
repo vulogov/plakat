@@ -341,6 +341,83 @@ actually steer toward the conditioning map.
 (adding ControlNet on top of baked conditioning would double-
 condition).
 
+## 10b. FLUX.1-Kontext-dev (image editing, v0.18)
+
+Kontext is BFL's image-editing Flux variant. Different conditioning
+mechanism from Canny / Depth: the reference image is VAE-encoded and
+**sequence-concatenated** onto the noise tokens (with
+`img_ids[..., 0] = 1` as a RoPE positional marker), instead of
+being channel-concatenated into a widened `img_in`. `img_in` stays
+at 64 channels — Kontext is architecturally identical to Flux.1-dev
+at the Linear level; the difference lives entirely in the pipeline's
+per-step concat + post-step strip.
+
+Two ways to invoke:
+
+```bash
+# `plakat generate` — explicit reference flag
+plakat generate "make the lighting golden hour" \
+ --model flux-kontext-dev \
+ --concept-image input.png
+
+# `plakat img2img` — input positional IS the reference (natural
+# for users coming from "edit this image" workflows)
+plakat img2img input.png \
+ --model flux-kontext-dev \
+ --prompt "add snow on the ground"
+```
+
+GGUF (4-bit/6-bit/8-bit) is supported via the unsloth mirror — same
+~7 GB transformer footprint as Flux.1-dev GGUF:
+
+```bash
+plakat generate "..." --model flux-kontext-dev-gguf \
+ --concept-image input.png --quant-level Q6_K
+
+# GGUF + LoRA composes (Kontext shares Dev's transformer layer
+# names, so any flux-dev LoRA applies unchanged)
+plakat generate "..." --model flux-kontext-dev-gguf \
+ --concept-image input.png \
+ --lora civitai:12345:0.7
+```
+
+NF4 is **not** supported (no upstream NF4 pack ships at time of
+writing; use BF16 or GGUF instead).
+
+### Aspect-bucket snap
+
+BFL publishes 17 preferred resolutions for Kontext (1024×1024,
+672×1568, 1568×672, and 14 intermediate aspect ratios, all multiples
+of 16). Opt-in via `--kontext-bucket`:
+
+```bash
+plakat generate "..." --model flux-kontext-dev \
+ --concept-image input.png \
+ --size 1600x1200 --kontext-bucket
+# → snaps 1600x1200 (4:3) to the closest published bucket
+```
+
+Off by default so non-Kontext workflows aren't surprised by silent
+size changes. Per-task `kontext-bucket: true` in scenarios mirrors
+the CLI flag.
+
+### Caveats
+
+- **Requires `--concept-image`** (the reference) — Kontext is an
+  editing model, not a pure generator. Without a reference it bails.
+- **No `--mask` / `--init-image`** — Kontext doesn't have a mask
+  path or a flow-match init lerp. For mask-restricted edits use
+  `flux-fill-dev` instead.
+- **No `--tiled`** in this release — per-tile reference slicing
+  isn't wired (the reference would have to be sliced along the
+  same tile grid as the noise canvas).
+- **No `--redux-image`** — both Redux and Kontext extend the
+  sequence dimension; combining them risks exceeding the Flux RoPE
+  budget. Pick one.
+- **No `--control-spec`** — the reference already drives layout;
+  layering ControlNet on top would double-condition. For pure
+  layout control use plain `flux-dev` with `--control-spec`.
+
 ## 11. Per-task LoRA in scenarios
 
 Scenarios can declare per-task LoRA stacks that compose with the
