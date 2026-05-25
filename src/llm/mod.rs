@@ -15,6 +15,7 @@
 //! once.
 
 pub mod aliases;
+pub mod cache;
 pub mod enhancer;
 pub mod templates;
 
