@@ -155,6 +155,23 @@ pub struct GenerationConfig {
     /// main-pass step count is usually a reasonable refine count;
     /// callers wanting a cheaper refine can drop this to ~12.
     pub hires_steps: Option<usize>,
+    /// v0.22 phase 9: optional override of the artefact library
+    /// directory. Empty (default) → CLI default
+    /// `assets/artefact_library`. Set with `plakat.config.set
+    /// "artefact_library" "path/to/library"`.
+    pub artefact_library: String,
+    /// v0.22 phase 9: img2img strength for the optional
+    /// post-composite blend pass in [0, 1]. Default 0.3. Same
+    /// semantics as `--artefact-blend-strength`. Only meaningful
+    /// when `plakat.artefact.blend.enable` is in effect AND the
+    /// artefact stack is non-empty.
+    pub artefact_blend_strength: f32,
+    /// v0.22 phase 9: enable smart-zones (depth + luminance) for
+    /// per-image artefact placement. Default false (rigid grid).
+    /// Mirrors `--smart-zones`. Loads the Depth-Anything-V2-Small
+    /// checkpoint on first use; falls back to the grid with a
+    /// warning on inference failure.
+    pub artefact_smart_zones: bool,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -201,6 +218,9 @@ impl Default for GenerationConfig {
             hires_strength: 0.5,
             hires_upscaler: "lanczos".to_string(),
             hires_steps: None,
+            artefact_library: String::new(),
+            artefact_blend_strength: 0.3,
+            artefact_smart_zones: false,
             size_explicit: false,
         }
     }
@@ -386,6 +406,19 @@ impl GenerationConfig {
                 }
                 self.hires_steps = Some(n as usize);
             }
+            "artefact_library" => {
+                // Empty resets to default; non-empty is stored as-is
+                // (path validation happens at generate time when the
+                // library actually loads).
+                self.artefact_library = value.to_string();
+            }
+            "artefact_blend_strength" => {
+                let f = parse_unit_float(value, key)? as f32;
+                self.artefact_blend_strength = f;
+            }
+            "artefact_smart_zones" => {
+                self.artefact_smart_zones = parse_bool(value, key)?;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -399,7 +432,8 @@ impl GenerationConfig {
                      adetailer_padding, adetailer_feather, \
                      adetailer_confidence, adetailer_size, \
                      adetailer_prompt, hires_scale, hires_strength, \
-                     hires_upscaler, hires_steps."
+                     hires_upscaler, hires_steps, artefact_library, \
+                     artefact_blend_strength, artefact_smart_zones."
                 ));
             }
         }
@@ -418,10 +452,12 @@ impl GenerationConfig {
             | "adetailer_strength" | "adetailer_padding"
             | "adetailer_feather" | "adetailer_confidence"
             | "adetailer_size"
-            | "hires_scale" | "hires_strength" | "hires_steps" => {
+            | "hires_scale" | "hires_strength" | "hires_steps"
+            | "artefact_blend_strength" => {
                 self.set_str(key, &value.to_string())
             }
-            "quantize_t5" | "kontext_bucket" | "tiled" => {
+            "quantize_t5" | "kontext_bucket" | "tiled"
+            | "artefact_smart_zones" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
                     0 => self.set_str(key, "false"),
@@ -433,7 +469,7 @@ impl GenerationConfig {
                 }
             }
             "negative" | "scheduler" | "adetailer_prompt"
-            | "hires_upscaler" => Err(anyhow!(
+            | "hires_upscaler" | "artefact_library" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -506,7 +542,7 @@ impl GenerationConfig {
             "refine_strength" | "refiner_frac" | "style_strength"
             | "adetailer_strength" | "adetailer_padding"
             | "adetailer_feather" | "adetailer_confidence"
-            | "hires_strength" => {
+            | "hires_strength" | "artefact_blend_strength" => {
                 if !value.is_finite() {
                     bail!(
                         "plakat.config.set: {key} {value} isn't finite"
@@ -526,6 +562,7 @@ impl GenerationConfig {
                     "adetailer_feather" => self.adetailer_feather = value as f32,
                     "adetailer_confidence" => self.adetailer_confidence = value as f32,
                     "hires_strength" => self.hires_strength = value as f32,
+                    "artefact_blend_strength" => self.artefact_blend_strength = value as f32,
                     _ => unreachable!(),
                 }
                 Ok(())
@@ -556,7 +593,7 @@ impl GenerationConfig {
                 self.set_int(key, value as i64)
             }
             "negative" | "scheduler" | "adetailer_prompt"
-            | "hires_upscaler" => Err(anyhow!(
+            | "hires_upscaler" | "artefact_library" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1016,6 +1053,10 @@ mod tests {
             "hires_strength",
             "hires_upscaler",
             "hires_steps",
+            // Phase 9 artefact keys:
+            "artefact_library",
+            "artefact_blend_strength",
+            "artefact_smart_zones",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -1384,5 +1425,76 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_float("hires_scale", 2.5).unwrap();
         assert!((cfg.hires_scale - 2.5).abs() < 1e-6);
+    }
+
+    // v0.22 phase 9: artefact config keys.
+
+    #[test]
+    fn defaults_for_v022_phase9_artefact_keys() {
+        let cfg = GenerationConfig::default();
+        assert_eq!(cfg.artefact_library, "");
+        assert!((cfg.artefact_blend_strength - 0.3).abs() < 1e-6);
+        assert!(!cfg.artefact_smart_zones);
+    }
+
+    #[test]
+    fn set_str_artefact_library_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("artefact_library", "/custom/lib").unwrap();
+        assert_eq!(cfg.artefact_library, "/custom/lib");
+        // Empty is allowed; resets to default at use-site.
+        cfg.set_str("artefact_library", "").unwrap();
+        assert_eq!(cfg.artefact_library, "");
+    }
+
+    #[test]
+    fn set_str_artefact_blend_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("artefact_blend_strength", "0.4").unwrap();
+        assert!((cfg.artefact_blend_strength - 0.4).abs() < 1e-6);
+        cfg.set_str("artefact_blend_strength", "0.0").unwrap();
+        assert!((cfg.artefact_blend_strength - 0.0).abs() < 1e-9);
+        cfg.set_str("artefact_blend_strength", "1.0").unwrap();
+        assert!((cfg.artefact_blend_strength - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_artefact_blend_strength_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("artefact_blend_strength", "-0.1").is_err());
+        assert!(cfg.set_str("artefact_blend_strength", "1.5").is_err());
+    }
+
+    #[test]
+    fn set_str_artefact_smart_zones_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("artefact_smart_zones", "true").unwrap();
+        assert!(cfg.artefact_smart_zones);
+        cfg.set_str("artefact_smart_zones", "false").unwrap();
+        assert!(!cfg.artefact_smart_zones);
+    }
+
+    #[test]
+    fn set_int_artefact_library_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("artefact_library", 0).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
+    }
+
+    #[test]
+    fn set_int_artefact_smart_zones_accepts_zero_and_one() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("artefact_smart_zones", 1).unwrap();
+        assert!(cfg.artefact_smart_zones);
+        cfg.set_int("artefact_smart_zones", 0).unwrap();
+        assert!(!cfg.artefact_smart_zones);
+        assert!(cfg.set_int("artefact_smart_zones", 2).is_err());
+    }
+
+    #[test]
+    fn set_float_artefact_blend_strength_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("artefact_blend_strength", 0.45).unwrap();
+        assert!((cfg.artefact_blend_strength - 0.45).abs() < 1e-6);
     }
 }

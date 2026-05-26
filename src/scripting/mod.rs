@@ -352,6 +352,73 @@ mod tests {
         });
     }
 
+    // v0.22 phase 9: plakat.artefact.* end-to-end.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artefact_add_pushes_and_list_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.artefacts.clear()).unwrap();
+            eval(r#""oak" plakat.artefact.add"#).unwrap();
+            eval(r#""sun@sky/right:0.8" plakat.artefact.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.artefacts.len(), 2);
+                assert_eq!(ctx.artefacts[0].name, "oak");
+                assert!(ctx.artefacts[0].zone.is_none());
+                assert_eq!(ctx.artefacts[1].name, "sun");
+                assert!(ctx.artefacts[1].zone.is_some());
+                assert!((ctx.artefacts[1].scale.unwrap() - 0.8).abs() < 1e-6);
+            })
+            .unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artefact_clear_empties_stack() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.artefacts.clear()).unwrap();
+            eval(r#""oak" plakat.artefact.add"#).unwrap();
+            eval("plakat.artefact.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.artefacts.is_empty())).unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artefact_add_bails_on_garbage_spec() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.artefacts.clear()).unwrap();
+            // Empty name; FromStr rejects.
+            let err = eval(r#""@sky" plakat.artefact.add"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("artefact"), "got {msg}");
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artefact_blend_enable_toggles_ctx_flag() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.artefact_blend_enabled = false).unwrap();
+            eval("plakat.artefact.blend.enable").unwrap();
+            with_ctx(|ctx| assert!(ctx.artefact_blend_enabled)).unwrap();
+            eval("plakat.artefact.blend.disable").unwrap();
+            with_ctx(|ctx| assert!(!ctx.artefact_blend_enabled)).unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn artefact_config_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            eval(r#""/some/lib" "artefact_library" plakat.config.set"#).unwrap();
+            eval(r#"0.45 "artefact_blend_strength" plakat.config.set"#).unwrap();
+            eval(r#""true" "artefact_smart_zones" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.artefact_library, "/some/lib");
+                assert!((ctx.config.artefact_blend_strength - 0.45).abs() < 1e-6);
+                assert!(ctx.config.artefact_smart_zones);
+            })
+            .unwrap();
+        });
+    }
+
     // v0.22 phase 5: plakat.controlnet.* end-to-end.
 
     /// `plakat.controlnet.add` pushes a kind + image pair.

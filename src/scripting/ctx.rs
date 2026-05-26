@@ -96,6 +96,18 @@ pub struct ScriptCtx {
     /// from `config.hires_*` keys. SD-family only — Flux + SD3
     /// bail (hires_fix needs an SD img2img pipeline for refine).
     pub hires_enabled: bool,
+    /// v0.22 phase 9: artefact specs accumulated via
+    /// `plakat.artefact.add`. After `plakat.generate` /
+    /// `plakat.img2img` / `plakat.portrait` renders, the
+    /// post-process composites each artefact onto the image (in
+    /// the order added). Empty (default) = no compositing pass.
+    /// SD-family only — Flux + SD3 bail when this is non-empty.
+    pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
+    /// v0.22 phase 9: when `true` AND `artefacts` is non-empty,
+    /// runs the masked-img2img blend pass over the artefact
+    /// zones after compositing — smooths hard edges. Same
+    /// behaviour as the CLI's `--artefact-blend` flag.
+    pub artefact_blend_enabled: bool,
 }
 
 impl ScriptCtx {
@@ -118,6 +130,8 @@ impl ScriptCtx {
             refiner_enabled: false,
             adetailer_enabled: false,
             hires_enabled: false,
+            artefacts: Vec::new(),
+            artefact_blend_enabled: false,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -509,6 +523,8 @@ mod tests {
             refiner_enabled: false,
             adetailer_enabled: false,
             hires_enabled: false,
+            artefacts: Vec::new(),
+            artefact_blend_enabled: false,
         }
     }
 

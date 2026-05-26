@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
 pub mod adetailer;
+pub mod artefact;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
@@ -111,6 +112,32 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         hires::plakat_hires_disable,
     )
     .map_err(|e| anyhow!("registering plakat.hires.disable: {e}"))?;
+    // v0.22 phase 9: plakat.artefact.* namespace.
+    vm.register_inline(
+        "plakat.artefact.add".to_string(),
+        artefact::plakat_artefact_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.add: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.clear".to_string(),
+        artefact::plakat_artefact_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.list".to_string(),
+        artefact::plakat_artefact_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.list: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.blend.enable".to_string(),
+        artefact::plakat_artefact_blend_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.blend.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.blend.disable".to_string(),
+        artefact::plakat_artefact_blend_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.blend.disable: {e}"))?;
     Ok(())
 }
 
