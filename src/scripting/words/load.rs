@@ -23,7 +23,6 @@ use crate::scripting::ctx::with_ctx_mut;
 use crate::scripting::helpers::{
     BundResult, pull, require_depth, to_bund_err, value_to_string,
 };
-use crate::scripting::script_entry;
 
 const TAG: &str = "plakat.load";
 
@@ -36,14 +35,11 @@ fn do_plakat_load(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let alias_v = pull(vm, TAG)?;
     let alias = value_to_string(alias_v, "model", TAG)?;
 
-    // Phase 1 keeps the SD-family gate; phases 2-3 lift it.
-    script_entry::validate_supported_for_phase_2(&alias)?;
-
-    // Trigger the cache load now. with_ctx_mut holds a write lock
-    // for the duration of the load — fine because the singleton
-    // serialises scripts anyway.
+    // v0.22 phase 2: unified family dispatch. ensure_loaded
+    // picks SD-family vs Flux automatically; SD3 still bails
+    // with the "phase 3" pointer.
     with_ctx_mut(|ctx| -> anyhow::Result<()> {
-        let _pipeline = ctx.get_or_load_sd_family(&alias)?;
+        ctx.ensure_loaded(&alias)?;
         Ok(())
     })??;
     tracing::info!(target: "plakat", "{TAG}: cached pipeline for {alias:?}");

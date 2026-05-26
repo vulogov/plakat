@@ -10,33 +10,133 @@
 //! `Flux(flux::Pipeline)` and `Sd3(sd3::Pipeline)` and lift the
 //! [`super::script_entry::validate_supported_for_phase_2`] gate.
 
-use crate::pipelines::portrait;
+use crate::pipelines::{flux, portrait};
 
 /// The active pipeline, cached by `(alias, pipeline)` in
 /// [`super::ctx::ScriptCtx::loaded`].
 ///
-/// We hold a [`portrait::Pipeline`] for the SD-family case
-/// because it generalises across the three image-producing host
-/// words:
+/// SD-family case uses [`portrait::Pipeline`] because it
+/// generalises across the three image-producing host words
+/// (text-to-image with empty photos, img2img via
+/// `run_with_pipeline`, portrait with identity).
 ///
-/// * `plakat.generate` → `portrait::Pipeline::generate` with
-///   empty `photos` (pure text-to-image; the identity encoder
-///   is loaded but produces no tokens when photos is empty).
-/// * `plakat.img2img` → `img2img::run_with_pipeline` borrows the
-///   same loaded pipeline.
-/// * `plakat.portrait` → `portrait::Pipeline::generate` with one
-///   reference photo.
+/// Flux case (v0.22 phase 2) uses [`flux::Pipeline`] which holds
+/// the BFL DiT transformer + T5 + CLIP encoders + autoencoder.
+/// One Flux pipeline serves both `plakat.generate` (text-to-image)
+/// and `plakat.img2img` (init image + strength fields on
+/// `flux::GenRequest`). `plakat.portrait` bails on Flux — Flux
+/// has no IP-Adapter-Plus-Face checkpoint; future portrait-on-
+/// Flux work would need a separate adapter strategy.
 ///
-/// Identity encoder is loaded conditionally at cache-creation
-/// time based on the alias:
-/// * `sd15` / `sdxl` / `sdxl-turbo` → `PlusFace` / `PlusFaceSdxl`
-/// * `sd21` → `None` (no shipped Plus-Face SD 2.1 checkpoint)
-///
-/// `plakat.portrait` against an `sd21`-loaded pipeline bails at
-/// generate time with the v0.21 "no identity encoder" message —
-/// same behaviour as v0.21.
+/// SD3 / SD3.5 (phase 3) will add a third variant.
 pub enum LoadedPipeline {
     SdFamily(portrait::Pipeline),
-    // Phase 2: Flux(crate::pipelines::flux::Pipeline)
+    Flux(flux::Pipeline),
     // Phase 3: Sd3(crate::pipelines::sd3::Pipeline)
+}
+
+/// Three families plakat recognises at the script layer. Used to
+/// pick the right load+generate path before paying the model
+/// load cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineFamily {
+    /// SD 1.5 / 2.1 / SDXL / SDXL-Turbo.
+    SdFamily,
+    /// Any Flux variant (Dev / Schnell / Fill / Canny / Depth /
+    /// Kontext, BF16 or GGUF or NF4).
+    Flux,
+    /// SD3 / SD3.5 — gated for phase 3.
+    Sd3,
+}
+
+impl PipelineFamily {
+    /// Resolve an alias (or canonical HF repo path) to a family.
+    /// Resolves the alias to its repo id first so detection works
+    /// against the canonical name (`sd21` only carries the SD-2.1
+    /// substrings after alias resolution).
+    pub fn detect(alias: &str) -> Self {
+        let resolved = if alias.contains('/') {
+            alias.to_string()
+        } else {
+            crate::hf::resolve_alias(alias).to_string()
+        };
+        let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+        if variant.is_flux() {
+            Self::Flux
+        } else if variant.is_sd3() {
+            Self::Sd3
+        } else {
+            Self::SdFamily
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_sd_family_aliases() {
+        for alias in &["sd15", "sd21", "sdxl", "sdxl-turbo"] {
+            assert_eq!(
+                PipelineFamily::detect(alias),
+                PipelineFamily::SdFamily,
+                "alias {alias:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_flux_aliases() {
+        // Every Flux variant + GGUF / NF4 should classify as Flux.
+        for alias in &[
+            "flux-dev",
+            "flux-schnell",
+            "flux-fill-dev",
+            "flux-canny-dev",
+            "flux-depth-dev",
+            "flux-kontext-dev",
+            "flux-dev-gguf",
+            "flux-dev-nf4",
+            "flux-schnell-gguf",
+        ] {
+            assert_eq!(
+                PipelineFamily::detect(alias),
+                PipelineFamily::Flux,
+                "alias {alias:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_sd3_aliases() {
+        for alias in &[
+            "sd3-medium",
+            "sd35-medium",
+            "sd35-large",
+            "sd35-large-turbo",
+        ] {
+            assert_eq!(
+                PipelineFamily::detect(alias),
+                PipelineFamily::Sd3,
+                "alias {alias:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_resolves_canonical_hf_repos() {
+        assert_eq!(
+            PipelineFamily::detect("black-forest-labs/FLUX.1-dev"),
+            PipelineFamily::Flux,
+        );
+        assert_eq!(
+            PipelineFamily::detect("stabilityai/stable-diffusion-3.5-medium"),
+            PipelineFamily::Sd3,
+        );
+        assert_eq!(
+            PipelineFamily::detect("stable-diffusion-v1-5/stable-diffusion-v1-5"),
+            PipelineFamily::SdFamily,
+        );
+    }
 }

@@ -23,26 +23,26 @@ use anyhow::{Context, Result, anyhow, bail};
 use image::DynamicImage;
 use std::path::{Path, PathBuf};
 
-use crate::pipelines::{ip_adapter::WeightedPhoto, portrait, t2i};
+use crate::pipelines::{flux, ip_adapter::WeightedPhoto, portrait, t2i};
 use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::loaded_pipeline::PipelineFamily;
 
-/// SD-family gate. Phases 2-3 will lift this in favour of a
-/// family-dispatching variant of [`ScriptCtx::get_or_load_sd_family`].
+/// v0.22 phase 2: legacy gate kept for back-compat with v0.21 tests.
+/// New code should use [`ScriptCtx::ensure_loaded`] which handles
+/// the family dispatch itself.
+///
+/// Returns `Err` for SD3 / SD3.5 (phase 3 lifts it). Flux is now
+/// accepted (phase 2 lifts the v0.21 phase-2b gate).
 pub fn validate_supported_for_phase_2(model: &str) -> Result<()> {
     let variant = t2i::Variant::detect(model);
-    if variant.is_flux() {
-        bail!(
-            "plakat.load: Flux models aren't wired in v0.22 phase 1 \
-             (got {model:?}). Phase 2 lands Flux support. For now \
-             use SD-family aliases: sd15, sd21, sdxl, sdxl-turbo."
-        );
-    }
     if variant.is_sd3() {
         bail!(
             "plakat.load: SD3 / SD3.5 models aren't wired in v0.22 \
-             phase 1 (got {model:?}). Phase 3 lands SD3 support. \
-             For now use SD-family aliases: sd15, sd21, sdxl, \
-             sdxl-turbo."
+             phase 2 (got {model:?}). Phase 3 lands SD3 support. \
+             For now use SD-family aliases (sd15 / sd21 / sdxl / \
+             sdxl-turbo) or Flux aliases (flux-dev / flux-schnell / \
+             flux-fill-dev / flux-canny-dev / flux-depth-dev / \
+             flux-kontext-dev)."
         );
     }
     Ok(())
@@ -50,7 +50,8 @@ pub fn validate_supported_for_phase_2(model: &str) -> Result<()> {
 
 /// Pick the per-family default size used when the script hasn't
 /// set width / height explicitly. SD 1.5 / 2.1 → 512²;
-/// SDXL / SDXL-Turbo → 1024². Reads the alias on `ctx.loaded`.
+/// SDXL / SDXL-Turbo → 1024²; Flux → 1024². Reads the alias on
+/// `ctx.loaded`.
 fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
     let alias = ctx
         .loaded_model()
@@ -61,7 +62,54 @@ fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
         crate::hf::resolve_alias(alias).to_string()
     };
     let variant = t2i::Variant::detect(&resolved);
-    if variant.is_xl() { (1024, 1024) } else { (512, 512) }
+    if variant.is_flux() {
+        (1024, 1024)
+    } else if variant.is_xl() {
+        (1024, 1024)
+    } else {
+        (512, 512)
+    }
+}
+
+/// v0.22 phase 2: build a `flux::GenRequest` from the script's
+/// config. Most fields map straight across from `GenerationConfig`;
+/// Flux-specific knobs come from the D-keys (kontext_bucket,
+/// fast applies at the pipeline level so isn't here).
+fn build_flux_gen_request(
+    ctx: &ScriptCtx,
+    prompt: &str,
+    out_dir: PathBuf,
+    init_image: Option<PathBuf>,
+) -> flux::GenRequest {
+    let (width, height) = if ctx.config.size_explicit {
+        (ctx.config.width, ctx.config.height)
+    } else {
+        default_size_for_loaded(ctx)
+    };
+    flux::GenRequest {
+        prompt: prompt.to_string(),
+        width,
+        height,
+        count: 1,
+        steps: Some(ctx.config.steps),
+        // Honour user-set guidance; non-default (7.5) is suspicious
+        // on Flux but we pass it through with a config-set warning
+        // belongs at the documentation level, not silent override.
+        // The user can call `plakat.config.set "guidance" 3.5` to
+        // pin the BFL default.
+        guidance: Some(ctx.config.guidance),
+        seed: ctx.config.seed,
+        out_dir,
+        conditioning: None,
+        init_image,
+        mask: None,
+        strength: Some(ctx.config.strength),
+        concept_conditioning: None,
+        tiled: None,
+        redux_images: Vec::new(),
+        kontext_bucket: ctx.config.kontext_bucket,
+        output_format: crate::imaging::io::OutputFormat::Png,
+    }
 }
 
 /// Build a `portrait::GenRequest` from the script's accumulated
@@ -126,31 +174,48 @@ fn read_rendered_png(dir: &Path) -> Result<DynamicImage> {
         .with_context(|| format!("reading rendered PNG {}", entry.path().display()))
 }
 
-/// v0.22 phase 1: render one image with the cached SD-family
-/// pipeline. Bails if no model has been loaded.
+/// v0.22 phase 2: render one image. Dispatches on the loaded
+/// pipeline's family — SD path uses `portrait::Pipeline.generate`
+/// with empty photos; Flux path uses `flux::Pipeline.generate`
+/// with no init_image.
 pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
     let alias = ctx
         .loaded_model()
         .ok_or_else(|| {
             anyhow!(
                 "plakat.generate: no model loaded. Call \"sd15\" plakat.load \
-                 (or your model of choice) before plakat.generate."
+                 (or another supported alias) before plakat.generate."
             )
         })?
         .to_string();
 
-    // Build the GenRequest first (immutable read of ctx.config +
-    // alias-derived defaults). Then borrow the pipeline mutably.
     let tmp = tempfile::Builder::new()
         .prefix("plakat-script-gen-")
         .tempdir()
         .context("creating tempdir for plakat.generate output")?;
-    let req = build_gen_request(ctx, prompt, Vec::new(), tmp.path().to_path_buf());
+    let tmp_path = tmp.path().to_path_buf();
 
-    let pipeline = ctx.get_or_load_sd_family(&alias)?;
-    pipeline.generate(&req, &[])
-        .context("portrait::Pipeline::generate (plakat.generate path)")?;
-    read_rendered_png(tmp.path())
+    match PipelineFamily::detect(&alias) {
+        PipelineFamily::SdFamily => {
+            let req = build_gen_request(ctx, prompt, Vec::new(), tmp_path.clone());
+            let pipeline = ctx.get_or_load_sd_family(&alias)?;
+            pipeline.generate(&req, &[])
+                .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+        }
+        PipelineFamily::Flux => {
+            let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
+            let pipeline = ctx.get_or_load_flux(&alias)?;
+            pipeline.generate(&req)
+                .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
+        }
+        PipelineFamily::Sd3 => {
+            bail!(
+                "plakat.generate: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
+                 (got {alias:?}). Phase 3 lands SD3 support."
+            );
+        }
+    }
+    read_rendered_png(&tmp_path)
 }
 
 /// v0.22 phase 1: render one img2img image. `input_path` may be
@@ -166,7 +231,7 @@ pub fn img2img_one(
         .ok_or_else(|| {
             anyhow!(
                 "plakat.img2img: no model loaded. Call \"sd15\" plakat.load \
-                 (or your model of choice) before plakat.img2img."
+                 (or another supported alias) before plakat.img2img."
             )
         })?
         .to_string();
@@ -197,44 +262,72 @@ pub fn img2img_one(
         .prefix("plakat-script-i2i-")
         .tempdir()
         .context("creating tempdir for plakat.img2img output")?;
-    let req = crate::pipelines::img2img::Request {
-        prompt: prompt.to_string(),
-        negative: ctx.config.negative.clone(),
-        model: alias.clone(),
-        device: ctx.device.clone(),
-        loras: Vec::new(),
-        lora_scale: 1.0,
-        input: input_path.to_path_buf(),
-        mask: None,
-        mask_feather: 0,
-        mask_invert: false,
-        width,
-        height,
-        count: 1,
-        steps: ctx.config.steps,
-        guidance: ctx.config.guidance,
-        scheduler: ctx.config.scheduler,
-        strength: ctx.config.strength,
-        seed: ctx.config.seed,
-        out_dir: tmp.path().to_path_buf(),
-        controls: Vec::new(),
-    };
+    let tmp_path = tmp.path().to_path_buf();
 
-    let pipeline = ctx.get_or_load_sd_family(&alias)?;
-
-    // run_with_pipeline is async; bridge here via block_in_place
-    // (same pattern as get_or_load_sd_family's internal load).
-    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
-        anyhow!(
-            "plakat.img2img: no tokio runtime in scope (eval must run on \
-             a multi-threaded runtime). Underlying error: {e}"
-        )
-    })?;
-    tokio::task::block_in_place(|| {
-        handle.block_on(crate::pipelines::img2img::run_with_pipeline(pipeline, &req))
-    })
-    .context("img2img::run_with_pipeline (plakat.img2img path)")?;
-    read_rendered_png(tmp.path())
+    match PipelineFamily::detect(&alias) {
+        PipelineFamily::SdFamily => {
+            let req = crate::pipelines::img2img::Request {
+                prompt: prompt.to_string(),
+                negative: ctx.config.negative.clone(),
+                model: alias.clone(),
+                device: ctx.device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                input: input_path.to_path_buf(),
+                mask: None,
+                mask_feather: 0,
+                mask_invert: false,
+                width,
+                height,
+                count: 1,
+                steps: ctx.config.steps,
+                guidance: ctx.config.guidance,
+                scheduler: ctx.config.scheduler,
+                strength: ctx.config.strength,
+                seed: ctx.config.seed,
+                out_dir: tmp_path.clone(),
+                controls: Vec::new(),
+            };
+            let pipeline = ctx.get_or_load_sd_family(&alias)?;
+            // run_with_pipeline is async; bridge via block_in_place.
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "plakat.img2img: no tokio runtime in scope (eval must \
+                     run on a multi-threaded runtime). Underlying error: {e}"
+                )
+            })?;
+            tokio::task::block_in_place(|| {
+                handle.block_on(crate::pipelines::img2img::run_with_pipeline(
+                    pipeline, &req,
+                ))
+            })
+            .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+        }
+        PipelineFamily::Flux => {
+            // Flux img2img threads `init_image` + `strength` through
+            // the same flux::GenRequest used for text-to-image.
+            // Working size override: width / height become the
+            // current values (size_explicit OR snapped input dims).
+            let mut req = build_flux_gen_request(
+                ctx,
+                prompt,
+                tmp_path.clone(),
+                Some(input_path.to_path_buf()),
+            );
+            req.width = width;
+            req.height = height;
+            let pipeline = ctx.get_or_load_flux(&alias)?;
+            pipeline.generate(&req)
+                .context("flux::Pipeline::generate (plakat.img2img Flux path)")?;
+        }
+        PipelineFamily::Sd3 => {
+            bail!(
+                "plakat.img2img: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
+                 (got {alias:?}). Phase 3 lands SD3 support."
+            );
+        }
+    }
+    read_rendered_png(&tmp_path)
 }
 
 /// v0.22 phase 1: render one portrait. Uses the cached
@@ -255,6 +348,22 @@ pub fn portrait_one(
             )
         })?
         .to_string();
+
+    // Portrait is SD-family-only. Flux has no IP-Adapter-Plus-Face
+    // checkpoint; SD3 isn't wired yet. Bail loud on either rather
+    // than load the wrong pipeline.
+    match PipelineFamily::detect(&alias) {
+        PipelineFamily::Flux => bail!(
+            "plakat.portrait: Flux has no IP-Adapter-Plus-Face \
+             checkpoint (got {alias:?}). Use SD 1.5 / SDXL for \
+             identity-preserving portraits in v0.22."
+        ),
+        PipelineFamily::Sd3 => bail!(
+            "plakat.portrait: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
+             (got {alias:?}). Phase 3 lands SD3 support."
+        ),
+        PipelineFamily::SdFamily => {}
+    }
 
     let tmp = tempfile::Builder::new()
         .prefix("plakat-script-portrait-")
@@ -297,12 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_2_gate_rejects_flux_aliases() {
+    fn phase_2_gate_accepts_flux_aliases() {
+        // v0.22 phase 2 lifts the Flux gate. SD3 still bails.
         for alias in &["flux-dev", "flux-schnell", "flux-kontext-dev"] {
-            let err = validate_supported_for_phase_2(alias).unwrap_err();
-            let msg = format!("{err}");
-            assert!(msg.contains("Flux"), "alias {alias:?}: {msg}");
-            assert!(msg.contains("Phase 2"), "alias {alias:?}: {msg}");
+            validate_supported_for_phase_2(alias).unwrap_or_else(|e| {
+                panic!("Flux alias {alias:?} should pass the gate in v0.22 phase 2: {e}")
+            });
         }
     }
 
