@@ -336,6 +336,51 @@ fn build_gen_request(
     }
 }
 
+/// v0.23 phase 1: build a `t2i::GenRequest` from the script's
+/// `GenerationConfig`. Used by `plakat.generate`'s SD-family
+/// path. Maps the cross-cutting GenerationConfig fields onto
+/// t2i's request shape, which exposes the SD-family extras
+/// (`clip_skip`, refiner controls, preview cadence, metadata)
+/// that the portrait::GenRequest doesn't carry.
+fn build_t2i_gen_request(
+    ctx: &ScriptCtx,
+    prompt: &str,
+    out_dir: PathBuf,
+) -> t2i::GenRequest {
+    let (width, height) = if ctx.config.size_explicit {
+        (ctx.config.width, ctx.config.height)
+    } else {
+        default_size_for_loaded(ctx)
+    };
+    t2i::GenRequest {
+        prompt: prompt.to_string(),
+        negative: resolve_negative(ctx),
+        width,
+        height,
+        count: 1,
+        steps: ctx.config.steps,
+        guidance: ctx.config.guidance,
+        seed: ctx.config.seed,
+        out_dir,
+        scheduler: ctx.config.scheduler,
+        refine: ctx.config.refine_steps,
+        refine_strength: ctx.config.refine_strength,
+        // v0.23 phase 2 will read ctx.config.refiner_frac when the
+        // refiner UNet load wires up. Today the loaded t2i pipeline
+        // has use_refiner: false, so this field is ignored.
+        refiner_frac: Some(ctx.config.refiner_frac),
+        // v0.23 phase 3 will start honouring clip_skip; until then
+        // t2i::Pipeline already accepts the field — passing it
+        // through today is harmless because clip_skip=1 (default)
+        // is the byte-identical path.
+        clip_skip: ctx.config.clip_skip,
+        metadata: None,
+        preview_every: None,
+        preview_size: None,
+        output_format: crate::imaging::io::OutputFormat::Png,
+    }
+}
+
 /// Locate the single PNG `pipeline.generate` writes into `dir`
 /// and load it as a [`DynamicImage`]. Pipelines name their
 /// outputs `plakat-<seed>.png`, `plakat-portrait-<seed>.png`,
@@ -440,7 +485,7 @@ impl ArtefactArgs {
 fn apply_artefacts_sd(
     args: &ArtefactArgs,
     rendered: &std::path::Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
     if args.is_empty() {
         return Ok(());
@@ -486,7 +531,7 @@ fn apply_artefacts_sd(
     .context("artefact compositing (plakat.artefact post-process)")?;
 
     if args.blend_enabled {
-        let shared_core = Some(pipeline.core());
+        let blend_shared_core = Some(shared_core.clone());
         // BlendConfig is non-Clone; build a fresh one here from the
         // snapshot. The snapshot's blend_cfg fields are owned strings
         // / cheap to recreate.
@@ -514,7 +559,7 @@ fn apply_artefacts_sd(
                 &Default::default(),
                 None,
                 smart.as_ref(),
-                shared_core,
+                blend_shared_core,
             ))
         })
         .context("artefact_blend::blend_files (plakat post-process)")?;
@@ -573,9 +618,9 @@ impl HiresArgs {
 fn apply_hires_sd(
     hcfg: &crate::pipelines::hires_fix::Config,
     rendered: &Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
-    let shared_core = Some(pipeline.core());
+    let shared_core = Some(shared_core);
     let files = vec![rendered.to_path_buf()];
     let handle = tokio::runtime::Handle::try_current().map_err(|e| {
         anyhow!(
@@ -636,9 +681,9 @@ impl AdetailerArgs {
 fn apply_adetailer_sd(
     acfg: &crate::pipelines::adetailer::Config,
     rendered: &Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
-    let shared_core = Some(pipeline.core());
+    let shared_core = Some(shared_core);
     let files = vec![rendered.to_path_buf()];
     let handle = tokio::runtime::Handle::try_current().map_err(|e| {
         anyhow!(
@@ -690,16 +735,16 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
         PipelineFamily::SdFamily => {
             if ctx.refiner_enabled {
                 bail!(
-                    "plakat.generate: SDXL refiner from scripts is deferred \
-                     to v0.23 phase 2 — the cached `portrait::Pipeline` \
-                     doesn't hold the refiner UNet slot (the SdT2i variant \
-                     from v0.23 phase 1 will). Workarounds: call \
-                     `plakat.refiner.disable` (same-model polish via \
+                    "plakat.generate: SDXL refiner UNet load lands in v0.23 \
+                     phase 2 (the SdT2i cache slot from phase 1 holds the \
+                     slot — the load just isn't wired yet). Workarounds: \
+                     call `plakat.refiner.disable` (same-model polish via \
                      `refine_steps`/`refine_strength` still works), or use \
                      `plakat generate --refiner` from the CLI directly."
                 );
             }
-            let req = build_gen_request(ctx, prompt, Vec::new(), tmp_path.clone());
+            // v0.23 phase 1: SD-family generate uses the t2i slot.
+            let req = build_t2i_gen_request(ctx, prompt, tmp_path.clone());
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
             // pipeline. The owned data lives on this frame for the
@@ -725,20 +770,24 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      before plakat.generate."
                 );
             }
-            let pipeline = ctx.get_or_load_sd_family(&alias)?;
+            let pipeline = ctx.get_or_load_sd_t2i(&alias)?;
             pipeline.generate(&req, &control_reqs)
-                .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+                .context("t2i::Pipeline::generate (plakat.generate SD path)")?;
+            // v0.23 phase 1: post-process helpers take Arc<SdCore>
+            // directly (pipeline-agnostic) so they work after either
+            // a t2i or portrait pipeline produced the image.
+            let shared_core = pipeline.core();
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+                apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
             }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+                apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
             }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
             }
         }
         PipelineFamily::Flux => {
@@ -926,17 +975,19 @@ pub fn img2img_one(
                 ))
             })
             .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+            // v0.23 phase 1: same Arc<SdCore> handoff as generate.
+            let shared_core = pipeline.core();
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+                apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
             }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+                apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
             }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
             }
         }
         PipelineFamily::Flux => {
@@ -1107,17 +1158,18 @@ pub fn portrait_one(
     let pipeline = ctx.get_or_load_sd_family(&alias)?;
     pipeline.generate(&req, &[])
         .context("portrait::Pipeline::generate (plakat.portrait path)")?;
+    let shared_core = pipeline.core();
     if !aargs.is_empty() {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+        apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
     }
     if hargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+        apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
     }
     if adargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+        apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
     }
     read_rendered_png(tmp.path())
 }

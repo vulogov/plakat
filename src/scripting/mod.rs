@@ -585,12 +585,15 @@ mod tests {
 
     /// `plakat.lora.add` pushes to ctx.loras and invalidates the
     /// cache (no real model load triggered — the test stays fast).
+    /// v0.23 phase 1: invalidation drops BOTH the primary slot
+    /// (portrait/flux/sd3) AND the secondary SD t2i slot.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lora_add_pushes_and_invalidates_cache() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
                 ctx.loras.clear();
                 ctx.loaded = None;
+                ctx.loaded_t2i = None;
             })
             .unwrap();
             eval(r#""civitai:12345" 0.7 plakat.lora.add"#).unwrap();
@@ -598,8 +601,9 @@ mod tests {
                 assert_eq!(ctx.loras.len(), 1, "lora pushed");
                 let spec = &ctx.loras[0];
                 assert!((spec.scale - 0.7).abs() < 1e-6);
-                // Cache must be None (invalidated by the mutation).
-                assert!(ctx.loaded.is_none(), "cache should be invalidated");
+                // Both cache slots must be invalidated.
+                assert!(ctx.loaded.is_none(), "primary slot invalidated");
+                assert!(ctx.loaded_t2i.is_none(), "t2i slot invalidated");
             })
             .unwrap();
         });
