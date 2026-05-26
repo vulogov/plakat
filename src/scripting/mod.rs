@@ -33,6 +33,7 @@ use std::path::Path;
 pub mod config;
 pub mod ctx;
 pub mod helpers;
+pub mod loaded_pipeline;
 pub mod repl;
 pub mod script_entry;
 pub mod words;
@@ -194,7 +195,7 @@ mod tests {
     async fn img2img_no_model_loaded_bails_via_eval() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
-                ctx.loaded_model = None;
+                ctx.loaded = None;
             })
             .unwrap();
             let err = eval(
@@ -215,12 +216,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn img2img_unknown_handle_bails_with_image_at_message() {
         with_singleton_ctx(|| {
-            // Pretend a model is loaded so we get past the load gate
-            // and into the handle resolution.
+            // v0.22 phase 1: the image_at(handle) check fires in
+            // the host word *before* any pipeline-loaded check, so
+            // we don't need to fake a loaded model anymore. Just
+            // reset the image registry so handle 999 is genuinely
+            // unknown.
             with_ctx_mut(|ctx| {
-                ctx.loaded_model = Some("sd15".to_string());
-                // Reset the image registry so the handle is
-                // genuinely unknown (other tests may have pushed).
                 ctx.images.clear();
             })
             .unwrap();
@@ -309,7 +310,7 @@ mod tests {
     async fn portrait_no_model_loaded_bails_via_eval() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
-                ctx.loaded_model = None;
+                ctx.loaded = None;
             })
             .unwrap();
             let err = eval(
@@ -331,8 +332,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn portrait_unknown_handle_bails_with_image_at_message() {
         with_singleton_ctx(|| {
+            // v0.22 phase 1: same as img2img — image_at(handle)
+            // check fires before any pipeline-loaded check.
             with_ctx_mut(|ctx| {
-                ctx.loaded_model = Some("sd15".to_string());
                 ctx.images.clear();
             })
             .unwrap();
@@ -381,7 +383,7 @@ mod tests {
             // Reset the context to a known-clean baseline.
             let out_dir = with_ctx_mut(|ctx| {
                 ctx.images.clear();
-                ctx.loaded_model = None;
+                ctx.loaded = None;
                 ctx.config = config::GenerationConfig::default();
                 ctx.out_dir.clone()
             })
