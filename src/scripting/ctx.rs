@@ -15,9 +15,9 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use crate::pipelines::portrait;
+use crate::pipelines::{flux, portrait};
 use crate::scripting::config::GenerationConfig;
-use crate::scripting::loaded_pipeline::LoadedPipeline;
+use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
 
 /// Process-wide script context. Holds the device + output dir +
 /// the in-script image registry + the active model alias.
@@ -137,6 +137,134 @@ impl ScriptCtx {
 
         match &self.loaded.as_ref().expect("just inserted").1 {
             LoadedPipeline::SdFamily(p) => Ok(p),
+            LoadedPipeline::Flux(_) => Err(anyhow!(
+                "ScriptCtx::get_or_load_sd_family called with a Flux \
+                 alias — the cache is holding a Flux pipeline. Use \
+                 get_or_load_flux or get_or_load (unified)."
+            )),
+        }
+    }
+
+    /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
+    /// Mirrors [`Self::get_or_load_sd_family`] for the Flux
+    /// family — same cache-invalidation rules, same internal
+    /// `block_in_place` async bridge.
+    ///
+    /// Reads the Flux-specific D-keys (`quantize_t5`,
+    /// `quant_level`, `t5_quant_level`) off `self.config` at
+    /// load time. Changing those config keys AFTER the pipeline
+    /// is cached has no effect until the next reload (alias
+    /// change or explicit unload). This is the v0.21 behaviour
+    /// for SD-family LoRAs too; documented in §7 of the v0.22
+    /// RFC.
+    ///
+    /// Returns `&mut flux::Pipeline` because Flux's `generate`
+    /// takes `&mut self` (T5 KV cache mutation). The borrow
+    /// checker enforces single-script-at-a-time access through
+    /// the singleton `RwLock`.
+    pub fn get_or_load_flux(&mut self, alias: &str) -> Result<&mut flux::Pipeline> {
+        let hit = self
+            .loaded
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded = None;
+            let resolved = if alias.contains('/') {
+                alias.to_string()
+            } else {
+                crate::hf::resolve_alias(alias).to_string()
+            };
+            let t2i_variant = crate::pipelines::t2i::Variant::detect(&resolved);
+            let fvar = match t2i_variant {
+                crate::pipelines::t2i::Variant::FluxSchnell => flux::Variant::Schnell,
+                crate::pipelines::t2i::Variant::FluxDev => flux::Variant::Dev,
+                crate::pipelines::t2i::Variant::FluxFillDev => flux::Variant::FillDev,
+                crate::pipelines::t2i::Variant::FluxCannyDev => flux::Variant::CannyDev,
+                crate::pipelines::t2i::Variant::FluxDepthDev => flux::Variant::DepthDev,
+                crate::pipelines::t2i::Variant::FluxKontextDev => flux::Variant::KontextDev,
+                _ => {
+                    return Err(anyhow!(
+                        "ScriptCtx::get_or_load_flux: alias {alias:?} \
+                         doesn't resolve to a Flux variant ({t2i_variant:?})"
+                    ));
+                }
+            };
+
+            let device = self.device.clone();
+            let quantize_t5 = self.config.quantize_t5;
+            let quant_level = self.config.quant_level.clone();
+            let t5_quant_level = self.config.t5_quant_level.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!("ScriptCtx::get_or_load_flux: no tokio runtime in scope. {e}")
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(flux::Pipeline::load(flux::LoadRequest {
+                    variant: fvar,
+                    repo: resolved,
+                    device,
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                    controlnets: Vec::new(),
+                    quantize_t5,
+                    flux_quant_level: quant_level,
+                    t5_quant_level,
+                    redux: false,
+                }))
+            })?;
+            self.loaded = Some((alias.to_string(), LoadedPipeline::Flux(pipeline)));
+        }
+
+        match &mut self.loaded.as_mut().expect("just inserted").1 {
+            LoadedPipeline::Flux(p) => Ok(p),
+            LoadedPipeline::SdFamily(_) => Err(anyhow!(
+                "ScriptCtx::get_or_load_flux called with an SD-family \
+                 alias — the cache is holding an SD pipeline. Use \
+                 get_or_load_sd_family or get_or_load (unified)."
+            )),
+        }
+    }
+
+    /// v0.22 phase 2: unified get-or-load dispatching on family.
+    /// Ensures the cache holds the right pipeline for `alias`;
+    /// callers then borrow-match against [`Self::loaded`] for the
+    /// pattern they need.
+    ///
+    /// Pattern at call sites:
+    ///
+    /// ```ignore
+    /// ctx.ensure_loaded(&alias)?;
+    /// match &mut ctx.loaded.as_mut().unwrap().1 {
+    ///     LoadedPipeline::SdFamily(p) => { /* ... */ }
+    ///     LoadedPipeline::Flux(p) => { /* ... */ }
+    /// }
+    /// ```
+    ///
+    /// We don't return a `&mut LoadedPipeline` directly because
+    /// the borrow checker treats `get_or_load_sd_family` /
+    /// `get_or_load_flux` as still-holding `&mut self` even after
+    /// `?`, which would prevent the caller from accessing other
+    /// `ScriptCtx` fields. Splitting "load" from "borrow" sidesteps
+    /// the issue.
+    pub fn ensure_loaded(&mut self, alias: &str) -> Result<()> {
+        match PipelineFamily::detect(alias) {
+            PipelineFamily::Sd3 => Err(anyhow!(
+                "plakat.load: SD3 / SD3.5 models aren't wired in v0.22 \
+                 phase 2 (got {alias:?}). Phase 3 lands SD3 support. \
+                 For now use SD-family aliases (sd15 / sd21 / sdxl / \
+                 sdxl-turbo) or Flux aliases (flux-dev / flux-schnell \
+                 / flux-fill-dev / flux-canny-dev / flux-depth-dev / \
+                 flux-kontext-dev)."
+            )),
+            PipelineFamily::SdFamily => {
+                self.get_or_load_sd_family(alias)?;
+                Ok(())
+            }
+            PipelineFamily::Flux => {
+                self.get_or_load_flux(alias)?;
+                Ok(())
+            }
         }
     }
 }

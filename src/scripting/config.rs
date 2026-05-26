@@ -41,6 +41,30 @@ pub struct GenerationConfig {
     /// `cli::portrait`'s default. Read by `plakat.portrait`; ignored
     /// by `plakat.generate` / `plakat.img2img`.
     pub face_strength: f32,
+    /// v0.22 phase 2: load T5-XXL as a quantized GGUF (~3 GB instead
+    /// of ~10 GB BF16). Default `false`. Flux-only — ignored on
+    /// SD-family. Combined with a `*-gguf` model alias, total Flux
+    /// footprint drops from ~17 GB to ~10 GB (fits 12 GB GPUs).
+    pub quantize_t5: bool,
+    /// v0.22 phase 2: Flux transformer GGUF quant level (`Q4_K_S`,
+    /// `Q4_K_M`, `Q5_K_M`, `Q8_0`, …). `None` → city96's `Q4_K_S`
+    /// default. Validated against the published city96 quant list.
+    /// Flux-only.
+    pub quant_level: Option<String>,
+    /// v0.22 phase 2: T5-XXL GGUF quant level. `None` → `Q4_K_M`.
+    /// Honoured only when `quantize_t5` is `true`.
+    pub t5_quant_level: Option<String>,
+    /// v0.22 phase 2: distillation preset name. Maps to the same
+    /// `--fast PRESET` table the CLI exposes: `hyper-8`, `hyper-16`,
+    /// `turbo-alpha` (Flux), `lcm-sdxl`, `lcm-sd15`. `None` → no
+    /// preset. Validated at apply time so unknown names bail with
+    /// the supported list.
+    pub fast: Option<String>,
+    /// v0.22 phase 2: opt-in Kontext aspect-bucket snap. When `true`
+    /// AND the loaded model is `flux-kontext-dev`, the requested
+    /// (width, height) snaps to the nearest of 17 BFL-recommended
+    /// resolutions before VAE encoding. No-op on every other model.
+    pub kontext_bucket: bool,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -64,6 +88,11 @@ impl Default for GenerationConfig {
             scheduler: SchedulerKind::Default,
             strength: 0.75,
             face_strength: 0.8,
+            quantize_t5: false,
+            quant_level: None,
+            t5_quant_level: None,
+            fast: None,
+            kontext_bucket: false,
             size_explicit: false,
         }
     }
@@ -107,11 +136,31 @@ impl GenerationConfig {
             "face_strength" => {
                 self.face_strength = parse_unit_float(value, key)? as f32;
             }
+            "quantize_t5" => {
+                self.quantize_t5 = parse_bool(value, key)?;
+            }
+            "quant_level" => {
+                validate_flux_quant_level(value, "quant_level")?;
+                self.quant_level = Some(value.to_string());
+            }
+            "t5_quant_level" => {
+                validate_t5_quant_level(value, "t5_quant_level")?;
+                self.t5_quant_level = Some(value.to_string());
+            }
+            "fast" => {
+                validate_fast_preset(value)?;
+                self.fast = Some(value.to_string());
+            }
+            "kontext_bucket" => {
+                self.kontext_bucket = parse_bool(value, key)?;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
                      Supported keys: steps, guidance, seed, width, \
-                     height, negative, scheduler, strength, face_strength."
+                     height, negative, scheduler, strength, \
+                     face_strength, quantize_t5, quant_level, \
+                     t5_quant_level, fast, kontext_bucket."
                 ));
             }
         }
@@ -125,13 +174,26 @@ impl GenerationConfig {
         match key {
             "steps" | "guidance" | "seed" | "width" | "height"
             | "strength" | "face_strength" => self.set_str(key, &value.to_string()),
+            "quantize_t5" | "kontext_bucket" => {
+                // Permissive bool ↔ int: accept 0 / 1 only.
+                match value {
+                    0 => self.set_str(key, "false"),
+                    1 => self.set_str(key, "true"),
+                    _ => Err(anyhow!(
+                        "plakat.config.set: key {key:?} expects a bool \
+                         (true/false or 0/1); got integer {value}"
+                    )),
+                }
+            }
             "negative" | "scheduler" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler, strength, face_strength."
+                 height, negative, scheduler, strength, \
+                 face_strength, quantize_t5, quant_level, \
+                 t5_quant_level, fast, kontext_bucket."
             )),
         }
     }
@@ -196,7 +258,9 @@ impl GenerationConfig {
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler, strength, face_strength."
+                 height, negative, scheduler, strength, \
+                 face_strength, quantize_t5, quant_level, \
+                 t5_quant_level, fast, kontext_bucket."
             )),
         }
     }
@@ -228,6 +292,63 @@ fn parse_unit_float(s: &str, key: &str) -> Result<f64> {
         bail!("plakat.config.set: {key} must be in [0, 1] (got {f})");
     }
     Ok(f)
+}
+
+fn parse_bool(s: &str, key: &str) -> Result<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(anyhow!(
+            "plakat.config.set: {key} = {s:?} isn't a bool (try true/false or 1/0)"
+        )),
+    }
+}
+
+/// v0.22 phase 2: validate a Flux transformer GGUF quant level
+/// against the published city96 list. Same check `pipelines::flux`
+/// applies at load time — we surface the error earlier (at
+/// `plakat.config.set` time) so scripts fail loudly the moment
+/// they typo a quant string.
+fn validate_flux_quant_level(value: &str, key: &str) -> Result<()> {
+    let allowed = crate::pipelines::flux::FLUX_QUANT_LEVELS;
+    if allowed.iter().any(|l| l.eq_ignore_ascii_case(value)) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "plakat.config.set: {key} = {value:?} isn't a published Flux \
+             GGUF quant level. Supported: {}",
+            allowed.join(", ")
+        ))
+    }
+}
+
+fn validate_t5_quant_level(value: &str, key: &str) -> Result<()> {
+    let allowed = crate::pipelines::flux::T5_QUANT_LEVELS;
+    if allowed.iter().any(|l| l.eq_ignore_ascii_case(value)) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "plakat.config.set: {key} = {value:?} isn't a published T5 \
+             GGUF quant level. Supported: {}",
+            allowed.join(", ")
+        ))
+    }
+}
+
+/// v0.22 phase 2: validate a `--fast` preset name. Accepts the
+/// five published presets; bails with the supported list on
+/// anything else.
+fn validate_fast_preset(value: &str) -> Result<()> {
+    const VALID: &[&str] =
+        &["hyper-8", "hyper-16", "turbo-alpha", "lcm-sdxl", "lcm-sd15"];
+    if VALID.iter().any(|p| p.eq_ignore_ascii_case(value)) {
+        return Ok(());
+    }
+    bail!(
+        "plakat.config.set: fast = {value:?} not recognised. Supported: \
+         {}",
+        VALID.join(", ")
+    )
 }
 
 fn parse_dim(s: &str, key: &str) -> Result<u32> {
@@ -436,6 +557,130 @@ mod tests {
         assert!(cfg.set_float("face_strength", -0.01).is_err());
         assert!(cfg.set_float("face_strength", 1.01).is_err());
         assert!(cfg.set_float("face_strength", f64::NAN).is_err());
+    }
+
+    // v0.22 phase 2: Flux-specific D-keys.
+
+    #[test]
+    fn set_str_quantize_t5_accepts_bool_forms() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("quantize_t5", "true").unwrap();
+        assert!(cfg.quantize_t5);
+        cfg.set_str("quantize_t5", "false").unwrap();
+        assert!(!cfg.quantize_t5);
+        cfg.set_str("quantize_t5", "1").unwrap();
+        assert!(cfg.quantize_t5);
+        cfg.set_str("quantize_t5", "0").unwrap();
+        assert!(!cfg.quantize_t5);
+        cfg.set_str("quantize_t5", "yes").unwrap();
+        assert!(cfg.quantize_t5);
+        cfg.set_str("quantize_t5", "on").unwrap();
+        assert!(cfg.quantize_t5);
+    }
+
+    #[test]
+    fn set_str_quantize_t5_rejects_garbage() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("quantize_t5", "maybe").is_err());
+        assert!(cfg.set_str("quantize_t5", "2").is_err());
+    }
+
+    #[test]
+    fn set_int_quantize_t5_accepts_zero_and_one_only() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("quantize_t5", 1).unwrap();
+        assert!(cfg.quantize_t5);
+        cfg.set_int("quantize_t5", 0).unwrap();
+        assert!(!cfg.quantize_t5);
+        // Anything else bails.
+        assert!(cfg.set_int("quantize_t5", 2).is_err());
+        assert!(cfg.set_int("quantize_t5", -1).is_err());
+    }
+
+    #[test]
+    fn set_str_quant_level_accepts_published_values() {
+        let mut cfg = GenerationConfig::default();
+        for level in &["Q4_K_S", "Q8_0", "F16", "Q6_K"] {
+            cfg.set_str("quant_level", level).unwrap_or_else(|e| {
+                panic!("quant level {level:?} should be accepted: {e}")
+            });
+        }
+        // Case-insensitive.
+        cfg.set_str("quant_level", "q4_k_s").unwrap();
+    }
+
+    #[test]
+    fn set_str_quant_level_rejects_unknown() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("quant_level", "Q1_K").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("isn't a published Flux"), "got {msg}");
+        assert!(msg.contains("Q4_K_S"), "got {msg}");
+    }
+
+    #[test]
+    fn set_str_fast_accepts_published_presets() {
+        let mut cfg = GenerationConfig::default();
+        for preset in &[
+            "hyper-8",
+            "hyper-16",
+            "turbo-alpha",
+            "lcm-sdxl",
+            "lcm-sd15",
+        ] {
+            cfg.set_str("fast", preset).unwrap_or_else(|e| {
+                panic!("preset {preset:?} should be accepted: {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn set_str_fast_rejects_unknown_preset() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("fast", "ultra-9000").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not recognised"), "got {msg}");
+        assert!(msg.contains("hyper-8"), "got {msg}");
+    }
+
+    #[test]
+    fn set_str_kontext_bucket_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("kontext_bucket", "true").unwrap();
+        assert!(cfg.kontext_bucket);
+        cfg.set_str("kontext_bucket", "false").unwrap();
+        assert!(!cfg.kontext_bucket);
+    }
+
+    #[test]
+    fn unknown_key_error_lists_new_v022_keys() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("definitely-not-a-key", "x").unwrap_err();
+        let msg = format!("{err}");
+        // Phase 2 added these; the error message should advertise
+        // them so users can self-correct on typos.
+        for new_key in &[
+            "quantize_t5",
+            "quant_level",
+            "t5_quant_level",
+            "fast",
+            "kontext_bucket",
+        ] {
+            assert!(
+                msg.contains(new_key),
+                "key {new_key:?} should be in the supported-keys list: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn defaults_for_v022_d_keys() {
+        let cfg = GenerationConfig::default();
+        assert!(!cfg.quantize_t5);
+        assert!(cfg.quant_level.is_none());
+        assert!(cfg.t5_quant_level.is_none());
+        assert!(cfg.fast.is_none());
+        assert!(!cfg.kontext_bucket);
     }
 
     #[test]
