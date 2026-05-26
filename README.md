@@ -8,6 +8,144 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+## What's new in v0.20 — recipe replay, project bootstrap, Flux animate, Kontext + tiled
+
+Nine features in three groups. v0.20 picks up where v0.19 left
+off on workflow polish (recipe-driven replay, project
+bootstrap, user-defined negative-preset catalogs, Civitai
+trigger-word display), then lands two unlock-grade composition
+wins: Flux Kontext + tiled denoise for hi-res reference edits,
+and Flux animate (T5 + CLIP-L lerp, flow-match per frame).
+
+### Top picks (3 features)
+
+- **`plakat generate --recipe FILE.json`**. Replay any prior
+  generation from its JSON sidecar. Recipe fields fill in only
+  where the CLI didn't set the flag explicitly — `--model`,
+  `--seed`, `--negative`, etc. pass through unchanged when you
+  override them. Useful for "re-render at higher steps" /
+  "swap one LoRA, keep everything else" iterations. The
+  prompt is never overridden — the recipe is structural, the
+  prompt is creative.
+
+  ```bash
+  # Re-render a v0.17 generation at higher quality
+  plakat generate "$(cat in.prompt)" --recipe in.json --steps 50
+  ```
+
+- **Flux + SD3 WebP output**. v0.19 shipped WebP on SD-family
+  only with a warn+fallback for the modern backbones. v0.20
+  threads `--format png|webp` through the Flux and SD3
+  pipelines too. WebP is ~30% smaller at perceptually-
+  equivalent quality; the JSON sidecar still works on every
+  backbone (so `plakat metadata` / `plakat clone` round-trip
+  unchanged).
+
+- **Civitai LoRA trigger-word display**. When a `--lora
+  civitai:NNNNNN` resolves (cache hit or fresh download),
+  plakat now prints the LoRA's trained trigger words inline:
+
+  ```text
+    ✦ Civitai LoRA 2595428 (v2614696) trigger words: watercolor_(medium), some_trigger
+      → consider adding these to your prompt for the LoRA to activate
+  ```
+
+  Silent LoRAs (no apparent effect because triggers were
+  missing from the prompt) is one of the most common
+  Civitai-LoRA friction points; this surfaces the fix at the
+  exact moment users need it.
+
+### Round-out (4 features)
+
+- **`plakat models aliases [--family F] [--repo] [--gated]`**.
+  Enumerates every `--model` short-name plakat recognises,
+  grouped by family. `--family flux` filters; `--repo` prints
+  bare HF repo ids (pipes into `xargs plakat models pull`);
+  `--gated` lists HF_TOKEN-only repos. Refactor: the
+  hand-written alias `match` became a static `ALIAS_TABLE`
+  so adding an entry updates both resolution and the listing.
+
+- **`plakat init [DIR]`**. Bootstraps a runnable starter
+  project — `scenario.hjson` (sd15, `enhancer: local`, two
+  tasks), `wildcards/` (subject / style / lighting with three
+  options each), and a focused `.gitignore`. Targets the
+  ungated SD 1.5 + on-device LLM enhancer so first-run users
+  with no HF token + no API key can generate end-to-end.
+  Companion fix: `scenario`'s enhancer validator gained the
+  `local` / `local:<alias>` / `auto` providers (previously
+  cloud-only — the gap is why a fresh init scenario couldn't
+  dry-run).
+
+- **User-defined negative-preset catalogs**. Drop a `.txt` file
+  into `<plakat-config-dir>/negative-presets/` and the
+  filename becomes a `--negative-preset` name. User files
+  override built-ins; safety-checked names; empty files fall
+  through to the built-in. Error output marks entries as
+  `<name> (user)` or `<name> (user override)`.
+
+- **`--enhance-keep-original`**. New flag on `plakat generate`
+  and `plakat portrait`: joins the enhancer's rewrite with
+  the user's original prompt via the SD-family `BREAK`
+  keyword (each chunk gets its own 77-token CLIP slot, so
+  original terms aren't diluted by the enhancer's added
+  detail). SD-family only by design; Flux / SD3 warn once
+  (their T5 ignores BREAK and has the budget to carry both
+  phrasings).
+
+### Big swings — Kontext + tiled, Flux animate (2 features)
+
+- **Flux Kontext + tiled denoise**. Lifts the v0.18 bail at
+  the Kontext + `--tiled` junction. Each tile slices the
+  matching region of the reference latent, packs it,
+  seq-concats onto the tile's noise tokens, pads CN
+  residuals for the reference half, runs forward, strips the
+  reference tail. Per-tile RoPE budget check fires up front
+  (Kontext + tiled doubles the per-tile sequence; the bail
+  interpolates the largest safe `--tile-size` into the error
+  message, typically ≤608 px for Kontext-dev).
+
+  ```bash
+  plakat generate "fold the dress into a flowing cape" \
+      --model flux-kontext-dev --concept-image portrait.jpg \
+      --size 2048x2048 --tiled --tile-size 512
+  ```
+
+- **Flux animate**. `plakat animate --model flux-dev` (and
+  `--model flux-schnell`) now work. Pre-encodes both endpoint
+  prompts through CLIP-L + T5-XXL **once**, then per frame:
+  lerp the `(clip_pooled, t5_emb)` pair → run Flux's
+  flow-match denoise → save. T5 encode dominates the cost,
+  so amortising it across frames is the whole point of
+  animate. New `pub fn animate_frame` on `flux::Pipeline`;
+  Kontext / Fill / Canny / Depth refused (no place for a
+  reference per call). Flux is guidance-distilled, so
+  `--negative` is a no-op (warns) and `--guidance` is the
+  scalar that goes straight to the model — drop to 3.5
+  (Dev) / 0.0 (Schnell).
+
+  ```bash
+  plakat animate \
+      --from "an oil painting of a fox in a meadow" \
+      --to   "an oil painting of a cat in a meadow" \
+      --frames 24 --seed 42 --guidance 3.5 \
+      --model flux-dev --size 1024x1024 --out ./morph --gif
+  ```
+
+### Deferred to v0.21
+
+- **SD3 / SD3.5 animate** — the three-encoder (CLIP-L +
+  CLIP-G + T5) lerp + MMDiT rectified-flow integrator wiring
+  is its own refactor. `plakat animate --model sd35-*` bails
+  with a clear "deferred" message; Flux animate in v0.20 is
+  the proving ground for the per-frame-encoding approach
+  SD3 will follow.
+- **AnimateDiff** — motion-adapter weights + temporal-attention
+  injection into the SD UNet. Genuinely new architecture
+  (not covered by candle 0.10.2); slated for v0.21+ as its
+  own multi-cycle effort rather than rushed into v0.20.
+
+569 lib tests green; +60 new tests across the cycle.
+
 ## What's new in v0.19 — local enhancer polish, partial-rerun, WebP, Kontext compositions
 
 Nine features in three groups. Pairs with v0.18's larger surface
@@ -638,7 +776,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18 — composes with ControlNet + Redux as of v0.19) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax (all backbones in v0.18), inline `<lora:>` tags (v0.18), `BREAK` keyword (v0.18, SD-family), CLIP-skip, ADetailer face refinement, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every` live previews, PNG metadata + JSON sidecar, `--negative-preset` (v0.19), `--format webp` (v0.19, SD-family), `--enhance local\|auto` + `--enhance-cache` / `-temp` / `-max-tokens` / `-system` (v0.18/v0.19). |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18 — composes with ControlNet + Redux v0.19, **+ `--tiled` v0.20**) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax, inline `<lora:>` tags, `BREAK` keyword (SD-family), CLIP-skip, ADetailer, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every`, PNG metadata + JSON sidecar, `--negative-preset` (+ user catalog v0.20), `--format webp` (Flux + SD3 in v0.20), `--enhance local\|auto` + cache/temp/tokens/system + **`--enhance-keep-original`** (v0.20), **`--recipe FILE.json`** (v0.20). |
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
@@ -647,11 +785,12 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |
-| `animate --from A --to B --frames N` | Prompt-morph animation: lerp CLIP embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL. v0.19 adds `--resume` for crash recovery (skips already-rendered frames). |
+| `animate --from A --to B --frames N` | Prompt-morph animation: lerp text-encoder embeddings between two prompts to produce a smooth N-frame sequence at a fixed seed. Optional GIF bundling. SD 1.5 / SD 2.1 / SDXL + **Flux Dev / Schnell (v0.20)** via CLIP-L pooled + T5 lerp + flow-match. v0.19 adds `--resume` for crash recovery. |
 | `stylize` | IP-Adapter style transfer on SD 1.5 (IN + REF → OUT). |
 | `upscale` | Resize, classical or Real-ESRGAN. |
 | `transparent` | Make every pixel matching the corner colour transparent. |
-| `models {search,recommend,size,pull,ls,rm}` | Browse HuggingFace and manage the local cache. |
+| `models {search,recommend,size,pull,ls,rm,aliases}` | Browse HuggingFace and manage the local cache. v0.20 adds **`aliases`** — enumerate every `--model` short-name plakat understands, grouped by family. `--family flux`, `--repo` (bare ids for piping), `--gated`. |
+| `init [DIR]` | **v0.20**. Bootstrap a runnable starter project — `scenario.hjson` + `wildcards/` + `.gitignore`. Targets `sd15` + `enhancer: local` so first-run users with no HF token / no API key can generate end-to-end. `--minimal` writes only the scenario; `--force` overwrites. |
 | `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. v0.19 adds `--json` for structured CI / scripting output. |
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
 | `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
