@@ -32,6 +32,7 @@ use std::path::Path;
 
 pub mod ctx;
 pub mod helpers;
+pub mod script_entry;
 pub mod words;
 
 pub use ctx::{ScriptCtx, with_ctx, with_ctx_mut};
@@ -89,12 +90,68 @@ mod tests {
     /// * The async bridge inside `plakat.echo` resolves (we drive
     ///   eval from a multi-threaded tokio runtime here, matching
     ///   the production CLI dispatch)
+    ///
+    /// **Test isolation note**: ScriptCtx is a process-wide
+    /// singleton (OnceLock) and can only be initialised once per
+    /// process. All tests that need a context must serialise
+    /// through one shared init — see `with_singleton_ctx` below.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn echo_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        ScriptCtx::init(Device::Cpu, tmp.path().to_path_buf()).unwrap();
-        // The simplest script that exercises a host word: push a
-        // string, call echo, drop the result.
-        eval("\"hello from phase 1\" plakat.echo drop").unwrap();
+        with_singleton_ctx(|| {
+            // The simplest script that exercises a host word: push a
+            // string, call echo, drop the result.
+            eval("\"hello from phase 1\" plakat.echo drop").unwrap();
+        });
+    }
+
+    /// v0.21 phase 2 round-trip: eval a script that uses
+    /// `plakat.save` against an image pre-stuffed into the context
+    /// (so we don't have to run the SD pipeline in unit tests).
+    /// Exercises the full pull/handle/save path the host word
+    /// implements, end-to-end via `eval()`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn save_round_trip_via_eval() {
+        with_singleton_ctx(|| {
+            // Stuff a tiny image into the context + remember the
+            // out_dir so we can assert the save landed.
+            let (handle, out_dir) = with_ctx_mut(|ctx| {
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])),
+                );
+                (ctx.push_image(img), ctx.out_dir.clone())
+            })
+            .unwrap();
+
+            // Script: push handle, push path, call save. The
+            // out_dir prefix gets prepended for relative paths.
+            let script = format!(
+                "{handle} \"phase2-save-test.png\" plakat.save"
+            );
+            eval(&script).unwrap();
+
+            assert!(out_dir.join("phase2-save-test.png").exists());
+        });
+    }
+
+    /// Test-helper: serialises every test that needs the singleton
+    /// context behind one shared init. Subsequent calls re-use the
+    /// already-init'd singleton; only the *first* test through the
+    /// gate pays the init cost. Each test runs its body inside the
+    /// mutex so they don't trample each other's state on `out_dir`
+    /// or `images`.
+    fn with_singleton_ctx<R>(body: impl FnOnce() -> R) -> R {
+        use std::sync::Mutex;
+        static GATE: Mutex<()> = Mutex::new(());
+        let _g = GATE.lock().unwrap();
+        if ctx::CTX.get().is_none() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Leak the tempdir to keep the path alive for the
+            // singleton's lifetime — only a single tempdir per
+            // process, harmless.
+            let path = tmp.path().to_path_buf();
+            std::mem::forget(tmp);
+            ScriptCtx::init(Device::Cpu, path).unwrap();
+        }
+        body()
     }
 }
