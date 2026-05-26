@@ -205,6 +205,51 @@ pub struct GenerationConfig {
     /// those families when a model is loaded). Mirrors
     /// `--enhance-keep-original`.
     pub enhance_keep_original: bool,
+    /// v0.22 phase 11: aspect ratio (`"16:9"`, `"1:1"`, `"2:3"`,
+    /// etc). Empty (default) → no aspect resolution. When set
+    /// and `size_explicit` is false, the working size becomes
+    /// `aspect` × `base` (shorter side = `base`). Mirrors
+    /// `--aspect`.
+    pub aspect: String,
+    /// v0.22 phase 11: base resolution for the shorter side
+    /// (pixels) when `aspect` is set. Default 768 (same as CLI).
+    /// Mirrors `--base`.
+    pub base: u32,
+    /// v0.22 phase 11: feather radius (pixels) applied to the
+    /// img2img mask edge. Default 8 (same as CLI). Only
+    /// meaningful when img2img is invoked with a mask.
+    /// `plakat.img2img` doesn't yet expose a mask path argument
+    /// in v0.22; the knob is declared today so the surface is
+    /// stable for v0.23's `plakat.inpaint`.
+    pub mask_feather: u32,
+    /// v0.22 phase 11: invert mask polarity (treat black as
+    /// inpaint). Default false. Same deferred-wiring story as
+    /// `mask_feather`.
+    pub mask_invert: bool,
+    /// v0.22 phase 11: CLIP-skip layer index. `1` (default) uses
+    /// the last hidden state. `2` uses the penultimate (Auto1111
+    /// / NovelAI SD 1.5 anime default). SD 1.5 / SD 2.1 only —
+    /// SDXL / Flux / SD3 ignore. The script-layer wiring is
+    /// **declared but no-op in v0.22 phase 11**: clip_skip lives
+    /// on `t2i::Pipeline`, not `portrait::Pipeline`; full
+    /// threading lands in v0.23 when the cache switches.
+    pub clip_skip: usize,
+    /// v0.22 phase 11: wildcard directory for `__name__` prompt
+    /// expansion. Empty (default) → no file-wildcard expansion
+    /// (inline `{a|b|c}` still works). Same deferred-wiring as
+    /// `clip_skip`: the prompt-expansion call site is in the
+    /// CLI's `expand_prompt_wildcards`; v0.22 declares the knob,
+    /// v0.23 will plumb it through `generate_one`.
+    pub wildcard_dir: String,
+    /// v0.22 phase 11: bundled negative-prompt preset name. One
+    /// of `photo` / `painting` / `anime` / `cinematic` (or any
+    /// user-installed preset). Empty (default) → no preset.
+    /// When set, the resolved preset text is comma-joined with
+    /// `negative` at generate-request time (preset first, then
+    /// user negative). Mirrors `--negative-preset`. Validated
+    /// against `prompt::negative_presets::PRESETS` at config-set
+    /// time.
+    pub negative_preset: String,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -260,6 +305,13 @@ impl Default for GenerationConfig {
             enhance_cache: false,
             enhance_system: String::new(),
             enhance_keep_original: false,
+            aspect: String::new(),
+            base: 768,
+            mask_feather: 8,
+            mask_invert: false,
+            clip_skip: 1,
+            wildcard_dir: String::new(),
+            negative_preset: String::new(),
             size_explicit: false,
         }
     }
@@ -503,6 +555,95 @@ impl GenerationConfig {
             "enhance_keep_original" => {
                 self.enhance_keep_original = parse_bool(value, key)?;
             }
+            "aspect" => {
+                // Empty resets (clear the aspect override). Non-empty
+                // must parse as `W:H` with positive integers.
+                if !value.is_empty() {
+                    let (w, h) = value.split_once(':').ok_or_else(|| {
+                        anyhow!(
+                            "plakat.config.set: aspect {value:?} must be \
+                             `W:H` with positive integers (e.g. 16:9)"
+                        )
+                    })?;
+                    let w_n: u32 = w.parse().with_context(|| {
+                        format!(
+                            "plakat.config.set: aspect {value:?} width \
+                             must be an integer"
+                        )
+                    })?;
+                    let h_n: u32 = h.parse().with_context(|| {
+                        format!(
+                            "plakat.config.set: aspect {value:?} height \
+                             must be an integer"
+                        )
+                    })?;
+                    if w_n == 0 || h_n == 0 {
+                        bail!(
+                            "plakat.config.set: aspect {value:?} components \
+                             must be > 0"
+                        );
+                    }
+                }
+                self.aspect = value.to_string();
+            }
+            "base" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 || n > 4096 {
+                    bail!(
+                        "plakat.config.set: base must be in (0, 4096] \
+                         (got {n})"
+                    );
+                }
+                if n % 8 != 0 {
+                    bail!(
+                        "plakat.config.set: base must be a multiple of 8 \
+                         (VAE); got {n}"
+                    );
+                }
+                self.base = n as u32;
+            }
+            "mask_feather" => {
+                let n = parse_pos_int(value, key)?;
+                if n > 256 {
+                    bail!(
+                        "plakat.config.set: mask_feather must be in [0, 256] \
+                         pixels (got {n})"
+                    );
+                }
+                self.mask_feather = n as u32;
+            }
+            "mask_invert" => {
+                self.mask_invert = parse_bool(value, key)?;
+            }
+            "clip_skip" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 || n > 12 {
+                    bail!(
+                        "plakat.config.set: clip_skip must be in [1, 12] \
+                         (got {n}). Common values: 1 (default), 2 (SD 1.5 \
+                         anime)."
+                    );
+                }
+                self.clip_skip = n as usize;
+            }
+            "wildcard_dir" => {
+                self.wildcard_dir = value.to_string();
+            }
+            "negative_preset" => {
+                if !value.is_empty() {
+                    // Validate against built-in + user-installed presets.
+                    let valid = crate::prompt::negative_presets::resolve(value)
+                        .is_some();
+                    if !valid {
+                        bail!(
+                            "plakat.config.set: negative_preset {value:?} not \
+                             recognised. Supported: {}",
+                            crate::prompt::negative_presets::supported_names()
+                        );
+                    }
+                }
+                self.negative_preset = value.to_string();
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -519,7 +660,9 @@ impl GenerationConfig {
                      hires_upscaler, hires_steps, artefact_library, \
                      artefact_blend_strength, artefact_smart_zones, \
                      enhance_provider, enhance_temp, enhance_max_tokens, \
-                     enhance_cache, enhance_system, enhance_keep_original."
+                     enhance_cache, enhance_system, enhance_keep_original, \
+                     aspect, base, mask_feather, mask_invert, clip_skip, \
+                     wildcard_dir, negative_preset."
                 ));
             }
         }
@@ -540,12 +683,13 @@ impl GenerationConfig {
             | "adetailer_size"
             | "hires_scale" | "hires_strength" | "hires_steps"
             | "artefact_blend_strength" | "enhance_temp"
-            | "enhance_max_tokens" => {
+            | "enhance_max_tokens" | "base" | "mask_feather"
+            | "clip_skip" => {
                 self.set_str(key, &value.to_string())
             }
             "quantize_t5" | "kontext_bucket" | "tiled"
             | "artefact_smart_zones" | "enhance_cache"
-            | "enhance_keep_original" => {
+            | "enhance_keep_original" | "mask_invert" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
                     0 => self.set_str(key, "false"),
@@ -558,7 +702,8 @@ impl GenerationConfig {
             }
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
-            | "enhance_provider" | "enhance_system" => Err(anyhow!(
+            | "enhance_provider" | "enhance_system"
+            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -683,7 +828,8 @@ impl GenerationConfig {
                 Ok(())
             }
             "steps" | "seed" | "width" | "height" | "refine_steps"
-            | "adetailer_size" | "hires_steps" | "enhance_max_tokens" => {
+            | "adetailer_size" | "hires_steps" | "enhance_max_tokens"
+            | "base" | "mask_feather" | "clip_skip" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
                 if value.fract() != 0.0 {
@@ -696,7 +842,8 @@ impl GenerationConfig {
             }
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
-            | "enhance_provider" | "enhance_system" => Err(anyhow!(
+            | "enhance_provider" | "enhance_system"
+            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1167,6 +1314,14 @@ mod tests {
             "enhance_cache",
             "enhance_system",
             "enhance_keep_original",
+            // Phase 11 misc keys:
+            "aspect",
+            "base",
+            "mask_feather",
+            "mask_invert",
+            "clip_skip",
+            "wildcard_dir",
+            "negative_preset",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -1732,5 +1887,148 @@ mod tests {
         assert!(cfg.enhance_cache);
         cfg.set_int("enhance_cache", 0).unwrap();
         assert!(!cfg.enhance_cache);
+    }
+
+    // v0.22 phase 11: misc config keys.
+
+    #[test]
+    fn defaults_for_v022_phase11_misc_keys() {
+        let cfg = GenerationConfig::default();
+        assert_eq!(cfg.aspect, "");
+        assert_eq!(cfg.base, 768);
+        assert_eq!(cfg.mask_feather, 8);
+        assert!(!cfg.mask_invert);
+        assert_eq!(cfg.clip_skip, 1);
+        assert_eq!(cfg.wildcard_dir, "");
+        assert_eq!(cfg.negative_preset, "");
+    }
+
+    #[test]
+    fn set_str_aspect_accepts_w_colon_h() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("aspect", "16:9").unwrap();
+        assert_eq!(cfg.aspect, "16:9");
+        cfg.set_str("aspect", "2:3").unwrap();
+        assert_eq!(cfg.aspect, "2:3");
+        // Empty clears.
+        cfg.set_str("aspect", "").unwrap();
+        assert_eq!(cfg.aspect, "");
+    }
+
+    #[test]
+    fn set_str_aspect_rejects_malformed() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("aspect", "169").is_err()); // no colon
+        assert!(cfg.set_str("aspect", "16:0").is_err()); // zero
+        assert!(cfg.set_str("aspect", "0:9").is_err()); // zero
+        assert!(cfg.set_str("aspect", "abc:def").is_err()); // non-int
+    }
+
+    #[test]
+    fn set_str_base_accepts_multiple_of_eight() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("base", "512").unwrap();
+        assert_eq!(cfg.base, 512);
+        cfg.set_str("base", "1024").unwrap();
+        assert_eq!(cfg.base, 1024);
+    }
+
+    #[test]
+    fn set_str_base_rejects_non_multiple_of_eight() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("base", "513").is_err());
+        assert!(cfg.set_str("base", "0").is_err());
+        assert!(cfg.set_str("base", "9000").is_err());
+    }
+
+    #[test]
+    fn set_str_mask_feather_accepts_zero_to_256() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("mask_feather", "0").unwrap();
+        assert_eq!(cfg.mask_feather, 0);
+        cfg.set_str("mask_feather", "16").unwrap();
+        assert_eq!(cfg.mask_feather, 16);
+        cfg.set_str("mask_feather", "256").unwrap();
+        assert_eq!(cfg.mask_feather, 256);
+        assert!(cfg.set_str("mask_feather", "500").is_err());
+    }
+
+    #[test]
+    fn set_str_mask_invert_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("mask_invert", "true").unwrap();
+        assert!(cfg.mask_invert);
+        cfg.set_str("mask_invert", "false").unwrap();
+        assert!(!cfg.mask_invert);
+    }
+
+    #[test]
+    fn set_str_clip_skip_accepts_one_to_twelve() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("clip_skip", "1").unwrap();
+        assert_eq!(cfg.clip_skip, 1);
+        cfg.set_str("clip_skip", "2").unwrap();
+        assert_eq!(cfg.clip_skip, 2);
+        assert!(cfg.set_str("clip_skip", "0").is_err());
+        assert!(cfg.set_str("clip_skip", "13").is_err());
+    }
+
+    #[test]
+    fn set_str_wildcard_dir_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("wildcard_dir", "/path/to/wildcards").unwrap();
+        assert_eq!(cfg.wildcard_dir, "/path/to/wildcards");
+    }
+
+    #[test]
+    fn set_str_negative_preset_accepts_built_ins() {
+        let mut cfg = GenerationConfig::default();
+        for name in &["photo", "painting", "anime", "cinematic"] {
+            cfg.set_str("negative_preset", name)
+                .unwrap_or_else(|e| panic!("preset {name:?} should parse: {e}"));
+            assert_eq!(cfg.negative_preset, *name);
+        }
+        // Empty clears.
+        cfg.set_str("negative_preset", "").unwrap();
+        assert_eq!(cfg.negative_preset, "");
+    }
+
+    #[test]
+    fn set_str_negative_preset_rejects_unknown() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("negative_preset", "ultra-9000").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ultra-9000"), "got {msg}");
+        assert!(msg.contains("photo"), "got {msg}");
+    }
+
+    #[test]
+    fn set_int_aspect_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("aspect", 169).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
+    }
+
+    #[test]
+    fn set_int_base_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("base", 512).unwrap();
+        assert_eq!(cfg.base, 512);
+    }
+
+    #[test]
+    fn set_int_mask_invert_accepts_zero_and_one() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("mask_invert", 1).unwrap();
+        assert!(cfg.mask_invert);
+        cfg.set_int("mask_invert", 0).unwrap();
+        assert!(!cfg.mask_invert);
+    }
+
+    #[test]
+    fn set_int_clip_skip_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("clip_skip", 2).unwrap();
+        assert_eq!(cfg.clip_skip, 2);
     }
 }

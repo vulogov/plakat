@@ -352,6 +352,44 @@ mod tests {
         });
     }
 
+    // v0.22 phase 11: misc config keys end-to-end.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase11_misc_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            eval(r#""16:9" "aspect" plakat.config.set"#).unwrap();
+            eval(r#"512 "base" plakat.config.set"#).unwrap();
+            eval(r#"16 "mask_feather" plakat.config.set"#).unwrap();
+            eval(r#""true" "mask_invert" plakat.config.set"#).unwrap();
+            eval(r#"2 "clip_skip" plakat.config.set"#).unwrap();
+            eval(r#""/wc" "wildcard_dir" plakat.config.set"#).unwrap();
+            eval(r#""photo" "negative_preset" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.aspect, "16:9");
+                assert_eq!(ctx.config.base, 512);
+                assert_eq!(ctx.config.mask_feather, 16);
+                assert!(ctx.config.mask_invert);
+                assert_eq!(ctx.config.clip_skip, 2);
+                assert_eq!(ctx.config.wildcard_dir, "/wc");
+                assert_eq!(ctx.config.negative_preset, "photo");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `negative_preset` validation bites at config-set time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase11_negative_preset_invalid_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""ultra-9000" "negative_preset" plakat.config.set"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("ultra-9000"), "got {msg}");
+        });
+    }
+
     // v0.22 phase 10: plakat.enhance end-to-end (config-side only;
     // we don't actually run an LLM forward in tests — downloading a
     // GGUF is out of scope for unit tests).
