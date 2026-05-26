@@ -726,7 +726,12 @@ fn modulate(x: &Tensor, shift: &Tensor, scale: &Tensor) -> Result<Tensor> {
     shift.broadcast_add(&x.broadcast_mul(&scale_plus_one)?)
 }
 
-pub trait JointBlock {
+// v0.22 phase 3: Send + Sync bounds added so sd3::Pipeline can be
+// held in the scripting OnceLock<RwLock<...>> cache. The concrete
+// MMDiTJointBlock + MMDiTSelfAttnJointBlock impls only contain
+// `candle_nn::Linear` / `LayerNorm` etc which are already
+// Send + Sync; the trait just needed to advertise the bound.
+pub trait JointBlock: Send + Sync {
     fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)>;
 }
 

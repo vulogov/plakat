@@ -352,7 +352,109 @@ arrow to recall).
   (`plakat scenario`); duplicating that surface in scripts would be
   redundant. If you need batch generation, use scenarios.
 
-## 9. The full word reference
+## 9. What's new in v0.22
+
+The v0.21 tutorial above covers the seven foundational words.
+v0.22 added 21 more host words across 7 namespaces, a pipeline
+cache, all three model families (SD / Flux / SD3), and 50+
+Category-B config keys. The full reference is
+[`SCRIPTING.md`](../SCRIPTING.md); this section walks through
+the patterns you're most likely to need.
+
+### Pipeline cache (phase 1)
+
+`plakat.load "sd15"` now caches the loaded SD pipeline. Calling
+`plakat.generate` multiple times on the same alias pays the model
+load cost once. Switching aliases drops the cached pipeline.
+LoRA / ControlNet mutations also drop the cache so the next
+generate rebuilds with the current state.
+
+### All three families (phases 2-3)
+
+```bund
+"flux-schnell" plakat.load        // Flux works (with quant D-keys)
+"sd35-medium"  plakat.load        // SD3 / SD3.5 work too
+```
+
+Family-specific config knobs (Flux quantisation, SD3 tiled
+denoise) live in the same `plakat.config.set` surface. See
+SCRIPTING.md §"Flux D-keys" and §"Tiled" for the full key list.
+
+### LoRA stack (phase 4)
+
+```bund
+"./style-v1.safetensors" 0.7 plakat.lora.add
+"civitai:123456"         1.0 plakat.lora.add
+0.9 "lora_scale" plakat.config.set     // global multiplier
+"sd15" plakat.load
+"a knight" plakat.generate
+```
+
+`plakat.lora.list` pushes each entry as `"<spec>:<scale>"` plus
+the count. `plakat.lora.clear` empties the stack.
+
+### ControlNet stack (phase 5)
+
+```bund
+"depth" "./depth.png"        plakat.controlnet.add        // pre-rendered map
+"canny" "./photo.jpg"        plakat.controlnet.annotate   // auto-annotate
+"depth:0.6:0.0:0.7@image=./d.png" plakat.controlnet.spec  // full grammar
+"sd15" plakat.load
+"a knight" plakat.generate
+```
+
+SD-family ControlNet flows through `Request.controls` per call —
+mutating the stack doesn't invalidate the cache. Flux + SD3
+ControlNet need load-time setup; the generate paths bail loud
+with a v0.23 pointer.
+
+### Post-process toggles (phases 6-9)
+
+```bund
+plakat.refiner.enable               // SDXL refiner (v0.23 wiring)
+plakat.adetailer.enable             // SCRFD face refinement
+plakat.hires.enable                 // upscale + img2img refine
+plakat.artefact.blend.enable        // post-composite blend pass
+"oak" plakat.artefact.add           // composite an artefact
+```
+
+Compose order at generate time: **artefacts → hires →
+adetailer**. Hires + artefacts are mutually exclusive (mirrors
+the CLI `--hires-fix` vs `--artefact` gate). All four post-
+process toggles work cleanly together so long as you don't
+combine hires with artefacts.
+
+### Prompt enhancer (phase 10)
+
+```bund
+"local" "enhance_provider" plakat.config.set
+"true"  "enhance_keep_original" plakat.config.set
+"sd15" plakat.load
+"a knight" plakat.enhance plakat.generate
+```
+
+Pure prompt transformer. The local LLM weight cache is global,
+so back-to-back enhance calls pay the GGUF load cost once.
+`enhance_keep_original` BREAK-joins on SD-family (no-ops on
+Flux/SD3).
+
+### Misc Category-B keys (phase 11)
+
+```bund
+"16:9" "aspect"           plakat.config.set
+512    "base"             plakat.config.set
+"./wildcards" "wildcard_dir" plakat.config.set
+"photo" "negative_preset" plakat.config.set
+"low quality" "negative"  plakat.config.set
+"a knight at __environment__" plakat.generate
+```
+
+`aspect` + `base` derive working size when `width`/`height` are
+unset. `wildcard_dir` enables `__name__` file wildcards (inline
+`{a|b|c}` always works). `negative_preset` combines with
+`negative` at request-build time.
+
+## 10. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"
@@ -377,10 +479,13 @@ side. Words on the right of the `--` get pushed in the order shown.
 - **`PORTRAIT_TUTORIAL.md`** — identity preservation in depth. The
   IP-Adapter / FaceID surface plakat exposes is much richer than
   what `plakat.portrait` covers in v0.21.
-- **`Documentation/RFC_v0.21_BUND_SCRIPTING.md`** — the design doc.
-  Read this if you want to know *why* the surface looks the way it
-  does, or if you're thinking about contributing a new `plakat.*`
-  word.
+- **`Documentation/SCRIPTING.md`** — the full reference for every
+  v0.22 host word + config key. Source of truth when this tutorial
+  feels too narrative.
+- **`Documentation/RFC_v0.22_BUND_WORDS_EXPANSION.md`** — the v0.22
+  design doc covering the 7 namespaces + cache + Category-B keys.
+- **`Documentation/RFC_v0.21_BUND_SCRIPTING.md`** — the v0.21
+  foundations doc.
 - **External Bund material** — `vulogov/Bund` on GitHub has the full
   language reference (lambdas, currying, list ops, control flow).
   Most of it isn't exposed to plakat scripts (RFC decision #2: build
