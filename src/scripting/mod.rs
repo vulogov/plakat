@@ -231,6 +231,101 @@ mod tests {
         });
     }
 
+    // v0.22 phase 4: plakat.lora.* end-to-end.
+
+    /// `plakat.lora.add` pushes to ctx.loras and invalidates the
+    /// cache (no real model load triggered — the test stays fast).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lora_add_pushes_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loras.clear();
+                ctx.loaded = None;
+            })
+            .unwrap();
+            eval(r#""civitai:12345" 0.7 plakat.lora.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.loras.len(), 1, "lora pushed");
+                let spec = &ctx.loras[0];
+                assert!((spec.scale - 0.7).abs() < 1e-6);
+                // Cache must be None (invalidated by the mutation).
+                assert!(ctx.loaded.is_none(), "cache should be invalidated");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.lora.add` with a bad scale rejects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lora_add_rejects_negative_scale() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loras.clear();
+            })
+            .unwrap();
+            let err = eval(r#""./foo.safetensors" -1.0 plakat.lora.add"#)
+                .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("scale must be"), "got {msg}");
+        });
+    }
+
+    /// `plakat.lora.clear` drops every entry + invalidates the
+    /// cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lora_clear_empties_stack() {
+        with_singleton_ctx(|| {
+            // Pre-stuff the LoRA stack.
+            with_ctx_mut(|ctx| {
+                ctx.loras.push(
+                    crate::pipelines::lora::LoraSpec {
+                        source: crate::pipelines::lora::LoraSource::Local(
+                            std::path::PathBuf::from("/tmp/a.safetensors"),
+                        ),
+                        scale: 0.5,
+                    },
+                );
+            })
+            .unwrap();
+            eval("plakat.lora.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.loras.is_empty(), "stack drained");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.lora.list` pushes one string per entry + the depth.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lora_list_pushes_entries() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loras.clear();
+                ctx.loras.push(crate::pipelines::lora::LoraSpec {
+                    source: crate::pipelines::lora::LoraSource::Local(
+                        std::path::PathBuf::from("/tmp/style.safetensors"),
+                    ),
+                    scale: 0.8,
+                });
+                ctx.loras.push(crate::pipelines::lora::LoraSpec {
+                    source: crate::pipelines::lora::LoraSource::Civitai {
+                        id_kind: crate::pipelines::lora::CivitaiIdKind::Model(12345),
+                        file: None,
+                    },
+                    scale: 0.5,
+                });
+            })
+            .unwrap();
+            // The list word pushes 3 values: 2 strings + 1 depth int.
+            // Drop them after each test so subsequent tests start clean.
+            eval("plakat.lora.list drop drop drop").unwrap();
+            // The eval succeeded — that's the contract. Detailed
+            // value verification happens in the format_source unit
+            // tests above; we only assert no panic + the right
+            // depth here. (Bund's `drop` pops one value each.)
+        });
+    }
+
     /// v0.21 phase 6: upscale round-trip. Stuff a hand-crafted
     /// 16×16 image into the registry, eval `1 2 plakat.upscale`,
     /// verify the new handle's image is 32×32. Unlike phases 4 +

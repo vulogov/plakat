@@ -14,13 +14,13 @@ pub mod echo;
 pub mod generate;
 pub mod img2img;
 pub mod load;
+pub mod lora;
 pub mod portrait;
 pub mod save;
 pub mod upscale;
 
-/// Register every `plakat.*` word into `vm`. Phase 1: echo.
-/// Phase 2: load + generate + save. Phase 3: config.set.
-/// Phase 4: img2img. Phase 5: portrait. Phase 6: upscale.
+/// Register every `plakat.*` word into `vm`. v0.21 shipped 7
+/// MVP words. v0.22 phase 4 adds the `plakat.lora.*` namespace.
 pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     vm.register_inline("plakat.echo".to_string(), echo::plakat_echo)
         .map_err(|e| anyhow!("registering plakat.echo: {e}"))?;
@@ -41,6 +41,13 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         config::plakat_config_set,
     )
     .map_err(|e| anyhow!("registering plakat.config.set: {e}"))?;
+    // v0.22 phase 4: plakat.lora.* namespace.
+    vm.register_inline("plakat.lora.add".to_string(), lora::plakat_lora_add)
+        .map_err(|e| anyhow!("registering plakat.lora.add: {e}"))?;
+    vm.register_inline("plakat.lora.clear".to_string(), lora::plakat_lora_clear)
+        .map_err(|e| anyhow!("registering plakat.lora.clear: {e}"))?;
+    vm.register_inline("plakat.lora.list".to_string(), lora::plakat_lora_list)
+        .map_err(|e| anyhow!("registering plakat.lora.list: {e}"))?;
     Ok(())
 }
 

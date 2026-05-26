@@ -84,6 +84,10 @@ pub struct GenerationConfig {
     /// overlap = smoother seams + more compute. Default 768
     /// (`tile_size - tile_size/4`). Ignored when `tiled` is `false`.
     pub tile_stride: u32,
+    /// v0.22 phase 4: global LoRA scale multiplier applied on top
+    /// of each individual `plakat.lora.add` weight. Default 1.0.
+    /// At 0.5 every LoRA's effective scale is halved.
+    pub lora_scale: f32,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -115,6 +119,7 @@ impl Default for GenerationConfig {
             tiled: false,
             tile_size: 1024,
             tile_stride: 768,
+            lora_scale: 1.0,
             size_explicit: false,
         }
     }
@@ -185,6 +190,20 @@ impl GenerationConfig {
             "tile_stride" => {
                 self.tile_stride = parse_tile_dim(value, key)?;
             }
+            "lora_scale" => {
+                // 0.0 = no LoRA effect; > 1.0 amplifies. Cap at
+                // 2.0 to avoid silently zeroing weights or
+                // exploding gradients; matches the CLI's
+                // `--lora-scale` documented range.
+                let f = parse_finite_float(value, key)?;
+                if !(0.0..=2.0).contains(&f) {
+                    bail!(
+                        "plakat.config.set: lora_scale must be in \
+                         [0, 2] (got {f})"
+                    );
+                }
+                self.lora_scale = f as f32;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -192,7 +211,7 @@ impl GenerationConfig {
                      height, negative, scheduler, strength, \
                      face_strength, quantize_t5, quant_level, \
                      t5_quant_level, fast, kontext_bucket, tiled, \
-                     tile_size, tile_stride."
+                     tile_size, tile_stride, lora_scale."
                 ));
             }
         }
@@ -205,9 +224,8 @@ impl GenerationConfig {
     pub fn set_int(&mut self, key: &str, value: i64) -> Result<()> {
         match key {
             "steps" | "guidance" | "seed" | "width" | "height"
-            | "strength" | "face_strength" | "tile_size" | "tile_stride" => {
-                self.set_str(key, &value.to_string())
-            }
+            | "strength" | "face_strength" | "tile_size" | "tile_stride"
+            | "lora_scale" => self.set_str(key, &value.to_string()),
             "quantize_t5" | "kontext_bucket" | "tiled" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
@@ -274,6 +292,19 @@ impl GenerationConfig {
                     );
                 }
                 self.face_strength = value as f32;
+                Ok(())
+            }
+            "lora_scale" => {
+                if !value.is_finite() {
+                    bail!("plakat.config.set: lora_scale {value} isn't finite");
+                }
+                if !(0.0..=2.0).contains(&value) {
+                    bail!(
+                        "plakat.config.set: lora_scale must be in [0, 2] \
+                         (got {value})"
+                    );
+                }
+                self.lora_scale = value as f32;
                 Ok(())
             }
             "steps" | "seed" | "width" | "height" => {
@@ -730,6 +761,7 @@ mod tests {
             "tiled",
             "tile_size",
             "tile_stride",
+            "lora_scale",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -803,6 +835,39 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_int("tile_stride", 768).unwrap();
         assert_eq!(cfg.tile_stride, 768);
+    }
+
+    // v0.22 phase 4: lora_scale config key.
+
+    #[test]
+    fn default_lora_scale_is_one() {
+        let cfg = GenerationConfig::default();
+        assert!((cfg.lora_scale - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_lora_scale_accepts_zero_to_two() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("lora_scale", "0.0").unwrap();
+        assert!((cfg.lora_scale - 0.0).abs() < 1e-9);
+        cfg.set_str("lora_scale", "1.5").unwrap();
+        assert!((cfg.lora_scale - 1.5).abs() < 1e-6);
+        cfg.set_str("lora_scale", "2.0").unwrap();
+        assert!((cfg.lora_scale - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_lora_scale_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("lora_scale", "-0.1").is_err());
+        assert!(cfg.set_str("lora_scale", "2.1").is_err());
+    }
+
+    #[test]
+    fn set_float_lora_scale_accepts_unit_and_amplified() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("lora_scale", 0.5).unwrap();
+        assert!((cfg.lora_scale - 0.5).abs() < 1e-6);
     }
 
     #[test]

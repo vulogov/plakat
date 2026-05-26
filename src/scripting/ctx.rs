@@ -15,7 +15,7 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use crate::pipelines::{flux, portrait, sd3};
+use crate::pipelines::{flux, lora::LoraSpec, portrait, sd3};
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
 
@@ -50,6 +50,12 @@ pub struct ScriptCtx {
     /// script. Read by [`super::script_entry::generate_one`] when
     /// building the `t2i::Request`.
     pub config: GenerationConfig,
+    /// v0.22 phase 4: LoRA stack accumulated via `plakat.lora.add`.
+    /// Read at pipeline-load time (cache invalidation: mutating
+    /// this drops `loaded` so the next `ensure_loaded` rebuilds
+    /// with the new LoRA set). See RFC §7 + the
+    /// [`Self::mark_loras_changed`] helper that does the drop.
+    pub loras: Vec<LoraSpec>,
 }
 
 impl ScriptCtx {
@@ -67,8 +73,19 @@ impl ScriptCtx {
             loaded: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
+            loras: Vec::new(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
+    }
+
+    /// v0.22 phase 4: invalidate the cached pipeline so the next
+    /// `ensure_loaded` reloads with the current LoRA stack
+    /// merged in. Call after every `plakat.lora.add` /
+    /// `plakat.lora.clear` mutation. Per RFC §7, this is the
+    /// "defer the merge to next generate" pattern — simpler than
+    /// in-place LoRA injection across the three pipeline families.
+    pub fn mark_loras_changed(&mut self) {
+        self.loaded = None;
     }
 
     /// v0.22 phase 1: read-only accessor for the currently-loaded
@@ -117,6 +134,8 @@ impl ScriptCtx {
 
             let identity = pick_sd_family_identity(alias);
             let device = self.device.clone();
+            let loras = self.loras.clone();
+            let lora_scale = self.config.lora_scale;
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
@@ -126,8 +145,8 @@ impl ScriptCtx {
                 handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
                     model: alias.to_string(),
                     device,
-                    loras: Vec::new(),
-                    lora_scale: 1.0,
+                    loras,
+                    lora_scale,
                     identity,
                     shared_clip_h: None,
                 }))
@@ -196,22 +215,34 @@ impl ScriptCtx {
             let quantize_t5 = self.config.quantize_t5;
             let quant_level = self.config.quant_level.clone();
             let t5_quant_level = self.config.t5_quant_level.clone();
+            let lora_specs = self.loras.clone();
+            let lora_scale = self.config.lora_scale;
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!("ScriptCtx::get_or_load_flux: no tokio runtime in scope. {e}")
             })?;
             let pipeline = tokio::task::block_in_place(|| {
-                handle.block_on(flux::Pipeline::load(flux::LoadRequest {
-                    variant: fvar,
-                    repo: resolved,
-                    device,
-                    loras: Vec::new(),
-                    lora_scale: 1.0,
-                    controlnets: Vec::new(),
-                    quantize_t5,
-                    flux_quant_level: quant_level,
-                    t5_quant_level,
-                    redux: false,
-                }))
+                handle.block_on(async {
+                    // Flux's LoadRequest wants ResolvedLora, not
+                    // LoraSpec — resolve here (downloads happen
+                    // lazily) and pass the resolved list through.
+                    let mut resolved_loras = Vec::with_capacity(lora_specs.len());
+                    for spec in &lora_specs {
+                        resolved_loras.push(spec.resolve().await?);
+                    }
+                    flux::Pipeline::load(flux::LoadRequest {
+                        variant: fvar,
+                        repo: resolved,
+                        device,
+                        loras: resolved_loras,
+                        lora_scale,
+                        controlnets: Vec::new(),
+                        quantize_t5,
+                        flux_quant_level: quant_level,
+                        t5_quant_level,
+                        redux: false,
+                    })
+                    .await
+                })
             })?;
             self.loaded = Some((alias.to_string(), LoadedPipeline::Flux(pipeline)));
         }
@@ -264,6 +295,8 @@ impl ScriptCtx {
             };
 
             let device = self.device.clone();
+            let loras = self.loras.clone();
+            let lora_scale = self.config.lora_scale;
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!("ScriptCtx::get_or_load_sd3: no tokio runtime in scope. {e}")
             })?;
@@ -272,8 +305,8 @@ impl ScriptCtx {
                     variant: sd3_variant,
                     repo: resolved,
                     device,
-                    loras: Vec::new(),
-                    lora_scale: 1.0,
+                    loras,
+                    lora_scale,
                     controlnets: Vec::new(),
                 }))
             })?;
@@ -427,6 +460,7 @@ mod tests {
             loaded: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
+            loras: Vec::new(),
         }
     }
 
