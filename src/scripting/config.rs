@@ -35,6 +35,12 @@ pub struct GenerationConfig {
     /// denoise (output == input). Default 0.75 matches the
     /// `cli::img2img` default. Ignored by `plakat.generate`.
     pub strength: f32,
+    /// v0.21 phase 5: IP-Adapter image-token contribution scale in
+    /// `[0, 1]`. 1.0 = image tokens carry full weight; 0.0 collapses
+    /// portrait into a text-only generate. Default 0.8 matches
+    /// `cli::portrait`'s default. Read by `plakat.portrait`; ignored
+    /// by `plakat.generate` / `plakat.img2img`.
+    pub face_strength: f32,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -57,6 +63,7 @@ impl Default for GenerationConfig {
             negative: String::new(),
             scheduler: SchedulerKind::Default,
             strength: 0.75,
+            face_strength: 0.8,
             size_explicit: false,
         }
     }
@@ -97,11 +104,14 @@ impl GenerationConfig {
             "strength" => {
                 self.strength = parse_unit_float(value, key)? as f32;
             }
+            "face_strength" => {
+                self.face_strength = parse_unit_float(value, key)? as f32;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
                      Supported keys: steps, guidance, seed, width, \
-                     height, negative, scheduler, strength."
+                     height, negative, scheduler, strength, face_strength."
                 ));
             }
         }
@@ -114,14 +124,14 @@ impl GenerationConfig {
     pub fn set_int(&mut self, key: &str, value: i64) -> Result<()> {
         match key {
             "steps" | "guidance" | "seed" | "width" | "height"
-            | "strength" => self.set_str(key, &value.to_string()),
+            | "strength" | "face_strength" => self.set_str(key, &value.to_string()),
             "negative" | "scheduler" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler, strength."
+                 height, negative, scheduler, strength, face_strength."
             )),
         }
     }
@@ -154,6 +164,21 @@ impl GenerationConfig {
                 self.strength = value as f32;
                 Ok(())
             }
+            "face_strength" => {
+                if !value.is_finite() {
+                    bail!(
+                        "plakat.config.set: face_strength {value} isn't finite"
+                    );
+                }
+                if !(0.0..=1.0).contains(&value) {
+                    bail!(
+                        "plakat.config.set: face_strength must be in [0, 1] \
+                         (got {value})"
+                    );
+                }
+                self.face_strength = value as f32;
+                Ok(())
+            }
             "steps" | "seed" | "width" | "height" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
@@ -171,7 +196,7 @@ impl GenerationConfig {
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler, strength."
+                 height, negative, scheduler, strength, face_strength."
             )),
         }
     }
@@ -381,6 +406,36 @@ mod tests {
     fn default_strength_matches_cli_default() {
         let cfg = GenerationConfig::default();
         assert!((cfg.strength - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn default_face_strength_matches_cli_default() {
+        let cfg = GenerationConfig::default();
+        assert!((cfg.face_strength - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_face_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("face_strength", "0.0").unwrap();
+        assert!((cfg.face_strength - 0.0).abs() < 1e-9);
+        cfg.set_str("face_strength", "1.0").unwrap();
+        assert!((cfg.face_strength - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_face_strength_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("face_strength", "-0.1").is_err());
+        assert!(cfg.set_str("face_strength", "1.5").is_err());
+    }
+
+    #[test]
+    fn set_float_face_strength_rejects_nan_and_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_float("face_strength", -0.01).is_err());
+        assert!(cfg.set_float("face_strength", 1.01).is_err());
+        assert!(cfg.set_float("face_strength", f64::NAN).is_err());
     }
 
     #[test]
