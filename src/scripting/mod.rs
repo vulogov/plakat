@@ -321,6 +321,37 @@ mod tests {
         });
     }
 
+    // v0.22 phase 8: plakat.hires.* end-to-end.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hires_enable_toggles_ctx_flag() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.hires_enabled = false).unwrap();
+            eval("plakat.hires.enable").unwrap();
+            with_ctx(|ctx| assert!(ctx.hires_enabled)).unwrap();
+            eval("plakat.hires.disable").unwrap();
+            with_ctx(|ctx| assert!(!ctx.hires_enabled)).unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hires_config_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            // value-then-key stack order.
+            eval(r#"2.5 "hires_scale" plakat.config.set"#).unwrap();
+            eval(r#"0.6 "hires_strength" plakat.config.set"#).unwrap();
+            eval(r#""real-esrgan-x2" "hires_upscaler" plakat.config.set"#).unwrap();
+            eval(r#"15 "hires_steps" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert!((ctx.config.hires_scale - 2.5).abs() < 1e-6);
+                assert!((ctx.config.hires_strength - 0.6).abs() < 1e-6);
+                assert_eq!(ctx.config.hires_upscaler, "real-esrgan-x2");
+                assert_eq!(ctx.config.hires_steps, Some(15));
+            })
+            .unwrap();
+        });
+    }
+
     // v0.22 phase 5: plakat.controlnet.* end-to-end.
 
     /// `plakat.controlnet.add` pushes a kind + image pair.

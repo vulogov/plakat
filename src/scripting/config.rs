@@ -10,7 +10,7 @@
 //! Defaults mirror `cli::generate`'s clap defaults so scripts and
 //! the CLI produce the same output for the same inputs.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::pipelines::scheduler::SchedulerKind;
 
@@ -137,6 +137,24 @@ pub struct GenerationConfig {
     /// override (e.g. "detailed eyes, intricate iris, sharp
     /// focus") for stronger refinements.
     pub adetailer_prompt: String,
+    /// v0.22 phase 8: hires-fix upscale factor in (1, 4]. Default
+    /// 2.0 (matches `--hires-scale`). Ignored when the picked
+    /// upscaler is ML (Real-ESRGAN: native 2× / 4×).
+    pub hires_scale: f32,
+    /// v0.22 phase 8: img2img strength on the upscaled image in
+    /// [0, 1]. Default 0.5 — preserves the t2i composition while
+    /// adding refinement. `0.7+` allows more reinterpretation.
+    pub hires_strength: f32,
+    /// v0.22 phase 8: upscaler token. Same grammar as
+    /// `plakat upscale --method` / `--hires-upscaler`. Default
+    /// `"lanczos"` (fast + sharp). `real-esrgan-x2` etc download
+    /// weights on first use.
+    pub hires_upscaler: String,
+    /// v0.22 phase 8: optional step-count override for the refine
+    /// pass. `None` (default) falls back to `config.steps`. The
+    /// main-pass step count is usually a reasonable refine count;
+    /// callers wanting a cheaper refine can drop this to ~12.
+    pub hires_steps: Option<usize>,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -179,6 +197,10 @@ impl Default for GenerationConfig {
             adetailer_confidence: 0.5,
             adetailer_size: 512,
             adetailer_prompt: "detailed face, sharp focus, high quality".to_string(),
+            hires_scale: 2.0,
+            hires_strength: 0.5,
+            hires_upscaler: "lanczos".to_string(),
+            hires_steps: None,
             size_explicit: false,
         }
     }
@@ -318,6 +340,52 @@ impl GenerationConfig {
             "adetailer_prompt" => {
                 self.adetailer_prompt = value.to_string();
             }
+            "hires_scale" => {
+                let f = value.parse::<f32>().with_context(|| {
+                    format!(
+                        "plakat.config.set: hires_scale expects a float, \
+                         got {value:?}"
+                    )
+                })?;
+                if !(f > 1.0 && f <= 4.0) {
+                    bail!(
+                        "plakat.config.set: hires_scale must be in (1, 4] \
+                         (got {f})"
+                    );
+                }
+                self.hires_scale = f;
+            }
+            "hires_strength" => {
+                let f = parse_unit_float(value, key)? as f32;
+                self.hires_strength = f;
+            }
+            "hires_upscaler" => {
+                // Validate now so the failure surfaces at config-set
+                // time instead of generate time. We don't store the
+                // parsed Method (keeps the config plain-data); the
+                // post-process call re-parses.
+                use std::str::FromStr;
+                crate::imaging::upscale::Method::from_str(value)
+                    .with_context(|| {
+                        format!(
+                            "plakat.config.set: hires_upscaler {value:?} not \
+                             recognised. Accepted: nearest, bilinear, bicubic, \
+                             lanczos, real-esrgan-x2, real-esrgan-x4, \
+                             real-esrgan-anime-x4"
+                        )
+                    })?;
+                self.hires_upscaler = value.to_string();
+            }
+            "hires_steps" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 || n > 500 {
+                    bail!(
+                        "plakat.config.set: hires_steps must be in (0, 500] \
+                         (got {n})"
+                    );
+                }
+                self.hires_steps = Some(n as usize);
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -330,7 +398,8 @@ impl GenerationConfig {
                      style_strength, adetailer_strength, \
                      adetailer_padding, adetailer_feather, \
                      adetailer_confidence, adetailer_size, \
-                     adetailer_prompt."
+                     adetailer_prompt, hires_scale, hires_strength, \
+                     hires_upscaler, hires_steps."
                 ));
             }
         }
@@ -348,7 +417,10 @@ impl GenerationConfig {
             | "refiner_frac" | "style_strength"
             | "adetailer_strength" | "adetailer_padding"
             | "adetailer_feather" | "adetailer_confidence"
-            | "adetailer_size" => self.set_str(key, &value.to_string()),
+            | "adetailer_size"
+            | "hires_scale" | "hires_strength" | "hires_steps" => {
+                self.set_str(key, &value.to_string())
+            }
             "quantize_t5" | "kontext_bucket" | "tiled" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
@@ -360,7 +432,8 @@ impl GenerationConfig {
                     )),
                 }
             }
-            "negative" | "scheduler" | "adetailer_prompt" => Err(anyhow!(
+            "negative" | "scheduler" | "adetailer_prompt"
+            | "hires_upscaler" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -432,7 +505,8 @@ impl GenerationConfig {
             }
             "refine_strength" | "refiner_frac" | "style_strength"
             | "adetailer_strength" | "adetailer_padding"
-            | "adetailer_feather" | "adetailer_confidence" => {
+            | "adetailer_feather" | "adetailer_confidence"
+            | "hires_strength" => {
                 if !value.is_finite() {
                     bail!(
                         "plakat.config.set: {key} {value} isn't finite"
@@ -451,12 +525,26 @@ impl GenerationConfig {
                     "adetailer_padding" => self.adetailer_padding = value as f32,
                     "adetailer_feather" => self.adetailer_feather = value as f32,
                     "adetailer_confidence" => self.adetailer_confidence = value as f32,
+                    "hires_strength" => self.hires_strength = value as f32,
                     _ => unreachable!(),
                 }
                 Ok(())
             }
+            "hires_scale" => {
+                if !value.is_finite() {
+                    bail!("plakat.config.set: hires_scale {value} isn't finite");
+                }
+                if !(value > 1.0 && value <= 4.0) {
+                    bail!(
+                        "plakat.config.set: hires_scale must be in (1, 4] \
+                         (got {value})"
+                    );
+                }
+                self.hires_scale = value as f32;
+                Ok(())
+            }
             "steps" | "seed" | "width" | "height" | "refine_steps"
-            | "adetailer_size" => {
+            | "adetailer_size" | "hires_steps" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
                 if value.fract() != 0.0 {
@@ -467,7 +555,8 @@ impl GenerationConfig {
                 }
                 self.set_int(key, value as i64)
             }
-            "negative" | "scheduler" | "adetailer_prompt" => Err(anyhow!(
+            "negative" | "scheduler" | "adetailer_prompt"
+            | "hires_upscaler" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -922,6 +1011,11 @@ mod tests {
             "adetailer_confidence",
             "adetailer_size",
             "adetailer_prompt",
+            // Phase 8 hires keys:
+            "hires_scale",
+            "hires_strength",
+            "hires_upscaler",
+            "hires_steps",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -1187,5 +1281,108 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_float("adetailer_strength", 0.55).unwrap();
         assert!((cfg.adetailer_strength - 0.55).abs() < 1e-6);
+    }
+
+    // v0.22 phase 8: hires-fix config keys.
+
+    #[test]
+    fn defaults_for_v022_phase8_hires_keys() {
+        let cfg = GenerationConfig::default();
+        assert!((cfg.hires_scale - 2.0).abs() < 1e-6);
+        assert!((cfg.hires_strength - 0.5).abs() < 1e-6);
+        assert_eq!(cfg.hires_upscaler, "lanczos");
+        assert!(cfg.hires_steps.is_none());
+    }
+
+    #[test]
+    fn set_str_hires_scale_accepts_open_one_to_four() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("hires_scale", "1.5").unwrap();
+        assert!((cfg.hires_scale - 1.5).abs() < 1e-6);
+        cfg.set_str("hires_scale", "4.0").unwrap();
+        assert!((cfg.hires_scale - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_hires_scale_rejects_one_and_below_or_above_four() {
+        let mut cfg = GenerationConfig::default();
+        // 1.0 is excluded — no upscaling makes hires-fix a no-op.
+        assert!(cfg.set_str("hires_scale", "1.0").is_err());
+        assert!(cfg.set_str("hires_scale", "0.5").is_err());
+        assert!(cfg.set_str("hires_scale", "4.5").is_err());
+    }
+
+    #[test]
+    fn set_str_hires_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("hires_strength", "0.0").unwrap();
+        assert!((cfg.hires_strength - 0.0).abs() < 1e-9);
+        cfg.set_str("hires_strength", "0.7").unwrap();
+        assert!((cfg.hires_strength - 0.7).abs() < 1e-6);
+        cfg.set_str("hires_strength", "1.0").unwrap();
+        assert!((cfg.hires_strength - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_str_hires_strength_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("hires_strength", "-0.1").is_err());
+        assert!(cfg.set_str("hires_strength", "1.5").is_err());
+    }
+
+    #[test]
+    fn set_str_hires_upscaler_accepts_canonical_methods() {
+        let mut cfg = GenerationConfig::default();
+        for m in &[
+            "lanczos",
+            "lanczos3",
+            "bicubic",
+            "bilinear",
+            "nearest",
+            "real-esrgan-x2",
+            "real-esrgan-x4",
+            "real-esrgan-anime-x4",
+        ] {
+            cfg.set_str("hires_upscaler", m)
+                .unwrap_or_else(|e| panic!("upscaler {m:?} should parse: {e}"));
+            assert_eq!(cfg.hires_upscaler, *m);
+        }
+    }
+
+    #[test]
+    fn set_str_hires_upscaler_rejects_unknown() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("hires_upscaler", "ultra-9000").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ultra-9000"), "got {msg}");
+        assert!(msg.contains("lanczos"), "got {msg}");
+    }
+
+    #[test]
+    fn set_str_hires_steps_accepts_positive_int() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("hires_steps", "12").unwrap();
+        assert_eq!(cfg.hires_steps, Some(12));
+    }
+
+    #[test]
+    fn set_str_hires_steps_rejects_zero_and_huge() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("hires_steps", "0").is_err());
+        assert!(cfg.set_str("hires_steps", "1000").is_err());
+    }
+
+    #[test]
+    fn set_int_hires_upscaler_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("hires_upscaler", 42).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
+    }
+
+    #[test]
+    fn set_float_hires_scale_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("hires_scale", 2.5).unwrap();
+        assert!((cfg.hires_scale - 2.5).abs() < 1e-6);
     }
 }

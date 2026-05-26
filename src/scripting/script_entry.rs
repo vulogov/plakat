@@ -293,6 +293,78 @@ fn find_rendered_png(dir: &Path) -> Result<PathBuf> {
     Ok(entry.path())
 }
 
+/// v0.22 phase 8: snapshot of hires-fix inputs that can be built
+/// *before* the cached pipeline is borrowed (same rationale as
+/// [`AdetailerArgs`]).
+struct HiresArgs {
+    enabled: bool,
+    cfg: crate::pipelines::hires_fix::Config,
+}
+
+impl HiresArgs {
+    fn from_ctx(ctx: &ScriptCtx, alias: &str, prompt: &str) -> Result<Self> {
+        use std::str::FromStr;
+        let upscaler = crate::imaging::upscale::Method::from_str(
+            &ctx.config.hires_upscaler,
+        )
+        .with_context(|| {
+            format!(
+                "plakat.hires: hires_upscaler {:?} not recognised",
+                ctx.config.hires_upscaler
+            )
+        })?;
+        let cfg = crate::pipelines::hires_fix::Config {
+            model: alias.to_string(),
+            loras: ctx.loras.clone(),
+            lora_scale: ctx.config.lora_scale,
+            prompt: prompt.to_string(),
+            negative: ctx.config.negative.clone(),
+            scale: ctx.config.hires_scale,
+            upscaler,
+            strength: ctx.config.hires_strength,
+            steps: ctx.config.hires_steps.unwrap_or(ctx.config.steps),
+            guidance: ctx.config.guidance as f64,
+            scheduler: ctx.config.scheduler,
+            device: ctx.device.clone(),
+        };
+        Ok(Self {
+            enabled: ctx.hires_enabled,
+            cfg,
+        })
+    }
+}
+
+/// v0.22 phase 8: run hires-fix on the rendered PNG in place.
+/// Reuses the cached `portrait::Pipeline`'s `SdCore` so no second
+/// model load happens. Caller is responsible for the family check
+/// (Flux + SD3 bail loud before reaching here).
+fn apply_hires_sd(
+    hcfg: &crate::pipelines::hires_fix::Config,
+    rendered: &Path,
+    pipeline: &portrait::Pipeline,
+) -> Result<()> {
+    let shared_core = Some(pipeline.core());
+    let files = vec![rendered.to_path_buf()];
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.hires: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+    let n = tokio::task::block_in_place(|| {
+        handle.block_on(crate::pipelines::hires_fix::refine_files(
+            hcfg, &files, shared_core,
+        ))
+    })
+    .context("hires_fix::refine_files (plakat post-process)")?;
+    tracing::info!(
+        target: "plakat",
+        "plakat.hires: refined {n} file(s) on {}",
+        rendered.display()
+    );
+    Ok(())
+}
+
 /// v0.22 phase 7: snapshot of ADetailer inputs that can be built
 /// *before* the cached pipeline is borrowed. Keeps the post-process
 /// out of the `ctx` borrow scope (the cached pipeline mutably
@@ -397,13 +469,20 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             let control_owned =
                 resolve_sd_controlnets(ctx, &alias, req.width, req.height, None)?;
             let control_reqs = controlnets_to_requests(&control_owned);
-            // v0.22 phase 7: snapshot adetailer inputs *before* the
-            // cached-pipeline borrow so the post-process can run
-            // while we still hold the pipeline reference.
+            // v0.22 phase 7+8: snapshot post-process inputs *before*
+            // the cached-pipeline borrow so they can run while we
+            // still hold the pipeline reference. Hires fix runs
+            // first (upscales + refines composition); ADetailer
+            // runs second (refines faces at the higher resolution).
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
+            let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             pipeline.generate(&req, &control_reqs)
                 .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+            if hargs.enabled {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+            }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
                 apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
@@ -425,6 +504,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      plakat.generate on Flux."
                 );
             }
+            if ctx.hires_enabled {
+                bail!(
+                    "plakat.generate: hires-fix is SD-family only in v0.22 \
+                     phase 8 — the refine pass needs an SD img2img \
+                     pipeline. Call plakat.hires.disable before \
+                     plakat.generate on Flux."
+                );
+            }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
@@ -443,6 +530,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
                      phase 7 — SCRFD + the face img2img pass require an SD \
                      backbone. Call plakat.adetailer.disable before \
+                     plakat.generate on SD3."
+                );
+            }
+            if ctx.hires_enabled {
+                bail!(
+                    "plakat.generate: hires-fix is SD-family only in v0.22 \
+                     phase 8 — the refine pass needs an SD img2img \
+                     pipeline. Call plakat.hires.disable before \
                      plakat.generate on SD3."
                 );
             }
@@ -528,8 +623,10 @@ pub fn img2img_one(
                 // resolves the specs internally.
                 controls: ctx.controlnets.clone(),
             };
-            // v0.22 phase 7: adetailer snapshot before pipeline borrow.
+            // v0.22 phase 7+8: post-process snapshots before
+            // pipeline borrow. Hires runs before ADetailer.
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
+            let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             // run_with_pipeline is async; bridge via block_in_place.
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
@@ -544,6 +641,10 @@ pub fn img2img_one(
                 ))
             })
             .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+            if hargs.enabled {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+            }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
                 apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
@@ -561,6 +662,13 @@ pub fn img2img_one(
                 bail!(
                     "plakat.img2img: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
+                     plakat.img2img on Flux."
+                );
+            }
+            if ctx.hires_enabled {
+                bail!(
+                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                     phase 8. Call plakat.hires.disable before \
                      plakat.img2img on Flux."
                 );
             }
@@ -592,6 +700,13 @@ pub fn img2img_one(
                 bail!(
                     "plakat.img2img: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
+                     plakat.img2img on SD3."
+                );
+            }
+            if ctx.hires_enabled {
+                bail!(
+                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                     phase 8. Call plakat.hires.disable before \
                      plakat.img2img on SD3."
                 );
             }
@@ -672,11 +787,16 @@ pub fn portrait_one(
     // Normalize photo weights (the pipeline's invariant).
     crate::pipelines::ip_adapter::normalize_photo_weights(&mut req.photos)?;
 
-    // v0.22 phase 7: adetailer snapshot before pipeline borrow.
+    // v0.22 phase 7+8: post-process snapshots before pipeline borrow.
     let adargs = AdetailerArgs::from_ctx(ctx, &alias);
+    let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
     let pipeline = ctx.get_or_load_sd_family(&alias)?;
     pipeline.generate(&req, &[])
         .context("portrait::Pipeline::generate (plakat.portrait path)")?;
+    if hargs.enabled {
+        let rendered = find_rendered_png(tmp.path())?;
+        apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+    }
     if adargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
         apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;

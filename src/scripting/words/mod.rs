@@ -14,6 +14,7 @@ pub mod config;
 pub mod controlnet;
 pub mod echo;
 pub mod generate;
+pub mod hires;
 pub mod img2img;
 pub mod load;
 pub mod lora;
@@ -99,6 +100,17 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         adetailer::plakat_adetailer_disable,
     )
     .map_err(|e| anyhow!("registering plakat.adetailer.disable: {e}"))?;
+    // v0.22 phase 8: plakat.hires.* namespace.
+    vm.register_inline(
+        "plakat.hires.enable".to_string(),
+        hires::plakat_hires_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.hires.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.hires.disable".to_string(),
+        hires::plakat_hires_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.hires.disable: {e}"))?;
     Ok(())
 }
 

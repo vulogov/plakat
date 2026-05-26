@@ -89,6 +89,13 @@ pub struct ScriptCtx {
     /// SD-family only — Flux + SD3 generate paths bail when this
     /// is on (SCRFD + img2img face passes are SD-only).
     pub adetailer_enabled: bool,
+    /// v0.22 phase 8: Hires-fix post-process toggle. When `true`,
+    /// `script_entry::generate_one` runs `hires_fix::refine_files`
+    /// on the rendered image (upscale → img2img refine). The
+    /// per-pass knobs (scale / strength / upscaler / steps) come
+    /// from `config.hires_*` keys. SD-family only — Flux + SD3
+    /// bail (hires_fix needs an SD img2img pipeline for refine).
+    pub hires_enabled: bool,
 }
 
 impl ScriptCtx {
@@ -110,6 +117,7 @@ impl ScriptCtx {
             controlnets: Vec::new(),
             refiner_enabled: false,
             adetailer_enabled: false,
+            hires_enabled: false,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -500,6 +508,7 @@ mod tests {
             controlnets: Vec::new(),
             refiner_enabled: false,
             adetailer_enabled: false,
+            hires_enabled: false,
         }
     }
 
