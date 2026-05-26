@@ -273,6 +273,145 @@ pub async fn img2img_one(
     Ok(img)
 }
 
+/// v0.21 phase 5: pick the IP-Adapter identity strategy for a
+/// model alias.
+///
+/// SD 1.5 → `PlusFace`; SDXL → `PlusFaceSdxl`. SD 2.1 has no
+/// shipped IP-Adapter-Plus-Face checkpoint, so it bails — the
+/// caller should switch to `sd15` or `sdxl`. FaceID variants
+/// require user-supplied ArcFace env vars + better suit a
+/// multi-photo workflow; deferred to v0.22 per RFC §5.1.
+pub fn pick_portrait_identity(
+    model: &str,
+) -> Result<crate::pipelines::ip_adapter::IdentityKind> {
+    use crate::pipelines::ip_adapter::IdentityKind;
+    // Resolve aliases (sd21 → stabilityai/stable-diffusion-2-1)
+    // before variant detection — Variant::detect matches against
+    // substrings of the resolved repo id, not against the short
+    // alias.
+    let resolved = if model.contains('/') {
+        model.to_string()
+    } else {
+        crate::hf::resolve_alias(model).to_string()
+    };
+    let variant = t2i::Variant::detect(&resolved);
+    if variant.is_xl() {
+        return Ok(IdentityKind::PlusFaceSdxl);
+    }
+    // SD 1.5 vs SD 2.1 — Variant::detect doesn't expose an
+    // is_sd15-only helper, so cover the negative space directly.
+    if matches!(variant, t2i::Variant::Sd21) {
+        bail!(
+            "plakat.portrait: SD 2.1 has no IP-Adapter-Plus-Face checkpoint \
+             (got {model:?}). Use --model sd15 or sdxl for v0.21 phase 5."
+        );
+    }
+    // Anything else SD-family (sd15, default) → PlusFace.
+    Ok(IdentityKind::PlusFace)
+}
+
+/// v0.21 phase 5: render one IP-Adapter portrait. Single reference
+/// photo only — FaceID + multi-photo blends deferred to v0.22
+/// per RFC §5.1. Same SD-family gate as `generate_one` /
+/// `img2img_one`.
+pub async fn portrait_one(
+    model: &str,
+    prompt: &str,
+    photo_path: &std::path::Path,
+    device: Device,
+    config: &GenerationConfig,
+) -> Result<DynamicImage> {
+    validate_supported_for_phase_2(model)?;
+    let identity = pick_portrait_identity(model)?;
+
+    // Same size resolution as generate_one — SD 1.5 → 512², SDXL →
+    // 1024², unless the script set width/height explicitly.
+    let variant = t2i::Variant::detect(model);
+    let (width, height) = if config.size_explicit {
+        if config.width == 0 || config.height == 0 {
+            bail!(
+                "plakat.portrait: size_explicit set but width/height is 0 — \
+                 only one of plakat.config.set width / height was called?"
+            );
+        }
+        (config.width, config.height)
+    } else if variant.is_xl() {
+        (1024u32, 1024u32)
+    } else {
+        (512u32, 512u32)
+    };
+
+    let tmp = tempfile::Builder::new()
+        .prefix("plakat-script-portrait-")
+        .tempdir()
+        .context("creating tempdir for plakat.portrait output")?;
+    let tmp_path: std::path::PathBuf = tmp.path().to_path_buf();
+
+    let req = crate::pipelines::portrait::Request {
+        prompt: prompt.to_string(),
+        negative: config.negative.clone(),
+        photos: vec![crate::pipelines::ip_adapter::WeightedPhoto::single(
+            photo_path.to_path_buf(),
+        )],
+        model: model.to_string(),
+        width,
+        height,
+        count: 1,
+        steps: config.steps,
+        guidance: config.guidance,
+        seed: config.seed,
+        out_dir: tmp_path.clone(),
+        device,
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        scheduler: config.scheduler,
+        refine: None,
+        refine_strength: 0.3,
+        face_strength: config.face_strength,
+        // v0.21 phase 5 MVP: no manual landmarks / bbox. SCRFD
+        // auto-detect kicks in if the user has PLAKAT_SCRFD_*
+        // configured; otherwise the pipeline falls back to a
+        // centre crop, same as cli::portrait does without the
+        // flags.
+        face_bbox: None,
+        face_landmarks: None,
+        identity: Some(identity),
+        // Phase 7f shared CLIP-H: irrelevant for a script that
+        // isn't running a style pass at the same time. Set to
+        // None; the encoder will mmap its own copy.
+        shared_clip_h: None,
+        controls: Vec::new(),
+    };
+
+    let _ = crate::pipelines::portrait::run(req)
+        .await
+        .context("portrait::run in plakat.portrait")?;
+
+    // portrait writes `plakat-portrait-<seed>.png` (single output
+    // since count=1). Glob for the single PNG.
+    let rendered = std::fs::read_dir(&tmp_path)
+        .with_context(|| format!("reading tempdir {}", tmp_path.display()))?
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "plakat.portrait: portrait::run produced no PNG in {} \
+                 — pipeline may have silently failed",
+                tmp_path.display()
+            )
+        })?;
+
+    let img = image::open(rendered.path())
+        .with_context(|| format!("reading rendered PNG {}", rendered.path().display()))?;
+    Ok(img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +451,33 @@ mod tests {
     // don't need a separate test for that — the existing
     // phase_2_gate_rejects_flux_aliases_with_helpful_message
     // covers it through validate_supported_for_phase_2 directly.
+
+    // v0.21 phase 5: portrait identity auto-pick.
+
+    #[test]
+    fn pick_portrait_identity_sd15_returns_plus_face() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let id = pick_portrait_identity("sd15").unwrap();
+        assert!(matches!(id, IdentityKind::PlusFace));
+    }
+
+    #[test]
+    fn pick_portrait_identity_sdxl_returns_plus_face_sdxl() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let id = pick_portrait_identity("sdxl").unwrap();
+        assert!(matches!(id, IdentityKind::PlusFaceSdxl));
+        let id = pick_portrait_identity("sdxl-turbo").unwrap();
+        assert!(matches!(id, IdentityKind::PlusFaceSdxl));
+    }
+
+    #[test]
+    fn pick_portrait_identity_sd21_bails_with_helpful_message() {
+        let err = pick_portrait_identity("sd21").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("SD 2.1"), "got {msg}");
+        assert!(msg.contains("sd15"), "got {msg}");
+        assert!(msg.contains("sdxl"), "got {msg}");
+    }
 
     #[test]
     fn phase_2_gate_passes_canonical_hf_repos_when_they_resolve_to_sd_family() {

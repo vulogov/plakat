@@ -222,6 +222,46 @@ mod tests {
         });
     }
 
+    /// v0.21 phase 5: portrait gate — no model loaded bails with
+    /// the "Call \"sdxl\" plakat.load" pointer (note the SDXL
+    /// suggestion in the message, not just sd15).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn portrait_no_model_loaded_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded_model = None;
+            })
+            .unwrap();
+            let err = eval(
+                "\"a portrait\" \"/tmp/me.jpg\" plakat.portrait",
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+            // The portrait-specific pointer recommends sdxl too,
+            // not just sd15 — pin that so a future tweak doesn't
+            // silently drop the SDXL hint.
+            assert!(msg.contains("sdxl"), "got {msg}");
+        });
+    }
+
+    /// v0.21 phase 5: unknown handle for the photo arg surfaces
+    /// the same image_at error img2img uses. Confirms the int
+    /// dispatch arm shares the lookup path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn portrait_unknown_handle_bails_with_image_at_message() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded_model = Some("sd15".to_string());
+                ctx.images.clear();
+            })
+            .unwrap();
+            let err = eval("\"a portrait\" 999 plakat.portrait").unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("image handle 999"), "got {msg}");
+        });
+    }
+
     /// v0.21 phase 3: an unknown key surfaces a clear error from
     /// inside eval. Exercise the failure mode end-to-end so we
     /// know the helpful error message actually reaches user
