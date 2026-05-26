@@ -17,6 +17,7 @@ pub mod img2img;
 pub mod load;
 pub mod lora;
 pub mod portrait;
+pub mod refiner;
 pub mod save;
 pub mod upscale;
 
@@ -75,6 +76,17 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         controlnet::plakat_controlnet_list,
     )
     .map_err(|e| anyhow!("registering plakat.controlnet.list: {e}"))?;
+    // v0.22 phase 6: plakat.refiner.* namespace.
+    vm.register_inline(
+        "plakat.refiner.enable".to_string(),
+        refiner::plakat_refiner_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.refiner.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.refiner.disable".to_string(),
+        refiner::plakat_refiner_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.refiner.disable: {e}"))?;
     Ok(())
 }
 

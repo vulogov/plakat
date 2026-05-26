@@ -246,8 +246,12 @@ fn build_gen_request(
         seed: ctx.config.seed,
         out_dir,
         scheduler: ctx.config.scheduler,
-        refine: None,
-        refine_strength: 0.3,
+        // v0.22 phase 6: same-model polish refine pass. `None`
+        // when the script never set refine_steps (== v0.21
+        // behaviour); `Some(N)` runs N extra denoise steps at
+        // `refine_strength` after the main loop.
+        refine: ctx.config.refine_steps,
+        refine_strength: ctx.config.refine_strength,
         face_strength: ctx.config.face_strength,
         face_bbox: None,
         face_landmarks: None,
@@ -304,6 +308,16 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
 
     match PipelineFamily::detect(&alias) {
         PipelineFamily::SdFamily => {
+            if ctx.refiner_enabled {
+                bail!(
+                    "plakat.generate: SDXL refiner from scripts is deferred \
+                     to v0.23 — the cached `portrait::Pipeline` doesn't \
+                     hold the refiner UNet slot. Workarounds: call \
+                     `plakat.refiner.disable` (same-model polish via \
+                     `refine_steps`/`refine_strength` still works), or use \
+                     `plakat generate --refiner` from the CLI directly."
+                );
+            }
             let req = build_gen_request(ctx, prompt, Vec::new(), tmp_path.clone());
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
