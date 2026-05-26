@@ -255,9 +255,9 @@ mod tests {
         });
     }
 
-    /// SDXL refiner is deferred; calling generate with the toggle
-    /// on bails with the v0.23 message rather than silently
-    /// running without it.
+    /// SDXL refiner is deferred to v0.23 phase 2; calling generate
+    /// with the toggle on bails with the v0.23 deferral message
+    /// rather than silently running without it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn refiner_enabled_generate_bails_with_v023_message() {
         with_singleton_ctx(|| {

@@ -68,7 +68,8 @@ pub struct ScriptCtx {
     /// Flux + SD3 ControlNet need load-time wiring that doesn't
     /// fit phase 5's scope — the SD-family generate / img2img
     /// paths bail if `controlnets` is non-empty when running on
-    /// Flux or SD3 with a clear "v0.23" pointer.
+    /// Flux or SD3 with a clear "v0.23" pointer (phase 6 wires
+    /// Flux; phase 7 wires SD3).
     pub controlnets: Vec<ControlSpec>,
     /// v0.22 phase 6: SDXL refiner toggle. `plakat.refiner.enable`
     /// sets this to `true`; `plakat.refiner.disable` resets it.
@@ -77,9 +78,9 @@ pub struct ScriptCtx {
     /// the cached `portrait::Pipeline` doesn't expose the
     /// refiner-UNet slot the way `t2i::Pipeline` does. When
     /// `refiner_enabled` is `true`, `script_entry::generate_one`
-    /// bails with a v0.23 deferral message + remediation hint.
-    /// The toggle is shipped today so the surface is stable for
-    /// when the cache switches to `t2i::Pipeline`.
+    /// bails with a v0.23 phase 2 deferral message + remediation
+    /// hint. The toggle is shipped today so the surface is stable
+    /// for when the cache adds the SdT2i variant in v0.23 phase 1.
     pub refiner_enabled: bool,
     /// v0.22 phase 7: ADetailer post-process toggle. When `true`,
     /// `script_entry::generate_one` runs `adetailer::refine_files`
