@@ -16,17 +16,25 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 /// Process-wide script context. Holds the device + output dir +
-/// (phase 2+) the cache of loaded pipelines.
+/// the in-script image registry + the active model alias.
 ///
 /// One script per process by construction — bundcore's VM has no
 /// per-eval isolation and the singleton can only be written once.
 pub struct ScriptCtx {
     pub device: Device,
     pub out_dir: PathBuf,
-    // Phase 2: lazily-loaded pipelines keyed by `--model` alias.
-    // pub loaded: HashMap<String, LoadedPipeline>,
-    // Phase 2: ScriptCtx.last_image for the handle-reuse contract.
-    // pub last_image: Option<DynamicImage>,
+    /// v0.21 phase 2: model alias the script most recently set
+    /// via `plakat.load`. `plakat.generate` uses this. `None`
+    /// means no model has been loaded yet — `plakat.generate`
+    /// bails with a clear message.
+    pub loaded_model: Option<String>,
+    /// v0.21 phase 2: rendered images, addressable by the integer
+    /// handle pushed onto the stack by `plakat.generate`. Index =
+    /// handle (1-based — handle 0 is reserved as "no image").
+    /// Phase 2 keeps every rendered image in memory for the
+    /// script's lifetime; if scripts ever start producing hundreds
+    /// of images we'll revisit (e.g. spill to disk).
+    pub images: Vec<image::DynamicImage>,
 }
 
 impl ScriptCtx {
@@ -38,8 +46,39 @@ impl ScriptCtx {
         std::fs::create_dir_all(&out_dir).map_err(|e| {
             anyhow!("creating script output dir {}: {e}", out_dir.display())
         })?;
-        CTX.set(RwLock::new(ScriptCtx { device, out_dir }))
-            .map_err(|_| anyhow!("ScriptCtx already initialised"))
+        CTX.set(RwLock::new(ScriptCtx {
+            device,
+            out_dir,
+            loaded_model: None,
+            images: Vec::new(),
+        }))
+        .map_err(|_| anyhow!("ScriptCtx already initialised"))
+    }
+
+    /// v0.21 phase 2: register a rendered image and return the
+    /// 1-based handle the script will see. Caller is responsible
+    /// for serialising mutation through [`with_ctx_mut`].
+    pub fn push_image(&mut self, img: image::DynamicImage) -> i64 {
+        self.images.push(img);
+        self.images.len() as i64
+    }
+
+    /// v0.21 phase 2: look up an image by its script-visible
+    /// handle. Bails on unknown handles + on the reserved 0
+    /// handle.
+    pub fn image_at(&self, handle: i64) -> Result<&image::DynamicImage> {
+        if handle <= 0 {
+            return Err(anyhow!(
+                "image handle must be >= 1 (got {handle}); handle 0 is reserved"
+            ));
+        }
+        let idx = handle as usize - 1;
+        self.images.get(idx).ok_or_else(|| {
+            anyhow!(
+                "image handle {handle} not found (only {} image(s) rendered so far)",
+                self.images.len()
+            )
+        })
     }
 }
 
@@ -70,4 +109,73 @@ pub fn with_ctx_mut<R>(f: impl FnOnce(&mut ScriptCtx) -> R) -> Result<R> {
         .write()
         .map_err(|e| anyhow!("ScriptCtx write lock poisoned: {e}"))?;
     Ok(f(&mut guard))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, RgbImage};
+
+    fn mk_ctx() -> ScriptCtx {
+        ScriptCtx {
+            device: Device::Cpu,
+            out_dir: std::env::temp_dir(),
+            loaded_model: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn mk_image(r: u8) -> DynamicImage {
+        let mut img = RgbImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = image::Rgb([r, 0, 0]);
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    #[test]
+    fn push_image_returns_one_based_handle() {
+        let mut ctx = mk_ctx();
+        assert_eq!(ctx.push_image(mk_image(10)), 1);
+        assert_eq!(ctx.push_image(mk_image(20)), 2);
+        assert_eq!(ctx.push_image(mk_image(30)), 3);
+    }
+
+    #[test]
+    fn image_at_returns_the_pushed_image() {
+        let mut ctx = mk_ctx();
+        let h = ctx.push_image(mk_image(99));
+        let got = ctx.image_at(h).unwrap();
+        // pixel (0,0) should be (99, 0, 0)
+        let rgb = got.to_rgb8();
+        let p = rgb.get_pixel(0, 0);
+        assert_eq!(p.0, [99, 0, 0]);
+    }
+
+    #[test]
+    fn image_at_zero_bails_with_reserved_message() {
+        let ctx = mk_ctx();
+        let err = ctx.image_at(0).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("reserved"), "got {msg}");
+    }
+
+    #[test]
+    fn image_at_negative_bails() {
+        let ctx = mk_ctx();
+        assert!(ctx.image_at(-1).is_err());
+    }
+
+    #[test]
+    fn image_at_unknown_handle_includes_rendered_count() {
+        let mut ctx = mk_ctx();
+        ctx.push_image(mk_image(1));
+        let err = ctx.image_at(99).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("99"), "got {msg}");
+        // The diagnostic mentions the rendered count so users can
+        // tell whether they're addressing a future handle vs a
+        // typo.
+        assert!(msg.contains("1 image"), "got {msg}");
+    }
 }

@@ -62,6 +62,13 @@ pub fn value_to_string(v: Value, field: &str, tag: &str) -> Result<String> {
         .map_err(|e| anyhow!("{tag}: arg {field:?} must be a string ({e})"))
 }
 
+/// Coerce a `Value` to an `i64`. Accepts integer values; rejects
+/// everything else with a typed error.
+pub fn value_to_int(v: Value, field: &str, tag: &str) -> Result<i64> {
+    v.cast_int()
+        .map_err(|e| anyhow!("{tag}: arg {field:?} must be an integer ({e})"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +120,22 @@ mod tests {
         let v = Value::from_string("forty-two".to_string());
         let got = value_to_string(v, "field", "test.word").unwrap();
         assert_eq!(got, "forty-two");
+    }
+
+    #[test]
+    fn value_to_int_passes_through_ints() {
+        let v = Value::from_int(42);
+        let got = value_to_int(v, "field", "test.word").unwrap();
+        assert_eq!(got, 42);
+    }
+
+    #[test]
+    fn value_to_int_bails_on_string_with_tag() {
+        let v = Value::from_string("not-a-number".to_string());
+        let err = value_to_int(v, "handle", "test.word").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("test.word"), "got {msg}");
+        assert!(msg.contains("handle"), "got {msg}");
+        assert!(msg.contains("integer"), "got {msg}");
     }
 }

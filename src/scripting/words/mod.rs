@@ -10,12 +10,21 @@ use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
 pub mod echo;
+pub mod generate;
+pub mod load;
+pub mod save;
 
-/// Register every `plakat.*` word into `vm`. Phase 1 ships just
-/// `plakat.echo`; subsequent phases append.
+/// Register every `plakat.*` word into `vm`. Phase 1 shipped
+/// `plakat.echo`. Phase 2 adds load + generate + save.
 pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     vm.register_inline("plakat.echo".to_string(), echo::plakat_echo)
         .map_err(|e| anyhow!("registering plakat.echo: {e}"))?;
+    vm.register_inline("plakat.load".to_string(), load::plakat_load)
+        .map_err(|e| anyhow!("registering plakat.load: {e}"))?;
+    vm.register_inline("plakat.generate".to_string(), generate::plakat_generate)
+        .map_err(|e| anyhow!("registering plakat.generate: {e}"))?;
+    vm.register_inline("plakat.save".to_string(), save::plakat_save)
+        .map_err(|e| anyhow!("registering plakat.save: {e}"))?;
     Ok(())
 }
 
