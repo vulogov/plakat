@@ -17,5 +17,6 @@ pub mod imaging;
 pub mod llm;
 pub mod pipelines;
 pub mod prompt;
+pub mod scripting;
 pub mod style;
 pub mod ui;
