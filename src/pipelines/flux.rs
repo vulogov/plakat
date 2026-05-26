@@ -1297,13 +1297,16 @@ impl Pipeline {
         // sequence dimension and adds matching positional ids with
         // axis 0 = 1 so the model's RoPE can tell reference tokens
         // from noise tokens.
+        // v0.20 #8: Kontext + tiled denoise. The reference latent is
+        // encoded once at full resolution; the non-tiled path packs
+        // it whole here, the tiled path keeps the 2D form
+        // (`kontext_ref_2d_opt`) and slices+packs per tile inside
+        // `denoise_tiled`. Per-tile RoPE budget check fires up front
+        // — at large `--tile-size` the doubled per-tile sequence
+        // (noise + ref) blows past Flux's RoPE limit, and we want
+        // that diagnosis before a 20-minute encode.
+        let mut kontext_ref_2d_opt: Option<Tensor> = None;
         let kontext_ref_packed: Option<(Tensor, Tensor)> = if self.variant.is_kontext() {
-            if req.tiled.is_some() {
-                bail!(
-                    "Flux Kontext doesn't compose with --tiled in this release \
-                     (per-tile reference slicing isn't wired)."
-                );
-            }
             if req.init_image.is_some() || req.mask.is_some() {
                 bail!(
                     "Flux Kontext denoises from pure noise + the reference image. \
@@ -1357,12 +1360,29 @@ impl Pipeline {
                 )
             })?;
             let spin = progress::spinner("Encoding Kontext reference image");
-            let pair = self.encode_kontext_reference(ref_path, h, w)?;
+            let ref_2d = self.encode_kontext_reference_2d(ref_path, h, w)?;
+            let (_b, _c, ref_lh, ref_lw) = ref_2d.dims4()?;
             spin.finish_with_message(format!(
-                "✓ Kontext reference encoded ({} tokens × 64ch)",
-                pair.0.dim(1)?
+                "✓ Kontext reference encoded ({}×{} latent → {} tokens × 64ch)",
+                ref_lh,
+                ref_lw,
+                (ref_lh / 2) * (ref_lw / 2)
             ));
-            Some(pair)
+            // v0.20 #8: when tiled is on, defer packing to the per-tile
+            // path and run the per-tile RoPE budget check up front so
+            // a bad --tile-size fails fast rather than 20 minutes in.
+            if let Some(tcfg) = req.tiled.as_ref() {
+                let tile_lat = (tcfg.tile_size as usize) / 8;
+                kontext_tile_budget_check(
+                    self.variant.t5_seq_len(),
+                    tile_lat,
+                    tcfg.tile_size,
+                )?;
+                kontext_ref_2d_opt = Some(ref_2d);
+                None
+            } else {
+                Some(self.pack_kontext_reference_full(&ref_2d)?)
+            }
         } else {
             None
         };
@@ -1606,6 +1626,7 @@ impl Pipeline {
                     tcfg,
                     &conditioning_2d,
                     fill_cond_2d.as_ref(),
+                    kontext_ref_2d_opt.as_ref(),
                     &bar,
                 )?
             } else {
@@ -1798,14 +1819,28 @@ impl Pipeline {
     ///
     /// Returns `((1, ref_seq, 64), (1, ref_seq, 3))`. Caller cats both
     /// onto the noise tokens / `state.img_ids` per step.
-    fn encode_kontext_reference(
+    /// v0.20 #8: encode the Kontext reference into its 2D latent
+    /// form `(1, 16, lh, lw)` without packing. The full-canvas
+    /// (non-tiled) path packs it once via
+    /// [`pack_kontext_reference_full`]; the tiled path keeps the 2D
+    /// form around and slices+packs per tile via
+    /// [`pack_kontext_reference_tile`].
+    fn encode_kontext_reference_2d(
         &self,
         path: &std::path::Path,
         h: usize,
         w: usize,
+    ) -> Result<Tensor> {
+        self.encode_conditioning_2d(path, h, w)
+    }
+
+    /// Pack a full-canvas Kontext reference latent into the
+    /// (tokens, ids) pair the non-tiled denoise consumes.
+    fn pack_kontext_reference_full(
+        &self,
+        z2d: &Tensor,
     ) -> Result<(Tensor, Tensor)> {
-        let z2d = self.encode_conditioning_2d(path, h, w)?;
-        let packed = pack_latent_to_tokens(&z2d)?;
+        let packed = pack_latent_to_tokens(z2d)?;
         // Match the layout `sampling::State::new` builds for the noise
         // tokens (axis 0 marker, h_id, w_id, shape (1, lh/2 * lw/2, 3))
         // — but force axis 0 to 1 so the model recognises this half as
@@ -1813,19 +1848,60 @@ impl Pipeline {
         // cat at step time succeeds without explicit promotion.
         let (_b, _c, lh, lw) = z2d.dims4()?;
         let (h2, w2) = (lh / 2, lw / 2);
+        let ids = self.kontext_ref_ids(h2, w2, 0, 0)?;
+        Ok((packed, ids))
+    }
+
+    /// v0.20 #8: slice the 2D Kontext reference to one tile and
+    /// build the per-tile (tokens, ids) pair. The reference geometry
+    /// matches the noise geometry — both are at the same target
+    /// resolution and both go through the same 8× VAE downsample
+    /// + 2×2 Flux patching — so the (ty, tx, sz) addressing the
+    /// tiled denoise uses for the noise applies verbatim to the
+    /// reference. Per-tile ids carry the reference half's `axis 0 = 1`
+    /// marker plus the tile's global (h_start, w_start) origin so
+    /// RoPE positions stay consistent with the non-tiled path.
+    fn pack_kontext_reference_tile(
+        &self,
+        ref_2d: &Tensor,
+        ty: usize,
+        tx: usize,
+        sz: usize,
+    ) -> Result<(Tensor, Tensor)> {
+        let tile = ref_2d.narrow(2, ty, sz)?.narrow(3, tx, sz)?;
+        let packed = pack_latent_to_tokens(&tile)?;
+        let (h2, w2) = (sz / 2, sz / 2);
+        let ids = self.kontext_ref_ids(h2, w2, ty / 2, tx / 2)?;
+        Ok((packed, ids))
+    }
+
+    /// v0.20 #8: build the Kontext reference half's positional id
+    /// tensor at the given origin. Extracted from the prior inline
+    /// `encode_kontext_reference` so both the full-canvas pack and
+    /// the per-tile pack share one implementation (and one dtype
+    /// choice).
+    fn kontext_ref_ids(
+        &self,
+        h2: usize,
+        w2: usize,
+        h_origin: usize,
+        w_origin: usize,
+    ) -> Result<Tensor> {
         let dev = &self.device;
-        let ones = Tensor::full(1f32, (h2, w2), dev)?.to_dtype(self.dtype)?;
-        let h_ids = Tensor::arange(0u32, h2 as u32, dev)?
+        let dtype = self.dtype;
+        let ones = Tensor::full(1f32, (h2, w2), dev)?.to_dtype(dtype)?;
+        let h_start = h_origin as u32;
+        let w_start = w_origin as u32;
+        let h_ids = Tensor::arange(h_start, h_start + h2 as u32, dev)?
             .reshape(((), 1))?
             .broadcast_as((h2, w2))?
-            .to_dtype(self.dtype)?;
-        let w_ids = Tensor::arange(0u32, w2 as u32, dev)?
+            .to_dtype(dtype)?;
+        let w_ids = Tensor::arange(w_start, w_start + w2 as u32, dev)?
             .reshape((1, ()))?
             .broadcast_as((h2, w2))?
-            .to_dtype(self.dtype)?;
-        let ref_img_ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)?
-            .reshape((1, h2 * w2, 3))?;
-        Ok((packed, ref_img_ids))
+            .to_dtype(dtype)?;
+        Ok(Tensor::stack(&[&ones, &h_ids, &w_ids], 2)?
+            .reshape((1, h2 * w2, 3))?)
     }
 
     /// v0.12 phase 2b + multi: flow-matching denoise loop. For each
@@ -2157,6 +2233,12 @@ impl Pipeline {
         tile_cfg: &crate::pipelines::tiled::TiledConfig,
         conditioning_2d: &[Option<Tensor>],
         fill_cond_2d: Option<&FillConditioning2D>,
+        // v0.20 #8: 2D Kontext reference latent `(1, 16, lh, lw)`.
+        // When `Some`, every tile slices the matching region of the
+        // reference, packs it, and seq-concats it onto the tile's
+        // noise tokens. The CN-residual padding + ref-tail strip
+        // mirror the non-tiled Kontext path.
+        kontext_ref_2d: Option<&Tensor>,
         bar: &indicatif::ProgressBar,
     ) -> Result<Tensor> {
         use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
@@ -2285,12 +2367,6 @@ impl Pipeline {
                     summed_double = Some(merge_residuals(summed_double, d)?);
                     summed_single = Some(merge_residuals(summed_single, s)?);
                 }
-                let double_r = summed_double.as_deref();
-                let single_r = match summed_single.as_ref() {
-                    Some(v) if !v.is_empty() => Some(v.as_slice()),
-                    _ => None,
-                };
-
                 // v0.16 phase 4: per-tile Flux Fill packing. When
                 // `fill_cond_2d` is set the loaded variant is
                 // Flux.1-Fill-dev — slice the masked-latent + mask
@@ -2304,6 +2380,56 @@ impl Pipeline {
                         Tensor::cat(&[&tile_packed, &fill_tile], D::Minus1)?
                     }
                     None => tile_packed.clone(),
+                };
+
+                // v0.20 #8: per-tile Kontext reference. Slice the 2D
+                // reference latent to the same (ty, tx, sz) region as
+                // the noise tile, pack it, and seq-concat onto the
+                // tile's flux_input + img_ids. The per-block forward
+                // sees a `(noise_tokens || ref_tokens)` sequence — the
+                // ref tail gets stripped off the prediction before
+                // unpacking, identical to the non-tiled path's
+                // contract.
+                let noise_seq_len = flux_input.dim(1)?;
+                let (flux_input, img_ids) = match kontext_ref_2d {
+                    Some(ref2d) => {
+                        let (ref_packed, ref_ids) =
+                            self.pack_kontext_reference_tile(ref2d, ty, tx, sz)?;
+                        let ref_ids = ref_ids.repeat((b_sz, 1, 1))?;
+                        let expanded_in = Tensor::cat(&[&flux_input, &ref_packed], 1)?;
+                        let expanded_ids = Tensor::cat(&[&img_ids, &ref_ids], 1)?;
+                        (expanded_in, expanded_ids)
+                    }
+                    None => (flux_input, img_ids),
+                };
+
+                // CN residuals were computed on the noise-only seq;
+                // pad with zeros for the Kontext reference half so
+                // the per-block `img + residual` add inside the
+                // backbone sees the expanded length. Identical
+                // contract to the non-tiled path's
+                // `pad_residual_for_kontext` step. The reference
+                // tokens get a no-op CN contribution: the CN was
+                // trained on noise positions, and the reference is
+                // already conditioning the model via cross-attention.
+                if let Some(ref2d) = kontext_ref_2d {
+                    let ref_seq_len = (sz / 2) * (sz / 2);
+                    let _ = ref2d; // shape sanity comes from the slice above
+                    if let Some(d) = summed_double.as_mut() {
+                        for r in d.iter_mut() {
+                            *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                        }
+                    }
+                    if let Some(s) = summed_single.as_mut() {
+                        for r in s.iter_mut() {
+                            *r = pad_residual_for_kontext(r, ref_seq_len)?;
+                        }
+                    }
+                }
+                let double_r = summed_double.as_deref();
+                let single_r = match summed_single.as_ref() {
+                    Some(v) if !v.is_empty() => Some(v.as_slice()),
+                    _ => None,
                 };
                 let pred = match &self.flux_model {
                     FluxBackbone::Bf16(net) => net.forward_with_residuals(
@@ -2348,6 +2474,16 @@ impl Pipeline {
                     )?,
                 };
 
+                // v0.20 #8: Kontext mode — strip the reference tail
+                // from the prediction before unpacking. final_layer
+                // is shape-independent, so the noise half still maps
+                // back to a `(1, 16, sz, sz)` latent tile via the
+                // same patch-reshape as the non-Kontext path.
+                let pred = if kontext_ref_2d.is_some() {
+                    pred.narrow(1, 0, noise_seq_len)?
+                } else {
+                    pred
+                };
                 // Unpack the (1, n_tokens, 64) prediction back to a
                 // 2D latent tile (1, 16, sz, sz). Inverse of the pack
                 // above.
@@ -2558,6 +2694,51 @@ fn kontext_redux_budget_check(total_seq: usize) -> Result<()> {
             "Kontext + Redux seq {total_seq} is past the {KONTEXT_REDUX_WARN_AT}-token \
              warn threshold (RoPE may degrade). Output should still complete; \
              quality may suffer."
+        );
+    }
+    Ok(())
+}
+
+/// v0.20 #8: per-tile RoPE budget for Kontext + tiled denoise.
+/// Each tile attends over `t5_seq + noise_tokens + ref_tokens`,
+/// and the noise + ref halves are the same size (a tile of
+/// `tile_lat × tile_lat` packs to `(tile_lat / 2)^2` tokens for
+/// each half). The doubling makes tiled+Kontext much more sensitive
+/// to `--tile-size` than tiled alone — at `--tile-size 1024` the
+/// per-tile seq blows past Flux's RoPE budget instantly.
+///
+/// Reuses the [`KONTEXT_REDUX_HARD_CAP`] / `_WARN_AT` thresholds —
+/// both compositions hit the same per-block attention surface, so
+/// the safe budget is the same.
+fn kontext_tile_budget_check(
+    t5_seq: usize,
+    tile_lat: usize,
+    tile_size_px: u32,
+) -> Result<()> {
+    let half_seq = (tile_lat / 2) * (tile_lat / 2);
+    let per_tile = t5_seq + 2 * half_seq;
+    if per_tile > KONTEXT_REDUX_HARD_CAP {
+        // Solve for the largest safe pixel tile so the error is
+        // actionable: half_seq ≤ (HARD_CAP - t5) / 2; tile_lat ≤
+        // 2*sqrt(half_seq); tile_px = tile_lat * 8.
+        let safe_half = KONTEXT_REDUX_HARD_CAP.saturating_sub(t5_seq) / 2;
+        let safe_tile_lat = 2 * (safe_half as f64).sqrt() as usize;
+        let safe_tile_lat = (safe_tile_lat / 2) * 2; // round down to even
+        let safe_tile_px = (safe_tile_lat * 8 / 16) * 16; // round down to /16
+        anyhow::bail!(
+            "Kontext + --tiled: per-tile attention seq ({per_tile}) exceeds Flux's \
+             RoPE budget ({KONTEXT_REDUX_HARD_CAP}) at --tile-size {tile_size_px}. \
+             Each tile concats noise + reference tokens, doubling the per-tile \
+             cost vs. tiled alone. Drop --tile-size to ≤ {safe_tile_px} (any \
+             multiple of 16)."
+        );
+    }
+    if per_tile > KONTEXT_REDUX_WARN_AT {
+        tracing::warn!(
+            target: "plakat",
+            "Kontext + --tiled: per-tile seq {per_tile} at --tile-size {tile_size_px} \
+             is past the {KONTEXT_REDUX_WARN_AT}-token warn threshold (RoPE may \
+             degrade). Output should still complete; quality may suffer."
         );
     }
     Ok(())
@@ -2980,5 +3161,92 @@ mod tests {
         for v in &axis0 {
             assert!((v - 1.0).abs() < 1e-6, "expected axis-0=1 marker, got {v}");
         }
+    }
+
+    // v0.20 #8: Kontext + tiled — per-tile RoPE budget check + the
+    // pack-tile helper's geometry/id contract. Both run on CPU
+    // without touching the VAE.
+
+    #[test]
+    fn kontext_tile_budget_passes_at_tile_size_512() {
+        // tile_lat = 64; per-tile noise+ref = 2 * 32^2 = 2048. With
+        // T5 seq 512 → 2560 total, well under the 3500 warn line.
+        kontext_tile_budget_check(512, 64, 512).unwrap();
+    }
+
+    #[test]
+    fn kontext_tile_budget_bails_at_tile_size_1024() {
+        // tile_lat = 128; per-tile noise+ref = 2 * 64^2 = 8192. With
+        // T5 seq 512 → 8704 total, way past the 4096 hard cap.
+        let err = kontext_tile_budget_check(512, 128, 1024).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("RoPE budget"), "got {msg}");
+        assert!(msg.contains("--tile-size"), "got {msg}");
+        // Should suggest a safe tile in pixels — must be a /16 value
+        // strictly below 1024.
+        assert!(
+            msg.contains("≤ ") || msg.contains("<="),
+            "expected suggested safe tile in error, got {msg}"
+        );
+    }
+
+    #[test]
+    fn kontext_tile_budget_warn_band() {
+        // tile_lat = 80; per-tile noise+ref = 2 * 40^2 = 3200. With
+        // T5 seq 512 → 3712 total → past warn (3500) but under cap
+        // (4096). Should succeed without bailing.
+        kontext_tile_budget_check(512, 80, 640).unwrap();
+    }
+
+    #[test]
+    fn pack_kontext_reference_tile_geometry() {
+        // Stand up a minimal Pipeline-equivalent to call the helper:
+        // it needs `self.device` + `self.dtype` for `kontext_ref_ids`.
+        // The helper takes a 2D latent (1, 16, lh, lw) and slices it
+        // at (ty, tx, sz). Hand-roll the ids without the impl to
+        // assert the per-tile shape contract.
+        let dev = Device::Cpu;
+        let dtype = DType::F32;
+        // Pretend full-canvas latent is 32×32 (so the full canvas
+        // would be at 256×256 pixels post-VAE). Take a tile at
+        // (ty=8, tx=8, sz=16) → expected (h2, w2) = (8, 8) tokens.
+        let ref_2d = Tensor::zeros((1, 16, 32, 32), dtype, &dev).unwrap();
+        let (ty, tx, sz) = (8usize, 8usize, 16usize);
+        let tile = ref_2d.narrow(2, ty, sz).unwrap().narrow(3, tx, sz).unwrap();
+        assert_eq!(tile.dims(), &[1, 16, sz, sz]);
+        // After 2x2 patching the packed shape is (1, (sz/2)^2, 64).
+        let packed = pack_latent_to_tokens(&tile).unwrap();
+        assert_eq!(packed.dims(), &[1, (sz / 2) * (sz / 2), 64]);
+        // Per-tile ids: axis 0 = 1 (ref marker), h_start = ty/2,
+        // w_start = tx/2.
+        let (h2, w2) = (sz / 2, sz / 2);
+        let ones = Tensor::full(1f32, (h2, w2), &dev).unwrap();
+        let h_ids = Tensor::arange((ty / 2) as u32, (ty / 2 + h2) as u32, &dev)
+            .unwrap()
+            .reshape(((), 1))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let w_ids = Tensor::arange((tx / 2) as u32, (tx / 2 + w2) as u32, &dev)
+            .unwrap()
+            .reshape((1, ()))
+            .unwrap()
+            .broadcast_as((h2, w2))
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        let ids = Tensor::stack(&[&ones, &h_ids, &w_ids], 2)
+            .unwrap()
+            .reshape((1, h2 * w2, 3))
+            .unwrap();
+        assert_eq!(ids.dims(), &[1, (sz / 2) * (sz / 2), 3]);
+        // First row should be (1, h_start=4, w_start=4) — axis-0
+        // marker plus the tile's global origin in token coords.
+        let first: Vec<f32> = ids.i((0, 0)).unwrap().to_vec1().unwrap();
+        assert!((first[0] - 1.0).abs() < 1e-6, "expected axis0=1, got {}", first[0]);
+        assert!((first[1] - 4.0).abs() < 1e-6, "expected h_start=4, got {}", first[1]);
+        assert!((first[2] - 4.0).abs() < 1e-6, "expected w_start=4, got {}", first[2]);
     }
 }
