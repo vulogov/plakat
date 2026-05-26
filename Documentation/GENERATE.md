@@ -400,6 +400,29 @@ or model alias doesn't surface stale hits. Scenarios that
 re-enhance the same prompts across multiple runs are the prime
 use case.
 
+#### `--enhance-keep-original` (v0.20)
+
+Keep the original prompt alongside the enhancer's rewrite by
+joining them with the SD-family `BREAK` keyword. Each chunk gets
+its own 77-token CLIP slot, so the original terms keep full
+attention weight instead of being diluted by the enhancer's added
+detail. Available on `plakat generate` and `plakat portrait`.
+
+```bash
+# Original: "a knight on a hill"
+# Enhanced: "a knight in burnished plate armor stands on a
+#            windswept hill at dawn, cinematic lighting, ..."
+# Final:    "<enhanced> BREAK a knight on a hill"
+plakat generate "a knight on a hill" --model sd15 \
+    --enhance local --enhance-keep-original
+```
+
+SD 1.5 / 2.1 / SDXL only. On Flux and SD3 the flag warns once
+and is a no-op: their T5 text encoder ignores `BREAK` and has
+the token budget to carry both phrasings without it, so the
+original terms aren't at risk of being clipped in the first
+place. Without `--enhance` the flag is silently ignored.
+
 ### Output
 
 #### `--format png | webp` (v0.19)

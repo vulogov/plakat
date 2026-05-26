@@ -159,6 +159,14 @@ pub struct PortraitArgs {
     #[arg(long = "enhance-cache", default_value_t = false)]
     pub enhance_cache: bool,
 
+    /// v0.20: keep the original prompt alongside the enhancer's
+    /// rewrite via the SD-family `BREAK` separator. See
+    /// `plakat generate --enhance-keep-original` for full
+    /// rationale. Portrait is always SD-family, so the flag
+    /// applies unconditionally when `--enhance` is set.
+    #[arg(long = "enhance-keep-original", default_value_t = false)]
+    pub enhance_keep_original: bool,
+
     /// Output directory.
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
@@ -397,11 +405,17 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
             max_new_tokens: args.enhance_max_tokens,
             cache: args.enhance_cache,
         };
+        let original = args.prompt.clone();
         let enhanced =
             crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
                 .await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
-        args.prompt = enhanced;
+        args.prompt = crate::cli::generate::maybe_keep_original(
+            &args.model,
+            enhanced,
+            &original,
+            args.enhance_keep_original,
+        );
     }
 
     // v0.18: A1111 inline <lora:name[:weight]> extraction.
