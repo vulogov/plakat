@@ -15,7 +15,9 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+use crate::pipelines::portrait;
 use crate::scripting::config::GenerationConfig;
+use crate::scripting::loaded_pipeline::LoadedPipeline;
 
 /// Process-wide script context. Holds the device + output dir +
 /// the in-script image registry + the active model alias.
@@ -25,11 +27,17 @@ use crate::scripting::config::GenerationConfig;
 pub struct ScriptCtx {
     pub device: Device,
     pub out_dir: PathBuf,
-    /// v0.21 phase 2: model alias the script most recently set
-    /// via `plakat.load`. `plakat.generate` uses this. `None`
-    /// means no model has been loaded yet — `plakat.generate`
-    /// bails with a clear message.
-    pub loaded_model: Option<String>,
+    /// v0.22 phase 1: cached pipeline keyed by the model alias
+    /// that loaded it. `None` means no model has been loaded yet;
+    /// image-producing host words bail with a clear message.
+    ///
+    /// Replaces v0.21's `loaded_model: Option<String>` — v0.22 (per
+    /// RFC decision #3) caches the actual pipeline so subsequent
+    /// `plakat.generate` / `img2img` / `portrait` calls reuse it
+    /// without paying the model-load cost again. v0.21 compat is
+    /// relaxed per decision #7 — the `loaded_model` field is gone;
+    /// scripts that don't care about the change still work.
+    pub loaded: Option<(String, LoadedPipeline)>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -56,12 +64,112 @@ impl ScriptCtx {
         CTX.set(RwLock::new(ScriptCtx {
             device,
             out_dir,
-            loaded_model: None,
+            loaded: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
+
+    /// v0.22 phase 1: read-only accessor for the currently-loaded
+    /// model's alias. `None` when nothing's been `plakat.load`ed
+    /// yet. Replaces direct access to v0.21's `loaded_model` field.
+    pub fn loaded_model(&self) -> Option<&str> {
+        self.loaded.as_ref().map(|(alias, _)| alias.as_str())
+    }
+
+    /// v0.22 phase 1: get-or-load the SD-family pipeline for
+    /// `alias`. Returns a reference to the cached
+    /// [`portrait::Pipeline`] (which generalises across
+    /// text-to-image / img2img / portrait — see
+    /// [`crate::scripting::loaded_pipeline::LoadedPipeline`]).
+    ///
+    /// On a cache miss the previous pipeline drops (RAII-freeing
+    /// GPU memory) before the new one loads. The load is `async`
+    /// (HF download + safetensors mmap); we block on the current
+    /// tokio runtime via `block_in_place` so callers can stay
+    /// sync. This requires a multi-threaded tokio runtime in
+    /// scope — `cli::run::run` provides one.
+    ///
+    /// **Identity encoder strategy**: SD 1.5 → `PlusFace`;
+    /// SDXL / SDXL-Turbo → `PlusFaceSdxl`; SD 2.1 → `None`
+    /// (no shipped Plus-Face checkpoint). Loading without
+    /// identity means `plakat.portrait` will bail at generate
+    /// time with the v0.21 "no identity encoder" message —
+    /// preserving v0.21's SD 2.1 portrait behaviour while
+    /// keeping `plakat.generate` working.
+    pub fn get_or_load_sd_family(
+        &mut self,
+        alias: &str,
+    ) -> Result<&portrait::Pipeline> {
+        // Cache hit on the alias?
+        let hit = self
+            .loaded
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            // Drop the previous pipeline first so the new model's
+            // weights don't have to coexist in GPU memory with
+            // the old.
+            self.loaded = None;
+
+            let identity = pick_sd_family_identity(alias);
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline: portrait::Pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
+                    model: alias.to_string(),
+                    device,
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                    identity,
+                    shared_clip_h: None,
+                }))
+            })?;
+            self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+        }
+
+        match &self.loaded.as_ref().expect("just inserted").1 {
+            LoadedPipeline::SdFamily(p) => Ok(p),
+        }
+    }
+}
+
+/// v0.22 phase 1: pick the identity strategy for an SD-family
+/// alias without bailing — sd21 returns `None` so the pipeline
+/// loads without an identity encoder. Caller is responsible for
+/// having validated SD-family-ness via
+/// [`crate::scripting::script_entry::validate_supported_for_phase_2`].
+fn pick_sd_family_identity(
+    alias: &str,
+) -> Option<crate::pipelines::ip_adapter::IdentityKind> {
+    use crate::pipelines::ip_adapter::IdentityKind;
+    let resolved = if alias.contains('/') {
+        alias.to_string()
+    } else {
+        crate::hf::resolve_alias(alias).to_string()
+    };
+    let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+    if variant.is_xl() {
+        Some(IdentityKind::PlusFaceSdxl)
+    } else if matches!(variant, crate::pipelines::t2i::Variant::Sd21) {
+        // SD 2.1 has no shipped Plus-Face checkpoint. Load
+        // without identity; plakat.portrait will bail at generate
+        // time with the underlying "no identity encoder" message.
+        None
+    } else {
+        // SD 1.5 default.
+        Some(IdentityKind::PlusFace)
+    }
+}
+
+impl ScriptCtx {
 
     /// v0.21 phase 2: register a rendered image and return the
     /// 1-based handle the script will see. Caller is responsible
@@ -128,7 +236,7 @@ mod tests {
         ScriptCtx {
             device: Device::Cpu,
             out_dir: std::env::temp_dir(),
-            loaded_model: None,
+            loaded: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
         }
@@ -186,5 +294,55 @@ mod tests {
         // tell whether they're addressing a future handle vs a
         // typo.
         assert!(msg.contains("1 image"), "got {msg}");
+    }
+
+    // v0.22 phase 1: pick_sd_family_identity returns the right
+    // identity strategy per alias, mapping sd21 → None (no
+    // shipped Plus-Face checkpoint) so the cache load succeeds
+    // for plakat.generate even on sd21.
+
+    #[test]
+    fn pick_sd_family_identity_sd15_is_plus_face() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let id = pick_sd_family_identity("sd15");
+        assert!(matches!(id, Some(IdentityKind::PlusFace)));
+    }
+
+    #[test]
+    fn pick_sd_family_identity_sdxl_is_plus_face_sdxl() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        assert!(matches!(
+            pick_sd_family_identity("sdxl"),
+            Some(IdentityKind::PlusFaceSdxl)
+        ));
+        assert!(matches!(
+            pick_sd_family_identity("sdxl-turbo"),
+            Some(IdentityKind::PlusFaceSdxl)
+        ));
+    }
+
+    #[test]
+    fn pick_sd_family_identity_sd21_is_none() {
+        // SD 2.1 has no shipped Plus-Face checkpoint. The cache
+        // loads without identity; plakat.portrait bails at
+        // generate time, but plakat.generate works.
+        assert!(pick_sd_family_identity("sd21").is_none());
+    }
+
+    #[test]
+    fn pick_sd_family_identity_resolves_alias_before_detection() {
+        // Bare "sd21" contains none of Variant::detect's SD-2.1
+        // substrings; only the resolved repo id does. We resolve
+        // first so the detection works.
+        // The resolved-alias path is also exercised by the
+        // canonical HF repo path:
+        assert!(pick_sd_family_identity("stabilityai/stable-diffusion-2-1")
+            .is_none());
+    }
+
+    #[test]
+    fn loaded_model_accessor_returns_none_when_unloaded() {
+        let ctx = mk_ctx();
+        assert!(ctx.loaded_model().is_none());
     }
 }
