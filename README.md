@@ -424,6 +424,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
 | `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 | `clone <FILE.png>` | v0.19. Translate a PNG's metadata into a re-runnable `plakat generate` shell command. JSON sidecar preferred; falls back to parsing the Auto1111 chunk (works on Civitai uploads + A1111 Web UI outputs). `--one-line` for piping. |
+| `run <SCRIPT.bund> \| --repl` | **v0.21**. Drive plakat from a stack-based Bund script. Seven host words (`plakat.load` / `generate` / `img2img` / `portrait` / `upscale` / `save` / `config.set`) cover the SD-family generate + refine + portrait + upscale surfaces. Interactive REPL with `--repl`. See [`Documentation/Tutorials/SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md). |
 
 ## Documentation
 
@@ -463,6 +464,11 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     `plakat outpaint INPUT.png` grows an image's canvas. Per-side
     flag grammar, VAE-snapped dimensions, model choice, iterative-
     stage workflow.
+  - [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md) —
+    **v0.21.** Drive plakat from a Bund script (`plakat run
+    SCRIPT.bund` or `plakat run --repl`). Stack-based syntax,
+    seven `plakat.*` host words, handle reuse, composition
+    patterns.
   - Specialized portrait recipes:
     [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
     and

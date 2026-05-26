@@ -359,6 +359,144 @@ mod tests {
         });
     }
 
+    /// v0.21 phase 8 composition test: drives the full script
+    /// surface end-to-end via `eval()` — config.set → load gate →
+    /// (pre-stuffed image handles, simulating prior generate calls)
+    /// → upscale → save. This is the "real script that loads SD,
+    /// generates 3 images, upscales the best one" referenced in
+    /// RFC §9, abridged to skip the SD model load (CI has no
+    /// weights).
+    ///
+    /// Pre-stuffing the registry with three synthetic images lets
+    /// us exercise the parts of the workflow that don't need a
+    /// pipeline — and there are more of those than you'd think:
+    /// stack discipline, handle reuse, output dir resolution,
+    /// Lanczos upscaling, file IO. The real-pipeline integration
+    /// (which DOES need SD weights) gets covered by manual smoke
+    /// scripts in the Documentation/Tutorials/SCRIPTING_TUTORIAL.md
+    /// walkthrough.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_composition_via_eval_three_handles_pick_best_upscale() {
+        with_singleton_ctx(|| {
+            // Reset the context to a known-clean baseline.
+            let out_dir = with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.loaded_model = None;
+                ctx.config = config::GenerationConfig::default();
+                ctx.out_dir.clone()
+            })
+            .unwrap();
+
+            // Pre-stuff three synthetic 8x8 images at handles 1, 2, 3.
+            // Each filled with a different pixel value so we can
+            // tell them apart after the round-trip.
+            with_ctx_mut(|ctx| {
+                for r in [10u8, 20u8, 30u8] {
+                    ctx.images.push(image::DynamicImage::ImageRgb8(
+                        image::RgbImage::from_pixel(8, 8, image::Rgb([r, r, r])),
+                    ));
+                }
+            })
+            .unwrap();
+
+            // The composition script. Real scripts would call
+            // plakat.generate three times instead of relying on
+            // pre-stuffed handles; the rest is identical.
+            //
+            //   1. config.set width + scheduler (proves int + string
+            //      keys both round-trip through eval)
+            //   2. upscale handle 3 x2 → handle 4; save it
+            //   3. upscale handle 4 x4 → handle 5; save it
+            //   4. save the *original* handle 3 too — proves handle
+            //      reuse: upscaling doesn't consume the source
+            //
+            // The integers in the script are explicit handle
+            // references; `plakat.save` consumes the handle it
+            // pops, so any chain after a save has to push the
+            // intended handle again.
+            let script = r#"
+                512 "width" plakat.config.set
+                "euler-a" "scheduler" plakat.config.set
+
+                3 2 plakat.upscale  "best.png"     plakat.save
+                4 4 plakat.upscale  "best-4k.png"  plakat.save
+                3                   "source.png"   plakat.save
+            "#;
+            eval(script).unwrap();
+
+            // Verify: config knobs latched + every save landed.
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.width, 512);
+                assert!(
+                    matches!(
+                        ctx.config.scheduler,
+                        crate::pipelines::scheduler::SchedulerKind::EulerA
+                    ),
+                    "scheduler should now be EulerA, got {:?}",
+                    ctx.config.scheduler
+                );
+                // Handles 1-3 were pre-stuffed; upscale added 4, 5.
+                assert_eq!(ctx.images.len(), 5,
+                    "expected 5 images in registry after 2x upscales");
+                // Handles 4 + 5 should be the upscaled variants.
+                assert_eq!(ctx.images[3].width(), 16, "handle 4 = source 8 * 2");
+                assert_eq!(ctx.images[4].width(), 64, "handle 5 = handle 4 * 4");
+            })
+            .unwrap();
+            // Three output files landed under out_dir.
+            for name in &["best.png", "best-4k.png", "source.png"] {
+                assert!(
+                    out_dir.join(name).exists(),
+                    "missing {name} under {}",
+                    out_dir.display()
+                );
+            }
+        });
+    }
+
+    /// v0.21 phase 8: REPL-equivalent state-persistence proof.
+    /// In a single eval(), config knobs set on line 1 affect a
+    /// hypothetical generate later in the same script. Doesn't run
+    /// the generate (no SD weights), but pins that the
+    /// config.set surface composes with the rest of the script
+    /// state without surprises.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_set_persists_for_subsequent_words_in_same_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+                ctx.images.clear();
+            })
+            .unwrap();
+
+            // Pre-stuff a handle so plakat.save has something to write.
+            let h = with_ctx_mut(|ctx| {
+                ctx.push_image(image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([5, 5, 5])),
+                ))
+            })
+            .unwrap();
+            assert_eq!(h, 1);
+
+            // Set steps + face_strength on line 1; save handle 1
+            // on line 2. The config setters survive across lines
+            // (the whole point of a persistent ScriptCtx).
+            let script = format!(
+                r#"
+                75   "steps"          plakat.config.set
+                0.5  "face_strength"  plakat.config.set
+                {h}  "persist.png"    plakat.save
+            "#
+            );
+            eval(&script).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.steps, 75);
+                assert!((ctx.config.face_strength - 0.5).abs() < 1e-6);
+            })
+            .unwrap();
+        });
+    }
+
     /// Test-helper: serialises every test that needs the singleton
     /// context behind one shared init. Subsequent calls re-use the
     /// already-init'd singleton; only the *first* test through the
