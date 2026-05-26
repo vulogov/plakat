@@ -1,7 +1,6 @@
 # RFC: Extend `plakat.*` words for low-level generation coverage (v0.22)
 
-**Status:** Research draft. Awaiting decisions on §8 before turning
-into a task list.
+**Status:** Decisions locked 2026-05-26. Ready to convert to phases.
 **Author:** v0.22 cycle research.
 **Date:** 2026-05-26.
 **Precedent:** [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md)
@@ -260,115 +259,89 @@ generates are free.
 
 ---
 
-## 8. Open questions (need user decision)
+## 8. Decisions (locked 2026-05-26)
 
-1. **v0.22 scope: which namespaces ship?**
-   The 51 Category-C flags cluster into 8-13 word namespaces.
-   The "lowest hanging fruit" subset is `lora` + `controlnet` +
-   `refiner` + `style` (~17 new words, covers most user demand).
-   The full set would also include `adetailer` + `hires` +
-   `artefact` + `enhance` + `embedding` + `stylize` + `outpaint`.
-   - **Recommended:** Top 4 namespaces (lora + controlnet +
-     refiner + style). Defer the other 7 to v0.23 with an
-     explicit list in the cycle's deferred-items memo.
+| # | Question | Decision | Notes |
+|---|---|---|---|
+| 1 | Namespace scope | **Full sweep — all 8 namespaces** | lora + controlnet + refiner + style + adetailer + hires + artefact + enhance. Bigger than the recommendation; cycle grows accordingly. |
+| 2 | Family expansion | **Flux + SD3 + SD3.5 all in v0.22** | One round of `LoadedPipeline` refactoring; all three families ship together. |
+| 3 | Pipeline cache | **Yes — phase 1** | Foundational; without it, LoRA + ControlNet workflows are too slow to be useful. |
+| 4 | Category-B config keys | **Split per-namespace** | The 27 keys land with their related word phases (e.g. adetailer_* keys with `plakat.adetailer.*`). NOT batched into one phase. Cleaner per-phase scope at the cost of more boundary edits in `config.rs`. |
+| 5 | Family-specific D keys | **Bundle with family phases** | `quantize_t5` ships with Flux; `tiled` semantics differ per family, so per-family validation; `kontext_bucket` only when Kontext loads. |
+| 6 | Introspection words | **Ship `.list` for collections** | `plakat.lora.list`, `plakat.controlnet.list`, etc. Push current state as a list onto the workbench. REPL debugging affordance. |
+| 7 | v0.21 backwards compat | **Relax — may break if improvement warrants** | NOT strict. v0.22 has freedom to rename / reshape v0.21 words if a better pattern emerges. v0.21 scripts may need a migration pass. Practical consequence: `plakat.upscale ( handle scale -- handle )` may grow new args, `config.set` keys may rename, etc. |
 
-2. **Family expansion: full or staged?**
-   Flux + SD3 + SD3.5 all in v0.22, or Flux in v0.22 and SD3
-   in v0.23?
-   - **Recommended:** All three in v0.22. They share the same
-     dispatch pattern (one of three Request types); doing them
-     together avoids two rounds of `LoadedPipeline` refactoring.
-
-3. **Pipeline cache: in or out?**
-   The cache is the biggest UX win but also forces a non-
-   trivial `ScriptCtx` refactor.
-   - **Recommended:** In. Without it, LoRA + ControlNet
-     workflows are too slow to be useful — every config change
-     pays the model-load cost. The cache lands as the first
-     phase (foundation for everything else).
-
-4. **All 27 Category-B config keys, or a subset?**
-   They're cheap to add (~5 lines each). Either ship all 27 in
-   one phase or pick the most-asked-for.
-   - **Recommended:** All 27. Single phase. The marginal cost
-     of validating each key is small enough that landing them
-     together is cleaner than scattered across the cycle.
-
-5. **Family-specific config keys (Category D — 13 of them):**
-   Bundle into the family-expansion phases, or own their own
-   phase?
-   - **Recommended:** Bundle. `quantize_t5` only makes sense
-     after Flux is loaded; landing them together keeps the
-     phase coherent.
-
-6. **`plakat.lora.list` / `plakat.controlnet.list` introspection
-   words: ship or defer?**
-   Useful for the REPL workflow but adds list-formatting code
-   for each namespace.
-   - **Recommended:** Ship for v0.22. The REPL is the script
-     debugger; `.s` shows the workbench, and `plakat.lora.list`
-     shows what's stacked behind the scenes. Cost is ~30 lines
-     per namespace.
-
-7. **Backwards compatibility: v0.21 scripts continue to work?**
-   Strictly hold v0.21's seven words + nine config keys
-   unchanged, or relax any of them?
-   - **Recommended:** Strict. The 7 v0.21 words + their stack
-     effects are the contract; v0.22 only adds, never modifies.
-     v0.21 scripts run unchanged.
+The full-sweep + family-expansion choice means v0.22 is the
+**largest single cycle since the project started**. Realistic
+estimate: 8-10 sessions, 13 phases (§9 below). Comparable to a
+v0.20-style "three big swings" cycle compressed into one focus
+area.
 
 ---
 
-## 9. Proposed phase plan (post-decision)
+## 9. Phase plan (locked post-decision)
 
 | Phase | Deliverable | Estimate |
 |---|---|---|
-| **1** | `LoadedPipeline` enum + pipeline cache infra. `ScriptCtx.loaded` becomes `Option<(String, LoadedPipeline)>`. v0.21's `plakat.generate` keeps working. | ~1 session |
-| **2** | Flux family expansion. Lift the phase-2 gate; route Flux variants through `pipelines::flux::Pipeline`. 4-5 new Category-D config keys (`quantize_t5`, `quant_level`, etc). | ~1 session |
-| **3** | SD3 / SD3.5 family expansion. Same shape as phase 2 for the third pipeline. | ~0.5 session |
-| **4** | All 27 Category-B config.set keys. Single phase; mostly mechanical (validator rule per key). | ~0.5 session |
-| **5** | `plakat.lora.*` namespace. add / clear / list + `lora_scale` interaction with the cache. | ~0.5 session |
-| **6** | `plakat.controlnet.*` namespace. add / annotate / spec / clear / list. | ~1 session |
-| **7** | `plakat.refiner.*` + `plakat.style.*` namespaces (smaller; can land together). | ~0.5 session |
-| **8** | Docs + tutorial update (SCRIPTING.md, SCRIPTING_TUTORIAL.md gain coverage sections); composition tests for the new surface. | ~0.5 session |
+| **1** | **Foundation: pipeline cache + `LoadedPipeline` enum.** `ScriptCtx.loaded` becomes `Option<(String, LoadedPipeline)>`. v0.21's `plakat.generate` keeps working but now reuses the cached pipeline across calls. ~3× speedup on multi-image scripts. | ~1 session |
+| **2** | **Flux family expansion.** Lift the phase-2 gate for Flux variants (`flux-dev`, `flux-schnell`, `flux-fill-dev`, `flux-canny-dev`, `flux-depth-dev`, `flux-kontext-dev` + GGUF/NF4). Routes through `pipelines::flux::Pipeline`. Bundled D-keys: `quantize_t5`, `quant_level`, `t5_quant_level`, `fast` (preset), `kontext_bucket`, `redux_image` collection. | ~1 session |
+| **3** | **SD3 / SD3.5 family expansion.** Route `sd3-medium`, `sd35-medium`, `sd35-large`, `sd35-large-turbo` through `pipelines::sd3::Pipeline`. Bundled D-keys: `tiled` (SD3 semantics), `tile_size`, `tile_stride`. | ~0.5 session |
+| **4** | **`plakat.lora.*` namespace.** `add` / `clear` / `list` + the `lora_scale` Category-B key. Cache-aware: LoRA mutations defer to next generate call. | ~1 session |
+| **5** | **`plakat.controlnet.*` namespace.** `add` / `annotate` / `spec` / `clear` / `list`. ControlSpec grammar matches the CLI's `--control-spec`. Per-CN strength/start/end via the spec string. | ~1 session |
+| **6** | **`plakat.refiner.*` + `plakat.style.*` (smaller pair).** Refiner: `enable` / `disable` + `refiner_frac`, `refine_steps`, `refine_strength` config keys. Style: `apply` / `detect` / `clear` + `style_strength` key. | ~0.5 session |
+| **7** | **`plakat.adetailer.*` namespace.** `enable` / `disable` + 6 bundled Category-B keys (`adetailer_strength`, `_padding`, `_feather`, `_confidence`, `_size`, `_prompt`). | ~0.5 session |
+| **8** | **`plakat.hires.*` namespace.** `enable` / `disable` + 5 bundled Category-B keys (`hires_scale`, `_strength`, `_upscaler`, `_steps`). | ~0.5 session |
+| **9** | **`plakat.artefact.*` namespace.** `add` (NAME ZONE SCALE) / `clear` / `list` + 4 bundled keys (`artefact_blend`, `_strength`, `smart_zones`, `artefact_library` path). | ~1 session |
+| **10** | **`plakat.enhance.*` namespace.** Provider selection (`local` / `api`) + 5 bundled keys (`enhance_provider`, `_temp`, `_max_tokens`, `_keep_original`, `_system` path). | ~0.5 session |
+| **11** | **Remaining Category-B keys** that don't fit a namespace: `aspect`, `base`, `mask_feather`, `mask_invert`, `clip_skip`, `wildcard_dir`, `negative_preset`. | ~0.5 session |
+| **12** | **Docs + composition tests.** SCRIPTING.md + SCRIPTING_TUTORIAL.md grow coverage sections for every new namespace. Composition tests exercise the full surface end-to-end. | ~1 session |
 
-**Total: ~5-6 sessions.** Slightly bigger than v0.21 because
-the cache infrastructure + family expansion are foundational
-work — once they land, the per-namespace phases are smaller
-than v0.21's per-word phases.
+**Total: ~9-10 sessions** (13 phases). The largest single cycle
+since v0.13's Flux modernization.
 
 ### Phase ordering rationale
 
-- Pipeline cache (phase 1) **first** so subsequent phases can
-  test against a fast inner loop instead of paying SD model
-  loads in every test.
-- Family expansion (phases 2-3) early because LoRA + ControlNet
-  on Flux behaves differently from SD; landing the families
-  first means LoRA + CN code only writes against one mature
-  `LoadedPipeline` enum.
-- Config.set keys (phase 4) batched into one phase because the
-  cost is dominated by test coverage, not implementation —
-  fewer commit boundaries.
-- New word namespaces (phases 5-7) after the foundations.
-- Docs (phase 8) last so the tutorial reflects shipped reality.
+- **Foundation first.** Phase 1's pipeline cache is the
+  load-bearing prerequisite for every subsequent phase. Without
+  it, every test that touches a host word pays the SD model
+  load cost — the test cycle becomes intolerably slow.
+- **Family expansion second.** Phases 2-3 lift the SD-family
+  gate before LoRA / ControlNet land. LoRA + CN behave
+  differently across families (Flux runtime LoRA vs SD merge-
+  into-UNet); shipping families first means new words only
+  write against one mature `LoadedPipeline` enum.
+- **Word namespaces in order of utility.** LoRA (phase 4) +
+  ControlNet (phase 5) are the highest-demand additions; the
+  refiner + style pair (phase 6) is smaller and shares
+  patterns; ADetailer (7) + Hires (8) are post-processing;
+  Artefact (9) + Enhance (10) round out the surface.
+- **Misc keys (11) before docs.** Sweep up the remaining
+  Category-B keys that don't fit a namespace just before the
+  docs phase, so the tutorial gets a complete word + key
+  catalog.
+- **Docs (12) last** so the tutorial reflects shipped reality
+  not RFC speculation. Same pattern as v0.21 phase 8.
 
 ---
 
 ## 10. What's NOT in v0.22 (explicitly deferred to v0.23)
 
-- `plakat.adetailer.*` (6 keys)
-- `plakat.hires.*` (5 keys)
-- `plakat.artefact.*` (collection + 4 keys)
-- `plakat.enhance.*` (3+ keys)
-- `plakat.embedding.*` (collection)
-- `plakat.stylize` (workflow word, different from `plakat.style`)
-- `plakat.outpaint` (workflow word)
-- Multi-photo portrait + FaceID + manual landmarks/bbox (lifts
-  the v0.21 phase-5 limitation)
+After the full-sweep decision (decision #1), v0.22 covers
+**eight** of the original 8 namespaces from the research. The
+following are still deferred to v0.23:
+
+- `plakat.embedding.*` (collection — Textual Inversion specs)
+- `plakat.stylize` (separate IP-Adapter-based workflow word,
+  distinct from `plakat.style`'s catalog-based path)
+- `plakat.outpaint` (separate workflow word — `plakat.img2img`
+  with a mask wraps it today, but a dedicated word would expose
+  per-side expansion)
+- Multi-photo portrait + FaceID + manual `face_bbox` /
+  `face_landmarks` (lifts the v0.21 phase-5 limitation)
 - Real-ESRGAN ML upscaling (the v0.21 phase-6 deferred item)
-- `plakat.metadata.*` (JSON sidecar I/O)
-- SD3 animate (carried from v0.20)
-- AnimateDiff (carried from v0.20)
+- `plakat.metadata.*` (JSON sidecar read/write from scripts)
+- SD3 animate (carried over from v0.20)
+- AnimateDiff (carried over from v0.20)
 
 v0.23 picks up where v0.22 leaves off. The RFC at that point
 will be a continuation of this one's structure.
