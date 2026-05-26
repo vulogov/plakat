@@ -222,6 +222,78 @@ mod tests {
         });
     }
 
+    /// v0.21 phase 6: upscale round-trip. Stuff a hand-crafted
+    /// 16×16 image into the registry, eval `1 2 plakat.upscale`,
+    /// verify the new handle's image is 32×32. Unlike phases 4 +
+    /// 5, this one runs the **real** transform in CI (no SD
+    /// weights involved — pure image-crate Lanczos resize).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upscale_round_trip_via_eval() {
+        with_singleton_ctx(|| {
+            let src_handle = with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(16, 16, image::Rgb([7, 7, 7])),
+                );
+                ctx.push_image(img)
+            })
+            .unwrap();
+            assert_eq!(src_handle, 1);
+
+            // 1 2 plakat.upscale → new handle (2). Bund prints the
+            // returned handle but we don't read the stack here; we
+            // verify via the registry instead.
+            eval("1 2 plakat.upscale drop").unwrap();
+
+            with_ctx(|ctx| {
+                assert_eq!(ctx.images.len(), 2, "expected upscaled image to land at handle 2");
+                let dst = &ctx.images[1];
+                assert_eq!(dst.width(), 32);
+                assert_eq!(dst.height(), 32);
+                // Source should still be addressable (handle reuse contract).
+                let src = &ctx.images[0];
+                assert_eq!(src.width(), 16);
+                assert_eq!(src.height(), 16);
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.21 phase 6: bad scale bails through eval with the
+    /// "scale must be 2 or 4" message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upscale_invalid_scale_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([0, 0, 0])),
+                );
+                ctx.push_image(img);
+            })
+            .unwrap();
+            let err = eval("1 3 plakat.upscale").unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("scale must be 2 or 4"), "got {msg}");
+            assert!(msg.contains("v0.22"), "got {msg}");
+        });
+    }
+
+    /// v0.21 phase 6: unknown handle bails through the
+    /// `ctx.image_at` lookup, same as img2img / portrait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upscale_unknown_handle_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+            })
+            .unwrap();
+            let err = eval("999 2 plakat.upscale").unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("image handle 999"), "got {msg}");
+        });
+    }
+
     /// v0.21 phase 5: portrait gate — no model loaded bails with
     /// the "Call \"sdxl\" plakat.load" pointer (note the SDXL
     /// suggestion in the message, not just sd15).
