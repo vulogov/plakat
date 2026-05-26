@@ -16,12 +16,13 @@ and the trade-offs between frame count + step count + size.
 - Finished [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md). You
   should be comfortable with `--prompt`, `--seed`, `--steps`,
   and the relationship between seed and noise.
-- A working `plakat generate` against SD 1.5 / SD 2.1 / SDXL. The
-  animate path now supports the full SD family; Flux + SD3 use T5
-  / rectified-flow and need their own machinery, deferred to a
-  follow-up.
+- A working `plakat generate` against SD 1.5 / SD 2.1 / SDXL or
+  Flux Dev / Schnell. The animate path supports the full SD
+  family plus Flux Dev / Schnell as of v0.20; SD3 / 3.5 is
+  deferred (their three-encoder lerp needs separate machinery,
+  see §9).
 - ~3 GB free for the SD 1.5 weights on first run (one-time cost);
-  ~7 GB for SDXL.
+  ~7 GB for SDXL; ~24 GB for Flux Dev BF16.
 
 ## 1. Your first morph
 
@@ -200,15 +201,59 @@ plakat animate --from A --to B --frames 24 --gif --out ./morph --resume
 
 Mirrors the scenario `--resume` semantics added in v0.17.
 
-## 8. Limitations
+## 8. Flux animate (v0.20)
 
-- **SD-family only** (SD 1.5 / SD 2.1 / SDXL). SDXL animate (added
-  in v0.18) lerps the dual CLIP-L + CLIP-G hidden states plus the
+`--model flux-dev` and `--model flux-schnell` work the same way
+the SD-family path does — pre-encodes both endpoints, lerps the
+text embeddings per frame, renders. Flux uses CLIP-L pooled +
+T5-XXL hidden states; the T5 encode is the expensive part, so
+amortising it across frames is the whole point.
+
+```bash
+plakat animate \
+    --from "an oil painting of a fox in a meadow" \
+    --to   "an oil painting of a cat in a meadow" \
+    --frames 24 --seed 42 --steps 20 --guidance 3.5 \
+    --model flux-dev --size 1024x1024 --out ./flux_morph --gif
+```
+
+Two Flux-specific gotchas worth knowing:
+
+- **`--guidance` defaults to 7.5 (right for SD; wrong for Flux).**
+  Flux is guidance-distilled — the CFG signal is a scalar input
+  to the model rather than a batched uncond+cond pass. Use
+  `--guidance 3.5` on `flux-dev`, `--guidance 0` on
+  `flux-schnell`. The default 7.5 won't blow up but produces
+  over-baked output.
+- **`--negative` is a no-op on Flux.** Since there's no CFG
+  batching, the unconditional branch can't be steered. Move
+  suppressors into the positive prompts; animate warns if you
+  pass `--negative` on a Flux variant.
+
+Flux Kontext / Fill / Canny / Depth aren't supported (they need
+a reference image per call that doesn't fit the `--from` /
+`--to` model). SD3 / SD3.5 are deferred to a follow-up — they
+need three-encoder lerp (CLIP-L + CLIP-G + T5) plus the
+rectified-flow MMDiT integrator wiring.
+
+T5 cost: ~10s extra per frame on CPU vs ~0.1s on a 24 GB GPU.
+For long Flux animations, use `--resume` aggressively — a
+crashed Flux animate at frame 30 of 32 is much more painful to
+restart than the equivalent SD 1.5 run.
+
+## 9. Limitations
+
+- **SDXL** lerps the dual CLIP-L + CLIP-G hidden states plus the
   pooled `add_text_embeds` micro-conditioning each frame; expect
   ~2-3× the per-frame cost of SD 1.5 in exchange for SDXL's
   trained resolution + visual quality.
-- **Flux + SD3 deferred.** Their T5 + rectified-flow paths need
-  separate machinery.
+- **SD3 / SD3.5 deferred.** Three-encoder lerp + the MMDiT
+  rectified-flow integrator wiring is its own follow-up; the
+  pipeline bails with a clear "deferred" message.
+- **AnimateDiff deferred.** True motion-adapter wiring
+  (temporal-attention injection into the UNet) is a different
+  category from prompt-morph animation and slated for a later
+  cycle.
 - **No CFG variations across frames.** Guidance is constant.
 - **No keyframe-style trajectories.** It's a single A → B lerp,
   not a multi-keyframe spline. Chain multiple `plakat animate`
