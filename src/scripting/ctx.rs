@@ -84,16 +84,16 @@ pub struct ScriptCtx {
     /// Flux or SD3 with a clear "v0.23" pointer (phase 6 wires
     /// Flux; phase 7 wires SD3).
     pub controlnets: Vec<ControlSpec>,
-    /// v0.22 phase 6: SDXL refiner toggle. `plakat.refiner.enable`
-    /// sets this to `true`; `plakat.refiner.disable` resets it.
+    /// v0.22 phase 6 + v0.23 phase 2: SDXL refiner toggle.
+    /// `plakat.refiner.enable` sets this to `true`;
+    /// `plakat.refiner.disable` resets it.
     ///
-    /// The actual SDXL refiner UNet load is **not yet wired**:
-    /// the cached `portrait::Pipeline` doesn't expose the
-    /// refiner-UNet slot the way `t2i::Pipeline` does. When
-    /// `refiner_enabled` is `true`, `script_entry::generate_one`
-    /// bails with a v0.23 phase 2 deferral message + remediation
-    /// hint. The toggle is shipped today so the surface is stable
-    /// for when the cache adds the SdT2i variant in v0.23 phase 1.
+    /// As of v0.23 phase 2, mutating this flag invalidates the
+    /// SdT2i slot via [`Self::mark_loras_changed`] so the next
+    /// `plakat.generate` reloads with `use_refiner` matching the
+    /// new value. The refiner UNet is SDXL-only; on non-SDXL
+    /// aliases the toggle warns + downgrades silently inside
+    /// [`Self::get_or_load_sd_t2i`].
     pub refiner_enabled: bool,
     /// v0.22 phase 7: ADetailer post-process toggle. When `true`,
     /// `script_entry::generate_one` runs `adetailer::refine_files`
@@ -270,14 +270,18 @@ impl ScriptCtx {
     /// `loaded` slot (which holds the portrait::Pipeline for
     /// `plakat.img2img` / `.portrait`).
     ///
-    /// Used by `plakat.generate`'s SD-family path so the v0.23
-    /// refiner UNet load (phase 2) and clip_skip wiring (phase 3)
-    /// have a `t2i::Pipeline` to land on.
+    /// Used by `plakat.generate`'s SD-family path so the
+    /// v0.23 phase 2 refiner UNet load and phase 3 clip_skip
+    /// wiring have a `t2i::Pipeline` to land on.
     ///
-    /// **use_refiner** is hardcoded to `false` in phase 1. Phase 2
-    /// will read `ctx.refiner_enabled` here. Refiner-enabled
-    /// scripts still bail at generate-request time until phase 2;
-    /// the toggle stays a no-op-with-a-bail until then.
+    /// **Refiner gating (v0.23 phase 2)**: `use_refiner` reads
+    /// `ctx.refiner_enabled`, but only for SDXL aliases. SD 1.5 /
+    /// SD 2.1 with the toggle on silently downgrade to
+    /// `use_refiner: false` and emit a one-time warn — mirrors
+    /// the CLI's `--refiner` behaviour. Toggling
+    /// `plakat.refiner.enable` / `.disable` invalidates this slot
+    /// via [`Self::mark_loras_changed`] so the next call rebuilds
+    /// with the new `use_refiner` value.
     pub fn get_or_load_sd_t2i(&mut self, alias: &str) -> Result<&mut t2i::Pipeline> {
         let hit = self
             .loaded_t2i
@@ -298,6 +302,32 @@ impl ScriptCtx {
                 self.loaded = None;
             }
 
+            // v0.23 phase 2: refiner UNet is SDXL-only. For non-SDXL
+            // aliases with the toggle on, downgrade silently with a
+            // warn rather than letting t2i::Pipeline::load bail (the
+            // bail would surface at plakat.load time, which is worse
+            // than a graceful downgrade).
+            let resolved = if alias.contains('/') {
+                alias.to_string()
+            } else {
+                crate::hf::resolve_alias(alias).to_string()
+            };
+            let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+            let use_refiner = if self.refiner_enabled && variant.is_xl() {
+                true
+            } else {
+                if self.refiner_enabled && !variant.is_xl() {
+                    tracing::warn!(
+                        target: "plakat",
+                        "plakat.refiner.enable is on, but model {alias:?} \
+                         resolves to {variant:?}, not SDXL. The SDXL refiner \
+                         UNet is SDXL-only; loading without it. Same as the \
+                         CLI's `--refiner` behaviour."
+                    );
+                }
+                false
+            };
+
             let device = self.device.clone();
             let loras = self.loras.clone();
             let lora_scale = self.config.lora_scale;
@@ -312,8 +342,7 @@ impl ScriptCtx {
                     device,
                     loras,
                     lora_scale,
-                    // v0.23 phase 2 will set this from ctx.refiner_enabled.
-                    use_refiner: false,
+                    use_refiner,
                     embeddings: Vec::new(),
                 }))
             })?;

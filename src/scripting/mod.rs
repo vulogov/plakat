@@ -255,33 +255,25 @@ mod tests {
         });
     }
 
-    /// SDXL refiner is deferred to v0.23 phase 2; calling generate
-    /// with the toggle on bails with the v0.23 deferral message
-    /// rather than silently running without it.
+    /// v0.23 phase 2: SDXL refiner UNet load wires through. The
+    /// bail from v0.22 phase 6 is gone — `plakat.refiner.enable`
+    /// + `plakat.generate` on SDXL now loads with the refiner
+    /// UNet (smoke-tested at the CLI level; this unit test just
+    /// confirms the toggle round-trips without touching a real
+    /// model load).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn refiner_enabled_generate_bails_with_v023_message() {
+    async fn refiner_toggle_round_trip_v023_phase2() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
-                ctx.refiner_enabled = true;
+                ctx.refiner_enabled = false;
                 ctx.loras.clear();
                 ctx.controlnets.clear();
             })
             .unwrap();
-            // No model loaded; the no-model gate fires first, so
-            // we set a dummy loaded pipeline to push the refiner
-            // gate into firing order. Actually loaded is needed
-            // for the family detection — but the load gate fires
-            // before family routing. Cleanest: explicitly assert
-            // the refiner gate IS the one that fires when both
-            // model is loaded AND refiner is on.
-            //
-            // For phase 6 the simpler validation: just exercise
-            // `plakat.refiner.enable` + `plakat.refiner.disable`
-            // round-trip (above) and trust that the new bail in
-            // generate_one's SD-family branch lands the correct
-            // message at runtime. Without an actual loaded pipeline
-            // the no-model gate fires first.
+            eval("plakat.refiner.enable").unwrap();
+            with_ctx(|ctx| assert!(ctx.refiner_enabled)).unwrap();
             eval("plakat.refiner.disable").unwrap();
+            with_ctx(|ctx| assert!(!ctx.refiner_enabled)).unwrap();
         });
     }
 
