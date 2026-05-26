@@ -1,12 +1,100 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.20. The current
+"What's new" sections for v0.13 through v0.21. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.21 — Bund scripting
+
+One big swing this cycle: `plakat run SCRIPT.bund` ships a
+stack-based DSL for driving plakat's pipelines from a script.
+Composition wins that were awkward at the CLI (`generate →
+upscale`, `generate → img2img → save`, multi-variation runs at a
+pinned seed) become one-liners; an interactive REPL on the same
+surface lands for exploration.
+
+### The seven `plakat.*` words
+
+```
+plakat.load        ( model-alias -- )
+plakat.generate    ( prompt -- handle )
+plakat.img2img     ( prompt input -- handle )      // input: path OR handle
+plakat.portrait    ( prompt photo -- handle )      // photo: path OR handle
+plakat.upscale     ( handle scale -- handle )      // Lanczos x2/x4
+plakat.save        ( handle path -- )
+plakat.config.set  ( value key -- )                // steps/guidance/seed/...
+```
+
+```bund
+"sdxl" plakat.load
+40   "steps"     plakat.config.set
+3.5  "guidance"  plakat.config.set
+"a fox in a meadow" plakat.generate    // handle 1
+  2 plakat.upscale                     // handle 2 (2048x2048)
+  "fox-2k.png" plakat.save
+"a fox in a meadow, painterly oil"
+  1  plakat.img2img                    // refine handle 1 → handle 3
+  "fox-refined.png" plakat.save
+```
+
+Handles address rendered images in an in-memory registry —
+chains compose without disk round-trips. Sources aren't consumed
+by downstream words, so the same generation can fan out into
+upscale + img2img + portrait variants from one root.
+
+### Interactive REPL
+
+```text
+$ plakat run --repl
+plakat REPL (v0.21). Type .help for commands, .q to exit.
+plakat> "sd15" plakat.load
+plakat> 50 "steps" plakat.config.set
+plakat> "a fox" plakat.generate
+=> 1
+plakat> "fox.png" plakat.save
+plakat> .s
+  [0] 1
+plakat> .q
+```
+
+Persistent state across lines, history at `<plakat-config-dir>/repl_history`,
+Forth-style meta-commands (`.q` / `.s` / `.help`), the `=>` echo
+shows the top of the workbench after each successful eval.
+
+### v0.21 limitations
+
+- **SD-family only** — `sd15`, `sd21`, `sdxl`, `sdxl-turbo`.
+  Flux + SD3 / SD3.5 bail at `plakat.load` with a clear "phase
+  2b" pointer; both land in v0.22.
+- **Single-photo portrait** — no FaceID / multi-photo / manual
+  landmarks. v0.22.
+- **Lanczos x2/x4 upscale only** — Real-ESRGAN ML upscaling in
+  v0.22.
+- **No LoRA / ControlNet / refiner words** — use the CLI directly
+  if you need them; the scripting surface stays minimal in v0.21.
+- **No pipeline cache** — every `plakat.generate` reloads the
+  model. Acceptable for the MVP; cache work is v0.22.
+
+### Documentation
+
+- [`SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md)
+  — narrative walkthrough: syntax in 60 seconds, every word with
+  examples, composition patterns, the REPL, limitations.
+- [`SCRIPTING.md`](SCRIPTING.md) — reference manual.
+- [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md)
+  — design RFC + the seven locked architectural decisions + phase
+  plan. Read if you're contributing a new `plakat.*` word.
+
+### By the numbers
+
+- 634 lib tests green (+65 new across the cycle).
+- 8 phase commits + 1 RFC commit + 1 release-notes commit.
+- 8 host words (7 MVP + `plakat.echo` smoke). 9 `GenerationConfig`
+  knobs.
 
 ## What's new in v0.20 — recipe replay, project bootstrap, Flux animate, Kontext + tiled
 
