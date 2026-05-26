@@ -23,35 +23,26 @@ use anyhow::{Context, Result, anyhow, bail};
 use image::DynamicImage;
 use std::path::{Path, PathBuf};
 
-use crate::pipelines::{flux, ip_adapter::WeightedPhoto, portrait, t2i};
+use crate::pipelines::{flux, ip_adapter::WeightedPhoto, portrait, sd3, t2i};
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::loaded_pipeline::PipelineFamily;
 
-/// v0.22 phase 2: legacy gate kept for back-compat with v0.21 tests.
+/// v0.22 phase 3: legacy gate kept for back-compat with v0.21 tests.
 /// New code should use [`ScriptCtx::ensure_loaded`] which handles
 /// the family dispatch itself.
 ///
-/// Returns `Err` for SD3 / SD3.5 (phase 3 lifts it). Flux is now
-/// accepted (phase 2 lifts the v0.21 phase-2b gate).
-pub fn validate_supported_for_phase_2(model: &str) -> Result<()> {
-    let variant = t2i::Variant::detect(model);
-    if variant.is_sd3() {
-        bail!(
-            "plakat.load: SD3 / SD3.5 models aren't wired in v0.22 \
-             phase 2 (got {model:?}). Phase 3 lands SD3 support. \
-             For now use SD-family aliases (sd15 / sd21 / sdxl / \
-             sdxl-turbo) or Flux aliases (flux-dev / flux-schnell / \
-             flux-fill-dev / flux-canny-dev / flux-depth-dev / \
-             flux-kontext-dev)."
-        );
-    }
+/// As of phase 3 every family plakat knows about is supported:
+/// SD-family, Flux, and SD3 / SD3.5. The function still exists for
+/// callers that want to validate before invoking the cache — it
+/// just returns `Ok` for everything now.
+pub fn validate_supported_for_phase_2(_model: &str) -> Result<()> {
     Ok(())
 }
 
 /// Pick the per-family default size used when the script hasn't
 /// set width / height explicitly. SD 1.5 / 2.1 → 512²;
-/// SDXL / SDXL-Turbo → 1024²; Flux → 1024². Reads the alias on
-/// `ctx.loaded`.
+/// SDXL / SDXL-Turbo → 1024²; Flux → 1024²; SD3 / SD3.5 → 1024².
+/// Reads the alias on `ctx.loaded`.
 fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
     let alias = ctx
         .loaded_model()
@@ -62,12 +53,23 @@ fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
         crate::hf::resolve_alias(alias).to_string()
     };
     let variant = t2i::Variant::detect(&resolved);
-    if variant.is_flux() {
-        (1024, 1024)
-    } else if variant.is_xl() {
+    if variant.is_flux() || variant.is_xl() || variant.is_sd3() {
         (1024, 1024)
     } else {
         (512, 512)
+    }
+}
+
+/// v0.22 phase 3: build the TiledConfig if the script enabled
+/// tiled denoise, else None. Shared across Flux + SD3.
+fn tiled_cfg_from(ctx: &ScriptCtx) -> Option<crate::pipelines::tiled::TiledConfig> {
+    if ctx.config.tiled {
+        Some(crate::pipelines::tiled::TiledConfig {
+            tile_size: ctx.config.tile_size,
+            stride: ctx.config.tile_stride,
+        })
+    } else {
+        None
     }
 }
 
@@ -93,10 +95,8 @@ fn build_flux_gen_request(
         count: 1,
         steps: Some(ctx.config.steps),
         // Honour user-set guidance; non-default (7.5) is suspicious
-        // on Flux but we pass it through with a config-set warning
-        // belongs at the documentation level, not silent override.
-        // The user can call `plakat.config.set "guidance" 3.5` to
-        // pin the BFL default.
+        // on Flux but we pass it through. The user can call
+        // `plakat.config.set "guidance" 3.5` to pin the BFL default.
         guidance: Some(ctx.config.guidance),
         seed: ctx.config.seed,
         out_dir,
@@ -105,9 +105,46 @@ fn build_flux_gen_request(
         mask: None,
         strength: Some(ctx.config.strength),
         concept_conditioning: None,
-        tiled: None,
+        tiled: tiled_cfg_from(ctx),
         redux_images: Vec::new(),
         kontext_bucket: ctx.config.kontext_bucket,
+        output_format: crate::imaging::io::OutputFormat::Png,
+    }
+}
+
+/// v0.22 phase 3: build an `sd3::GenRequest` from the script's
+/// config. SD3 lacks SD-family's `face_strength` + Flux's
+/// `kontext_bucket`; it has its own `mask_feather` + `mask_invert`
+/// not yet exposed at the script layer (v0.23 once
+/// `plakat.inpaint` lands).
+fn build_sd3_gen_request(
+    ctx: &ScriptCtx,
+    prompt: &str,
+    out_dir: PathBuf,
+    init_image: Option<PathBuf>,
+) -> sd3::GenRequest {
+    let (width, height) = if ctx.config.size_explicit {
+        (ctx.config.width, ctx.config.height)
+    } else {
+        default_size_for_loaded(ctx)
+    };
+    sd3::GenRequest {
+        prompt: prompt.to_string(),
+        negative: ctx.config.negative.clone(),
+        width,
+        height,
+        count: 1,
+        steps: Some(ctx.config.steps),
+        guidance: Some(ctx.config.guidance),
+        seed: ctx.config.seed,
+        out_dir,
+        init_image,
+        mask: None,
+        mask_feather: 0,
+        mask_invert: false,
+        strength: Some(ctx.config.strength),
+        tiled: tiled_cfg_from(ctx),
+        controlnet_conditioning: Vec::new(),
         output_format: crate::imaging::io::OutputFormat::Png,
     }
 }
@@ -209,10 +246,10 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                 .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
         }
         PipelineFamily::Sd3 => {
-            bail!(
-                "plakat.generate: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
-                 (got {alias:?}). Phase 3 lands SD3 support."
-            );
+            let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
+            let pipeline = ctx.get_or_load_sd3(&alias)?;
+            pipeline.generate(&req)
+                .context("sd3::Pipeline::generate (plakat.generate SD3 path)")?;
         }
     }
     read_rendered_png(&tmp_path)
@@ -321,10 +358,20 @@ pub fn img2img_one(
                 .context("flux::Pipeline::generate (plakat.img2img Flux path)")?;
         }
         PipelineFamily::Sd3 => {
-            bail!(
-                "plakat.img2img: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
-                 (got {alias:?}). Phase 3 lands SD3 support."
+            // SD3 img2img: GenRequest has init_image + strength
+            // built-in, same shape as Flux. Working size honours
+            // the snapped input dims.
+            let mut req = build_sd3_gen_request(
+                ctx,
+                prompt,
+                tmp_path.clone(),
+                Some(input_path.to_path_buf()),
             );
+            req.width = width;
+            req.height = height;
+            let pipeline = ctx.get_or_load_sd3(&alias)?;
+            pipeline.generate(&req)
+                .context("sd3::Pipeline::generate (plakat.img2img SD3 path)")?;
         }
     }
     read_rendered_png(&tmp_path)
@@ -349,9 +396,10 @@ pub fn portrait_one(
         })?
         .to_string();
 
-    // Portrait is SD-family-only. Flux has no IP-Adapter-Plus-Face
-    // checkpoint; SD3 isn't wired yet. Bail loud on either rather
-    // than load the wrong pipeline.
+    // Portrait is SD-family-only. Flux + SD3 have no shipped
+    // IP-Adapter-Plus-Face checkpoint, so neither can do
+    // identity-preserving portraits. Bail loud rather than
+    // silently loading the wrong pipeline.
     match PipelineFamily::detect(&alias) {
         PipelineFamily::Flux => bail!(
             "plakat.portrait: Flux has no IP-Adapter-Plus-Face \
@@ -359,8 +407,9 @@ pub fn portrait_one(
              identity-preserving portraits in v0.22."
         ),
         PipelineFamily::Sd3 => bail!(
-            "plakat.portrait: SD3 / SD3.5 isn't wired in v0.22 phase 2 \
-             (got {alias:?}). Phase 3 lands SD3 support."
+            "plakat.portrait: SD3 / SD3.5 has no IP-Adapter-Plus-Face \
+             checkpoint (got {alias:?}). Use SD 1.5 / SDXL for \
+             identity-preserving portraits."
         ),
         PipelineFamily::SdFamily => {}
     }
@@ -416,12 +465,13 @@ mod tests {
     }
 
     #[test]
-    fn phase_2_gate_rejects_sd3_aliases() {
+    fn phase_2_gate_accepts_sd3_aliases() {
+        // v0.22 phase 3 lifts the last family bail. Every family
+        // plakat knows now passes validate_supported_for_phase_2.
         for alias in &["sd35-medium", "sd35-large", "sd3-medium"] {
-            let err = validate_supported_for_phase_2(alias).unwrap_err();
-            let msg = format!("{err}");
-            assert!(msg.contains("SD3"), "alias {alias:?}: {msg}");
-            assert!(msg.contains("Phase 3"), "alias {alias:?}: {msg}");
+            validate_supported_for_phase_2(alias).unwrap_or_else(|e| {
+                panic!("SD3 alias {alias:?} should pass the gate in v0.22 phase 3: {e}")
+            });
         }
     }
 
