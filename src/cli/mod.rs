@@ -16,6 +16,7 @@ pub mod metadata;
 pub mod models;
 pub mod outpaint;
 pub mod portrait;
+pub mod run;
 pub mod scenario;
 pub mod style;
 pub mod stylize;
@@ -110,6 +111,11 @@ pub enum Command {
     /// `.gitignore`. Defaults to the current directory; pass DIR
     /// to write somewhere else.
     Init(init::InitArgs),
+    /// v0.21: evaluate a Bund script. Host words namespaced under
+    /// `plakat.*` drive the same pipelines `plakat generate` /
+    /// `img2img` / `portrait` / `upscale` use. See
+    /// `Documentation/RFC_v0.21_BUND_SCRIPTING.md` for the design.
+    Run(run::RunArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -160,5 +166,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Metadata(args) => metadata::run(args).await,
         Command::Clone(args) => clone::run(args).await,
         Command::Init(args) => init::run(args).await,
+        Command::Run(args) => {
+            let device = crate::device::select(&cli.device)?;
+            run::run(args, device).await
+        }
     }
 }

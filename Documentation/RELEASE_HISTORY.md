@@ -1,12 +1,150 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.19. The current
+"What's new" sections for v0.13 through v0.20. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.20 — recipe replay, project bootstrap, Flux animate, Kontext + tiled
+
+Nine features in three groups. v0.20 picks up where v0.19 left
+off on workflow polish (recipe-driven replay, project
+bootstrap, user-defined negative-preset catalogs, Civitai
+trigger-word display), then lands two unlock-grade composition
+wins: Flux Kontext + tiled denoise for hi-res reference edits,
+and Flux animate (T5 + CLIP-L lerp, flow-match per frame).
+
+### Top picks (3 features)
+
+- **`plakat generate --recipe FILE.json`**. Replay any prior
+  generation from its JSON sidecar. Recipe fields fill in only
+  where the CLI didn't set the flag explicitly — `--model`,
+  `--seed`, `--negative`, etc. pass through unchanged when you
+  override them. Useful for "re-render at higher steps" /
+  "swap one LoRA, keep everything else" iterations. The
+  prompt is never overridden — the recipe is structural, the
+  prompt is creative.
+
+  ```bash
+  # Re-render a v0.17 generation at higher quality
+  plakat generate "$(cat in.prompt)" --recipe in.json --steps 50
+  ```
+
+- **Flux + SD3 WebP output**. v0.19 shipped WebP on SD-family
+  only with a warn+fallback for the modern backbones. v0.20
+  threads `--format png|webp` through the Flux and SD3
+  pipelines too. WebP is ~30% smaller at perceptually-
+  equivalent quality; the JSON sidecar still works on every
+  backbone (so `plakat metadata` / `plakat clone` round-trip
+  unchanged).
+
+- **Civitai LoRA trigger-word display**. When a `--lora
+  civitai:NNNNNN` resolves (cache hit or fresh download),
+  plakat now prints the LoRA's trained trigger words inline:
+
+  ```text
+    ✦ Civitai LoRA 2595428 (v2614696) trigger words: watercolor_(medium), some_trigger
+      → consider adding these to your prompt for the LoRA to activate
+  ```
+
+  Silent LoRAs (no apparent effect because triggers were
+  missing from the prompt) is one of the most common
+  Civitai-LoRA friction points; this surfaces the fix at the
+  exact moment users need it.
+
+### Round-out (4 features)
+
+- **`plakat models aliases [--family F] [--repo] [--gated]`**.
+  Enumerates every `--model` short-name plakat recognises,
+  grouped by family. `--family flux` filters; `--repo` prints
+  bare HF repo ids (pipes into `xargs plakat models pull`);
+  `--gated` lists HF_TOKEN-only repos. Refactor: the
+  hand-written alias `match` became a static `ALIAS_TABLE`
+  so adding an entry updates both resolution and the listing.
+
+- **`plakat init [DIR]`**. Bootstraps a runnable starter
+  project — `scenario.hjson` (sd15, `enhancer: local`, two
+  tasks), `wildcards/` (subject / style / lighting with three
+  options each), and a focused `.gitignore`. Targets the
+  ungated SD 1.5 + on-device LLM enhancer so first-run users
+  with no HF token + no API key can generate end-to-end.
+  Companion fix: `scenario`'s enhancer validator gained the
+  `local` / `local:<alias>` / `auto` providers (previously
+  cloud-only — the gap is why a fresh init scenario couldn't
+  dry-run).
+
+- **User-defined negative-preset catalogs**. Drop a `.txt` file
+  into `<plakat-config-dir>/negative-presets/` and the
+  filename becomes a `--negative-preset` name. User files
+  override built-ins; safety-checked names; empty files fall
+  through to the built-in. Error output marks entries as
+  `<name> (user)` or `<name> (user override)`.
+
+- **`--enhance-keep-original`**. New flag on `plakat generate`
+  and `plakat portrait`: joins the enhancer's rewrite with
+  the user's original prompt via the SD-family `BREAK`
+  keyword (each chunk gets its own 77-token CLIP slot, so
+  original terms aren't diluted by the enhancer's added
+  detail). SD-family only by design; Flux / SD3 warn once
+  (their T5 ignores BREAK and has the budget to carry both
+  phrasings).
+
+### Big swings — Kontext + tiled, Flux animate (2 features)
+
+- **Flux Kontext + tiled denoise**. Lifts the v0.18 bail at
+  the Kontext + `--tiled` junction. Each tile slices the
+  matching region of the reference latent, packs it,
+  seq-concats onto the tile's noise tokens, pads CN
+  residuals for the reference half, runs forward, strips the
+  reference tail. Per-tile RoPE budget check fires up front
+  (Kontext + tiled doubles the per-tile sequence; the bail
+  interpolates the largest safe `--tile-size` into the error
+  message, typically ≤608 px for Kontext-dev).
+
+  ```bash
+  plakat generate "fold the dress into a flowing cape" \
+      --model flux-kontext-dev --concept-image portrait.jpg \
+      --size 2048x2048 --tiled --tile-size 512
+  ```
+
+- **Flux animate**. `plakat animate --model flux-dev` (and
+  `--model flux-schnell`) now work. Pre-encodes both endpoint
+  prompts through CLIP-L + T5-XXL **once**, then per frame:
+  lerp the `(clip_pooled, t5_emb)` pair → run Flux's
+  flow-match denoise → save. T5 encode dominates the cost,
+  so amortising it across frames is the whole point of
+  animate. New `pub fn animate_frame` on `flux::Pipeline`;
+  Kontext / Fill / Canny / Depth refused (no place for a
+  reference per call). Flux is guidance-distilled, so
+  `--negative` is a no-op (warns) and `--guidance` is the
+  scalar that goes straight to the model — drop to 3.5
+  (Dev) / 0.0 (Schnell).
+
+  ```bash
+  plakat animate \
+      --from "an oil painting of a fox in a meadow" \
+      --to   "an oil painting of a cat in a meadow" \
+      --frames 24 --seed 42 --guidance 3.5 \
+      --model flux-dev --size 1024x1024 --out ./morph --gif
+  ```
+
+### Deferred to v0.21
+
+- **SD3 / SD3.5 animate** — the three-encoder (CLIP-L +
+  CLIP-G + T5) lerp + MMDiT rectified-flow integrator wiring
+  is its own refactor. `plakat animate --model sd35-*` bails
+  with a clear "deferred" message; Flux animate in v0.20 is
+  the proving ground for the per-frame-encoding approach
+  SD3 will follow.
+- **AnimateDiff** — motion-adapter weights + temporal-attention
+  injection into the SD UNet. Genuinely new architecture
+  (not covered by candle 0.10.2); slated for v0.21+ as its
+  own multi-cycle effort rather than rushed into v0.20.
+
+569 lib tests green; +60 new tests across the cycle.
 
 ## What's new in v0.19 — local enhancer polish, partial-rerun, WebP, Kontext compositions
 

@@ -133,6 +133,14 @@ If you're new to plakat, work through these in order:
     choice (`sdxl-inpaint` / `sd15-inpaint` /
     `flux-fill-dev`), iterative-stage workflow.
 
+17. [`SCRIPTING_TUTORIAL.md`](SCRIPTING_TUTORIAL.md) — **v0.21.**
+    Drive plakat from a Bund script (`plakat run SCRIPT.bund`).
+    Stack-based syntax (Forth-flavoured), the seven `plakat.*`
+    host words (load + generate + img2img + portrait + upscale +
+    save + config.set), handle reuse for `generate → upscale →
+    save` chains, the interactive REPL (`plakat run --repl`),
+    composition patterns + limitations.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
@@ -170,6 +178,7 @@ feature:
 | `METADATA_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. One or more PNGs from a previous plakat / A1111 / Civitai run. |
 | `SCENARIOS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md` and (for the persona walkthrough) `PORTRAIT_TUTORIAL.md`. Optional API key for `enhancer: deepseek` / `gemini`. |
 | `OUTPAINT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md` and `IMG2IMG_TUTORIAL.md` (outpaint is a thin wrapper around the inpaint flow). An input image to extend. |
+| `SCRIPTING_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Stack-based syntax is unusual but the tutorial assumes no prior Forth experience. |
 
 ## When to use a reference manual instead
 
