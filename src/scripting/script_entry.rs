@@ -263,7 +263,7 @@ fn build_flux_gen_request(
 /// v0.22 phase 3: build an `sd3::GenRequest` from the script's
 /// config. SD3 lacks SD-family's `face_strength` + Flux's
 /// `kontext_bucket`; it has its own `mask_feather` + `mask_invert`
-/// not yet exposed at the script layer (v0.23 once
+/// not yet exposed at the script layer (v0.23 phase 5 once
 /// `plakat.inpaint` lands).
 fn build_sd3_gen_request(
     ctx: &ScriptCtx,
@@ -691,8 +691,9 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             if ctx.refiner_enabled {
                 bail!(
                     "plakat.generate: SDXL refiner from scripts is deferred \
-                     to v0.23 — the cached `portrait::Pipeline` doesn't \
-                     hold the refiner UNet slot. Workarounds: call \
+                     to v0.23 phase 2 — the cached `portrait::Pipeline` \
+                     doesn't hold the refiner UNet slot (the SdT2i variant \
+                     from v0.23 phase 1 will). Workarounds: call \
                      `plakat.refiner.disable` (same-model polish via \
                      `refine_steps`/`refine_strength` still works), or use \
                      `plakat generate --refiner` from the CLI directly."
@@ -744,8 +745,9 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             if !ctx.controlnets.is_empty() {
                 bail!(
                     "plakat.generate: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (Flux CN needs load-time setup; deferred to v0.23). \
-                     Call plakat.controlnet.clear before plakat.generate on Flux."
+                     phase 5 (Flux CN needs load-time setup; deferred to v0.23 \
+                     phase 6). Call plakat.controlnet.clear before plakat.generate \
+                     on Flux."
                 );
             }
             if ctx.adetailer_enabled {
@@ -780,8 +782,9 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             if !ctx.controlnets.is_empty() {
                 bail!(
                     "plakat.generate: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (SD3 CN needs load-time setup; deferred to v0.23). \
-                     Call plakat.controlnet.clear before plakat.generate on SD3."
+                     phase 5 (SD3 CN needs load-time setup; deferred to v0.23 \
+                     phase 7). Call plakat.controlnet.clear before plakat.generate \
+                     on SD3."
                 );
             }
             if ctx.adetailer_enabled {
@@ -881,8 +884,8 @@ pub fn img2img_one(
                 mask: None,
                 // v0.22 phase 11: knobs are declared but the mask
                 // path is not yet exposed at the script layer
-                // (v0.23 plakat.inpaint). The img2img pipeline
-                // honours these only when `mask` is set.
+                // (v0.23 phase 5 ships plakat.inpaint). The img2img
+                // pipeline honours these only when `mask` is set.
                 mask_feather: ctx.config.mask_feather,
                 mask_invert: ctx.config.mask_invert,
                 width,
@@ -940,8 +943,8 @@ pub fn img2img_one(
             if !ctx.controlnets.is_empty() {
                 bail!(
                     "plakat.img2img: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
-                     before plakat.img2img on Flux."
+                     phase 5 (deferred to v0.23 phase 6). Call \
+                     plakat.controlnet.clear before plakat.img2img on Flux."
                 );
             }
             if ctx.adetailer_enabled {
@@ -985,8 +988,8 @@ pub fn img2img_one(
             if !ctx.controlnets.is_empty() {
                 bail!(
                     "plakat.img2img: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
-                     before plakat.img2img on SD3."
+                     phase 5 (deferred to v0.23 phase 7). Call \
+                     plakat.controlnet.clear before plakat.img2img on SD3."
                 );
             }
             if ctx.adetailer_enabled {

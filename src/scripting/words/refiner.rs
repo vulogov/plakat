@@ -24,11 +24,12 @@
 //!   `refiner_frac`): the toggle exists today but loading the
 //!   actual refiner UNet requires switching the SD-family cache
 //!   from `portrait::Pipeline` to `t2i::Pipeline` (the only
-//!   pipeline that holds an optional `refiner_unet`). That's a
-//!   v0.23 refactor. Setting `refiner_enabled = true` and then
-//!   calling `plakat.generate` bails with a clear deferral
-//!   message + the workaround (use the CLI's `--refiner` for
-//!   now, or `plakat.refiner.disable`).
+//!   pipeline that holds an optional `refiner_unet`). That's
+//!   v0.23 phase 2 (after v0.23 phase 1's SdT2i variant lands).
+//!   Setting `refiner_enabled = true` and then calling
+//!   `plakat.generate` bails with a clear deferral message +
+//!   the workaround (use the CLI's `--refiner` for now, or
+//!   `plakat.refiner.disable`).
 //!
 //! Cache invalidation: the SDXL refiner is a load-time pipeline
 //! feature (the refiner-UNet weights are mmapped at load), so

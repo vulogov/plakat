@@ -103,13 +103,14 @@ pub struct GenerationConfig {
     /// Only meaningful when `plakat.refiner.enable` is in effect
     /// AND the loaded model is SDXL. Declared in phase 6 for
     /// completeness; the actual refiner-UNet load lands in v0.23
-    /// once the SD-family cache switches to `t2i::Pipeline`.
+    /// phase 2 once the SD-family cache switches to `t2i::Pipeline`
+    /// (v0.23 phase 1, the SdT2i variant).
     pub refiner_frac: f32,
     /// v0.22 phase 6: `plakat.style.*`-related strength multiplier
-    /// in [0, 1]. Declared today; the apply / detect / clear
-    /// words are deferred to v0.23 (catalog-integration scope is
-    /// bigger than the phase-6 budget). Documented as a known
-    /// shipping-but-no-op key — same approach as Flux's
+    /// in [0, 1]. Declared today; the apply / detect / clear / list
+    /// words land in v0.23 phase 4 (catalog-integration scope is
+    /// bigger than the v0.22 phase-6 budget). Documented as a
+    /// known shipping-but-no-op key — same approach as Flux's
     /// `kontext_bucket` before phase 2 wired it.
     pub style_strength: f32,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
@@ -220,7 +221,7 @@ pub struct GenerationConfig {
     /// meaningful when img2img is invoked with a mask.
     /// `plakat.img2img` doesn't yet expose a mask path argument
     /// in v0.22; the knob is declared today so the surface is
-    /// stable for v0.23's `plakat.inpaint`.
+    /// stable for v0.23 phase 5's `plakat.inpaint`.
     pub mask_feather: u32,
     /// v0.22 phase 11: invert mask polarity (treat black as
     /// inpaint). Default false. Same deferred-wiring story as
@@ -232,14 +233,15 @@ pub struct GenerationConfig {
     /// SDXL / Flux / SD3 ignore. The script-layer wiring is
     /// **declared but no-op in v0.22 phase 11**: clip_skip lives
     /// on `t2i::Pipeline`, not `portrait::Pipeline`; full
-    /// threading lands in v0.23 when the cache switches.
+    /// threading lands in v0.23 phase 3 (after the v0.23 phase 1
+    /// cache switch adds the SdT2i slot).
     pub clip_skip: usize,
     /// v0.22 phase 11: wildcard directory for `__name__` prompt
     /// expansion. Empty (default) → no file-wildcard expansion
-    /// (inline `{a|b|c}` still works). Same deferred-wiring as
-    /// `clip_skip`: the prompt-expansion call site is in the
-    /// CLI's `expand_prompt_wildcards`; v0.22 declares the knob,
-    /// v0.23 will plumb it through `generate_one`.
+    /// (inline `{a|b|c}` still works). Wired into
+    /// [`super::script_entry::expand_prompt`], called at the top of
+    /// `generate_one` / `img2img_one` / `portrait_one` so all
+    /// three image-producing words honour it.
     pub wildcard_dir: String,
     /// v0.22 phase 11: bundled negative-prompt preset name. One
     /// of `photo` / `painting` / `anime` / `cinematic` (or any
