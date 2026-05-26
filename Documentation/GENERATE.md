@@ -1451,9 +1451,10 @@ plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
 ## `plakat animate`
 
 Frame-by-frame prompt-morph animation. Encodes two prompts
-through CLIP-L once, then runs the denoise loop N times with
-linearly-lerped hidden states. The shared seed keeps the initial
-noise constant so the morph is smooth rather than flickery.
+through the relevant text encoders **once**, then runs the
+denoise loop N times with linearly-lerped hidden states. The
+shared seed keeps the initial noise constant so the morph is
+smooth rather than flickery.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -1461,22 +1462,32 @@ noise constant so the morph is smooth rather than flickery.
 | `--to <STR>` | (required) | Frame N-1's prompt. |
 | `--frames <N>` | `16` | Frame count (≥ 2). |
 | `--seed <U64>` | (random) | Shared seed for every frame. Locking it produces smooth morphs. |
-| `--model <ALIAS>` | `sd15` | SD-family only. SDXL / Flux / SD3 bail loud. |
-| `--size <WxH>` | `512x512` | Output dims; must be /8. |
+| `--model <ALIAS>` | `sd15` | SD 1.5 / 2.1 / SDXL or Flux Dev / Schnell (v0.20). SD3 / 3.5 + Flux Kontext / Fill / Canny / Depth bail loud. |
+| `--size <WxH>` | `512x512` | Output dims; must be /8 on SD, /16 on Flux. |
 | `--steps <N>` | `20` | Steps per frame. Lower OK for animations. |
-| `--guidance <F>` | `7.5` | CFG, shared across frames. |
-| `--negative <STR>` | `""` | Negative prompt, shared. |
-| `--scheduler <KIND>` | `default` | Same options as `plakat generate`. |
+| `--guidance <F>` | `7.5` | CFG, shared across frames. **Flux only**: drop to `3.5` (Dev) or `0` (Schnell) — Flux is guidance-distilled, the scalar is fed directly to the model. |
+| `--negative <STR>` | `""` | Negative prompt, shared. **Ignored on Flux** (no CFG batching to steer); animate warns if you pass one. |
+| `--scheduler <KIND>` | `default` | SD-family only. Flux animate uses BFL's flow-match schedule unconditionally. |
 | `--out <DIR>` | `./out` | Frames land as `frame-NNNN.png`. |
 | `--gif` | off | Bundle frames into `<out>/animation.gif`. |
 | `--gif-delay-ms <N>` | `100` | GIF frame delay. 100=10fps, 41≈24fps, 33≈30fps. |
 
 ```bash
+# SD 1.5
 plakat animate \
     --from "a photo of a fox in a meadow" \
     --to "a photo of a cat in a meadow" \
     --frames 24 --seed 42 \
     --model sd15 --out ./fox_to_cat --gif
+
+# Flux Dev — pre-encodes both endpoints' CLIP-L pooled + T5
+# states once, lerps them per frame. T5 encode dominates the
+# load cost so amortising it across frames is the whole point.
+plakat animate \
+    --from "an oil painting of a fox in a meadow" \
+    --to   "an oil painting of a cat in a meadow" \
+    --frames 24 --seed 42 --steps 20 --guidance 3.5 \
+    --model flux-dev --size 1024x1024 --out ./flux_morph --gif
 ```
 
 Full walkthrough + composition tips:
