@@ -264,6 +264,15 @@ fn build_gen_request(
 /// or `plakat-img2img-<seed>.png`; we don't try to predict the
 /// filename — we just grab the single PNG file.
 fn read_rendered_png(dir: &Path) -> Result<DynamicImage> {
+    let path = find_rendered_png(dir)?;
+    image::open(&path)
+        .with_context(|| format!("reading rendered PNG {}", path.display()))
+}
+
+/// Same locator as [`read_rendered_png`] but returns the path
+/// so callers (e.g. ADetailer post-process) can operate on the
+/// file in place before the final load.
+fn find_rendered_png(dir: &Path) -> Result<PathBuf> {
     let entry = std::fs::read_dir(dir)
         .with_context(|| format!("reading tempdir {}", dir.display()))?
         .filter_map(|e| e.ok())
@@ -281,8 +290,70 @@ fn read_rendered_png(dir: &Path) -> Result<DynamicImage> {
                 dir.display()
             )
         })?;
-    image::open(entry.path())
-        .with_context(|| format!("reading rendered PNG {}", entry.path().display()))
+    Ok(entry.path())
+}
+
+/// v0.22 phase 7: snapshot of ADetailer inputs that can be built
+/// *before* the cached pipeline is borrowed. Keeps the post-process
+/// out of the `ctx` borrow scope (the cached pipeline mutably
+/// borrows `ctx`, so we can't reach back into `ctx.config` while
+/// holding that borrow).
+struct AdetailerArgs {
+    enabled: bool,
+    cfg: crate::pipelines::adetailer::Config,
+}
+
+impl AdetailerArgs {
+    fn from_ctx(ctx: &ScriptCtx, alias: &str) -> Self {
+        let mut cfg = crate::pipelines::adetailer::Config::defaults();
+        cfg.model = alias.to_string();
+        cfg.device = ctx.device.clone();
+        cfg.prompt = ctx.config.adetailer_prompt.clone();
+        cfg.negative = ctx.config.negative.clone();
+        cfg.strength = ctx.config.adetailer_strength;
+        cfg.working_size = ctx.config.adetailer_size;
+        cfg.steps = ctx.config.steps;
+        cfg.guidance = ctx.config.guidance as f64;
+        cfg.scheduler = ctx.config.scheduler;
+        cfg.confidence = ctx.config.adetailer_confidence;
+        cfg.padding = ctx.config.adetailer_padding;
+        cfg.feather = ctx.config.adetailer_feather;
+        Self {
+            enabled: ctx.adetailer_enabled,
+            cfg,
+        }
+    }
+}
+
+/// v0.22 phase 7: run ADetailer on the rendered PNG in place.
+/// Reuses the cached `portrait::Pipeline`'s `SdCore` so no second
+/// model load happens. Caller is responsible for the family check
+/// (Flux + SD3 bail loud before reaching here).
+fn apply_adetailer_sd(
+    acfg: &crate::pipelines::adetailer::Config,
+    rendered: &Path,
+    pipeline: &portrait::Pipeline,
+) -> Result<()> {
+    let shared_core = Some(pipeline.core());
+    let files = vec![rendered.to_path_buf()];
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.adetailer: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+    let n = tokio::task::block_in_place(|| {
+        handle.block_on(crate::pipelines::adetailer::refine_files(
+            acfg, &files, shared_core,
+        ))
+    })
+    .context("adetailer::refine_files (plakat post-process)")?;
+    tracing::info!(
+        target: "plakat",
+        "plakat.adetailer: refined {n} face(s) on {}",
+        rendered.display()
+    );
+    Ok(())
 }
 
 /// v0.22 phase 2: render one image. Dispatches on the loaded
@@ -326,9 +397,17 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             let control_owned =
                 resolve_sd_controlnets(ctx, &alias, req.width, req.height, None)?;
             let control_reqs = controlnets_to_requests(&control_owned);
+            // v0.22 phase 7: snapshot adetailer inputs *before* the
+            // cached-pipeline borrow so the post-process can run
+            // while we still hold the pipeline reference.
+            let adargs = AdetailerArgs::from_ctx(ctx, &alias);
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             pipeline.generate(&req, &control_reqs)
                 .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+            if adargs.enabled {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+            }
         }
         PipelineFamily::Flux => {
             if !ctx.controlnets.is_empty() {
@@ -336,6 +415,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     "plakat.generate: ControlNet on Flux isn't wired in v0.22 \
                      phase 5 (Flux CN needs load-time setup; deferred to v0.23). \
                      Call plakat.controlnet.clear before plakat.generate on Flux."
+                );
+            }
+            if ctx.adetailer_enabled {
+                bail!(
+                    "plakat.generate: ADetailer is SD-family only in v0.22 \
+                     phase 7 — SCRFD + the face img2img pass require an SD \
+                     backbone. Call plakat.adetailer.disable before \
+                     plakat.generate on Flux."
                 );
             }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
@@ -349,6 +436,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     "plakat.generate: ControlNet on SD3 isn't wired in v0.22 \
                      phase 5 (SD3 CN needs load-time setup; deferred to v0.23). \
                      Call plakat.controlnet.clear before plakat.generate on SD3."
+                );
+            }
+            if ctx.adetailer_enabled {
+                bail!(
+                    "plakat.generate: ADetailer is SD-family only in v0.22 \
+                     phase 7 — SCRFD + the face img2img pass require an SD \
+                     backbone. Call plakat.adetailer.disable before \
+                     plakat.generate on SD3."
                 );
             }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
@@ -433,6 +528,8 @@ pub fn img2img_one(
                 // resolves the specs internally.
                 controls: ctx.controlnets.clone(),
             };
+            // v0.22 phase 7: adetailer snapshot before pipeline borrow.
+            let adargs = AdetailerArgs::from_ctx(ctx, &alias);
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             // run_with_pipeline is async; bridge via block_in_place.
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
@@ -447,6 +544,10 @@ pub fn img2img_one(
                 ))
             })
             .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+            if adargs.enabled {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+            }
         }
         PipelineFamily::Flux => {
             if !ctx.controlnets.is_empty() {
@@ -454,6 +555,13 @@ pub fn img2img_one(
                     "plakat.img2img: ControlNet on Flux isn't wired in v0.22 \
                      phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
                      before plakat.img2img on Flux."
+                );
+            }
+            if ctx.adetailer_enabled {
+                bail!(
+                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                     phase 7. Call plakat.adetailer.disable before \
+                     plakat.img2img on Flux."
                 );
             }
             // Flux img2img threads `init_image` + `strength` through
@@ -478,6 +586,13 @@ pub fn img2img_one(
                     "plakat.img2img: ControlNet on SD3 isn't wired in v0.22 \
                      phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
                      before plakat.img2img on SD3."
+                );
+            }
+            if ctx.adetailer_enabled {
+                bail!(
+                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                     phase 7. Call plakat.adetailer.disable before \
+                     plakat.img2img on SD3."
                 );
             }
             // SD3 img2img: GenRequest has init_image + strength
@@ -557,9 +672,15 @@ pub fn portrait_one(
     // Normalize photo weights (the pipeline's invariant).
     crate::pipelines::ip_adapter::normalize_photo_weights(&mut req.photos)?;
 
+    // v0.22 phase 7: adetailer snapshot before pipeline borrow.
+    let adargs = AdetailerArgs::from_ctx(ctx, &alias);
     let pipeline = ctx.get_or_load_sd_family(&alias)?;
     pipeline.generate(&req, &[])
         .context("portrait::Pipeline::generate (plakat.portrait path)")?;
+    if adargs.enabled {
+        let rendered = find_rendered_png(tmp.path())?;
+        apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+    }
     read_rendered_png(tmp.path())
 }
 
