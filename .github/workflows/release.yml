@@ -131,18 +131,47 @@ jobs:
       # -----------------------------------------------------------------
       # Linux cross-compile prerequisites (aarch64 only).
       # -----------------------------------------------------------------
+      # v0.22 broke the previously-C-free dep graph: rust_dynamic 0.49
+      # → neurons → plotters (default features) → font-kit →
+      # yeslogic-fontconfig-sys. The build script wants a fontconfig
+      # sysroot for the cross target; we install libfontconfig1-dev:arm64
+      # via dpkg multiarch and point pkg-config at it.
+      #
+      # GH-hosted Ubuntu runners default their apt sources to amd64
+      # only, so we have to splice in the ports.ubuntu.com mirror for
+      # arm64 before `apt-get install :arm64` will find anything.
       - name: Install aarch64 Linux cross toolchain
         if: matrix.cross_linux
         run: |
+          # Restrict the default amd64 sources so apt doesn't try to
+          # fetch arm64 from archive.ubuntu.com (which doesn't host it
+          # and would 404 on every package).
+          sudo sed -i 's|^deb http|deb [arch=amd64] http|g' /etc/apt/sources.list
+          # Add the arm64 ports mirror (Ubuntu jammy is what ubuntu-22.04
+          # runs; if the runner image upgrades to 24.04 noble we'd need
+          # to bump this).
+          {
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse"
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse"
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse"
+          } | sudo tee /etc/apt/sources.list.d/arm64.list
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            pkg-config \
+            libfontconfig1-dev:arm64
           # Tell cargo which linker to use for the aarch64 target.
-          # No OpenSSL sysroot needed — hf-hub + reqwest both use
-          # rustls (pure Rust TLS), so the dep graph is C-free.
+          # PKG_CONFIG_* vars route fontconfig discovery at the arm64
+          # multiarch path (no separate sysroot — multiarch layouts
+          # leave headers/libs under /usr/{include,lib}/aarch64-linux-gnu/).
           {
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
             echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig"
+            echo "PKG_CONFIG_ALLOW_CROSS_aarch64_unknown_linux_gnu=1"
+            echo "PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/"
           } >> "$GITHUB_ENV"
 
       # -----------------------------------------------------------------
