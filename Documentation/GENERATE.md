@@ -504,11 +504,12 @@ For outputs above the model's trained working resolution (4K SDXL,
 Composes with: GGUF + LoRA + img2img on Flux; ControlNet on
 SDXL and Flux (each tile gets its CN conditioning cropped to its
 region); **Flux.1-Fill-dev** (per-tile masked-latent + mask
-packing); **SD3 / SD3.5 img2img + inpaint** (the rectified-flow
-init lerp + RePaint mask blend compose with the per-tile
-velocity blend). Does **not** compose with the SDXL refiner,
-Flux concept variants (Canny-dev / Depth-dev), SD3 ControlNet,
-or `--hires-fix`.
+packing); **Flux.1-Kontext-dev** (per-tile reference-image
+slicing — see "Kontext + tiled" below); **SD3 / SD3.5 img2img
++ inpaint** (the rectified-flow init lerp + RePaint mask blend
+compose with the per-tile velocity blend). Does **not** compose
+with the SDXL refiner, Flux concept variants (Canny-dev /
+Depth-dev), SD3 ControlNet, or `--hires-fix`.
 
 SD3 / SD3.5 join the tiled lineup. MMDiT's `pos_embed_max_size`
 caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
@@ -534,6 +535,33 @@ plakat generate ".." --model flux-dev --size 2048x2048 \
 plakat generate ".." --model sd35-medium --size 2048x2048 \
  --tiled --tile-size 1024 --tile-stride 768
 ```
+
+#### Kontext + tiled (v0.20)
+
+Flux.1-Kontext-dev composes with `--tiled` for hi-res
+reference-image edits. Each tile slices the matching region of
+the reference latent, packs it, and seq-concats onto the tile's
+noise tokens — so a 2K edit of a 2K reference image stays
+spatially aligned without OOM.
+
+```bash
+plakat generate "fold the dress into a flowing cape" \
+ --model flux-kontext-dev --concept-image portrait.jpg \
+ --size 2048x2048 --tiled --tile-size 512 --tile-stride 384
+```
+
+**Tile-size constraint**: each tile attends over
+`t5 + noise + reference` tokens, and the noise + ref halves are
+the same size — so Kontext + tiled hits Flux's RoPE budget
+(4096 tokens) much faster than tiled alone. At `--tile-size 512`
+the per-tile attention seq is ~2560 (safe); at `--tile-size 1024`
+it would be ~8700 (rejected). The pipeline bails up front with
+the largest safe `--tile-size` for the current model in the
+error message — typically `≤ 608` for Kontext-dev.
+
+Reference must be passed via `--concept-image`. Composes with
+`--control-spec` (CN residuals zero-pad the reference half) and
+`--redux-image` (subject to the same combined RoPE budget).
 
 ### Artefact compositing
 
