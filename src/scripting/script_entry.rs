@@ -118,6 +118,51 @@ fn resolve_negative(ctx: &ScriptCtx) -> String {
     }
 }
 
+/// v0.23 phase 4: resolve the script's active style state (id +
+/// ref) against the catalog. Returns `None` when neither is set;
+/// otherwise builds a [`StylePrepRequest`] for the current alias
+/// and dispatches to [`prepare_style`].
+///
+/// The async bridge follows the same pattern as the other
+/// post-process helpers — `block_in_place` + `block_on` on the
+/// current tokio handle. CLIP-H is lazy-loaded inside
+/// `prepare_style` only when `style_ref` is set (.detect path);
+/// `style_id` alone (.apply path) only needs the catalog JSON +
+/// the SD-family per-model entries.
+fn resolve_style_for_generate(
+    ctx: &ScriptCtx,
+    alias: &str,
+) -> Result<Option<crate::style::StylePrep>> {
+    if ctx.style_id.is_none() && ctx.style_ref.is_none() {
+        return Ok(None);
+    }
+    let catalog_dir = if ctx.config.style_catalog.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&ctx.config.style_catalog))
+    };
+    let req = crate::style::StylePrepRequest {
+        style_ref: ctx.style_ref.as_deref(),
+        style_override: ctx.style_id.as_deref(),
+        style_strength: ctx.config.style_strength,
+        style_catalog: catalog_dir.as_deref(),
+        model: alias,
+        user_loras_nonempty: !ctx.loras.is_empty(),
+        device: &ctx.device,
+    };
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.style: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+    let prep = tokio::task::block_in_place(|| {
+        handle.block_on(crate::style::prepare_style(req))
+    })
+    .context("style catalog resolve (plakat.style.* lazy resolve)")?;
+    Ok(Some(prep))
+}
+
 /// v0.22 phase 11: expand the prompt against `config.wildcard_dir`
 /// (`__name__` file wildcards + inline `{a|b|c}` alternation).
 /// When `wildcard_dir` is empty, only inline alternation expands.
@@ -741,7 +786,43 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             // `refiner_frac` (default 0.8 = last 20% of steps).
             // Non-SDXL aliases silently downgrade with a warn —
             // gating happens inside `get_or_load_sd_t2i`.
-            let req = build_t2i_gen_request(ctx, prompt, tmp_path.clone());
+
+            // v0.23 phase 4: resolve the active style (if any)
+            // BEFORE borrowing the pipeline. The resolve produces
+            // catalog LoRAs that override the user LoRA stack for
+            // this load, plus a trigger phrase that prepends to
+            // the prompt and negative_extras that append to the
+            // negative. We temporarily swap `ctx.loras` so the
+            // loader sees the catalog LoRAs; restored after the
+            // pipeline borrow releases. CLI parity:
+            // `cli::generate::apply_style` does the same overwrite.
+            let style_prep = resolve_style_for_generate(ctx, &alias)?;
+            let user_loras_snapshot = if style_prep.is_some() {
+                Some(ctx.loras.clone())
+            } else {
+                None
+            };
+            // Compose the effective prompt + negative from style.
+            let (effective_prompt, effective_negative_extras): (String, String) =
+                match style_prep.as_ref() {
+                    Some(prep) => (
+                        crate::style::prepend_trigger(&prep.trigger, prompt),
+                        prep.negative_extras.clone(),
+                    ),
+                    None => (prompt.to_string(), String::new()),
+                };
+            // Mutate ctx.loras to the style-resolved set (CLI
+            // behavior: style overwrites user LoRAs).
+            if let Some(prep) = style_prep.as_ref() {
+                ctx.loras = crate::style::parse_resolved_loras(prep)
+                    .context("parsing resolved style LoRAs into LoraSpec")?;
+            }
+
+            let mut req = build_t2i_gen_request(ctx, &effective_prompt, tmp_path.clone());
+            // Append style's negative_extras to the request negative.
+            if !effective_negative_extras.is_empty() {
+                req.negative = crate::style::combine_negative(&req.negative, &effective_negative_extras);
+            }
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
             // pipeline. The owned data lives on this frame for the
@@ -755,9 +836,9 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             // --hires-fix is combined with --artefact / --artefact-blend;
             // we mirror that gate here.
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
-            let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
+            let hargs = HiresArgs::from_ctx(ctx, &alias, &effective_prompt)?;
             let aargs = ArtefactArgs::from_ctx(
-                ctx, &alias, prompt, req.width, req.height,
+                ctx, &alias, &effective_prompt, req.width, req.height,
             );
             if !aargs.is_empty() && hargs.enabled {
                 bail!(
@@ -767,13 +848,25 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      before plakat.generate."
                 );
             }
-            let pipeline = ctx.get_or_load_sd_t2i(&alias)?;
-            pipeline.generate(&req, &control_reqs)
-                .context("t2i::Pipeline::generate (plakat.generate SD path)")?;
+            // Scope-bound pipeline borrow so we can restore
+            // ctx.loras after the generate call returns.
+            let shared_core = {
+                let pipeline = ctx.get_or_load_sd_t2i(&alias)?;
+                pipeline.generate(&req, &control_reqs)
+                    .context("t2i::Pipeline::generate (plakat.generate SD path)")?;
+                pipeline.core()
+            };
+            // Restore user LoRA stack now that the pipeline borrow
+            // is released. Subsequent generate calls with the same
+            // style cache-hit the pipeline (loaded with style
+            // LoRAs); the user-visible LoRA stack returns to what
+            // the user actually configured.
+            if let Some(snap) = user_loras_snapshot {
+                ctx.loras = snap;
+            }
             // v0.23 phase 1: post-process helpers take Arc<SdCore>
             // directly (pipeline-agnostic) so they work after either
             // a t2i or portrait pipeline produced the image.
-            let shared_core = pipeline.core();
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
                 apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
@@ -819,6 +912,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      Call plakat.artefact.clear before plakat.generate on Flux."
                 );
             }
+            if ctx.style_id.is_some() || ctx.style_ref.is_some() {
+                bail!(
+                    "plakat.generate: plakat.style.* is SD-family only in \
+                     v0.23 phase 4 — Flux style integration isn't wired \
+                     in the runtime yet. Call plakat.style.clear before \
+                     plakat.generate on Flux."
+                );
+            }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
@@ -854,6 +955,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     "plakat.generate: artefacts are SD-family only in v0.22 \
                      phase 9 — the optional blend pass uses portrait::Pipeline. \
                      Call plakat.artefact.clear before plakat.generate on SD3."
+                );
+            }
+            if ctx.style_id.is_some() || ctx.style_ref.is_some() {
+                bail!(
+                    "plakat.generate: plakat.style.* is SD-family only in \
+                     v0.23 phase 4 — SD3 style integration isn't wired in \
+                     the runtime yet. Call plakat.style.clear before \
+                     plakat.generate on SD3."
                 );
             }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
@@ -1268,6 +1377,8 @@ mod tests {
             hires_enabled: false,
             artefacts: Vec::new(),
             artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;

@@ -122,6 +122,20 @@ pub struct ScriptCtx {
     /// zones after compositing — smooths hard edges. Same
     /// behaviour as the CLI's `--artefact-blend` flag.
     pub artefact_blend_enabled: bool,
+    /// v0.23 phase 4: active style id (set by `plakat.style.apply`).
+    /// When `Some`, the next SD-family `plakat.generate` resolves
+    /// the style against the catalog at request-build time:
+    /// catalog LoRAs replace user LoRAs (with a warn), trigger
+    /// phrase prepends to the prompt, and `negative_extras`
+    /// appends to the negative. Mirrors `--style ID`.
+    pub style_id: Option<String>,
+    /// v0.23 phase 4: reference photo for detection-based style
+    /// pick (set by `plakat.style.detect`). When `Some` AND
+    /// `style_id` is `None`, generate runs detection through
+    /// CLIP-H + cosine-matches against the catalog. When both
+    /// are `Some`, the photo runs detection (for logging) but
+    /// `style_id` wins. Mirrors `--style-ref PATH`.
+    pub style_ref: Option<std::path::PathBuf>,
 }
 
 impl ScriptCtx {
@@ -147,6 +161,8 @@ impl ScriptCtx {
             hires_enabled: false,
             artefacts: Vec::new(),
             artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -665,6 +681,8 @@ mod tests {
             hires_enabled: false,
             artefacts: Vec::new(),
             artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
         }
     }
 
