@@ -70,6 +70,17 @@ pub struct ScriptCtx {
     /// paths bail if `controlnets` is non-empty when running on
     /// Flux or SD3 with a clear "v0.23" pointer.
     pub controlnets: Vec<ControlSpec>,
+    /// v0.22 phase 6: SDXL refiner toggle. `plakat.refiner.enable`
+    /// sets this to `true`; `plakat.refiner.disable` resets it.
+    ///
+    /// The actual SDXL refiner UNet load is **not yet wired**:
+    /// the cached `portrait::Pipeline` doesn't expose the
+    /// refiner-UNet slot the way `t2i::Pipeline` does. When
+    /// `refiner_enabled` is `true`, `script_entry::generate_one`
+    /// bails with a v0.23 deferral message + remediation hint.
+    /// The toggle is shipped today so the surface is stable for
+    /// when the cache switches to `t2i::Pipeline`.
+    pub refiner_enabled: bool,
 }
 
 impl ScriptCtx {
@@ -89,6 +100,7 @@ impl ScriptCtx {
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
+            refiner_enabled: false,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -477,6 +489,7 @@ mod tests {
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
+            refiner_enabled: false,
         }
     }
 

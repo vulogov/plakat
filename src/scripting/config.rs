@@ -88,6 +88,30 @@ pub struct GenerationConfig {
     /// of each individual `plakat.lora.add` weight. Default 1.0.
     /// At 0.5 every LoRA's effective scale is halved.
     pub lora_scale: f32,
+    /// v0.22 phase 6: same-model polish refine steps. `Some(N)`
+    /// appends N extra denoise steps at low strength after the
+    /// main loop, using the same model — useful for sharpening.
+    /// `None` (the default) disables the polish pass.
+    /// SD-family only; ignored on Flux + SD3.
+    pub refine_steps: Option<usize>,
+    /// v0.22 phase 6: polish-pass denoise strength in [0, 1].
+    /// Default 0.3. Lower = subtler (mostly preserves the main
+    /// pass); higher = more rework of the existing image.
+    pub refine_strength: f32,
+    /// v0.22 phase 6: fraction of the schedule at which the SDXL
+    /// refiner UNet takes over (default 0.8 = last 20% of steps).
+    /// Only meaningful when `plakat.refiner.enable` is in effect
+    /// AND the loaded model is SDXL. Declared in phase 6 for
+    /// completeness; the actual refiner-UNet load lands in v0.23
+    /// once the SD-family cache switches to `t2i::Pipeline`.
+    pub refiner_frac: f32,
+    /// v0.22 phase 6: `plakat.style.*`-related strength multiplier
+    /// in [0, 1]. Declared today; the apply / detect / clear
+    /// words are deferred to v0.23 (catalog-integration scope is
+    /// bigger than the phase-6 budget). Documented as a known
+    /// shipping-but-no-op key — same approach as Flux's
+    /// `kontext_bucket` before phase 2 wired it.
+    pub style_strength: f32,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -120,6 +144,10 @@ impl Default for GenerationConfig {
             tile_size: 1024,
             tile_stride: 768,
             lora_scale: 1.0,
+            refine_steps: None,
+            refine_strength: 0.3,
+            refiner_frac: 0.8,
+            style_strength: 1.0,
             size_explicit: false,
         }
     }
@@ -204,6 +232,31 @@ impl GenerationConfig {
                 }
                 self.lora_scale = f as f32;
             }
+            "refine_steps" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 {
+                    bail!(
+                        "plakat.config.set: refine_steps must be > 0 (got 0). \
+                         Use `plakat.refiner.disable` to skip the polish pass."
+                    );
+                }
+                if n > 100 {
+                    bail!(
+                        "plakat.config.set: refine_steps {n} is past any \
+                         practical polish budget. Try 4-16."
+                    );
+                }
+                self.refine_steps = Some(n as usize);
+            }
+            "refine_strength" => {
+                self.refine_strength = parse_unit_float(value, key)? as f32;
+            }
+            "refiner_frac" => {
+                self.refiner_frac = parse_unit_float(value, key)? as f32;
+            }
+            "style_strength" => {
+                self.style_strength = parse_unit_float(value, key)? as f32;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -211,7 +264,9 @@ impl GenerationConfig {
                      height, negative, scheduler, strength, \
                      face_strength, quantize_t5, quant_level, \
                      t5_quant_level, fast, kontext_bucket, tiled, \
-                     tile_size, tile_stride, lora_scale."
+                     tile_size, tile_stride, lora_scale, \
+                     refine_steps, refine_strength, refiner_frac, \
+                     style_strength."
                 ));
             }
         }
@@ -225,7 +280,10 @@ impl GenerationConfig {
         match key {
             "steps" | "guidance" | "seed" | "width" | "height"
             | "strength" | "face_strength" | "tile_size" | "tile_stride"
-            | "lora_scale" => self.set_str(key, &value.to_string()),
+            | "lora_scale" | "refine_steps" | "refine_strength"
+            | "refiner_frac" | "style_strength" => {
+                self.set_str(key, &value.to_string())
+            }
             "quantize_t5" | "kontext_bucket" | "tiled" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
@@ -307,7 +365,26 @@ impl GenerationConfig {
                 self.lora_scale = value as f32;
                 Ok(())
             }
-            "steps" | "seed" | "width" | "height" => {
+            "refine_strength" | "refiner_frac" | "style_strength" => {
+                if !value.is_finite() {
+                    bail!(
+                        "plakat.config.set: {key} {value} isn't finite"
+                    );
+                }
+                if !(0.0..=1.0).contains(&value) {
+                    bail!(
+                        "plakat.config.set: {key} must be in [0, 1] (got {value})"
+                    );
+                }
+                match key {
+                    "refine_strength" => self.refine_strength = value as f32,
+                    "refiner_frac" => self.refiner_frac = value as f32,
+                    "style_strength" => self.style_strength = value as f32,
+                    _ => unreachable!(),
+                }
+                Ok(())
+            }
+            "steps" | "seed" | "width" | "height" | "refine_steps" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
                 if value.fract() != 0.0 {
@@ -762,6 +839,10 @@ mod tests {
             "tile_size",
             "tile_stride",
             "lora_scale",
+            "refine_steps",
+            "refine_strength",
+            "refiner_frac",
+            "style_strength",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -868,6 +949,75 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_float("lora_scale", 0.5).unwrap();
         assert!((cfg.lora_scale - 0.5).abs() < 1e-6);
+    }
+
+    // v0.22 phase 6: refiner + style config keys.
+
+    #[test]
+    fn defaults_for_phase_6_keys() {
+        let cfg = GenerationConfig::default();
+        assert!(cfg.refine_steps.is_none());
+        assert!((cfg.refine_strength - 0.3).abs() < 1e-6);
+        assert!((cfg.refiner_frac - 0.8).abs() < 1e-6);
+        assert!((cfg.style_strength - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_refine_steps_accepts_positive_int() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("refine_steps", "8").unwrap();
+        assert_eq!(cfg.refine_steps, Some(8));
+        cfg.set_str("refine_steps", "16").unwrap();
+        assert_eq!(cfg.refine_steps, Some(16));
+    }
+
+    #[test]
+    fn set_str_refine_steps_rejects_zero_and_huge() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("refine_steps", "0").unwrap_err();
+        assert!(format!("{err}").contains("must be > 0"));
+        assert!(cfg.set_str("refine_steps", "999").is_err());
+    }
+
+    #[test]
+    fn set_str_refine_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("refine_strength", "0.5").unwrap();
+        assert!((cfg.refine_strength - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_refine_strength_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("refine_strength", "1.5").is_err());
+    }
+
+    #[test]
+    fn set_str_refiner_frac_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("refiner_frac", "0.75").unwrap();
+        assert!((cfg.refiner_frac - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_style_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("style_strength", "0.6").unwrap();
+        assert!((cfg.style_strength - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_float_refine_strength_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("refine_strength", 0.4).unwrap();
+        assert!((cfg.refine_strength - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_int_refine_steps_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("refine_steps", 10).unwrap();
+        assert_eq!(cfg.refine_steps, Some(10));
     }
 
     #[test]
