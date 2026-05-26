@@ -227,14 +227,16 @@ pub struct GenerationConfig {
     /// inpaint). Default false. Same deferred-wiring story as
     /// `mask_feather`.
     pub mask_invert: bool,
-    /// v0.22 phase 11: CLIP-skip layer index. `1` (default) uses
-    /// the last hidden state. `2` uses the penultimate (Auto1111
-    /// / NovelAI SD 1.5 anime default). SD 1.5 / SD 2.1 only —
-    /// SDXL / Flux / SD3 ignore. The script-layer wiring is
-    /// **declared but no-op in v0.22 phase 11**: clip_skip lives
-    /// on `t2i::Pipeline`, not `portrait::Pipeline`; full
-    /// threading lands in v0.23 phase 3 (after the v0.23 phase 1
-    /// cache switch adds the SdT2i slot).
+    /// v0.22 phase 11 + v0.23 phase 3: CLIP-skip layer index.
+    /// `1` (default) uses the last hidden state. `2` uses the
+    /// penultimate (Auto1111 / NovelAI SD 1.5 anime default).
+    /// SD 1.5 / SD 2.1 only — SDXL / Flux / SD3 ignore (SDXL
+    /// already uses penultimate by training default; Flux + SD3
+    /// use T5 and have no equivalent knob). Wired into
+    /// `t2i::GenRequest.clip_skip` by
+    /// [`super::script_entry::build_t2i_gen_request`]; t2i's
+    /// `encode_prompt` reads it during the CLIP-L hidden-state
+    /// pick. Honoured by `plakat.generate` only.
     pub clip_skip: usize,
     /// v0.22 phase 11: wildcard directory for `__name__` prompt
     /// expansion. Empty (default) → no file-wildcard expansion

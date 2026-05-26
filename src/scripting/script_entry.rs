@@ -365,14 +365,14 @@ fn build_t2i_gen_request(
         scheduler: ctx.config.scheduler,
         refine: ctx.config.refine_steps,
         refine_strength: ctx.config.refine_strength,
-        // v0.23 phase 2 will read ctx.config.refiner_frac when the
-        // refiner UNet load wires up. Today the loaded t2i pipeline
-        // has use_refiner: false, so this field is ignored.
+        // v0.23 phase 2: refiner_frac steers the base→refiner
+        // schedule split when `ctx.refiner_enabled` triggered the
+        // SDXL refiner UNet load.
         refiner_frac: Some(ctx.config.refiner_frac),
-        // v0.23 phase 3 will start honouring clip_skip; until then
-        // t2i::Pipeline already accepts the field — passing it
-        // through today is harmless because clip_skip=1 (default)
-        // is the byte-identical path.
+        // v0.23 phase 3: clip_skip honoured by t2i::Pipeline's
+        // encode_prompt — SD 1.5 / SD 2.1 returns the (N-th from
+        // last) CLIP-L hidden state. SDXL / Flux / SD3 ignore
+        // (SDXL already uses penultimate by training default).
         clip_skip: ctx.config.clip_skip,
         metadata: None,
         preview_every: None,
@@ -1243,5 +1243,41 @@ mod tests {
     fn aspect_to_size_malformed_returns_none() {
         assert!(aspect_to_size("garbage", 768).is_none());
         assert!(aspect_to_size("16:0", 768).is_none());
+    }
+
+    // v0.23 phase 3: clip_skip + refiner_frac propagation.
+
+    /// `build_t2i_gen_request` carries the config-layer
+    /// clip_skip + refiner_frac through to `t2i::GenRequest`. We
+    /// dodge the loaded-pipeline requirement by setting
+    /// size_explicit = true so default_size_for_loaded isn't
+    /// called.
+    #[test]
+    fn build_t2i_gen_request_carries_clip_skip_and_refiner_frac() {
+        let mut ctx = ScriptCtx {
+            device: candle_core::Device::Cpu,
+            out_dir: std::env::temp_dir(),
+            loaded: None,
+            loaded_t2i: None,
+            images: Vec::new(),
+            config: crate::scripting::config::GenerationConfig::default(),
+            loras: Vec::new(),
+            controlnets: Vec::new(),
+            refiner_enabled: false,
+            adetailer_enabled: false,
+            hires_enabled: false,
+            artefacts: Vec::new(),
+            artefact_blend_enabled: false,
+        };
+        ctx.config.size_explicit = true;
+        ctx.config.width = 512;
+        ctx.config.height = 512;
+        ctx.config.clip_skip = 2;
+        ctx.config.refiner_frac = 0.85;
+
+        let req = build_t2i_gen_request(&ctx, "a fox", std::env::temp_dir());
+        assert_eq!(req.clip_skip, 2);
+        assert_eq!(req.refiner_frac, Some(0.85));
+        assert_eq!(req.width, 512);
     }
 }
