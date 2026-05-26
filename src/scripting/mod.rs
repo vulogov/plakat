@@ -352,6 +352,43 @@ mod tests {
         });
     }
 
+    // v0.22 phase 10: plakat.enhance end-to-end (config-side only;
+    // we don't actually run an LLM forward in tests — downloading a
+    // GGUF is out of scope for unit tests).
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enhance_config_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            // Value-then-key stack order.
+            eval(r#""deepseek" "enhance_provider" plakat.config.set"#).unwrap();
+            eval(r#"0.7 "enhance_temp" plakat.config.set"#).unwrap();
+            eval(r#"128 "enhance_max_tokens" plakat.config.set"#).unwrap();
+            eval(r#""true" "enhance_cache" plakat.config.set"#).unwrap();
+            eval(r#""/sys.txt" "enhance_system" plakat.config.set"#).unwrap();
+            eval(r#""true" "enhance_keep_original" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.enhance_provider, "deepseek");
+                assert!((ctx.config.enhance_temp.unwrap() - 0.7).abs() < 1e-6);
+                assert_eq!(ctx.config.enhance_max_tokens, Some(128));
+                assert!(ctx.config.enhance_cache);
+                assert_eq!(ctx.config.enhance_system, "/sys.txt");
+                assert!(ctx.config.enhance_keep_original);
+            })
+            .unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enhance_empty_provider_bails_with_helpful_message() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.config.enhance_provider.clear()).unwrap();
+            let err = eval(r#""a knight" plakat.enhance"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("provider"), "got {msg}");
+            assert!(msg.contains("plakat.config.set"), "got {msg}");
+        });
+    }
+
     // v0.22 phase 9: plakat.artefact.* end-to-end.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
