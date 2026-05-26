@@ -125,6 +125,17 @@ pub struct GenerateArgs {
     #[arg(long = "enhance-cache", default_value_t = false)]
     pub enhance_cache: bool,
 
+    /// v0.20: keep the original prompt alongside the enhancer's
+    /// rewrite by joining them with the SD-family `BREAK`
+    /// separator (each chunk gets its own 77-token CLIP slot,
+    /// so the original terms keep full attention weight).
+    /// SD 1.5 / 2.1 / SDXL only — Flux and SD3 use T5, which
+    /// has the token budget to carry both phrasings without
+    /// BREAK and where the keyword is a no-op anyway. Ignored
+    /// without `--enhance`. Ignored if the prompt was empty.
+    #[arg(long = "enhance-keep-original", default_value_t = false)]
+    pub enhance_keep_original: bool,
+
     /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
     /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
     /// works without this flag. When set, file wildcards in the
@@ -678,11 +689,17 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             max_new_tokens: args.enhance_max_tokens,
             cache: args.enhance_cache,
         };
+        let original = args.prompt.clone();
         let enhanced =
             crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
                 .await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
-        args.prompt = enhanced;
+        args.prompt = maybe_keep_original(
+            &args.model,
+            enhanced,
+            &original,
+            args.enhance_keep_original,
+        );
     }
 
     // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
@@ -1354,6 +1371,47 @@ fn apply_recipe(
     Ok(())
 }
 
+/// v0.20: implement `--enhance-keep-original`. When the flag is
+/// set on an SD-family model, the enhancer's rewrite and the
+/// user's original prompt get joined with the A1111 `BREAK`
+/// keyword — each chunk gets its own 77-token CLIP slot, so the
+/// original terms keep their full attention weight instead of
+/// being diluted by the enhancer's added detail. On Flux / SD3
+/// the flag is a no-op with a one-line warn: their T5 text
+/// encoder ignores `BREAK` and has the token budget to carry
+/// both phrasings without it, so the original prompt isn't at
+/// risk of being clipped.
+///
+/// Empty originals (`""` after the wildcard/style passes) also
+/// short-circuit to the enhanced text alone — joining with
+/// `BREAK` would produce a trailing-empty chunk that the
+/// chunk-splitter would drop anyway.
+pub(crate) fn maybe_keep_original(
+    model: &str,
+    enhanced: String,
+    original: &str,
+    keep_original: bool,
+) -> String {
+    if !keep_original || original.trim().is_empty() {
+        return enhanced;
+    }
+    let variant = crate::pipelines::t2i::Variant::detect(model);
+    if variant.is_flux() || variant.is_sd3() {
+        tracing::warn!(
+            target: "plakat",
+            "--enhance-keep-original ignored on Flux/SD3 model {:?}: \
+             BREAK is CLIP-only, and T5 already has the token budget \
+             to carry both phrasings. The enhancer's output is used as-is.",
+            model
+        );
+        return enhanced;
+    }
+    format!(
+        "{enhanced} {break_kw} {original}",
+        break_kw = crate::prompt::break_chunks::BREAK_KEYWORD
+    )
+}
+
 /// `--seed` when set (so the same seed reproduces the same picks);
 /// otherwise OS entropy. `--wildcard-dir` is only required for
 /// file wildcards (inline `{a|b|c}` works without it).
@@ -1435,6 +1493,7 @@ mod tests {
             enhance_temp: None,
             enhance_max_tokens: None,
             enhance_cache: false,
+            enhance_keep_original: false,
             wildcard_dir: None,
             clip_skip: 1,
             out: PathBuf::from("./out"),
@@ -1636,5 +1695,91 @@ mod tests {
         // The recipe's prompt field is "the recipe's prompt" but
         // apply_recipe never touches args.prompt.
         assert_eq!(args.prompt, "user's own prompt");
+    }
+
+    // v0.20 #7: --enhance-keep-original behaviour.
+
+    #[test]
+    fn keep_original_off_returns_enhanced_unchanged() {
+        let out = maybe_keep_original(
+            "sd15",
+            "an enhanced detailed prompt".to_string(),
+            "original",
+            false,
+        );
+        assert_eq!(out, "an enhanced detailed prompt");
+    }
+
+    #[test]
+    fn keep_original_on_sd15_inserts_break() {
+        let out = maybe_keep_original(
+            "sd15",
+            "an enhanced detailed prompt".to_string(),
+            "a cat on a couch",
+            true,
+        );
+        assert_eq!(out, "an enhanced detailed prompt BREAK a cat on a couch");
+    }
+
+    #[test]
+    fn keep_original_on_sdxl_inserts_break() {
+        let out = maybe_keep_original(
+            "sdxl",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert!(out.contains(" BREAK "), "got {out}");
+    }
+
+    #[test]
+    fn keep_original_on_flux_is_noop() {
+        let out = maybe_keep_original(
+            "flux-dev",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        // No BREAK on Flux — T5 ignores it. Enhanced text only.
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_on_sd3_is_noop() {
+        let out = maybe_keep_original(
+            "sd35-medium",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_with_empty_original_returns_enhanced() {
+        // A wildcard pass that produced an empty original (or the
+        // user passed `""`) would yield a trailing-empty chunk after
+        // BREAK that the chunk-splitter drops anyway — skip the
+        // concat so logs stay clean.
+        let out = maybe_keep_original(
+            "sd15",
+            "enhanced".to_string(),
+            "   ",
+            true,
+        );
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_canonical_hf_repo_for_flux_also_noops() {
+        // Variant detection runs on the raw `--model` string, so a
+        // user-passed canonical repo path should classify the same.
+        let out = maybe_keep_original(
+            "black-forest-labs/FLUX.1-dev",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert_eq!(out, "enhanced");
     }
 }
