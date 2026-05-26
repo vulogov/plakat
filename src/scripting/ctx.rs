@@ -15,7 +15,9 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use crate::pipelines::{flux, lora::LoraSpec, portrait, sd3};
+use crate::pipelines::{
+    controlnet::ControlSpec, flux, lora::LoraSpec, portrait, sd3,
+};
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
 
@@ -56,6 +58,18 @@ pub struct ScriptCtx {
     /// with the new LoRA set). See RFC §7 + the
     /// [`Self::mark_loras_changed`] helper that does the drop.
     pub loras: Vec<LoraSpec>,
+    /// v0.22 phase 5: ControlNet stack accumulated via the
+    /// `plakat.controlnet.*` words. Read at generate time
+    /// (per-call, not per-load — SD-family ControlNet flows
+    /// through `Request.controls` / `pipeline.generate(...,
+    /// controls)`). No cache invalidation needed for SD-family
+    /// because the cached pipeline doesn't bake in the CN stack.
+    ///
+    /// Flux + SD3 ControlNet need load-time wiring that doesn't
+    /// fit phase 5's scope — the SD-family generate / img2img
+    /// paths bail if `controlnets` is non-empty when running on
+    /// Flux or SD3 with a clear "v0.23" pointer.
+    pub controlnets: Vec<ControlSpec>,
 }
 
 impl ScriptCtx {
@@ -74,6 +88,7 @@ impl ScriptCtx {
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
+            controlnets: Vec::new(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -461,6 +476,7 @@ mod tests {
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
+            controlnets: Vec::new(),
         }
     }
 

@@ -60,6 +60,76 @@ fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
     }
 }
 
+/// v0.22 phase 5: resolve the script's ControlNet stack to
+/// `Vec<OwnedControl>` for the SD-family path. `pipeline.generate`
+/// wants `&[ControlRequest]` that borrow from owned data; the
+/// caller binds the returned vec to a stack-frame local and
+/// builds the requests via [`controlnets_to_requests`].
+///
+/// `fallback_input` is the source image to auto-annotate when a
+/// `ControlSpec` has neither `image=` nor `from=` set. `None`
+/// for generate (a missing input bails); `Some(path)` for
+/// img2img (uses the source image).
+///
+/// Empty `ctx.controlnets` short-circuits to an empty vec
+/// without paying any HF download cost.
+fn resolve_sd_controlnets(
+    ctx: &ScriptCtx,
+    alias: &str,
+    width: u32,
+    height: u32,
+    fallback_input: Option<&Path>,
+) -> Result<Vec<crate::pipelines::controlnet::OwnedControl>> {
+    if ctx.controlnets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dtype = if matches!(ctx.device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    let specs = ctx.controlnets.clone();
+    let device = ctx.device.clone();
+    let model = alias.to_string();
+    let fallback = fallback_input.map(|p| p.to_path_buf());
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.controlnet: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+    tokio::task::block_in_place(|| {
+        handle.block_on(crate::pipelines::controlnet::load_control_stack(
+            &specs,
+            &model,
+            width,
+            height,
+            &device,
+            dtype,
+            fallback.as_deref(),
+        ))
+    })
+    .context("loading ControlNet stack for script generate")
+}
+
+/// v0.22 phase 5: borrow each `OwnedControl` into a
+/// `ControlRequest` matching `pipeline.generate`'s arg shape.
+/// Cheap — `conditioning.clone()` is an Arc bump.
+fn controlnets_to_requests<'a>(
+    owned: &'a [crate::pipelines::controlnet::OwnedControl],
+) -> Vec<crate::pipelines::controlnet::ControlRequest<'a>> {
+    owned
+        .iter()
+        .map(|o| crate::pipelines::controlnet::ControlRequest {
+            net: &o.net,
+            conditioning: o.conditioning.clone(),
+            strength: o.strength,
+            start: o.start,
+            end: o.end,
+        })
+        .collect()
+}
+
 /// v0.22 phase 3: build the TiledConfig if the script enabled
 /// tiled denoise, else None. Shared across Flux + SD3.
 fn tiled_cfg_from(ctx: &ScriptCtx) -> Option<crate::pipelines::tiled::TiledConfig> {
@@ -235,17 +305,38 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
     match PipelineFamily::detect(&alias) {
         PipelineFamily::SdFamily => {
             let req = build_gen_request(ctx, prompt, Vec::new(), tmp_path.clone());
+            // v0.22 phase 5: resolve the script's controlnets to
+            // OwnedControl + ControlRequest before borrowing the
+            // pipeline. The owned data lives on this frame for the
+            // pipeline.generate call's lifetime.
+            let control_owned =
+                resolve_sd_controlnets(ctx, &alias, req.width, req.height, None)?;
+            let control_reqs = controlnets_to_requests(&control_owned);
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
-            pipeline.generate(&req, &[])
+            pipeline.generate(&req, &control_reqs)
                 .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
         }
         PipelineFamily::Flux => {
+            if !ctx.controlnets.is_empty() {
+                bail!(
+                    "plakat.generate: ControlNet on Flux isn't wired in v0.22 \
+                     phase 5 (Flux CN needs load-time setup; deferred to v0.23). \
+                     Call plakat.controlnet.clear before plakat.generate on Flux."
+                );
+            }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
                 .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
         }
         PipelineFamily::Sd3 => {
+            if !ctx.controlnets.is_empty() {
+                bail!(
+                    "plakat.generate: ControlNet on SD3 isn't wired in v0.22 \
+                     phase 5 (SD3 CN needs load-time setup; deferred to v0.23). \
+                     Call plakat.controlnet.clear before plakat.generate on SD3."
+                );
+            }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_sd3(&alias)?;
             pipeline.generate(&req)
@@ -323,7 +414,10 @@ pub fn img2img_one(
                 strength: ctx.config.strength,
                 seed: ctx.config.seed,
                 out_dir: tmp_path.clone(),
-                controls: Vec::new(),
+                // v0.22 phase 5: ControlNet stack flows through
+                // img2img::Request.controls. img2img::run_with_pipeline
+                // resolves the specs internally.
+                controls: ctx.controlnets.clone(),
             };
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             // run_with_pipeline is async; bridge via block_in_place.
@@ -341,6 +435,13 @@ pub fn img2img_one(
             .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
         }
         PipelineFamily::Flux => {
+            if !ctx.controlnets.is_empty() {
+                bail!(
+                    "plakat.img2img: ControlNet on Flux isn't wired in v0.22 \
+                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
+                     before plakat.img2img on Flux."
+                );
+            }
             // Flux img2img threads `init_image` + `strength` through
             // the same flux::GenRequest used for text-to-image.
             // Working size override: width / height become the
@@ -358,6 +459,13 @@ pub fn img2img_one(
                 .context("flux::Pipeline::generate (plakat.img2img Flux path)")?;
         }
         PipelineFamily::Sd3 => {
+            if !ctx.controlnets.is_empty() {
+                bail!(
+                    "plakat.img2img: ControlNet on SD3 isn't wired in v0.22 \
+                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
+                     before plakat.img2img on SD3."
+                );
+            }
             // SD3 img2img: GenRequest has init_image + strength
             // built-in, same shape as Flux. Working size honours
             // the snapped input dims.

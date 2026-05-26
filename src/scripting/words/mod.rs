@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
 pub mod config;
+pub mod controlnet;
 pub mod echo;
 pub mod generate;
 pub mod img2img;
@@ -48,6 +49,32 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.lora.clear: {e}"))?;
     vm.register_inline("plakat.lora.list".to_string(), lora::plakat_lora_list)
         .map_err(|e| anyhow!("registering plakat.lora.list: {e}"))?;
+    // v0.22 phase 5: plakat.controlnet.* namespace.
+    vm.register_inline(
+        "plakat.controlnet.add".to_string(),
+        controlnet::plakat_controlnet_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.add: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.annotate".to_string(),
+        controlnet::plakat_controlnet_annotate,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.annotate: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.spec".to_string(),
+        controlnet::plakat_controlnet_spec,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.spec: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.clear".to_string(),
+        controlnet::plakat_controlnet_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.list".to_string(),
+        controlnet::plakat_controlnet_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.list: {e}"))?;
     Ok(())
 }
 

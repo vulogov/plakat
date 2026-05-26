@@ -231,6 +231,93 @@ mod tests {
         });
     }
 
+    // v0.22 phase 5: plakat.controlnet.* end-to-end.
+
+    /// `plakat.controlnet.add` pushes a kind + image pair.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controlnet_add_pushes_kind_image() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.controlnets.clear()).unwrap();
+            eval(r#""depth" "./d.png" plakat.controlnet.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.controlnets.len(), 1);
+                let cn = &ctx.controlnets[0];
+                assert_eq!(cn.kind.slug(), "depth");
+                assert!(cn.image.as_ref().unwrap().to_str().unwrap().ends_with("d.png"));
+                assert!(cn.from.is_none());
+                assert!((cn.strength - 1.0).abs() < 1e-6);
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.controlnet.annotate` pushes a kind + from pair.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controlnet_annotate_pushes_kind_from() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.controlnets.clear()).unwrap();
+            eval(r#""canny" "./photo.jpg" plakat.controlnet.annotate"#).unwrap();
+            with_ctx(|ctx| {
+                let cn = &ctx.controlnets[0];
+                assert_eq!(cn.kind.slug(), "canny");
+                assert!(cn.image.is_none());
+                assert!(cn.from.as_ref().unwrap().to_str().unwrap().ends_with("photo.jpg"));
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.controlnet.spec` parses the full grammar.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controlnet_spec_parses_full_grammar() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.controlnets.clear()).unwrap();
+            eval(
+                r#""depth:from=./photo.jpg:strength=0.7:start=0.2:end=0.7" plakat.controlnet.spec"#,
+            )
+            .unwrap();
+            with_ctx(|ctx| {
+                let cn = &ctx.controlnets[0];
+                assert_eq!(cn.kind.slug(), "depth");
+                assert!((cn.strength - 0.7).abs() < 1e-6);
+                assert!((cn.start - 0.2).abs() < 1e-6);
+                assert!((cn.end - 0.7).abs() < 1e-6);
+            })
+            .unwrap();
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controlnet_unknown_kind_bails() {
+        with_singleton_ctx(|| {
+            let err =
+                eval(r#""not-a-kind" "./x.png" plakat.controlnet.add"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("unknown control kind"), "got {msg}");
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controlnet_clear_empties() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.controlnets.push(
+                    crate::pipelines::controlnet::ControlSpec {
+                        kind: crate::pipelines::controlnet::ControlKind::Canny,
+                        image: Some(std::path::PathBuf::from("/tmp/x.png")),
+                        from: None,
+                        strength: 1.0,
+                        start: 0.0,
+                        end: 1.0,
+                    },
+                );
+            })
+            .unwrap();
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.controlnets.is_empty())).unwrap();
+        });
+    }
+
     // v0.22 phase 4: plakat.lora.* end-to-end.
 
     /// `plakat.lora.add` pushes to ctx.loras and invalidates the
