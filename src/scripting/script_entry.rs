@@ -167,6 +167,112 @@ pub async fn generate_one(
     Ok(img)
 }
 
+/// v0.21 phase 4: render one img2img image using the script's
+/// accumulated [`GenerationConfig`]. `input_path` is the source
+/// image — the caller is responsible for materialising
+/// in-memory handles to disk before invoking this (see
+/// `words::img2img`).
+///
+/// Working size resolution:
+/// * `config.size_explicit == true` → use `config.width × config.height`
+/// * else → read the input image's dimensions, snap to /8
+///
+/// The /8 snap is what `cli::img2img` does too; downsizing happens
+/// inside the pipeline.
+pub async fn img2img_one(
+    model: &str,
+    prompt: &str,
+    input_path: &std::path::Path,
+    device: Device,
+    config: &GenerationConfig,
+) -> Result<DynamicImage> {
+    validate_supported_for_phase_2(model)?;
+
+    let (width, height) = if config.size_explicit {
+        if config.width == 0 || config.height == 0 {
+            bail!(
+                "plakat.img2img: size_explicit set but width/height is 0 — \
+                 only one of plakat.config.set width / height was called?"
+            );
+        }
+        (config.width, config.height)
+    } else {
+        let dims = image::image_dimensions(input_path).with_context(|| {
+            format!(
+                "reading dimensions of {} for plakat.img2img working size",
+                input_path.display()
+            )
+        })?;
+        // Snap to /8 (VAE constraint). Round down so we never
+        // upscale the input silently.
+        let (w, h) = dims;
+        ((w / 8) * 8, (h / 8) * 8)
+    };
+    if width == 0 || height == 0 {
+        bail!(
+            "plakat.img2img: working size {width}x{height} collapsed to 0 \
+             after /8 snap. Input image is too small (< 8 pixels on a side)."
+        );
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix("plakat-script-i2i-")
+        .tempdir()
+        .context("creating tempdir for plakat.img2img output")?;
+    let tmp_path: std::path::PathBuf = tmp.path().to_path_buf();
+
+    let req = crate::pipelines::img2img::Request {
+        prompt: prompt.to_string(),
+        negative: config.negative.clone(),
+        model: model.to_string(),
+        device,
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        input: input_path.to_path_buf(),
+        mask: None,
+        mask_feather: 0,
+        mask_invert: false,
+        width,
+        height,
+        count: 1,
+        steps: config.steps,
+        guidance: config.guidance,
+        scheduler: config.scheduler,
+        strength: config.strength,
+        seed: config.seed,
+        out_dir: tmp_path.clone(),
+        controls: Vec::new(),
+    };
+
+    let _ = crate::pipelines::img2img::run(req)
+        .await
+        .context("img2img::run in plakat.img2img")?;
+
+    // img2img writes `plakat-img2img-<seed>.png` (single output
+    // since count=1). Glob for the single PNG.
+    let rendered = std::fs::read_dir(&tmp_path)
+        .with_context(|| format!("reading tempdir {}", tmp_path.display()))?
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "plakat.img2img: img2img::run produced no PNG in {} \
+                 — pipeline may have silently failed",
+                tmp_path.display()
+            )
+        })?;
+
+    let img = image::open(rendered.path())
+        .with_context(|| format!("reading rendered PNG {}", rendered.path().display()))?;
+    Ok(img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +306,12 @@ mod tests {
             assert!(msg.contains("Phase 2b"), "alias {alias:?}: {msg}");
         }
     }
+
+    // v0.21 phase 4: img2img_one shares the validate_supported_for_phase_2
+    // gate with generate_one, so the same Flux/SD3 bail fires. We
+    // don't need a separate test for that — the existing
+    // phase_2_gate_rejects_flux_aliases_with_helpful_message
+    // covers it through validate_supported_for_phase_2 directly.
 
     #[test]
     fn phase_2_gate_passes_canonical_hf_repos_when_they_resolve_to_sd_family() {

@@ -30,6 +30,11 @@ pub struct GenerationConfig {
     pub height: u32,
     pub negative: String,
     pub scheduler: SchedulerKind,
+    /// v0.21 phase 4: img2img denoise strength in `[0, 1]`. 1.0 =
+    /// fully re-noised input (output ignores the input). 0.0 = no
+    /// denoise (output == input). Default 0.75 matches the
+    /// `cli::img2img` default. Ignored by `plakat.generate`.
+    pub strength: f32,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -51,6 +56,7 @@ impl Default for GenerationConfig {
             height: 0, // sentinel — see `size_explicit`
             negative: String::new(),
             scheduler: SchedulerKind::Default,
+            strength: 0.75,
             size_explicit: false,
         }
     }
@@ -88,11 +94,14 @@ impl GenerationConfig {
             "scheduler" => {
                 self.scheduler = value.parse::<SchedulerKind>()?;
             }
+            "strength" => {
+                self.strength = parse_unit_float(value, key)? as f32;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
                      Supported keys: steps, guidance, seed, width, \
-                     height, negative, scheduler."
+                     height, negative, scheduler, strength."
                 ));
             }
         }
@@ -104,16 +113,15 @@ impl GenerationConfig {
     /// keys that don't accept ints.
     pub fn set_int(&mut self, key: &str, value: i64) -> Result<()> {
         match key {
-            "steps" | "guidance" | "seed" | "width" | "height" => {
-                self.set_str(key, &value.to_string())
-            }
+            "steps" | "guidance" | "seed" | "width" | "height"
+            | "strength" => self.set_str(key, &value.to_string()),
             "negative" | "scheduler" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler."
+                 height, negative, scheduler, strength."
             )),
         }
     }
@@ -129,6 +137,21 @@ impl GenerationConfig {
                     );
                 }
                 self.guidance = value;
+                Ok(())
+            }
+            "strength" => {
+                if !value.is_finite() {
+                    bail!(
+                        "plakat.config.set: strength {value} isn't finite"
+                    );
+                }
+                if !(0.0..=1.0).contains(&value) {
+                    bail!(
+                        "plakat.config.set: strength must be in [0, 1] \
+                         (got {value})"
+                    );
+                }
+                self.strength = value as f32;
                 Ok(())
             }
             "steps" | "seed" | "width" | "height" => {
@@ -148,7 +171,7 @@ impl GenerationConfig {
             other => Err(anyhow!(
                 "plakat.config.set: unknown key {other:?}. \
                  Supported keys: steps, guidance, seed, width, \
-                 height, negative, scheduler."
+                 height, negative, scheduler, strength."
             )),
         }
     }
@@ -170,6 +193,14 @@ fn parse_finite_float(s: &str, key: &str) -> Result<f64> {
         .map_err(|e| anyhow!("plakat.config.set: {key} = {s:?} isn't a number ({e})"))?;
     if !f.is_finite() {
         bail!("plakat.config.set: {key} {f} isn't finite");
+    }
+    Ok(f)
+}
+
+fn parse_unit_float(s: &str, key: &str) -> Result<f64> {
+    let f = parse_finite_float(s, key)?;
+    if !(0.0..=1.0).contains(&f) {
+        bail!("plakat.config.set: {key} must be in [0, 1] (got {f})");
     }
     Ok(f)
 }
@@ -301,6 +332,55 @@ mod tests {
         assert!(msg.contains("unknown key"), "got {msg}");
         assert!(msg.contains("steps"), "got {msg}");
         assert!(msg.contains("scheduler"), "got {msg}");
+    }
+
+    #[test]
+    fn set_str_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("strength", "0.0").unwrap();
+        assert!((cfg.strength - 0.0).abs() < 1e-9);
+        cfg.set_str("strength", "1.0").unwrap();
+        assert!((cfg.strength - 1.0).abs() < 1e-9);
+        cfg.set_str("strength", "0.55").unwrap();
+        assert!((cfg.strength - 0.55).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_strength_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("strength", "-0.1").is_err());
+        assert!(cfg.set_str("strength", "1.1").is_err());
+        assert!(cfg.set_str("strength", "2.0").is_err());
+    }
+
+    #[test]
+    fn set_float_strength_accepts_unit_interval() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("strength", 0.5).unwrap();
+        assert!((cfg.strength - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_float_strength_rejects_out_of_range_and_nan() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_float("strength", -0.01).is_err());
+        assert!(cfg.set_float("strength", 1.01).is_err());
+        assert!(cfg.set_float("strength", f64::NAN).is_err());
+    }
+
+    #[test]
+    fn set_int_strength_accepts_zero_and_one() {
+        // The int path routes through set_str, which accepts "0" + "1".
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("strength", 0).unwrap();
+        cfg.set_int("strength", 1).unwrap();
+        assert_eq!(cfg.strength, 1.0);
+    }
+
+    #[test]
+    fn default_strength_matches_cli_default() {
+        let cfg = GenerationConfig::default();
+        assert!((cfg.strength - 0.75).abs() < 1e-9);
     }
 
     #[test]

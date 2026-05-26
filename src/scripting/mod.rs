@@ -172,6 +172,56 @@ mod tests {
         });
     }
 
+    /// v0.21 phase 4: handle-reuse path. We can't run the real
+    /// img2img pipeline in CI (needs SD weights), but we can pin
+    /// the "bail with helpful message" surface for two failure
+    /// modes that have to keep working as the codebase evolves:
+    ///
+    /// 1. img2img with no model loaded → "no model loaded" pointer
+    ///    fires from inside the host word, before any tempfile
+    ///    materialisation happens.
+    /// 2. img2img with an invalid input type (neither string nor
+    ///    int) → typed error from the dispatch arm.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn img2img_no_model_loaded_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded_model = None;
+            })
+            .unwrap();
+            let err = eval(
+                "\"a fox\" \"/tmp/does-not-matter.png\" plakat.img2img",
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+        });
+    }
+
+    /// v0.21 phase 4: handle-vs-path dispatch — when the script
+    /// passes a handle that doesn't exist, the lookup fails inside
+    /// the word with the same "image handle N not found" message
+    /// `ctx.image_at` produces. Pins that the int dispatch arm
+    /// routes through `image_at` (not silently treating the int as
+    /// a path string).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn img2img_unknown_handle_bails_with_image_at_message() {
+        with_singleton_ctx(|| {
+            // Pretend a model is loaded so we get past the load gate
+            // and into the handle resolution.
+            with_ctx_mut(|ctx| {
+                ctx.loaded_model = Some("sd15".to_string());
+                // Reset the image registry so the handle is
+                // genuinely unknown (other tests may have pushed).
+                ctx.images.clear();
+            })
+            .unwrap();
+            let err = eval("\"a fox\" 999 plakat.img2img").unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("image handle 999"), "got {msg}");
+        });
+    }
+
     /// v0.21 phase 3: an unknown key surfaces a clear error from
     /// inside eval. Exercise the failure mode end-to-end so we
     /// know the helpful error message actually reaches user
