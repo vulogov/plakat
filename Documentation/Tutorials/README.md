@@ -11,7 +11,14 @@ For exhaustive flag-by-flag reference material, see the parent
 
 If you're new to plakat, work through these in order:
 
-1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **start here.**
+0. [`GETTING_STARTED.md`](GETTING_STARTED.md) — **the fastest path
+   from a fresh checkout to a rendered image** (v0.20). Uses
+   `plakat init` to bootstrap a runnable starter project + walks
+   through dry-run → first render → iteration. Zero HF token, zero
+   API keys. If you want the "just show me it works" experience
+   before reading flag references, start here.
+
+1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **the foundation.**
    Your first generation, the flags that matter, seeds for
    reproducibility, prompt wildcards, CLIP-skip, ADetailer face
    refinement, Civitai browser + downloader, Hires fix, Textual
@@ -83,9 +90,10 @@ If you're new to plakat, work through these in order:
 
 11. [`ANIMATE_TUTORIAL.md`](ANIMATE_TUTORIAL.md) — prompt-morph
     animations via `plakat animate`. Linearly interpolate the
-    CLIP encoding between two prompts to produce a smooth
-    N-frame sequence at a fixed seed. Optional GIF bundling.
-    SD 1.5 / SD 2.1 / SDXL (v0.18).
+    text-encoder embeddings between two prompts to produce a
+    smooth N-frame sequence at a fixed seed. Optional GIF
+    bundling. SD 1.5 / SD 2.1 / SDXL + **Flux Dev / Schnell**
+    (v0.20 — T5 + CLIP-L lerp, flow-match per frame).
 
 12. [`ADVANCED_PROMPTING_TUTORIAL.md`](ADVANCED_PROMPTING_TUTORIAL.md) —
     three power-user prompt features as a coherent set: A1111
@@ -145,6 +153,7 @@ feature:
 
 | Tutorial | Prerequisites |
 |---|---|
+| `GETTING_STARTED.md` | plakat installed; can run `plakat --help`. |
 | `GENERATE_TUTORIAL.md` | plakat installed; can run `plakat --help`. |
 | `PORTRAIT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. |
 | `STYLES_TUTORIAL.md` | Above + finished `PORTRAIT_TUTORIAL.md` (helpful but not required). |

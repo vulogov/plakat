@@ -222,6 +222,8 @@ pub struct Request {
     /// per `generate` call into the cached per-slot conditioning
     /// latents used in `predict_velocity_full`.
     pub controlnets: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad>,
+    /// v0.20: output container — see `GenRequest::output_format`.
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 pub struct LoadRequest {
@@ -269,6 +271,8 @@ pub struct GenRequest {
     /// from the load request (used when one scenario task has no CN
     /// conditioning to swap to). Empty Vec = preserve all paths.
     pub controlnet_conditioning: Vec<Option<PathBuf>>,
+    /// v0.20: output container — see `Request::output_format`.
+    pub output_format: crate::imaging::io::OutputFormat,
 }
 
 pub struct Pipeline {
@@ -928,7 +932,10 @@ impl Pipeline {
 
             let out_path = req
                 .out_dir
-                .join(format!("plakat-sd3-{mode_tag}-{seed}.png"));
+                .join(format!(
+                    "plakat-sd3-{mode_tag}-{seed}.{}",
+                    req.output_format.extension()
+                ));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
         }
@@ -1477,6 +1484,7 @@ fn build_img2img_timesteps(steps: usize, shift: f64, strength: Option<f64>) -> V
 }
 
 pub async fn run(req: Request) -> Result<()> {
+    let output_format = req.output_format;
     let mut p = Pipeline::load(LoadRequest {
         variant: req.variant,
         repo: req.repo,
@@ -1507,6 +1515,7 @@ pub async fn run(req: Request) -> Result<()> {
         strength: req.strength,
         tiled: req.tiled,
         controlnet_conditioning: Vec::new(),
+        output_format,
     })
 }
 

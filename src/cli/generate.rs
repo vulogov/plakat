@@ -18,6 +18,32 @@ pub struct GenerateArgs {
     /// Text prompt describing the image.
     pub prompt: String,
 
+    /// v0.20: load generation defaults from a JSON sidecar (the
+    /// `.json` file plakat writes alongside every output, or any
+    /// file in the same `GenerationMetadata` format). CLI flags
+    /// that differ from their built-in defaults override the
+    /// recipe; flags left at their defaults inherit from the
+    /// recipe.
+    ///
+    /// The positional `prompt` arg ALWAYS comes from the CLI —
+    /// the recipe never replaces it. Use `plakat clone PNG` if
+    /// you want a full byte-equivalent rerun of an existing
+    /// image.
+    ///
+    /// Common workflow: rerun a previous setup with a new prompt:
+    ///
+    /// ```bash
+    /// plakat generate "a different scene description" \
+    ///     --recipe ./out/plakat-42.json
+    /// ```
+    ///
+    /// All scalar fields (model / seed / steps / guidance /
+    /// scheduler / size / negative / clip-skip) flow through, plus
+    /// the LoRA stack. Pass any CLI flag explicitly to override
+    /// the corresponding recipe field.
+    #[arg(long, value_name = "PATH")]
+    pub recipe: Option<PathBuf>,
+
     /// Model: alias (sd15, sd21, sdxl, sdxl-turbo, flux-schnell) or any HF repo id.
     #[arg(long, default_value = "sd15")]
     pub model: String,
@@ -98,6 +124,17 @@ pub struct GenerateArgs {
     /// iteration. Ignored on the API providers.
     #[arg(long = "enhance-cache", default_value_t = false)]
     pub enhance_cache: bool,
+
+    /// v0.20: keep the original prompt alongside the enhancer's
+    /// rewrite by joining them with the SD-family `BREAK`
+    /// separator (each chunk gets its own 77-token CLIP slot,
+    /// so the original terms keep full attention weight).
+    /// SD 1.5 / 2.1 / SDXL only — Flux and SD3 use T5, which
+    /// has the token budget to carry both phrasings without
+    /// BREAK and where the keyword is a no-op anyway. Ignored
+    /// without `--enhance`. Ignored if the prompt was empty.
+    #[arg(long = "enhance-keep-original", default_value_t = false)]
+    pub enhance_keep_original: bool,
 
     /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
     /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
@@ -601,6 +638,28 @@ pub struct GenerateArgs {
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    // v0.20: apply --recipe FIRST so subsequent flags + downstream
+    // resolution (negative-preset combine, wildcards, enhance,
+    // dispatch) operate against the merged config. Recipe fields
+    // fill in args left at clap defaults; explicit CLI flags win.
+    if let Some(path) = args.recipe.clone() {
+        let json = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading --recipe {}", path.display()))?;
+        let recipe: crate::imaging::metadata::GenerationMetadata =
+            serde_json::from_str(&json).with_context(|| {
+                format!("parsing --recipe JSON {}", path.display())
+            })?;
+        apply_recipe(&mut args, &recipe)?;
+        tracing::info!(
+            target: "plakat",
+            "Applied recipe {} (model={}, seed={}, loras={})",
+            path.display(),
+            args.model,
+            args.seed.map(|s| s.to_string()).unwrap_or_else(|| "(random)".into()),
+            args.loras.len()
+        );
+    }
+
     // v0.19: resolve --negative-preset FIRST so the combined
     // negative flows into every downstream step (wildcards on the
     // negative branch, enhance call, encoder dispatch). Bails up
@@ -630,11 +689,17 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             max_new_tokens: args.enhance_max_tokens,
             cache: args.enhance_cache,
         };
+        let original = args.prompt.clone();
         let enhanced =
             crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
                 .await?;
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
-        args.prompt = enhanced;
+        args.prompt = maybe_keep_original(
+            &args.model,
+            enhanced,
+            &original,
+            args.enhance_keep_original,
+        );
     }
 
     // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
@@ -1215,6 +1280,138 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
 
 /// v0.16 phase 5: expand `{a|b|c}` and `__name__` wildcards in both
 /// the prompt and negative prompt. The wildcard RNG is seeded from
+/// v0.20: apply a generation recipe (JSON sidecar) as default
+/// values for `GenerateArgs`. CLI flags that the user explicitly
+/// set (i.e. differ from clap's built-in default) win; flags left
+/// at their defaults inherit from the recipe. The positional
+/// `prompt` is never overridden — use `plakat clone PNG` for a
+/// byte-equivalent rerun.
+///
+/// Detection of "user set this explicitly" is by value comparison
+/// against the known clap defaults declared in the
+/// `#[arg(default_value = ...)]` attributes above. Edge case: a
+/// user who explicitly passes `--model sd15` (the default) can't
+/// be distinguished from a user who didn't pass `--model` at all
+/// — in both cases the recipe's `model` field wins. Acceptable
+/// for v0.20; matches diffusers' parser-recipe behaviour.
+fn apply_recipe(
+    args: &mut GenerateArgs,
+    recipe: &crate::imaging::metadata::GenerationMetadata,
+) -> Result<()> {
+    use crate::imaging::sizes::Size;
+    use crate::pipelines::lora::LoraSpec;
+    use crate::pipelines::scheduler::SchedulerKind;
+    use std::str::FromStr;
+
+    // model: default "sd15".
+    if args.model == "sd15" {
+        args.model = recipe.model.clone();
+    }
+    // negative: default "".
+    if args.negative.is_empty() {
+        args.negative = recipe.negative.clone();
+    }
+    // seed: default None.
+    if args.seed.is_none() {
+        args.seed = Some(recipe.seed);
+    }
+    // steps: default 28.
+    if args.steps == 28 {
+        args.steps = recipe.steps;
+    }
+    // guidance: default 7.5.
+    if (args.guidance - 7.5).abs() < f64::EPSILON {
+        args.guidance = recipe.guidance;
+    }
+    // scheduler: default SchedulerKind::Default.
+    if matches!(args.scheduler, SchedulerKind::Default) {
+        if let Ok(s) = SchedulerKind::from_str(&recipe.scheduler) {
+            args.scheduler = s;
+        }
+    }
+    // size: default None. Apply width/height from recipe.
+    if args.size.is_none() && args.aspect.is_none() {
+        args.size = Some(Size {
+            w: recipe.width,
+            h: recipe.height,
+        });
+    }
+    // loras: default empty Vec. Parse each recipe spec.
+    if args.loras.is_empty() {
+        let mut parsed: Vec<LoraSpec> = Vec::with_capacity(recipe.loras.len());
+        for spec in &recipe.loras {
+            // Recipe LoRA strings are debug-formatted in the v0.17
+            // metadata writer (`format!("{:?}", spec)`). Strip the
+            // outer quotes and reparse — best-effort: skip the
+            // entry with a warn if it doesn't parse rather than
+            // bailing the whole generation.
+            let cleaned = spec.trim_matches('"');
+            match cleaned.parse::<LoraSpec>() {
+                Ok(p) => parsed.push(p),
+                Err(e) => tracing::warn!(
+                    target: "plakat",
+                    "recipe LoRA {spec:?} failed to parse: {e} — skipping"
+                ),
+            }
+        }
+        args.loras = parsed;
+    }
+    // lora_scale: default 1.0.
+    if (args.lora_scale - 1.0).abs() < f32::EPSILON {
+        if let Some(s) = recipe.lora_scale {
+            args.lora_scale = s;
+        }
+    }
+    // clip_skip: default 1.
+    if args.clip_skip == 1 {
+        if let Some(cs) = recipe.clip_skip {
+            args.clip_skip = cs;
+        }
+    }
+    Ok(())
+}
+
+/// v0.20: implement `--enhance-keep-original`. When the flag is
+/// set on an SD-family model, the enhancer's rewrite and the
+/// user's original prompt get joined with the A1111 `BREAK`
+/// keyword — each chunk gets its own 77-token CLIP slot, so the
+/// original terms keep their full attention weight instead of
+/// being diluted by the enhancer's added detail. On Flux / SD3
+/// the flag is a no-op with a one-line warn: their T5 text
+/// encoder ignores `BREAK` and has the token budget to carry
+/// both phrasings without it, so the original prompt isn't at
+/// risk of being clipped.
+///
+/// Empty originals (`""` after the wildcard/style passes) also
+/// short-circuit to the enhanced text alone — joining with
+/// `BREAK` would produce a trailing-empty chunk that the
+/// chunk-splitter would drop anyway.
+pub(crate) fn maybe_keep_original(
+    model: &str,
+    enhanced: String,
+    original: &str,
+    keep_original: bool,
+) -> String {
+    if !keep_original || original.trim().is_empty() {
+        return enhanced;
+    }
+    let variant = crate::pipelines::t2i::Variant::detect(model);
+    if variant.is_flux() || variant.is_sd3() {
+        tracing::warn!(
+            target: "plakat",
+            "--enhance-keep-original ignored on Flux/SD3 model {:?}: \
+             BREAK is CLIP-only, and T5 already has the token budget \
+             to carry both phrasings. The enhancer's output is used as-is.",
+            model
+        );
+        return enhanced;
+    }
+    format!(
+        "{enhanced} {break_kw} {original}",
+        break_kw = crate::prompt::break_chunks::BREAK_KEYWORD
+    )
+}
+
 /// `--seed` when set (so the same seed reproduces the same picks);
 /// otherwise OS entropy. `--wildcard-dir` is only required for
 /// file wildcards (inline `{a|b|c}` works without it).
@@ -1266,4 +1463,323 @@ async fn apply_style(args: &mut GenerateArgs, device: &Device) -> Result<()> {
     args.negative = combine_negative(&args.negative, &prep.negative_extras);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::imaging::metadata::GenerationMetadata;
+
+    /// v0.20: helper to construct a `GenerateArgs` with clap's
+    /// declared defaults. Mirrors the `#[arg(default_value = ...)]`
+    /// attributes above. Used by the recipe-override tests.
+    fn mk_default_args(prompt: &str) -> GenerateArgs {
+        use crate::pipelines::scheduler::SchedulerKind;
+        GenerateArgs {
+            prompt: prompt.into(),
+            recipe: None,
+            model: "sd15".into(),
+            size: None,
+            aspect: None,
+            base: 768,
+            count: 1,
+            steps: 28,
+            guidance: 7.5,
+            negative: String::new(),
+            negative_preset: None,
+            seed: None,
+            enhance: None,
+            enhance_system: None,
+            enhance_temp: None,
+            enhance_max_tokens: None,
+            enhance_cache: false,
+            enhance_keep_original: false,
+            wildcard_dir: None,
+            clip_skip: 1,
+            out: PathBuf::from("./out"),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            scheduler: SchedulerKind::Default,
+            refine: None,
+            refine_strength: 0.4,
+            refiner: false,
+            refiner_frac: 0.8,
+            style_ref: None,
+            style: None,
+            style_strength: 0.6,
+            style_catalog: None,
+            artefacts: Vec::new(),
+            artefact_library: None,
+            artefact_blend: false,
+            artefact_blend_strength: 0.3,
+            smart_zones: false,
+            control: None,
+            control_image: None,
+            control_from: None,
+            control_strength: 1.0,
+            control_start: 0.0,
+            control_end: 1.0,
+            control_specs: Vec::new(),
+            tiled: false,
+            tile_size: 1024,
+            tile_stride: 768,
+            quantize_t5: false,
+            quant_level: None,
+            t5_quant_level: None,
+            fast: None,
+            redux_images: Vec::new(),
+            concept_image: None,
+            concept_from: None,
+            kontext_bucket: false,
+            adetailer: false,
+            adetailer_strength: 0.4,
+            adetailer_padding: 0.25,
+            adetailer_feather: 0.25,
+            adetailer_confidence: 0.5,
+            adetailer_size: 512,
+            adetailer_prompt: None,
+            hires_fix: false,
+            hires_scale: 2.0,
+            hires_strength: 0.5,
+            hires_upscaler: "lanczos".into(),
+            hires_steps: None,
+            embeddings: Vec::new(),
+            no_metadata: false,
+            format: crate::imaging::io::OutputFormat::Png,
+            grid: false,
+            grid_cols: None,
+            grid_padding: 0,
+            preview_every: 0,
+            preview_size: 384,
+        }
+    }
+
+    fn mk_recipe() -> GenerationMetadata {
+        let mut m = GenerationMetadata::new(
+            "the recipe's prompt",
+            "sdxl",
+            12345,
+            42,
+            6.0,
+            "dpmpp-2m",
+            1024,
+            768,
+        );
+        m.negative = "blurry".into();
+        m.loras = vec!["civitai:777:0.6".into()];
+        m.lora_scale = Some(0.5);
+        m.clip_skip = Some(2);
+        m
+    }
+
+    #[test]
+    fn recipe_overrides_default_model() {
+        let mut args = mk_default_args("user prompt");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.model, "sdxl");
+    }
+
+    #[test]
+    fn cli_explicit_model_wins_over_recipe() {
+        let mut args = mk_default_args("user prompt");
+        args.model = "flux-dev".into(); // user set --model flux-dev
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.model, "flux-dev");
+    }
+
+    #[test]
+    fn recipe_fills_seed_when_unset() {
+        let mut args = mk_default_args("p");
+        assert!(args.seed.is_none());
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.seed, Some(12345));
+    }
+
+    #[test]
+    fn cli_seed_wins_over_recipe() {
+        let mut args = mk_default_args("p");
+        args.seed = Some(99);
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.seed, Some(99));
+    }
+
+    #[test]
+    fn recipe_overrides_default_steps_and_guidance() {
+        let mut args = mk_default_args("p");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.steps, 42);
+        assert!((args.guidance - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cli_non_default_steps_wins() {
+        let mut args = mk_default_args("p");
+        args.steps = 50; // user set --steps 50
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.steps, 50);
+    }
+
+    #[test]
+    fn recipe_fills_size_when_unset() {
+        let mut args = mk_default_args("p");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        let size = args.size.unwrap();
+        assert_eq!((size.w, size.h), (1024, 768));
+    }
+
+    #[test]
+    fn cli_size_wins_over_recipe() {
+        use crate::imaging::sizes::Size;
+        let mut args = mk_default_args("p");
+        args.size = Some(Size { w: 512, h: 512 });
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        let size = args.size.unwrap();
+        assert_eq!((size.w, size.h), (512, 512));
+    }
+
+    #[test]
+    fn recipe_loras_parse_via_lora_spec_from_str() {
+        let mut args = mk_default_args("p");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.loras.len(), 1);
+        // Scale was 0.6 in the recipe's "civitai:777:0.6".
+        assert!((args.loras[0].scale - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recipe_clip_skip_applies_when_default() {
+        let mut args = mk_default_args("p");
+        assert_eq!(args.clip_skip, 1);
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.clip_skip, 2);
+    }
+
+    #[test]
+    fn recipe_negative_applies_when_empty() {
+        let mut args = mk_default_args("p");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.negative, "blurry");
+    }
+
+    #[test]
+    fn cli_negative_wins_over_recipe() {
+        let mut args = mk_default_args("p");
+        args.negative = "ugly hands".into();
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        assert_eq!(args.negative, "ugly hands");
+    }
+
+    #[test]
+    fn recipe_skips_loras_when_cli_has_some() {
+        use crate::pipelines::lora::{LoraSource, LoraSpec};
+        let mut args = mk_default_args("p");
+        args.loras = vec![LoraSpec {
+            source: LoraSource::Local(PathBuf::from("foo.safetensors")),
+            scale: 1.0,
+        }];
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        // CLI LoRA stack untouched.
+        assert_eq!(args.loras.len(), 1);
+        match &args.loras[0].source {
+            LoraSource::Local(p) => {
+                assert_eq!(p.to_str().unwrap(), "foo.safetensors")
+            }
+            other => panic!("expected Local, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_is_never_overridden_by_recipe() {
+        let mut args = mk_default_args("user's own prompt");
+        apply_recipe(&mut args, &mk_recipe()).unwrap();
+        // The recipe's prompt field is "the recipe's prompt" but
+        // apply_recipe never touches args.prompt.
+        assert_eq!(args.prompt, "user's own prompt");
+    }
+
+    // v0.20 #7: --enhance-keep-original behaviour.
+
+    #[test]
+    fn keep_original_off_returns_enhanced_unchanged() {
+        let out = maybe_keep_original(
+            "sd15",
+            "an enhanced detailed prompt".to_string(),
+            "original",
+            false,
+        );
+        assert_eq!(out, "an enhanced detailed prompt");
+    }
+
+    #[test]
+    fn keep_original_on_sd15_inserts_break() {
+        let out = maybe_keep_original(
+            "sd15",
+            "an enhanced detailed prompt".to_string(),
+            "a cat on a couch",
+            true,
+        );
+        assert_eq!(out, "an enhanced detailed prompt BREAK a cat on a couch");
+    }
+
+    #[test]
+    fn keep_original_on_sdxl_inserts_break() {
+        let out = maybe_keep_original(
+            "sdxl",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert!(out.contains(" BREAK "), "got {out}");
+    }
+
+    #[test]
+    fn keep_original_on_flux_is_noop() {
+        let out = maybe_keep_original(
+            "flux-dev",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        // No BREAK on Flux — T5 ignores it. Enhanced text only.
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_on_sd3_is_noop() {
+        let out = maybe_keep_original(
+            "sd35-medium",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_with_empty_original_returns_enhanced() {
+        // A wildcard pass that produced an empty original (or the
+        // user passed `""`) would yield a trailing-empty chunk after
+        // BREAK that the chunk-splitter drops anyway — skip the
+        // concat so logs stay clean.
+        let out = maybe_keep_original(
+            "sd15",
+            "enhanced".to_string(),
+            "   ",
+            true,
+        );
+        assert_eq!(out, "enhanced");
+    }
+
+    #[test]
+    fn keep_original_canonical_hf_repo_for_flux_also_noops() {
+        // Variant detection runs on the raw `--model` string, so a
+        // user-passed canonical repo path should classify the same.
+        let out = maybe_keep_original(
+            "black-forest-labs/FLUX.1-dev",
+            "enhanced".to_string(),
+            "original",
+            true,
+        );
+        assert_eq!(out, "enhanced");
+    }
 }

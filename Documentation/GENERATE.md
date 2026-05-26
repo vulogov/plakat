@@ -400,6 +400,29 @@ or model alias doesn't surface stale hits. Scenarios that
 re-enhance the same prompts across multiple runs are the prime
 use case.
 
+#### `--enhance-keep-original` (v0.20)
+
+Keep the original prompt alongside the enhancer's rewrite by
+joining them with the SD-family `BREAK` keyword. Each chunk gets
+its own 77-token CLIP slot, so the original terms keep full
+attention weight instead of being diluted by the enhancer's added
+detail. Available on `plakat generate` and `plakat portrait`.
+
+```bash
+# Original: "a knight on a hill"
+# Enhanced: "a knight in burnished plate armor stands on a
+#            windswept hill at dawn, cinematic lighting, ..."
+# Final:    "<enhanced> BREAK a knight on a hill"
+plakat generate "a knight on a hill" --model sd15 \
+    --enhance local --enhance-keep-original
+```
+
+SD 1.5 / 2.1 / SDXL only. On Flux and SD3 the flag warns once
+and is a no-op: their T5 text encoder ignores `BREAK` and has
+the token budget to carry both phrasings without it, so the
+original terms aren't at risk of being clipped in the first
+place. Without `--enhance` the flag is silently ignored.
+
 ### Output
 
 #### `--format png | webp` (v0.19)
@@ -421,11 +444,12 @@ plakat generate "..." --model sd15 --format webp
 # → ./out/plakat-42.webp + ./out/plakat-42.json
 ```
 
-**Scope**: SD-family (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only in
-this release. Flux / SD3 outputs stay PNG; passing `--format
-webp` with those models warns and falls back. The `--grid` PNG
+**Scope (v0.20)**: every backbone honours `--format webp` —
+SD 1.5 / 2.1 / SDXL / SDXL-Turbo, Flux (BF16 / GGUF / NF4 / Fill
+/ Canny / Depth / Kontext), and SD3 / SD3.5. The `--grid` PNG
 itself stays `.png` regardless (combining N WebP cells into one
-shareable grid file is the common workflow).
+shareable grid file is the common workflow). The v0.19 warn-and-
+fallback on Flux / SD3 is no longer needed.
 
 #### `--out <DIR>` (default `./out`)
 
@@ -480,11 +504,12 @@ For outputs above the model's trained working resolution (4K SDXL,
 Composes with: GGUF + LoRA + img2img on Flux; ControlNet on
 SDXL and Flux (each tile gets its CN conditioning cropped to its
 region); **Flux.1-Fill-dev** (per-tile masked-latent + mask
-packing); **SD3 / SD3.5 img2img + inpaint** (the rectified-flow
-init lerp + RePaint mask blend compose with the per-tile
-velocity blend). Does **not** compose with the SDXL refiner,
-Flux concept variants (Canny-dev / Depth-dev), SD3 ControlNet,
-or `--hires-fix`.
+packing); **Flux.1-Kontext-dev** (per-tile reference-image
+slicing — see "Kontext + tiled" below); **SD3 / SD3.5 img2img
++ inpaint** (the rectified-flow init lerp + RePaint mask blend
+compose with the per-tile velocity blend). Does **not** compose
+with the SDXL refiner, Flux concept variants (Canny-dev /
+Depth-dev), SD3 ControlNet, or `--hires-fix`.
 
 SD3 / SD3.5 join the tiled lineup. MMDiT's `pos_embed_max_size`
 caps the patched tile dim at 192 (SD3 / SD3.5-Large) or 384
@@ -510,6 +535,33 @@ plakat generate ".." --model flux-dev --size 2048x2048 \
 plakat generate ".." --model sd35-medium --size 2048x2048 \
  --tiled --tile-size 1024 --tile-stride 768
 ```
+
+#### Kontext + tiled (v0.20)
+
+Flux.1-Kontext-dev composes with `--tiled` for hi-res
+reference-image edits. Each tile slices the matching region of
+the reference latent, packs it, and seq-concats onto the tile's
+noise tokens — so a 2K edit of a 2K reference image stays
+spatially aligned without OOM.
+
+```bash
+plakat generate "fold the dress into a flowing cape" \
+ --model flux-kontext-dev --concept-image portrait.jpg \
+ --size 2048x2048 --tiled --tile-size 512 --tile-stride 384
+```
+
+**Tile-size constraint**: each tile attends over
+`t5 + noise + reference` tokens, and the noise + ref halves are
+the same size — so Kontext + tiled hits Flux's RoPE budget
+(4096 tokens) much faster than tiled alone. At `--tile-size 512`
+the per-tile attention seq is ~2560 (safe); at `--tile-size 1024`
+it would be ~8700 (rejected). The pipeline bails up front with
+the largest safe `--tile-size` for the current model in the
+error message — typically `≤ 608` for Kontext-dev.
+
+Reference must be passed via `--concept-image`. Composes with
+`--control-spec` (CN residuals zero-pad the reference half) and
+`--redux-image` (subject to the same combined RoPE budget).
 
 ### Artefact compositing
 
@@ -735,6 +787,35 @@ The portrait subcommand normally falls back to its built-in
 DEFAULT_NEGATIVE (face / hand suppressors); `--negative-preset`
 replaces that fallback. A typo bails up front with the list of
 supported names.
+
+#### User-defined presets (v0.20)
+
+Drop a plain-text file into the plakat config directory and the
+filename (without `.txt`) becomes a `--negative-preset` name:
+
+| Platform | Location |
+|---|---|
+| Linux   | `~/.config/plakat/negative-presets/<name>.txt` |
+| macOS   | `~/Library/Application Support/ai.plakat.plakat/negative-presets/<name>.txt` |
+| Windows | `%APPDATA%\plakat\plakat\config\negative-presets\<name>.txt` |
+
+```bash
+mkdir -p ~/.config/plakat/negative-presets
+cat > ~/.config/plakat/negative-presets/anatomy.txt <<'EOF'
+extra fingers, fused fingers, mutated hands, asymmetric eyes,
+missing limbs, deformed face
+EOF
+
+plakat generate "portrait of an alchemist" --model sd15 \
+    --negative-preset anatomy
+```
+
+File contents become the negative prompt verbatim (whitespace
+trimmed). Names must be `[a-zA-Z0-9_-]+` — slashes / dots / spaces
+are skipped. **User files override built-ins of the same name**,
+so saving an `anime.txt` replaces the bundled `anime` preset (a
+typo'd `--negative-preset anime` lists it as `anime (user
+override)` in the error output so the source is unambiguous).
 
 ### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
 
@@ -1286,6 +1367,34 @@ Browse HuggingFace and manage the local cache.
 | `models pull <REPO>` | Pre-download SD/Flux weight files for a repo. |
 | `models ls` | List cached models with disk usage. |
 | `models rm <REPO>.. [--yes]` | Delete cached models (with size + confirmation by default). |
+| `models aliases [--family F] [--repo] [--gated]` | List every `--model` alias plakat recognises, grouped by family. **v0.20.** |
+
+### `plakat models aliases`
+
+Enumerates the static alias table — the same lookup `--model` runs
+against — so you can see what short names plakat accepts before
+typing one. Three modes:
+
+```bash
+# Default: human-readable, grouped by family
+plakat models aliases
+
+# Filter to one family (substring match, case-insensitive)
+plakat models aliases --family flux
+plakat models aliases --family "sd 3"
+
+# Bare repo ids, one per line — pipes cleanly into models pull
+plakat models aliases --family flux --repo | xargs -L1 plakat models pull
+
+# Only HF_TOKEN-gated repos
+plakat models aliases --gated
+```
+
+Output rows show every alias spelling, the canonical HF repo, the
+sub-kind (`base`, `inpaint`, `GGUF`, `Kontext`, …), a `[gated]`
+marker when HF_TOKEN is required, and a one-line note. Adding a
+new alias in `src/hf/mod.rs` updates both the resolver and this
+listing.
 
 ---
 
@@ -1342,9 +1451,10 @@ plakat embedding flux-ip-adapter-info XLabs-AI/flux-ip-adapter
 ## `plakat animate`
 
 Frame-by-frame prompt-morph animation. Encodes two prompts
-through CLIP-L once, then runs the denoise loop N times with
-linearly-lerped hidden states. The shared seed keeps the initial
-noise constant so the morph is smooth rather than flickery.
+through the relevant text encoders **once**, then runs the
+denoise loop N times with linearly-lerped hidden states. The
+shared seed keeps the initial noise constant so the morph is
+smooth rather than flickery.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -1352,26 +1462,72 @@ noise constant so the morph is smooth rather than flickery.
 | `--to <STR>` | (required) | Frame N-1's prompt. |
 | `--frames <N>` | `16` | Frame count (≥ 2). |
 | `--seed <U64>` | (random) | Shared seed for every frame. Locking it produces smooth morphs. |
-| `--model <ALIAS>` | `sd15` | SD-family only. SDXL / Flux / SD3 bail loud. |
-| `--size <WxH>` | `512x512` | Output dims; must be /8. |
+| `--model <ALIAS>` | `sd15` | SD 1.5 / 2.1 / SDXL or Flux Dev / Schnell (v0.20). SD3 / 3.5 + Flux Kontext / Fill / Canny / Depth bail loud. |
+| `--size <WxH>` | `512x512` | Output dims; must be /8 on SD, /16 on Flux. |
 | `--steps <N>` | `20` | Steps per frame. Lower OK for animations. |
-| `--guidance <F>` | `7.5` | CFG, shared across frames. |
-| `--negative <STR>` | `""` | Negative prompt, shared. |
-| `--scheduler <KIND>` | `default` | Same options as `plakat generate`. |
+| `--guidance <F>` | `7.5` | CFG, shared across frames. **Flux only**: drop to `3.5` (Dev) or `0` (Schnell) — Flux is guidance-distilled, the scalar is fed directly to the model. |
+| `--negative <STR>` | `""` | Negative prompt, shared. **Ignored on Flux** (no CFG batching to steer); animate warns if you pass one. |
+| `--scheduler <KIND>` | `default` | SD-family only. Flux animate uses BFL's flow-match schedule unconditionally. |
 | `--out <DIR>` | `./out` | Frames land as `frame-NNNN.png`. |
 | `--gif` | off | Bundle frames into `<out>/animation.gif`. |
 | `--gif-delay-ms <N>` | `100` | GIF frame delay. 100=10fps, 41≈24fps, 33≈30fps. |
 
 ```bash
+# SD 1.5
 plakat animate \
     --from "a photo of a fox in a meadow" \
     --to "a photo of a cat in a meadow" \
     --frames 24 --seed 42 \
     --model sd15 --out ./fox_to_cat --gif
+
+# Flux Dev — pre-encodes both endpoints' CLIP-L pooled + T5
+# states once, lerps them per frame. T5 encode dominates the
+# load cost so amortising it across frames is the whole point.
+plakat animate \
+    --from "an oil painting of a fox in a meadow" \
+    --to   "an oil painting of a cat in a meadow" \
+    --frames 24 --seed 42 --steps 20 --guidance 3.5 \
+    --model flux-dev --size 1024x1024 --out ./flux_morph --gif
 ```
 
 Full walkthrough + composition tips:
 [`Documentation/Tutorials/ANIMATE_TUTORIAL.md`](Tutorials/ANIMATE_TUTORIAL.md).
+
+---
+
+## `plakat init` (v0.20)
+
+Bootstrap a starter project directory — `scenario.hjson`,
+`wildcards/` (with three example files), and a focused
+`.gitignore`. Targets `sd15` and `enhancer: local` so the
+generated scenario runs end-to-end with no API key, no HF token,
+and no model selection up front.
+
+| Flag | Default | Description |
+|---|---|---|
+| `DIR` (positional) | `.` | Target directory. Created if missing. |
+| `--minimal` | off | Write only `scenario.hjson`. Skip `wildcards/` and `.gitignore`. |
+| `--force` | off | Overwrite existing files. Default errors on conflict. |
+
+```bash
+# Fresh project in a new directory
+plakat init ./my-poster-project
+plakat scenario ./my-poster-project/scenario.hjson --dry-run
+plakat scenario ./my-poster-project/scenario.hjson
+
+# Minimal — just the scenario file (e.g. adding to an existing repo)
+plakat init . --minimal
+
+# Re-init after editing things you regret
+plakat init . --force
+```
+
+The generated `wildcards/` directory holds `subject.txt`,
+`style.txt`, and `lighting.txt` — three options each — for use
+with `plakat generate "__subject__ in a __lighting__" --wildcard-dir
+./wildcards`. The scenario file itself uses the scenario engine's
+own scene/weather catalog mechanism rather than wildcards (the two
+mechanisms are independent).
 
 ---
 

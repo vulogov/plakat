@@ -7,11 +7,18 @@
 //!
 //! Scope notes:
 //!
-//! * SD 1.5 / SD 2.1 / SDXL in this release. SDXL uses dual encoders
-//!   (CLIP-L penult + CLIP-G penult concat → 2048d) plus a pooled
-//!   `add_embedding` and `add_time_ids` micro-conditioning vector;
-//!   the lerp runs across all three at frame time. Flux + SD3 use
-//!   T5 + rectified flow that need their own machinery.
+//! * SD 1.5 / SD 2.1 / SDXL via the shared CLIP encoder lerp.
+//!   SDXL also lerps the pooled `add_text_embeds` + builds a
+//!   `add_time_ids` micro-conditioning vector.
+//! * **v0.20 #9**: Flux (Dev / Schnell) via T5 + CLIP-L-pooled
+//!   lerp + flow-match per-frame. Flux is guidance-distilled so
+//!   there's no CFG batching — `--negative` is a no-op on Flux
+//!   variants (we warn at the CLI layer if the user passes one).
+//!   The Kontext / Fill / Canny / Depth Flux variants are
+//!   refused: they need a reference / conditioning image which
+//!   doesn't fit the per-frame morph contract.
+//! * SD3 / SD3.5 animate is a follow-up (needs three-encoder
+//!   lerp + the rectified-flow MMDiT integrator wiring).
 //! * No `--lora` / `--control` / `--refiner` plumbing — animate
 //!   keeps the pipeline narrow on purpose. Bake LoRAs into the
 //!   prompts via wildcards or use the standard `plakat generate`
@@ -128,23 +135,47 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
     std::fs::create_dir_all(&args.out)
         .with_context(|| format!("creating output dir {}", args.out.display()))?;
 
-    // Model gate: SD 1.5 / SD 2.1 only. Reuse `SdVariant::detect`
-    // so the alias + repo-id resolution is the same as the t2i
-    // dispatch.
-    let variant = {
-        let repo = if args.model.contains('/') {
-            args.model.clone()
-        } else {
-            crate::hf::resolve_alias(&args.model).to_string()
-        };
-        SdVariant::detect(&repo)
+    // Model gate. v0.20 #9: split into SD-family + Flux dispatch.
+    // SD3 / SD3.5 stays gated — it needs three-encoder lerp + the
+    // rectified-flow MMDiT integrator wiring, which lands in a
+    // follow-up.
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
     };
+    let t2i_variant = crate::pipelines::t2i::Variant::detect(&repo);
+    if t2i_variant.is_sd3() {
+        anyhow::bail!(
+            "`plakat animate` doesn't yet support SD3 / SD3.5 (got --model {}). \
+             SD3's three-encoder (CLIP-L + CLIP-G + T5) lerp + the rectified-\
+             flow MMDiT integrator lands in a follow-up. Flux variants work.",
+            args.model,
+        );
+    }
+    if t2i_variant.is_flux() {
+        // Flux Kontext / Fill / Canny / Depth need a reference or
+        // conditioning image per call — there's no place to plug
+        // one in `--from` / `--to`. Refuse up front rather than
+        // OOM the user 30s into a load.
+        let fvar = map_to_flux_variant(t2i_variant);
+        if !matches!(fvar, crate::pipelines::flux::Variant::Dev | crate::pipelines::flux::Variant::Schnell) {
+            anyhow::bail!(
+                "`plakat animate` on Flux supports `--model flux-dev` and \
+                 `--model flux-schnell` (got --model {} = {:?}). Kontext / \
+                 Fill / Canny / Depth need a reference image per call which \
+                 doesn't fit the per-frame morph contract.",
+                args.model,
+                fvar,
+            );
+        }
+        return run_flux(args, device, fvar).await;
+    }
+    let variant = SdVariant::detect(&repo);
     if !matches!(variant, SdVariant::Sd15 | SdVariant::Sd21 | SdVariant::Sdxl) {
         anyhow::bail!(
-            "`plakat animate` is SD 1.5 / SD 2.1 / SDXL only in this \
-             release (got --model {} = {:?}). Flux / SD3 animation \
-             lands in a follow-up — the per-frame embedding lerp \
-             needs separate machinery for those families.",
+            "`plakat animate` is SD 1.5 / SD 2.1 / SDXL or Flux Dev / Schnell \
+             in this release (got --model {} = {:?}).",
             args.model,
             variant
         );
@@ -678,6 +709,180 @@ fn parse_size(s: &str) -> Result<(u32, u32)> {
     Ok((w, h))
 }
 
+/// v0.20 #9: map the unified `t2i::Variant` to `flux::Variant`.
+/// Mirrors the same match inside `t2i::run` so the alias lookup
+/// stays in one place. Defaults to `Schnell` for anything not
+/// explicitly listed — the caller has already vetted the variant
+/// via `is_flux()` so the fallback only fires on future Flux
+/// additions.
+fn map_to_flux_variant(
+    v: crate::pipelines::t2i::Variant,
+) -> crate::pipelines::flux::Variant {
+    use crate::pipelines::flux::Variant as FV;
+    use crate::pipelines::t2i::Variant;
+    match v {
+        Variant::FluxDev => FV::Dev,
+        Variant::FluxFillDev => FV::FillDev,
+        Variant::FluxCannyDev => FV::CannyDev,
+        Variant::FluxDepthDev => FV::DepthDev,
+        Variant::FluxKontextDev => FV::KontextDev,
+        _ => FV::Schnell,
+    }
+}
+
+/// v0.20 #9: Flux animate dispatch. Loads `flux::Pipeline` once,
+/// pre-encodes both endpoint prompts via `Pipeline::encode_prompt`,
+/// then per frame: lerp `(clip_pooled, t5_emb)` → call
+/// `Pipeline::animate_frame` → save with metadata.
+///
+/// Mirrors the SD path's frame/resume/gif structure as closely as
+/// possible so behavioural differences across families stay
+/// contained to the encode + denoise seams.
+async fn run_flux(
+    args: AnimateArgs,
+    device: Device,
+    fvar: crate::pipelines::flux::Variant,
+) -> Result<()> {
+    use crate::pipelines::flux;
+
+    let (width, height) = parse_size(&args.size)?;
+
+    if !args.negative.is_empty() {
+        tracing::warn!(
+            target: "plakat",
+            "--negative is ignored on Flux animate: Flux is guidance-distilled \
+             (no CFG batching), so the unconditional branch can't be steered. \
+             Drop --negative or move the suppressors into the positive prompts."
+        );
+    }
+
+    let load_spin = crate::ui::progress::spinner(&format!(
+        "Loading Flux {} for animation",
+        match fvar {
+            flux::Variant::Dev => "Dev",
+            flux::Variant::Schnell => "Schnell",
+            _ => "unknown",
+        }
+    ));
+    let repo = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+    let mut pipeline = flux::Pipeline::load(flux::LoadRequest {
+        variant: fvar,
+        repo,
+        device,
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        controlnets: Vec::new(),
+        quantize_t5: false,
+        flux_quant_level: None,
+        t5_quant_level: None,
+        redux: false,
+    })
+    .await?;
+    load_spin.finish_with_message("✓ Flux backbone ready");
+
+    let encode_spin =
+        crate::ui::progress::spinner("Encoding Flux endpoint prompts");
+    let (clip_a, t5_a) = pipeline.encode_prompt(&args.from)?;
+    let (clip_b, t5_b) = pipeline.encode_prompt(&args.to)?;
+    encode_spin.finish_with_message("✓ endpoint embeddings ready");
+
+    let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
+    crate::ui::progress::println(&format!(
+        "  animation: {} frames, seed {seed}, model {}, {}x{}",
+        args.frames, args.model, width, height,
+    ));
+
+    let scheduler_name = format!("{:?}", args.scheduler).to_lowercase();
+    let mut skipped = 0u32;
+    let mut frame_paths: Vec<PathBuf> = Vec::with_capacity(args.frames as usize);
+    for frame_i in 0..args.frames {
+        let t = if args.frames == 1 {
+            0.0
+        } else {
+            frame_i as f64 / (args.frames - 1) as f64
+        };
+        let frame_path = args.out.join(format!("frame-{frame_i:04}.png"));
+        if args.resume && frame_path.exists() {
+            skipped += 1;
+            frame_paths.push(frame_path.clone());
+            crate::ui::progress::println(&format!(
+                "  frame {}/{} → {} (t={:.3}) {}",
+                frame_i + 1,
+                args.frames,
+                frame_path.display(),
+                t,
+                console::style("(resume — already on disk)").dim(),
+            ));
+            continue;
+        }
+        let clip_lerp = lerp_tensors(&clip_a, &clip_b, t)?;
+        let t5_lerp = lerp_tensors(&t5_a, &t5_b, t)?;
+        let (buf, ow, oh) = pipeline.animate_frame(
+            &clip_lerp,
+            &t5_lerp,
+            width,
+            height,
+            args.steps,
+            args.guidance,
+            seed,
+        )?;
+        if !args.no_metadata {
+            let prompt_desc =
+                format!("lerp({t:.4}): {:?} | {:?}", args.from, args.to);
+            let mut m = crate::imaging::metadata::GenerationMetadata::new(
+                prompt_desc,
+                args.model.clone(),
+                seed,
+                args.steps,
+                args.guidance,
+                scheduler_name.clone(),
+                width,
+                height,
+            );
+            m.negative = args.negative.clone();
+            m.mode = Some("animate".to_string());
+            m.with_animate_lerp(t, &args.from, &args.to);
+            crate::imaging::io::save_rgb_u8_with_metadata(
+                &buf, ow, oh, &frame_path, &m,
+            )?;
+        } else {
+            crate::imaging::io::save_rgb_u8(&buf, ow, oh, &frame_path)?;
+        }
+        frame_paths.push(frame_path);
+        crate::ui::progress::println(&format!(
+            "  frame {}/{} → {} (t={:.3})",
+            frame_i + 1,
+            args.frames,
+            frame_paths.last().unwrap().display(),
+            t,
+        ));
+    }
+
+    if args.resume && skipped > 0 {
+        crate::ui::progress::println(&format!(
+            "  {} skipped {skipped}/{} frame(s) that were already on disk",
+            console::style("(resume)").dim(),
+            args.frames,
+        ));
+    }
+
+    if args.gif {
+        let gif_path = args.out.join("animation.gif");
+        let spin = crate::ui::progress::spinner(&format!(
+            "Bundling {} frames → {}",
+            frame_paths.len(),
+            gif_path.display()
+        ));
+        write_gif(&frame_paths, &gif_path, args.gif_delay_ms)?;
+        spin.finish_with_message(format!("✓ {}", gif_path.display()));
+    }
+    Ok(())
+}
+
 fn write_gif(
     frame_paths: &[PathBuf],
     out_path: &std::path::Path,
@@ -791,6 +996,79 @@ mod tests {
         for v in &flat {
             assert!((v - 1.0).abs() < 1e-5, "expected ~1.0, got {v}");
         }
+    }
+
+    // v0.20 #9 — Flux animate routing + lerp on Flux's tensor shapes.
+
+    #[test]
+    fn map_to_flux_variant_covers_flux_family() {
+        use crate::pipelines::flux::Variant as FV;
+        use crate::pipelines::t2i::Variant;
+        assert!(matches!(map_to_flux_variant(Variant::FluxDev), FV::Dev));
+        assert!(matches!(
+            map_to_flux_variant(Variant::FluxFillDev),
+            FV::FillDev
+        ));
+        assert!(matches!(
+            map_to_flux_variant(Variant::FluxCannyDev),
+            FV::CannyDev
+        ));
+        assert!(matches!(
+            map_to_flux_variant(Variant::FluxDepthDev),
+            FV::DepthDev
+        ));
+        assert!(matches!(
+            map_to_flux_variant(Variant::FluxKontextDev),
+            FV::KontextDev
+        ));
+        assert!(matches!(
+            map_to_flux_variant(Variant::FluxSchnell),
+            FV::Schnell
+        ));
+    }
+
+    #[test]
+    fn lerp_on_flux_t5_shape_1_512_4096() {
+        // Flux Dev's T5 hidden state: (1, 512, 4096). Make sure
+        // lerp handles the volume + that midpoint averages
+        // correctly for the larger tensor.
+        let a = Tensor::zeros((1, 512, 4096), DType::F32, &Device::Cpu).unwrap();
+        let b = (Tensor::ones((1, 512, 4096), DType::F32, &Device::Cpu).unwrap() * 6.0).unwrap();
+        let out = lerp_tensors(&a, &b, 0.5).unwrap();
+        assert_eq!(out.dims(), &[1, 512, 4096]);
+        // Sample one position; with floats the broadcast is exact.
+        let mid = out.i(0).unwrap().i(256).unwrap().i(2048).unwrap();
+        let v: f32 = mid.to_vec0().unwrap();
+        assert!((v - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lerp_on_flux_clip_pooled_shape_1_768() {
+        // Flux CLIP-L pooled output is (1, 768) — single row of
+        // pooled features. Same broadcast contract as the SDXL
+        // pooled tensor; verify the shape passes through.
+        let a = Tensor::zeros((1, 768), DType::F32, &Device::Cpu).unwrap();
+        let b = (Tensor::ones((1, 768), DType::F32, &Device::Cpu).unwrap() * 2.0).unwrap();
+        let out = lerp_tensors(&a, &b, 0.5).unwrap();
+        assert_eq!(out.dims(), &[1, 768]);
+        let v: Vec<f32> = out.flatten_all().unwrap().to_vec1().unwrap();
+        for x in &v {
+            assert!((x - 1.0).abs() < 1e-5, "expected 1.0, got {x}");
+        }
+    }
+
+    #[test]
+    fn lerp_on_flux_schnell_t5_shape_1_256_4096() {
+        // Schnell uses a 256-token T5 budget (vs Dev's 512).
+        // Same lerp contract, smaller tensor.
+        let a = Tensor::zeros((1, 256, 4096), DType::F32, &Device::Cpu).unwrap();
+        let b = (Tensor::ones((1, 256, 4096), DType::F32, &Device::Cpu).unwrap() * 4.0).unwrap();
+        let out = lerp_tensors(&a, &b, 0.25).unwrap();
+        assert_eq!(out.dims(), &[1, 256, 4096]);
+        let mid = out.i(0).unwrap().i(128).unwrap().i(2000).unwrap();
+        let v: f32 = mid.to_vec0().unwrap();
+        // 0 * 0.75 + 4 * 0.25 = 1.0
+        assert!((v - 1.0).abs() < 1e-5);
     }
 
     #[test]

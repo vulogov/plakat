@@ -724,6 +724,10 @@ async fn run_flux_fill(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // v0.18 phase 2b: Kontext bucket only matters for Kontext;
         // these img2img arms don't route through Kontext.
         kontext_bucket: false,
+        // v0.20: WebP isn't surfaced at the img2img CLI yet.
+        // Defaults to PNG; pipeline-level filename construction
+        // honours this field.
+        output_format: crate::imaging::io::OutputFormat::Png,
     })
     .await?;
     // Tempdir held until after the awaited generate completes —
@@ -864,6 +868,10 @@ async fn run_flux_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // v0.18 phase 2b: Kontext bucket only matters for Kontext;
         // these img2img arms don't route through Kontext.
         kontext_bucket: false,
+        // v0.20: WebP isn't surfaced at the img2img CLI yet.
+        // Defaults to PNG; pipeline-level filename construction
+        // honours this field.
+        output_format: crate::imaging::io::OutputFormat::Png,
     })
     .await?;
 
@@ -989,6 +997,8 @@ async fn run_flux_kontext(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         redux_images: Vec::new(),
         concept_conditioning: Some(args.input),
         kontext_bucket,
+        // v0.20: WebP isn't surfaced at the img2img CLI yet.
+        output_format: crate::imaging::io::OutputFormat::Png,
     })
     .await?;
 
@@ -1111,6 +1121,10 @@ async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // dispatch only. The img2img CLI doesn't surface --control*,
         // so an empty Vec here is the only valid value.
         controlnets: Vec::new(),
+        // v0.20: WebP isn't surfaced at the img2img CLI yet — SD3
+        // outputs default to PNG. The pipeline layer honours this
+        // when set.
+        output_format: crate::imaging::io::OutputFormat::Png,
     })
     .await?;
 
