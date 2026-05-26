@@ -293,6 +293,157 @@ fn find_rendered_png(dir: &Path) -> Result<PathBuf> {
     Ok(entry.path())
 }
 
+/// v0.22 phase 9: snapshot of artefact compose + blend inputs
+/// that can be built *before* the cached pipeline is borrowed
+/// (same rationale as [`AdetailerArgs`] / [`HiresArgs`]).
+///
+/// `specs` empty → the whole post-process step is a no-op (matches
+/// `composite_onto_files`'s short-circuit). The optional blend
+/// pass needs the model alias + LoRA stack to build a
+/// `BlendConfig`; we snapshot them too so a later config-key
+/// change can't desync the blend with the cached pipeline.
+struct ArtefactArgs {
+    specs: Vec<crate::artefacts::ArtefactSpec>,
+    library_dir: std::path::PathBuf,
+    smart_zones: bool,
+    blend_enabled: bool,
+    blend_cfg: crate::pipelines::artefact_blend::BlendConfig,
+}
+
+impl ArtefactArgs {
+    fn from_ctx(
+        ctx: &ScriptCtx,
+        alias: &str,
+        prompt: &str,
+        image_w: u32,
+        image_h: u32,
+    ) -> Self {
+        let library_dir = if ctx.config.artefact_library.is_empty() {
+            std::path::PathBuf::from("assets/artefact_library")
+        } else {
+            std::path::PathBuf::from(&ctx.config.artefact_library)
+        };
+        let blend_cfg = crate::pipelines::artefact_blend::BlendConfig {
+            model: alias.to_string(),
+            device: ctx.device.clone(),
+            loras: ctx.loras.clone(),
+            lora_scale: ctx.config.lora_scale,
+            prompt: prompt.to_string(),
+            negative: ctx.config.negative.clone(),
+            image_w,
+            image_h,
+            steps: ctx.config.steps,
+            guidance: ctx.config.guidance as f64,
+            scheduler: ctx.config.scheduler,
+            strength: ctx.config.artefact_blend_strength,
+            feather_px: None,
+        };
+        Self {
+            specs: ctx.artefacts.clone(),
+            library_dir,
+            smart_zones: ctx.config.artefact_smart_zones,
+            blend_enabled: ctx.artefact_blend_enabled,
+            blend_cfg,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.specs.is_empty()
+    }
+}
+
+/// v0.22 phase 9: run the artefact compositing + optional blend
+/// pass on the rendered PNG in place. Caller is responsible for
+/// the family check (Flux + SD3 bail before reaching here).
+///
+/// Smart-zones loads `Depth-Anything-V2-Small` on first use; the
+/// runtime block-in-place bridge mirrors the other post-process
+/// paths.
+fn apply_artefacts_sd(
+    args: &ArtefactArgs,
+    rendered: &std::path::Path,
+    pipeline: &portrait::Pipeline,
+) -> Result<()> {
+    if args.is_empty() {
+        return Ok(());
+    }
+    let canvas_w = args.blend_cfg.image_w;
+    let canvas_h = args.blend_cfg.image_h;
+    let files = vec![rendered.to_path_buf()];
+
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.artefact: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+
+    // Smart-zones: lazy depth-pipeline load. We pay the load cost
+    // exactly when the script asked for it; otherwise None and
+    // the rigid grid runs (no depth weights download).
+    let smart = if args.smart_zones {
+        Some(
+            tokio::task::block_in_place(|| {
+                handle.block_on(crate::pipelines::depth::DepthPipeline::load(
+                    args.blend_cfg.device.clone(),
+                ))
+            })
+            .context("loading Depth-Anything-V2-Small for artefact smart-zones")?,
+        )
+    } else {
+        None
+    };
+
+    // Alpha composite — synchronous, no model load. Empty spec
+    // list is already handled by the early-return above.
+    crate::artefacts::composite_onto_files(
+        &args.specs,
+        &args.library_dir,
+        &files,
+        canvas_w,
+        canvas_h,
+        &Default::default(),
+        smart.as_ref(),
+    )
+    .context("artefact compositing (plakat.artefact post-process)")?;
+
+    if args.blend_enabled {
+        let shared_core = Some(pipeline.core());
+        // BlendConfig is non-Clone; build a fresh one here from the
+        // snapshot. The snapshot's blend_cfg fields are owned strings
+        // / cheap to recreate.
+        let bcfg = crate::pipelines::artefact_blend::BlendConfig {
+            model: args.blend_cfg.model.clone(),
+            device: args.blend_cfg.device.clone(),
+            loras: args.blend_cfg.loras.clone(),
+            lora_scale: args.blend_cfg.lora_scale,
+            prompt: args.blend_cfg.prompt.clone(),
+            negative: args.blend_cfg.negative.clone(),
+            image_w: args.blend_cfg.image_w,
+            image_h: args.blend_cfg.image_h,
+            steps: args.blend_cfg.steps,
+            guidance: args.blend_cfg.guidance,
+            scheduler: args.blend_cfg.scheduler,
+            strength: args.blend_cfg.strength,
+            feather_px: args.blend_cfg.feather_px,
+        };
+        tokio::task::block_in_place(|| {
+            handle.block_on(crate::pipelines::artefact_blend::blend_files(
+                bcfg,
+                &args.specs,
+                &args.library_dir,
+                &files,
+                &Default::default(),
+                None,
+                smart.as_ref(),
+                shared_core,
+            ))
+        })
+        .context("artefact_blend::blend_files (plakat post-process)")?;
+    }
+    Ok(())
+}
+
 /// v0.22 phase 8: snapshot of hires-fix inputs that can be built
 /// *before* the cached pipeline is borrowed (same rationale as
 /// [`AdetailerArgs`]).
@@ -469,16 +620,31 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             let control_owned =
                 resolve_sd_controlnets(ctx, &alias, req.width, req.height, None)?;
             let control_reqs = controlnets_to_requests(&control_owned);
-            // v0.22 phase 7+8: snapshot post-process inputs *before*
-            // the cached-pipeline borrow so they can run while we
-            // still hold the pipeline reference. Hires fix runs
-            // first (upscales + refines composition); ADetailer
-            // runs second (refines faces at the higher resolution).
+            // v0.22 phase 7-9: post-process snapshots *before* the
+            // cached-pipeline borrow. Run order: artefacts (compose
+            // + blend) → hires → adetailer. The CLI bails if
+            // --hires-fix is combined with --artefact / --artefact-blend;
+            // we mirror that gate here.
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
             let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
+            let aargs = ArtefactArgs::from_ctx(
+                ctx, &alias, prompt, req.width, req.height,
+            );
+            if !aargs.is_empty() && hargs.enabled {
+                bail!(
+                    "plakat.generate: hires-fix doesn't compose with \
+                     artefacts in v0.22 — the CLI bails the same way. \
+                     Call plakat.hires.disable OR plakat.artefact.clear \
+                     before plakat.generate."
+                );
+            }
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             pipeline.generate(&req, &control_reqs)
                 .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+            if !aargs.is_empty() {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+            }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
                 apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
@@ -512,6 +678,13 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      plakat.generate on Flux."
                 );
             }
+            if !ctx.artefacts.is_empty() {
+                bail!(
+                    "plakat.generate: artefacts are SD-family only in v0.22 \
+                     phase 9 — the optional blend pass uses portrait::Pipeline. \
+                     Call plakat.artefact.clear before plakat.generate on Flux."
+                );
+            }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
@@ -539,6 +712,13 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      phase 8 — the refine pass needs an SD img2img \
                      pipeline. Call plakat.hires.disable before \
                      plakat.generate on SD3."
+                );
+            }
+            if !ctx.artefacts.is_empty() {
+                bail!(
+                    "plakat.generate: artefacts are SD-family only in v0.22 \
+                     phase 9 — the optional blend pass uses portrait::Pipeline. \
+                     Call plakat.artefact.clear before plakat.generate on SD3."
                 );
             }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
@@ -623,10 +803,16 @@ pub fn img2img_one(
                 // resolves the specs internally.
                 controls: ctx.controlnets.clone(),
             };
-            // v0.22 phase 7+8: post-process snapshots before
-            // pipeline borrow. Hires runs before ADetailer.
+            // v0.22 phase 7-9: post-process snapshots before pipeline borrow.
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
             let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
+            let aargs = ArtefactArgs::from_ctx(ctx, &alias, prompt, width, height);
+            if !aargs.is_empty() && hargs.enabled {
+                bail!(
+                    "plakat.img2img: hires-fix doesn't compose with artefacts \
+                     in v0.22. Disable one before plakat.img2img."
+                );
+            }
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
             // run_with_pipeline is async; bridge via block_in_place.
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
@@ -641,6 +827,10 @@ pub fn img2img_one(
                 ))
             })
             .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+            if !aargs.is_empty() {
+                let rendered = find_rendered_png(&tmp_path)?;
+                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+            }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
                 apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
@@ -669,6 +859,13 @@ pub fn img2img_one(
                 bail!(
                     "plakat.img2img: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
+                     plakat.img2img on Flux."
+                );
+            }
+            if !ctx.artefacts.is_empty() {
+                bail!(
+                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                     phase 9. Call plakat.artefact.clear before \
                      plakat.img2img on Flux."
                 );
             }
@@ -707,6 +904,13 @@ pub fn img2img_one(
                 bail!(
                     "plakat.img2img: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
+                     plakat.img2img on SD3."
+                );
+            }
+            if !ctx.artefacts.is_empty() {
+                bail!(
+                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                     phase 9. Call plakat.artefact.clear before \
                      plakat.img2img on SD3."
                 );
             }
@@ -787,12 +991,23 @@ pub fn portrait_one(
     // Normalize photo weights (the pipeline's invariant).
     crate::pipelines::ip_adapter::normalize_photo_weights(&mut req.photos)?;
 
-    // v0.22 phase 7+8: post-process snapshots before pipeline borrow.
+    // v0.22 phase 7-9: post-process snapshots before pipeline borrow.
     let adargs = AdetailerArgs::from_ctx(ctx, &alias);
     let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
+    let aargs = ArtefactArgs::from_ctx(ctx, &alias, prompt, req.width, req.height);
+    if !aargs.is_empty() && hargs.enabled {
+        bail!(
+            "plakat.portrait: hires-fix doesn't compose with artefacts in \
+             v0.22. Disable one before plakat.portrait."
+        );
+    }
     let pipeline = ctx.get_or_load_sd_family(&alias)?;
     pipeline.generate(&req, &[])
         .context("portrait::Pipeline::generate (plakat.portrait path)")?;
+    if !aargs.is_empty() {
+        let rendered = find_rendered_png(tmp.path())?;
+        apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+    }
     if hargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
         apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
