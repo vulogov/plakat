@@ -285,6 +285,42 @@ mod tests {
         });
     }
 
+    // v0.22 phase 7: plakat.adetailer.* end-to-end.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adetailer_enable_toggles_ctx_flag() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.adetailer_enabled = false).unwrap();
+            eval("plakat.adetailer.enable").unwrap();
+            with_ctx(|ctx| assert!(ctx.adetailer_enabled)).unwrap();
+            eval("plakat.adetailer.disable").unwrap();
+            with_ctx(|ctx| assert!(!ctx.adetailer_enabled)).unwrap();
+        });
+    }
+
+    /// Config-only round-trip via `plakat.config.set` exercises the
+    /// new phase 7 keys end-to-end through the host word.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adetailer_config_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            // Stack order: value pushed first, then key on top.
+            eval(r#"0.6 "adetailer_strength" plakat.config.set"#).unwrap();
+            eval(r#"0.35 "adetailer_padding" plakat.config.set"#).unwrap();
+            eval(r#"768 "adetailer_size" plakat.config.set"#).unwrap();
+            eval(
+                r#""sharp face, detailed skin" "adetailer_prompt" plakat.config.set"#,
+            )
+            .unwrap();
+            with_ctx(|ctx| {
+                assert!((ctx.config.adetailer_strength - 0.6).abs() < 1e-6);
+                assert!((ctx.config.adetailer_padding - 0.35).abs() < 1e-6);
+                assert_eq!(ctx.config.adetailer_size, 768);
+                assert_eq!(ctx.config.adetailer_prompt, "sharp face, detailed skin");
+            })
+            .unwrap();
+        });
+    }
+
     // v0.22 phase 5: plakat.controlnet.* end-to-end.
 
     /// `plakat.controlnet.add` pushes a kind + image pair.

@@ -81,6 +81,14 @@ pub struct ScriptCtx {
     /// The toggle is shipped today so the surface is stable for
     /// when the cache switches to `t2i::Pipeline`.
     pub refiner_enabled: bool,
+    /// v0.22 phase 7: ADetailer post-process toggle. When `true`,
+    /// `script_entry::generate_one` runs `adetailer::refine_files`
+    /// on the rendered image before pushing it to `images`. The
+    /// per-pass knobs (strength / padding / feather / confidence
+    /// / size / prompt) come from `config.adetailer_*` keys.
+    /// SD-family only — Flux + SD3 generate paths bail when this
+    /// is on (SCRFD + img2img face passes are SD-only).
+    pub adetailer_enabled: bool,
 }
 
 impl ScriptCtx {
@@ -101,6 +109,7 @@ impl ScriptCtx {
             loras: Vec::new(),
             controlnets: Vec::new(),
             refiner_enabled: false,
+            adetailer_enabled: false,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -490,6 +499,7 @@ mod tests {
             loras: Vec::new(),
             controlnets: Vec::new(),
             refiner_enabled: false,
+            adetailer_enabled: false,
         }
     }
 

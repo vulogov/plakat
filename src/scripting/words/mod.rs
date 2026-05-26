@@ -9,6 +9,7 @@
 use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
+pub mod adetailer;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
@@ -87,6 +88,17 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         refiner::plakat_refiner_disable,
     )
     .map_err(|e| anyhow!("registering plakat.refiner.disable: {e}"))?;
+    // v0.22 phase 7: plakat.adetailer.* namespace.
+    vm.register_inline(
+        "plakat.adetailer.enable".to_string(),
+        adetailer::plakat_adetailer_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.adetailer.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.adetailer.disable".to_string(),
+        adetailer::plakat_adetailer_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.adetailer.disable: {e}"))?;
     Ok(())
 }
 

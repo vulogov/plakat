@@ -112,6 +112,31 @@ pub struct GenerationConfig {
     /// shipping-but-no-op key — same approach as Flux's
     /// `kontext_bucket` before phase 2 wired it.
     pub style_strength: f32,
+    /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
+    /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
+    /// identity / colour; higher = more rework. Ignored when
+    /// `ctx.adetailer_enabled == false`.
+    pub adetailer_strength: f32,
+    /// v0.22 phase 7: bbox expansion fraction (each side) in [0, 1].
+    /// Default 0.25 (25% on each side = 50% total dim growth).
+    /// Trade-off: more = better blending, less = sharper detail.
+    pub adetailer_padding: f32,
+    /// v0.22 phase 7: feather fraction in [0, 1]. Default 0.25 —
+    /// the outer 25% of the bbox fades 1.0 → 0.0. Larger = softer
+    /// seam.
+    pub adetailer_feather: f32,
+    /// v0.22 phase 7: SCRFD confidence threshold in [0, 1]. Faces
+    /// scored below this are skipped. Default 0.5 (InsightFace's).
+    pub adetailer_confidence: f32,
+    /// v0.22 phase 7: working resolution of the face img2img pass
+    /// (square). Default 512 (SD 1.5 native); 1024 fits SDXL.
+    /// Snapped to /8 by the img2img pipeline.
+    pub adetailer_size: u32,
+    /// v0.22 phase 7: prompt for the face pass. Default matches
+    /// `adetailer::Config::defaults`. Set to a portrait-flavoured
+    /// override (e.g. "detailed eyes, intricate iris, sharp
+    /// focus") for stronger refinements.
+    pub adetailer_prompt: String,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -148,6 +173,12 @@ impl Default for GenerationConfig {
             refine_strength: 0.3,
             refiner_frac: 0.8,
             style_strength: 1.0,
+            adetailer_strength: 0.4,
+            adetailer_padding: 0.25,
+            adetailer_feather: 0.25,
+            adetailer_confidence: 0.5,
+            adetailer_size: 512,
+            adetailer_prompt: "detailed face, sharp focus, high quality".to_string(),
             size_explicit: false,
         }
     }
@@ -257,6 +288,36 @@ impl GenerationConfig {
             "style_strength" => {
                 self.style_strength = parse_unit_float(value, key)? as f32;
             }
+            "adetailer_strength" | "adetailer_padding" | "adetailer_feather"
+            | "adetailer_confidence" => {
+                let f = parse_unit_float(value, key)? as f32;
+                match key {
+                    "adetailer_strength" => self.adetailer_strength = f,
+                    "adetailer_padding" => self.adetailer_padding = f,
+                    "adetailer_feather" => self.adetailer_feather = f,
+                    "adetailer_confidence" => self.adetailer_confidence = f,
+                    _ => unreachable!(),
+                }
+            }
+            "adetailer_size" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 || n > 2048 {
+                    bail!(
+                        "plakat.config.set: adetailer_size must be in \
+                         (0, 2048] (got {n})"
+                    );
+                }
+                if n % 8 != 0 {
+                    bail!(
+                        "plakat.config.set: adetailer_size must be a \
+                         multiple of 8 (VAE); got {n}"
+                    );
+                }
+                self.adetailer_size = n as u32;
+            }
+            "adetailer_prompt" => {
+                self.adetailer_prompt = value.to_string();
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -266,7 +327,10 @@ impl GenerationConfig {
                      t5_quant_level, fast, kontext_bucket, tiled, \
                      tile_size, tile_stride, lora_scale, \
                      refine_steps, refine_strength, refiner_frac, \
-                     style_strength."
+                     style_strength, adetailer_strength, \
+                     adetailer_padding, adetailer_feather, \
+                     adetailer_confidence, adetailer_size, \
+                     adetailer_prompt."
                 ));
             }
         }
@@ -281,9 +345,10 @@ impl GenerationConfig {
             "steps" | "guidance" | "seed" | "width" | "height"
             | "strength" | "face_strength" | "tile_size" | "tile_stride"
             | "lora_scale" | "refine_steps" | "refine_strength"
-            | "refiner_frac" | "style_strength" => {
-                self.set_str(key, &value.to_string())
-            }
+            | "refiner_frac" | "style_strength"
+            | "adetailer_strength" | "adetailer_padding"
+            | "adetailer_feather" | "adetailer_confidence"
+            | "adetailer_size" => self.set_str(key, &value.to_string()),
             "quantize_t5" | "kontext_bucket" | "tiled" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
@@ -295,7 +360,7 @@ impl GenerationConfig {
                     )),
                 }
             }
-            "negative" | "scheduler" => Err(anyhow!(
+            "negative" | "scheduler" | "adetailer_prompt" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -365,7 +430,9 @@ impl GenerationConfig {
                 self.lora_scale = value as f32;
                 Ok(())
             }
-            "refine_strength" | "refiner_frac" | "style_strength" => {
+            "refine_strength" | "refiner_frac" | "style_strength"
+            | "adetailer_strength" | "adetailer_padding"
+            | "adetailer_feather" | "adetailer_confidence" => {
                 if !value.is_finite() {
                     bail!(
                         "plakat.config.set: {key} {value} isn't finite"
@@ -380,11 +447,16 @@ impl GenerationConfig {
                     "refine_strength" => self.refine_strength = value as f32,
                     "refiner_frac" => self.refiner_frac = value as f32,
                     "style_strength" => self.style_strength = value as f32,
+                    "adetailer_strength" => self.adetailer_strength = value as f32,
+                    "adetailer_padding" => self.adetailer_padding = value as f32,
+                    "adetailer_feather" => self.adetailer_feather = value as f32,
+                    "adetailer_confidence" => self.adetailer_confidence = value as f32,
                     _ => unreachable!(),
                 }
                 Ok(())
             }
-            "steps" | "seed" | "width" | "height" | "refine_steps" => {
+            "steps" | "seed" | "width" | "height" | "refine_steps"
+            | "adetailer_size" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
                 if value.fract() != 0.0 {
@@ -395,7 +467,7 @@ impl GenerationConfig {
                 }
                 self.set_int(key, value as i64)
             }
-            "negative" | "scheduler" => Err(anyhow!(
+            "negative" | "scheduler" | "adetailer_prompt" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -843,6 +915,13 @@ mod tests {
             "refine_strength",
             "refiner_frac",
             "style_strength",
+            // Phase 7 adetailer keys:
+            "adetailer_strength",
+            "adetailer_padding",
+            "adetailer_feather",
+            "adetailer_confidence",
+            "adetailer_size",
+            "adetailer_prompt",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -1026,5 +1105,87 @@ mod tests {
         let err = cfg.set_int("seed", -1).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains(">= 0"), "got {msg}");
+    }
+
+    // v0.22 phase 7: adetailer config keys.
+
+    #[test]
+    fn defaults_for_v022_phase7_adetailer_keys() {
+        let cfg = GenerationConfig::default();
+        assert!((cfg.adetailer_strength - 0.4).abs() < 1e-6);
+        assert!((cfg.adetailer_padding - 0.25).abs() < 1e-6);
+        assert!((cfg.adetailer_feather - 0.25).abs() < 1e-6);
+        assert!((cfg.adetailer_confidence - 0.5).abs() < 1e-6);
+        assert_eq!(cfg.adetailer_size, 512);
+        assert_eq!(
+            cfg.adetailer_prompt,
+            "detailed face, sharp focus, high quality"
+        );
+    }
+
+    #[test]
+    fn set_str_adetailer_unit_floats_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("adetailer_strength", "0.6").unwrap();
+        assert!((cfg.adetailer_strength - 0.6).abs() < 1e-6);
+        cfg.set_str("adetailer_padding", "0.35").unwrap();
+        assert!((cfg.adetailer_padding - 0.35).abs() < 1e-6);
+        cfg.set_str("adetailer_feather", "0.5").unwrap();
+        assert!((cfg.adetailer_feather - 0.5).abs() < 1e-6);
+        cfg.set_str("adetailer_confidence", "0.7").unwrap();
+        assert!((cfg.adetailer_confidence - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_adetailer_unit_floats_reject_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("adetailer_strength", "1.5").is_err());
+        assert!(cfg.set_str("adetailer_padding", "-0.1").is_err());
+        assert!(cfg.set_str("adetailer_confidence", "2.0").is_err());
+    }
+
+    #[test]
+    fn set_str_adetailer_size_requires_multiple_of_eight() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("adetailer_size", "768").unwrap();
+        assert_eq!(cfg.adetailer_size, 768);
+        let err = cfg.set_str("adetailer_size", "513").unwrap_err();
+        assert!(format!("{err}").contains("multiple of 8"));
+    }
+
+    #[test]
+    fn set_str_adetailer_size_rejects_zero_and_huge() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("adetailer_size", "0").is_err());
+        assert!(cfg.set_str("adetailer_size", "4096").is_err());
+    }
+
+    #[test]
+    fn set_str_adetailer_prompt_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("adetailer_prompt", "sharp eyes, detailed skin").unwrap();
+        assert_eq!(cfg.adetailer_prompt, "sharp eyes, detailed skin");
+    }
+
+    #[test]
+    fn set_int_adetailer_prompt_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("adetailer_prompt", 42).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("expects a string"), "got {msg}");
+    }
+
+    #[test]
+    fn set_int_adetailer_size_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("adetailer_size", 1024).unwrap();
+        assert_eq!(cfg.adetailer_size, 1024);
+    }
+
+    #[test]
+    fn set_float_adetailer_strength_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("adetailer_strength", 0.55).unwrap();
+        assert!((cfg.adetailer_strength - 0.55).abs() < 1e-6);
     }
 }
