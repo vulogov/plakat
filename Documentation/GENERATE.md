@@ -737,6 +737,35 @@ DEFAULT_NEGATIVE (face / hand suppressors); `--negative-preset`
 replaces that fallback. A typo bails up front with the list of
 supported names.
 
+#### User-defined presets (v0.20)
+
+Drop a plain-text file into the plakat config directory and the
+filename (without `.txt`) becomes a `--negative-preset` name:
+
+| Platform | Location |
+|---|---|
+| Linux   | `~/.config/plakat/negative-presets/<name>.txt` |
+| macOS   | `~/Library/Application Support/ai.plakat.plakat/negative-presets/<name>.txt` |
+| Windows | `%APPDATA%\plakat\plakat\config\negative-presets\<name>.txt` |
+
+```bash
+mkdir -p ~/.config/plakat/negative-presets
+cat > ~/.config/plakat/negative-presets/anatomy.txt <<'EOF'
+extra fingers, fused fingers, mutated hands, asymmetric eyes,
+missing limbs, deformed face
+EOF
+
+plakat generate "portrait of an alchemist" --model sd15 \
+    --negative-preset anatomy
+```
+
+File contents become the negative prompt verbatim (whitespace
+trimmed). Names must be `[a-zA-Z0-9_-]+` — slashes / dots / spaces
+are skipped. **User files override built-ins of the same name**,
+so saving an `anime.txt` replaces the bundled `anime` preset (a
+typo'd `--negative-preset anime` lists it as `anime (user
+override)` in the error output so the source is unambiguous).
+
 ### BREAK keyword (SD 1.5 / 2.1 / SDXL — v0.18)
 
 CLIP's 77-token cap silently truncates long prompts. Split a long
