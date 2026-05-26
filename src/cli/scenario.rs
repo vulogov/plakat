@@ -2468,6 +2468,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // also empty in scenarios today — SD3 CN scenario
                     // wiring lands in a later phase).
                     controlnet_conditioning: Vec::new(),
+                    // v0.20: scenarios don't expose --format yet —
+                    // default to PNG (the v0.17 A1111-compat path).
+                    output_format: crate::imaging::io::OutputFormat::Png,
                 };
                 sp.generate(&sd3_req)?;
                 if task_lora_applied {
@@ -2677,6 +2680,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         // aspect snap. Ignored when the resolved
                         // variant isn't Kontext.
                         kontext_bucket: eff_kontext_bucket,
+                        // v0.20: scenarios don't expose --format yet.
+                        output_format: crate::imaging::io::OutputFormat::Png,
                     })?;
                 }
                 // Dry-run path doesn't reach here.
@@ -2945,7 +2950,16 @@ fn sd_per_task_lora_preflight(
 
 fn validate_enhancer_keys(enhancer: &str) -> Result<()> {
     let cfg = crate::config::Config::load()?;
-    match enhancer.to_lowercase().as_str() {
+    let lower = enhancer.to_lowercase();
+    // v0.20 #5: accept the `local` + `local:<alias>` + `auto`
+    // providers `prompt::enhance` already supports. Previously
+    // scenarios were gated to cloud providers only, which made
+    // `plakat init`-generated starters non-runnable without an
+    // API key.
+    if lower == "local" || lower.starts_with("local:") || lower == "auto" {
+        return Ok(());
+    }
+    match lower.as_str() {
         "deepseek" => {
             if cfg.deepseek_api_key.is_none() {
                 bail!(
@@ -2962,7 +2976,10 @@ fn validate_enhancer_keys(enhancer: &str) -> Result<()> {
                 );
             }
         }
-        other => bail!("unknown enhancer {other:?} (expected: deepseek | gemini)"),
+        other => bail!(
+            "unknown enhancer {other:?} \
+             (expected: deepseek | gemini | local | local:<alias> | auto)"
+        ),
     }
     Ok(())
 }
@@ -3927,5 +3944,39 @@ mod tests {
         // up-front `count == 0` guard instead.
         let tmp = tempfile::tempdir().unwrap();
         assert!(!task_outputs_all_present(tmp.path(), 1000, 0));
+    }
+
+    // v0.20 #5: `validate_enhancer_keys` should pass providers
+    // that don't require a cloud API key without consulting the
+    // env. The previous version of the gate rejected `local`,
+    // which made `plakat init`-generated scenarios non-runnable
+    // out of the box.
+
+    #[test]
+    fn validate_enhancer_keys_accepts_local() {
+        validate_enhancer_keys("local").unwrap();
+        validate_enhancer_keys("LOCAL").unwrap();
+    }
+
+    #[test]
+    fn validate_enhancer_keys_accepts_local_alias() {
+        validate_enhancer_keys("local:qwen2.5-1.5b").unwrap();
+        validate_enhancer_keys("local:smollm2-360m").unwrap();
+    }
+
+    #[test]
+    fn validate_enhancer_keys_accepts_auto() {
+        validate_enhancer_keys("auto").unwrap();
+    }
+
+    #[test]
+    fn validate_enhancer_keys_rejects_unknown() {
+        let err = validate_enhancer_keys("openai-gpt").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown enhancer"), "got {msg}");
+        // Error message advertises every supported form so users
+        // can self-correct without grepping the source.
+        assert!(msg.contains("local"), "got {msg}");
+        assert!(msg.contains("auto"), "got {msg}");
     }
 }

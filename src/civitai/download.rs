@@ -55,6 +55,53 @@ fn ensure_dir(p: &Path) -> Result<()> {
     Ok(())
 }
 
+/// v0.20: surface the LoRA's trigger words at resolve time. Logged
+/// to stdout via the `ui::progress` channel (same surface as
+/// download progress messages) so users see it inline with the
+/// rest of the generate-flow output. Logged for both cache hits
+/// and fresh downloads — Civitai LoRAs almost always need
+/// trigger phrases in the prompt to activate properly, and silent
+/// LoRAs (no apparent effect) are a top user-friction signal.
+///
+/// Empty `trained_words` (LoRA has no triggers; uncommon but
+/// happens with style LoRAs that activate purely from scale) is a
+/// silent no-op rather than a warning.
+fn log_trigger_words(model_id: u64, version_id: u64, trained_words: &[String]) {
+    for line in format_trigger_lines(model_id, version_id, trained_words) {
+        crate::ui::progress::println(&line);
+    }
+}
+
+/// Pure helper for [`log_trigger_words`] — returns the lines that
+/// would be printed. Empty when the LoRA has no trigger words, so
+/// the caller naturally emits nothing. Split out so the
+/// formatting logic is unit-testable without capturing stdout.
+fn format_trigger_lines(
+    model_id: u64,
+    version_id: u64,
+    trained_words: &[String],
+) -> Vec<String> {
+    // Filter blanks defensively: Civitai sometimes stores empty
+    // strings in `trainedWords` when an author leaves placeholders.
+    // We don't want to show "trigger words: , , ,".
+    let words: Vec<&str> = trained_words
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let formatted = words.join(", ");
+    vec![
+        format!(
+            "  ✦ Civitai LoRA {model_id} (v{version_id}) trigger words: {formatted}"
+        ),
+        "    → consider adding these to your prompt for the LoRA to activate"
+            .to_string(),
+    ]
+}
+
 /// Result of one download.
 pub struct DownloadResult {
     /// Local path the file ended up at.
@@ -82,6 +129,13 @@ pub async fn download_version(
     file_name: Option<&str>,
 ) -> Result<DownloadResult> {
     let (version, resolved_model_id) = resolve_version(model_id, version_id).await?;
+    // v0.20: surface the LoRA's trained trigger words so users
+    // know what to put in their prompt. Civitai LoRA cards almost
+    // always list one or more "trigger phrases" (the tokens the
+    // LoRA was trained to respond to); without them in the prompt
+    // the LoRA's effect is muted at best. Logged unconditionally
+    // (cache hit + fresh download) so the info surfaces every run.
+    log_trigger_words(resolved_model_id, version.id, &version.trained_words);
     let file = pick_file(&version, file_name)?;
     let target = version_file_path(resolved_model_id, version.id, &file.name);
 
@@ -436,5 +490,48 @@ mod tests {
         let err = pick_file(&v, Some("nothere.safetensors")).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("the-only.safetensors"), "got {msg}");
+    }
+
+    #[test]
+    fn trigger_lines_empty_when_no_words() {
+        assert!(format_trigger_lines(1, 2, &[]).is_empty());
+    }
+
+    #[test]
+    fn trigger_lines_filter_blank_entries() {
+        let words = vec!["".into(), "  ".into()];
+        assert!(format_trigger_lines(1, 2, &words).is_empty());
+    }
+
+    #[test]
+    fn trigger_lines_single_word() {
+        let words = vec!["watercolor".into()];
+        let lines = format_trigger_lines(123, 456, &words);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("123"), "got {}", lines[0]);
+        assert!(lines[0].contains("v456"), "got {}", lines[0]);
+        assert!(lines[0].contains("watercolor"), "got {}", lines[0]);
+        assert!(lines[1].contains("consider adding"), "got {}", lines[1]);
+    }
+
+    #[test]
+    fn trigger_lines_multiple_words_joined() {
+        let words = vec!["soft pastels".into(), "watercolor".into()];
+        let lines = format_trigger_lines(7, 8, &words);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].contains("soft pastels, watercolor"),
+            "got {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn trigger_lines_trim_whitespace() {
+        let words = vec!["  pad  ".into(), "  ".into(), "ok".into()];
+        let lines = format_trigger_lines(1, 2, &words);
+        assert_eq!(lines.len(), 2);
+        // " " entry filtered, "  pad  " trimmed to "pad"
+        assert!(lines[0].contains("pad, ok"), "got {}", lines[0]);
     }
 }

@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod embedding;
 pub mod generate;
 pub mod img2img;
+pub mod init;
 pub mod inspect;
 pub mod metadata;
 pub mod models;
@@ -104,6 +105,11 @@ pub enum Command {
     /// falls back to parsing the Auto1111 `parameters` PNG tEXt
     /// chunk (works on Civitai uploads + A1111 Web UI outputs).
     Clone(clone::CloneArgs),
+    /// v0.20: bootstrap a starter project — `scenario.hjson`,
+    /// `wildcards/` (with a few example files), and a focused
+    /// `.gitignore`. Defaults to the current directory; pass DIR
+    /// to write somewhere else.
+    Init(init::InitArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -153,5 +159,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Metadata(args) => metadata::run(args).await,
         Command::Clone(args) => clone::run(args).await,
+        Command::Init(args) => init::run(args).await,
     }
 }

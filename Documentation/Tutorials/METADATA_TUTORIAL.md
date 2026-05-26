@@ -247,6 +247,38 @@ animate-endpoint context (they're not in the recipe). `plakat clone`
 always emits `plakat generate` regardless of original mode and
 notes the mode mismatch in stderr.
 
+## 8. The other companion: `plakat generate --recipe` (v0.20)
+
+While `plakat clone` produces a shell command for re-running, the
+v0.20 `--recipe` flag loads the JSON directly + runs the
+generation. Same recipe, no shell-glue intermediate:
+
+```bash
+# Same setup as ./out/plakat-42.png but with a different prompt
+plakat generate "a different scene description" \
+    --recipe ./out/plakat-42.json
+
+# Same recipe but tweak the seed
+plakat generate "the original prompt" \
+    --recipe ./out/plakat-42.json --seed 999
+
+# Any CLI flag that differs from its default overrides the recipe
+plakat generate "..." --recipe ./out/plakat-42.json \
+    --steps 50 --guidance 6.5 --size 1024x1024
+```
+
+When to use which:
+
+| Goal | Tool |
+|---|---|
+| See the recipe in the terminal | `plakat metadata FILE.png` |
+| Get a shell command to copy + tweak | `plakat clone FILE.png` |
+| Run a generation directly from the recipe | `plakat generate --recipe FILE.json` |
+
+The positional `prompt` arg is ALWAYS taken from the CLI — the
+recipe never overrides it. If you want a byte-equivalent rerun
+(prompt + every other field), use `plakat clone` and pipe to bash.
+
 ## Where to next
 
 - **`GENERATE_TUTORIAL.md`** §22 — the write side of metadata

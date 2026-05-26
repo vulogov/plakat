@@ -408,9 +408,22 @@ the CLI flag.
 - **No `--mask` / `--init-image`** — Kontext doesn't have a mask
   path or a flow-match init lerp. For mask-restricted edits use
   `flux-fill-dev` instead.
-- **No `--tiled`** in this release — per-tile reference slicing
-  isn't wired (the reference would have to be sliced along the
-  same tile grid as the noise canvas).
+- **`--tiled` composes** (v0.20). Each tile slices the matching
+  region of the reference latent, packs it, seq-concats onto the
+  tile's noise tokens, and strips the reference tail before
+  unpacking. Watch the per-tile RoPE budget: noise + reference
+  halves are the same size, so the per-tile sequence grows
+  quadratically with `--tile-size`. Safe at `--tile-size 512`
+  (per-tile seq ~2560); rejected at `--tile-size 1024`
+  (per-tile seq ~8700, past Flux's 4096 RoPE limit). The bail
+  interpolates the largest safe `--tile-size` for the current
+  model in its error message.
+
+  ```bash
+  plakat generate "fold the dress into a flowing cape" \
+      --model flux-kontext-dev --concept-image portrait.jpg \
+      --size 2048x2048 --tiled --tile-size 512
+  ```
 - **`--redux-image` composes** (v0.19). Redux extends the txt
   sequence (+729 SigLIP tokens per image); Kontext extends the
   img sequence (+~1k VAE reference tokens). They're orthogonal in
