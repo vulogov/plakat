@@ -10,7 +10,7 @@
 //! `Flux(flux::Pipeline)` and `Sd3(sd3::Pipeline)` and lift the
 //! [`super::script_entry::validate_supported_for_phase_2`] gate.
 
-use crate::pipelines::{flux, portrait};
+use crate::pipelines::{flux, portrait, sd3};
 
 /// The active pipeline, cached by `(alias, pipeline)` in
 /// [`super::ctx::ScriptCtx::loaded`].
@@ -32,7 +32,7 @@ use crate::pipelines::{flux, portrait};
 pub enum LoadedPipeline {
     SdFamily(portrait::Pipeline),
     Flux(flux::Pipeline),
-    // Phase 3: Sd3(crate::pipelines::sd3::Pipeline)
+    Sd3(sd3::Pipeline),
 }
 
 /// Three families plakat recognises at the script layer. Used to

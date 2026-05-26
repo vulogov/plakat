@@ -65,6 +65,25 @@ pub struct GenerationConfig {
     /// (width, height) snaps to the nearest of 17 BFL-recommended
     /// resolutions before VAE encoding. No-op on every other model.
     pub kontext_bucket: bool,
+    /// v0.22 phase 3: tiled MultiDiffusion-style denoise. When `true`,
+    /// the backbone only ever sees `tile_size`-sized tiles per step;
+    /// overlapping tiles are blended via a 2D Hann window. Lets the
+    /// model produce 4K+ outputs without exceeding its trained
+    /// working resolution.
+    ///
+    /// Supported on Flux (`flux-dev` / `flux-schnell`) and SD3 /
+    /// SD3.5 in v0.22 phase 3 — SDXL tiled is a follow-up
+    /// (needs the t2i::Pipeline cache path which isn't wired yet).
+    /// SD 1.5 / 2.1 / Flux concept variants bail loud.
+    pub tiled: bool,
+    /// v0.22 phase 3: tile side length in pixels. Default 1024 (the
+    /// SDXL native + Flux working scale). Must be a multiple of 8 on
+    /// SD, 16 on Flux + SD3. Ignored when `tiled` is `false`.
+    pub tile_size: u32,
+    /// v0.22 phase 3: stride between tile origins. Smaller = more
+    /// overlap = smoother seams + more compute. Default 768
+    /// (`tile_size - tile_size/4`). Ignored when `tiled` is `false`.
+    pub tile_stride: u32,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -93,6 +112,9 @@ impl Default for GenerationConfig {
             t5_quant_level: None,
             fast: None,
             kontext_bucket: false,
+            tiled: false,
+            tile_size: 1024,
+            tile_stride: 768,
             size_explicit: false,
         }
     }
@@ -154,13 +176,23 @@ impl GenerationConfig {
             "kontext_bucket" => {
                 self.kontext_bucket = parse_bool(value, key)?;
             }
+            "tiled" => {
+                self.tiled = parse_bool(value, key)?;
+            }
+            "tile_size" => {
+                self.tile_size = parse_tile_dim(value, key)?;
+            }
+            "tile_stride" => {
+                self.tile_stride = parse_tile_dim(value, key)?;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
                      Supported keys: steps, guidance, seed, width, \
                      height, negative, scheduler, strength, \
                      face_strength, quantize_t5, quant_level, \
-                     t5_quant_level, fast, kontext_bucket."
+                     t5_quant_level, fast, kontext_bucket, tiled, \
+                     tile_size, tile_stride."
                 ));
             }
         }
@@ -173,8 +205,10 @@ impl GenerationConfig {
     pub fn set_int(&mut self, key: &str, value: i64) -> Result<()> {
         match key {
             "steps" | "guidance" | "seed" | "width" | "height"
-            | "strength" | "face_strength" => self.set_str(key, &value.to_string()),
-            "quantize_t5" | "kontext_bucket" => {
+            | "strength" | "face_strength" | "tile_size" | "tile_stride" => {
+                self.set_str(key, &value.to_string())
+            }
+            "quantize_t5" | "kontext_bucket" | "tiled" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
                     0 => self.set_str(key, "false"),
@@ -193,7 +227,8 @@ impl GenerationConfig {
                  Supported keys: steps, guidance, seed, width, \
                  height, negative, scheduler, strength, \
                  face_strength, quantize_t5, quant_level, \
-                 t5_quant_level, fast, kontext_bucket."
+                 t5_quant_level, fast, kontext_bucket, tiled, \
+                 tile_size, tile_stride."
             )),
         }
     }
@@ -260,7 +295,8 @@ impl GenerationConfig {
                  Supported keys: steps, guidance, seed, width, \
                  height, negative, scheduler, strength, \
                  face_strength, quantize_t5, quant_level, \
-                 t5_quant_level, fast, kontext_bucket."
+                 t5_quant_level, fast, kontext_bucket, tiled, \
+                 tile_size, tile_stride."
             )),
         }
     }
@@ -349,6 +385,32 @@ fn validate_fast_preset(value: &str) -> Result<()> {
          {}",
         VALID.join(", ")
     )
+}
+
+/// v0.22 phase 3: tile-size / tile-stride validator. Same as
+/// `parse_dim` but the upper bound is 4096 + must be a multiple
+/// of 16 (Flux + SD3's patching granularity — strictest of the
+/// three families). SD's relaxed /8 constraint isn't worth its
+/// own validator yet because v0.22 phase 3 only ships tiled on
+/// Flux + SD3.
+fn parse_tile_dim(s: &str, key: &str) -> Result<u32> {
+    let n = parse_pos_int(s, key)?;
+    if n == 0 {
+        bail!("plakat.config.set: {key} must be > 0 (got 0)");
+    }
+    if n % 16 != 0 {
+        bail!(
+            "plakat.config.set: {key} must be a multiple of 16 \
+             (Flux + SD3 patching constraint); got {n}"
+        );
+    }
+    if n > 4096 {
+        bail!(
+            "plakat.config.set: {key} {n} > 4096 is past any \
+             practical tile size"
+        );
+    }
+    Ok(n as u32)
 }
 
 fn parse_dim(s: &str, key: &str) -> Result<u32> {
@@ -657,14 +719,17 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         let err = cfg.set_str("definitely-not-a-key", "x").unwrap_err();
         let msg = format!("{err}");
-        // Phase 2 added these; the error message should advertise
-        // them so users can self-correct on typos.
+        // Phases 2 + 3 added these; the error message should
+        // advertise them so users can self-correct on typos.
         for new_key in &[
             "quantize_t5",
             "quant_level",
             "t5_quant_level",
             "fast",
             "kontext_bucket",
+            "tiled",
+            "tile_size",
+            "tile_stride",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -681,6 +746,63 @@ mod tests {
         assert!(cfg.t5_quant_level.is_none());
         assert!(cfg.fast.is_none());
         assert!(!cfg.kontext_bucket);
+        // Phase 3 D-keys:
+        assert!(!cfg.tiled);
+        assert_eq!(cfg.tile_size, 1024);
+        assert_eq!(cfg.tile_stride, 768);
+    }
+
+    // v0.22 phase 3: tiled D-keys.
+
+    #[test]
+    fn set_str_tiled_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("tiled", "true").unwrap();
+        assert!(cfg.tiled);
+        cfg.set_str("tiled", "false").unwrap();
+        assert!(!cfg.tiled);
+    }
+
+    #[test]
+    fn set_int_tiled_accepts_zero_and_one() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("tiled", 1).unwrap();
+        assert!(cfg.tiled);
+        cfg.set_int("tiled", 0).unwrap();
+        assert!(!cfg.tiled);
+        assert!(cfg.set_int("tiled", 2).is_err());
+    }
+
+    #[test]
+    fn set_str_tile_size_accepts_multiple_of_16() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("tile_size", "512").unwrap();
+        assert_eq!(cfg.tile_size, 512);
+        cfg.set_str("tile_size", "1024").unwrap();
+        assert_eq!(cfg.tile_size, 1024);
+        cfg.set_str("tile_size", "768").unwrap();
+        assert_eq!(cfg.tile_size, 768);
+    }
+
+    #[test]
+    fn set_str_tile_size_rejects_non_multiple_of_16() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("tile_size", "513").unwrap_err();
+        assert!(format!("{err}").contains("multiple of 16"));
+    }
+
+    #[test]
+    fn set_str_tile_size_rejects_zero_and_huge() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("tile_size", "0").is_err());
+        assert!(cfg.set_str("tile_size", "8000").is_err());
+    }
+
+    #[test]
+    fn set_int_tile_stride_accepts_768() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("tile_stride", 768).unwrap();
+        assert_eq!(cfg.tile_stride, 768);
     }
 
     #[test]

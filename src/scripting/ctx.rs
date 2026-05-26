@@ -15,7 +15,7 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use crate::pipelines::{flux, portrait};
+use crate::pipelines::{flux, portrait, sd3};
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
 
@@ -137,10 +137,10 @@ impl ScriptCtx {
 
         match &self.loaded.as_ref().expect("just inserted").1 {
             LoadedPipeline::SdFamily(p) => Ok(p),
-            LoadedPipeline::Flux(_) => Err(anyhow!(
-                "ScriptCtx::get_or_load_sd_family called with a Flux \
-                 alias — the cache is holding a Flux pipeline. Use \
-                 get_or_load_flux or get_or_load (unified)."
+            LoadedPipeline::Flux(_) | LoadedPipeline::Sd3(_) => Err(anyhow!(
+                "ScriptCtx::get_or_load_sd_family called with a non-SD \
+                 alias — the cache is holding a different pipeline. \
+                 Use ensure_loaded for family-aware dispatch."
             )),
         }
     }
@@ -218,10 +218,74 @@ impl ScriptCtx {
 
         match &mut self.loaded.as_mut().expect("just inserted").1 {
             LoadedPipeline::Flux(p) => Ok(p),
-            LoadedPipeline::SdFamily(_) => Err(anyhow!(
-                "ScriptCtx::get_or_load_flux called with an SD-family \
-                 alias — the cache is holding an SD pipeline. Use \
-                 get_or_load_sd_family or get_or_load (unified)."
+            LoadedPipeline::SdFamily(_) | LoadedPipeline::Sd3(_) => Err(anyhow!(
+                "ScriptCtx::get_or_load_flux called with a non-Flux \
+                 alias — the cache is holding a different pipeline. \
+                 Use ensure_loaded for family-aware dispatch."
+            )),
+        }
+    }
+
+    /// v0.22 phase 3: get-or-load the SD3 / SD3.5 pipeline for
+    /// `alias`. Mirrors [`Self::get_or_load_sd_family`] and
+    /// [`Self::get_or_load_flux`].
+    ///
+    /// SD3 doesn't have LoRA / ControlNet load-time D-keys
+    /// (those land in phases 4-5); the LoadRequest fields are
+    /// empty for now.
+    pub fn get_or_load_sd3(&mut self, alias: &str) -> Result<&mut sd3::Pipeline> {
+        let hit = self
+            .loaded
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded = None;
+            let resolved = if alias.contains('/') {
+                alias.to_string()
+            } else {
+                crate::hf::resolve_alias(alias).to_string()
+            };
+            let t2i_variant = crate::pipelines::t2i::Variant::detect(&resolved);
+            let sd3_variant = match t2i_variant {
+                crate::pipelines::t2i::Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+                crate::pipelines::t2i::Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+                crate::pipelines::t2i::Variant::Sd35Large => sd3::Variant::Sd35Large,
+                crate::pipelines::t2i::Variant::Sd35LargeTurbo => {
+                    sd3::Variant::Sd35LargeTurbo
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "ScriptCtx::get_or_load_sd3: alias {alias:?} \
+                         doesn't resolve to an SD3 variant ({t2i_variant:?})"
+                    ));
+                }
+            };
+
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!("ScriptCtx::get_or_load_sd3: no tokio runtime in scope. {e}")
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(sd3::Pipeline::load(sd3::LoadRequest {
+                    variant: sd3_variant,
+                    repo: resolved,
+                    device,
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                    controlnets: Vec::new(),
+                }))
+            })?;
+            self.loaded = Some((alias.to_string(), LoadedPipeline::Sd3(pipeline)));
+        }
+
+        match &mut self.loaded.as_mut().expect("just inserted").1 {
+            LoadedPipeline::Sd3(p) => Ok(p),
+            LoadedPipeline::SdFamily(_) | LoadedPipeline::Flux(_) => Err(anyhow!(
+                "ScriptCtx::get_or_load_sd3 called with a non-SD3 \
+                 alias — the cache is holding a different pipeline. \
+                 Use ensure_loaded for family-aware dispatch."
             )),
         }
     }
@@ -249,20 +313,16 @@ impl ScriptCtx {
     /// the issue.
     pub fn ensure_loaded(&mut self, alias: &str) -> Result<()> {
         match PipelineFamily::detect(alias) {
-            PipelineFamily::Sd3 => Err(anyhow!(
-                "plakat.load: SD3 / SD3.5 models aren't wired in v0.22 \
-                 phase 2 (got {alias:?}). Phase 3 lands SD3 support. \
-                 For now use SD-family aliases (sd15 / sd21 / sdxl / \
-                 sdxl-turbo) or Flux aliases (flux-dev / flux-schnell \
-                 / flux-fill-dev / flux-canny-dev / flux-depth-dev / \
-                 flux-kontext-dev)."
-            )),
             PipelineFamily::SdFamily => {
                 self.get_or_load_sd_family(alias)?;
                 Ok(())
             }
             PipelineFamily::Flux => {
                 self.get_or_load_flux(alias)?;
+                Ok(())
+            }
+            PipelineFamily::Sd3 => {
+                self.get_or_load_sd3(alias)?;
                 Ok(())
             }
         }
