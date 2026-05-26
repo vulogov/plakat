@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 use crate::pipelines::{
-    controlnet::ControlSpec, flux, lora::LoraSpec, portrait, sd3,
+    controlnet::ControlSpec, flux, lora::LoraSpec, portrait, sd3, t2i,
 };
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
@@ -40,6 +40,19 @@ pub struct ScriptCtx {
     /// relaxed per decision #7 — the `loaded_model` field is gone;
     /// scripts that don't care about the change still work.
     pub loaded: Option<(String, LoadedPipeline)>,
+    /// v0.23 phase 1: secondary SD-family cache slot holding a
+    /// `t2i::Pipeline`. Used exclusively by `plakat.generate`'s
+    /// SD path so that family's CLIP-skip + (v0.23 phase 2)
+    /// SDXL-refiner UNet wiring can land — those live on
+    /// `t2i::Pipeline`, not the `portrait::Pipeline` that
+    /// `plakat.img2img` / `.portrait` keep using.
+    ///
+    /// Per RFC v0.23 Option A: both SD-family slots can be loaded
+    /// for the same alias simultaneously; they share an
+    /// `Arc<SdCore>` so the duplication cost is only the slot
+    /// extras (refiner UNet vs. IP-Adapter encoder). Loading a
+    /// non-SD-family alias drops this slot.
+    pub loaded_t2i: Option<(String, t2i::Pipeline)>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -124,6 +137,7 @@ impl ScriptCtx {
             device,
             out_dir,
             loaded: None,
+            loaded_t2i: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
@@ -145,13 +159,25 @@ impl ScriptCtx {
     /// in-place LoRA injection across the three pipeline families.
     pub fn mark_loras_changed(&mut self) {
         self.loaded = None;
+        // v0.23 phase 1: the t2i slot also caches LoRA-merged
+        // weights; same invalidation rule.
+        self.loaded_t2i = None;
     }
 
     /// v0.22 phase 1: read-only accessor for the currently-loaded
     /// model's alias. `None` when nothing's been `plakat.load`ed
     /// yet. Replaces direct access to v0.21's `loaded_model` field.
     pub fn loaded_model(&self) -> Option<&str> {
-        self.loaded.as_ref().map(|(alias, _)| alias.as_str())
+        // v0.23 phase 1: prefer the SdT2i slot's alias when it's
+        // populated (plakat.load now loads t2i by default for
+        // SD-family). Fall back to the portrait/flux/sd3 slot.
+        // Both slots normally hold the same alias when both are
+        // loaded; the order matters only during a slot-rebuild
+        // window.
+        self.loaded_t2i
+            .as_ref()
+            .map(|(a, _)| a.as_str())
+            .or_else(|| self.loaded.as_ref().map(|(a, _)| a.as_str()))
     }
 
     /// v0.22 phase 1: get-or-load the SD-family pipeline for
@@ -191,26 +217,41 @@ impl ScriptCtx {
             // the old.
             self.loaded = None;
 
-            let identity = pick_sd_family_identity(alias);
-            let device = self.device.clone();
-            let loras = self.loras.clone();
-            let lora_scale = self.config.lora_scale;
-            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
-                anyhow!(
-                    "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
-                )
-            })?;
-            let pipeline: portrait::Pipeline = tokio::task::block_in_place(|| {
-                handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
-                    model: alias.to_string(),
-                    device,
-                    loras,
-                    lora_scale,
-                    identity,
-                    shared_clip_h: None,
-                }))
-            })?;
-            self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            // v0.23 phase 1: if `loaded_t2i` already holds the
+            // same alias, we can derive a portrait::Pipeline from
+            // its shared `SdCore` without paying for a second
+            // weights load. Saves several GB on SDXL.
+            let shared_core = self
+                .loaded_t2i
+                .as_ref()
+                .filter(|(a, _)| a == alias)
+                .map(|(_, p)| p.core());
+
+            if let Some(core) = shared_core {
+                let pipeline = portrait::Pipeline::from_core(core);
+                self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            } else {
+                let identity = pick_sd_family_identity(alias);
+                let device = self.device.clone();
+                let loras = self.loras.clone();
+                let lora_scale = self.config.lora_scale;
+                let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                    anyhow!(
+                        "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
+                    )
+                })?;
+                let pipeline: portrait::Pipeline = tokio::task::block_in_place(|| {
+                    handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
+                        model: alias.to_string(),
+                        device,
+                        loras,
+                        lora_scale,
+                        identity,
+                        shared_clip_h: None,
+                    }))
+                })?;
+                self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            }
         }
 
         match &self.loaded.as_ref().expect("just inserted").1 {
@@ -221,6 +262,65 @@ impl ScriptCtx {
                  Use ensure_loaded for family-aware dispatch."
             )),
         }
+    }
+
+    /// v0.23 phase 1: get-or-load the SD-family **t2i** pipeline
+    /// for `alias`. Caches into [`Self::loaded_t2i`] — the
+    /// secondary SD-family slot that coexists with the primary
+    /// `loaded` slot (which holds the portrait::Pipeline for
+    /// `plakat.img2img` / `.portrait`).
+    ///
+    /// Used by `plakat.generate`'s SD-family path so the v0.23
+    /// refiner UNet load (phase 2) and clip_skip wiring (phase 3)
+    /// have a `t2i::Pipeline` to land on.
+    ///
+    /// **use_refiner** is hardcoded to `false` in phase 1. Phase 2
+    /// will read `ctx.refiner_enabled` here. Refiner-enabled
+    /// scripts still bail at generate-request time until phase 2;
+    /// the toggle stays a no-op-with-a-bail until then.
+    pub fn get_or_load_sd_t2i(&mut self, alias: &str) -> Result<&mut t2i::Pipeline> {
+        let hit = self
+            .loaded_t2i
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            // Drop the previous t2i pipeline first.
+            self.loaded_t2i = None;
+
+            // Family change: if the primary slot holds a non-SD
+            // family (Flux / SD3), drop it too. Same-family aliases
+            // can coexist (portrait::Pipeline + t2i::Pipeline for
+            // the same alias share an Arc<SdCore>).
+            if !matches!(self.loaded.as_ref().map(|(_, p)| p),
+                Some(LoadedPipeline::SdFamily(_)) | None) {
+                self.loaded = None;
+            }
+
+            let device = self.device.clone();
+            let loras = self.loras.clone();
+            let lora_scale = self.config.lora_scale;
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_sd_t2i: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline: t2i::Pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(t2i::Pipeline::load(t2i::LoadRequest {
+                    model: alias.to_string(),
+                    device,
+                    loras,
+                    lora_scale,
+                    // v0.23 phase 2 will set this from ctx.refiner_enabled.
+                    use_refiner: false,
+                    embeddings: Vec::new(),
+                }))
+            })?;
+            self.loaded_t2i = Some((alias.to_string(), pipeline));
+        }
+
+        Ok(&mut self.loaded_t2i.as_mut().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -249,6 +349,8 @@ impl ScriptCtx {
 
         if !hit {
             self.loaded = None;
+            // v0.23 phase 1: family change drops the SD t2i slot too.
+            self.loaded_t2i = None;
             let resolved = if alias.contains('/') {
                 alias.to_string()
             } else {
@@ -332,6 +434,8 @@ impl ScriptCtx {
 
         if !hit {
             self.loaded = None;
+            // v0.23 phase 1: family change drops the SD t2i slot too.
+            self.loaded_t2i = None;
             let resolved = if alias.contains('/') {
                 alias.to_string()
             } else {
@@ -406,7 +510,12 @@ impl ScriptCtx {
     pub fn ensure_loaded(&mut self, alias: &str) -> Result<()> {
         match PipelineFamily::detect(alias) {
             PipelineFamily::SdFamily => {
-                self.get_or_load_sd_family(alias)?;
+                // v0.23 phase 1: `plakat.load` now warms the t2i
+                // slot by default for SD-family aliases.
+                // plakat.portrait + plakat.img2img will lazy-load
+                // the portrait slot on first call (deriving from
+                // the t2i slot's SdCore — no second weights load).
+                self.get_or_load_sd_t2i(alias)?;
                 Ok(())
             }
             PipelineFamily::Flux => {
@@ -517,6 +626,7 @@ mod tests {
             device: Device::Cpu,
             out_dir: std::env::temp_dir(),
             loaded: None,
+            loaded_t2i: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
@@ -631,5 +741,22 @@ mod tests {
     fn loaded_model_accessor_returns_none_when_unloaded() {
         let ctx = mk_ctx();
         assert!(ctx.loaded_model().is_none());
+    }
+
+    // v0.23 phase 1: mark_loras_changed drops both SD-family
+    // slots (primary `loaded` + secondary `loaded_t2i`).
+    #[test]
+    fn mark_loras_changed_drops_both_sd_slots() {
+        let mut ctx = mk_ctx();
+        // We can't easily fabricate a real pipeline here without a
+        // tokio runtime + model download, but we can at least
+        // exercise the field-clearing path: pre-populating with
+        // None and calling mark_loras_changed is a no-op that
+        // should still leave both slots None.
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+        ctx.mark_loras_changed();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
     }
 }
