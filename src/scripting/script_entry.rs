@@ -733,17 +733,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
 
     match PipelineFamily::detect(&alias) {
         PipelineFamily::SdFamily => {
-            if ctx.refiner_enabled {
-                bail!(
-                    "plakat.generate: SDXL refiner UNet load lands in v0.23 \
-                     phase 2 (the SdT2i cache slot from phase 1 holds the \
-                     slot — the load just isn't wired yet). Workarounds: \
-                     call `plakat.refiner.disable` (same-model polish via \
-                     `refine_steps`/`refine_strength` still works), or use \
-                     `plakat generate --refiner` from the CLI directly."
-                );
-            }
             // v0.23 phase 1: SD-family generate uses the t2i slot.
+            // v0.23 phase 2: when `ctx.refiner_enabled` is on and the
+            // alias is SDXL, the t2i pipeline loads with the official
+            // SDXL refiner UNet (~6 GB download on first run); the
+            // schedule splits between base + refiner at
+            // `refiner_frac` (default 0.8 = last 20% of steps).
+            // Non-SDXL aliases silently downgrade with a warn —
+            // gating happens inside `get_or_load_sd_t2i`.
             let req = build_t2i_gen_request(ctx, prompt, tmp_path.clone());
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the

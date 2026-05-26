@@ -98,13 +98,13 @@ pub struct GenerationConfig {
     /// Default 0.3. Lower = subtler (mostly preserves the main
     /// pass); higher = more rework of the existing image.
     pub refine_strength: f32,
-    /// v0.22 phase 6: fraction of the schedule at which the SDXL
-    /// refiner UNet takes over (default 0.8 = last 20% of steps).
-    /// Only meaningful when `plakat.refiner.enable` is in effect
-    /// AND the loaded model is SDXL. Declared in phase 6 for
-    /// completeness; the actual refiner-UNet load lands in v0.23
-    /// phase 2 once the SD-family cache switches to `t2i::Pipeline`
-    /// (v0.23 phase 1, the SdT2i variant).
+    /// v0.22 phase 6 + v0.23 phase 2: fraction of the schedule at
+    /// which the SDXL refiner UNet takes over (default 0.8 = last
+    /// 20% of steps). Wired into `t2i::GenRequest.refiner_frac`
+    /// by [`super::script_entry::build_t2i_gen_request`]. Only
+    /// meaningful when `plakat.refiner.enable` is in effect AND
+    /// the loaded model is SDXL — otherwise the t2i pipeline's
+    /// refiner_unet slot is None and this field is ignored.
     pub refiner_frac: f32,
     /// v0.22 phase 6: `plakat.style.*`-related strength multiplier
     /// in [0, 1]. Declared today; the apply / detect / clear / list
