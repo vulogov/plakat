@@ -9,18 +9,24 @@
 use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
+pub mod adetailer;
+pub mod artefact;
 pub mod config;
+pub mod controlnet;
 pub mod echo;
+pub mod enhance;
 pub mod generate;
+pub mod hires;
 pub mod img2img;
 pub mod load;
+pub mod lora;
 pub mod portrait;
+pub mod refiner;
 pub mod save;
 pub mod upscale;
 
-/// Register every `plakat.*` word into `vm`. Phase 1: echo.
-/// Phase 2: load + generate + save. Phase 3: config.set.
-/// Phase 4: img2img. Phase 5: portrait. Phase 6: upscale.
+/// Register every `plakat.*` word into `vm`. v0.21 shipped 7
+/// MVP words. v0.22 phase 4 adds the `plakat.lora.*` namespace.
 pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     vm.register_inline("plakat.echo".to_string(), echo::plakat_echo)
         .map_err(|e| anyhow!("registering plakat.echo: {e}"))?;
@@ -41,6 +47,101 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         config::plakat_config_set,
     )
     .map_err(|e| anyhow!("registering plakat.config.set: {e}"))?;
+    // v0.22 phase 4: plakat.lora.* namespace.
+    vm.register_inline("plakat.lora.add".to_string(), lora::plakat_lora_add)
+        .map_err(|e| anyhow!("registering plakat.lora.add: {e}"))?;
+    vm.register_inline("plakat.lora.clear".to_string(), lora::plakat_lora_clear)
+        .map_err(|e| anyhow!("registering plakat.lora.clear: {e}"))?;
+    vm.register_inline("plakat.lora.list".to_string(), lora::plakat_lora_list)
+        .map_err(|e| anyhow!("registering plakat.lora.list: {e}"))?;
+    // v0.22 phase 5: plakat.controlnet.* namespace.
+    vm.register_inline(
+        "plakat.controlnet.add".to_string(),
+        controlnet::plakat_controlnet_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.add: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.annotate".to_string(),
+        controlnet::plakat_controlnet_annotate,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.annotate: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.spec".to_string(),
+        controlnet::plakat_controlnet_spec,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.spec: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.clear".to_string(),
+        controlnet::plakat_controlnet_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.controlnet.list".to_string(),
+        controlnet::plakat_controlnet_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.controlnet.list: {e}"))?;
+    // v0.22 phase 6: plakat.refiner.* namespace.
+    vm.register_inline(
+        "plakat.refiner.enable".to_string(),
+        refiner::plakat_refiner_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.refiner.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.refiner.disable".to_string(),
+        refiner::plakat_refiner_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.refiner.disable: {e}"))?;
+    // v0.22 phase 7: plakat.adetailer.* namespace.
+    vm.register_inline(
+        "plakat.adetailer.enable".to_string(),
+        adetailer::plakat_adetailer_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.adetailer.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.adetailer.disable".to_string(),
+        adetailer::plakat_adetailer_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.adetailer.disable: {e}"))?;
+    // v0.22 phase 8: plakat.hires.* namespace.
+    vm.register_inline(
+        "plakat.hires.enable".to_string(),
+        hires::plakat_hires_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.hires.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.hires.disable".to_string(),
+        hires::plakat_hires_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.hires.disable: {e}"))?;
+    // v0.22 phase 9: plakat.artefact.* namespace.
+    vm.register_inline(
+        "plakat.artefact.add".to_string(),
+        artefact::plakat_artefact_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.add: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.clear".to_string(),
+        artefact::plakat_artefact_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.list".to_string(),
+        artefact::plakat_artefact_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.list: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.blend.enable".to_string(),
+        artefact::plakat_artefact_blend_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.blend.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.artefact.blend.disable".to_string(),
+        artefact::plakat_artefact_blend_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.artefact.blend.disable: {e}"))?;
+    // v0.22 phase 10: plakat.enhance host word.
+    vm.register_inline("plakat.enhance".to_string(), enhance::plakat_enhance)
+        .map_err(|e| anyhow!("registering plakat.enhance: {e}"))?;
     Ok(())
 }
 

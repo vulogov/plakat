@@ -1,11 +1,13 @@
-# `plakat run` — Bund scripting (v0.21)
+# `plakat run` — Bund scripting (v0.22)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
 with composition patterns, see
 [`Tutorials/SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md).
-For the design rationale + the seven architectural decisions
-locked in, see [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md).
+For the v0.21 design (foundations) see
+[`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md); for the
+v0.22 expansion (the namespaces + cache + Category-B keys covered
+below) see [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md).
 
 ## Modes
 
@@ -15,7 +17,7 @@ plakat run --repl               # Interactive REPL on the same surface
 plakat run --repl --out PATH    # REPL with a custom output dir
 ```
 
-Both modes share the same `ScriptCtx` singleton + the same seven
+Both modes share the same `ScriptCtx` singleton + the same 28
 `plakat.*` host words. One process invocation = one script eval
 (no concurrent scripts in one process — bundcore's VM has no
 per-eval isolation).
@@ -27,9 +29,10 @@ per-eval isolation).
 | `SCRIPT` (positional) | required without `--repl` | Path to a `.bund` file. Read + eval'd as a single string. |
 | `--out PATH` | `./out` | Output directory for relative paths passed to `plakat.save`. Created if missing. |
 | `--repl` | off | Start interactive REPL instead of evaling a file. The positional is ignored when set. |
+| `--device DEV` | `auto` | Override device: `auto | cuda[:N] | metal | cpu`. |
+| `--cache-dir PATH` | env-driven | HuggingFace cache override. |
 
-Plus every global plakat flag (`--device`, `--verbose`,
-`--cache-dir`, …) still applies.
+Plus every global plakat flag (`--verbose`, etc.) still applies.
 
 ## Language
 
@@ -49,219 +52,301 @@ The language ships lambdas, list literals (`[ a b c ]`), named
 symbols (`:foo`), control flow, and arithmetic — but plakat
 **only** registers the bundcore VM primitives (no filesystem,
 no network, no shell, no sudo). The full Bund stdlib is
-deliberately excluded per RFC decision #2. The seven plakat host
-words listed below are the only domain-specific surface scripts
-can reach.
+deliberately excluded per v0.21 RFC decision #2.
 
-## Host words
+## Host words (28 total)
 
-Every host word is namespaced `plakat.*`. Stack-effect notation
-follows Forth: `( in1 in2 -- out1 )` means "pops in1 and in2;
-pushes out1." Top-of-stack is the rightmost input (popped first).
+Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
+"pops in1 and in2; pushes out1." Top-of-stack is the rightmost
+input (popped first).
 
-### `plakat.echo ( s -- s' )`
+### Core image surface (v0.21 + cache-aware v0.22)
 
-Phase 1 smoke word. Pulls a string, pushes
-`"[out=<out_dir>] <s>"` back. Useful for verifying the
-integration but not part of any real script.
+| Word | Stack effect | Notes |
+|---|---|---|
+| `plakat.echo` | `( s -- s' )` | Phase 1 smoke word. |
+| `plakat.load` | `( alias -- )` | Resolve + cache pipeline. v0.22: cache-aware — same alias reuses the loaded model. |
+| `plakat.generate` | `( prompt -- handle )` | Text-to-image. |
+| `plakat.img2img` | `( prompt input -- handle )` | `input` = path string OR image handle. |
+| `plakat.portrait` | `( prompt photo -- handle )` | IP-Adapter-Plus-Face. SD-family only. |
+| `plakat.upscale` | `( handle scale -- handle )` | Lanczos-3, integer `2` or `4`. |
+| `plakat.save` | `( handle path -- )` | Relative paths resolve under `--out`. |
+| `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. |
 
-### `plakat.load ( model-alias -- )`
+#### Supported aliases (v0.22)
 
-Records the model alias subsequent words use. Idempotent: calling
-twice with the same alias is a no-op; calling with a different
-alias overwrites.
+All three families are first-class. The cache holds one pipeline
+at a time and reloads when the alias family changes.
 
-Supported v0.21 aliases:
-
-| Alias | Model |
+| Family | Aliases |
 |---|---|
-| `sd15` | Stable Diffusion 1.5 (community mirror) |
-| `sd21` | SD 2.1 (`plakat.portrait` bails; everything else works) |
-| `sdxl` | Stable Diffusion XL base 1.0 |
-| `sdxl-turbo` | SDXL-Turbo |
+| SD 1.5 / 2.1 / SDXL | `sd15`, `sd21`, `sdxl`, `sdxl-turbo` |
+| Flux | `flux-dev`, `flux-schnell`, `flux-kontext-dev`, `flux-fill-dev`, `flux-canny-dev`, `flux-depth-dev` (+ GGUF / NF4 variants) |
+| SD3 / SD3.5 | `sd3-medium`, `sd35-medium`, `sd35-large`, `sd35-large-turbo` |
 
-**Bails with a "Phase 2b" pointer:**
+Full HF repo IDs are accepted and classify the same way as `--model`.
 
-- Every Flux variant (`flux-dev`, `flux-schnell`, `flux-kontext-dev`,
-  `flux-fill-dev`, `flux-canny-dev`, `flux-depth-dev`, the GGUF +
-  NF4 variants).
-- SD3 / SD3.5 (`sd3-medium`, `sd35-medium`, `sd35-large`,
-  `sd35-large-turbo`).
+### `plakat.lora.*` — LoRA stack (phase 4)
 
-Full HuggingFace repo IDs (e.g.
-`stable-diffusion-v1-5/stable-diffusion-v1-5`) are accepted and
-classify the same way the CLI's `--model` does.
-
-### `plakat.generate ( prompt -- handle )`
-
-Text-to-image. Renders one image with the loaded model and the
-current `GenerationConfig`. Pushes an integer handle (≥ 1)
-addressing the rendered image in `ScriptCtx.images`. Handles are
-permanent for the script's lifetime — saving doesn't free them.
-
-Bails if no model has been loaded.
-
-### `plakat.img2img ( prompt input -- handle )`
-
-Re-imagine an existing image at `strength`. The `input` arg
-accepts two shapes:
-
-| `input` type | Effect |
+| Word | Stack effect |
 |---|---|
-| string | Filesystem path; read directly. |
-| integer | Image handle; the registry image is materialised to a tempfile bound to the host-fn stack frame. |
+| `plakat.lora.add` | `( spec scale -- )` |
+| `plakat.lora.clear` | `( -- )` |
+| `plakat.lora.list` | `( -- s_1 … s_n n )` |
 
-Handle reuse is the load-bearing affordance of the cycle:
-`generate → img2img` composes without disk round-trip. The
-source is **not consumed** — the same handle can be re-used in
-multiple subsequent words.
+`spec` accepts the same grammar as `--lora` (local path,
+`civitai:N`, `civitai-version:N`, HF `repo#file`). Mutations
+invalidate the pipeline cache: the next image-producing word
+rebuilds with the current LoRA set merged in.
 
-### `plakat.portrait ( prompt photo -- handle )`
+### `plakat.controlnet.*` — ControlNet stack (phase 5)
 
-Identity-preserving portrait via IP-Adapter-Plus-Face. Same
-two `input` shapes as `img2img`. Identity strategy is auto-picked
-from the loaded model:
+| Word | Stack effect | Behaviour |
+|---|---|---|
+| `plakat.controlnet.add` | `( kind image-path -- )` | Pre-rendered conditioning map. |
+| `plakat.controlnet.annotate` | `( kind from-path -- )` | Auto-annotate from a regular image. |
+| `plakat.controlnet.spec` | `( spec-string -- )` | Full grammar: `kind[:strength][:start][:end][@image=PATH][@from=PATH]`. |
+| `plakat.controlnet.clear` | `( -- )` | |
+| `plakat.controlnet.list` | `( -- s_1 … s_n n )` | |
 
-| Loaded model | IP-Adapter strategy |
+SD-family flows through `Request.controls` at generate time
+(per-call, not per-load). Flux + SD3 ControlNet need load-time
+setup; the generate paths bail loud with a v0.23 pointer.
+
+### `plakat.refiner.*` — SDXL refiner toggle (phase 6)
+
+| Word | Stack effect |
 |---|---|
-| SD 1.5 | `PlusFace` |
-| SDXL / SDXL-Turbo | `PlusFaceSdxl` |
-| SD 2.1 | bails (no shipped Plus-Face checkpoint) |
+| `plakat.refiner.enable` | `( -- )` |
+| `plakat.refiner.disable` | `( -- )` |
 
-v0.21 ships single-photo portraits only. FaceID variants + multi-
-photo identity blends + manual `face_bbox` / `face_landmarks`
-arguments are deferred to v0.22.
+Toggle is wired today; the actual SDXL-refiner UNet load is
+deferred to v0.23 (needs `t2i::Pipeline` cache instead of
+`portrait::Pipeline`). `plakat.generate` with the toggle on bails
+with a v0.23 message. Same-model polish via `refine_steps`/
+`refine_strength` is fully wired.
 
-The IP-Adapter weight (image-token contribution) is controlled
-via `plakat.config.set "face_strength"` — see config below.
+### `plakat.adetailer.*` — face refinement (phase 7)
 
-### `plakat.upscale ( handle scale -- handle )`
+| Word | Stack effect |
+|---|---|
+| `plakat.adetailer.enable` | `( -- )` |
+| `plakat.adetailer.disable` | `( -- )` |
 
-Lanczos-3 resize. `scale` must be the integer `2` or `4`. ML
-upscaling (Real-ESRGAN) is deferred to v0.22.
+Post-process: SCRFD detects faces; an img2img pass refines each
+face crop; feather-composited back. Reuses the cached
+`portrait::Pipeline::core()` so no second SD load. SD-family
+only — Flux + SD3 bail.
 
-No async bridge needed — the resize is pure CPU + image-crate
-work. Width/height overflow are guarded via `checked_mul` — at
-scale 4 a >1 GP input would silently wrap otherwise; bails loud.
+### `plakat.hires.*` — hires fix (phase 8)
 
-### `plakat.save ( handle path -- )`
+| Word | Stack effect |
+|---|---|
+| `plakat.hires.enable` | `( -- )` |
+| `plakat.hires.disable` | `( -- )` |
 
-Writes the handle's image to `path`. Relative paths resolve
-against the script's `--out` directory; absolute paths pass
-through unchanged. The handle is **not** consumed — the same
-image can be saved to multiple paths.
+Post-process: upscale (classical or Real-ESRGAN) + img2img refine
+at moderate strength. Reuses the cached SD backbone. SD-family
+only. When combined with `plakat.artefact.*` (non-empty stack),
+`plakat.generate` bails — mirrors the CLI's
+`--hires-fix` + `--artefact` mutual-exclusion gate.
 
-If the parent directory doesn't exist, it's created. Format is
-inferred from the extension (image crate's defaults: `.png` /
-`.jpg` / `.webp` / `.bmp` / `.tiff`).
+### `plakat.artefact.*` — compose + blend (phase 9)
 
-### `plakat.config.set ( value key -- )`
+| Word | Stack effect |
+|---|---|
+| `plakat.artefact.add` | `( spec -- )` — `NAME[@ZONE[:SCALE]]` grammar |
+| `plakat.artefact.clear` | `( -- )` |
+| `plakat.artefact.list` | `( -- s_1 … s_n n )` |
+| `plakat.artefact.blend.enable` | `( -- )` |
+| `plakat.artefact.blend.disable` | `( -- )` |
 
-Mutates one knob on the script's accumulated `GenerationConfig`.
-The mutation persists across all subsequent `plakat.generate` /
-`img2img` / `portrait` calls within one script.
+Post-process pipeline: alpha-composite each artefact (in add
+order), then optionally run a masked-img2img blend pass over the
+zones. Same grammar as the CLI's `--artefact` flag (full-object
+overrides remain HJSON-only). SD-family only.
 
-Stack order: bottom = value, top = key string.
+### `plakat.enhance` — prompt rewriter (phase 10)
 
-| Key | Type | Default | Validation |
+| Word | Stack effect |
+|---|---|
+| `plakat.enhance` | `( prompt -- enhanced )` |
+
+Pure prompt transformer. Dispatches to the configured provider
+(see `enhance_provider`). Greedy by default — reproducible. The
+local LLM cache is global, so back-to-back enhance calls pay the
+GGUF load cost once. `enhance_keep_original` joins the rewrite
+with the original via `BREAK` on SD-family models; Flux + SD3
+no-op (T5 ignores BREAK).
+
+## Post-process composition order
+
+When `plakat.generate` runs with multiple post-process toggles
+enabled, the SD-family path applies them in this order on the
+rendered image:
+
+1. **Artefacts** (compose + optional blend) — if `artefacts`
+   non-empty.
+2. **Hires fix** — if `hires_enabled`. *Mutually exclusive with
+   artefacts; the generate call bails when both are set.*
+3. **ADetailer** — if `adetailer_enabled`.
+
+The CLI's same gate (`--hires-fix` rejects `--artefact*`) is
+mirrored at the script layer.
+
+## Config keys (v0.22)
+
+All set via `plakat.config.set` (value below, key on top of
+stack). Setting an unknown key bails with the full supported
+list. Type mismatches bail.
+
+### Core (v0.21)
+
+| Key | Type | Default | Range |
 |---|---|---|---|
 | `steps` | int | 28 | > 0 |
 | `guidance` | float | 7.5 | finite |
-| `seed` | int | (random) | ≥ 0 |
-| `width` | int | per-family | > 0, ÷8, ≤ 4096 |
-| `height` | int | per-family | same as width |
+| `seed` | int | random | ≥ 0 |
+| `width`, `height` | int | per-family | > 0, ÷8, ≤ 4096 |
 | `negative` | string | `""` | passthrough |
-| `scheduler` | string | `default` | parsed via `SchedulerKind::FromStr` (see below) |
+| `scheduler` | string | `default` | parsed via `SchedulerKind` |
 | `strength` | float | 0.75 | finite, `[0, 1]` |
 | `face_strength` | float | 0.8 | finite, `[0, 1]` |
 
-Per-family size defaults: SD 1.5 / 2.1 → 512²; SDXL / SDXL-Turbo
-→ 1024². Setting `width` or `height` flips an internal
-`size_explicit` flag — once you set either dimension, the
-script's pinned size applies even if the loaded model would
-prefer a different default.
+### Flux D-keys (phase 2)
 
-Scheduler names: `default | ddim | euler-a | euler | heun |
-unipc | dpmpp-2m | unipc-exp | lcm | ddpm` (case-insensitive,
-with the usual aliases). An unknown name bails with the full
-supported list.
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `quantize_t5` | bool | false | T5 INT8 quantisation |
+| `quant_level` | string | unset | Flux backbone quant (Q2_K…Q8_0) |
+| `t5_quant_level` | string | unset | T5 quant level |
+| `fast` | string | unset | bundled preset: `lcm-4`, `lcm-8`, `hyper-8`, `lightning-8`, `turbo-1` |
+| `kontext_bucket` | bool | false | Honour reference image's aspect bucket for FLUX.1-Kontext |
 
-Setting a key the validator doesn't know about bails with the
-list of supported keys. Setting an int key with a non-integer
-float (`7.5 "steps" plakat.config.set`) bails — explicit type
-mismatch instead of silent truncation. NaN / Inf / out-of-range
-all bail with the offending value in the message.
+### Tiled / phase 3
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `tiled` | bool | false | SD3-tiled denoise |
+| `tile_size` | int | 1024 | multiple of 16 |
+| `tile_stride` | int | 768 | tile overlap |
+
+### LoRA (phase 4)
+
+| Key | Type | Default | Range |
+|---|---|---|---|
+| `lora_scale` | float | 1.0 | `[0, 2]` |
+
+### Refiner / style (phase 6)
+
+| Key | Type | Default | Range |
+|---|---|---|---|
+| `refine_steps` | int (Option) | unset | `(0, 500]` (same-model polish) |
+| `refine_strength` | float | 0.3 | `[0, 1]` |
+| `refiner_frac` | float | 0.8 | `[0, 1]` (SDXL refiner UNet — deferred) |
+| `style_strength` | float | 1.0 | `[0, 1]` (style catalog — deferred) |
+
+### ADetailer (phase 7)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `adetailer_strength` | float | 0.4 | `[0, 1]` |
+| `adetailer_padding` | float | 0.25 | bbox expansion per side |
+| `adetailer_feather` | float | 0.25 | mask feather fraction |
+| `adetailer_confidence` | float | 0.5 | SCRFD threshold |
+| `adetailer_size` | int | 512 | working size, /8 |
+| `adetailer_prompt` | string | `"detailed face…"` | per-face prompt |
+
+### Hires (phase 8)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `hires_scale` | float | 2.0 | `(1, 4]` |
+| `hires_strength` | float | 0.5 | `[0, 1]` |
+| `hires_upscaler` | string | `lanczos` | classical or Real-ESRGAN method |
+| `hires_steps` | int (Option) | unset | falls back to `steps` |
+
+### Artefact (phase 9)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `artefact_library` | string | empty | path override; empty → `assets/artefact_library` |
+| `artefact_blend_strength` | float | 0.3 | `[0, 1]` |
+| `artefact_smart_zones` | bool | false | Depth-Anything-V2-Small placement |
+
+### Enhance (phase 10)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enhance_provider` | string | `auto` | `auto`/`deepseek`/`gemini`/`local`/`local:<alias>` |
+| `enhance_temp` | float (Option) | unset | `[0, 2]` (local only) |
+| `enhance_max_tokens` | int (Option) | unset | `(0, 1024]` (local only) |
+| `enhance_cache` | bool | false | SHA-256 disk cache for local |
+| `enhance_system` | string | empty | path to custom system prompt |
+| `enhance_keep_original` | bool | false | BREAK-join rewrite + original (SD-family) |
+
+### Misc (phase 11)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `aspect` | string | empty | `W:H` (e.g. `16:9`); derives size when `width`/`height` unset |
+| `base` | int | 768 | shorter-side resolution for `aspect`, /8 |
+| `mask_feather` | int | 8 | img2img mask edge feather (px) |
+| `mask_invert` | bool | false | img2img mask polarity |
+| `clip_skip` | int | 1 | `[1, 12]` — declared, **wiring deferred to v0.23** |
+| `wildcard_dir` | string | empty | `__name__` wildcard directory |
+| `negative_preset` | string | empty | `photo`/`painting`/`anime`/`cinematic` (combined with `negative`) |
 
 ## REPL meta-commands
 
 `plakat run --repl` launches an interactive line editor against
-a **persistent** Bund instance. State (stack contents, named
-lambdas, config knobs) survives across lines. Three meta-commands
-start with `.` (Forth convention):
+a **persistent** Bund instance. State (stack, named lambdas,
+config knobs) survives across lines.
 
 | Command | Effect |
 |---|---|
-| `.q` / `.quit` | Exit the REPL. Saves history. |
-| `.s` / `.stack` | Non-destructive workbench listing, bottom-up. `[0]` is the bottom of the stack; higher indices are closer to the top. |
-| `.help` | List every `plakat.*` word + the meta-commands + a few examples. |
+| `.q` / `.quit` | Exit. Saves history. |
+| `.s` / `.stack` | Non-destructive workbench listing, bottom-up. |
+| `.help` | List every `plakat.*` word + the meta-commands. |
 
-After every successful eval that left a value on top, the REPL
-echoes `=> <value>` (Forth REPL convention). `Value: Clone` lets
-us peek non-destructively.
-
-Line editing: rustyline 18. Ctrl-D exits clean; Ctrl-C clears the
-partial line and keeps the REPL alive. History persists at:
-
-| Platform | Path |
-|---|---|
-| Linux | `~/.config/plakat/repl_history` |
-| macOS | `~/Library/Application Support/ai.plakat.plakat/repl_history` |
-| Windows | `%APPDATA%\plakat\plakat\config\repl_history` |
-
-Eval errors don't bail the REPL — they print to stderr and the
-prompt comes back. Fix the line and try again.
+History persists at `~/.config/plakat/repl_history` (Linux),
+`~/Library/Application Support/ai.plakat.plakat/repl_history` (macOS),
+or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
 
 ## Architecture notes
 
 - **Singleton context.** `ScriptCtx` is a process-wide
-  `OnceLock<RwLock<…>>` because bundcore host functions are bare
-  `fn` pointers, not closures, and can't capture state. One
-  script per process by construction. RFC decision #3.
-- **Built our own VM.** `bundcore::STDLIB` is empty when the
-  `bund` binary crate isn't a dep (which plakat isn't). `Bund::new()`
-  + `init_lib()` ends up registering only the multistackvm
-  primitives plus the seven `plakat.*` words — no filesystem /
-  network / shell access reachable from user scripts. RFC
-  decision #2.
+  `OnceLock<RwLock<…>>`. v0.21 RFC decision #3.
+- **Pipeline cache (v0.22 phase 1).** `ScriptCtx::loaded` holds
+  one `LoadedPipeline` enum variant
+  (`SdFamily(portrait::Pipeline)` / `Flux(flux::Pipeline)` /
+  `Sd3(sd3::Pipeline)`). Same-alias reuse skips the model load;
+  family changes or LoRA mutations drop the cached pipeline.
+- **Restricted stdlib.** `bundcore::STDLIB` is empty when the
+  `bund` binary crate isn't a dep. Plakat ships only the 28
+  `plakat.*` words on top of the bundcore VM primitives — no
+  filesystem / network / shell access from user scripts. v0.21
+  RFC decision #2.
 - **Async bridge.** Bundcore is fully synchronous; plakat
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
-  Requires a multi-threaded tokio runtime; `cli::run::run`
-  provides one. RFC §3.3.
-- **No pipeline cache.** Every `plakat.generate` / `img2img` /
-  `portrait` call loads the model. Acceptable trade-off for the
-  v0.21 MVP (the alternative was a non-trivial pipeline-cache
-  abstraction); deferred to v0.22.
 
-## v0.21 limitations
+## v0.22 limitations / deferred to v0.23
 
 | Limitation | Tracking |
 |---|---|
-| SD-family only (no Flux / SD3) | v0.22 phase 2b |
-| No SD 2.1 portrait | (no upstream Plus-Face SD 2.1 checkpoint) |
-| Single-photo portrait; no FaceID | v0.22 |
-| Lanczos upscale x2 / x4 only | v0.22 ML upscale + arbitrary scale |
-| No LoRA / ControlNet / refiner words | v0.22 |
-| Every `generate` reloads the model | v0.22 pipeline cache |
-| Scenarios not exposed to scripts | by design — HJSON scenarios already exist |
-| AnimateDiff | carried over from v0.20 deferred list |
+| Flux / SD3 ControlNet | needs load-time wiring (v0.23) |
+| SDXL refiner UNet load | needs t2i::Pipeline cache (v0.23) |
+| Style catalog (`plakat.style.*`) | scope deferred (v0.23) |
+| `plakat.inpaint` (mask path arg) | mask_feather/mask_invert knobs are declared |
+| `clip_skip` wiring | t2i::Pipeline encode path (v0.23) |
 
 ## See also
 
 - [`Tutorials/SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md)
-  — narrative walkthrough with the composition patterns.
+  — narrative walkthrough with composition patterns.
+- [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md)
+  — v0.22 design doc, locked decisions, phase plan.
 - [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) —
-  design doc, locked decisions, phase plan.
-- `vulogov/Bund` on GitHub — the language reference. Most of the
-  Bund stdlib isn't exposed to plakat scripts, but the syntax +
-  concepts are the same.
+  v0.21 foundations.
+- `vulogov/Bund` on GitHub — the language reference.

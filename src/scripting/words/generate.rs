@@ -1,17 +1,17 @@
-//! v0.21 phase 2: `plakat.generate ( prompt -- handle )`.
+//! `plakat.generate ( prompt -- handle )`.
 //!
-//! Renders one image with the model recorded by `plakat.load`,
-//! stores it in `ScriptCtx.images`, and pushes the 1-based
-//! integer handle onto the stack so subsequent words
-//! (`plakat.save`, future `plakat.upscale`) can address it.
+//! Renders one image with the cached pipeline (set by
+//! `plakat.load`), stores it in `ScriptCtx.images`, and pushes
+//! the 1-based integer handle onto the stack.
 //!
-//! Bails if `plakat.load` hasn't been called first — better a
-//! clear error than a default model surprising the user.
+//! v0.22 phase 1: the cached pipeline is reused across calls,
+//! so consecutive `plakat.generate` invocations pay zero
+//! model-load cost.
 
 use rust_dynamic::value::Value;
 use rust_multistackvm::multistackvm::VM;
 
-use crate::scripting::ctx::{with_ctx, with_ctx_mut};
+use crate::scripting::ctx::with_ctx_mut;
 use crate::scripting::helpers::{
     BundResult, pull, push, require_depth, to_bund_err, value_to_string,
 };
@@ -28,41 +28,13 @@ fn do_plakat_generate(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let prompt_v = pull(vm, TAG)?;
     let prompt = value_to_string(prompt_v, "prompt", TAG)?;
 
-    // Pull (model, device, config) out of the context up front so
-    // we don't hold the read lock across the async/blocking work.
-    // Clone config because generate_one borrows it across the
-    // tokio block.
-    let (model, device, config) = with_ctx(|ctx| {
-        (
-            ctx.loaded_model.clone(),
-            ctx.device.clone(),
-            ctx.config.clone(),
-        )
-    })?;
-    let model = model.ok_or_else(|| {
-        anyhow::anyhow!(
-            "{TAG}: no model loaded. Call `\"sd15\" plakat.load` (or \
-             your model of choice) before `plakat.generate`."
-        )
-    })?;
-
-    // Async bridge. Pattern is identical to `plakat.echo` —
-    // `cli::run::run` already runs us on a multi-threaded tokio
-    // runtime, so `Handle::try_current()` always returns Ok here.
-    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
-        anyhow::anyhow!(
-            "{TAG}: no tokio runtime in scope (eval must run on a \
-             multi-threaded runtime). Underlying error: {e}"
-        )
-    })?;
-    let img = tokio::task::block_in_place(|| {
-        handle.block_on(script_entry::generate_one(&model, &prompt, device, &config))
-    })?;
-
-    let handle_int = with_ctx_mut(|ctx| ctx.push_image(img))?;
+    let handle_int = with_ctx_mut(|ctx| -> anyhow::Result<i64> {
+        let img = script_entry::generate_one(ctx, &prompt)?;
+        Ok(ctx.push_image(img))
+    })??;
     tracing::info!(
         target: "plakat",
-        "{TAG}: rendered handle {handle_int} via model {model:?}"
+        "{TAG}: rendered handle {handle_int}"
     );
     push(vm, Value::from_int(handle_int));
     Ok(vm)
