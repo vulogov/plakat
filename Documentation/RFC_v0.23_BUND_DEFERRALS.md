@@ -1,7 +1,6 @@
-# RFC v0.23 — Bund scripting deferrals (research draft)
+# RFC v0.23 — Bund scripting deferrals
 
-**Status:** research draft — open questions in §6 need user
-sign-off before phase 1 can land.
+**Status:** decisions locked 2026-05-26 — ready for phase 0.
 
 **Predecessors:**
 - [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) —
@@ -181,11 +180,30 @@ trade-off.
 Option A also keeps the door open for a later v0.24+ Option C
 refactor if we accumulate more reasons to unify.
 
-## 6. Open questions (lock these before phase 1)
+## 6. Decisions (locked 2026-05-26)
 
-### Q1: Cache architecture (§5)
+### Q1: Cache architecture (§5) — **Option A**
 
-**Lock:** A / B / C. Recommend A.
+Two slots per SD-family invocation:
+
+```rust
+enum LoadedPipeline {
+    SdT2i(t2i::Pipeline),
+    SdPortrait(portrait::Pipeline),
+    Flux(flux::Pipeline),
+    Sd3(sd3::Pipeline),
+}
+```
+
+Routing:
+- `plakat.generate` / `plakat.img2img` / `plakat.refiner.*` →
+  `SdT2i` slot
+- `plakat.portrait` → `SdPortrait` slot
+- Both slots share `Arc<SdCore>`, so the cost of interleaving
+  is only the slot-specific extras (refiner UNet for t2i,
+  IP-Adapter encoder for portrait).
+- Family changes (loading an alias of a different family) drop
+  both slots.
 
 ### Q2: `plakat.style.*` surface
 
@@ -203,9 +221,9 @@ plakat.style.clear                       // forget the active style
 Cache invalidation: mutations drop the cached pipeline (same as
 LoRA), since the style catalog applies LoRAs at load time.
 
-**Lock:** confirm the four-word shape vs. a thinner version
-(e.g. just `apply` + `clear`). Recommend shipping all four for
-REPL ergonomics.
+**Locked:** four words. REPL ergonomics matter; `detect`
+ships even though it's a heavier integration (drives the
+style detector against a reference photo).
 
 ### Q3: `plakat.inpaint` stack effect
 
@@ -218,8 +236,8 @@ Two viable shapes:
   path); when set, `plakat.img2img` runs inpaint instead of
   whole-image img2img.
 
-**Lock:** separate word vs. config-key extension. Recommend
-**separate word** — matches the explicit-is-better Bund style.
+**Locked:** separate word. Matches the explicit-is-better
+Bund style; `plakat.img2img` semantics stay mode-free.
 
 ### Q4: Flux + SD3 ControlNet — one phase or two?
 
@@ -228,8 +246,8 @@ Both need load-time wiring; both are independent. We could:
 - Ship them in one combined phase (~1 session).
 - Ship Flux first, SD3 second (~0.5 session each).
 
-**Lock:** combined vs. split. Recommend **split** — keeps each
-phase small + reviewable.
+**Locked:** split. Phase 6 = Flux CN, phase 7 = SD3 CN.
+~0.5 session each.
 
 ### Q5: v0.22 → v0.23 compat
 
@@ -248,10 +266,11 @@ Two options:
   a config key). Default off in v0.23 to preserve v0.22
   behaviour; users opt in.
 
-**Lock:** quiet vs. opt-in. Recommend **quiet upgrade** — the
-v0.22 docs already said the toggle "is shipped today so the
-surface is stable for when the cache switches to t2i::Pipeline,"
-which is exactly what happens.
+**Locked:** quiet upgrade. v0.22 docs already telegraphed the
+behaviour; v0.23 release notes will call out the cost (~6 GB
+download + ~30s extra load) so anyone who flipped the toggle
+"to be safe" can flip it back if they don't actually want the
+refiner.
 
 ### Q6: Phase ordering — depth-first or breadth-first?
 
@@ -264,13 +283,10 @@ Two viable orderings:
   (refiner, clip_skip, style, inpaint) in one bigger phase →
   Flux CN → SD3 CN. Fewer phases, more per-phase scope.
 
-**Lock:** depth-first vs. breadth-first. Recommend **depth-first**
-(matches v0.22's per-namespace cadence). 7 phases each at ~0.5–1
-session.
+**Locked:** depth-first. 9 phases (incl. phase 0 hygiene +
+phase 8 docs) each at ~0.5–1 session. Matches v0.22 cadence.
 
-## 7. Phase plan (locked post-decision)
-
-Assuming the recommendations above are accepted:
+## 7. Phase plan (locked 2026-05-26)
 
 | # | Deliverable | Est. |
 |---|---|---|
