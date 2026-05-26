@@ -1,10 +1,13 @@
 //! v0.21: `plakat run SCRIPT.bund` — evaluate a Bund script with
 //! the `plakat.*` host words registered.
 //!
-//! Phase 1 ships file evaluation only; the `--repl` flag (decision
-//! #6, RFC §8) lands in phase 7 once the host-word surface is
-//! stable. Until then `--repl` parses but bails up front with a
-//! clear "not yet wired" message so the CLI shape is fixed early.
+//! Two modes:
+//!   * **File** (default) — `plakat run path.bund` reads + evals
+//!     the file as a single string. Exits on completion.
+//!   * **REPL** (v0.21 phase 7) — `plakat run --repl` starts an
+//!     interactive line editor against a persistent Bund. Stack
+//!     state, named lambdas, and `plakat.config.set` knobs all
+//!     survive across lines. See [`crate::scripting::repl`].
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::Device;
@@ -24,26 +27,29 @@ pub struct RunArgs {
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
 
-    /// v0.21 phase 7 placeholder. Parses but bails up front today.
+    /// v0.21 phase 7: start an interactive REPL instead of evaling
+    /// a file. The `SCRIPT` positional is ignored when this is on.
     #[arg(long, default_value_t = false)]
     pub repl: bool,
 }
 
 pub async fn run(args: RunArgs, device: Device) -> Result<()> {
+    crate::scripting::ScriptCtx::init(device, args.out.clone())
+        .with_context(|| "initialising script context")?;
+
     if args.repl {
-        anyhow::bail!(
-            "`plakat run --repl` lands in v0.21 phase 7 (RFC \
-             §9). For now use `plakat run SCRIPT.bund`."
-        );
+        // The REPL is interactive + blocking — we want it to own
+        // the calling thread until the user quits. `spawn_blocking`
+        // would let the rest of the runtime keep going, but plakat
+        // CLI is one-shot anyway and the REPL is the foreground
+        // work, so running it directly is fine.
+        return crate::scripting::repl::run();
     }
 
     let script = args
         .script
         .as_ref()
         .ok_or_else(|| anyhow!("expected SCRIPT path (clap usually enforces this)"))?;
-
-    crate::scripting::ScriptCtx::init(device, args.out.clone())
-        .with_context(|| "initialising script context")?;
 
     crate::scripting::eval_file(script)
         .with_context(|| format!("running script {}", script.display()))?;

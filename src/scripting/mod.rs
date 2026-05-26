@@ -33,10 +33,18 @@ use std::path::Path;
 pub mod config;
 pub mod ctx;
 pub mod helpers;
+pub mod repl;
 pub mod script_entry;
 pub mod words;
 
 pub use ctx::{ScriptCtx, with_ctx, with_ctx_mut};
+
+/// v0.21 phase 7: re-export of the test helper from the inner
+/// `tests` module so other test modules (`repl::tests`) can use
+/// the same shared singleton gate. Production callers never see
+/// this — it's `cfg(test)` only.
+#[cfg(test)]
+pub(crate) use tests::with_singleton_ctx as tests_with_singleton_ctx;
 
 /// Build a fresh plakat-flavoured Bund instance.
 ///
@@ -357,10 +365,16 @@ mod tests {
     /// gate pays the init cost. Each test runs its body inside the
     /// mutex so they don't trample each other's state on `out_dir`
     /// or `images`.
-    fn with_singleton_ctx<R>(body: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_singleton_ctx<R>(body: impl FnOnce() -> R) -> R {
         use std::sync::Mutex;
         static GATE: Mutex<()> = Mutex::new(());
-        let _g = GATE.lock().unwrap();
+        // Recover from poisoning. If an earlier test panicked while
+        // holding the lock, the singleton state itself is fine
+        // (panics rarely happen mid-init; even if they do, the next
+        // test sees the OnceLock as already-set and uses it). The
+        // poison is a stale flag we just need to clear so subsequent
+        // tests don't all fail with "lock poisoned" cascades.
+        let _g = GATE.lock().unwrap_or_else(|p| p.into_inner());
         if ctx::CTX.get().is_none() {
             let tmp = tempfile::tempdir().unwrap();
             // Leak the tempdir to keep the path alive for the
