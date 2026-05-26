@@ -419,6 +419,92 @@ mod tests {
         });
     }
 
+    // v0.23 phase 4: plakat.style.* end-to-end (state-only).
+
+    /// `plakat.style.apply` sets `ctx.style_id` and invalidates
+    /// both SD cache slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_apply_sets_id_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""poster-bold" plakat.style.apply"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert!(ctx.loaded.is_none(), "primary slot invalidated");
+                assert!(ctx.loaded_t2i.is_none(), "t2i slot invalidated");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.detect` sets `ctx.style_ref` and invalidates
+    /// both SD cache slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_detect_sets_ref_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""./ref.jpg" plakat.style.detect"#).unwrap();
+            with_ctx(|ctx| {
+                let path = ctx.style_ref.as_ref().expect("style_ref set");
+                assert!(path.to_string_lossy().ends_with("ref.jpg"));
+                assert!(ctx.loaded.is_none());
+                assert!(ctx.loaded_t2i.is_none());
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.clear` empties both fields.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_clear_empties_state() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = Some("test".into());
+                ctx.style_ref = Some("/tmp/x.jpg".into());
+            })
+            .unwrap();
+            eval("plakat.style.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.style_id.is_none());
+                assert!(ctx.style_ref.is_none());
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.apply ""` bails — empty id isn't useful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_apply_empty_id_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""" plakat.style.apply"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("empty"), "got {msg}");
+        });
+    }
+
+    /// `plakat.config.set "style_catalog" "..."` round-trips.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_catalog_config_key_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.config.style_catalog.clear()).unwrap();
+            eval(r#""/custom/styles" "style_catalog" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.config.style_catalog, "/custom/styles"))
+                .unwrap();
+        });
+    }
+
     // v0.22 phase 9: plakat.artefact.* end-to-end.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

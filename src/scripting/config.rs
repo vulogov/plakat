@@ -113,6 +113,12 @@ pub struct GenerationConfig {
     /// known shipping-but-no-op key — same approach as Flux's
     /// `kontext_bucket` before phase 2 wired it.
     pub style_strength: f32,
+    /// v0.23 phase 4: optional override of the style catalog
+    /// directory. Empty (default) → CLI default
+    /// `assets/style_catalog`. Set with `plakat.config.set
+    /// "style_catalog" "path/to/catalog"`. Read by
+    /// `plakat.style.apply` / `.detect` / `.list` at resolve time.
+    pub style_catalog: String,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
     /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
     /// identity / colour; higher = more rework. Ignored when
@@ -290,6 +296,7 @@ impl Default for GenerationConfig {
             refine_strength: 0.3,
             refiner_frac: 0.8,
             style_strength: 1.0,
+            style_catalog: String::new(),
             adetailer_strength: 0.4,
             adetailer_padding: 0.25,
             adetailer_feather: 0.25,
@@ -507,6 +514,12 @@ impl GenerationConfig {
                 // library actually loads).
                 self.artefact_library = value.to_string();
             }
+            "style_catalog" => {
+                // v0.23 phase 4: same shape as artefact_library —
+                // empty resets to default. The catalog directory is
+                // loaded lazily inside the plakat.style.* words.
+                self.style_catalog = value.to_string();
+            }
             "artefact_blend_strength" => {
                 let f = parse_unit_float(value, key)? as f32;
                 self.artefact_blend_strength = f;
@@ -666,7 +679,7 @@ impl GenerationConfig {
                      enhance_provider, enhance_temp, enhance_max_tokens, \
                      enhance_cache, enhance_system, enhance_keep_original, \
                      aspect, base, mask_feather, mask_invert, clip_skip, \
-                     wildcard_dir, negative_preset."
+                     wildcard_dir, negative_preset, style_catalog."
                 ));
             }
         }
@@ -707,7 +720,8 @@ impl GenerationConfig {
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
-            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
+            | "aspect" | "wildcard_dir" | "negative_preset"
+            | "style_catalog" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -847,7 +861,8 @@ impl GenerationConfig {
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
-            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
+            | "aspect" | "wildcard_dir" | "negative_preset"
+            | "style_catalog" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1326,6 +1341,8 @@ mod tests {
             "clip_skip",
             "wildcard_dir",
             "negative_preset",
+            // v0.23 phase 4 style key:
+            "style_catalog",
         ] {
             assert!(
                 msg.contains(new_key),
