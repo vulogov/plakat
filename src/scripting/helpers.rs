@@ -69,6 +69,24 @@ pub fn value_to_int(v: Value, field: &str, tag: &str) -> Result<i64> {
         .map_err(|e| anyhow!("{tag}: arg {field:?} must be an integer ({e})"))
 }
 
+/// Coerce a `Value` to an `f64`. Accepts float OR int values
+/// (int → lossless cast to float) so scripts can pass `7` where
+/// `7.0` is expected without the syntax friction.
+pub fn value_to_float(v: Value, field: &str, tag: &str) -> Result<f64> {
+    // Try float first; fall back to int. rust_dynamic's cast_float
+    // doesn't auto-promote integers, so the two-step gives us the
+    // user-friendly behaviour.
+    if let Ok(f) = v.cast_float() {
+        return Ok(f);
+    }
+    if let Ok(i) = v.cast_int() {
+        return Ok(i as f64);
+    }
+    Err(anyhow!(
+        "{tag}: arg {field:?} must be a number (float or integer)"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

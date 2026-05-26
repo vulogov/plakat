@@ -28,10 +28,16 @@ fn do_plakat_generate(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let prompt_v = pull(vm, TAG)?;
     let prompt = value_to_string(prompt_v, "prompt", TAG)?;
 
-    // Pull (model, device) out of the context up front so we don't
-    // hold the read lock across the async/blocking work.
-    let (model, device) = with_ctx(|ctx| {
-        (ctx.loaded_model.clone(), ctx.device.clone())
+    // Pull (model, device, config) out of the context up front so
+    // we don't hold the read lock across the async/blocking work.
+    // Clone config because generate_one borrows it across the
+    // tokio block.
+    let (model, device, config) = with_ctx(|ctx| {
+        (
+            ctx.loaded_model.clone(),
+            ctx.device.clone(),
+            ctx.config.clone(),
+        )
     })?;
     let model = model.ok_or_else(|| {
         anyhow::anyhow!(
@@ -50,7 +56,7 @@ fn do_plakat_generate(vm: &mut VM) -> anyhow::Result<&mut VM> {
         )
     })?;
     let img = tokio::task::block_in_place(|| {
-        handle.block_on(script_entry::generate_one(&model, &prompt, device))
+        handle.block_on(script_entry::generate_one(&model, &prompt, device, &config))
     })?;
 
     let handle_int = with_ctx_mut(|ctx| ctx.push_image(img))?;

@@ -30,8 +30,8 @@ use candle_core::Device;
 use image::DynamicImage;
 use std::path::PathBuf;
 
-use crate::pipelines::scheduler::SchedulerKind;
 use crate::pipelines::t2i;
+use crate::scripting::config::GenerationConfig;
 
 /// v0.21 phase 2 gate: only SD-family models go through the
 /// script entry. Flux + SD3 require additional plumbing
@@ -57,24 +57,36 @@ pub fn validate_supported_for_phase_2(model: &str) -> Result<()> {
     Ok(())
 }
 
-/// v0.21 phase 2: render one image using SD-family defaults.
+/// v0.21 phase 2 + 3: render one image using the script's
+/// accumulated [`GenerationConfig`].
 ///
 /// Returns the rendered image as an in-memory [`DynamicImage`]
 /// (read back from the tempdir `t2i::run` writes into). The
 /// caller stores it in `ScriptCtx.images` and pushes a handle.
+///
+/// `config.size_explicit == false` means the script never called
+/// `plakat.config.set width|height`; in that case we pick the
+/// SD-family default for the loaded model (SDXL → 1024², everything
+/// else → 512²) so a minimal `"sd15" plakat.load "fox" plakat.generate`
+/// still works without a manual size call.
 pub async fn generate_one(
     model: &str,
     prompt: &str,
     device: Device,
+    config: &GenerationConfig,
 ) -> Result<DynamicImage> {
     validate_supported_for_phase_2(model)?;
 
-    // SD-family default working size. SD 1.5 = 512×512, SDXL =
-    // 1024×1024. Variant::detect carries this knowledge already;
-    // we pick a sensible default per family rather than hard-
-    // coding one.
     let variant = t2i::Variant::detect(model);
-    let (width, height) = if variant.is_xl() {
+    let (width, height) = if config.size_explicit {
+        if config.width == 0 || config.height == 0 {
+            bail!(
+                "plakat.generate: size_explicit set but width/height is 0 — \
+                 only one of plakat.config.set width / height was called?"
+            );
+        }
+        (config.width, config.height)
+    } else if variant.is_xl() {
         (1024u32, 1024u32)
     } else {
         (512u32, 512u32)
@@ -88,22 +100,19 @@ pub async fn generate_one(
 
     let req = t2i::Request {
         prompt: prompt.to_string(),
-        negative: String::new(),
+        negative: config.negative.clone(),
         model: model.to_string(),
         width,
         height,
         count: 1,
-        // Phase 2 defaults match `cli::generate`'s clap defaults
-        // so scripts and the CLI behave the same out of the box.
-        // Phase 3 (`plakat.config.set`) exposes overrides.
-        steps: 28,
-        guidance: 7.5,
-        seed: None,
+        steps: config.steps,
+        guidance: config.guidance,
+        seed: config.seed,
         out_dir: tmp_path.clone(),
         device,
         loras: Vec::new(),
         lora_scale: 1.0,
-        scheduler: SchedulerKind::Default,
+        scheduler: config.scheduler,
         refine: None,
         refine_strength: 0.3,
         use_refiner: false,

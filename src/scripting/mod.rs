@@ -30,6 +30,7 @@ use anyhow::{Context, Result, anyhow};
 use bundcore::bundcore::Bund;
 use std::path::Path;
 
+pub mod config;
 pub mod ctx;
 pub mod helpers;
 pub mod script_entry;
@@ -130,6 +131,61 @@ mod tests {
             eval(&script).unwrap();
 
             assert!(out_dir.join("phase2-save-test.png").exists());
+        });
+    }
+
+    /// v0.21 phase 3 round-trip: eval a script that mutates several
+    /// `plakat.config.set` knobs (int, float, string keys) and
+    /// verify the GenerationConfig reflects them. Doesn't run a
+    /// real generation; just proves the host word + value dispatch
+    /// + GenerationConfig::set_* compose end-to-end through eval.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_set_round_trip_via_eval() {
+        with_singleton_ctx(|| {
+            // Wipe to defaults so this test doesn't depend on
+            // others' state.
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            // Three pushes of (value, key) pairs covering each
+            // value-type branch (int, float, string).
+            let script = r#"
+                50    "steps"      plakat.config.set
+                3.5   "guidance"   plakat.config.set
+                "blurry" "negative" plakat.config.set
+                "euler-a" "scheduler" plakat.config.set
+                42    "seed"       plakat.config.set
+            "#;
+            eval(script).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.steps, 50);
+                assert!((ctx.config.guidance - 3.5).abs() < 1e-9);
+                assert_eq!(ctx.config.negative, "blurry");
+                assert!(matches!(
+                    ctx.config.scheduler,
+                    crate::pipelines::scheduler::SchedulerKind::EulerA
+                ));
+                assert_eq!(ctx.config.seed, Some(42));
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.21 phase 3: an unknown key surfaces a clear error from
+    /// inside eval. Exercise the failure mode end-to-end so we
+    /// know the helpful error message actually reaches user
+    /// scripts and isn't swallowed by bundcore.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_set_unknown_key_bails_via_eval() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                "1 \"definitely-not-a-real-key\" plakat.config.set",
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("unknown key"), "got {msg}");
+            assert!(msg.contains("steps"), "got {msg}");
         });
     }
 
