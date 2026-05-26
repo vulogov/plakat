@@ -172,6 +172,39 @@ pub struct GenerationConfig {
     /// checkpoint on first use; falls back to the grid with a
     /// warning on inference failure.
     pub artefact_smart_zones: bool,
+    /// v0.22 phase 10: prompt-enhancer provider. Same grammar as
+    /// `--enhance`: `"auto"` (default), `"deepseek"`, `"gemini"`,
+    /// `"local"`, `"local:<alias>"` (e.g. `"local:smollm2-360m"`).
+    /// Read at `plakat.enhance` time.
+    pub enhance_provider: String,
+    /// v0.22 phase 10: local-LLM sampling temperature. `None`
+    /// (default) → greedy decode (reproducible). `Some(t)` with
+    /// `t > 0` enables sampling. Ignored on DeepSeek / Gemini
+    /// providers. Mirrors `--enhance-temp`.
+    pub enhance_temp: Option<f64>,
+    /// v0.22 phase 10: local-LLM max-new-tokens cap. `None`
+    /// (default) → 96 (the same default as `--enhance-max-tokens`).
+    /// Ignored on DeepSeek / Gemini.
+    pub enhance_max_tokens: Option<usize>,
+    /// v0.22 phase 10: opt-in disk cache for the local enhancer.
+    /// SHA-256 of (alias, system, user, temp, max_tokens) keys an
+    /// on-disk lookup at `~/.cache/plakat/enhance/`. Default
+    /// false. Mirrors `--enhance-cache`. Ignored on the API
+    /// providers.
+    pub enhance_cache: bool,
+    /// v0.22 phase 10: optional path to a custom enhancer system
+    /// prompt file. Empty (default) → built-in
+    /// `prompt::SYSTEM`. Mirrors `--enhance-system`. Applies to
+    /// all three providers (the API providers honour the system
+    /// override even though they ignore temp / max_tokens / cache).
+    pub enhance_system: String,
+    /// v0.22 phase 10: join the enhancer rewrite with the original
+    /// prompt via the A1111 `BREAK` keyword so each chunk gets
+    /// its own 77-token CLIP slot. Default false. SD-family only
+    /// (Flux / SD3's T5 ignores BREAK; the flag warn-no-ops on
+    /// those families when a model is loaded). Mirrors
+    /// `--enhance-keep-original`.
+    pub enhance_keep_original: bool,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -221,6 +254,12 @@ impl Default for GenerationConfig {
             artefact_library: String::new(),
             artefact_blend_strength: 0.3,
             artefact_smart_zones: false,
+            enhance_provider: "auto".to_string(),
+            enhance_temp: None,
+            enhance_max_tokens: None,
+            enhance_cache: false,
+            enhance_system: String::new(),
+            enhance_keep_original: false,
             size_explicit: false,
         }
     }
@@ -419,6 +458,51 @@ impl GenerationConfig {
             "artefact_smart_zones" => {
                 self.artefact_smart_zones = parse_bool(value, key)?;
             }
+            "enhance_provider" => {
+                // Validate against the same grammar `prompt::enhance_with_args`
+                // accepts. The bail surfaces at config-set time so a typo
+                // doesn't wait until plakat.enhance to fail.
+                let v = value.to_lowercase();
+                let ok = matches!(v.as_str(), "auto" | "deepseek" | "gemini" | "local")
+                    || v.starts_with("local:");
+                if !ok {
+                    bail!(
+                        "plakat.config.set: enhance_provider {value:?} not \
+                         recognised. Accepted: auto, deepseek, gemini, local, \
+                         local:<alias> (e.g. local:smollm2-360m)"
+                    );
+                }
+                self.enhance_provider = v;
+            }
+            "enhance_temp" => {
+                let f = parse_finite_float(value, key)?;
+                if !(0.0..=2.0).contains(&f) {
+                    bail!(
+                        "plakat.config.set: enhance_temp must be in [0, 2] \
+                         (got {f})"
+                    );
+                }
+                self.enhance_temp = Some(f);
+            }
+            "enhance_max_tokens" => {
+                let n = parse_pos_int(value, key)?;
+                if n == 0 || n > 1024 {
+                    bail!(
+                        "plakat.config.set: enhance_max_tokens must be in \
+                         (0, 1024] (got {n})"
+                    );
+                }
+                self.enhance_max_tokens = Some(n as usize);
+            }
+            "enhance_cache" => {
+                self.enhance_cache = parse_bool(value, key)?;
+            }
+            "enhance_system" => {
+                self.enhance_system = value.to_string();
+            }
+            "enhance_keep_original" => {
+                self.enhance_keep_original = parse_bool(value, key)?;
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -433,7 +517,9 @@ impl GenerationConfig {
                      adetailer_confidence, adetailer_size, \
                      adetailer_prompt, hires_scale, hires_strength, \
                      hires_upscaler, hires_steps, artefact_library, \
-                     artefact_blend_strength, artefact_smart_zones."
+                     artefact_blend_strength, artefact_smart_zones, \
+                     enhance_provider, enhance_temp, enhance_max_tokens, \
+                     enhance_cache, enhance_system, enhance_keep_original."
                 ));
             }
         }
@@ -453,11 +539,13 @@ impl GenerationConfig {
             | "adetailer_feather" | "adetailer_confidence"
             | "adetailer_size"
             | "hires_scale" | "hires_strength" | "hires_steps"
-            | "artefact_blend_strength" => {
+            | "artefact_blend_strength" | "enhance_temp"
+            | "enhance_max_tokens" => {
                 self.set_str(key, &value.to_string())
             }
             "quantize_t5" | "kontext_bucket" | "tiled"
-            | "artefact_smart_zones" => {
+            | "artefact_smart_zones" | "enhance_cache"
+            | "enhance_keep_original" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
                     0 => self.set_str(key, "false"),
@@ -469,7 +557,8 @@ impl GenerationConfig {
                 }
             }
             "negative" | "scheduler" | "adetailer_prompt"
-            | "hires_upscaler" | "artefact_library" => Err(anyhow!(
+            | "hires_upscaler" | "artefact_library"
+            | "enhance_provider" | "enhance_system" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -580,8 +669,21 @@ impl GenerationConfig {
                 self.hires_scale = value as f32;
                 Ok(())
             }
+            "enhance_temp" => {
+                if !value.is_finite() {
+                    bail!("plakat.config.set: enhance_temp {value} isn't finite");
+                }
+                if !(0.0..=2.0).contains(&value) {
+                    bail!(
+                        "plakat.config.set: enhance_temp must be in [0, 2] \
+                         (got {value})"
+                    );
+                }
+                self.enhance_temp = Some(value);
+                Ok(())
+            }
             "steps" | "seed" | "width" | "height" | "refine_steps"
-            | "adetailer_size" | "hires_steps" => {
+            | "adetailer_size" | "hires_steps" | "enhance_max_tokens" => {
                 // Permissive: round int-valued floats so `7.0` → 7.
                 // Strictly-non-integer floats are an error.
                 if value.fract() != 0.0 {
@@ -593,7 +695,8 @@ impl GenerationConfig {
                 self.set_int(key, value as i64)
             }
             "negative" | "scheduler" | "adetailer_prompt"
-            | "hires_upscaler" | "artefact_library" => Err(anyhow!(
+            | "hires_upscaler" | "artefact_library"
+            | "enhance_provider" | "enhance_system" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1057,6 +1160,13 @@ mod tests {
             "artefact_library",
             "artefact_blend_strength",
             "artefact_smart_zones",
+            // Phase 10 enhance keys:
+            "enhance_provider",
+            "enhance_temp",
+            "enhance_max_tokens",
+            "enhance_cache",
+            "enhance_system",
+            "enhance_keep_original",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -1496,5 +1606,131 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_float("artefact_blend_strength", 0.45).unwrap();
         assert!((cfg.artefact_blend_strength - 0.45).abs() < 1e-6);
+    }
+
+    // v0.22 phase 10: enhance config keys.
+
+    #[test]
+    fn defaults_for_v022_phase10_enhance_keys() {
+        let cfg = GenerationConfig::default();
+        assert_eq!(cfg.enhance_provider, "auto");
+        assert!(cfg.enhance_temp.is_none());
+        assert!(cfg.enhance_max_tokens.is_none());
+        assert!(!cfg.enhance_cache);
+        assert_eq!(cfg.enhance_system, "");
+        assert!(!cfg.enhance_keep_original);
+    }
+
+    #[test]
+    fn set_str_enhance_provider_accepts_grammar() {
+        let mut cfg = GenerationConfig::default();
+        for p in &[
+            "auto",
+            "deepseek",
+            "gemini",
+            "local",
+            "local:smollm2-360m",
+            "local:qwen2.5-1.5b",
+        ] {
+            cfg.set_str("enhance_provider", p)
+                .unwrap_or_else(|e| panic!("provider {p:?} should parse: {e}"));
+            assert_eq!(cfg.enhance_provider, p.to_lowercase());
+        }
+    }
+
+    #[test]
+    fn set_str_enhance_provider_rejects_unknown() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("enhance_provider", "claude").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("claude"), "got {msg}");
+        assert!(msg.contains("local"), "got {msg}");
+    }
+
+    #[test]
+    fn set_str_enhance_temp_accepts_zero_to_two() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("enhance_temp", "0.0").unwrap();
+        assert_eq!(cfg.enhance_temp, Some(0.0));
+        cfg.set_str("enhance_temp", "1.5").unwrap();
+        assert!((cfg.enhance_temp.unwrap() - 1.5).abs() < 1e-6);
+        cfg.set_str("enhance_temp", "2.0").unwrap();
+        assert_eq!(cfg.enhance_temp, Some(2.0));
+    }
+
+    #[test]
+    fn set_str_enhance_temp_rejects_out_of_range() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("enhance_temp", "-0.1").is_err());
+        assert!(cfg.set_str("enhance_temp", "2.5").is_err());
+    }
+
+    #[test]
+    fn set_str_enhance_max_tokens_accepts_positive() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("enhance_max_tokens", "128").unwrap();
+        assert_eq!(cfg.enhance_max_tokens, Some(128));
+    }
+
+    #[test]
+    fn set_str_enhance_max_tokens_rejects_zero_and_huge() {
+        let mut cfg = GenerationConfig::default();
+        assert!(cfg.set_str("enhance_max_tokens", "0").is_err());
+        assert!(cfg.set_str("enhance_max_tokens", "5000").is_err());
+    }
+
+    #[test]
+    fn set_str_enhance_cache_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("enhance_cache", "true").unwrap();
+        assert!(cfg.enhance_cache);
+        cfg.set_str("enhance_cache", "false").unwrap();
+        assert!(!cfg.enhance_cache);
+    }
+
+    #[test]
+    fn set_str_enhance_system_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("enhance_system", "/path/to/sys.txt").unwrap();
+        assert_eq!(cfg.enhance_system, "/path/to/sys.txt");
+    }
+
+    #[test]
+    fn set_str_enhance_keep_original_accepts_bool() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("enhance_keep_original", "true").unwrap();
+        assert!(cfg.enhance_keep_original);
+        cfg.set_str("enhance_keep_original", "false").unwrap();
+        assert!(!cfg.enhance_keep_original);
+    }
+
+    #[test]
+    fn set_int_enhance_provider_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("enhance_provider", 0).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
+    }
+
+    #[test]
+    fn set_float_enhance_temp_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_float("enhance_temp", 0.7).unwrap();
+        assert!((cfg.enhance_temp.unwrap() - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_int_enhance_max_tokens_round_trip() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("enhance_max_tokens", 200).unwrap();
+        assert_eq!(cfg.enhance_max_tokens, Some(200));
+    }
+
+    #[test]
+    fn set_int_enhance_cache_accepts_zero_and_one() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_int("enhance_cache", 1).unwrap();
+        assert!(cfg.enhance_cache);
+        cfg.set_int("enhance_cache", 0).unwrap();
+        assert!(!cfg.enhance_cache);
     }
 }

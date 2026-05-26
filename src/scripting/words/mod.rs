@@ -14,6 +14,7 @@ pub mod artefact;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
+pub mod enhance;
 pub mod generate;
 pub mod hires;
 pub mod img2img;
@@ -138,6 +139,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         artefact::plakat_artefact_blend_disable,
     )
     .map_err(|e| anyhow!("registering plakat.artefact.blend.disable: {e}"))?;
+    // v0.22 phase 10: plakat.enhance host word.
+    vm.register_inline("plakat.enhance".to_string(), enhance::plakat_enhance)
+        .map_err(|e| anyhow!("registering plakat.enhance: {e}"))?;
     Ok(())
 }
 
