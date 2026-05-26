@@ -1690,7 +1690,14 @@ impl Pipeline {
     /// is pooled-only — only the EOT position is read out, so per-
     /// token weights don't change the pooled vector and the CLIP-L
     /// path is left untouched.
-    fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+    ///
+    /// v0.20 #9: exposed at `pub(crate)` so `cli::animate` can
+    /// pre-encode both endpoints once and lerp the embeddings per
+    /// frame. The encode is the dominant cost (T5-XXL forward is
+    /// ~80% of a Flux generation's setup time); doing it twice per
+    /// run rather than once per frame is the whole point of
+    /// `plakat animate`.
+    pub(crate) fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
         // v0.18: A1111 BREAK keyword. Flux's T5 has a 256/512-
         // token budget, far past CLIP's 77-token cap — BREAK adds
         // no value here. Strip + warn rather than silently passing
@@ -1767,6 +1774,102 @@ impl Pipeline {
             self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?
         };
         Ok((clip_pooled, t5_emb))
+    }
+
+    /// v0.20 #9: render one animate frame from pre-encoded
+    /// embeddings. Skips encode_prompt + every adapter-setup path
+    /// (Redux / Kontext / ControlNet / Fill / concept / img2img)
+    /// that `generate()` runs. The caller (`cli::animate`) is
+    /// responsible for:
+    ///
+    /// * calling [`encode_prompt`] once per endpoint;
+    /// * lerping the `(clip_pooled, t5_emb)` pair per frame;
+    /// * passing the lerped pair plus shared seed in here.
+    ///
+    /// Returns `(rgb_bytes, width, height)` — the saving (PNG/WebP
+    /// + metadata embed) is handled by the caller so animate can
+    /// stamp per-frame lerp `t` into the sidecar.
+    ///
+    /// Flux is guidance-distilled: the CFG signal is a scalar
+    /// input to the model rather than a batch-doubled
+    /// uncond+cond pass. Hence there's no `negative` parameter and
+    /// no CFG batching here — animate's `--negative` flag is a
+    /// no-op for Flux variants and we surface a warn at the CLI
+    /// layer if the user passed one.
+    pub fn animate_frame(
+        &mut self,
+        clip_pooled: &Tensor,
+        t5_emb: &Tensor,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        seed: u64,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        let (w, h) = (width as usize, height as usize);
+        if w % 16 != 0 || h % 16 != 0 {
+            bail!(
+                "Flux animate requires --size dims divisible by 16 (got {w}x{h}). \
+                 Try 512x512 / 768x768 / 1024x1024."
+            );
+        }
+
+        let lat_h = (h + 15) / 16;
+        let lat_w = (w + 15) / 16;
+        let image_seq_len = lat_h * lat_w;
+        let ae_cfg = self.variant.ae_config();
+
+        let seed_u32 = seed & (u32::MAX as u64);
+        if let Err(e) = self.device.set_seed(seed_u32) {
+            tracing::debug!(
+                target: "plakat",
+                "set_seed not supported ({e}); using global RNG"
+            );
+        }
+
+        let noise = sampling::get_noise(1, h, w, &self.device)?.to_dtype(self.dtype)?;
+
+        // BFL's flow-match schedule shift (only on dev: the
+        // guidance-distilled checkpoints want the shifted t spacing
+        // their training expected). Schnell is unshifted.
+        let shift = if self.variant.is_dev() {
+            Some((image_seq_len, 0.5_f64, 1.15_f64))
+        } else {
+            None
+        };
+        let timesteps = sampling::get_schedule(steps, shift);
+
+        let bar = progress::step_bar(
+            timesteps.len().saturating_sub(1) as u64,
+            "animate frame",
+        );
+
+        let state = sampling::State::new(t5_emb, clip_pooled, &noise)?;
+        let denoised = self.denoise_with_optional_controlnet(
+            &state,
+            &timesteps,
+            guidance,
+            &[],   // no per-CN packed conditioning
+            None,  // no Fill
+            None,  // no concept (Canny/Depth)
+            None,  // no Kontext reference
+            &bar,
+        )?;
+        bar.set_position(timesteps.len().saturating_sub(1) as u64);
+        bar.finish_with_message("✓ frame denoised");
+
+        let denoised_2d = sampling::unpack(&denoised, h, w)?;
+        let pre_decode =
+            ((&denoised_2d / ae_cfg.scale_factor)? + ae_cfg.shift_factor)?;
+        let decoded = self.ae_model.decode(&pre_decode)?;
+        let img_norm = ((decoded.clamp(-1f32, 1f32)? + 1.0)? * 0.5)?;
+        let img_u8 = (img_norm * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = img_u8.dims3()?;
+        let buf = img_u8.flatten_all()?.to_vec1::<u8>()?;
+        Ok((buf, ow as u32, oh as u32))
     }
 
     /// v0.12 phase 2b → v0.13 phase 9: load + VAE-encode a Flux
