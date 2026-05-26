@@ -43,7 +43,17 @@ pub fn validate_supported_for_phase_2(_model: &str) -> Result<()> {
 /// set width / height explicitly. SD 1.5 / 2.1 → 512²;
 /// SDXL / SDXL-Turbo → 1024²; Flux → 1024²; SD3 / SD3.5 → 1024².
 /// Reads the alias on `ctx.loaded`.
+///
+/// v0.22 phase 11: when `ctx.config.aspect` is non-empty, the
+/// aspect-derived size takes precedence over the family default.
+/// `base` is the shorter side; the longer side scales to maintain
+/// the ratio, snapped to /8 (VAE).
 fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
+    if !ctx.config.aspect.is_empty() {
+        if let Some(dims) = aspect_to_size(&ctx.config.aspect, ctx.config.base) {
+            return dims;
+        }
+    }
     let alias = ctx
         .loaded_model()
         .expect("default_size called without a loaded pipeline");
@@ -58,6 +68,74 @@ fn default_size_for_loaded(ctx: &ScriptCtx) -> (u32, u32) {
     } else {
         (512, 512)
     }
+}
+
+/// v0.22 phase 11: parse `W:H` aspect + `base` into `(w, h)`. The
+/// shorter side equals `base`; the longer side scales to keep the
+/// ratio, then both snap down to a multiple of 8 (VAE). Returns
+/// `None` on malformed input (caller falls back to family default).
+/// `set_str` already validates at config-set time, so a `None`
+/// here means defaults won.
+fn aspect_to_size(aspect: &str, base: u32) -> Option<(u32, u32)> {
+    let (a, b) = aspect.split_once(':')?;
+    let w_ratio: u32 = a.parse().ok()?;
+    let h_ratio: u32 = b.parse().ok()?;
+    if w_ratio == 0 || h_ratio == 0 {
+        return None;
+    }
+    let (w, h) = if w_ratio >= h_ratio {
+        (base * w_ratio / h_ratio, base)
+    } else {
+        (base, base * h_ratio / w_ratio)
+    };
+    let snap = |n: u32| (n / 8) * 8;
+    Some((snap(w), snap(h)))
+}
+
+/// v0.22 phase 11: combine `config.negative_preset` (when set)
+/// with the user-provided `config.negative` via
+/// `negative_presets::combine`. Returns the user negative
+/// unchanged when no preset is configured. A non-resolving
+/// preset name (e.g. user-installed preset got removed
+/// mid-script) warns and falls back rather than bailing, since
+/// `set_str` validated at config-set time.
+fn resolve_negative(ctx: &ScriptCtx) -> String {
+    let preset = if ctx.config.negative_preset.is_empty() {
+        None
+    } else {
+        Some(ctx.config.negative_preset.as_str())
+    };
+    match crate::prompt::negative_presets::combine(preset, &ctx.config.negative) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                target: "plakat",
+                "plakat.config: negative_preset combine failed ({e}) — \
+                 falling back to user negative only"
+            );
+            ctx.config.negative.clone()
+        }
+    }
+}
+
+/// v0.22 phase 11: expand the prompt against `config.wildcard_dir`
+/// (`__name__` file wildcards + inline `{a|b|c}` alternation).
+/// When `wildcard_dir` is empty, only inline alternation expands.
+/// Seed: `config.seed` when set (reproducible), else OS entropy.
+fn expand_prompt(ctx: &ScriptCtx, prompt: &str) -> Result<String> {
+    use crate::prompt::wildcards;
+    let dir = if ctx.config.wildcard_dir.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&ctx.config.wildcard_dir))
+    };
+    use rand::SeedableRng;
+    let mut rng: rand::rngs::StdRng = match ctx.config.seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_entropy(),
+    };
+    wildcards::expand(prompt, dir.as_deref(), &mut rng)
+        .context("expanding wildcards in script prompt")
 }
 
 /// v0.22 phase 5: resolve the script's ControlNet stack to
@@ -200,7 +278,7 @@ fn build_sd3_gen_request(
     };
     sd3::GenRequest {
         prompt: prompt.to_string(),
-        negative: ctx.config.negative.clone(),
+        negative: resolve_negative(ctx),
         width,
         height,
         count: 1,
@@ -236,7 +314,7 @@ fn build_gen_request(
     };
     portrait::GenRequest {
         prompt: prompt.to_string(),
-        negative: ctx.config.negative.clone(),
+        negative: resolve_negative(ctx),
         photos,
         width,
         height,
@@ -329,7 +407,7 @@ impl ArtefactArgs {
             loras: ctx.loras.clone(),
             lora_scale: ctx.config.lora_scale,
             prompt: prompt.to_string(),
-            negative: ctx.config.negative.clone(),
+            negative: resolve_negative(ctx),
             image_w,
             image_h,
             steps: ctx.config.steps,
@@ -468,8 +546,11 @@ impl HiresArgs {
             model: alias.to_string(),
             loras: ctx.loras.clone(),
             lora_scale: ctx.config.lora_scale,
+            // v0.22 phase 11: same negative+preset combination as
+            // the main t2i request — the hires refine pass sees a
+            // consistent negative.
             prompt: prompt.to_string(),
-            negative: ctx.config.negative.clone(),
+            negative: resolve_negative(ctx),
             scale: ctx.config.hires_scale,
             upscaler,
             strength: ctx.config.hires_strength,
@@ -532,7 +613,7 @@ impl AdetailerArgs {
         cfg.model = alias.to_string();
         cfg.device = ctx.device.clone();
         cfg.prompt = ctx.config.adetailer_prompt.clone();
-        cfg.negative = ctx.config.negative.clone();
+        cfg.negative = resolve_negative(ctx);
         cfg.strength = ctx.config.adetailer_strength;
         cfg.working_size = ctx.config.adetailer_size;
         cfg.steps = ctx.config.steps;
@@ -593,6 +674,11 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             )
         })?
         .to_string();
+
+    // v0.22 phase 11: expand `{a|b|c}` + `__name__` wildcards against
+    // `config.wildcard_dir`. Seeded by `config.seed` for reproducibility.
+    let prompt_owned = expand_prompt(ctx, prompt)?;
+    let prompt = prompt_owned.as_str();
 
     let tmp = tempfile::Builder::new()
         .prefix("plakat-script-gen-")
@@ -748,6 +834,12 @@ pub fn img2img_one(
         })?
         .to_string();
 
+    // v0.22 phase 11: wildcard expansion before the working-size
+    // resolution (size doesn't depend on prompt, but expanding
+    // first keeps the seeded-RNG order consistent across paths).
+    let prompt_owned = expand_prompt(ctx, prompt)?;
+    let prompt = prompt_owned.as_str();
+
     // Working size: explicit config wins; else input image dims
     // snapped to /8 (downward). Read config + dims first, then
     // borrow the pipeline mutably.
@@ -780,15 +872,19 @@ pub fn img2img_one(
         PipelineFamily::SdFamily => {
             let req = crate::pipelines::img2img::Request {
                 prompt: prompt.to_string(),
-                negative: ctx.config.negative.clone(),
+                negative: resolve_negative(ctx),
                 model: alias.clone(),
                 device: ctx.device.clone(),
                 loras: Vec::new(),
                 lora_scale: 1.0,
                 input: input_path.to_path_buf(),
                 mask: None,
-                mask_feather: 0,
-                mask_invert: false,
+                // v0.22 phase 11: knobs are declared but the mask
+                // path is not yet exposed at the script layer
+                // (v0.23 plakat.inpaint). The img2img pipeline
+                // honours these only when `mask` is set.
+                mask_feather: ctx.config.mask_feather,
+                mask_invert: ctx.config.mask_invert,
                 width,
                 height,
                 count: 1,
@@ -952,6 +1048,10 @@ pub fn portrait_one(
         })?
         .to_string();
 
+    // v0.22 phase 11: wildcard expansion (matches generate_one).
+    let prompt_owned = expand_prompt(ctx, prompt)?;
+    let prompt = prompt_owned.as_str();
+
     // Portrait is SD-family-only. Flux + SD3 have no shipped
     // IP-Adapter-Plus-Face checkpoint, so neither can do
     // identity-preserving portraits. Bail loud rather than
@@ -1059,5 +1159,37 @@ mod tests {
             "stable-diffusion-v1-5/stable-diffusion-v1-5",
         )
         .unwrap();
+    }
+
+    // v0.22 phase 11: aspect-derived size + negative-preset combine.
+
+    #[test]
+    fn aspect_to_size_landscape_snaps_to_eight() {
+        // 16:9 with base 768 → longer side 1365.33 → snap down to 1360.
+        let (w, h) = aspect_to_size("16:9", 768).unwrap();
+        assert_eq!(h, 768);
+        assert_eq!(w % 8, 0);
+        assert!(w > h);
+    }
+
+    #[test]
+    fn aspect_to_size_portrait_returns_base_as_shorter_side() {
+        let (w, h) = aspect_to_size("2:3", 512).unwrap();
+        assert_eq!(w, 512);
+        assert!(h > w);
+        assert_eq!(h % 8, 0);
+    }
+
+    #[test]
+    fn aspect_to_size_square_keeps_base() {
+        let (w, h) = aspect_to_size("1:1", 1024).unwrap();
+        assert_eq!(w, 1024);
+        assert_eq!(h, 1024);
+    }
+
+    #[test]
+    fn aspect_to_size_malformed_returns_none() {
+        assert!(aspect_to_size("garbage", 768).is_none());
+        assert!(aspect_to_size("16:0", 768).is_none());
     }
 }
