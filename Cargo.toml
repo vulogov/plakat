@@ -120,6 +120,16 @@ tempfile = "3"
 # HJSON for scenario files
 deser-hjson = "2"
 
+# v0.21: Bund scripting engine (RFC: Documentation/RFC_v0.21_BUND_SCRIPTING.md).
+# We embed via `bundcore` rather than the `bund` binary crate (no [lib] target).
+# Exact-version pins because the upstream uses wildcard requirements
+# internally — pinning gives us a stable supply chain.
+bundcore = "=0.7.0"
+bund_language_parser = "=0.14.0"
+rust_multistackvm = "=0.38.0"
+rust_dynamic = "=0.49.0"
+easy-error = "1"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

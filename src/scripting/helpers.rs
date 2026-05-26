@@ -1,0 +1,117 @@
+//! v0.21: stack / value helpers for plakat host words.
+//!
+//! Pattern lifted from blackInkhaven's `src/scripting/stdlib/helpers.rs`:
+//! every host word is a `fn(&mut VM) -> Result<&mut VM, easy_error::Error>`,
+//! pops its args off the workbench (top-most popped first), validates
+//! shapes, calls into plakat's `anyhow`-flavoured world, and pushes
+//! its result back. The `anyhow inside / easy_error at boundary`
+//! pattern keeps the rest of plakat insulated from bundcore's error
+//! type — only this module + the words/ leaves see `easy_error`.
+
+use anyhow::{Result, anyhow};
+use rust_dynamic::value::Value;
+use rust_multistackvm::multistackvm::VM;
+
+/// The host-function return type bundcore expects. Aliased here so
+/// every word file references it through one name.
+pub type BundResult<'a> = std::result::Result<&'a mut VM, easy_error::Error>;
+
+/// Adapter: `anyhow::Error` → `easy_error::Error`. Preserves the
+/// display message; loses the backtrace, but bundcore can't surface
+/// one to script-land anyway.
+pub fn to_bund_err(e: anyhow::Error) -> easy_error::Error {
+    easy_error::err_msg(format!("{e:#}"))
+}
+
+/// Pop the top of the workbench (or main stack if workbench is
+/// empty). Mirrors blackInkhaven's `pull` helper.
+///
+/// `tag` is included in error messages so the user sees *which*
+/// host word's pop failed, not just "stack underflow."
+pub fn pull(vm: &mut VM, tag: &str) -> Result<Value> {
+    vm.stack
+        .pull()
+        .ok_or_else(|| anyhow!("{tag}: stack underflow (no value to pop)"))
+}
+
+/// Push a value onto the workbench. Stays an infallible helper for
+/// symmetry with `pull` — bundcore's `push` is itself infallible.
+pub fn push(vm: &mut VM, value: Value) {
+    vm.stack.push(value);
+}
+
+/// Bail unless the workbench has at least `n` values to pop. Run
+/// before the first `pull` in any multi-arg word so a script that
+/// invoked the word with the wrong arity fails up front rather
+/// than after a partial pop.
+pub fn require_depth(vm: &mut VM, n: usize, tag: &str) -> Result<()> {
+    let have = vm.stack.current_stack_len();
+    if have < n {
+        return Err(anyhow!(
+            "{tag}: needs {n} arg(s) on the stack, found {have}"
+        ));
+    }
+    Ok(())
+}
+
+/// Coerce a `Value` to a `String`. Accepts string values; rejects
+/// everything else with a typed error. `field` is the human-name
+/// of the arg (e.g. "prompt", "path") for diagnostics.
+pub fn value_to_string(v: Value, field: &str, tag: &str) -> Result<String> {
+    v.cast_string()
+        .map_err(|e| anyhow!("{tag}: arg {field:?} must be a string ({e})"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_multistackvm::multistackvm::VM;
+
+    #[test]
+    fn to_bund_err_round_trips_message() {
+        let err = to_bund_err(anyhow!("something specific"));
+        let s = format!("{err}");
+        assert!(s.contains("something specific"), "got {s}");
+    }
+
+    #[test]
+    fn require_depth_bails_on_empty_stack() {
+        let mut vm = VM::new();
+        let err = require_depth(&mut vm, 1, "test.word").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("test.word"), "got {msg}");
+        assert!(msg.contains("found 0"), "got {msg}");
+    }
+
+    #[test]
+    fn require_depth_passes_with_enough_values() {
+        let mut vm = VM::new();
+        vm.stack.push(Value::from_string("a".to_string()));
+        vm.stack.push(Value::from_string("b".to_string()));
+        require_depth(&mut vm, 2, "test.word").unwrap();
+    }
+
+    #[test]
+    fn pull_returns_top_of_workbench() {
+        let mut vm = VM::new();
+        vm.stack.push(Value::from_string("hello".to_string()));
+        let got = pull(&mut vm, "test.word").unwrap();
+        assert_eq!(got.cast_string().unwrap(), "hello");
+    }
+
+    #[test]
+    fn pull_on_empty_stack_bails_with_tag() {
+        let mut vm = VM::new();
+        let err = pull(&mut vm, "test.word").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("test.word"), "got {msg}");
+        assert!(msg.contains("underflow"), "got {msg}");
+    }
+
+    #[test]
+    fn value_to_string_passes_through_strings() {
+        let v = Value::from_string("forty-two".to_string());
+        let got = value_to_string(v, "field", "test.word").unwrap();
+        assert_eq!(got, "forty-two");
+    }
+}
