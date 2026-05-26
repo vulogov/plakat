@@ -15,6 +15,8 @@ use candle_core::Device;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+use crate::scripting::config::GenerationConfig;
+
 /// Process-wide script context. Holds the device + output dir +
 /// the in-script image registry + the active model alias.
 ///
@@ -35,6 +37,11 @@ pub struct ScriptCtx {
     /// script's lifetime; if scripts ever start producing hundreds
     /// of images we'll revisit (e.g. spill to disk).
     pub images: Vec<image::DynamicImage>,
+    /// v0.21 phase 3: generation knobs the script accumulates via
+    /// `plakat.config.set`. Persistent across calls within one
+    /// script. Read by [`super::script_entry::generate_one`] when
+    /// building the `t2i::Request`.
+    pub config: GenerationConfig,
 }
 
 impl ScriptCtx {
@@ -51,6 +58,7 @@ impl ScriptCtx {
             out_dir,
             loaded_model: None,
             images: Vec::new(),
+            config: GenerationConfig::default(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -122,6 +130,7 @@ mod tests {
             out_dir: std::env::temp_dir(),
             loaded_model: None,
             images: Vec::new(),
+            config: GenerationConfig::default(),
         }
     }
 

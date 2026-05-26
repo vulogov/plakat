@@ -9,13 +9,15 @@
 use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
+pub mod config;
 pub mod echo;
 pub mod generate;
 pub mod load;
 pub mod save;
 
 /// Register every `plakat.*` word into `vm`. Phase 1 shipped
-/// `plakat.echo`. Phase 2 adds load + generate + save.
+/// `plakat.echo`. Phase 2 added load + generate + save. Phase 3
+/// adds config.set.
 pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     vm.register_inline("plakat.echo".to_string(), echo::plakat_echo)
         .map_err(|e| anyhow!("registering plakat.echo: {e}"))?;
@@ -25,6 +27,11 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.generate: {e}"))?;
     vm.register_inline("plakat.save".to_string(), save::plakat_save)
         .map_err(|e| anyhow!("registering plakat.save: {e}"))?;
+    vm.register_inline(
+        "plakat.config.set".to_string(),
+        config::plakat_config_set,
+    )
+    .map_err(|e| anyhow!("registering plakat.config.set: {e}"))?;
     Ok(())
 }
 
