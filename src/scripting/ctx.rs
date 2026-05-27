@@ -164,6 +164,33 @@ pub struct ScriptCtx {
     /// command exposes `--embedding` either). Embeddings stay
     /// in `ctx.embeddings` silently on those paths.
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+    /// v0.24 phase 8: ControlNet auto-annotation cache for Flux +
+    /// SD3. `from=` specs in `ctx.controlnets` can't be annotated
+    /// at pipeline-load time (the loader doesn't know the
+    /// per-generate width/height yet). The first `plakat.generate`
+    /// with a `from=` spec runs the annotator using that
+    /// generate's dims; subsequent generates with the same
+    /// pipeline + same dims reuse. Dim mismatch on a later call
+    /// re-annotates.
+    ///
+    /// `None` means "no cache yet." The first generate populates
+    /// it. Cleared by `mark_controlnets_changed` /
+    /// `mark_loras_changed` (any pipeline-invalidating mutation
+    /// also drops these tempfiles).
+    pub cn_annotation_cache: Option<CnAnnotationCache>,
+}
+
+/// v0.24 phase 8: per-loaded-pipeline annotation cache. The
+/// `_tmpdir` field keeps the annotated PNGs alive for the
+/// pipeline's lifetime; dropping the cache deletes them.
+pub struct CnAnnotationCache {
+    /// Indexed parallel to `ctx.controlnets`. `Some((w, h, path))`
+    /// means CN[i] has a cached annotation at those dims;
+    /// `None` means CN[i] doesn't need annotation (image= spec)
+    /// or hasn't been annotated yet.
+    pub entries: Vec<Option<(u32, u32, std::path::PathBuf)>>,
+    /// Lifetime guard for the annotation PNGs.
+    pub _tmpdir: tempfile::TempDir,
 }
 
 impl ScriptCtx {
@@ -193,6 +220,7 @@ impl ScriptCtx {
             style_ref: None,
             portrait_photos: Vec::new(),
             embeddings: Vec::new(),
+            cn_annotation_cache: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -208,6 +236,9 @@ impl ScriptCtx {
         // v0.23 phase 1: the t2i slot also caches LoRA-merged
         // weights; same invalidation rule.
         self.loaded_t2i = None;
+        // v0.24 phase 8: annotation cache is bound to the loaded
+        // pipeline; drop alongside.
+        self.cn_annotation_cache = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -230,6 +261,9 @@ impl ScriptCtx {
         if is_flux_or_sd3 {
             self.loaded = None;
         }
+        // v0.24 phase 8: drop annotation cache too (CN stack
+        // change → cached annotations may be wrong index).
+        self.cn_annotation_cache = None;
         // SD-family slots (loaded if SdFamily variant, loaded_t2i)
         // are left intact: SD-family CN is per-call, not per-load.
     }
@@ -481,32 +515,20 @@ impl ScriptCtx {
                 }
             };
 
-            // v0.23 phase 6: resolve the script's ControlNet stack
-            // into Flux-flavoured load specs. Phase 6 supports
-            // `plakat.controlnet.add` (kind + image=PATH) only;
-            // `plakat.controlnet.annotate` / `.spec from=PATH`
-            // (auto-annotate) bails — annotation needs the
-            // width/height that aren't known at load time. Pre-
-            // render with `plakat upscale --method real-esrgan-x*`
-            // -free workflows or the standalone
-            // `plakat.controlnet.add` path.
+            // v0.23 phase 6 + v0.24 phase 8: resolve the script's
+            // ControlNet stack into Flux-flavoured load specs.
+            // image= specs get the path baked into the load
+            // request; from= specs leave `conditioning: None` —
+            // the annotator runs at first generate (script_entry)
+            // and feeds the result back via
+            // `pipeline.set_controlnet_conditioning`.
             let flux_cn_loads: Vec<flux::FluxControlNetLoad> = self
                 .controlnets
                 .iter()
                 .map(|spec| -> Result<flux::FluxControlNetLoad> {
                     let cond = match (&spec.image, &spec.from) {
-                        (Some(path), None) => path.clone(),
-                        (None, Some(_)) => anyhow::bail!(
-                            "plakat.controlnet (Flux): auto-annotate \
-                             (`plakat.controlnet.annotate` / from=PATH) \
-                             isn't wired at load time in v0.23 phase 6 — \
-                             annotation needs the per-generate width/height \
-                             which the loader doesn't know. Pre-render the \
-                             conditioning image (depth map, canny edges, \
-                             etc.) and use `plakat.controlnet.add KIND PATH` \
-                             instead. (kind={:?})",
-                            spec.kind
-                        ),
+                        (Some(path), None) => Some(path.clone()),
+                        (None, Some(_)) => None, // lazy-annotate
                         (Some(_), Some(_)) => anyhow::bail!(
                             "plakat.controlnet (Flux): a single spec has \
                              both image= and from= set; pick one. (kind={:?})",
@@ -515,15 +537,14 @@ impl ScriptCtx {
                         (None, None) => anyhow::bail!(
                             "plakat.controlnet (Flux): kind={:?} needs \
                              either image=PATH (pre-rendered) or from=PATH \
-                             (auto-annotate). v0.23 phase 6 supports image= \
-                             only on Flux.",
+                             (auto-annotate).",
                             spec.kind
                         ),
                     };
                     let mut cn_load = crate::pipelines::t2i::flux_controlnet_load_for(
                         spec.kind, fvar, spec.strength,
                     )?;
-                    cn_load.conditioning = Some(cond);
+                    cn_load.conditioning = cond;
                     cn_load.start = spec.start;
                     cn_load.end = spec.end;
                     Ok(cn_load)
@@ -618,28 +639,18 @@ impl ScriptCtx {
                 }
             };
 
-            // v0.23 phase 7: resolve the script's ControlNet stack
-            // into SD3-flavoured load specs. Same scope as phase 6
-            // (Flux): `plakat.controlnet.add` (kind + image=PATH)
-            // supported; auto-annotate / from= bails inside the
-            // resolver (per-generate width/height isn't known at
-            // load time).
+            // v0.23 phase 7 + v0.24 phase 8: resolve the script's
+            // ControlNet stack into SD3-flavoured load specs.
+            // image= specs bake the path in; from= specs leave
+            // conditioning=None and the annotator fires at first
+            // generate (same lazy pattern as Flux).
             let sd3_cn_loads: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> =
                 self.controlnets
                     .iter()
                     .map(|spec| -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
                         let cond = match (&spec.image, &spec.from) {
-                            (Some(path), None) => path.clone(),
-                            (None, Some(_)) => anyhow::bail!(
-                                "plakat.controlnet (SD3): auto-annotate \
-                                 (`plakat.controlnet.annotate` / from=PATH) \
-                                 isn't wired at load time in v0.23 phase 7 — \
-                                 annotation needs the per-generate width/height \
-                                 which the loader doesn't know. Pre-render the \
-                                 conditioning image and use `plakat.controlnet.add \
-                                 KIND PATH` instead. (kind={:?})",
-                                spec.kind
-                            ),
+                            (Some(path), None) => Some(path.clone()),
+                            (None, Some(_)) => None, // lazy-annotate
                             (Some(_), Some(_)) => anyhow::bail!(
                                 "plakat.controlnet (SD3): a single spec has \
                                  both image= and from= set; pick one. (kind={:?})",
@@ -648,15 +659,14 @@ impl ScriptCtx {
                             (None, None) => anyhow::bail!(
                                 "plakat.controlnet (SD3): kind={:?} needs \
                                  either image=PATH (pre-rendered) or from=PATH \
-                                 (auto-annotate). v0.23 phase 7 supports image= \
-                                 only on SD3.",
+                                 (auto-annotate).",
                                 spec.kind
                             ),
                         };
                         let mut cn_load = crate::pipelines::t2i::sd3_controlnet_load_for(
                             spec.kind, sd3_variant, spec.strength,
                         )?;
-                        cn_load.conditioning = Some(cond);
+                        cn_load.conditioning = cond;
                         cn_load.start = spec.start;
                         cn_load.end = spec.end;
                         Ok(cn_load)
@@ -865,6 +875,7 @@ mod tests {
             style_ref: None,
             portrait_photos: Vec::new(),
             embeddings: Vec::new(),
+            cn_annotation_cache: None,
         }
     }
 
