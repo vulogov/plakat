@@ -419,6 +419,59 @@ mod tests {
         });
     }
 
+    // v0.23 phase 5: plakat.inpaint surface (state-only).
+
+    /// `plakat.inpaint` without a loaded model bails with a
+    /// recognisable message before touching the filesystem.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_no_model_loaded_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            let err = eval(
+                r#""fix the sky"  "./photo.png"  "./mask.png"  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+            assert!(msg.contains("plakat.inpaint"), "got {msg}");
+        });
+    }
+
+    /// `plakat.inpaint` with an empty mask path bails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_empty_mask_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""prompt"  "./photo.png"  ""  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("mask path can't be empty"), "got {msg}");
+        });
+    }
+
+    /// `plakat.inpaint` with a non-string non-int input bails
+    /// before model dispatch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_bad_input_type_bails() {
+        with_singleton_ctx(|| {
+            // Use a float for `input` — neither string nor int.
+            let err = eval(
+                r#""prompt"  3.14  "./mask.png"  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("input must be a string path or an integer"),
+                "got {msg}"
+            );
+        });
+    }
+
     // v0.23 phase 4: plakat.style.* end-to-end (state-only).
 
     /// `plakat.style.apply` sets `ctx.style_id` and invalidates
