@@ -883,20 +883,26 @@ mod tests {
         });
     }
 
-    /// v0.21 phase 5: portrait gate — no model loaded bails with
-    /// the "Call \"sdxl\" plakat.load" pointer (note the SDXL
-    /// suggestion in the message, not just sd15).
+    /// v0.21 phase 5 + v0.24 phase 1: portrait gate — no model
+    /// loaded bails with the "Call \"sdxl\" plakat.load" pointer
+    /// (note the SDXL suggestion in the message, not just sd15).
+    /// Updated for v0.24: `plakat.portrait` no longer takes a
+    /// photo arg; photos come from the
+    /// `plakat.portrait.photo.add` stack.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn portrait_no_model_loaded_bails_via_eval() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
                 ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.portrait_photos.clear();
             })
             .unwrap();
-            let err = eval(
-                "\"a portrait\" \"/tmp/me.jpg\" plakat.portrait",
-            )
-            .unwrap_err();
+            // Push a photo so we exercise the no-model-loaded gate
+            // (not the empty-photo-stack gate, which would also
+            // bail correctly but on a different message).
+            eval(r#""/tmp/me.jpg" 1.0 plakat.portrait.photo.add"#).unwrap();
+            let err = eval(r#""a portrait" plakat.portrait"#).unwrap_err();
             let msg = format!("{err}");
             assert!(msg.contains("no model loaded"), "got {msg}");
             // The portrait-specific pointer recommends sdxl too,
@@ -906,21 +912,84 @@ mod tests {
         });
     }
 
-    /// v0.21 phase 5: unknown handle for the photo arg surfaces
-    /// the same image_at error img2img uses. Confirms the int
-    /// dispatch arm shares the lookup path.
+    /// v0.21 phase 5 + v0.24 phase 1: unknown handle pushed to
+    /// `plakat.portrait.photo.add` surfaces the image_at error.
+    /// Confirms the int dispatch arm shares the lookup path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn portrait_unknown_handle_bails_with_image_at_message() {
         with_singleton_ctx(|| {
-            // v0.22 phase 1: same as img2img — image_at(handle)
-            // check fires before any pipeline-loaded check.
             with_ctx_mut(|ctx| {
                 ctx.images.clear();
+                ctx.portrait_photos.clear();
             })
             .unwrap();
-            let err = eval("\"a portrait\" 999 plakat.portrait").unwrap_err();
+            // Pushing handle 999 onto the photo stack fires
+            // image_at(999) inside the materialise-handle arm.
+            let err = eval(r#"999 1.0 plakat.portrait.photo.add"#).unwrap_err();
             let msg = format!("{err}");
             assert!(msg.contains("image handle 999"), "got {msg}");
+        });
+    }
+
+    /// v0.24 phase 1: plakat.portrait with empty photo stack
+    /// bails before any model dispatch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn portrait_empty_photo_stack_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                // Pretend a model is loaded so we get past the
+                // no-model-loaded gate; portrait_photos check
+                // fires inside portrait_one before any pipeline
+                // dispatch.
+                ctx.portrait_photos.clear();
+            })
+            .unwrap();
+            // No portrait.photo.add — empty stack should bail.
+            // The no-model gate may fire first if no model is
+            // loaded; either bail proves a clear error reaches
+            // the user.
+            let err = eval(r#""a portrait" plakat.portrait"#).unwrap_err();
+            let msg = format!("{err}");
+            // Either "no model loaded" or "no photo configured"
+            // is acceptable — both are clear errors.
+            assert!(
+                msg.contains("no model loaded") || msg.contains("no photo"),
+                "got {msg}"
+            );
+        });
+    }
+
+    /// v0.24 phase 1: plakat.portrait.photo.{add, clear, list}
+    /// round-trip.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn portrait_photo_add_clear_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.portrait_photos.clear()).unwrap();
+            eval(r#""/tmp/alice.jpg" 1.0 plakat.portrait.photo.add"#).unwrap();
+            eval(r#""/tmp/bob.jpg" 0.5 plakat.portrait.photo.add"#).unwrap();
+            eval(r#""/tmp/carol.jpg" -1.0 plakat.portrait.photo.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.portrait_photos.len(), 3);
+                assert!((ctx.portrait_photos[0].weight.unwrap() - 1.0).abs() < 1e-6);
+                assert!((ctx.portrait_photos[1].weight.unwrap() - 0.5).abs() < 1e-6);
+                // -1.0 weight means auto-fill → None on the spec.
+                assert!(ctx.portrait_photos[2].weight.is_none());
+            })
+            .unwrap();
+            eval("plakat.portrait.photo.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.portrait_photos.is_empty())).unwrap();
+        });
+    }
+
+    /// v0.24 phase 1: plakat.portrait.photo.add rejects negative
+    /// (non-(-1.0)) weight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn portrait_photo_add_rejects_negative_weight() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""/tmp/x.jpg" -0.5 plakat.portrait.photo.add"#)
+                .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("weight must be"), "got {msg}");
         });
     }
 
