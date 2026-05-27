@@ -147,7 +147,8 @@ async fn offline_discovery_no_cache_is_noop() {
     let opts = DiscoveryOptions {
         offline: true,
         base: BaseFamily::Sdxl,
-        cache_root: dir.path().to_path_buf(),
+        cache_root: dir.path().join("discovery"),
+        civitai_cache_root: dir.path().join("civitai-empty"),
         scale: 0.8,
     };
     let q = LoraQuery {
