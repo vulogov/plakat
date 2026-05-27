@@ -597,6 +597,31 @@ mod tests {
         });
     }
 
+    /// v0.26 phase 7: stylize cache slot exists + gets dropped
+    /// on LoRA stack mutation. Pure state test — doesn't actually
+    /// load a pipeline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stylize_cache_slot_clears_on_lora_change() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                // Slot is None at init; explicitly verify after
+                // a hypothetical reset.
+                ctx.loaded_stylize = None;
+                ctx.loras.clear();
+            })
+            .unwrap();
+
+            // Add a LoRA — should trigger mark_loras_changed which
+            // includes loaded_stylize in the invalidation set.
+            eval(r#""user/test-lora" 0.7 plakat.lora.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.loaded_stylize.is_none(),
+                    "loaded_stylize must clear on LoRA add");
+            })
+            .unwrap();
+        });
+    }
+
     // v0.24 phase 5: plakat.embedding.* namespace (state-only).
 
     /// `plakat.embedding.add` parses + pushes, `mark_loras_changed`

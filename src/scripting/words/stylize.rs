@@ -27,12 +27,14 @@
 //!   "alice-renaissance.png" plakat.save
 //! ```
 //!
-//! ## Caching
+//! ## Caching (v0.26 phase 7)
 //!
-//! No cache slot in v0.24 phase 6 — each `plakat.stylize` loads
-//! SD 1.5 + IP-Adapter fresh (~5 GB total). Scripts that call
-//! stylize once per run pay the load once; scripts that loop
-//! pay each iteration. Caching is a v0.25+ optimisation.
+//! The loaded `stylize::Pipeline` caches on
+//! `ScriptCtx::loaded_stylize` keyed by alias. Multi-call scripts
+//! amortise the ~5 GB load over every `plakat.stylize` call with
+//! the same alias. Alias change drops the slot; LoRA stack
+//! mutation also drops it (the UNet snapshot would need a fresh
+//! LoRA merge). Mirrors the v0.23 SdT2i slot pattern.
 
 use rust_dynamic::types;
 use rust_dynamic::value::Value;
@@ -63,14 +65,13 @@ fn do_plakat_stylize(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let (_subject_tmp_guard, subject_path) = resolve_image_arg(subject_v, "subject")?;
     let (_style_tmp_guard, style_path) = resolve_image_arg(style_v, "style")?;
 
-    // Snapshot config + alias for the async `stylize::run` call.
-    let (alias, strength, steps, seed, device) = with_ctx(|ctx| {
+    // Snapshot config + alias before the pipeline borrow.
+    let (alias, strength, steps, seed) = with_ctx(|ctx| {
         (
             ctx.loaded_model().map(|s| s.to_string()),
             ctx.config.strength,
             ctx.config.steps,
             ctx.config.seed,
-            ctx.device.clone(),
         )
     })?;
     let alias = alias.ok_or_else(|| {
@@ -99,27 +100,21 @@ fn do_plakat_stylize(vm: &mut VM) -> anyhow::Result<&mut VM> {
         .map_err(|e| anyhow::anyhow!("{TAG}: creating output tempfile: {e}"))?;
     let out_path = out_tmp.path().to_path_buf();
 
-    let req = crate::pipelines::stylize::Request {
+    // v0.26 phase 7: cache slot — first call pays the ~5 GB load,
+    // subsequent calls reuse the loaded pipeline. Alias change
+    // OR LoRA stack mutation invalidates via mark_loras_changed.
+    let gen_req = crate::pipelines::stylize::GenRequest {
         input: subject_path.clone(),
         reference: style_path.clone(),
         out: out_path.clone(),
         strength,
-        model: alias.clone(),
         steps,
         seed,
-        device,
     };
-
-    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
-        anyhow::anyhow!(
-            "{TAG}: no tokio runtime in scope (eval must run on a \
-             multi-threaded runtime). Underlying error: {e}"
-        )
-    })?;
-    tokio::task::block_in_place(|| {
-        handle.block_on(crate::pipelines::stylize::run(req))
-    })
-    .map_err(|e| anyhow::anyhow!("{TAG}: stylize::run failed: {e}"))?;
+    with_ctx_mut(|ctx| {
+        let pipeline = ctx.get_or_load_stylize(&alias)?;
+        pipeline.stylize_one(&gen_req)
+    })??;
 
     // Read the rendered PNG back + register a handle.
     let img = image::open(&out_path).map_err(|e| {
