@@ -890,13 +890,15 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         ));
     }
 
-    // v0.25 phase 3: --look and --genre presets. Run AFTER --fast so
-    // distillation step counts (e.g. hyper-8 → 8 steps) aren't
-    // overwritten by a softer medium suggestion. Override-only-if-
-    // user-didn't-pass: matches the same clap-default-comparison
-    // trick the fast preset uses just above.
+    // v0.25 phases 3–5: --look and --genre presets + auto-LoRA
+    // discovery. Runs AFTER --fast so distillation step counts
+    // (e.g. hyper-8 → 8 steps) aren't overwritten by a softer
+    // medium suggestion. Override-only-if-user-didn't-pass: matches
+    // the clap-default-comparison trick the fast preset uses above.
+    // The shared helper lives in src/preset/mod.rs so portrait /
+    // img2img / outpaint can reuse it (phase 6).
     if args.look.is_some() || args.genre.is_some() {
-        use crate::preset::{GenerationParams, apply_presets};
+        use crate::preset::{GenerationParams, apply_presets_with_discovery};
         use std::str::FromStr;
 
         let mut params = GenerationParams {
@@ -913,11 +915,15 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             scheduler: (!matches!(args.scheduler, SchedulerKind::Default))
                 .then(String::new),
         };
-        let (look_spec, genre_spec) = apply_presets(
+        apply_presets_with_discovery(
             args.look.as_deref(),
             args.genre.as_deref(),
+            args.offline,
+            crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
             &mut params,
-        )?;
+            &mut args.loras,
+        )
+        .await?;
 
         args.prompt = params.prompt;
         args.negative = params.negative;
@@ -930,93 +936,6 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
             args.scheduler =
                 SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
-        }
-        // Log what was applied. lora_query is consumed by the
-        // discovery client (phase 4+) — for now we just note that
-        // discovery is pending.
-        if let Some(l) = &look_spec {
-            crate::ui::progress::println(&format!(
-                "  look '{}': prompt/negative composed, steps={}, guidance={}{}",
-                l.name,
-                args.steps,
-                args.guidance,
-                l.lora_query
-                    .as_ref()
-                    .filter(|_| args.loras.is_empty())
-                    .map(|_| ", lora-discovery=pending (phase 4)")
-                    .unwrap_or_default(),
-            ));
-        }
-        if let Some(g) = &genre_spec {
-            crate::ui::progress::println(&format!(
-                "  genre '{}': prompt/negative composed",
-                g.name
-            ));
-        }
-
-        // v0.25 phase 4: automatic LoRA discovery. Gated on:
-        // - user's LoRA stack is empty (else respect the user's picks)
-        // - the resolved preset carries a `lora_query`
-        // Prefer the look's query (medium is more specific than
-        // genre); fall back to the genre's. Trigger words are
-        // prepended to the prompt via the existing dedup-aware
-        // `style::prepend_trigger` helper.
-        if args.loras.is_empty() {
-            let query_source = look_spec
-                .as_ref()
-                .filter(|s| s.lora_query.is_some())
-                .or(genre_spec.as_ref().filter(|s| s.lora_query.is_some()));
-            if let Some(spec) = query_source {
-                let query = spec.lora_query.as_ref().expect("filter guarantees Some");
-                let opts = crate::preset::discovery::DiscoveryOptions::with_defaults(
-                    args.offline,
-                    crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
-                );
-                match crate::preset::discovery::discover_lora(query, &spec.name, &opts).await {
-                    Ok(Some(d)) => {
-                        crate::ui::progress::println(&format!(
-                            "  discovered LoRA '{}' (scale={}) for '{}'{}",
-                            d.model_name,
-                            d.spec.scale,
-                            spec.name,
-                            d.source_url
-                                .as_deref()
-                                .map(|u| format!(" — {u}"))
-                                .unwrap_or_default(),
-                        ));
-                        if !d.trigger_words.is_empty() {
-                            let trigger = d.trigger_words.join(", ");
-                            args.prompt = crate::style::prepend_trigger(&trigger, &args.prompt);
-                            crate::ui::progress::println(&format!(
-                                "  trigger words prepended: {trigger}"
-                            ));
-                        }
-                        args.loras.push(d.spec);
-                    }
-                    Ok(None) => {
-                        crate::ui::progress::println(&format!(
-                            "  no compatible LoRA found for '{}'{}",
-                            spec.name,
-                            if args.offline { " (offline)" } else { "" },
-                        ));
-                    }
-                    Err(e) => {
-                        // Non-fatal: discovery failure shouldn't block
-                        // generation. The prompt prefix + sampler hints
-                        // already applied; the user just doesn't get the
-                        // matched LoRA.
-                        tracing::warn!(
-                            target: "plakat",
-                            "look-discovery failed for {}: {e:#}",
-                            spec.name
-                        );
-                        crate::ui::progress::println(&format!(
-                            "  ⚠ discovery failed for '{}': {e}",
-                            spec.name
-                        ));
-                    }
-                }
-            }
         }
     }
 

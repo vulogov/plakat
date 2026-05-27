@@ -302,6 +302,111 @@ pub fn apply_presets(
     Ok((look_spec, genre_spec))
 }
 
+/// End-to-end helper for CLI subcommands: applies look + genre
+/// presets, runs LoRA discovery when appropriate, and prepends
+/// trigger words. Mutates both `params` (sampler/prompt/negative
+/// fields) and `loras` (the LoRA stack — discovery push).
+///
+/// Designed so that wiring a new CLI subcommand is just:
+/// 1. Build a `GenerationParams` from the args, with `Option<>`
+///    fields set per the "user passed?" detection trick.
+/// 2. Call this helper.
+/// 3. Write `params` back to the args fields.
+///
+/// Phase 3 wired `generate`; phase 6 reuses this for `portrait` /
+/// `img2img` / `outpaint`. Network/cache logic lives in
+/// [`discovery::discover_lora`]; this helper is the orchestration
+/// layer above it.
+pub async fn apply_presets_with_discovery(
+    look_name: Option<&str>,
+    genre_name: Option<&str>,
+    offline: bool,
+    base: discovery::BaseFamily,
+    params: &mut GenerationParams,
+    loras: &mut Vec<crate::pipelines::lora::LoraSpec>,
+) -> Result<()> {
+    let (look_spec, genre_spec) = apply_presets(look_name, genre_name, params)?;
+
+    if let Some(l) = &look_spec {
+        crate::ui::progress::println(&format!(
+            "  look '{}': prompt/negative composed{}{}{}",
+            l.name,
+            l.steps
+                .map(|s| format!(", steps={s}"))
+                .unwrap_or_default(),
+            l.guidance
+                .map(|g| format!(", guidance={g}"))
+                .unwrap_or_default(),
+            l.lora_query
+                .as_ref()
+                .filter(|_| loras.is_empty())
+                .map(|_| ", lora-discovery=pending")
+                .unwrap_or_default(),
+        ));
+    }
+    if let Some(g) = &genre_spec {
+        crate::ui::progress::println(&format!(
+            "  genre '{}': prompt/negative composed",
+            g.name
+        ));
+    }
+
+    // Discovery: only when the user hasn't supplied LoRAs.
+    if !loras.is_empty() {
+        return Ok(());
+    }
+    let query_source = look_spec
+        .as_ref()
+        .filter(|s| s.lora_query.is_some())
+        .or(genre_spec.as_ref().filter(|s| s.lora_query.is_some()));
+    let Some(spec) = query_source else {
+        return Ok(());
+    };
+    let query = spec.lora_query.as_ref().expect("filter guarantees Some");
+    let opts = discovery::DiscoveryOptions::with_defaults(offline, base);
+    match discovery::discover_lora(query, &spec.name, &opts).await {
+        Ok(Some(d)) => {
+            crate::ui::progress::println(&format!(
+                "  discovered LoRA '{}' (scale={}) for '{}'{}",
+                d.model_name,
+                d.spec.scale,
+                spec.name,
+                d.source_url
+                    .as_deref()
+                    .map(|u| format!(" — {u}"))
+                    .unwrap_or_default(),
+            ));
+            if !d.trigger_words.is_empty() {
+                let trigger = d.trigger_words.join(", ");
+                params.prompt = crate::style::prepend_trigger(&trigger, &params.prompt);
+                crate::ui::progress::println(&format!(
+                    "  trigger words prepended: {trigger}"
+                ));
+            }
+            loras.push(d.spec);
+        }
+        Ok(None) => {
+            crate::ui::progress::println(&format!(
+                "  no compatible LoRA found for '{}'{}",
+                spec.name,
+                if offline { " (offline)" } else { "" },
+            ));
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "plakat",
+                "look-discovery failed for {}: {e:#}",
+                spec.name
+            );
+            crate::ui::progress::println(&format!(
+                "  ⚠ discovery failed for '{}': {e}",
+                spec.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

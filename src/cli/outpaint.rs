@@ -107,6 +107,22 @@ pub struct OutpaintArgs {
     #[arg(long, default_value_t = 1.0)]
     pub lora_scale: f32,
 
+    /// **v0.25**: art-medium preset. See `plakat generate --look`
+    /// for the full list. Composes the prompt + suggests sampler /
+    /// steps / guidance, and auto-discovers a matching LoRA when
+    /// `--loras` is empty.
+    #[arg(long = "look", value_name = "NAME")]
+    pub look: Option<String>,
+
+    /// **v0.25**: subject-domain preset (`anime`).
+    #[arg(long = "genre", value_name = "NAME")]
+    pub genre: Option<String>,
+
+    /// **v0.25**: skip remote LoRA discovery (use cache + local
+    /// scan only).
+    #[arg(long, default_value_t = false)]
+    pub offline: bool,
+
     /// Feather radius (pixels) on the mask edge. Softens the boundary
     /// between the preserved input and the inpainted expansion.
     #[arg(long = "mask-feather", default_value_t = 16, value_name = "PX")]
@@ -277,6 +293,13 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         // as img2img inpaint; we don't surface --negative-preset
         // at the outpaint CLI yet (outpaint scope is narrow).
         negative_preset: None,
+        // v0.25 phase 6: forward --look / --genre / --offline so
+        // the img2img dispatch applies them. Override-only-if-
+        // user-didn't-pass semantics + auto-LoRA discovery flow
+        // identical to a direct `plakat img2img` invocation.
+        look: args.look,
+        genre: args.genre,
+        offline: args.offline,
         // v0.18: outpaint controls dimension changes via per-
         // side --left/--right/--top/--bottom/--expand flags, so
         // --aspect isn't surfaced on the outpaint CLI. Pass None +
