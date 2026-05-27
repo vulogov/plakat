@@ -1422,6 +1422,7 @@ mod tests {
             style_id: None,
             style_ref: None,
             portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;

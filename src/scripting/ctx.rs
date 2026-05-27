@@ -151,6 +151,19 @@ pub struct ScriptCtx {
     /// normalisation as `cli::portrait`
     /// (`ip_adapter::normalize_photo_weights`).
     pub portrait_photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
+    /// v0.24 phase 5: Textual Inversion (embedding) stack
+    /// populated via `plakat.embedding.add`. Threaded into
+    /// `t2i::LoadRequest.embeddings` at load time, so mutations
+    /// invalidate the SdT2i slot via `mark_loras_changed`
+    /// (embeddings are load-time alongside LoRAs).
+    ///
+    /// **Effective only on `plakat.generate`'s SdT2i path.**
+    /// `plakat.img2img` + `plakat.portrait` use
+    /// `portrait::Pipeline`, which doesn't take embeddings
+    /// (matches `cli::img2img` / `cli::portrait` — neither CLI
+    /// command exposes `--embedding` either). Embeddings stay
+    /// in `ctx.embeddings` silently on those paths.
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
 impl ScriptCtx {
@@ -179,6 +192,7 @@ impl ScriptCtx {
             style_id: None,
             style_ref: None,
             portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -392,6 +406,11 @@ impl ScriptCtx {
             let device = self.device.clone();
             let loras = self.loras.clone();
             let lora_scale = self.config.lora_scale;
+            // v0.24 phase 5: Textual Inversion embeddings flow
+            // through at load time, alongside LoRAs. Cache
+            // invalidation on stack mutation uses the same
+            // `mark_loras_changed` path.
+            let embeddings = self.embeddings.clone();
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_sd_t2i: no tokio runtime in scope. {e}"
@@ -404,7 +423,7 @@ impl ScriptCtx {
                     loras,
                     lora_scale,
                     use_refiner,
-                    embeddings: Vec::new(),
+                    embeddings,
                 }))
             })?;
             self.loaded_t2i = Some((alias.to_string(), pipeline));
@@ -845,6 +864,7 @@ mod tests {
             style_id: None,
             style_ref: None,
             portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
         }
     }
 

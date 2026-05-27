@@ -419,6 +419,73 @@ mod tests {
         });
     }
 
+    // v0.24 phase 5: plakat.embedding.* namespace (state-only).
+
+    /// `plakat.embedding.add` parses + pushes, `mark_loras_changed`
+    /// drops both SD slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedding_add_pushes_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.embeddings.clear();
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""./my-ti.safetensors:foo:0.7" plakat.embedding.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.embeddings.len(), 1);
+                let e = &ctx.embeddings[0];
+                assert_eq!(e.source, "./my-ti.safetensors");
+                assert_eq!(e.trigger.as_deref(), Some("foo"));
+                assert!((e.scale - 0.7).abs() < 1e-6);
+                // Both SD slots invalidated.
+                assert!(ctx.loaded.is_none());
+                assert!(ctx.loaded_t2i.is_none());
+            })
+            .unwrap();
+        });
+    }
+
+    /// Specs without trigger/scale also work (path-only).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedding_add_path_only() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.embeddings.clear()).unwrap();
+            eval(r#""./bare.safetensors" plakat.embedding.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.embeddings.len(), 1);
+                let e = &ctx.embeddings[0];
+                assert_eq!(e.source, "./bare.safetensors");
+                assert!(e.trigger.is_none());
+                assert!((e.scale - 1.0).abs() < 1e-6);
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.embedding.clear` empties the stack.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedding_clear_empties_stack() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.embeddings.clear()).unwrap();
+            eval(r#""./a.safetensors" plakat.embedding.add"#).unwrap();
+            eval(r#""./b.safetensors" plakat.embedding.add"#).unwrap();
+            eval("plakat.embedding.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.embeddings.is_empty())).unwrap();
+        });
+    }
+
+    /// Empty spec bails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedding_add_empty_spec_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""" plakat.embedding.add"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("empty"), "got {msg}");
+        });
+    }
+
     // v0.24 phase 4: plakat.outpaint surface (state-only).
 
     /// `plakat.outpaint` bails when expand-spec is malformed.

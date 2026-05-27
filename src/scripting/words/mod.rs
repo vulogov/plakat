@@ -14,6 +14,7 @@ pub mod artefact;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
+pub mod embedding;
 pub mod enhance;
 pub mod generate;
 pub mod hires;
@@ -180,6 +181,22 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // v0.24 phase 4: plakat.outpaint host word.
     vm.register_inline("plakat.outpaint".to_string(), outpaint::plakat_outpaint)
         .map_err(|e| anyhow!("registering plakat.outpaint: {e}"))?;
+    // v0.24 phase 5: plakat.embedding.* (Textual Inversion).
+    vm.register_inline(
+        "plakat.embedding.add".to_string(),
+        embedding::plakat_embedding_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.add: {e}"))?;
+    vm.register_inline(
+        "plakat.embedding.clear".to_string(),
+        embedding::plakat_embedding_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.embedding.list".to_string(),
+        embedding::plakat_embedding_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.list: {e}"))?;
     Ok(())
 }
 
