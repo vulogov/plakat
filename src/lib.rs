@@ -16,6 +16,7 @@ pub mod hf;
 pub mod imaging;
 pub mod llm;
 pub mod pipelines;
+pub mod preset;
 pub mod prompt;
 pub mod scripting;
 pub mod style;
