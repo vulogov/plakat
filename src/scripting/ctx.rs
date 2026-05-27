@@ -53,6 +53,20 @@ pub struct ScriptCtx {
     /// extras (refiner UNet vs. IP-Adapter encoder). Loading a
     /// non-SD-family alias drops this slot.
     pub loaded_t2i: Option<(String, t2i::Pipeline)>,
+    /// v0.26 phase 7: cached `stylize::Pipeline` for
+    /// `plakat.stylize` (IP-Adapter Plus + SD 1.5 base). Without
+    /// this slot, every `plakat.stylize` call pays the full ~5 GB
+    /// load (SD 1.5 weights + CLIP-H image encoder + IP-Adapter
+    /// projection). With the slot, multi-call scripts amortise.
+    ///
+    /// SD 1.5 only — stylize already bails on SDXL / Flux / SD3
+    /// at load time. Tuple is `(alias, pipeline)` matching the
+    /// `loaded_t2i` pattern. Invalidated by [`Self::mark_loras_changed`]
+    /// because the stylize pipeline holds an SD 1.5 UNet snapshot
+    /// — a LoRA stack mutation would need a fresh load to take
+    /// effect.
+    pub loaded_stylize:
+        Option<(String, crate::pipelines::stylize::Pipeline)>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -234,6 +248,7 @@ impl ScriptCtx {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            loaded_stylize: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -252,6 +267,10 @@ impl ScriptCtx {
         // v0.24 phase 8: annotation cache is bound to the loaded
         // pipeline; drop alongside.
         self.cn_annotation_cache = None;
+        // v0.26 phase 7: the stylize slot holds an SD 1.5 UNet
+        // snapshot — a LoRA stack mutation invalidates it. Same
+        // pattern as loaded_t2i.
+        self.loaded_stylize = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -477,6 +496,51 @@ impl ScriptCtx {
         }
 
         Ok(&mut self.loaded_t2i.as_mut().expect("just inserted").1)
+    }
+
+    /// v0.26 phase 7: get-or-load the IP-Adapter stylize pipeline
+    /// for `alias`. Caches into [`Self::loaded_stylize`].
+    ///
+    /// Mirrors the v0.23 SdT2i pattern: same-alias hit reuses the
+    /// loaded pipeline; alias change drops + reloads. Invalidated
+    /// on LoRA stack mutation via [`Self::mark_loras_changed`]
+    /// (the stylize pipeline holds a UNet snapshot that LoRAs
+    /// would need to re-merge into).
+    ///
+    /// Returns `&stylize::Pipeline` (immutable) because
+    /// `stylize::Pipeline::stylize_one` takes `&self` — no
+    /// per-call state mutation.
+    pub fn get_or_load_stylize(
+        &mut self,
+        alias: &str,
+    ) -> Result<&crate::pipelines::stylize::Pipeline> {
+        let hit = self
+            .loaded_stylize
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_stylize = None;
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_stylize: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(crate::pipelines::stylize::Pipeline::load(
+                    crate::pipelines::stylize::LoadRequest {
+                        model: alias.to_string(),
+                        device,
+                        shared_clip_h: None,
+                    },
+                ))
+            })?;
+            self.loaded_stylize = Some((alias.to_string(), pipeline));
+        }
+
+        Ok(&self.loaded_stylize.as_ref().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -891,6 +955,7 @@ mod tests {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            loaded_stylize: None,
         }
     }
 

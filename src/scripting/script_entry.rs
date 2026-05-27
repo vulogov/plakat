@@ -1680,6 +1680,7 @@ mod tests {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            loaded_stylize: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;
