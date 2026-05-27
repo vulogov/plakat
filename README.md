@@ -8,132 +8,130 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.22 — Bund words expansion
+## What's new in v0.23 — Bund deferrals closed
 
-The v0.21 scripting MVP graduates to feature parity with the
-CLI. Twelve phases ship 21 new host words across 7 namespaces,
-a pipeline cache so multi-call scripts don't reload the model,
-all three model families on the scripting surface, and 50+
-new Category-B config keys covering everything from Flux
-quantisation to face-detection thresholds.
+Nine phases close every "deferred to v0.23" stub v0.22 explicitly
+took on, plus add two new things: the `plakat.style.*` catalog
+namespace and the `plakat.inpaint` host word. Word count
+28 → 33; smaller cycle than v0.22 (~7 phases of real work).
 
-### The 28 `plakat.*` words
+### Cache architecture: the SdT2i slot
 
-```
-// v0.21 core (cache-aware in v0.22):
-plakat.load / .generate / .img2img / .portrait / .upscale / .save / .config.set / .echo
+`plakat.load "sdxl"` now warms a `t2i::Pipeline` slot in addition
+to (or sharing `Arc<SdCore>` with) the v0.22 `portrait::Pipeline`
+slot. `plakat.generate`'s SD-family path routes through SdT2i,
+which carries the SDXL refiner UNet hook + the CLIP-skip encode
+path that the v0.22 portrait cache didn't expose.
+`plakat.img2img` + `plakat.portrait` keep using portrait — both
+slots share the same `Arc<SdCore>` so mixed scripts pay one
+weights load.
 
-// LoRA stack (phase 4):
-plakat.lora.add ( spec scale -- )    // mutates → invalidates pipeline cache
-plakat.lora.clear / .list
-
-// ControlNet stack (phase 5):
-plakat.controlnet.add ( kind img -- )         plakat.controlnet.spec ( spec -- )
-plakat.controlnet.annotate ( kind from -- )   plakat.controlnet.clear / .list
-
-// Post-process toggles:
-plakat.refiner.{enable,disable}      // phase 6: SDXL refiner switch
-plakat.adetailer.{enable,disable}    // phase 7: SCRFD face refinement
-plakat.hires.{enable,disable}        // phase 8: upscale + img2img refine
-plakat.artefact.add / .clear / .list / .blend.{enable,disable}   // phase 9
-
-// Prompt enhancer (phase 10):
-plakat.enhance ( prompt -- enhanced )
-```
+### Six v0.22 deferrals close
 
 ```bund
-"sdxl" plakat.load                          // cache-aware now
-"./style-lora.safetensors" 0.7 plakat.lora.add
-"depth" "./d.png" plakat.controlnet.add
-plakat.adetailer.enable
-plakat.hires.enable
-"a knight" plakat.enhance plakat.generate   // enhance, then render
-  "knight.png" plakat.save
+"sdxl" plakat.load
+plakat.refiner.enable             // phase 2: actually loads the SDXL refiner UNet
+0.85 "refiner_frac" plakat.config.set
+2 "clip_skip" plakat.config.set   // phase 3: wires through t2i::Pipeline.encode_*
+"a knight" plakat.generate        // base UNet 80% → refiner UNet 20%
 ```
 
-### Pipeline cache
+The toggle was a state flag with a generate-time bail in v0.22;
+v0.23 actually drives `use_refiner` at load time. Non-SDXL
+aliases silently downgrade with a warn (matches CLI `--refiner`).
 
-`ScriptCtx::loaded` holds one `LoadedPipeline` enum
-(`SdFamily(portrait::Pipeline)` / `Flux(flux::Pipeline)` /
-`Sd3(sd3::Pipeline)`). Same-alias reuse skips the model load
-entirely; family changes or LoRA mutations drop the cached
-pipeline. Cuts a 6-call multi-variant script from
-six model loads to one.
-
-### All three families on the scripting surface
+### `plakat.style.*` namespace (phase 4)
 
 ```bund
-"flux-schnell" plakat.load    // works — Flux pipeline cached
-"sd35-medium"  plakat.load    // works — SD3 pipeline cached
+"poster-bold" plakat.style.apply       // by id
+"./ref.jpg"   plakat.style.detect      // CLIP-H detect from photo
+plakat.style.list                      // ( -- ...ids count )
+plakat.style.clear
+0.7 "style_strength" plakat.config.set
+"a town square" plakat.generate
 ```
 
-Family-specific config keys (`quantize_t5`, `quant_level`,
-`t5_quant_level`, `fast`, `kontext_bucket` for Flux; `tiled`,
-`tile_size`, `tile_stride` for SD3) flow through the same
-`plakat.config.set` surface. Where capabilities differ by family
-(SD-family ControlNet works per-call; Flux + SD3 need load-time
-setup), scripts bail loud with a clear v0.23 pointer.
+Resolution runs lazily at `plakat.generate` request-build time:
+catalog LoRAs override the user LoRA stack for the load (CLI
+parity with `--style ID`); trigger prepends to prompt;
+`negative_extras` appends to negative. Subsequent generates with
+the same style cache-hit the style-laden pipeline.
 
-### 50+ new Category-B config keys
+### `plakat.inpaint` host word (phase 5)
 
-Every CLI knob plakat takes is reachable from scripts:
-generation defaults (`aspect`, `base`, `clip_skip`), enhancer
-config (`enhance_provider`, `enhance_temp`, `enhance_cache`,
-`enhance_keep_original`), wildcard expansion (`wildcard_dir`),
-post-process knobs (`hires_scale`, `adetailer_strength`,
-`artefact_blend_strength`), and the LoRA + style + refiner
-multipliers (`lora_scale`, `refine_strength`, `style_strength`).
-Validated at config-set time — a typo or out-of-range value
-bails with the full supported list.
+```bund
+"stained glass window in the wall"
+   "./photo.png" "./mask.png"
+   plakat.inpaint
+   "result.png" plakat.save
+```
 
-### Composition order
+Stack: `( prompt input mask -- handle )`. The mask path arg that
+`mask_feather` + `mask_invert` were waiting for since v0.22.
+SD-family + SD3 wired (sd3::GenRequest has native RePaint
+inpaint); Flux bails — flux-fill-dev channel-concat wiring isn't
+in scope; bail message points at `plakat img2img --model
+flux-fill-dev --mask`.
 
-`plakat.generate` runs post-process passes in a fixed order
-on the SD-family path:
+### Flux + SD3 ControlNet (phases 6–7)
 
-1. **Artefacts** (compose + optional blend)
-2. **Hires fix** (mutually exclusive with artefacts; the CLI's
-   same gate mirrored)
-3. **ADetailer** (SCRFD face refinement at the final resolution)
+```bund
+"./depth-map.png" "depth" plakat.controlnet.add
+"flux-dev" plakat.load
+"a cyberpunk street" plakat.generate
+```
 
-So `plakat.artefact.add` + `plakat.adetailer.enable` produces a
-composited image with refined faces; `plakat.hires.enable` +
-`plakat.adetailer.enable` upscales then refines faces at the
-hi-res output.
+CN stack wires into `LoadRequest.controlnets` at pipeline-load
+time. Stack mutations call `mark_controlnets_changed` which
+drops the Flux/SD3 slot (SD-family slots stay intact — those
+remain per-call). **Scope cap**: `image=` specs only;
+auto-annotate (`from=`) needs per-generate dims the loader
+doesn't know — pre-render the conditioning map and use
+`plakat.controlnet.add`.
+
+### Composition order, refined
+
+The SD-family run order now includes the v0.23 style step:
+
+1. **Style resolve** (if `style_id` / `style_ref` set).
+2. **t2i.generate** with resolved LoRAs + refiner gate + clip_skip.
+3. **Artefacts** (compose + optional blend).
+4. **Hires fix**. Mutually exclusive with artefacts.
+5. **ADetailer** (face refinement at the final resolution).
 
 ### Documentation
 
 - [`SCRIPTING.md`](Documentation/SCRIPTING.md) — full reference
-  for all 28 words + every config key. Rewritten for v0.22.
+  for all 33 words + every config key. Updated for v0.23.
 - [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md)
-  — narrative walkthrough; new §9 "What's new in v0.22" covers
-  the cache, all three families, the LoRA / ControlNet stacks,
-  post-process toggles, the prompt enhancer, and misc keys with
-  copy-pasteable snippets.
-- [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](Documentation/RFC_v0.22_BUND_WORDS_EXPANSION.md)
-  — design doc, seven locked decisions, twelve-phase plan.
+  — narrative walkthrough; new §10 "What's new in v0.23" covers
+  every closure with copy-pasteable snippets.
+- [`RFC_v0.23_BUND_DEFERRALS.md`](Documentation/RFC_v0.23_BUND_DEFERRALS.md)
+  — design doc, six locked decisions, nine-phase plan.
 
 ### By the numbers
 
-- 758 lib tests green (+124 new across the cycle).
-- 12 phase commits + 2 RFC commits + this release-notes commit.
-- 28 host words (was 8 in v0.21). ~60 `GenerationConfig` keys
-  (was 9 in v0.21).
-- Four composition tests exercise multi-namespace state
-  interaction end-to-end.
+- 772 lib tests green (+14 new across the cycle).
+- 9 phase commits + 2 RFC commits + this release-notes commit.
+- 33 host words (was 28 in v0.22). `style_catalog` config key
+  added; six v0.22 deferred items closed.
+- Three composition tests exercise the full v0.23 surface
+  alongside the v0.22 namespaces.
 
-### Deferred to v0.23
+### Deferred to v0.24+
 
-- Flux + SD3 ControlNet (needs load-time wiring).
-- SDXL refiner UNet load (needs `t2i::Pipeline` cache; toggle
-  is shipped today).
-- `plakat.inpaint` (mask path argument; `mask_feather` +
-  `mask_invert` knobs are declared).
-- `clip_skip` wiring (needs `t2i::Pipeline.encode_*` path).
-- `plakat.style.*` namespace (style catalog integration; the
-  `style_strength` knob ships today).
+- Flux + SD3 ControlNet auto-annotate (`from=` specs).
+- Flux inpaint via `plakat.inpaint` (needs flux-fill-dev
+  channel-concat wiring).
+- AnimateDiff (long-running carry from v0.20).
+- SD3 / SD3.5 animate.
+- FaceID + multi-photo portrait + manual landmarks.
+- Real-ESRGAN ML upscaling in `plakat.upscale`
+  (`plakat.hires_upscaler` already exposes it).
+- `plakat.embedding.*`, `plakat.stylize`, `plakat.outpaint`,
+  `plakat.metadata.*`.
 
-**Earlier releases** (v0.13 – v0.21):
+**Earlier releases** (v0.13 – v0.22):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -411,7 +409,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
 | `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 | `clone <FILE.png>` | v0.19. Translate a PNG's metadata into a re-runnable `plakat generate` shell command. JSON sidecar preferred; falls back to parsing the Auto1111 chunk (works on Civitai uploads + A1111 Web UI outputs). `--one-line` for piping. |
-| `run <SCRIPT.bund> \| --repl` | **v0.21**, **expanded in v0.22**. Drive plakat from a stack-based Bund script. v0.22 ships 28 host words across 8 namespaces (`plakat.lora.*`, `plakat.controlnet.*`, `plakat.refiner.*`, `plakat.adetailer.*`, `plakat.hires.*`, `plakat.artefact.*`, `plakat.enhance`, core image surface) plus a pipeline cache + SD/Flux/SD3 all three families + 60+ config keys. Interactive REPL with `--repl`. See [`SCRIPTING.md`](Documentation/SCRIPTING.md) for the full reference and [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md) for the walkthrough. |
+| `run <SCRIPT.bund> \| --repl` | **v0.21**, **expanded in v0.22, deferrals closed in v0.23**. Drive plakat from a stack-based Bund script. v0.23 ships 33 host words across 9 namespaces (`plakat.lora.*`, `plakat.controlnet.*`, `plakat.refiner.*`, `plakat.adetailer.*`, `plakat.hires.*`, `plakat.artefact.*`, `plakat.style.*`, `plakat.enhance`, `plakat.inpaint`, core image surface) plus a pipeline cache + SD/Flux/SD3 all three families + 60+ config keys + Flux/SD3 ControlNet + SDXL refiner + clip_skip. Interactive REPL with `--repl`. See [`SCRIPTING.md`](Documentation/SCRIPTING.md) for the full reference and [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md) for the walkthrough. |
 
 ## Documentation
 
@@ -452,13 +450,14 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     flag grammar, VAE-snapped dimensions, model choice, iterative-
     stage workflow.
   - [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md) —
-    **v0.21**, **expanded in v0.22.** Drive plakat from a Bund
-    script (`plakat run SCRIPT.bund` or `plakat run --repl`).
-    Stack-based syntax, 28 `plakat.*` host words across 8
-    namespaces, pipeline cache, all three model families,
-    composition patterns. See also
-    [`SCRIPTING.md`](Documentation/SCRIPTING.md) for the
-    reference.
+    **v0.21**, **expanded in v0.22, deferrals closed in v0.23.**
+    Drive plakat from a Bund script (`plakat run SCRIPT.bund`
+    or `plakat run --repl`). Stack-based syntax, 33 `plakat.*`
+    host words across 9 namespaces (incl. `plakat.style.*` and
+    `plakat.inpaint`), pipeline cache, all three model families,
+    SDXL refiner + clip_skip + Flux/SD3 ControlNet, composition
+    patterns. See also [`SCRIPTING.md`](Documentation/SCRIPTING.md)
+    for the reference.
   - Specialized portrait recipes:
     [aging interpolation](Documentation/Tutorials/PORTRAIT_HOW_TO_AGE.md)
     and
