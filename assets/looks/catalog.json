@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "looks": [
+    {
+      "name": "ink-wash",
+      "display_name": "Ink Wash",
+      "description": "East Asian sumi-e: wet monochromatic ink on paper, visible brush strokes, atmospheric negative space.",
+      "prompt_prefix": "ink wash painting, sumi-e style, monochromatic ink on rice paper",
+      "prompt_suffix": ", traditional brush strokes, atmospheric negative space",
+      "negative_extras": "photographic, colorful, smooth digital gradients, 3d render, oil painting",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 32,
+      "guidance": 6.5,
+      "lora_query": {
+        "tags": ["sumi-e", "ink-painting", "chinese-painting"],
+        "keywords": ["ink wash", "sumi-e", "chinese ink", "japanese painting", "brush painting"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "watercolor",
+      "display_name": "Watercolor",
+      "description": "Transparent pigment washes on textured paper; soft bleeding edges, paper grain visible through pigment.",
+      "prompt_prefix": "watercolor painting, soft transparent washes",
+      "prompt_suffix": ", on cold-pressed paper, traditional watercolor techniques, visible paper texture",
+      "negative_extras": "photographic, smooth digital gradients, oil painting, 3d render, glossy",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 32,
+      "guidance": 6.0,
+      "lora_query": {
+        "tags": ["watercolor", "traditional-media"],
+        "keywords": ["watercolor", "aquarelle", "wash", "watercolour"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "oil-painting",
+      "display_name": "Oil Painting",
+      "description": "Thick impasto brushwork on canvas; rich palette, visible texture, classical painterly technique.",
+      "prompt_prefix": "oil painting, thick impasto brushstrokes",
+      "prompt_suffix": ", on canvas texture, classical oil painting technique, rich pigments",
+      "negative_extras": "photographic, smooth digital gradients, flat colors, 3d render, cgi",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 40,
+      "guidance": 7.0,
+      "lora_query": {
+        "tags": ["oil-painting", "traditional-media", "painterly"],
+        "keywords": ["oil painting", "impasto", "alla prima", "painterly", "classical painting"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "charcoal",
+      "display_name": "Charcoal",
+      "description": "Monochrome charcoal drawing with smudged shading; dramatic chiaroscuro on textured paper.",
+      "prompt_prefix": "charcoal drawing, monochromatic, dramatic chiaroscuro",
+      "prompt_suffix": ", on textured paper, smudged shading, expressive marks",
+      "negative_extras": "colorful, photographic, vector art, smooth digital gradients, painted",
+      "scheduler_hint": "euler-a",
+      "steps": 30,
+      "guidance": 6.5,
+      "lora_query": {
+        "tags": ["charcoal", "drawing", "traditional-media"],
+        "keywords": ["charcoal", "charcoal drawing", "chiaroscuro", "tonal drawing"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "pencil",
+      "display_name": "Pencil",
+      "description": "Graphite pencil sketch with fine lines, hatching, and cross-hatching on sketchbook paper.",
+      "prompt_prefix": "pencil drawing, fine graphite lines, hatching and cross-hatching",
+      "prompt_suffix": ", on sketchbook paper, traditional pencil sketch, detailed line work",
+      "negative_extras": "colorful, photographic, painted, smooth digital gradients, vector art",
+      "scheduler_hint": "euler-a",
+      "steps": 28,
+      "guidance": 6.5,
+      "lora_query": {
+        "tags": ["pencil-drawing", "graphite", "drawing"],
+        "keywords": ["pencil sketch", "graphite", "hatching", "pencil drawing", "sketch"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "chalk-pastel",
+      "display_name": "Chalk Pastel",
+      "description": "Soft chalk pastel strokes on textured paper; vibrant matte pigments, dusty surface quality.",
+      "prompt_prefix": "chalk pastel drawing, soft pastel strokes",
+      "prompt_suffix": ", on textured paper, vibrant matte pigments, dusty surface",
+      "negative_extras": "photographic, smooth digital gradients, glossy, 3d render",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 32,
+      "guidance": 6.0,
+      "lora_query": {
+        "tags": ["pastel", "chalk-pastel", "traditional-media"],
+        "keywords": ["chalk pastel", "soft pastel", "pastel drawing"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "linocut",
+      "display_name": "Linocut",
+      "description": "High-contrast relief print with bold carved lines and limited palette; traditional block-print aesthetic.",
+      "prompt_prefix": "linocut print, bold carved lines, high contrast",
+      "prompt_suffix": ", limited palette, traditional relief print, visible carving marks",
+      "negative_extras": "photographic, smooth gradients, soft edges, photorealistic, painted",
+      "scheduler_hint": "euler-a",
+      "steps": 28,
+      "guidance": 7.5,
+      "lora_query": {
+        "tags": ["linocut", "block-print", "relief-print"],
+        "keywords": ["linocut", "linoprint", "block print", "woodcut", "relief print"]
+      },
+      "base_compat": null
+    },
+    {
+      "name": "gouache",
+      "display_name": "Gouache",
+      "description": "Opaque watercolor; flat matte color areas, illustrative quality, painterly but graphic.",
+      "prompt_prefix": "gouache painting, opaque matte colors",
+      "prompt_suffix": ", on illustration board, flat areas of color, illustrative",
+      "negative_extras": "photographic, glossy, transparent washes, 3d render, photorealistic",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 32,
+      "guidance": 6.5,
+      "lora_query": {
+        "tags": ["gouache", "traditional-media", "illustration"],
+        "keywords": ["gouache", "opaque watercolor", "matte paint"]
+      },
+      "base_compat": null
+    }
+  ]
+}

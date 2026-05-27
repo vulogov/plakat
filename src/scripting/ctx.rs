@@ -138,6 +138,70 @@ pub struct ScriptCtx {
     /// are `Some`, the photo runs detection (for logging) but
     /// `style_id` wins. Mirrors `--style-ref PATH`.
     pub style_ref: Option<std::path::PathBuf>,
+    /// v0.24 phase 1: multi-photo portrait stack. Populated via
+    /// `plakat.portrait.photo.add ( path weight -- )`; drained
+    /// by `plakat.portrait.photo.clear`. `plakat.portrait
+    /// ( prompt -- handle )` reads this stack and bails when
+    /// empty. Mirrors the v0.22 LoRA/ControlNet pattern — state
+    /// accumulates between calls, mutations don't invalidate
+    /// the cache (photos are per-call on the SD-family path).
+    ///
+    /// Each entry's `weight` is `Some(f32)` for an explicit
+    /// weight or `None` for "auto-fill the remainder." Same
+    /// normalisation as `cli::portrait`
+    /// (`ip_adapter::normalize_photo_weights`).
+    pub portrait_photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
+    /// v0.24 phase 5: Textual Inversion (embedding) stack
+    /// populated via `plakat.embedding.add`. Threaded into
+    /// `t2i::LoadRequest.embeddings` at load time, so mutations
+    /// invalidate the SdT2i slot via `mark_loras_changed`
+    /// (embeddings are load-time alongside LoRAs).
+    ///
+    /// **Effective only on `plakat.generate`'s SdT2i path.**
+    /// `plakat.img2img` + `plakat.portrait` use
+    /// `portrait::Pipeline`, which doesn't take embeddings
+    /// (matches `cli::img2img` / `cli::portrait` — neither CLI
+    /// command exposes `--embedding` either). Embeddings stay
+    /// in `ctx.embeddings` silently on those paths.
+    pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+    /// v0.24 phase 8: ControlNet auto-annotation cache for Flux +
+    /// SD3. `from=` specs in `ctx.controlnets` can't be annotated
+    /// at pipeline-load time (the loader doesn't know the
+    /// per-generate width/height yet). The first `plakat.generate`
+    /// with a `from=` spec runs the annotator using that
+    /// generate's dims; subsequent generates with the same
+    /// pipeline + same dims reuse. Dim mismatch on a later call
+    /// re-annotates.
+    ///
+    /// `None` means "no cache yet." The first generate populates
+    /// it. Cleared by `mark_controlnets_changed` /
+    /// `mark_loras_changed` (any pipeline-invalidating mutation
+    /// also drops these tempfiles).
+    pub cn_annotation_cache: Option<CnAnnotationCache>,
+    /// v0.25 phase 8: active art-medium preset (set by
+    /// `plakat.look.apply`). When `Some`, the next `plakat.generate`
+    /// / `.portrait` / `.img2img` applies the preset's prompt
+    /// prefix/suffix + sampler/steps/guidance hints and (when
+    /// `ctx.loras` is empty) runs auto-LoRA discovery. Mirrors
+    /// `--look NAME`.
+    pub look_name: Option<String>,
+    /// v0.25 phase 8: active subject-domain preset (set by
+    /// `plakat.genre.apply`). Independent axis from `look_name`;
+    /// composes additively. Mirrors `--genre NAME`.
+    pub genre_name: Option<String>,
+}
+
+/// v0.24 phase 8: per-loaded-pipeline annotation cache. The
+/// `_tmpdir` field keeps the annotated PNGs alive for the
+/// pipeline's lifetime; dropping the cache deletes them.
+pub struct CnAnnotationCache {
+    /// Indexed parallel to `ctx.controlnets`. `Some((w, h, path))`
+    /// means CN[i] has a cached annotation at those dims;
+    /// `None` means CN[i] doesn't need annotation (image= spec)
+    /// or hasn't been annotated yet.
+    pub entries: Vec<Option<(u32, u32, std::path::PathBuf)>>,
+    /// Lifetime guard for the annotation PNGs.
+    pub _tmpdir: tempfile::TempDir,
 }
 
 impl ScriptCtx {
@@ -165,6 +229,11 @@ impl ScriptCtx {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
+            cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -180,6 +249,9 @@ impl ScriptCtx {
         // v0.23 phase 1: the t2i slot also caches LoRA-merged
         // weights; same invalidation rule.
         self.loaded_t2i = None;
+        // v0.24 phase 8: annotation cache is bound to the loaded
+        // pipeline; drop alongside.
+        self.cn_annotation_cache = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -202,6 +274,9 @@ impl ScriptCtx {
         if is_flux_or_sd3 {
             self.loaded = None;
         }
+        // v0.24 phase 8: drop annotation cache too (CN stack
+        // change → cached annotations may be wrong index).
+        self.cn_annotation_cache = None;
         // SD-family slots (loaded if SdFamily variant, loaded_t2i)
         // are left intact: SD-family CN is per-call, not per-load.
     }
@@ -273,7 +348,12 @@ impl ScriptCtx {
                 let pipeline = portrait::Pipeline::from_core(core);
                 self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
             } else {
-                let identity = pick_sd_family_identity(alias);
+                let override_kind = if self.config.identity_kind.is_empty() {
+                    None
+                } else {
+                    Some(self.config.identity_kind.as_str())
+                };
+                let identity = pick_sd_family_identity(alias, override_kind);
                 let device = self.device.clone();
                 let loras = self.loras.clone();
                 let lora_scale = self.config.lora_scale;
@@ -373,6 +453,11 @@ impl ScriptCtx {
             let device = self.device.clone();
             let loras = self.loras.clone();
             let lora_scale = self.config.lora_scale;
+            // v0.24 phase 5: Textual Inversion embeddings flow
+            // through at load time, alongside LoRAs. Cache
+            // invalidation on stack mutation uses the same
+            // `mark_loras_changed` path.
+            let embeddings = self.embeddings.clone();
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_sd_t2i: no tokio runtime in scope. {e}"
@@ -385,7 +470,7 @@ impl ScriptCtx {
                     loras,
                     lora_scale,
                     use_refiner,
-                    embeddings: Vec::new(),
+                    embeddings,
                 }))
             })?;
             self.loaded_t2i = Some((alias.to_string(), pipeline));
@@ -443,32 +528,20 @@ impl ScriptCtx {
                 }
             };
 
-            // v0.23 phase 6: resolve the script's ControlNet stack
-            // into Flux-flavoured load specs. Phase 6 supports
-            // `plakat.controlnet.add` (kind + image=PATH) only;
-            // `plakat.controlnet.annotate` / `.spec from=PATH`
-            // (auto-annotate) bails — annotation needs the
-            // width/height that aren't known at load time. Pre-
-            // render with `plakat upscale --method real-esrgan-x*`
-            // -free workflows or the standalone
-            // `plakat.controlnet.add` path.
+            // v0.23 phase 6 + v0.24 phase 8: resolve the script's
+            // ControlNet stack into Flux-flavoured load specs.
+            // image= specs get the path baked into the load
+            // request; from= specs leave `conditioning: None` —
+            // the annotator runs at first generate (script_entry)
+            // and feeds the result back via
+            // `pipeline.set_controlnet_conditioning`.
             let flux_cn_loads: Vec<flux::FluxControlNetLoad> = self
                 .controlnets
                 .iter()
                 .map(|spec| -> Result<flux::FluxControlNetLoad> {
                     let cond = match (&spec.image, &spec.from) {
-                        (Some(path), None) => path.clone(),
-                        (None, Some(_)) => anyhow::bail!(
-                            "plakat.controlnet (Flux): auto-annotate \
-                             (`plakat.controlnet.annotate` / from=PATH) \
-                             isn't wired at load time in v0.23 phase 6 — \
-                             annotation needs the per-generate width/height \
-                             which the loader doesn't know. Pre-render the \
-                             conditioning image (depth map, canny edges, \
-                             etc.) and use `plakat.controlnet.add KIND PATH` \
-                             instead. (kind={:?})",
-                            spec.kind
-                        ),
+                        (Some(path), None) => Some(path.clone()),
+                        (None, Some(_)) => None, // lazy-annotate
                         (Some(_), Some(_)) => anyhow::bail!(
                             "plakat.controlnet (Flux): a single spec has \
                              both image= and from= set; pick one. (kind={:?})",
@@ -477,15 +550,14 @@ impl ScriptCtx {
                         (None, None) => anyhow::bail!(
                             "plakat.controlnet (Flux): kind={:?} needs \
                              either image=PATH (pre-rendered) or from=PATH \
-                             (auto-annotate). v0.23 phase 6 supports image= \
-                             only on Flux.",
+                             (auto-annotate).",
                             spec.kind
                         ),
                     };
                     let mut cn_load = crate::pipelines::t2i::flux_controlnet_load_for(
                         spec.kind, fvar, spec.strength,
                     )?;
-                    cn_load.conditioning = Some(cond);
+                    cn_load.conditioning = cond;
                     cn_load.start = spec.start;
                     cn_load.end = spec.end;
                     Ok(cn_load)
@@ -580,28 +652,18 @@ impl ScriptCtx {
                 }
             };
 
-            // v0.23 phase 7: resolve the script's ControlNet stack
-            // into SD3-flavoured load specs. Same scope as phase 6
-            // (Flux): `plakat.controlnet.add` (kind + image=PATH)
-            // supported; auto-annotate / from= bails inside the
-            // resolver (per-generate width/height isn't known at
-            // load time).
+            // v0.23 phase 7 + v0.24 phase 8: resolve the script's
+            // ControlNet stack into SD3-flavoured load specs.
+            // image= specs bake the path in; from= specs leave
+            // conditioning=None and the annotator fires at first
+            // generate (same lazy pattern as Flux).
             let sd3_cn_loads: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> =
                 self.controlnets
                     .iter()
                     .map(|spec| -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
                         let cond = match (&spec.image, &spec.from) {
-                            (Some(path), None) => path.clone(),
-                            (None, Some(_)) => anyhow::bail!(
-                                "plakat.controlnet (SD3): auto-annotate \
-                                 (`plakat.controlnet.annotate` / from=PATH) \
-                                 isn't wired at load time in v0.23 phase 7 — \
-                                 annotation needs the per-generate width/height \
-                                 which the loader doesn't know. Pre-render the \
-                                 conditioning image and use `plakat.controlnet.add \
-                                 KIND PATH` instead. (kind={:?})",
-                                spec.kind
-                            ),
+                            (Some(path), None) => Some(path.clone()),
+                            (None, Some(_)) => None, // lazy-annotate
                             (Some(_), Some(_)) => anyhow::bail!(
                                 "plakat.controlnet (SD3): a single spec has \
                                  both image= and from= set; pick one. (kind={:?})",
@@ -610,15 +672,14 @@ impl ScriptCtx {
                             (None, None) => anyhow::bail!(
                                 "plakat.controlnet (SD3): kind={:?} needs \
                                  either image=PATH (pre-rendered) or from=PATH \
-                                 (auto-annotate). v0.23 phase 7 supports image= \
-                                 only on SD3.",
+                                 (auto-annotate).",
                                 spec.kind
                             ),
                         };
                         let mut cn_load = crate::pipelines::t2i::sd3_controlnet_load_for(
                             spec.kind, sd3_variant, spec.strength,
                         )?;
-                        cn_load.conditioning = Some(cond);
+                        cn_load.conditioning = cond;
                         cn_load.start = spec.start;
                         cn_load.end = spec.end;
                         Ok(cn_load)
@@ -698,15 +759,34 @@ impl ScriptCtx {
     }
 }
 
-/// v0.22 phase 1: pick the identity strategy for an SD-family
-/// alias without bailing — sd21 returns `None` so the pipeline
-/// loads without an identity encoder. Caller is responsible for
-/// having validated SD-family-ness via
-/// [`crate::scripting::script_entry::validate_supported_for_phase_2`].
+/// v0.22 phase 1 + v0.24 phase 3: pick the identity strategy for
+/// an SD-family alias. `override_kind` (v0.24 phase 3) lets the
+/// script override the alias-based auto-pick via the
+/// `identity_kind` config key. When `override_kind` is `None`
+/// or empty, the v0.22 auto-pick rule applies: sd15 → PlusFace,
+/// sdxl → PlusFaceSdxl, sd21 → None (no shipped Plus-Face
+/// checkpoint; portrait bails at generate time on sd21).
+///
+/// Caller is responsible for having validated SD-family-ness.
 fn pick_sd_family_identity(
     alias: &str,
+    override_kind: Option<&str>,
 ) -> Option<crate::pipelines::ip_adapter::IdentityKind> {
     use crate::pipelines::ip_adapter::IdentityKind;
+    // v0.24 phase 3: override wins when non-empty. set_str
+    // validated the string at config-set time, so re-parsing
+    // here is effectively infallible — but bail loudly if not
+    // (a panic would mask a config-layer bug).
+    if let Some(s) = override_kind {
+        let s = s.trim();
+        if !s.is_empty() {
+            use std::str::FromStr;
+            return IdentityKind::from_str(s)
+                .ok()
+                .map(Some)
+                .unwrap_or(None);
+        }
+    }
     let resolved = if alias.contains('/') {
         alias.to_string()
     } else {
@@ -806,6 +886,11 @@ mod tests {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
+            cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         }
     }
 
@@ -871,7 +956,7 @@ mod tests {
     #[test]
     fn pick_sd_family_identity_sd15_is_plus_face() {
         use crate::pipelines::ip_adapter::IdentityKind;
-        let id = pick_sd_family_identity("sd15");
+        let id = pick_sd_family_identity("sd15", None);
         assert!(matches!(id, Some(IdentityKind::PlusFace)));
     }
 
@@ -879,11 +964,11 @@ mod tests {
     fn pick_sd_family_identity_sdxl_is_plus_face_sdxl() {
         use crate::pipelines::ip_adapter::IdentityKind;
         assert!(matches!(
-            pick_sd_family_identity("sdxl"),
+            pick_sd_family_identity("sdxl", None),
             Some(IdentityKind::PlusFaceSdxl)
         ));
         assert!(matches!(
-            pick_sd_family_identity("sdxl-turbo"),
+            pick_sd_family_identity("sdxl-turbo", None),
             Some(IdentityKind::PlusFaceSdxl)
         ));
     }
@@ -893,7 +978,7 @@ mod tests {
         // SD 2.1 has no shipped Plus-Face checkpoint. The cache
         // loads without identity; plakat.portrait bails at
         // generate time, but plakat.generate works.
-        assert!(pick_sd_family_identity("sd21").is_none());
+        assert!(pick_sd_family_identity("sd21", None).is_none());
     }
 
     #[test]
@@ -903,8 +988,49 @@ mod tests {
         // first so the detection works.
         // The resolved-alias path is also exercised by the
         // canonical HF repo path:
-        assert!(pick_sd_family_identity("stabilityai/stable-diffusion-2-1")
-            .is_none());
+        assert!(
+            pick_sd_family_identity("stabilityai/stable-diffusion-2-1", None)
+                .is_none()
+        );
+    }
+
+    // v0.24 phase 3: identity_kind override.
+
+    /// Non-empty override wins over the alias-based auto-pick.
+    #[test]
+    fn pick_sd_family_identity_override_wins() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        // sd15 would auto-pick PlusFace; override to FaceId.
+        let id = pick_sd_family_identity("sd15", Some("face-id"));
+        assert!(matches!(id, Some(IdentityKind::FaceId)));
+        // sdxl with override.
+        let id = pick_sd_family_identity("sdxl", Some("face-id-sdxl"));
+        assert!(matches!(id, Some(IdentityKind::FaceIdSdxl)));
+    }
+
+    /// Empty override falls back to auto-pick.
+    #[test]
+    fn pick_sd_family_identity_empty_override_falls_back() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        assert!(matches!(
+            pick_sd_family_identity("sd15", Some("")),
+            Some(IdentityKind::PlusFace)
+        ));
+        assert!(matches!(
+            pick_sd_family_identity("sd15", Some("   ")),
+            Some(IdentityKind::PlusFace)
+        ));
+    }
+
+    /// Override can force PlusFaceSdxl even on a non-XL alias
+    /// (caller's responsibility to keep this sane — pipeline load
+    /// will bail at runtime if the override mismatches the
+    /// model's hidden dim).
+    #[test]
+    fn pick_sd_family_identity_override_on_sd21() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let id = pick_sd_family_identity("sd21", Some("plus-face"));
+        assert!(matches!(id, Some(IdentityKind::PlusFace)));
     }
 
     #[test]

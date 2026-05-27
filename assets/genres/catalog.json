@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "genres": [
+    {
+      "name": "anime",
+      "display_name": "Anime",
+      "description": "Japanese animation aesthetic: cel-shaded color, clean line art, expressive eyes, stylized proportions.",
+      "prompt_prefix": "anime illustration, cel-shaded, clean line art",
+      "prompt_suffix": ", anime aesthetic, expressive style, stylized proportions",
+      "negative_extras": "photographic, realistic skin texture, photorealistic, 3d render, hyperrealism",
+      "scheduler_hint": "euler-a",
+      "steps": 24,
+      "guidance": 8.0,
+      "lora_query": {
+        "tags": ["anime", "manga", "cel-shaded"],
+        "keywords": ["anime", "manga", "cel shaded", "japanese animation", "anime style"]
+      },
+      "base_compat": null
+    }
+  ]
+}
