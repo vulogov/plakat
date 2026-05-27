@@ -376,8 +376,12 @@ fn build_gen_request(
         refine: ctx.config.refine_steps,
         refine_strength: ctx.config.refine_strength,
         face_strength: ctx.config.face_strength,
-        face_bbox: None,
-        face_landmarks: None,
+        // v0.24 phase 2: face_bbox + face_landmarks come from
+        // config keys. Read only by the portrait path; ignored
+        // by the SD-family generate/img2img paths which pass an
+        // empty `photos` vec.
+        face_bbox: ctx.config.face_bbox,
+        face_landmarks: ctx.config.face_landmarks,
     }
 }
 

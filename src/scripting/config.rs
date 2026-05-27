@@ -261,6 +261,25 @@ pub struct GenerationConfig {
     /// against `prompt::negative_presets::PRESETS` at config-set
     /// time.
     pub negative_preset: String,
+    /// v0.24 phase 2: optional face bounding box override for
+    /// `plakat.portrait`. CSV grammar `"x0,y0,x1,y1"` (4 floats
+    /// in [0,1]; x0<x1, y0<y1). Mirrors `--face-bbox`. Empty
+    /// string clears; non-empty validates at set-time via
+    /// `cli::portrait::parse_face_bbox`. Threaded into
+    /// `portrait::GenRequest.face_bbox` at request-build time.
+    /// `face_landmarks` takes precedence when both are set.
+    pub face_bbox: Option<[f32; 4]>,
+    /// v0.24 phase 2: optional 5-point face landmarks override
+    /// for `plakat.portrait`. CSV grammar
+    /// `"LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY"` (10 floats in [0,1])
+    /// — left_eye, right_eye, nose, left_mouth, right_mouth.
+    /// Mirrors `--face-landmarks`. Empty string clears; non-empty
+    /// validates at set-time via
+    /// `cli::portrait::parse_face_landmarks`. Threaded into
+    /// `portrait::GenRequest.face_landmarks`. **Takes precedence
+    /// over `face_bbox` when both are set** — same precedence as
+    /// the CLI's `--face-landmarks > --face-bbox` rule.
+    pub face_landmarks: Option<[[f32; 2]; 5]>,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -324,6 +343,8 @@ impl Default for GenerationConfig {
             clip_skip: 1,
             wildcard_dir: String::new(),
             negative_preset: String::new(),
+            face_bbox: None,
+            face_landmarks: None,
             size_explicit: false,
         }
     }
@@ -662,6 +683,37 @@ impl GenerationConfig {
                 }
                 self.negative_preset = value.to_string();
             }
+            "face_bbox" => {
+                // v0.24 phase 2: empty clears; non-empty validates
+                // via the CLI's parse_face_bbox (4-CSV grammar).
+                if value.is_empty() {
+                    self.face_bbox = None;
+                } else {
+                    let parsed =
+                        crate::cli::portrait::parse_face_bbox(value).map_err(|e| {
+                            anyhow!(
+                                "plakat.config.set: face_bbox {value:?}: {e}"
+                            )
+                        })?;
+                    self.face_bbox = Some(parsed);
+                }
+            }
+            "face_landmarks" => {
+                // v0.24 phase 2: empty clears; non-empty validates
+                // via the CLI's parse_face_landmarks (10-CSV grammar,
+                // 5 landmark pairs).
+                if value.is_empty() {
+                    self.face_landmarks = None;
+                } else {
+                    let parsed = crate::cli::portrait::parse_face_landmarks(value)
+                        .map_err(|e| {
+                            anyhow!(
+                                "plakat.config.set: face_landmarks {value:?}: {e}"
+                            )
+                        })?;
+                    self.face_landmarks = Some(parsed);
+                }
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -680,7 +732,8 @@ impl GenerationConfig {
                      enhance_provider, enhance_temp, enhance_max_tokens, \
                      enhance_cache, enhance_system, enhance_keep_original, \
                      aspect, base, mask_feather, mask_invert, clip_skip, \
-                     wildcard_dir, negative_preset, style_catalog."
+                     wildcard_dir, negative_preset, style_catalog, \
+                     face_bbox, face_landmarks."
                 ));
             }
         }
@@ -722,7 +775,7 @@ impl GenerationConfig {
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
             | "aspect" | "wildcard_dir" | "negative_preset"
-            | "style_catalog" => Err(anyhow!(
+            | "style_catalog" | "face_bbox" | "face_landmarks" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -863,7 +916,7 @@ impl GenerationConfig {
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
             | "aspect" | "wildcard_dir" | "negative_preset"
-            | "style_catalog" => Err(anyhow!(
+            | "style_catalog" | "face_bbox" | "face_landmarks" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1344,6 +1397,9 @@ mod tests {
             "negative_preset",
             // v0.23 phase 4 style key:
             "style_catalog",
+            // v0.24 phase 2 face keys:
+            "face_bbox",
+            "face_landmarks",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -2052,5 +2108,89 @@ mod tests {
         let mut cfg = GenerationConfig::default();
         cfg.set_int("clip_skip", 2).unwrap();
         assert_eq!(cfg.clip_skip, 2);
+    }
+
+    // v0.24 phase 2: face_bbox + face_landmarks config keys.
+
+    #[test]
+    fn defaults_for_v024_phase2_face_keys() {
+        let cfg = GenerationConfig::default();
+        assert!(cfg.face_bbox.is_none());
+        assert!(cfg.face_landmarks.is_none());
+    }
+
+    #[test]
+    fn set_str_face_bbox_round_trips_csv() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("face_bbox", "0.2,0.1,0.8,0.7").unwrap();
+        let bbox = cfg.face_bbox.expect("bbox set");
+        assert!((bbox[0] - 0.2).abs() < 1e-6);
+        assert!((bbox[1] - 0.1).abs() < 1e-6);
+        assert!((bbox[2] - 0.8).abs() < 1e-6);
+        assert!((bbox[3] - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_face_bbox_empty_clears() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("face_bbox", "0.2,0.1,0.8,0.7").unwrap();
+        assert!(cfg.face_bbox.is_some());
+        cfg.set_str("face_bbox", "").unwrap();
+        assert!(cfg.face_bbox.is_none());
+    }
+
+    #[test]
+    fn set_str_face_bbox_rejects_malformed() {
+        let mut cfg = GenerationConfig::default();
+        // Wrong arity.
+        assert!(cfg.set_str("face_bbox", "0.2,0.1,0.8").is_err());
+        // Out-of-range component.
+        assert!(cfg.set_str("face_bbox", "0.2,0.1,1.5,0.7").is_err());
+        // x0 >= x1.
+        assert!(cfg.set_str("face_bbox", "0.8,0.1,0.2,0.7").is_err());
+        // y0 >= y1.
+        assert!(cfg.set_str("face_bbox", "0.2,0.7,0.8,0.1").is_err());
+    }
+
+    #[test]
+    fn set_str_face_landmarks_round_trips_csv() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str(
+            "face_landmarks",
+            "0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68",
+        )
+        .unwrap();
+        let lm = cfg.face_landmarks.expect("landmarks set");
+        assert!((lm[0][0] - 0.40).abs() < 1e-6);
+        assert!((lm[4][1] - 0.68).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_str_face_landmarks_empty_clears() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str(
+            "face_landmarks",
+            "0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68",
+        )
+        .unwrap();
+        assert!(cfg.face_landmarks.is_some());
+        cfg.set_str("face_landmarks", "").unwrap();
+        assert!(cfg.face_landmarks.is_none());
+    }
+
+    #[test]
+    fn set_str_face_landmarks_rejects_wrong_arity() {
+        let mut cfg = GenerationConfig::default();
+        // 8 values instead of 10.
+        let err =
+            cfg.set_str("face_landmarks", "0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8").unwrap_err();
+        assert!(format!("{err}").contains("10 comma-separated"));
+    }
+
+    #[test]
+    fn set_int_face_bbox_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("face_bbox", 42).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
     }
 }
