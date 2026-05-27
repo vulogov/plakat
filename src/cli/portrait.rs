@@ -306,8 +306,9 @@ pub struct PortraitArgs {
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
-/// and `x0 < x1`, `y0 < y1`.
-fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
+/// and `x0 < x1`, `y0 < y1`. v0.24 phase 2: `pub(crate)` so the script
+/// config layer (`face_bbox` key) can reuse the same grammar.
+pub(crate) fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
     let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
     if parts.len() != 4 {
         return Err(format!(
@@ -337,8 +338,10 @@ fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
 
 /// Parse `LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 normalised floats) into
 /// the 5-point landmark array. Order matches `LANDMARK_ORDER`:
-/// left_eye, right_eye, nose, left_mouth, right_mouth.
-fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
+/// left_eye, right_eye, nose, left_mouth, right_mouth. v0.24 phase 2:
+/// `pub(crate)` so the script config layer (`face_landmarks` key)
+/// can reuse the same grammar.
+pub(crate) fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
     let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
     if parts.len() != 10 {
         return Err(format!(
