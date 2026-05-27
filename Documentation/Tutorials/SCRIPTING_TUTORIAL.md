@@ -557,7 +557,128 @@ The SD-family run order:
 
 Order matters: style → generate → artefacts → hires → adetailer.
 
-## 11. The full word reference
+## 11. What's new in v0.24
+
+v0.24 adds 9 new host words (33 → 42), exposing the last
+CLI-only persona and post-process features to scripts. Three
+config keys for face-alignment overrides, one new namespace
+(`plakat.portrait.photo.*`) for multi-photo identity, plus
+namespaces for outpaint, Textual Inversion, style transfer, and
+metadata read. The two v0.23 limitations (Flux/SD3 `from=`
+auto-annotate, Flux inpaint via `flux-fill-dev`) also close.
+Full reference is [`SCRIPTING.md`](../SCRIPTING.md).
+
+### Multi-photo portrait (phase 1) — BREAKING CHANGE
+
+```bund
+// v0.23:
+"alice.jpg" "a portrait" plakat.portrait
+
+// v0.24:
+"alice.jpg" 1.0 plakat.portrait.photo.add
+"a portrait" plakat.portrait
+```
+
+`plakat.portrait` no longer takes a photo arg. Photos come from
+`plakat.portrait.photo.add ( path-or-handle weight -- )`. Weight
+`-1.0` means auto-fill (CLI's default); explicit values pass
+through. Weights normalise sum-to-1 at request-build time.
+
+Multi-photo identity blends:
+
+```bund
+"alice.jpg" 0.7 plakat.portrait.photo.add
+"bob.jpg"   0.3 plakat.portrait.photo.add
+"a couple at the beach" plakat.portrait
+```
+
+### Face alignment overrides (phases 2-3)
+
+```bund
+"0.2,0.1,0.8,0.7" "face_bbox" plakat.config.set
+"0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68"
+   "face_landmarks" plakat.config.set
+"face-id" "identity_kind" plakat.config.set
+```
+
+CLI parity with `--face-bbox`, `--face-landmarks`, and the four
+identity-encoder variants (`plus-face`, `plus-face-sdxl`,
+`face-id`, `face-id-sdxl`). Empty string clears any of them.
+
+### `plakat.outpaint` (phase 4)
+
+```bund
+"sd15" plakat.load
+"wide mountain valley, panorama"
+   "./photo.jpg" "left=512,right=512"
+   plakat.outpaint
+```
+
+Stack: `( prompt input expand-spec -- handle )`. Spec is
+`"expand=N"` (all four sides) or `"left=L,right=R,top=T,bottom=B"`.
+Builds a replicate-edge canvas + a mask, dispatches to
+`plakat.inpaint`.
+
+### `plakat.embedding.*` Textual Inversion (phase 5)
+
+```bund
+"./my-ti.safetensors:mytrigger:0.7" plakat.embedding.add
+"civitai:99999:concept" plakat.embedding.add
+"sdxl" plakat.load
+"mytrigger a knight" plakat.generate
+```
+
+Spec grammar matches `--embedding`. Effective only on
+`plakat.generate`'s SdT2i path; `plakat.img2img` +
+`plakat.portrait` silently ignore (CLI parity).
+
+### `plakat.stylize` (phase 6)
+
+```bund
+"sd15" plakat.load
+0.35 "strength" plakat.config.set
+"alice.jpg" "renaissance.jpg" plakat.stylize
+   "alice-renaissance.png" plakat.save
+```
+
+Stack: `( subject style -- handle )`. No prompt — image-driven.
+SD 1.5 only. One-shot load per call (~5 GB).
+
+### `plakat.metadata.read` (phase 7)
+
+```bund
+"fox.png" plakat.metadata.read    // ( -- k_1 v_1 ... k_n v_n n )
+```
+
+Reads the JSON sidecar. Pushes every populated field as a
+`(key, value)` string pair plus a count.
+
+### Flux + SD3 ControlNet `from=` auto-annotate (phase 8)
+
+```bund
+"sd35-medium" plakat.load
+"depth" "./photo.jpg" plakat.controlnet.annotate
+"a knight" plakat.generate    // depth map auto-derived from photo.jpg
+```
+
+Annotation runs lazily at first generate using the call's
+width/height; the annotated PNG caches on a per-pipeline
+tempdir. Same dims → cache hit; dim mismatch re-annotates.
+
+### Flux inpaint via flux-fill-dev (phase 9)
+
+```bund
+"flux-fill-dev" plakat.load
+"stained glass window in the wall"
+   "./photo.png" "./mask.png"
+   plakat.inpaint
+```
+
+The v0.23 `plakat.inpaint` Flux bail is gone — when the loaded
+alias resolves to `FluxFillDev`, the mask threads through
+`flux::GenRequest.mask`.
+
+## 12. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"
