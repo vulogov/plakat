@@ -225,13 +225,14 @@ pub struct GenerationConfig {
     /// v0.22 phase 11: feather radius (pixels) applied to the
     /// img2img mask edge. Default 8 (same as CLI). Only
     /// meaningful when img2img is invoked with a mask.
-    /// `plakat.img2img` doesn't yet expose a mask path argument
-    /// in v0.22; the knob is declared today so the surface is
-    /// stable for v0.23 phase 5's `plakat.inpaint`.
+    /// Wired into `img2img::Request.mask_feather` by
+    /// `script_entry::img2img_or_inpaint_one` (v0.23 phase 5);
+    /// the img2img pipeline honours it only when a mask is
+    /// supplied via `plakat.inpaint`.
     pub mask_feather: u32,
     /// v0.22 phase 11: invert mask polarity (treat black as
-    /// inpaint). Default false. Same deferred-wiring story as
-    /// `mask_feather`.
+    /// inpaint). Default false. Same wiring as `mask_feather`
+    /// — fires through `plakat.inpaint` (v0.23 phase 5).
     pub mask_invert: bool,
     /// v0.22 phase 11 + v0.23 phase 3: CLIP-skip layer index.
     /// `1` (default) uses the last hidden state. `2` uses the

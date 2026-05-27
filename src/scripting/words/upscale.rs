@@ -1,9 +1,10 @@
 //! v0.21 phase 6: `plakat.upscale ( handle scale -- handle )`.
 //!
 //! Lanczos-3 resize of a registered image. Scale must be 2 or 4
-//! (matches the spec in RFC §5.1). Real-ESRGAN ML upscaling is
-//! deferred to v0.22 — it adds a model-download surface that
-//! doesn't fit the "phase 6 = 0.5 sessions" budget.
+//! (matches the spec in RFC §5.1). Real-ESRGAN ML upscaling on
+//! the standalone `plakat.upscale` word is still deferred (v0.25+
+//! carry; `plakat.hires` already exposes ML upscalers via
+//! `hires_upscaler` since v0.22 phase 8).
 //!
 //! The source handle is **not** consumed; the upscaled image is
 //! pushed as a new handle. Same lifetime contract as
