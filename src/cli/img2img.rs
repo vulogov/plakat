@@ -30,6 +30,26 @@ pub struct Img2ImgArgs {
     #[arg(long = "negative-preset", value_name = "NAME")]
     pub negative_preset: Option<String>,
 
+    /// **v0.25**: art-medium preset (`ink-wash` / `watercolor` /
+    /// `oil-painting` / `charcoal` / `pencil` / `chalk-pastel` /
+    /// `linocut` / `gouache`). Composes the prompt, suggests
+    /// sampler/steps/guidance, and (when `--lora` is empty)
+    /// auto-discovers a matching LoRA from Civitai → HF Hub →
+    /// local cache. Override-only: explicit flags always win.
+    /// Applies to inpaint too (use `--mask`).
+    #[arg(long = "look", value_name = "NAME")]
+    pub look: Option<String>,
+
+    /// **v0.25**: subject-domain preset (`anime`). Independent
+    /// axis from `--look`; composes additively.
+    #[arg(long = "genre", value_name = "NAME")]
+    pub genre: Option<String>,
+
+    /// **v0.25**: skip remote LoRA discovery for `--look` /
+    /// `--genre` (use only cache + local scan).
+    #[arg(long, default_value_t = false)]
+    pub offline: bool,
+
     /// Optional inpaint mask. When set, only mask=white pixels are
     /// re-painted; mask=black pixels are preserved. Grayscale, RGB
     /// (luminance), or RGBA (alpha channel) all accepted.
@@ -292,6 +312,51 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
             crate::prompt::lora_tags::extract(&args.negative)?;
         args.negative = cleaned;
     }
+
+    // v0.25 phase 6: --look / --genre presets + auto-LoRA discovery.
+    // Lands before the dispatch arms so SD-family / Flux Fill /
+    // Flux img2img / SD3 all see the same composed prompt + LoRA
+    // stack. Also covers the inpaint variant (img2img --mask) since
+    // inpaint is a flag on this same path.
+    if args.look.is_some() || args.genre.is_some() {
+        use crate::preset::{GenerationParams, apply_presets_with_discovery};
+        use crate::pipelines::scheduler::SchedulerKind;
+        use std::str::FromStr;
+
+        let mut params = GenerationParams {
+            prompt: args.prompt.clone(),
+            negative: args.negative.clone(),
+            // img2img clap defaults: steps=28, guidance=7.5 (match generate).
+            steps: (args.steps != 28).then_some(args.steps),
+            guidance: ((args.guidance - 7.5).abs() >= f64::EPSILON)
+                .then_some(args.guidance),
+            scheduler: (!matches!(args.scheduler, SchedulerKind::Default))
+                .then(String::new),
+        };
+        apply_presets_with_discovery(
+            args.look.as_deref(),
+            args.genre.as_deref(),
+            args.offline,
+            crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+            &mut params,
+            &mut args.loras,
+        )
+        .await?;
+
+        args.prompt = params.prompt;
+        args.negative = params.negative;
+        if let Some(s) = params.steps {
+            args.steps = s;
+        }
+        if let Some(g) = params.guidance {
+            args.guidance = g;
+        }
+        if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+            args.scheduler =
+                SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
+        }
+    }
+
     // v0.16 phase 10: --tiled is SD3 img2img / inpaint only. SD 1.5
     // / SDXL img2img uses a different (UNet) backbone and doesn't
     // share the rectified-flow tiled path. Flux Fill ignores
@@ -1231,6 +1296,9 @@ mod tests {
             prompt: "test".into(),
             negative: String::new(),
             negative_preset: None,
+            look: None,
+            genre: None,
+            offline: false,
             mask: None,
             mask_feather: 8,
             mask_invert: false,

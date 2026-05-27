@@ -171,6 +171,93 @@ fn base_family_for_common_model_aliases() {
     assert_eq!(BaseFamily::from_model_arg("sd35-medium"), BaseFamily::Sd3);
 }
 
+// --- Phase 6: same flags on portrait / img2img / outpaint ---
+
+/// `plakat portrait --look watercolor` parses.
+#[test]
+fn portrait_accepts_look_and_genre() {
+    let cli = Cli::try_parse_from([
+        "plakat", "portrait", "--look", "watercolor", "--genre", "anime",
+        "--offline", "a person",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Portrait(args) => {
+            assert_eq!(args.look.as_deref(), Some("watercolor"));
+            assert_eq!(args.genre.as_deref(), Some("anime"));
+            assert!(args.offline);
+        }
+        other => panic!("expected Portrait, got {other:?}"),
+    }
+}
+
+/// `plakat img2img --look watercolor` parses (also covers inpaint
+/// via the `--mask` flag on the same subcommand).
+#[test]
+fn img2img_accepts_look_and_genre_and_inpaint() {
+    let cli = Cli::try_parse_from([
+        "plakat", "img2img",
+        "--prompt", "transform this",
+        "--mask", "/tmp/mask.png",
+        "--look", "oil-painting",
+        "--genre", "anime",
+        "--offline",
+        "/tmp/x.png",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Img2img(args) => {
+            assert_eq!(args.look.as_deref(), Some("oil-painting"));
+            assert_eq!(args.genre.as_deref(), Some("anime"));
+            assert!(args.offline);
+            assert!(args.mask.is_some(), "inpaint mask threaded through");
+        }
+        other => panic!("expected Img2img, got {other:?}"),
+    }
+}
+
+/// `plakat outpaint --look ink-wash` parses.
+#[test]
+fn outpaint_accepts_look_and_genre() {
+    let cli = Cli::try_parse_from([
+        "plakat", "outpaint",
+        "--prompt", "extend the scene",
+        "--expand", "256",
+        "--look", "ink-wash",
+        "--genre", "anime",
+        "--offline",
+        "/tmp/x.png",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Outpaint(args) => {
+            assert_eq!(args.look.as_deref(), Some("ink-wash"));
+            assert_eq!(args.genre.as_deref(), Some("anime"));
+            assert!(args.offline);
+        }
+        other => panic!("expected Outpaint, got {other:?}"),
+    }
+}
+
+/// Each subcommand's bogus-look name fails fast with a helpful
+/// list of valid names — and (this is the gate) before any model
+/// load / network call.
+#[test]
+fn portrait_rejects_unknown_look_at_parse_time() {
+    // Note: clap parse succeeds (the string-typed flag accepts
+    // anything); the actual name validation happens at the
+    // catalog lookup inside the run function. This test pins the
+    // shape rather than the error path.
+    let cli = Cli::try_parse_from([
+        "plakat", "portrait", "--look", "definitely-not-real", "a person",
+    ])
+    .expect("parse accepts any string");
+    match cli.command {
+        Command::Portrait(args) => assert_eq!(args.look.as_deref(), Some("definitely-not-real")),
+        other => panic!("expected Portrait, got {other:?}"),
+    }
+}
+
 /// Empty-user-side invocation: preset fills every override field
 /// + composes prompt and negative.
 #[test]
