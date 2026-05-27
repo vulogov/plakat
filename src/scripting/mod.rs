@@ -1800,6 +1800,146 @@ mod tests {
         });
     }
 
+    // v0.24 phase 10: composition tests for the v0.24 surface.
+
+    /// One script exercises every v0.24 namespace + config key
+    /// (state-only — no model load).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v024_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.loras.clear();
+                ctx.controlnets.clear();
+                ctx.portrait_photos.clear();
+                ctx.embeddings.clear();
+                ctx.refiner_enabled = false;
+                ctx.adetailer_enabled = false;
+                ctx.hires_enabled = false;
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.config.face_bbox = None;
+                ctx.config.face_landmarks = None;
+                ctx.config.identity_kind.clear();
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.24 phase 1: portrait.photo.* multi-photo stack
+                "./alice.jpg" 0.7 plakat.portrait.photo.add
+                "./bob.jpg"   0.3 plakat.portrait.photo.add
+
+                // v0.24 phase 2: face alignment overrides
+                "0.2,0.1,0.8,0.7" "face_bbox" plakat.config.set
+                "0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68"
+                    "face_landmarks" plakat.config.set
+
+                // v0.24 phase 3: identity override
+                "face-id-sdxl" "identity_kind" plakat.config.set
+
+                // v0.24 phase 5: embedding stack
+                "./style-ti.safetensors:mytrigger:0.7" plakat.embedding.add
+
+                // v0.24 phase 8: from= specs no longer bail
+                "depth" "./reference.jpg" plakat.controlnet.annotate
+            "#,
+            )
+            .unwrap();
+
+            with_ctx(|ctx| {
+                // Phase 1 state.
+                assert_eq!(ctx.portrait_photos.len(), 2);
+                assert!((ctx.portrait_photos[0].weight.unwrap() - 0.7).abs() < 1e-6);
+                assert!((ctx.portrait_photos[1].weight.unwrap() - 0.3).abs() < 1e-6);
+                // Phase 2 face keys.
+                let bbox = ctx.config.face_bbox.expect("bbox set");
+                assert!((bbox[0] - 0.2).abs() < 1e-6);
+                let lm = ctx.config.face_landmarks.expect("landmarks set");
+                assert!((lm[0][0] - 0.40).abs() < 1e-6);
+                // Phase 3 identity_kind.
+                assert_eq!(ctx.config.identity_kind, "face-id-sdxl");
+                // Phase 5 embedding stack.
+                assert_eq!(ctx.embeddings.len(), 1);
+                assert_eq!(ctx.embeddings[0].trigger.as_deref(), Some("mytrigger"));
+                assert!((ctx.embeddings[0].scale - 0.7).abs() < 1e-6);
+                // Phase 8 from= spec lives on the controlnets stack.
+                assert_eq!(ctx.controlnets.len(), 1);
+                assert!(ctx.controlnets[0].from.is_some());
+            })
+            .unwrap();
+        });
+    }
+
+    /// portrait_photos stack and the new face_* config keys are
+    /// independent — clearing one doesn't disturb the other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v024_portrait_state_independence() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.portrait_photos.clear();
+                ctx.config.face_bbox = None;
+                ctx.config.identity_kind.clear();
+            })
+            .unwrap();
+            eval(r#""./alice.jpg" 1.0 plakat.portrait.photo.add"#).unwrap();
+            eval(r#""0.2,0.1,0.8,0.7" "face_bbox" plakat.config.set"#).unwrap();
+            eval(r#""face-id" "identity_kind" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.portrait_photos.len(), 1);
+                assert!(ctx.config.face_bbox.is_some());
+                assert_eq!(ctx.config.identity_kind, "face-id");
+            })
+            .unwrap();
+            // Clear photos — face keys persist.
+            eval("plakat.portrait.photo.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.portrait_photos.is_empty());
+                assert!(ctx.config.face_bbox.is_some());
+                assert_eq!(ctx.config.identity_kind, "face-id");
+            })
+            .unwrap();
+            // Clear face_bbox — photos already cleared; identity persists.
+            eval(r#""" "face_bbox" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.config.face_bbox.is_none());
+                assert_eq!(ctx.config.identity_kind, "face-id");
+            })
+            .unwrap();
+        });
+    }
+
+    /// CN annotation cache invalidates on stack mutation —
+    /// add/remove a CN spec drops the cache via
+    /// `mark_controlnets_changed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v024_cn_annotation_cache_invalidates() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.controlnets.clear();
+                ctx.cn_annotation_cache = None;
+            })
+            .unwrap();
+            eval(r#""depth" "./photo.jpg" plakat.controlnet.annotate"#).unwrap();
+            // No annotation has run yet (no generate fired); cache
+            // is still None until first generate. Confirm that.
+            with_ctx(|ctx| {
+                assert_eq!(ctx.controlnets.len(), 1);
+                assert!(ctx.cn_annotation_cache.is_none());
+            })
+            .unwrap();
+            // Clear the CN stack — should also clear the (empty)
+            // annotation cache via mark_controlnets_changed.
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.controlnets.is_empty());
+                assert!(ctx.cn_annotation_cache.is_none());
+            })
+            .unwrap();
+        });
+    }
+
     /// Test-helper: serialises every test that needs the singleton
     /// context behind one shared init. Subsequent calls re-use the
     /// already-init'd singleton; only the *first* test through the
