@@ -18,6 +18,7 @@ pub mod enhance;
 pub mod generate;
 pub mod hires;
 pub mod img2img;
+pub mod inpaint;
 pub mod load;
 pub mod lora;
 pub mod portrait;
@@ -155,6 +156,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.style.clear: {e}"))?;
     vm.register_inline("plakat.style.list".to_string(), style::plakat_style_list)
         .map_err(|e| anyhow!("registering plakat.style.list: {e}"))?;
+    // v0.23 phase 5: plakat.inpaint host word.
+    vm.register_inline("plakat.inpaint".to_string(), inpaint::plakat_inpaint)
+        .map_err(|e| anyhow!("registering plakat.inpaint: {e}"))?;
     Ok(())
 }
 

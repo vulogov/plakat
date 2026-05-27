@@ -982,12 +982,45 @@ pub fn img2img_one(
     prompt: &str,
     input_path: &Path,
 ) -> Result<DynamicImage> {
+    img2img_or_inpaint_one(ctx, prompt, input_path, None, "plakat.img2img")
+}
+
+/// v0.23 phase 5: inpaint dispatch. Shares the body with
+/// `img2img_one` — the only differences are the `mask` arg + the
+/// error-message tag.
+pub fn inpaint_one(
+    ctx: &mut ScriptCtx,
+    prompt: &str,
+    input_path: &Path,
+    mask_path: &Path,
+) -> Result<DynamicImage> {
+    img2img_or_inpaint_one(ctx, prompt, input_path, Some(mask_path), "plakat.inpaint")
+}
+
+/// Shared body for [`img2img_one`] and [`inpaint_one`].
+///
+/// `mask_path` is `None` for plain img2img, `Some(...)` for
+/// inpaint. The SD-family path threads it into
+/// `img2img::Request.mask` (the v0.22 phase 11 `mask_feather` /
+/// `mask_invert` config keys are honoured only when this is
+/// non-None — they were declared then but unreachable until now).
+/// Flux + SD3 inpaint require their fill variants
+/// (flux-fill-dev / sd3 mmdit native inpaint) — those bail with
+/// a clear message in phase 5; full wiring lands when there's a
+/// CLI parity gap that needs it.
+fn img2img_or_inpaint_one(
+    ctx: &mut ScriptCtx,
+    prompt: &str,
+    input_path: &Path,
+    mask_path: Option<&Path>,
+    word_tag: &str,
+) -> Result<DynamicImage> {
     let alias = ctx
         .loaded_model()
         .ok_or_else(|| {
             anyhow!(
-                "plakat.img2img: no model loaded. Call \"sd15\" plakat.load \
-                 (or another supported alias) before plakat.img2img."
+                "{word_tag}: no model loaded. Call \"sd15\" plakat.load \
+                 (or another supported alias) before {word_tag}."
             )
         })?
         .to_string();
@@ -1006,7 +1039,7 @@ pub fn img2img_one(
     } else {
         let dims = image::image_dimensions(input_path).with_context(|| {
             format!(
-                "reading dimensions of {} for plakat.img2img working size",
+                "reading dimensions of {} for {word_tag} working size",
                 input_path.display()
             )
         })?;
@@ -1015,7 +1048,7 @@ pub fn img2img_one(
     };
     if width == 0 || height == 0 {
         bail!(
-            "plakat.img2img: working size {width}x{height} collapsed to 0 \
+            "{word_tag}: working size {width}x{height} collapsed to 0 \
              after /8 snap. Input image is too small (< 8 pixels on a side)."
         );
     }
@@ -1023,7 +1056,7 @@ pub fn img2img_one(
     let tmp = tempfile::Builder::new()
         .prefix("plakat-script-i2i-")
         .tempdir()
-        .context("creating tempdir for plakat.img2img output")?;
+        .with_context(|| format!("creating tempdir for {word_tag} output"))?;
     let tmp_path = tmp.path().to_path_buf();
 
     match PipelineFamily::detect(&alias) {
@@ -1036,11 +1069,10 @@ pub fn img2img_one(
                 loras: Vec::new(),
                 lora_scale: 1.0,
                 input: input_path.to_path_buf(),
-                mask: None,
-                // v0.22 phase 11: knobs are declared but the mask
-                // path is not yet exposed at the script layer
-                // (v0.23 phase 5 ships plakat.inpaint). The img2img
-                // pipeline honours these only when `mask` is set.
+                // v0.23 phase 5: mask threads through when plakat.inpaint
+                // is the caller. mask_feather / mask_invert (declared
+                // v0.22 phase 11) finally have a mask to act on.
+                mask: mask_path.map(|p| p.to_path_buf()),
                 mask_feather: ctx.config.mask_feather,
                 mask_invert: ctx.config.mask_invert,
                 width,
@@ -1052,9 +1084,6 @@ pub fn img2img_one(
                 strength: ctx.config.strength,
                 seed: ctx.config.seed,
                 out_dir: tmp_path.clone(),
-                // v0.22 phase 5: ControlNet stack flows through
-                // img2img::Request.controls. img2img::run_with_pipeline
-                // resolves the specs internally.
                 controls: ctx.controlnets.clone(),
             };
             // v0.22 phase 7-9: post-process snapshots before pipeline borrow.
@@ -1063,15 +1092,14 @@ pub fn img2img_one(
             let aargs = ArtefactArgs::from_ctx(ctx, &alias, prompt, width, height);
             if !aargs.is_empty() && hargs.enabled {
                 bail!(
-                    "plakat.img2img: hires-fix doesn't compose with artefacts \
-                     in v0.22. Disable one before plakat.img2img."
+                    "{word_tag}: hires-fix doesn't compose with artefacts \
+                     in v0.22. Disable one before {word_tag}."
                 );
             }
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
-            // run_with_pipeline is async; bridge via block_in_place.
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
-                    "plakat.img2img: no tokio runtime in scope (eval must \
+                    "{word_tag}: no tokio runtime in scope (eval must \
                      run on a multi-threaded runtime). Underlying error: {e}"
                 )
             })?;
@@ -1080,8 +1108,7 @@ pub fn img2img_one(
                     pipeline, &req,
                 ))
             })
-            .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
-            // v0.23 phase 1: same Arc<SdCore> handoff as generate.
+            .with_context(|| format!("img2img::run_with_pipeline ({word_tag} SD path)"))?;
             let shared_core = pipeline.core();
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
@@ -1099,36 +1126,46 @@ pub fn img2img_one(
         PipelineFamily::Flux => {
             if !ctx.controlnets.is_empty() {
                 bail!(
-                    "plakat.img2img: ControlNet on Flux isn't wired in v0.22 \
+                    "{word_tag}: ControlNet on Flux isn't wired in v0.22 \
                      phase 5 (deferred to v0.23 phase 6). Call \
-                     plakat.controlnet.clear before plakat.img2img on Flux."
+                     plakat.controlnet.clear before {word_tag} on Flux."
                 );
             }
             if ctx.adetailer_enabled {
                 bail!(
-                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                    "{word_tag}: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
             if ctx.hires_enabled {
                 bail!(
-                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                    "{word_tag}: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
             if !ctx.artefacts.is_empty() {
                 bail!(
-                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                    "{word_tag}: artefacts are SD-family only in v0.22 \
                      phase 9. Call plakat.artefact.clear before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
-            // Flux img2img threads `init_image` + `strength` through
-            // the same flux::GenRequest used for text-to-image.
-            // Working size override: width / height become the
-            // current values (size_explicit OR snapped input dims).
+            if mask_path.is_some() {
+                // v0.23 phase 5: Flux inpaint requires the
+                // flux-fill-dev variant + load-time channel-concat
+                // wiring on the img_in projection. That's its own
+                // refactor; not in scope for phase 5. Bail with a
+                // clear pointer.
+                bail!(
+                    "plakat.inpaint: Flux inpaint requires the \
+                     flux-fill-dev variant + per-load setup; not wired \
+                     in v0.23 phase 5. Workaround: use the CLI's \
+                     `plakat img2img --model flux-fill-dev --mask MASK` \
+                     directly, or stay on SD-family in scripts."
+                );
+            }
             let mut req = build_flux_gen_request(
                 ctx,
                 prompt,
@@ -1139,40 +1176,37 @@ pub fn img2img_one(
             req.height = height;
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
-                .context("flux::Pipeline::generate (plakat.img2img Flux path)")?;
+                .with_context(|| format!("flux::Pipeline::generate ({word_tag} Flux path)"))?;
         }
         PipelineFamily::Sd3 => {
             if !ctx.controlnets.is_empty() {
                 bail!(
-                    "plakat.img2img: ControlNet on SD3 isn't wired in v0.22 \
+                    "{word_tag}: ControlNet on SD3 isn't wired in v0.22 \
                      phase 5 (deferred to v0.23 phase 7). Call \
-                     plakat.controlnet.clear before plakat.img2img on SD3."
+                     plakat.controlnet.clear before {word_tag} on SD3."
                 );
             }
             if ctx.adetailer_enabled {
                 bail!(
-                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                    "{word_tag}: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
             if ctx.hires_enabled {
                 bail!(
-                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                    "{word_tag}: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
             if !ctx.artefacts.is_empty() {
                 bail!(
-                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                    "{word_tag}: artefacts are SD-family only in v0.22 \
                      phase 9. Call plakat.artefact.clear before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
-            // SD3 img2img: GenRequest has init_image + strength
-            // built-in, same shape as Flux. Working size honours
-            // the snapped input dims.
             let mut req = build_sd3_gen_request(
                 ctx,
                 prompt,
@@ -1181,9 +1215,17 @@ pub fn img2img_one(
             );
             req.width = width;
             req.height = height;
+            // v0.23 phase 5: SD3 / SD3.5 support native RePaint
+            // inpaint via the mask field. Thread it through when
+            // plakat.inpaint is the caller.
+            if let Some(p) = mask_path {
+                req.mask = Some(p.to_path_buf());
+                req.mask_feather = ctx.config.mask_feather;
+                req.mask_invert = ctx.config.mask_invert;
+            }
             let pipeline = ctx.get_or_load_sd3(&alias)?;
             pipeline.generate(&req)
-                .context("sd3::Pipeline::generate (plakat.img2img SD3 path)")?;
+                .with_context(|| format!("sd3::Pipeline::generate ({word_tag} SD3 path)"))?;
         }
     }
     read_rendered_png(&tmp_path)
