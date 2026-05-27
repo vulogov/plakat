@@ -8,130 +8,168 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.23 — Bund deferrals closed
+## What's new in v0.25 — art-medium presets + auto-LoRA discovery
 
-Nine phases close every "deferred to v0.23" stub v0.22 explicitly
-took on, plus add two new things: the `plakat.style.*` catalog
-namespace and the `plakat.inpaint` host word. Word count
-28 → 33; smaller cycle than v0.22 (~7 phases of real work).
+Twelve phases ship two new preset axes — `--look` (art medium)
+and `--genre` (subject domain) — with **automatic LoRA discovery**
+from Civitai / HuggingFace / your local cache. Pick "watercolor"
+or "ink-wash" with one flag and plakat composes the prompt, picks
+a sampler, and finds a compatible LoRA matched to your loaded
+base model. Host word count 42 → 48.
 
-### Cache architecture: the SdT2i slot
+### `--look` — eight bundled art mediums
 
-`plakat.load "sdxl"` now warms a `t2i::Pipeline` slot in addition
-to (or sharing `Arc<SdCore>` with) the v0.22 `portrait::Pipeline`
-slot. `plakat.generate`'s SD-family path routes through SdT2i,
-which carries the SDXL refiner UNet hook + the CLIP-skip encode
-path that the v0.22 portrait cache didn't expose.
-`plakat.img2img` + `plakat.portrait` keep using portrait — both
-slots share the same `Arc<SdCore>` so mixed scripts pay one
-weights load.
+```bash
+plakat generate --model sd15 --look watercolor "a cottage in the woods"
+plakat generate --model sdxl --look oil-painting "a still life"
+plakat generate --model sd15 --look ink-wash "a mountain temple"
+```
 
-### Six v0.22 deferrals close
+Eight mediums ship: `ink-wash`, `watercolor`, `oil-painting`,
+`charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`. Each
+bundles a prompt prefix/suffix + recommended sampler/steps/guidance
++ a `lora_query` that drives auto-discovery.
+
+Override-only semantics: explicit `--steps` / `--guidance` /
+`--scheduler` always win. Compositional fields (prompt prefix +
+negative) always apply.
+
+### `--genre` — independent subject-domain axis
+
+```bash
+plakat generate --model sdxl --genre anime "a knight in a forest"
+
+# Compose with --look (watercolor anime knight):
+plakat generate --model sdxl --look watercolor --genre anime "a knight"
+```
+
+v0.25 ships `anime` only as the built-in genre. User-extensible
+via `$CONFIG_DIR/genres/*.json` — add `photoreal`, `fantasy`,
+`cyberpunk`, or anything else without waiting for a release.
+
+### Auto-LoRA discovery (Civitai → HF → local)
+
+When `--lora` is empty, plakat searches for a compatible LoRA:
+
+1. **Discovery cache** at `$PLAKAT_CACHE_DIR/look-discovery/`
+   keyed by `(name, base_model)`.
+2. **Civitai** REST API — filters by base-model compatibility
+   (`SD 1.5` / `SDXL 1.0` / `Pony` / `Illustrious` / `Flux.1 D` /
+   `SD 3.5 Medium`).
+3. **HuggingFace Hub** fallback — search by tag/repo-id patterns.
+4. **Local-cache scan** — walk `civitai/` download cache for
+   already-pulled LoRAs matching the look's keywords.
+
+Trigger words from the discovered LoRA auto-prepend to the prompt
+via the dedup-aware `style::prepend_trigger`. Failure is
+non-fatal — discovery soft-fails through to "no LoRA found" and
+the prompt prefix + sampler hints still apply.
+
+```bash
+# Offline mode: cache + local scan only (no network).
+plakat generate --model sd15 --look watercolor --offline "a cottage"
+```
+
+### Surfaces — CLI + scenarios + Bund
+
+`--look` / `--genre` / `--offline` work on every prompt-driven
+subcommand: `generate`, `portrait`, `img2img`, `inpaint` (via
+`img2img --mask`), `outpaint`.
+
+Scenarios accept `look:` / `genre:` / `offline:` at both global
+and per-task levels:
+
+```hjson
+{
+    model: sdxl
+    look: watercolor    # scenario-wide
+    genre: anime
+
+    tasks: [
+        { name: knight, prompt: "a knight" }
+        { name: temple, prompt: "a temple", look: oil-painting }
+    ]
+}
+```
+
+Bund scripts get six new host words + one config key:
 
 ```bund
 "sdxl" plakat.load
-plakat.refiner.enable             // phase 2: actually loads the SDXL refiner UNet
-0.85 "refiner_frac" plakat.config.set
-2 "clip_skip" plakat.config.set   // phase 3: wires through t2i::Pipeline.encode_*
-"a knight" plakat.generate        // base UNet 80% → refiner UNet 20%
+"watercolor" plakat.look.apply
+"anime"      plakat.genre.apply
+"true" "offline_discovery" plakat.config.set
+"a cottage at dawn" plakat.generate
+"cottage.png" plakat.save
 ```
 
-The toggle was a state flag with a generate-time bail in v0.22;
-v0.23 actually drives `use_refiner` at load time. Non-SDXL
-aliases silently downgrade with a warn (matches CLI `--refiner`).
+| New host word | Effect |
+|---|---|
+| `plakat.look.{apply,clear,list}` | Set / unset / enumerate the active look |
+| `plakat.genre.{apply,clear,list}` | Same for the genre axis |
 
-### `plakat.style.*` namespace (phase 4)
+### User-extension catalogs
 
-```bund
-"poster-bold" plakat.style.apply       // by id
-"./ref.jpg"   plakat.style.detect      // CLIP-H detect from photo
-plakat.style.list                      // ( -- ...ids count )
-plakat.style.clear
-0.7 "style_strength" plakat.config.set
-"a town square" plakat.generate
+Drop a JSON file under `$CONFIG_DIR/{looks,genres}/`:
+
+```text
+Linux:   ~/.config/plakat/looks/cyberpunk.json
+macOS:   ~/Library/Application Support/ai.plakat.plakat/looks/cyberpunk.json
+Windows: %APPDATA%\plakat\plakat\config\looks\cyberpunk.json
 ```
 
-Resolution runs lazily at `plakat.generate` request-build time:
-catalog LoRAs override the user LoRA stack for the load (CLI
-parity with `--style ID`); trigger prepends to prompt;
-`negative_extras` appends to negative. Subsequent generates with
-the same style cache-hit the style-laden pipeline.
-
-### `plakat.inpaint` host word (phase 5)
-
-```bund
-"stained glass window in the wall"
-   "./photo.png" "./mask.png"
-   plakat.inpaint
-   "result.png" plakat.save
-```
-
-Stack: `( prompt input mask -- handle )`. The mask path arg that
-`mask_feather` + `mask_invert` were waiting for since v0.22.
-SD-family + SD3 wired (sd3::GenRequest has native RePaint
-inpaint); Flux bails — flux-fill-dev channel-concat wiring isn't
-in scope; bail message points at `plakat img2img --model
-flux-fill-dev --mask`.
-
-### Flux + SD3 ControlNet (phases 6–7)
-
-```bund
-"./depth-map.png" "depth" plakat.controlnet.add
-"flux-dev" plakat.load
-"a cyberpunk street" plakat.generate
-```
-
-CN stack wires into `LoadRequest.controlnets` at pipeline-load
-time. Stack mutations call `mark_controlnets_changed` which
-drops the Flux/SD3 slot (SD-family slots stay intact — those
-remain per-call). **Scope cap**: `image=` specs only;
-auto-annotate (`from=`) needs per-generate dims the loader
-doesn't know — pre-render the conditioning map and use
-`plakat.controlnet.add`.
-
-### Composition order, refined
-
-The SD-family run order now includes the v0.23 style step:
-
-1. **Style resolve** (if `style_id` / `style_ref` set).
-2. **t2i.generate** with resolved LoRAs + refiner gate + clip_skip.
-3. **Artefacts** (compose + optional blend).
-4. **Hires fix**. Mutually exclusive with artefacts.
-5. **ADetailer** (face refinement at the final resolution).
+One `PresetSpec` JSON object per file; filename stem is the
+catalog key. User entries shadow bundled by name. Bad JSON /
+unsafe filenames log via `tracing::warn` and skip — the bundled
+catalog still loads.
 
 ### Documentation
 
-- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — full reference
-  for all 33 words + every config key. Updated for v0.23.
+- [`LOOKS.md`](Documentation/LOOKS.md) — flag reference + the
+  field shape for user-extension files.
+- [`GENRES.md`](Documentation/GENRES.md) — the subject-domain
+  axis.
+- [`LOOKS_TUTORIAL.md`](Documentation/Tutorials/LOOKS_TUTORIAL.md)
+  — narrative walkthrough with worked examples.
+- [`GENRES_TUTORIAL.md`](Documentation/Tutorials/GENRES_TUTORIAL.md)
+  — companion tutorial.
+- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — full host-word
+  reference, updated for v0.25 (48 words).
 - [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md)
-  — narrative walkthrough; new §10 "What's new in v0.23" covers
-  every closure with copy-pasteable snippets.
-- [`RFC_v0.23_BUND_DEFERRALS.md`](Documentation/RFC_v0.23_BUND_DEFERRALS.md)
-  — design doc, six locked decisions, nine-phase plan.
+  §12 — what's new in v0.25 from the Bund perspective.
+- [`RFC_v0.25_LOOKS_AND_GENRES.md`](Documentation/RFC_v0.25_LOOKS_AND_GENRES.md)
+  — design doc, eight locked decisions, 12-phase plan.
 
 ### By the numbers
 
-- 772 lib tests green (+14 new across the cycle).
-- 9 phase commits + 2 RFC commits + this release-notes commit.
-- 33 host words (was 28 in v0.22). `style_catalog` config key
-  added; six v0.22 deferred items closed.
-- Three composition tests exercise the full v0.23 surface
-  alongside the v0.22 namespaces.
+- 902 lib tests green + 20 integration tests (+85 lib and +13
+  integration tests across the cycle).
+- 12 phase commits + RFC.
+- 42 → 48 host words. `offline_discovery` config key added.
+- 8 bundled looks + 1 bundled genre + user-extension directory
+  wired.
+- 3-source discovery chain (Civitai + HF Hub + local-cache scan)
+  with on-disk caching keyed by `(name, base_model)`.
 
-### Deferred to v0.24+
+### v0.24 → v0.25 migration
 
-- Flux + SD3 ControlNet auto-annotate (`from=` specs).
-- Flux inpaint via `plakat.inpaint` (needs flux-fill-dev
-  channel-concat wiring).
+v0.25 is **additive** — no host word, config key, scenario field,
+or stack effect changes shape. If you don't pass `--look` or
+`--genre`, behavior is byte-identical to v0.24.
+
+### Deferred to v0.26+
+
+- Bund `plakat.look.*` apply on Flux + SD3 paths (state sets;
+  apply currently SD-family only — use the CLI on those families).
+- Scenario auto-LoRA discovery (the prompt prefix + sampler
+  still apply; supply `loras:` explicitly for now).
 - AnimateDiff (long-running carry from v0.20).
 - SD3 / SD3.5 animate.
-- FaceID + multi-photo portrait + manual landmarks.
-- Real-ESRGAN ML upscaling in `plakat.upscale`
-  (`plakat.hires_upscaler` already exposes it).
-- `plakat.embedding.*`, `plakat.stylize`, `plakat.outpaint`,
-  `plakat.metadata.*`.
+- Real-ESRGAN ML upscaling in `plakat.upscale` (`plakat.hires`
+  already exposes it).
+- `plakat.metadata.write` (gated on `plakat.save` sidecars).
 
-**Earlier releases** (v0.13 – v0.22):
+**Earlier releases** (v0.13 – v0.24):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
