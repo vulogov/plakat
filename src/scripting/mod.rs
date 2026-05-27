@@ -419,6 +419,53 @@ mod tests {
         });
     }
 
+    // v0.24 phase 6: plakat.stylize surface (state-only).
+
+    /// `plakat.stylize` bails when no model is loaded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stylize_no_model_loaded_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            let err = eval(
+                r#""./subject.jpg" "./style.jpg" plakat.stylize"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+        });
+    }
+
+    /// `plakat.stylize` bails on empty path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stylize_empty_path_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""./subject.jpg" "" plakat.stylize"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("can't be empty"), "got {msg}");
+        });
+    }
+
+    /// `plakat.stylize` bails on non-image arg type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stylize_bad_arg_type_bails() {
+        with_singleton_ctx(|| {
+            // Float as the style arg — neither string nor int.
+            let err = eval(
+                r#""./subject.jpg" 3.14 plakat.stylize"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("string path or an integer handle"), "got {msg}");
+        });
+    }
+
     // v0.24 phase 5: plakat.embedding.* namespace (state-only).
 
     /// `plakat.embedding.add` parses + pushes, `mark_loras_changed`
