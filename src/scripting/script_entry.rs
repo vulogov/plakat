@@ -925,14 +925,10 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                 .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
         }
         PipelineFamily::Sd3 => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.generate: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (SD3 CN needs load-time setup; deferred to v0.23 \
-                     phase 7). Call plakat.controlnet.clear before plakat.generate \
-                     on SD3."
-                );
-            }
+            // v0.23 phase 7: SD3 ControlNet wires through the cache
+            // at load time. Same as Flux (phase 6) — image= specs
+            // only; mark_controlnets_changed drops the slot on stack
+            // mutations.
             if ctx.adetailer_enabled {
                 bail!(
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
@@ -1173,13 +1169,8 @@ fn img2img_or_inpaint_one(
                 .with_context(|| format!("flux::Pipeline::generate ({word_tag} Flux path)"))?;
         }
         PipelineFamily::Sd3 => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "{word_tag}: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23 phase 7). Call \
-                     plakat.controlnet.clear before {word_tag} on SD3."
-                );
-            }
+            // v0.23 phase 7: SD3 ControlNet wires through at load
+            // time. See `get_or_load_sd3` for the resolve path.
             if ctx.adetailer_enabled {
                 bail!(
                     "{word_tag}: ADetailer is SD-family only in v0.22 \

@@ -538,13 +538,16 @@ impl ScriptCtx {
         }
     }
 
-    /// v0.22 phase 3: get-or-load the SD3 / SD3.5 pipeline for
-    /// `alias`. Mirrors [`Self::get_or_load_sd_family`] and
-    /// [`Self::get_or_load_flux`].
+    /// v0.22 phase 3 + v0.23 phase 7: get-or-load the SD3 / SD3.5
+    /// pipeline for `alias`. Mirrors [`Self::get_or_load_sd_family`]
+    /// and [`Self::get_or_load_flux`].
     ///
-    /// SD3 doesn't have LoRA / ControlNet load-time D-keys
-    /// (those land in phases 4-5); the LoadRequest fields are
-    /// empty for now.
+    /// v0.23 phase 7 resolves `self.controlnets` into
+    /// `Vec<Sd3ControlNetLoad>` at load time (image=PATH specs
+    /// only — auto-annotate bails the same way Flux does, since
+    /// neither family knows the per-generate dims at load).
+    /// `mark_controlnets_changed` drops this slot on stack
+    /// mutations.
     pub fn get_or_load_sd3(&mut self, alias: &str) -> Result<&mut sd3::Pipeline> {
         let hit = self
             .loaded
@@ -577,6 +580,51 @@ impl ScriptCtx {
                 }
             };
 
+            // v0.23 phase 7: resolve the script's ControlNet stack
+            // into SD3-flavoured load specs. Same scope as phase 6
+            // (Flux): `plakat.controlnet.add` (kind + image=PATH)
+            // supported; auto-annotate / from= bails inside the
+            // resolver (per-generate width/height isn't known at
+            // load time).
+            let sd3_cn_loads: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> =
+                self.controlnets
+                    .iter()
+                    .map(|spec| -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
+                        let cond = match (&spec.image, &spec.from) {
+                            (Some(path), None) => path.clone(),
+                            (None, Some(_)) => anyhow::bail!(
+                                "plakat.controlnet (SD3): auto-annotate \
+                                 (`plakat.controlnet.annotate` / from=PATH) \
+                                 isn't wired at load time in v0.23 phase 7 — \
+                                 annotation needs the per-generate width/height \
+                                 which the loader doesn't know. Pre-render the \
+                                 conditioning image and use `plakat.controlnet.add \
+                                 KIND PATH` instead. (kind={:?})",
+                                spec.kind
+                            ),
+                            (Some(_), Some(_)) => anyhow::bail!(
+                                "plakat.controlnet (SD3): a single spec has \
+                                 both image= and from= set; pick one. (kind={:?})",
+                                spec.kind
+                            ),
+                            (None, None) => anyhow::bail!(
+                                "plakat.controlnet (SD3): kind={:?} needs \
+                                 either image=PATH (pre-rendered) or from=PATH \
+                                 (auto-annotate). v0.23 phase 7 supports image= \
+                                 only on SD3.",
+                                spec.kind
+                            ),
+                        };
+                        let mut cn_load = crate::pipelines::t2i::sd3_controlnet_load_for(
+                            spec.kind, sd3_variant, spec.strength,
+                        )?;
+                        cn_load.conditioning = Some(cond);
+                        cn_load.start = spec.start;
+                        cn_load.end = spec.end;
+                        Ok(cn_load)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
             let device = self.device.clone();
             let loras = self.loras.clone();
             let lora_scale = self.config.lora_scale;
@@ -590,7 +638,7 @@ impl ScriptCtx {
                     device,
                     loras,
                     lora_scale,
-                    controlnets: Vec::new(),
+                    controlnets: sd3_cn_loads,
                 }))
             })?;
             self.loaded = Some((alias.to_string(), LoadedPipeline::Sd3(pipeline)));
