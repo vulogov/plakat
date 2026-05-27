@@ -389,6 +389,21 @@ impl MergeTarget {
         peft_prefixes: &["text_encoder_2."],
         name: "CLIP-G (text encoder 2)",
     };
+    /// v0.26 phase 4: AnimateDiff motion-adapter weights. Motion
+    /// LoRAs from the community (e.g. `guoyww/animatediff-motion-
+    /// lora-zoom-in`) typically use bare PEFT-style keys
+    /// (`down_blocks.0.motion_modules.0.temporal_transformer.
+    /// transformer_blocks.0.attention_blocks.0.to_q.lora.{down,up}.
+    /// weight`). No `lora_unet_` / `text_encoder.` prefix, so
+    /// `is_likely_target` falls through to the "no recognized
+    /// prefix" branch and lets `resolve_lora_base` decide via the
+    /// adapter's base_keys lookup. Empty prefix arrays here are
+    /// intentional.
+    pub const MOTION_ADAPTER: Self = Self {
+        kohya_prefixes: &[],
+        peft_prefixes: &[],
+        name: "motion adapter",
+    };
 }
 
 /// Union of all kohya/PEFT prefixes plakat understands — used to detect
@@ -435,7 +450,10 @@ pub fn merge_loras_into_weights(
 ) -> Result<(usize, usize)> {
     let mut merged: HashMap<String, Tensor> = candle_core::safetensors::load(base_path, device)
         .with_context(|| format!("loading base {} weights {}", target.name, base_path.display()))?;
-    let kohya_to_diffusers = build_kohya_map(&merged, target.kohya_prefixes[0]);
+    // v0.26 phase 4: motion adapters have no kohya prefix
+    // convention. Empty prefix arrays → use empty prefix here too.
+    let kohya_prefix = target.kohya_prefixes.first().copied().unwrap_or("");
+    let kohya_to_diffusers = build_kohya_map(&merged, kohya_prefix);
 
     let mut modified = 0usize;
     let mut seen_targets = 0usize;

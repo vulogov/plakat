@@ -230,6 +230,67 @@ impl MotionAdapter {
         })
     }
 
+    /// v0.26 phase 4: load with motion LoRAs merged in. Equivalent
+    /// to `load_v3()` when `motion_loras` is empty; otherwise
+    /// downloads each LoRA via [`crate::pipelines::lora::LoraSpec::resolve`],
+    /// merges into a tempfile via [`crate::pipelines::lora::merge_loras_into_weights`]
+    /// with `MergeTarget::MOTION_ADAPTER`, and loads the merged
+    /// tempfile. The tempfile lives as long as the returned
+    /// [`MotionAdapter`] — drop the adapter to release it.
+    pub async fn load_v3_with_motion_loras(
+        motion_loras: &[crate::pipelines::lora::LoraSpec],
+        default_scale: f32,
+        device: &candle_core::Device,
+    ) -> Result<Self> {
+        let base = Self::load_v3().await?;
+        if motion_loras.is_empty() {
+            return Ok(base);
+        }
+
+        let mut resolved =
+            Vec::with_capacity(motion_loras.len());
+        for (i, spec) in motion_loras.iter().enumerate() {
+            resolved.push(
+                spec.resolve()
+                    .await
+                    .with_context(|| format!("resolving motion LoRA #{i}"))?,
+            );
+        }
+
+        let tmp = tempfile::Builder::new()
+            .prefix("plakat-motion-lora-merged-")
+            .suffix(".safetensors")
+            .tempfile()
+            .context("creating tempfile for merged motion-adapter")?;
+        let (modified, total) = crate::pipelines::lora::merge_loras_into_weights(
+            &base.weights_path,
+            tmp.path(),
+            &resolved,
+            default_scale,
+            device,
+            crate::pipelines::lora::MergeTarget::MOTION_ADAPTER,
+        )
+        .context("merging motion LoRAs into motion-adapter weights")?;
+        tracing::info!(
+            target: "plakat",
+            "motion LoRA merge: {modified}/{total} targets across {} LoRA(s)",
+            resolved.len(),
+        );
+
+        // Detach the tempfile so the merged safetensors outlives
+        // this call. The returned PathBuf lives on `MotionAdapter`
+        // until drop — OS reclaims at process exit.
+        let (_file, merged_path) = tmp
+            .keep()
+            .context("detaching merged motion-adapter tempfile")?;
+        let tensor_layout = read_tensor_layout(&merged_path)?;
+        Ok(Self {
+            config: base.config,
+            weights_path: merged_path,
+            tensor_layout,
+        })
+    }
+
     /// Total number of tensors in the adapter. Sanity check after
     /// load.
     pub fn tensor_count(&self) -> usize {
@@ -493,6 +554,107 @@ mod tests {
         }"#;
         let err = MotionAdapterConfig::from_json(bad).unwrap_err();
         assert!(err.to_string().contains("parsing"));
+    }
+
+    /// Motion LoRA merge: writing a synthetic adapter +
+    /// synthetic LoRA, calling `merge_loras_into_weights` with
+    /// `MergeTarget::MOTION_ADAPTER`, asserts the merged file
+    /// has the same key set and modified at least one target.
+    /// No network required.
+    #[test]
+    fn motion_lora_merges_into_synthetic_adapter() {
+        use crate::pipelines::lora::{
+            MergeTarget, ResolvedLora, merge_loras_into_weights,
+        };
+        use candle_core::{DType, Device, Tensor};
+        use std::collections::HashMap;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+
+        // Build a minimal synthetic motion-adapter safetensors
+        // with ONE attention block's worth of tensors. Real V3
+        // has 16 modules × ~20 tensors each; one's enough for the
+        // merge round-trip test.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let adapter_path = tmp_dir.path().join("adapter.safetensors");
+        let lora_path = tmp_dir.path().join("motion-lora.safetensors");
+        let out_path = tmp_dir.path().join("merged.safetensors");
+
+        let dim = 16;
+        let rank = 4;
+
+        let base_key =
+            "down_blocks.0.motion_modules.0.temporal_transformer.transformer_blocks.0.attention_blocks.0.to_q.weight".to_string();
+        let base_weight = Tensor::randn(0.0f32, 1.0, (dim, dim), &device).unwrap();
+        let mut adapter: HashMap<String, Tensor> = HashMap::new();
+        adapter.insert(base_key.clone(), base_weight.clone());
+        candle_core::safetensors::save(&adapter, &adapter_path).unwrap();
+
+        // Build the motion LoRA: down + up matrices at the same
+        // key path, suffixed `.lora.down.weight` and `.lora.up.weight`.
+        // The merge logic strips these suffixes to find the base.
+        let stem = base_key.strip_suffix(".weight").unwrap();
+        let lora_down = Tensor::randn(0.0f32, 0.01, (rank, dim), &device).unwrap();
+        let lora_up = Tensor::randn(0.0f32, 0.01, (dim, rank), &device).unwrap();
+        let mut lora: HashMap<String, Tensor> = HashMap::new();
+        lora.insert(format!("{stem}.lora.down.weight"), lora_down);
+        lora.insert(format!("{stem}.lora.up.weight"), lora_up);
+        candle_core::safetensors::save(&lora, &lora_path).unwrap();
+
+        let resolved = ResolvedLora {
+            path: lora_path,
+            scale: 1.0,
+            display: "test-motion-lora".to_string(),
+        };
+        let (modified, total) = merge_loras_into_weights(
+            &adapter_path,
+            &out_path,
+            &[resolved],
+            1.0,
+            &device,
+            MergeTarget::MOTION_ADAPTER,
+        )
+        .expect("merge succeeds");
+        assert_eq!(total, 1, "should see exactly 1 LoRA target group");
+        assert_eq!(modified, 1, "should modify the single matching target");
+
+        // Verify the merged file has the same base key and that
+        // the value differs from the original (i.e. the delta
+        // was actually applied).
+        let merged: HashMap<String, Tensor> =
+            candle_core::safetensors::load(&out_path, &device).unwrap();
+        assert!(merged.contains_key(&base_key));
+        let merged_w = merged.get(&base_key).unwrap();
+        let diff = (merged_w - &base_weight)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap();
+        let v: f32 = diff.to_vec0().unwrap();
+        // With random small init, the delta should be visibly
+        // non-zero. Loose bound — the actual value depends on
+        // the random init.
+        let _ = dtype;
+        assert!(v > 0.0, "merged tensor identical to base — delta not applied");
+    }
+
+    /// Empty motion-LoRA list is a no-op: load_v3_with_motion_loras
+    /// returns the same MotionAdapter as load_v3 (no tempfile, no
+    /// merge).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[ignore] // network — downloads V3 adapter
+    async fn load_v3_with_empty_motion_loras_is_noop() {
+        use candle_core::Device;
+        let adapter =
+            MotionAdapter::load_v3_with_motion_loras(&[], 1.0, &Device::Cpu)
+                .await
+                .expect("load");
+        // Same tensor count as direct load.
+        let direct = MotionAdapter::load_v3().await.unwrap();
+        assert_eq!(adapter.tensor_count(), direct.tensor_count());
+        assert_eq!(adapter.weights_path, direct.weights_path);
     }
 
     /// Network-required: downloads ~1.4 GB on first run. Run
