@@ -178,6 +178,17 @@ pub struct ScriptCtx {
     /// `mark_loras_changed` (any pipeline-invalidating mutation
     /// also drops these tempfiles).
     pub cn_annotation_cache: Option<CnAnnotationCache>,
+    /// v0.25 phase 8: active art-medium preset (set by
+    /// `plakat.look.apply`). When `Some`, the next `plakat.generate`
+    /// / `.portrait` / `.img2img` applies the preset's prompt
+    /// prefix/suffix + sampler/steps/guidance hints and (when
+    /// `ctx.loras` is empty) runs auto-LoRA discovery. Mirrors
+    /// `--look NAME`.
+    pub look_name: Option<String>,
+    /// v0.25 phase 8: active subject-domain preset (set by
+    /// `plakat.genre.apply`). Independent axis from `look_name`;
+    /// composes additively. Mirrors `--genre NAME`.
+    pub genre_name: Option<String>,
 }
 
 /// v0.24 phase 8: per-loaded-pipeline annotation cache. The
@@ -221,6 +232,8 @@ impl ScriptCtx {
             portrait_photos: Vec::new(),
             embeddings: Vec::new(),
             cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -876,6 +889,8 @@ mod tests {
             portrait_photos: Vec::new(),
             embeddings: Vec::new(),
             cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         }
     }
 

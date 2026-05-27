@@ -119,6 +119,11 @@ pub struct GenerationConfig {
     /// "style_catalog" "path/to/catalog"`. Read by
     /// `plakat.style.apply` / `.detect` / `.list` at resolve time.
     pub style_catalog: String,
+    /// v0.25 phase 8: skip remote LoRA discovery for `plakat.look.*`
+    /// / `plakat.genre.*` (use cache + local scan only). Mirrors the
+    /// CLI `--offline` flag. Default `false`. Set with
+    /// `plakat.config.set "offline_discovery" "true"`.
+    pub offline_discovery: bool,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
     /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
     /// identity / colour; higher = more rework. Ignored when
@@ -328,6 +333,7 @@ impl Default for GenerationConfig {
             refiner_frac: 0.8,
             style_strength: 1.0,
             style_catalog: String::new(),
+            offline_discovery: false,
             adetailer_strength: 0.4,
             adetailer_padding: 0.25,
             adetailer_feather: 0.25,
@@ -554,6 +560,13 @@ impl GenerationConfig {
                 // loaded lazily inside the plakat.style.* words.
                 self.style_catalog = value.to_string();
             }
+            "offline_discovery" => {
+                // v0.25 phase 8: mirrors the CLI --offline flag for
+                // plakat.look.* / plakat.genre.* auto-discovery.
+                // Accepts "true"/"false" / "1"/"0" / "yes"/"no" via
+                // parse_bool below.
+                self.offline_discovery = parse_bool(value, key)?;
+            }
             "artefact_blend_strength" => {
                 let f = parse_unit_float(value, key)? as f32;
                 self.artefact_blend_strength = f;
@@ -764,7 +777,8 @@ impl GenerationConfig {
                      enhance_cache, enhance_system, enhance_keep_original, \
                      aspect, base, mask_feather, mask_invert, clip_skip, \
                      wildcard_dir, negative_preset, style_catalog, \
-                     face_bbox, face_landmarks, identity_kind."
+                     face_bbox, face_landmarks, identity_kind, \
+                     offline_discovery."
                 ));
             }
         }

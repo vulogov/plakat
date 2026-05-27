@@ -17,10 +17,12 @@ pub mod echo;
 pub mod embedding;
 pub mod enhance;
 pub mod generate;
+pub mod genre;
 pub mod hires;
 pub mod img2img;
 pub mod inpaint;
 pub mod load;
+pub mod look;
 pub mod lora;
 pub mod metadata;
 pub mod outpaint;
@@ -161,6 +163,19 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.style.clear: {e}"))?;
     vm.register_inline("plakat.style.list".to_string(), style::plakat_style_list)
         .map_err(|e| anyhow!("registering plakat.style.list: {e}"))?;
+    // v0.25 phase 8: plakat.look.* + plakat.genre.* namespaces.
+    vm.register_inline("plakat.look.apply".to_string(), look::plakat_look_apply)
+        .map_err(|e| anyhow!("registering plakat.look.apply: {e}"))?;
+    vm.register_inline("plakat.look.clear".to_string(), look::plakat_look_clear)
+        .map_err(|e| anyhow!("registering plakat.look.clear: {e}"))?;
+    vm.register_inline("plakat.look.list".to_string(), look::plakat_look_list)
+        .map_err(|e| anyhow!("registering plakat.look.list: {e}"))?;
+    vm.register_inline("plakat.genre.apply".to_string(), genre::plakat_genre_apply)
+        .map_err(|e| anyhow!("registering plakat.genre.apply: {e}"))?;
+    vm.register_inline("plakat.genre.clear".to_string(), genre::plakat_genre_clear)
+        .map_err(|e| anyhow!("registering plakat.genre.clear: {e}"))?;
+    vm.register_inline("plakat.genre.list".to_string(), genre::plakat_genre_list)
+        .map_err(|e| anyhow!("registering plakat.genre.list: {e}"))?;
     // v0.23 phase 5: plakat.inpaint host word.
     vm.register_inline("plakat.inpaint".to_string(), inpaint::plakat_inpaint)
         .map_err(|e| anyhow!("registering plakat.inpaint: {e}"))?;
