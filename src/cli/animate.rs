@@ -42,8 +42,11 @@ pub struct AnimateArgs {
     #[arg(long)]
     pub from: String,
 
-    /// Second prompt — the last frame renders this.
-    #[arg(long)]
+    /// Second prompt — the last frame renders this. Required for
+    /// the v0.20 lerp morph (default mode); **optional and ignored**
+    /// in `--animatediff` mode (single-prompt motion-coherent
+    /// generation reuses `--from` for every frame).
+    #[arg(long, default_value = "")]
     pub to: String,
 
     /// Frame count (≥ 2). Frame N maps to lerp factor
@@ -124,6 +127,23 @@ pub struct AnimateArgs {
     #[arg(long = "motion-lora", value_name = "SPEC")]
     pub motion_loras: Vec<crate::pipelines::lora::LoraSpec>,
 
+    /// **v0.26**: per-LoRA scale multiplier for `--motion-lora`,
+    /// stacked on top of each spec's own `:scale` suffix. Mirrors
+    /// `--lora-scale` from `plakat generate`. Default `1.0`.
+    #[arg(long = "motion-lora-scale", default_value_t = 1.0)]
+    pub motion_lora_scale: f32,
+
+    /// **v0.26**: output format(s). `frames` is the default
+    /// (always writes per-frame PNGs). `gif` adds an animated
+    /// GIF (equivalent to the v0.20 `--gif` flag). `mp4` / `webm`
+    /// invoke ffmpeg (must be on `$PATH`) to encode a video.
+    /// `all` writes every format.
+    ///
+    /// Composes with `--gif`: passing `--gif` is equivalent to
+    /// `--format gif`. When both are set, `--format` wins.
+    #[arg(long, value_name = "FMT", default_value = "frames")]
+    pub format: crate::imaging::video::Format,
+
     /// v0.18 phase 6: skip the A1111 `parameters` PNG tEXt chunk
     /// and the `.json` sidecar that animate writes alongside each
     /// `frame-NNNN.png`. Default off — metadata helps you re-render
@@ -142,6 +162,24 @@ pub struct AnimateArgs {
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
+    // v0.26 phase 5: AnimateDiff dispatch routing. When
+    // --animatediff is set, route through the AnimateDiff stack
+    // (motion adapter + vendored UNet) instead of the v0.20
+    // prompt-lerp morph. The actual inference dispatch is
+    // deferred per RFC §12 — phase 5 ships the routing skeleton
+    // so the CLI surface is stable, and the implementation
+    // closure lands in v0.26.1.
+    if args.animatediff {
+        return run_animatediff(args, device).await;
+    }
+
+    if args.to.is_empty() {
+        anyhow::bail!(
+            "--to is required for the v0.20 prompt-lerp animate mode. \
+             Pass `--to \"<second prompt>\"` or switch to AnimateDiff \
+             with `--animatediff` (single-prompt motion-coherent mode)."
+        );
+    }
     if args.frames < 2 {
         anyhow::bail!("--frames must be ≥ 2 (got {})", args.frames);
     }
@@ -902,6 +940,92 @@ async fn run_flux(
         spin.finish_with_message(format!("✓ {}", gif_path.display()));
     }
     Ok(())
+}
+
+/// v0.26 phase 5: AnimateDiff dispatch. Loads the V3 motion
+/// stack (with optional motion LoRAs), then routes through
+/// [`crate::pipelines::animatediff::AnimateDiffPipeline::generate`]
+/// — which currently bails with a v0.26.1 deferral message. The
+/// stack assembly itself is real (network-required first-run,
+/// cached afterward); the inference loop closes in v0.26.1.
+///
+/// Single-prompt mode: `--from` is the prompt, `--to` is ignored
+/// (logged at info level if non-empty).
+async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
+    use crate::pipelines::animatediff::AnimateDiffPipeline;
+
+    // Hard gate: SD 1.5 only. SDXL motion adapters exist but are
+    // less mature (RFC §6 Q2) — deferred to v0.27.
+    let alias_l = args.model.to_lowercase();
+    let is_sd15 = alias_l == "sd15"
+        || alias_l == "sd1.5"
+        || alias_l == "sd-1.5"
+        || alias_l.contains("v1-5")
+        || alias_l.contains("stable-diffusion-v1-5");
+    if !is_sd15 {
+        anyhow::bail!(
+            "`--animatediff` requires --model sd15 (got --model {}). \
+             SDXL motion adapters exist but are deferred to v0.27. \
+             v0.26 ships AnimateDiff V3 on SD 1.5 only.",
+            args.model,
+        );
+    }
+    let max_seq = 32usize;
+    if (args.frames as usize) > max_seq {
+        anyhow::bail!(
+            "--frames {} exceeds AnimateDiff V3's motion_max_seq_length ({}). \
+             Use --frames ≤ {}.",
+            args.frames,
+            max_seq,
+            max_seq,
+        );
+    }
+
+    if !args.to.is_empty() {
+        tracing::info!(
+            target: "plakat",
+            "--animatediff ignores --to (single-prompt mode). \
+             Using --from for every frame."
+        );
+    }
+    if args.format.needs_ffmpeg() {
+        let v = crate::imaging::video::ffmpeg_version()?;
+        tracing::info!(target: "plakat", "ffmpeg detected: {v}");
+    }
+
+    let dtype = if matches!(device, Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::BF16
+    };
+
+    let pipeline = AnimateDiffPipeline::load_v3(
+        &device,
+        dtype,
+        &args.motion_loras,
+        args.motion_lora_scale,
+    )
+    .await
+    .context("loading AnimateDiff V3 stack")?;
+
+    tracing::info!(
+        target: "plakat",
+        "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
+        pipeline.modules.modules.len(),
+        pipeline.max_frames,
+    );
+
+    let (width, height) = parse_size(&args.size)?;
+    pipeline
+        .generate(
+            &args.from,
+            &args.negative,
+            args.frames as usize,
+            args.seed.unwrap_or(0),
+            width,
+            height,
+        )
+        .await
 }
 
 fn write_gif(
