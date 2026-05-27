@@ -419,6 +419,65 @@ mod tests {
         });
     }
 
+    // v0.24 phase 4: plakat.outpaint surface (state-only).
+
+    /// `plakat.outpaint` bails when expand-spec is malformed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outpaint_empty_spec_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""prompt" "./photo.png" "" plakat.outpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("expand-spec"), "got {msg}");
+        });
+    }
+
+    /// `plakat.outpaint` bails when all sides are zero.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outpaint_all_zero_spec_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""prompt" "./photo.png" "left=0,right=0" plakat.outpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("> 0"), "got {msg}");
+        });
+    }
+
+    /// `plakat.outpaint` bails on an unknown spec key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outpaint_unknown_spec_key_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""prompt" "./photo.png" "middle=128" plakat.outpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("unknown expand-spec"), "got {msg}");
+        });
+    }
+
+    /// `plakat.outpaint` bails when no model is loaded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outpaint_no_model_loaded_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            let err = eval(
+                r#""prompt" "./photo.png" "expand=128" plakat.outpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+        });
+    }
+
     // v0.23 phase 5: plakat.inpaint surface (state-only).
 
     /// `plakat.inpaint` without a loaded model bails with a

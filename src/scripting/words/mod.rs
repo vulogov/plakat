@@ -21,6 +21,7 @@ pub mod img2img;
 pub mod inpaint;
 pub mod load;
 pub mod lora;
+pub mod outpaint;
 pub mod portrait;
 pub mod portrait_photo;
 pub mod refiner;
@@ -176,6 +177,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         portrait_photo::plakat_portrait_photo_list,
     )
     .map_err(|e| anyhow!("registering plakat.portrait.photo.list: {e}"))?;
+    // v0.24 phase 4: plakat.outpaint host word.
+    vm.register_inline("plakat.outpaint".to_string(), outpaint::plakat_outpaint)
+        .map_err(|e| anyhow!("registering plakat.outpaint: {e}"))?;
     Ok(())
 }
 
