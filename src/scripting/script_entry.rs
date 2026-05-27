@@ -1223,7 +1223,6 @@ fn img2img_or_inpaint_one(
 pub fn portrait_one(
     ctx: &mut ScriptCtx,
     prompt: &str,
-    photo_path: &Path,
 ) -> Result<DynamicImage> {
     let alias = ctx
         .loaded_model()
@@ -1234,6 +1233,19 @@ pub fn portrait_one(
             )
         })?
         .to_string();
+
+    // v0.24 phase 1: photos come from the multi-photo stack
+    // populated by `plakat.portrait.photo.add`. Empty stack →
+    // bail loudly so users get a clear "add at least one
+    // photo first" error.
+    if ctx.portrait_photos.is_empty() {
+        bail!(
+            "plakat.portrait: no photo configured. Push at least one \
+             photo onto the portrait stack with `plakat.portrait.photo.add \
+             ( path-or-handle weight -- )` before calling plakat.portrait."
+        );
+    }
+    let photos = ctx.portrait_photos.clone();
 
     // v0.22 phase 11: wildcard expansion (matches generate_one).
     let prompt_owned = expand_prompt(ctx, prompt)?;
@@ -1261,7 +1273,6 @@ pub fn portrait_one(
         .prefix("plakat-script-portrait-")
         .tempdir()
         .context("creating tempdir for plakat.portrait output")?;
-    let photos = vec![WeightedPhoto::single(photo_path.to_path_buf())];
     let mut req = build_gen_request(ctx, prompt, photos, tmp.path().to_path_buf());
     // Override per-family default size for portrait: 3:4
     // is the CLI default. Honour size_explicit override.
@@ -1406,6 +1417,7 @@ mod tests {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;

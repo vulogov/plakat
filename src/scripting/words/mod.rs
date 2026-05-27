@@ -22,6 +22,7 @@ pub mod inpaint;
 pub mod load;
 pub mod lora;
 pub mod portrait;
+pub mod portrait_photo;
 pub mod refiner;
 pub mod save;
 pub mod style;
@@ -159,6 +160,22 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // v0.23 phase 5: plakat.inpaint host word.
     vm.register_inline("plakat.inpaint".to_string(), inpaint::plakat_inpaint)
         .map_err(|e| anyhow!("registering plakat.inpaint: {e}"))?;
+    // v0.24 phase 1: plakat.portrait.photo.* multi-photo namespace.
+    vm.register_inline(
+        "plakat.portrait.photo.add".to_string(),
+        portrait_photo::plakat_portrait_photo_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.add: {e}"))?;
+    vm.register_inline(
+        "plakat.portrait.photo.clear".to_string(),
+        portrait_photo::plakat_portrait_photo_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.portrait.photo.list".to_string(),
+        portrait_photo::plakat_portrait_photo_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.list: {e}"))?;
     Ok(())
 }
 

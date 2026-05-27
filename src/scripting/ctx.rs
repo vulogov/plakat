@@ -138,6 +138,19 @@ pub struct ScriptCtx {
     /// are `Some`, the photo runs detection (for logging) but
     /// `style_id` wins. Mirrors `--style-ref PATH`.
     pub style_ref: Option<std::path::PathBuf>,
+    /// v0.24 phase 1: multi-photo portrait stack. Populated via
+    /// `plakat.portrait.photo.add ( path weight -- )`; drained
+    /// by `plakat.portrait.photo.clear`. `plakat.portrait
+    /// ( prompt -- handle )` reads this stack and bails when
+    /// empty. Mirrors the v0.22 LoRA/ControlNet pattern — state
+    /// accumulates between calls, mutations don't invalidate
+    /// the cache (photos are per-call on the SD-family path).
+    ///
+    /// Each entry's `weight` is `Some(f32)` for an explicit
+    /// weight or `None` for "auto-fill the remainder." Same
+    /// normalisation as `cli::portrait`
+    /// (`ip_adapter::normalize_photo_weights`).
+    pub portrait_photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
 }
 
 impl ScriptCtx {
@@ -165,6 +178,7 @@ impl ScriptCtx {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -806,6 +820,7 @@ mod tests {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
         }
     }
 
