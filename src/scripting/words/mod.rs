@@ -22,6 +22,7 @@ pub mod img2img;
 pub mod inpaint;
 pub mod load;
 pub mod lora;
+pub mod metadata;
 pub mod outpaint;
 pub mod portrait;
 pub mod portrait_photo;
@@ -201,6 +202,12 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // v0.24 phase 6: plakat.stylize (IP-Adapter style transfer).
     vm.register_inline("plakat.stylize".to_string(), stylize::plakat_stylize)
         .map_err(|e| anyhow!("registering plakat.stylize: {e}"))?;
+    // v0.24 phase 7: plakat.metadata.read (JSON sidecar reader).
+    vm.register_inline(
+        "plakat.metadata.read".to_string(),
+        metadata::plakat_metadata_read,
+    )
+    .map_err(|e| anyhow!("registering plakat.metadata.read: {e}"))?;
     Ok(())
 }
 
