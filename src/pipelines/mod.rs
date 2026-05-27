@@ -15,6 +15,7 @@ pub mod tiled;
 pub mod extra_schedulers;
 pub mod hires_fix;
 pub mod img2img;
+pub mod motion_adapter;
 pub mod face_models;
 pub mod faceid_lora;
 pub mod flux;
