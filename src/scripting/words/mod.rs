@@ -28,6 +28,7 @@ pub mod portrait_photo;
 pub mod refiner;
 pub mod save;
 pub mod style;
+pub mod stylize;
 pub mod upscale;
 
 /// Register every `plakat.*` word into `vm`. v0.21 shipped 7
@@ -197,6 +198,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         embedding::plakat_embedding_list,
     )
     .map_err(|e| anyhow!("registering plakat.embedding.list: {e}"))?;
+    // v0.24 phase 6: plakat.stylize (IP-Adapter style transfer).
+    vm.register_inline("plakat.stylize".to_string(), stylize::plakat_stylize)
+        .map_err(|e| anyhow!("registering plakat.stylize: {e}"))?;
     Ok(())
 }
 
