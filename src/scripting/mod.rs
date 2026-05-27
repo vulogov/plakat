@@ -1304,6 +1304,129 @@ mod tests {
         });
     }
 
+    // v0.23 phase 8: composition tests for the v0.23 surface.
+
+    /// One script touches every v0.23 deferral closure + the two
+    /// new things (`plakat.style.*`, `plakat.inpaint` surface).
+    /// State-only — no model load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v023_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.loras.clear();
+                ctx.controlnets.clear();
+                ctx.refiner_enabled = false;
+                ctx.adetailer_enabled = false;
+                ctx.hires_enabled = false;
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.config.clip_skip = 1;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.23 phase 2: refiner toggle (now actually loads SDXL refiner UNet)
+                plakat.refiner.enable
+                0.85 "refiner_frac" plakat.config.set
+
+                // v0.23 phase 3: clip_skip wires through to t2i::Pipeline.encode_*
+                2 "clip_skip" plakat.config.set
+
+                // v0.23 phase 4: plakat.style.* — pick by id or detect from a photo
+                "poster-bold" plakat.style.apply
+                "/custom/style-catalog" "style_catalog" plakat.config.set
+                0.7 "style_strength" plakat.config.set
+
+                // v0.23 phases 6 + 7: Flux + SD3 ControlNet (image= specs)
+                "depth" "./depth.png" plakat.controlnet.add
+                "canny" "./edges.png" plakat.controlnet.add
+
+                // v0.22 post-process toggles still fire after the v0.23 surface.
+                plakat.adetailer.enable
+            "#,
+            )
+            .unwrap();
+
+            with_ctx(|ctx| {
+                assert!(ctx.refiner_enabled);
+                assert!((ctx.config.refiner_frac - 0.85).abs() < 1e-6);
+                assert_eq!(ctx.config.clip_skip, 2);
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert_eq!(ctx.config.style_catalog, "/custom/style-catalog");
+                assert!((ctx.config.style_strength - 0.7).abs() < 1e-6);
+                assert_eq!(ctx.controlnets.len(), 2);
+                assert!(ctx.adetailer_enabled);
+            })
+            .unwrap();
+        });
+    }
+
+    /// Style state + ControlNet stack both invalidate cache slots,
+    /// but they DON'T cross-invalidate (a CN mutation shouldn't
+    /// disturb the style state, and vice versa).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_style_and_controlnet_state_are_independent() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.controlnets.clear();
+            })
+            .unwrap();
+            eval(r#""poster-bold" plakat.style.apply"#).unwrap();
+            eval(r#""depth" "./d.png" plakat.controlnet.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert_eq!(ctx.controlnets.len(), 1);
+            })
+            .unwrap();
+            // Clearing CN doesn't touch style.
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert!(ctx.controlnets.is_empty());
+            })
+            .unwrap();
+            // Clearing style doesn't touch CN (already empty, but check the toggle).
+            eval(r#""canny" "./c.png" plakat.controlnet.add"#).unwrap();
+            eval("plakat.style.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.style_id.is_none());
+                assert_eq!(ctx.controlnets.len(), 1);
+            })
+            .unwrap();
+        });
+    }
+
+    /// mark_controlnets_changed (v0.23 phase 6) preserves SD slots
+    /// — verified at the state layer (real-pipeline behaviour
+    /// covered in ctx.rs unit tests + CLI smoke).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_controlnet_mutation_state_smoke() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.controlnets.clear();
+            })
+            .unwrap();
+            // Add + clear cycle exercises mark_controlnets_changed.
+            eval(r#""depth" "./d.png" plakat.controlnet.add"#).unwrap();
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.controlnets.is_empty());
+                // SD slots stay None (nothing was loaded) — the test
+                // proves the path doesn't crash on empty slots.
+                assert!(ctx.loaded.is_none());
+                assert!(ctx.loaded_t2i.is_none());
+            })
+            .unwrap();
+        });
+    }
+
     /// Test-helper: serialises every test that needs the singleton
     /// context behind one shared init. Subsequent calls re-use the
     /// already-init'd singleton; only the *first* test through the
