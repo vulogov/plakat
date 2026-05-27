@@ -100,12 +100,34 @@ pub struct Catalog {
 
 impl Catalog {
     /// Load the bundled catalog for `kind` from
-    /// `assets/{looks,genres}/catalog.json` relative to the current
-    /// working directory. Phase 9 layers user-extension lookup on
-    /// top via [`Self::load_with_user_dir`].
+    /// `assets/{looks,genres}/catalog.json`, then merge user
+    /// extensions from `$CONFIG_DIR/{looks,genres}/*.json` on top.
+    /// User entries shadow bundled by `name`.
+    ///
+    /// For hermetic tests + scripted overrides, see
+    /// [`Self::load_with_user_dir`].
     pub fn load_default(kind: Kind) -> Result<Self> {
+        Self::load_with_user_dir(kind, user_extension_dir(kind).as_deref())
+    }
+
+    /// Load bundled + optional user-extension directory. Pass
+    /// `user_dir = None` to skip user extensions entirely (used by
+    /// tests that pin exact entry counts).
+    pub fn load_with_user_dir(kind: Kind, user_dir: Option<&Path>) -> Result<Self> {
         let path = PathBuf::from(kind.default_asset_dir()).join("catalog.json");
-        Self::load_from(&path, kind)
+        let mut catalog = Self::load_from(&path, kind)?;
+        if let Some(dir) = user_dir {
+            let user_specs = load_user_extensions(dir, kind);
+            for u in user_specs {
+                // User overrides bundled by name.
+                if let Some(idx) = catalog.entries.iter().position(|e| e.name == u.name) {
+                    catalog.entries[idx] = u;
+                } else {
+                    catalog.entries.push(u);
+                }
+            }
+        }
+        Ok(catalog)
     }
 
     /// Load from an explicit `catalog.json` path. Surfaced for tests
@@ -246,6 +268,109 @@ impl PresetSpec {
             Some(list) => list.iter().any(|b| b == base),
         }
     }
+}
+
+/// v0.25 phase 9: user-extension directory for `kind`. Returns
+/// `None` on platforms without a resolvable config dir (very rare
+/// — only on stripped systems with no `$HOME`).
+///
+/// Same `directories::ProjectDirs` lookup the negative-presets
+/// catalog uses, so the directories live next to each other:
+/// * Linux:   `~/.config/plakat/{looks,genres}/`
+/// * macOS:   `~/Library/Application Support/ai.plakat.plakat/{looks,genres}/`
+/// * Windows: `%APPDATA%\plakat\plakat\config\{looks,genres}\`
+pub fn user_extension_dir(kind: Kind) -> Option<PathBuf> {
+    let subdir = match kind {
+        Kind::Look => "looks",
+        Kind::Genre => "genres",
+    };
+    directories::ProjectDirs::from("ai", "plakat", "plakat")
+        .map(|d| d.config_dir().join(subdir))
+}
+
+/// True for kebab-/snake-case identifiers. Anything that could
+/// escape the user directory (slashes, `..`) or produce surprising
+/// catalog names gets rejected.
+fn is_safe_user_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Scan `dir` for `*.json` user-extension files and parse each as
+/// a [`PresetSpec`]. Each file holds ONE preset (the inner object
+/// shape, no `looks: [...]` wrapper).
+///
+/// Parse errors and invalid entries are logged via `tracing::warn`
+/// and skipped — the bundled catalog still works. The file's stem
+/// is authoritative: if `spec.name` differs from the filename
+/// stem, the stem wins (with a warning).
+///
+/// Returns an empty vec if the directory doesn't exist.
+fn load_user_extensions(dir: &Path, kind: Kind) -> Vec<PresetSpec> {
+    let read = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let kind_label = match kind {
+        Kind::Look => "look",
+        Kind::Genre => "genre",
+    };
+    let mut out = Vec::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) if is_safe_user_name(s) => s.to_string(),
+            Some(s) => {
+                tracing::warn!(
+                    target: "plakat",
+                    "user {kind_label} file {} has unsafe stem {s:?} — skipping",
+                    path.display()
+                );
+                continue;
+            }
+            None => continue,
+        };
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    target: "plakat",
+                    "reading user {kind_label} {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let mut spec: PresetSpec = match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    target: "plakat",
+                    "parsing user {kind_label} {} (JSON error {e}) — skipping. \
+                     See assets/{kind_label}s/README.md for the field shape.",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        if spec.name != stem {
+            tracing::warn!(
+                target: "plakat",
+                "user {kind_label} {} declares name={:?} but filename stem is {stem:?} \
+                 — using stem as the catalog key",
+                path.display(),
+                spec.name,
+            );
+            spec.name = stem;
+        }
+        out.push(spec);
+    }
+    out
 }
 
 /// Apply look + genre presets to `params`. Loads the bundled
@@ -432,7 +557,10 @@ mod tests {
 
     #[test]
     fn bundled_looks_catalog_parses() {
-        let cat = Catalog::load_default(Kind::Look).expect("load bundled looks");
+        // Skip user-extension scan so the dev's ~/.config/plakat/looks/
+        // doesn't perturb the entry count.
+        let cat = Catalog::load_with_user_dir(Kind::Look, None)
+            .expect("load bundled looks");
         assert_eq!(cat.schema_version, 1);
         assert_eq!(cat.entries.len(), 8);
         let names = cat.names();
@@ -452,7 +580,8 @@ mod tests {
 
     #[test]
     fn bundled_genres_catalog_parses() {
-        let cat = Catalog::load_default(Kind::Genre).expect("load bundled genres");
+        let cat = Catalog::load_with_user_dir(Kind::Genre, None)
+            .expect("load bundled genres");
         assert_eq!(cat.schema_version, 1);
         assert_eq!(cat.entries.len(), 1);
         assert_eq!(cat.find("anime").map(|e| e.name.as_str()), Some("anime"));
@@ -707,6 +836,149 @@ mod tests {
         let mut p = GenerationParams::default();
         let err = apply_presets(None, Some("not-a-real-genre"), &mut p).unwrap_err();
         assert!(err.to_string().contains("unknown --genre"));
+    }
+
+    // v0.25 phase 9: user-extension directory loading.
+
+    /// Helper: write a user-extension preset JSON file into `dir`.
+    fn write_user_preset(dir: &std::path::Path, name: &str, prompt_prefix: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let spec = serde_json::json!({
+            "name": name,
+            "display_name": name,
+            "description": "user-supplied",
+            "prompt_prefix": prompt_prefix,
+            "prompt_suffix": null,
+            "negative_extras": null,
+            "scheduler_hint": null,
+            "steps": null,
+            "guidance": null,
+            "lora_query": null,
+            "base_compat": null
+        });
+        let path = dir.join(format!("{name}.json"));
+        std::fs::write(&path, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn user_extension_adds_new_look() {
+        let dir = tempfile::tempdir().unwrap();
+        write_user_preset(dir.path(), "my-style", "my-style painting, custom");
+
+        let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
+        // 8 bundled + 1 user.
+        assert_eq!(cat.entries.len(), 9);
+        let my = cat.find("my-style").expect("user look present");
+        assert_eq!(my.prompt_prefix.as_deref(), Some("my-style painting, custom"));
+    }
+
+    #[test]
+    fn user_extension_overrides_bundled_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_user_preset(dir.path(), "watercolor", "STRICTER WATERCOLOR PREFIX");
+
+        let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
+        // Still 8 entries — the user file shadows the bundled
+        // watercolor entry rather than adding a duplicate.
+        assert_eq!(cat.entries.len(), 8);
+        let wc = cat.find("watercolor").unwrap();
+        assert_eq!(wc.prompt_prefix.as_deref(), Some("STRICTER WATERCOLOR PREFIX"));
+    }
+
+    #[test]
+    fn user_extension_none_path_skips_user_scan() {
+        // None disables the user-extension scan even on a system
+        // where ~/.config/plakat/looks/ has files (the pinned-count
+        // tests rely on this).
+        let cat = Catalog::load_with_user_dir(Kind::Look, None).unwrap();
+        assert_eq!(cat.entries.len(), 8);
+    }
+
+    #[test]
+    fn user_extension_nonexistent_dir_is_empty() {
+        let cat = Catalog::load_with_user_dir(
+            Kind::Look,
+            Some(std::path::Path::new("/does-not-exist-xyz123")),
+        )
+        .unwrap();
+        assert_eq!(cat.entries.len(), 8);
+    }
+
+    #[test]
+    fn user_extension_bad_json_skipped_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("broken.json"), "{ not valid json").unwrap();
+        // Bundled catalog still loads; corrupt file is logged + skipped.
+        let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
+        assert_eq!(cat.entries.len(), 8);
+        assert!(cat.find("broken").is_none());
+    }
+
+    #[test]
+    fn user_extension_unsafe_filename_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        // Inject a hostile filename — `..` is not a safe stem.
+        // (We can't actually create a file literally named "..",
+        // but the load logic also rejects non-alphanumeric chars.)
+        std::fs::write(dir.path().join("evil name.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("..hidden.json"), "{}").unwrap();
+        let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
+        assert_eq!(cat.entries.len(), 8);
+    }
+
+    #[test]
+    fn user_extension_filename_authoritative_over_inner_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // File is `my-look.json` but inner JSON says name="lies".
+        // The stem must win.
+        let spec = serde_json::json!({
+            "name": "lies",
+            "display_name": "X",
+            "description": "...",
+            "prompt_prefix": "X",
+            "prompt_suffix": null,
+            "negative_extras": null,
+            "scheduler_hint": null,
+            "steps": null,
+            "guidance": null,
+            "lora_query": null,
+            "base_compat": null
+        });
+        std::fs::write(
+            dir.path().join("my-look.json"),
+            serde_json::to_string(&spec).unwrap(),
+        )
+        .unwrap();
+        let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
+        assert!(cat.find("my-look").is_some());
+        assert!(
+            cat.find("lies").is_none(),
+            "inner name shouldn't be used as key"
+        );
+    }
+
+    #[test]
+    fn user_extension_works_for_genres_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_user_preset(dir.path(), "cyberpunk", "cyberpunk, neon");
+        let cat = Catalog::load_with_user_dir(Kind::Genre, Some(dir.path())).unwrap();
+        // 1 bundled (anime) + 1 user (cyberpunk).
+        assert_eq!(cat.entries.len(), 2);
+        assert!(cat.find("anime").is_some());
+        assert!(cat.find("cyberpunk").is_some());
+    }
+
+    #[test]
+    fn is_safe_user_name_rejects_traversal() {
+        assert!(is_safe_user_name("watercolor"));
+        assert!(is_safe_user_name("my_look"));
+        assert!(is_safe_user_name("look-v2"));
+        assert!(!is_safe_user_name(""));
+        assert!(!is_safe_user_name(".."));
+        assert!(!is_safe_user_name("../etc"));
+        assert!(!is_safe_user_name("a/b"));
+        assert!(!is_safe_user_name("a b"));
+        assert!(!is_safe_user_name("a.b"));
     }
 
     /// Composing a look + a genre on the same params: the second
