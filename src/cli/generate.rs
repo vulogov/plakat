@@ -419,6 +419,15 @@ pub struct GenerateArgs {
     #[arg(long = "genre", value_name = "NAME")]
     pub genre: Option<String>,
 
+    /// **v0.25**: skip remote LoRA discovery for `--look` /
+    /// `--genre`. Discovery normally hits Civitai (and, phase 5+,
+    /// HF Hub and a local-cache scan); with `--offline`, only the
+    /// on-disk discovery cache (and phase 5's local scan) are
+    /// consulted. Useful for CI / reproducibility / air-gapped runs.
+    /// Has no effect when no `--look` / `--genre` is set.
+    #[arg(long, default_value_t = false)]
+    pub offline: bool,
+
     /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
     /// conditioning to the standard Flux variants (`flux-dev`,
     /// `flux-schnell`, GGUF, NF4) by encoding the image through
@@ -943,6 +952,71 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                 "  genre '{}': prompt/negative composed",
                 g.name
             ));
+        }
+
+        // v0.25 phase 4: automatic LoRA discovery. Gated on:
+        // - user's LoRA stack is empty (else respect the user's picks)
+        // - the resolved preset carries a `lora_query`
+        // Prefer the look's query (medium is more specific than
+        // genre); fall back to the genre's. Trigger words are
+        // prepended to the prompt via the existing dedup-aware
+        // `style::prepend_trigger` helper.
+        if args.loras.is_empty() {
+            let query_source = look_spec
+                .as_ref()
+                .filter(|s| s.lora_query.is_some())
+                .or(genre_spec.as_ref().filter(|s| s.lora_query.is_some()));
+            if let Some(spec) = query_source {
+                let query = spec.lora_query.as_ref().expect("filter guarantees Some");
+                let opts = crate::preset::discovery::DiscoveryOptions::with_defaults(
+                    args.offline,
+                    crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+                );
+                match crate::preset::discovery::discover_lora(query, &spec.name, &opts).await {
+                    Ok(Some(d)) => {
+                        crate::ui::progress::println(&format!(
+                            "  discovered LoRA '{}' (scale={}) for '{}'{}",
+                            d.model_name,
+                            d.spec.scale,
+                            spec.name,
+                            d.source_url
+                                .as_deref()
+                                .map(|u| format!(" — {u}"))
+                                .unwrap_or_default(),
+                        ));
+                        if !d.trigger_words.is_empty() {
+                            let trigger = d.trigger_words.join(", ");
+                            args.prompt = crate::style::prepend_trigger(&trigger, &args.prompt);
+                            crate::ui::progress::println(&format!(
+                                "  trigger words prepended: {trigger}"
+                            ));
+                        }
+                        args.loras.push(d.spec);
+                    }
+                    Ok(None) => {
+                        crate::ui::progress::println(&format!(
+                            "  no compatible LoRA found for '{}'{}",
+                            spec.name,
+                            if args.offline { " (offline)" } else { "" },
+                        ));
+                    }
+                    Err(e) => {
+                        // Non-fatal: discovery failure shouldn't block
+                        // generation. The prompt prefix + sampler hints
+                        // already applied; the user just doesn't get the
+                        // matched LoRA.
+                        tracing::warn!(
+                            target: "plakat",
+                            "look-discovery failed for {}: {e:#}",
+                            spec.name
+                        );
+                        crate::ui::progress::println(&format!(
+                            "  ⚠ discovery failed for '{}': {e}",
+                            spec.name
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1613,6 +1687,7 @@ mod tests {
             fast: None,
             look: None,
             genre: None,
+            offline: false,
             redux_images: Vec::new(),
             concept_image: None,
             concept_from: None,

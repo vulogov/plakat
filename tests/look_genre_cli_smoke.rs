@@ -114,6 +114,62 @@ fn fully_flagged_invocation_keeps_user_values() {
     assert!(params.negative.contains("photographic"));
 }
 
+/// `--offline` flag is accepted on `generate` and lives on
+/// `GenerateArgs.offline` as a `bool`.
+#[test]
+fn generate_accepts_offline_flag() {
+    let cli = Cli::try_parse_from([
+        "plakat",
+        "generate",
+        "--look",
+        "watercolor",
+        "--offline",
+        "a cottage",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Generate(args) => {
+            assert_eq!(args.look.as_deref(), Some("watercolor"));
+            assert!(args.offline);
+        }
+        other => panic!("expected Generate, got {other:?}"),
+    }
+}
+
+/// Discovery end-to-end with offline + no cache → `Ok(None)`. No
+/// network call, no panic, just a silent miss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn offline_discovery_no_cache_is_noop() {
+    use plakat::preset::LoraQuery;
+    use plakat::preset::discovery::{BaseFamily, DiscoveryOptions, discover_lora};
+
+    let dir = tempfile::tempdir().unwrap();
+    let opts = DiscoveryOptions {
+        offline: true,
+        base: BaseFamily::Sdxl,
+        cache_root: dir.path().to_path_buf(),
+        scale: 0.8,
+    };
+    let q = LoraQuery {
+        tags: vec!["watercolor".into()],
+        keywords: vec!["watercolor".into()],
+    };
+    let result = discover_lora(&q, "watercolor", &opts).await.unwrap();
+    assert!(result.is_none(), "offline + empty cache must return None");
+}
+
+/// `BaseFamily::from_model_arg` returns the right family for each
+/// `--model` alias plakat accepts. Anchored here so regressions in
+/// `Variant::detect` are caught at the discovery layer too.
+#[test]
+fn base_family_for_common_model_aliases() {
+    use plakat::preset::discovery::BaseFamily;
+    assert_eq!(BaseFamily::from_model_arg("sd15"), BaseFamily::Sd15);
+    assert_eq!(BaseFamily::from_model_arg("sdxl"), BaseFamily::Sdxl);
+    assert_eq!(BaseFamily::from_model_arg("flux-dev"), BaseFamily::Flux);
+    assert_eq!(BaseFamily::from_model_arg("sd35-medium"), BaseFamily::Sd3);
+}
+
 /// Empty-user-side invocation: preset fills every override field
 /// + composes prompt and negative.
 #[test]
