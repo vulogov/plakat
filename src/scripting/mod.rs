@@ -255,33 +255,25 @@ mod tests {
         });
     }
 
-    /// SDXL refiner is deferred; calling generate with the toggle
-    /// on bails with the v0.23 message rather than silently
-    /// running without it.
+    /// v0.23 phase 2: SDXL refiner UNet load wires through. The
+    /// bail from v0.22 phase 6 is gone — `plakat.refiner.enable`
+    /// + `plakat.generate` on SDXL now loads with the refiner
+    /// UNet (smoke-tested at the CLI level; this unit test just
+    /// confirms the toggle round-trips without touching a real
+    /// model load).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn refiner_enabled_generate_bails_with_v023_message() {
+    async fn refiner_toggle_round_trip_v023_phase2() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
-                ctx.refiner_enabled = true;
+                ctx.refiner_enabled = false;
                 ctx.loras.clear();
                 ctx.controlnets.clear();
             })
             .unwrap();
-            // No model loaded; the no-model gate fires first, so
-            // we set a dummy loaded pipeline to push the refiner
-            // gate into firing order. Actually loaded is needed
-            // for the family detection — but the load gate fires
-            // before family routing. Cleanest: explicitly assert
-            // the refiner gate IS the one that fires when both
-            // model is loaded AND refiner is on.
-            //
-            // For phase 6 the simpler validation: just exercise
-            // `plakat.refiner.enable` + `plakat.refiner.disable`
-            // round-trip (above) and trust that the new bail in
-            // generate_one's SD-family branch lands the correct
-            // message at runtime. Without an actual loaded pipeline
-            // the no-model gate fires first.
+            eval("plakat.refiner.enable").unwrap();
+            with_ctx(|ctx| assert!(ctx.refiner_enabled)).unwrap();
             eval("plakat.refiner.disable").unwrap();
+            with_ctx(|ctx| assert!(!ctx.refiner_enabled)).unwrap();
         });
     }
 
@@ -424,6 +416,145 @@ mod tests {
             let msg = format!("{err}");
             assert!(msg.contains("provider"), "got {msg}");
             assert!(msg.contains("plakat.config.set"), "got {msg}");
+        });
+    }
+
+    // v0.23 phase 5: plakat.inpaint surface (state-only).
+
+    /// `plakat.inpaint` without a loaded model bails with a
+    /// recognisable message before touching the filesystem.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_no_model_loaded_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            let err = eval(
+                r#""fix the sky"  "./photo.png"  "./mask.png"  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+            assert!(msg.contains("plakat.inpaint"), "got {msg}");
+        });
+    }
+
+    /// `plakat.inpaint` with an empty mask path bails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_empty_mask_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(
+                r#""prompt"  "./photo.png"  ""  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("mask path can't be empty"), "got {msg}");
+        });
+    }
+
+    /// `plakat.inpaint` with a non-string non-int input bails
+    /// before model dispatch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_bad_input_type_bails() {
+        with_singleton_ctx(|| {
+            // Use a float for `input` — neither string nor int.
+            let err = eval(
+                r#""prompt"  3.14  "./mask.png"  plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("input must be a string path or an integer"),
+                "got {msg}"
+            );
+        });
+    }
+
+    // v0.23 phase 4: plakat.style.* end-to-end (state-only).
+
+    /// `plakat.style.apply` sets `ctx.style_id` and invalidates
+    /// both SD cache slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_apply_sets_id_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""poster-bold" plakat.style.apply"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert!(ctx.loaded.is_none(), "primary slot invalidated");
+                assert!(ctx.loaded_t2i.is_none(), "t2i slot invalidated");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.detect` sets `ctx.style_ref` and invalidates
+    /// both SD cache slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_detect_sets_ref_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""./ref.jpg" plakat.style.detect"#).unwrap();
+            with_ctx(|ctx| {
+                let path = ctx.style_ref.as_ref().expect("style_ref set");
+                assert!(path.to_string_lossy().ends_with("ref.jpg"));
+                assert!(ctx.loaded.is_none());
+                assert!(ctx.loaded_t2i.is_none());
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.clear` empties both fields.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_clear_empties_state() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = Some("test".into());
+                ctx.style_ref = Some("/tmp/x.jpg".into());
+            })
+            .unwrap();
+            eval("plakat.style.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.style_id.is_none());
+                assert!(ctx.style_ref.is_none());
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.style.apply ""` bails — empty id isn't useful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_apply_empty_id_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""" plakat.style.apply"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("empty"), "got {msg}");
+        });
+    }
+
+    /// `plakat.config.set "style_catalog" "..."` round-trips.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn style_catalog_config_key_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.config.style_catalog.clear()).unwrap();
+            eval(r#""/custom/styles" "style_catalog" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.config.style_catalog, "/custom/styles"))
+                .unwrap();
         });
     }
 
@@ -585,12 +716,15 @@ mod tests {
 
     /// `plakat.lora.add` pushes to ctx.loras and invalidates the
     /// cache (no real model load triggered — the test stays fast).
+    /// v0.23 phase 1: invalidation drops BOTH the primary slot
+    /// (portrait/flux/sd3) AND the secondary SD t2i slot.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lora_add_pushes_and_invalidates_cache() {
         with_singleton_ctx(|| {
             with_ctx_mut(|ctx| {
                 ctx.loras.clear();
                 ctx.loaded = None;
+                ctx.loaded_t2i = None;
             })
             .unwrap();
             eval(r#""civitai:12345" 0.7 plakat.lora.add"#).unwrap();
@@ -598,8 +732,9 @@ mod tests {
                 assert_eq!(ctx.loras.len(), 1, "lora pushed");
                 let spec = &ctx.loras[0];
                 assert!((spec.scale - 0.7).abs() < 1e-6);
-                // Cache must be None (invalidated by the mutation).
-                assert!(ctx.loaded.is_none(), "cache should be invalidated");
+                // Both cache slots must be invalidated.
+                assert!(ctx.loaded.is_none(), "primary slot invalidated");
+                assert!(ctx.loaded_t2i.is_none(), "t2i slot invalidated");
             })
             .unwrap();
         });
@@ -1166,6 +1301,129 @@ mod tests {
             // Anime preset text starts with "lowres" or similar —
             // assert it's a *combination*, not just the user input.
             assert!(combined.len() > "extra-junk-words".len() + 2);
+        });
+    }
+
+    // v0.23 phase 8: composition tests for the v0.23 surface.
+
+    /// One script touches every v0.23 deferral closure + the two
+    /// new things (`plakat.style.*`, `plakat.inpaint` surface).
+    /// State-only — no model load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v023_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.loras.clear();
+                ctx.controlnets.clear();
+                ctx.refiner_enabled = false;
+                ctx.adetailer_enabled = false;
+                ctx.hires_enabled = false;
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.config.clip_skip = 1;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.23 phase 2: refiner toggle (now actually loads SDXL refiner UNet)
+                plakat.refiner.enable
+                0.85 "refiner_frac" plakat.config.set
+
+                // v0.23 phase 3: clip_skip wires through to t2i::Pipeline.encode_*
+                2 "clip_skip" plakat.config.set
+
+                // v0.23 phase 4: plakat.style.* — pick by id or detect from a photo
+                "poster-bold" plakat.style.apply
+                "/custom/style-catalog" "style_catalog" plakat.config.set
+                0.7 "style_strength" plakat.config.set
+
+                // v0.23 phases 6 + 7: Flux + SD3 ControlNet (image= specs)
+                "depth" "./depth.png" plakat.controlnet.add
+                "canny" "./edges.png" plakat.controlnet.add
+
+                // v0.22 post-process toggles still fire after the v0.23 surface.
+                plakat.adetailer.enable
+            "#,
+            )
+            .unwrap();
+
+            with_ctx(|ctx| {
+                assert!(ctx.refiner_enabled);
+                assert!((ctx.config.refiner_frac - 0.85).abs() < 1e-6);
+                assert_eq!(ctx.config.clip_skip, 2);
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert_eq!(ctx.config.style_catalog, "/custom/style-catalog");
+                assert!((ctx.config.style_strength - 0.7).abs() < 1e-6);
+                assert_eq!(ctx.controlnets.len(), 2);
+                assert!(ctx.adetailer_enabled);
+            })
+            .unwrap();
+        });
+    }
+
+    /// Style state + ControlNet stack both invalidate cache slots,
+    /// but they DON'T cross-invalidate (a CN mutation shouldn't
+    /// disturb the style state, and vice versa).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_style_and_controlnet_state_are_independent() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.controlnets.clear();
+            })
+            .unwrap();
+            eval(r#""poster-bold" plakat.style.apply"#).unwrap();
+            eval(r#""depth" "./d.png" plakat.controlnet.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert_eq!(ctx.controlnets.len(), 1);
+            })
+            .unwrap();
+            // Clearing CN doesn't touch style.
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                assert!(ctx.controlnets.is_empty());
+            })
+            .unwrap();
+            // Clearing style doesn't touch CN (already empty, but check the toggle).
+            eval(r#""canny" "./c.png" plakat.controlnet.add"#).unwrap();
+            eval("plakat.style.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.style_id.is_none());
+                assert_eq!(ctx.controlnets.len(), 1);
+            })
+            .unwrap();
+        });
+    }
+
+    /// mark_controlnets_changed (v0.23 phase 6) preserves SD slots
+    /// — verified at the state layer (real-pipeline behaviour
+    /// covered in ctx.rs unit tests + CLI smoke).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_controlnet_mutation_state_smoke() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.controlnets.clear();
+            })
+            .unwrap();
+            // Add + clear cycle exercises mark_controlnets_changed.
+            eval(r#""depth" "./d.png" plakat.controlnet.add"#).unwrap();
+            eval("plakat.controlnet.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.controlnets.is_empty());
+                // SD slots stay None (nothing was loaded) — the test
+                // proves the path doesn't crash on empty slots.
+                assert!(ctx.loaded.is_none());
+                assert!(ctx.loaded_t2i.is_none());
+            })
+            .unwrap();
         });
     }
 

@@ -454,7 +454,110 @@ unset. `wildcard_dir` enables `__name__` file wildcards (inline
 `{a|b|c}` always works). `negative_preset` combines with
 `negative` at request-build time.
 
-## 10. The full word reference
+## 10. What's new in v0.23
+
+v0.23 closes every "deferred to v0.23" stub v0.22 explicitly took
+on, plus adds two new things (`plakat.style.*` namespace + the
+`plakat.inpaint` host word). Word count: 28 → 33. Smaller cycle
+than v0.22 (~7 phases vs. 12). Full reference is
+[`SCRIPTING.md`](../SCRIPTING.md).
+
+### Cache architecture: the SdT2i slot
+
+`plakat.load "sdxl"` now warms a `t2i::Pipeline` slot (not just
+`portrait::Pipeline`). `plakat.generate` runs through the t2i
+slot, which carries the SDXL refiner UNet hook + the CLIP-skip-
+aware encode path. `plakat.img2img` + `plakat.portrait` keep
+using `portrait::Pipeline`. Both slots share `Arc<SdCore>`, so
+mixed generate+portrait scripts pay one weight load.
+
+### SDXL refiner finally loads
+
+```bund
+"sdxl" plakat.load
+plakat.refiner.enable             // ~6 GB extra download first time
+0.85 "refiner_frac" plakat.config.set
+"a knight" plakat.generate        // base UNet 80% → refiner UNet 20%
+```
+
+The v0.22 toggle was a state flag with a generate-time bail; in
+v0.23 it actually drives `use_refiner` at load time. Non-SDXL
+aliases silently downgrade with a warn.
+
+### `clip_skip` wires through
+
+```bund
+2 "clip_skip" plakat.config.set   // SD 1.5 anime checkpoints
+"sd15" plakat.load
+"a fox in tall grass" plakat.generate
+```
+
+SDXL warns (penultimate is the design); Flux + SD3 ignore (T5).
+
+### `plakat.style.*` namespace
+
+```bund
+"poster-bold" plakat.style.apply       // by id
+"./ref.jpg"   plakat.style.detect      // CLIP-H detect from photo
+plakat.style.list                      // ( -- ...ids count )
+plakat.style.clear
+0.7 "style_strength" plakat.config.set
+"a town square" plakat.generate        // catalog LoRAs override user LoRAs
+```
+
+CLI parity: style LoRAs replace the user LoRA stack for the
+load; trigger phrase prepends to the prompt; `negative_extras`
+appends to the negative. Subsequent generates with the same
+style cache-hit the style-laden pipeline.
+
+### `plakat.inpaint`
+
+```bund
+16   "mask_feather" plakat.config.set       // declared v0.22, now firing
+"true" "mask_invert" plakat.config.set
+"stained glass window in the wall"
+   "./photo.png" "./mask.png"
+   plakat.inpaint
+   "result.png" plakat.save
+```
+
+Stack: `( prompt input mask -- handle )`. `input` accepts a
+string path or an image handle; `mask` is a string path. SD-family
++ SD3 work end-to-end. Flux inpaint requires the `flux-fill-dev`
+variant + channel-concat wiring (not in scope); bail message
+points at the CLI workaround.
+
+### Flux + SD3 ControlNet from scripts
+
+```bund
+"./depth-map.png" "depth" plakat.controlnet.add
+"flux-dev" plakat.load
+"a cyberpunk street" plakat.generate
+```
+
+CN stack wires into `LoadRequest.controlnets` at load time. Stack
+mutations invalidate the Flux/SD3 slot. **Scope cap**: `image=`
+specs only (pre-rendered conditioning). `from=` (auto-annotate
+via `plakat.controlnet.annotate`) bails on Flux/SD3 — the loader
+doesn't know the per-generate dims yet. Pre-render depth/canny/
+pose maps and use `.add`.
+
+### Composition order, refined
+
+The SD-family run order:
+
+1. **Style resolve** (if `style_id` / `style_ref` set) → catalog
+   LoRAs override user LoRAs; trigger prepends; negative extras
+   append.
+2. **t2i.generate** with the resolved LoRA stack + refiner gate
+   + `clip_skip`.
+3. **Artefacts** (compose + optional blend).
+4. **Hires fix**. Mutually exclusive with artefacts.
+5. **ADetailer** (face refinement at the final resolution).
+
+Order matters: style → generate → artefacts → hires → adetailer.
+
+## 11. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"

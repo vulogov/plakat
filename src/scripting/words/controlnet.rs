@@ -122,6 +122,10 @@ pub fn plakat_controlnet_clear(vm: &mut VM) -> BundResult<'_> {
 fn do_plakat_controlnet_clear(vm: &mut VM) -> anyhow::Result<&mut VM> {
     with_ctx_mut(|ctx| {
         ctx.controlnets.clear();
+        // v0.23 phase 6: Flux + SD3 bake the CN stack at load time;
+        // drop those slots so the next generate reloads without
+        // CN. SD-family slots are left intact (per-call CN).
+        ctx.mark_controlnets_changed();
     })?;
     tracing::info!(target: "plakat", "{CLEAR_TAG}: stack drained");
     Ok(vm)
@@ -164,6 +168,8 @@ fn push_controlnet(spec: ControlSpec, tag: &str) -> anyhow::Result<()> {
     let desc = format_spec(&spec);
     with_ctx_mut(|ctx| {
         ctx.controlnets.push(spec);
+        // v0.23 phase 6: Flux + SD3 bake the CN stack at load time.
+        ctx.mark_controlnets_changed();
     })?;
     tracing::info!(
         target: "plakat",

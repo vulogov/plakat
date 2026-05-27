@@ -18,11 +18,13 @@ pub mod enhance;
 pub mod generate;
 pub mod hires;
 pub mod img2img;
+pub mod inpaint;
 pub mod load;
 pub mod lora;
 pub mod portrait;
 pub mod refiner;
 pub mod save;
+pub mod style;
 pub mod upscale;
 
 /// Register every `plakat.*` word into `vm`. v0.21 shipped 7
@@ -142,6 +144,21 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // v0.22 phase 10: plakat.enhance host word.
     vm.register_inline("plakat.enhance".to_string(), enhance::plakat_enhance)
         .map_err(|e| anyhow!("registering plakat.enhance: {e}"))?;
+    // v0.23 phase 4: plakat.style.* namespace.
+    vm.register_inline("plakat.style.apply".to_string(), style::plakat_style_apply)
+        .map_err(|e| anyhow!("registering plakat.style.apply: {e}"))?;
+    vm.register_inline(
+        "plakat.style.detect".to_string(),
+        style::plakat_style_detect,
+    )
+    .map_err(|e| anyhow!("registering plakat.style.detect: {e}"))?;
+    vm.register_inline("plakat.style.clear".to_string(), style::plakat_style_clear)
+        .map_err(|e| anyhow!("registering plakat.style.clear: {e}"))?;
+    vm.register_inline("plakat.style.list".to_string(), style::plakat_style_list)
+        .map_err(|e| anyhow!("registering plakat.style.list: {e}"))?;
+    // v0.23 phase 5: plakat.inpaint host word.
+    vm.register_inline("plakat.inpaint".to_string(), inpaint::plakat_inpaint)
+        .map_err(|e| anyhow!("registering plakat.inpaint: {e}"))?;
     Ok(())
 }
 
