@@ -419,6 +419,35 @@ mod tests {
         });
     }
 
+    // v0.24 phase 9: Flux inpaint via flux-fill-dev (state-only).
+
+    /// `plakat.inpaint` on a wrong Flux variant bails with the
+    /// "use flux-fill-dev" pointer. We can't actually load a
+    /// pipeline in a unit test (would need real weights), but we
+    /// can check the bail fires before any pipeline dispatch by
+    /// faking `ctx.loaded_model()` via a sentinel alias and
+    /// confirming the message reaches user-land. Note: the
+    /// no-model gate fires first when no model is loaded, so we
+    /// validate the bail message via the CLI smoke instead.
+    /// Here we just confirm `plakat.inpaint` still gates on
+    /// no-model-loaded after phase 9.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inpaint_phase9_no_model_still_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            let err = eval(
+                r#""fix the sky" "./photo.png" "./mask.png" plakat.inpaint"#,
+            )
+            .unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("no model loaded"), "got {msg}");
+        });
+    }
+
     // v0.24 phase 7: plakat.metadata.read surface.
 
     /// Write a minimal JSON sidecar to a tempdir, then read it

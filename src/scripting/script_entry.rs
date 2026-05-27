@@ -1294,19 +1294,30 @@ fn img2img_or_inpaint_one(
                      {word_tag} on Flux."
                 );
             }
+            // v0.24 phase 9: Flux inpaint via flux-fill-dev. The
+            // mask threads through `flux::GenRequest.mask`; the
+            // pipeline's `img_in` projection (loaded for the
+            // FluxFillDev variant) handles channel-concat of
+            // the init image + mask onto the noise tokens.
+            // Other Flux variants don't have that projection
+            // (img_in is 64-channel for vanilla Flux vs. 384 for
+            // Fill), so we bail with a clear pointer.
             if mask_path.is_some() {
-                // v0.23 phase 5: Flux inpaint requires the
-                // flux-fill-dev variant + load-time channel-concat
-                // wiring on the img_in projection. That's its own
-                // refactor; not in scope for phase 5. Bail with a
-                // clear pointer.
-                bail!(
-                    "plakat.inpaint: Flux inpaint requires the \
-                     flux-fill-dev variant + per-load setup; not wired \
-                     in v0.23 phase 5. Workaround: use the CLI's \
-                     `plakat img2img --model flux-fill-dev --mask MASK` \
-                     directly, or stay on SD-family in scripts."
-                );
+                let resolved = if alias.contains('/') {
+                    alias.clone()
+                } else {
+                    crate::hf::resolve_alias(&alias).to_string()
+                };
+                let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+                if !matches!(variant, crate::pipelines::t2i::Variant::FluxFillDev) {
+                    bail!(
+                        "plakat.inpaint: Flux inpaint requires the \
+                         flux-fill-dev variant (got {alias:?} → {variant:?}). \
+                         Use `\"flux-fill-dev\" plakat.load` before \
+                         plakat.inpaint, or stay on SD-family / SD3 (both \
+                         support inpaint natively)."
+                    );
+                }
             }
             let mut req = build_flux_gen_request(
                 ctx,
@@ -1316,6 +1327,13 @@ fn img2img_or_inpaint_one(
             );
             req.width = width;
             req.height = height;
+            // v0.24 phase 9: thread the mask through flux::GenRequest.
+            // build_flux_gen_request defaults this to None; we set it
+            // only when the caller is plakat.inpaint AND the variant
+            // checked out above.
+            if let Some(p) = mask_path {
+                req.mask = Some(p.to_path_buf());
+            }
             // v0.24 phase 8: lazy-annotate from= CN specs on the
             // img2img path too. Same pattern as generate_one.
             ctx.get_or_load_flux(&alias)?;
