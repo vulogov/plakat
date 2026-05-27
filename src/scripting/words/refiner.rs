@@ -13,22 +13,17 @@
 //! - `refine_strength` (float [0,1]) — polish denoise strength
 //! - `refiner_frac` (float [0,1]) — fraction at which the SDXL refiner UNet takes over
 //!
-//! **Wiring status (v0.22 phase 6)**:
+//! **Wiring status (v0.22 phase 6 + v0.23 phase 2)**:
 //! - **Same-model polish** (`refine_steps` + `refine_strength`):
-//!   wired today. The portrait::Pipeline cache exposes
-//!   `GenRequest.refine` + `refine_strength` which
-//!   `script_entry::build_gen_request` populates from these
-//!   config keys. SD-family only; Flux + SD3 don't have an
+//!   wired in v0.22. SD-family only; Flux + SD3 don't have an
 //!   equivalent polish path.
 //! - **SDXL refiner UNet** (`plakat.refiner.enable` +
-//!   `refiner_frac`): the toggle exists today but loading the
-//!   actual refiner UNet requires switching the SD-family cache
-//!   from `portrait::Pipeline` to `t2i::Pipeline` (the only
-//!   pipeline that holds an optional `refiner_unet`). That's a
-//!   v0.23 refactor. Setting `refiner_enabled = true` and then
-//!   calling `plakat.generate` bails with a clear deferral
-//!   message + the workaround (use the CLI's `--refiner` for
-//!   now, or `plakat.refiner.disable`).
+//!   `refiner_frac`): wired in v0.23 phase 2. The v0.23 phase 1
+//!   SdT2i cache slot holds an optional refiner-UNet from
+//!   t2i::Pipeline; ScriptCtx::get_or_load_sd_t2i sets
+//!   `use_refiner` from `ctx.refiner_enabled`. SDXL-only; non-SDXL
+//!   aliases silently downgrade with a warn (same behaviour as
+//!   the CLI's `--refiner` flag).
 //!
 //! Cache invalidation: the SDXL refiner is a load-time pipeline
 //! feature (the refiner-UNet weights are mmapped at load), so

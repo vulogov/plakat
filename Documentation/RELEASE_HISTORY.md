@@ -1,12 +1,68 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.21. The current
+"What's new" sections for v0.13 through v0.22. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.22 — Bund words expansion
+
+The v0.21 scripting MVP graduates to feature parity with the
+CLI. Twelve phases ship 21 new host words across 7 namespaces,
+a pipeline cache so multi-call scripts don't reload the model,
+all three model families on the scripting surface, and 50+
+new Category-B config keys.
+
+### The 28 `plakat.*` words
+
+```
+// v0.21 core (cache-aware in v0.22):
+plakat.load / .generate / .img2img / .portrait / .upscale / .save / .config.set / .echo
+
+// LoRA stack (phase 4):
+plakat.lora.add / .clear / .list
+
+// ControlNet stack (phase 5):
+plakat.controlnet.add / .annotate / .spec / .clear / .list
+
+// Post-process toggles:
+plakat.refiner.{enable,disable}      // phase 6: SDXL refiner switch
+plakat.adetailer.{enable,disable}    // phase 7: SCRFD face refinement
+plakat.hires.{enable,disable}        // phase 8: upscale + img2img refine
+plakat.artefact.add / .clear / .list / .blend.{enable,disable}   // phase 9
+
+// Prompt enhancer (phase 10):
+plakat.enhance ( prompt -- enhanced )
+```
+
+### Pipeline cache + all three families
+
+`ScriptCtx::loaded` holds one `LoadedPipeline` enum
+(`SdFamily(portrait::Pipeline)` / `Flux(flux::Pipeline)` /
+`Sd3(sd3::Pipeline)`). Same-alias reuse skips the model load
+entirely. Family-specific config keys (`quantize_t5`,
+`kontext_bucket` for Flux; `tiled`, `tile_size`,
+`tile_stride` for SD3) flow through the same
+`plakat.config.set` surface.
+
+### By the numbers
+
+- 758 lib tests green (+124 new across the cycle).
+- 12 phase commits + 2 RFC commits + 1 release-notes commit.
+- 28 host words (was 8 in v0.21). ~60 `GenerationConfig` keys.
+- Four composition tests exercise multi-namespace state
+  interaction end-to-end.
+
+### Deferred to v0.23 (all closed in v0.23)
+
+- Flux + SD3 ControlNet load-time wiring.
+- SDXL refiner UNet load.
+- `plakat.inpaint` (mask path argument).
+- `clip_skip` wiring.
+- `plakat.style.*` namespace.
 
 ## What's new in v0.21 — Bund scripting
 

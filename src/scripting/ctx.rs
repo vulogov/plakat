@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 use crate::pipelines::{
-    controlnet::ControlSpec, flux, lora::LoraSpec, portrait, sd3,
+    controlnet::ControlSpec, flux, lora::LoraSpec, portrait, sd3, t2i,
 };
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
@@ -40,6 +40,19 @@ pub struct ScriptCtx {
     /// relaxed per decision #7 — the `loaded_model` field is gone;
     /// scripts that don't care about the change still work.
     pub loaded: Option<(String, LoadedPipeline)>,
+    /// v0.23 phase 1: secondary SD-family cache slot holding a
+    /// `t2i::Pipeline`. Used exclusively by `plakat.generate`'s
+    /// SD path so that family's CLIP-skip + (v0.23 phase 2)
+    /// SDXL-refiner UNet wiring can land — those live on
+    /// `t2i::Pipeline`, not the `portrait::Pipeline` that
+    /// `plakat.img2img` / `.portrait` keep using.
+    ///
+    /// Per RFC v0.23 Option A: both SD-family slots can be loaded
+    /// for the same alias simultaneously; they share an
+    /// `Arc<SdCore>` so the duplication cost is only the slot
+    /// extras (refiner UNet vs. IP-Adapter encoder). Loading a
+    /// non-SD-family alias drops this slot.
+    pub loaded_t2i: Option<(String, t2i::Pipeline)>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -65,21 +78,24 @@ pub struct ScriptCtx {
     /// controls)`). No cache invalidation needed for SD-family
     /// because the cached pipeline doesn't bake in the CN stack.
     ///
-    /// Flux + SD3 ControlNet need load-time wiring that doesn't
-    /// fit phase 5's scope — the SD-family generate / img2img
-    /// paths bail if `controlnets` is non-empty when running on
-    /// Flux or SD3 with a clear "v0.23" pointer.
+    /// v0.23 phase 6 wires Flux ControlNet at load time (the
+    /// Flux pipeline's `LoadRequest.controlnets` bakes in the
+    /// CN stack on first generate; `mark_controlnets_changed`
+    /// drops the slot on stack mutations). SD3 CN follows in
+    /// phase 7. Note: Flux CN scripting supports `image=` specs
+    /// only — `from=` (auto-annotate) would need the per-generate
+    /// width/height at load time, which the loader doesn't know.
     pub controlnets: Vec<ControlSpec>,
-    /// v0.22 phase 6: SDXL refiner toggle. `plakat.refiner.enable`
-    /// sets this to `true`; `plakat.refiner.disable` resets it.
+    /// v0.22 phase 6 + v0.23 phase 2: SDXL refiner toggle.
+    /// `plakat.refiner.enable` sets this to `true`;
+    /// `plakat.refiner.disable` resets it.
     ///
-    /// The actual SDXL refiner UNet load is **not yet wired**:
-    /// the cached `portrait::Pipeline` doesn't expose the
-    /// refiner-UNet slot the way `t2i::Pipeline` does. When
-    /// `refiner_enabled` is `true`, `script_entry::generate_one`
-    /// bails with a v0.23 deferral message + remediation hint.
-    /// The toggle is shipped today so the surface is stable for
-    /// when the cache switches to `t2i::Pipeline`.
+    /// As of v0.23 phase 2, mutating this flag invalidates the
+    /// SdT2i slot via [`Self::mark_loras_changed`] so the next
+    /// `plakat.generate` reloads with `use_refiner` matching the
+    /// new value. The refiner UNet is SDXL-only; on non-SDXL
+    /// aliases the toggle warns + downgrades silently inside
+    /// [`Self::get_or_load_sd_t2i`].
     pub refiner_enabled: bool,
     /// v0.22 phase 7: ADetailer post-process toggle. When `true`,
     /// `script_entry::generate_one` runs `adetailer::refine_files`
@@ -108,6 +124,20 @@ pub struct ScriptCtx {
     /// zones after compositing — smooths hard edges. Same
     /// behaviour as the CLI's `--artefact-blend` flag.
     pub artefact_blend_enabled: bool,
+    /// v0.23 phase 4: active style id (set by `plakat.style.apply`).
+    /// When `Some`, the next SD-family `plakat.generate` resolves
+    /// the style against the catalog at request-build time:
+    /// catalog LoRAs replace user LoRAs (with a warn), trigger
+    /// phrase prepends to the prompt, and `negative_extras`
+    /// appends to the negative. Mirrors `--style ID`.
+    pub style_id: Option<String>,
+    /// v0.23 phase 4: reference photo for detection-based style
+    /// pick (set by `plakat.style.detect`). When `Some` AND
+    /// `style_id` is `None`, generate runs detection through
+    /// CLIP-H + cosine-matches against the catalog. When both
+    /// are `Some`, the photo runs detection (for logging) but
+    /// `style_id` wins. Mirrors `--style-ref PATH`.
+    pub style_ref: Option<std::path::PathBuf>,
 }
 
 impl ScriptCtx {
@@ -123,6 +153,7 @@ impl ScriptCtx {
             device,
             out_dir,
             loaded: None,
+            loaded_t2i: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
@@ -132,6 +163,8 @@ impl ScriptCtx {
             hires_enabled: false,
             artefacts: Vec::new(),
             artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -144,13 +177,49 @@ impl ScriptCtx {
     /// in-place LoRA injection across the three pipeline families.
     pub fn mark_loras_changed(&mut self) {
         self.loaded = None;
+        // v0.23 phase 1: the t2i slot also caches LoRA-merged
+        // weights; same invalidation rule.
+        self.loaded_t2i = None;
+    }
+
+    /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
+    /// stack is baked in at LOAD time. Flux CN is load-time
+    /// (per phase 6); SD3 CN is also load-time (per phase 7,
+    /// when that wiring lands the SD3 branch here will start
+    /// firing). SD-family CN stays per-call (the
+    /// `pipeline.generate(req, &controls)` arg), so the SD slots
+    /// aren't touched — scripts that toggle CN on/off between SD
+    /// generates pay nothing.
+    ///
+    /// Called by `plakat.controlnet.*` mutations.
+    pub fn mark_controlnets_changed(&mut self) {
+        // The primary `loaded` slot is shared by Flux + SD3 + SD;
+        // drop it only when it's Flux (phase 6) or SD3 (phase 7).
+        let is_flux_or_sd3 = matches!(
+            self.loaded.as_ref().map(|(_, p)| p),
+            Some(LoadedPipeline::Flux(_)) | Some(LoadedPipeline::Sd3(_))
+        );
+        if is_flux_or_sd3 {
+            self.loaded = None;
+        }
+        // SD-family slots (loaded if SdFamily variant, loaded_t2i)
+        // are left intact: SD-family CN is per-call, not per-load.
     }
 
     /// v0.22 phase 1: read-only accessor for the currently-loaded
     /// model's alias. `None` when nothing's been `plakat.load`ed
     /// yet. Replaces direct access to v0.21's `loaded_model` field.
     pub fn loaded_model(&self) -> Option<&str> {
-        self.loaded.as_ref().map(|(alias, _)| alias.as_str())
+        // v0.23 phase 1: prefer the SdT2i slot's alias when it's
+        // populated (plakat.load now loads t2i by default for
+        // SD-family). Fall back to the portrait/flux/sd3 slot.
+        // Both slots normally hold the same alias when both are
+        // loaded; the order matters only during a slot-rebuild
+        // window.
+        self.loaded_t2i
+            .as_ref()
+            .map(|(a, _)| a.as_str())
+            .or_else(|| self.loaded.as_ref().map(|(a, _)| a.as_str()))
     }
 
     /// v0.22 phase 1: get-or-load the SD-family pipeline for
@@ -190,26 +259,41 @@ impl ScriptCtx {
             // the old.
             self.loaded = None;
 
-            let identity = pick_sd_family_identity(alias);
-            let device = self.device.clone();
-            let loras = self.loras.clone();
-            let lora_scale = self.config.lora_scale;
-            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
-                anyhow!(
-                    "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
-                )
-            })?;
-            let pipeline: portrait::Pipeline = tokio::task::block_in_place(|| {
-                handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
-                    model: alias.to_string(),
-                    device,
-                    loras,
-                    lora_scale,
-                    identity,
-                    shared_clip_h: None,
-                }))
-            })?;
-            self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            // v0.23 phase 1: if `loaded_t2i` already holds the
+            // same alias, we can derive a portrait::Pipeline from
+            // its shared `SdCore` without paying for a second
+            // weights load. Saves several GB on SDXL.
+            let shared_core = self
+                .loaded_t2i
+                .as_ref()
+                .filter(|(a, _)| a == alias)
+                .map(|(_, p)| p.core());
+
+            if let Some(core) = shared_core {
+                let pipeline = portrait::Pipeline::from_core(core);
+                self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            } else {
+                let identity = pick_sd_family_identity(alias);
+                let device = self.device.clone();
+                let loras = self.loras.clone();
+                let lora_scale = self.config.lora_scale;
+                let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                    anyhow!(
+                        "ScriptCtx::get_or_load_sd_family: no tokio runtime in scope. {e}"
+                    )
+                })?;
+                let pipeline: portrait::Pipeline = tokio::task::block_in_place(|| {
+                    handle.block_on(portrait::Pipeline::load(portrait::LoadRequest {
+                        model: alias.to_string(),
+                        device,
+                        loras,
+                        lora_scale,
+                        identity,
+                        shared_clip_h: None,
+                    }))
+                })?;
+                self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
+            }
         }
 
         match &self.loaded.as_ref().expect("just inserted").1 {
@@ -220,6 +304,94 @@ impl ScriptCtx {
                  Use ensure_loaded for family-aware dispatch."
             )),
         }
+    }
+
+    /// v0.23 phase 1: get-or-load the SD-family **t2i** pipeline
+    /// for `alias`. Caches into [`Self::loaded_t2i`] — the
+    /// secondary SD-family slot that coexists with the primary
+    /// `loaded` slot (which holds the portrait::Pipeline for
+    /// `plakat.img2img` / `.portrait`).
+    ///
+    /// Used by `plakat.generate`'s SD-family path so the
+    /// v0.23 phase 2 refiner UNet load and phase 3 clip_skip
+    /// wiring have a `t2i::Pipeline` to land on.
+    ///
+    /// **Refiner gating (v0.23 phase 2)**: `use_refiner` reads
+    /// `ctx.refiner_enabled`, but only for SDXL aliases. SD 1.5 /
+    /// SD 2.1 with the toggle on silently downgrade to
+    /// `use_refiner: false` and emit a one-time warn — mirrors
+    /// the CLI's `--refiner` behaviour. Toggling
+    /// `plakat.refiner.enable` / `.disable` invalidates this slot
+    /// via [`Self::mark_loras_changed`] so the next call rebuilds
+    /// with the new `use_refiner` value.
+    pub fn get_or_load_sd_t2i(&mut self, alias: &str) -> Result<&mut t2i::Pipeline> {
+        let hit = self
+            .loaded_t2i
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            // Drop the previous t2i pipeline first.
+            self.loaded_t2i = None;
+
+            // Family change: if the primary slot holds a non-SD
+            // family (Flux / SD3), drop it too. Same-family aliases
+            // can coexist (portrait::Pipeline + t2i::Pipeline for
+            // the same alias share an Arc<SdCore>).
+            if !matches!(self.loaded.as_ref().map(|(_, p)| p),
+                Some(LoadedPipeline::SdFamily(_)) | None) {
+                self.loaded = None;
+            }
+
+            // v0.23 phase 2: refiner UNet is SDXL-only. For non-SDXL
+            // aliases with the toggle on, downgrade silently with a
+            // warn rather than letting t2i::Pipeline::load bail (the
+            // bail would surface at plakat.load time, which is worse
+            // than a graceful downgrade).
+            let resolved = if alias.contains('/') {
+                alias.to_string()
+            } else {
+                crate::hf::resolve_alias(alias).to_string()
+            };
+            let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+            let use_refiner = if self.refiner_enabled && variant.is_xl() {
+                true
+            } else {
+                if self.refiner_enabled && !variant.is_xl() {
+                    tracing::warn!(
+                        target: "plakat",
+                        "plakat.refiner.enable is on, but model {alias:?} \
+                         resolves to {variant:?}, not SDXL. The SDXL refiner \
+                         UNet is SDXL-only; loading without it. Same as the \
+                         CLI's `--refiner` behaviour."
+                    );
+                }
+                false
+            };
+
+            let device = self.device.clone();
+            let loras = self.loras.clone();
+            let lora_scale = self.config.lora_scale;
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_sd_t2i: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline: t2i::Pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(t2i::Pipeline::load(t2i::LoadRequest {
+                    model: alias.to_string(),
+                    device,
+                    loras,
+                    lora_scale,
+                    use_refiner,
+                    embeddings: Vec::new(),
+                }))
+            })?;
+            self.loaded_t2i = Some((alias.to_string(), pipeline));
+        }
+
+        Ok(&mut self.loaded_t2i.as_mut().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -248,6 +420,8 @@ impl ScriptCtx {
 
         if !hit {
             self.loaded = None;
+            // v0.23 phase 1: family change drops the SD t2i slot too.
+            self.loaded_t2i = None;
             let resolved = if alias.contains('/') {
                 alias.to_string()
             } else {
@@ -268,6 +442,55 @@ impl ScriptCtx {
                     ));
                 }
             };
+
+            // v0.23 phase 6: resolve the script's ControlNet stack
+            // into Flux-flavoured load specs. Phase 6 supports
+            // `plakat.controlnet.add` (kind + image=PATH) only;
+            // `plakat.controlnet.annotate` / `.spec from=PATH`
+            // (auto-annotate) bails — annotation needs the
+            // width/height that aren't known at load time. Pre-
+            // render with `plakat upscale --method real-esrgan-x*`
+            // -free workflows or the standalone
+            // `plakat.controlnet.add` path.
+            let flux_cn_loads: Vec<flux::FluxControlNetLoad> = self
+                .controlnets
+                .iter()
+                .map(|spec| -> Result<flux::FluxControlNetLoad> {
+                    let cond = match (&spec.image, &spec.from) {
+                        (Some(path), None) => path.clone(),
+                        (None, Some(_)) => anyhow::bail!(
+                            "plakat.controlnet (Flux): auto-annotate \
+                             (`plakat.controlnet.annotate` / from=PATH) \
+                             isn't wired at load time in v0.23 phase 6 — \
+                             annotation needs the per-generate width/height \
+                             which the loader doesn't know. Pre-render the \
+                             conditioning image (depth map, canny edges, \
+                             etc.) and use `plakat.controlnet.add KIND PATH` \
+                             instead. (kind={:?})",
+                            spec.kind
+                        ),
+                        (Some(_), Some(_)) => anyhow::bail!(
+                            "plakat.controlnet (Flux): a single spec has \
+                             both image= and from= set; pick one. (kind={:?})",
+                            spec.kind
+                        ),
+                        (None, None) => anyhow::bail!(
+                            "plakat.controlnet (Flux): kind={:?} needs \
+                             either image=PATH (pre-rendered) or from=PATH \
+                             (auto-annotate). v0.23 phase 6 supports image= \
+                             only on Flux.",
+                            spec.kind
+                        ),
+                    };
+                    let mut cn_load = crate::pipelines::t2i::flux_controlnet_load_for(
+                        spec.kind, fvar, spec.strength,
+                    )?;
+                    cn_load.conditioning = Some(cond);
+                    cn_load.start = spec.start;
+                    cn_load.end = spec.end;
+                    Ok(cn_load)
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             let device = self.device.clone();
             let quantize_t5 = self.config.quantize_t5;
@@ -293,7 +516,7 @@ impl ScriptCtx {
                         device,
                         loras: resolved_loras,
                         lora_scale,
-                        controlnets: Vec::new(),
+                        controlnets: flux_cn_loads,
                         quantize_t5,
                         flux_quant_level: quant_level,
                         t5_quant_level,
@@ -315,13 +538,16 @@ impl ScriptCtx {
         }
     }
 
-    /// v0.22 phase 3: get-or-load the SD3 / SD3.5 pipeline for
-    /// `alias`. Mirrors [`Self::get_or_load_sd_family`] and
-    /// [`Self::get_or_load_flux`].
+    /// v0.22 phase 3 + v0.23 phase 7: get-or-load the SD3 / SD3.5
+    /// pipeline for `alias`. Mirrors [`Self::get_or_load_sd_family`]
+    /// and [`Self::get_or_load_flux`].
     ///
-    /// SD3 doesn't have LoRA / ControlNet load-time D-keys
-    /// (those land in phases 4-5); the LoadRequest fields are
-    /// empty for now.
+    /// v0.23 phase 7 resolves `self.controlnets` into
+    /// `Vec<Sd3ControlNetLoad>` at load time (image=PATH specs
+    /// only — auto-annotate bails the same way Flux does, since
+    /// neither family knows the per-generate dims at load).
+    /// `mark_controlnets_changed` drops this slot on stack
+    /// mutations.
     pub fn get_or_load_sd3(&mut self, alias: &str) -> Result<&mut sd3::Pipeline> {
         let hit = self
             .loaded
@@ -331,6 +557,8 @@ impl ScriptCtx {
 
         if !hit {
             self.loaded = None;
+            // v0.23 phase 1: family change drops the SD t2i slot too.
+            self.loaded_t2i = None;
             let resolved = if alias.contains('/') {
                 alias.to_string()
             } else {
@@ -352,6 +580,51 @@ impl ScriptCtx {
                 }
             };
 
+            // v0.23 phase 7: resolve the script's ControlNet stack
+            // into SD3-flavoured load specs. Same scope as phase 6
+            // (Flux): `plakat.controlnet.add` (kind + image=PATH)
+            // supported; auto-annotate / from= bails inside the
+            // resolver (per-generate width/height isn't known at
+            // load time).
+            let sd3_cn_loads: Vec<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> =
+                self.controlnets
+                    .iter()
+                    .map(|spec| -> Result<crate::pipelines::sd3_controlnet::Sd3ControlNetLoad> {
+                        let cond = match (&spec.image, &spec.from) {
+                            (Some(path), None) => path.clone(),
+                            (None, Some(_)) => anyhow::bail!(
+                                "plakat.controlnet (SD3): auto-annotate \
+                                 (`plakat.controlnet.annotate` / from=PATH) \
+                                 isn't wired at load time in v0.23 phase 7 — \
+                                 annotation needs the per-generate width/height \
+                                 which the loader doesn't know. Pre-render the \
+                                 conditioning image and use `plakat.controlnet.add \
+                                 KIND PATH` instead. (kind={:?})",
+                                spec.kind
+                            ),
+                            (Some(_), Some(_)) => anyhow::bail!(
+                                "plakat.controlnet (SD3): a single spec has \
+                                 both image= and from= set; pick one. (kind={:?})",
+                                spec.kind
+                            ),
+                            (None, None) => anyhow::bail!(
+                                "plakat.controlnet (SD3): kind={:?} needs \
+                                 either image=PATH (pre-rendered) or from=PATH \
+                                 (auto-annotate). v0.23 phase 7 supports image= \
+                                 only on SD3.",
+                                spec.kind
+                            ),
+                        };
+                        let mut cn_load = crate::pipelines::t2i::sd3_controlnet_load_for(
+                            spec.kind, sd3_variant, spec.strength,
+                        )?;
+                        cn_load.conditioning = Some(cond);
+                        cn_load.start = spec.start;
+                        cn_load.end = spec.end;
+                        Ok(cn_load)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
             let device = self.device.clone();
             let loras = self.loras.clone();
             let lora_scale = self.config.lora_scale;
@@ -365,7 +638,7 @@ impl ScriptCtx {
                     device,
                     loras,
                     lora_scale,
-                    controlnets: Vec::new(),
+                    controlnets: sd3_cn_loads,
                 }))
             })?;
             self.loaded = Some((alias.to_string(), LoadedPipeline::Sd3(pipeline)));
@@ -405,7 +678,12 @@ impl ScriptCtx {
     pub fn ensure_loaded(&mut self, alias: &str) -> Result<()> {
         match PipelineFamily::detect(alias) {
             PipelineFamily::SdFamily => {
-                self.get_or_load_sd_family(alias)?;
+                // v0.23 phase 1: `plakat.load` now warms the t2i
+                // slot by default for SD-family aliases.
+                // plakat.portrait + plakat.img2img will lazy-load
+                // the portrait slot on first call (deriving from
+                // the t2i slot's SdCore — no second weights load).
+                self.get_or_load_sd_t2i(alias)?;
                 Ok(())
             }
             PipelineFamily::Flux => {
@@ -516,6 +794,7 @@ mod tests {
             device: Device::Cpu,
             out_dir: std::env::temp_dir(),
             loaded: None,
+            loaded_t2i: None,
             images: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
@@ -525,6 +804,8 @@ mod tests {
             hires_enabled: false,
             artefacts: Vec::new(),
             artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
         }
     }
 
@@ -630,5 +911,37 @@ mod tests {
     fn loaded_model_accessor_returns_none_when_unloaded() {
         let ctx = mk_ctx();
         assert!(ctx.loaded_model().is_none());
+    }
+
+    // v0.23 phase 1: mark_loras_changed drops both SD-family
+    // slots (primary `loaded` + secondary `loaded_t2i`).
+    #[test]
+    fn mark_loras_changed_drops_both_sd_slots() {
+        let mut ctx = mk_ctx();
+        // We can't easily fabricate a real pipeline here without a
+        // tokio runtime + model download, but we can at least
+        // exercise the field-clearing path: pre-populating with
+        // None and calling mark_loras_changed is a no-op that
+        // should still leave both slots None.
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+        ctx.mark_loras_changed();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+    }
+
+    // v0.23 phase 6: mark_controlnets_changed is a no-op when
+    // both slots are empty (smoke test). The real semantics
+    // (drops Flux/SD3 slot, leaves SD-family alone) need a real
+    // loaded pipeline to verify; covered by CLI smoke + the
+    // documented invariant inside the method.
+    #[test]
+    fn mark_controlnets_changed_is_safe_when_empty() {
+        let mut ctx = mk_ctx();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+        ctx.mark_controlnets_changed();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
     }
 }

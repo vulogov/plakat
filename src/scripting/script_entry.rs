@@ -118,6 +118,51 @@ fn resolve_negative(ctx: &ScriptCtx) -> String {
     }
 }
 
+/// v0.23 phase 4: resolve the script's active style state (id +
+/// ref) against the catalog. Returns `None` when neither is set;
+/// otherwise builds a [`StylePrepRequest`] for the current alias
+/// and dispatches to [`prepare_style`].
+///
+/// The async bridge follows the same pattern as the other
+/// post-process helpers — `block_in_place` + `block_on` on the
+/// current tokio handle. CLIP-H is lazy-loaded inside
+/// `prepare_style` only when `style_ref` is set (.detect path);
+/// `style_id` alone (.apply path) only needs the catalog JSON +
+/// the SD-family per-model entries.
+fn resolve_style_for_generate(
+    ctx: &ScriptCtx,
+    alias: &str,
+) -> Result<Option<crate::style::StylePrep>> {
+    if ctx.style_id.is_none() && ctx.style_ref.is_none() {
+        return Ok(None);
+    }
+    let catalog_dir = if ctx.config.style_catalog.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&ctx.config.style_catalog))
+    };
+    let req = crate::style::StylePrepRequest {
+        style_ref: ctx.style_ref.as_deref(),
+        style_override: ctx.style_id.as_deref(),
+        style_strength: ctx.config.style_strength,
+        style_catalog: catalog_dir.as_deref(),
+        model: alias,
+        user_loras_nonempty: !ctx.loras.is_empty(),
+        device: &ctx.device,
+    };
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.style: no tokio runtime in scope (eval must run on \
+             a multi-threaded runtime). Underlying error: {e}"
+        )
+    })?;
+    let prep = tokio::task::block_in_place(|| {
+        handle.block_on(crate::style::prepare_style(req))
+    })
+    .context("style catalog resolve (plakat.style.* lazy resolve)")?;
+    Ok(Some(prep))
+}
+
 /// v0.22 phase 11: expand the prompt against `config.wildcard_dir`
 /// (`__name__` file wildcards + inline `{a|b|c}` alternation).
 /// When `wildcard_dir` is empty, only inline alternation expands.
@@ -263,7 +308,7 @@ fn build_flux_gen_request(
 /// v0.22 phase 3: build an `sd3::GenRequest` from the script's
 /// config. SD3 lacks SD-family's `face_strength` + Flux's
 /// `kontext_bucket`; it has its own `mask_feather` + `mask_invert`
-/// not yet exposed at the script layer (v0.23 once
+/// not yet exposed at the script layer (v0.23 phase 5 once
 /// `plakat.inpaint` lands).
 fn build_sd3_gen_request(
     ctx: &ScriptCtx,
@@ -333,6 +378,51 @@ fn build_gen_request(
         face_strength: ctx.config.face_strength,
         face_bbox: None,
         face_landmarks: None,
+    }
+}
+
+/// v0.23 phase 1: build a `t2i::GenRequest` from the script's
+/// `GenerationConfig`. Used by `plakat.generate`'s SD-family
+/// path. Maps the cross-cutting GenerationConfig fields onto
+/// t2i's request shape, which exposes the SD-family extras
+/// (`clip_skip`, refiner controls, preview cadence, metadata)
+/// that the portrait::GenRequest doesn't carry.
+fn build_t2i_gen_request(
+    ctx: &ScriptCtx,
+    prompt: &str,
+    out_dir: PathBuf,
+) -> t2i::GenRequest {
+    let (width, height) = if ctx.config.size_explicit {
+        (ctx.config.width, ctx.config.height)
+    } else {
+        default_size_for_loaded(ctx)
+    };
+    t2i::GenRequest {
+        prompt: prompt.to_string(),
+        negative: resolve_negative(ctx),
+        width,
+        height,
+        count: 1,
+        steps: ctx.config.steps,
+        guidance: ctx.config.guidance,
+        seed: ctx.config.seed,
+        out_dir,
+        scheduler: ctx.config.scheduler,
+        refine: ctx.config.refine_steps,
+        refine_strength: ctx.config.refine_strength,
+        // v0.23 phase 2: refiner_frac steers the base→refiner
+        // schedule split when `ctx.refiner_enabled` triggered the
+        // SDXL refiner UNet load.
+        refiner_frac: Some(ctx.config.refiner_frac),
+        // v0.23 phase 3: clip_skip honoured by t2i::Pipeline's
+        // encode_prompt — SD 1.5 / SD 2.1 returns the (N-th from
+        // last) CLIP-L hidden state. SDXL / Flux / SD3 ignore
+        // (SDXL already uses penultimate by training default).
+        clip_skip: ctx.config.clip_skip,
+        metadata: None,
+        preview_every: None,
+        preview_size: None,
+        output_format: crate::imaging::io::OutputFormat::Png,
     }
 }
 
@@ -440,7 +530,7 @@ impl ArtefactArgs {
 fn apply_artefacts_sd(
     args: &ArtefactArgs,
     rendered: &std::path::Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
     if args.is_empty() {
         return Ok(());
@@ -486,7 +576,7 @@ fn apply_artefacts_sd(
     .context("artefact compositing (plakat.artefact post-process)")?;
 
     if args.blend_enabled {
-        let shared_core = Some(pipeline.core());
+        let blend_shared_core = Some(shared_core.clone());
         // BlendConfig is non-Clone; build a fresh one here from the
         // snapshot. The snapshot's blend_cfg fields are owned strings
         // / cheap to recreate.
@@ -514,7 +604,7 @@ fn apply_artefacts_sd(
                 &Default::default(),
                 None,
                 smart.as_ref(),
-                shared_core,
+                blend_shared_core,
             ))
         })
         .context("artefact_blend::blend_files (plakat post-process)")?;
@@ -573,9 +663,9 @@ impl HiresArgs {
 fn apply_hires_sd(
     hcfg: &crate::pipelines::hires_fix::Config,
     rendered: &Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
-    let shared_core = Some(pipeline.core());
+    let shared_core = Some(shared_core);
     let files = vec![rendered.to_path_buf()];
     let handle = tokio::runtime::Handle::try_current().map_err(|e| {
         anyhow!(
@@ -636,9 +726,9 @@ impl AdetailerArgs {
 fn apply_adetailer_sd(
     acfg: &crate::pipelines::adetailer::Config,
     rendered: &Path,
-    pipeline: &portrait::Pipeline,
+    shared_core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
 ) -> Result<()> {
-    let shared_core = Some(pipeline.core());
+    let shared_core = Some(shared_core);
     let files = vec![rendered.to_path_buf()];
     let handle = tokio::runtime::Handle::try_current().map_err(|e| {
         anyhow!(
@@ -688,17 +778,51 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
 
     match PipelineFamily::detect(&alias) {
         PipelineFamily::SdFamily => {
-            if ctx.refiner_enabled {
-                bail!(
-                    "plakat.generate: SDXL refiner from scripts is deferred \
-                     to v0.23 — the cached `portrait::Pipeline` doesn't \
-                     hold the refiner UNet slot. Workarounds: call \
-                     `plakat.refiner.disable` (same-model polish via \
-                     `refine_steps`/`refine_strength` still works), or use \
-                     `plakat generate --refiner` from the CLI directly."
-                );
+            // v0.23 phase 1: SD-family generate uses the t2i slot.
+            // v0.23 phase 2: when `ctx.refiner_enabled` is on and the
+            // alias is SDXL, the t2i pipeline loads with the official
+            // SDXL refiner UNet (~6 GB download on first run); the
+            // schedule splits between base + refiner at
+            // `refiner_frac` (default 0.8 = last 20% of steps).
+            // Non-SDXL aliases silently downgrade with a warn —
+            // gating happens inside `get_or_load_sd_t2i`.
+
+            // v0.23 phase 4: resolve the active style (if any)
+            // BEFORE borrowing the pipeline. The resolve produces
+            // catalog LoRAs that override the user LoRA stack for
+            // this load, plus a trigger phrase that prepends to
+            // the prompt and negative_extras that append to the
+            // negative. We temporarily swap `ctx.loras` so the
+            // loader sees the catalog LoRAs; restored after the
+            // pipeline borrow releases. CLI parity:
+            // `cli::generate::apply_style` does the same overwrite.
+            let style_prep = resolve_style_for_generate(ctx, &alias)?;
+            let user_loras_snapshot = if style_prep.is_some() {
+                Some(ctx.loras.clone())
+            } else {
+                None
+            };
+            // Compose the effective prompt + negative from style.
+            let (effective_prompt, effective_negative_extras): (String, String) =
+                match style_prep.as_ref() {
+                    Some(prep) => (
+                        crate::style::prepend_trigger(&prep.trigger, prompt),
+                        prep.negative_extras.clone(),
+                    ),
+                    None => (prompt.to_string(), String::new()),
+                };
+            // Mutate ctx.loras to the style-resolved set (CLI
+            // behavior: style overwrites user LoRAs).
+            if let Some(prep) = style_prep.as_ref() {
+                ctx.loras = crate::style::parse_resolved_loras(prep)
+                    .context("parsing resolved style LoRAs into LoraSpec")?;
             }
-            let req = build_gen_request(ctx, prompt, Vec::new(), tmp_path.clone());
+
+            let mut req = build_t2i_gen_request(ctx, &effective_prompt, tmp_path.clone());
+            // Append style's negative_extras to the request negative.
+            if !effective_negative_extras.is_empty() {
+                req.negative = crate::style::combine_negative(&req.negative, &effective_negative_extras);
+            }
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
             // pipeline. The owned data lives on this frame for the
@@ -712,9 +836,9 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             // --hires-fix is combined with --artefact / --artefact-blend;
             // we mirror that gate here.
             let adargs = AdetailerArgs::from_ctx(ctx, &alias);
-            let hargs = HiresArgs::from_ctx(ctx, &alias, prompt)?;
+            let hargs = HiresArgs::from_ctx(ctx, &alias, &effective_prompt)?;
             let aargs = ArtefactArgs::from_ctx(
-                ctx, &alias, prompt, req.width, req.height,
+                ctx, &alias, &effective_prompt, req.width, req.height,
             );
             if !aargs.is_empty() && hargs.enabled {
                 bail!(
@@ -724,30 +848,46 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      before plakat.generate."
                 );
             }
-            let pipeline = ctx.get_or_load_sd_family(&alias)?;
-            pipeline.generate(&req, &control_reqs)
-                .context("portrait::Pipeline::generate (plakat.generate SD path)")?;
+            // Scope-bound pipeline borrow so we can restore
+            // ctx.loras after the generate call returns.
+            let shared_core = {
+                let pipeline = ctx.get_or_load_sd_t2i(&alias)?;
+                pipeline.generate(&req, &control_reqs)
+                    .context("t2i::Pipeline::generate (plakat.generate SD path)")?;
+                pipeline.core()
+            };
+            // Restore user LoRA stack now that the pipeline borrow
+            // is released. Subsequent generate calls with the same
+            // style cache-hit the pipeline (loaded with style
+            // LoRAs); the user-visible LoRA stack returns to what
+            // the user actually configured.
+            if let Some(snap) = user_loras_snapshot {
+                ctx.loras = snap;
+            }
+            // v0.23 phase 1: post-process helpers take Arc<SdCore>
+            // directly (pipeline-agnostic) so they work after either
+            // a t2i or portrait pipeline produced the image.
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+                apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
             }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+                apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
             }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
             }
         }
         PipelineFamily::Flux => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.generate: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (Flux CN needs load-time setup; deferred to v0.23). \
-                     Call plakat.controlnet.clear before plakat.generate on Flux."
-                );
-            }
+            // v0.23 phase 6: Flux ControlNet wires through the cache
+            // at load time. `ctx.controlnets` mutations call
+            // `mark_controlnets_changed` which drops the Flux slot,
+            // so the next plakat.generate reloads with the current
+            // CN stack. Image-only specs (plakat.controlnet.add KIND
+            // PATH) supported; auto-annotate bails inside the
+            // loader.
             if ctx.adetailer_enabled {
                 bail!(
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
@@ -771,19 +911,24 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      Call plakat.artefact.clear before plakat.generate on Flux."
                 );
             }
+            if ctx.style_id.is_some() || ctx.style_ref.is_some() {
+                bail!(
+                    "plakat.generate: plakat.style.* is SD-family only in \
+                     v0.23 phase 4 — Flux style integration isn't wired \
+                     in the runtime yet. Call plakat.style.clear before \
+                     plakat.generate on Flux."
+                );
+            }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
                 .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
         }
         PipelineFamily::Sd3 => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.generate: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (SD3 CN needs load-time setup; deferred to v0.23). \
-                     Call plakat.controlnet.clear before plakat.generate on SD3."
-                );
-            }
+            // v0.23 phase 7: SD3 ControlNet wires through the cache
+            // at load time. Same as Flux (phase 6) — image= specs
+            // only; mark_controlnets_changed drops the slot on stack
+            // mutations.
             if ctx.adetailer_enabled {
                 bail!(
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
@@ -807,6 +952,14 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      Call plakat.artefact.clear before plakat.generate on SD3."
                 );
             }
+            if ctx.style_id.is_some() || ctx.style_ref.is_some() {
+                bail!(
+                    "plakat.generate: plakat.style.* is SD-family only in \
+                     v0.23 phase 4 — SD3 style integration isn't wired in \
+                     the runtime yet. Call plakat.style.clear before \
+                     plakat.generate on SD3."
+                );
+            }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
             let pipeline = ctx.get_or_load_sd3(&alias)?;
             pipeline.generate(&req)
@@ -824,12 +977,45 @@ pub fn img2img_one(
     prompt: &str,
     input_path: &Path,
 ) -> Result<DynamicImage> {
+    img2img_or_inpaint_one(ctx, prompt, input_path, None, "plakat.img2img")
+}
+
+/// v0.23 phase 5: inpaint dispatch. Shares the body with
+/// `img2img_one` — the only differences are the `mask` arg + the
+/// error-message tag.
+pub fn inpaint_one(
+    ctx: &mut ScriptCtx,
+    prompt: &str,
+    input_path: &Path,
+    mask_path: &Path,
+) -> Result<DynamicImage> {
+    img2img_or_inpaint_one(ctx, prompt, input_path, Some(mask_path), "plakat.inpaint")
+}
+
+/// Shared body for [`img2img_one`] and [`inpaint_one`].
+///
+/// `mask_path` is `None` for plain img2img, `Some(...)` for
+/// inpaint. The SD-family path threads it into
+/// `img2img::Request.mask` (the v0.22 phase 11 `mask_feather` /
+/// `mask_invert` config keys are honoured only when this is
+/// non-None — they were declared then but unreachable until now).
+/// Flux + SD3 inpaint require their fill variants
+/// (flux-fill-dev / sd3 mmdit native inpaint) — those bail with
+/// a clear message in phase 5; full wiring lands when there's a
+/// CLI parity gap that needs it.
+fn img2img_or_inpaint_one(
+    ctx: &mut ScriptCtx,
+    prompt: &str,
+    input_path: &Path,
+    mask_path: Option<&Path>,
+    word_tag: &str,
+) -> Result<DynamicImage> {
     let alias = ctx
         .loaded_model()
         .ok_or_else(|| {
             anyhow!(
-                "plakat.img2img: no model loaded. Call \"sd15\" plakat.load \
-                 (or another supported alias) before plakat.img2img."
+                "{word_tag}: no model loaded. Call \"sd15\" plakat.load \
+                 (or another supported alias) before {word_tag}."
             )
         })?
         .to_string();
@@ -848,7 +1034,7 @@ pub fn img2img_one(
     } else {
         let dims = image::image_dimensions(input_path).with_context(|| {
             format!(
-                "reading dimensions of {} for plakat.img2img working size",
+                "reading dimensions of {} for {word_tag} working size",
                 input_path.display()
             )
         })?;
@@ -857,7 +1043,7 @@ pub fn img2img_one(
     };
     if width == 0 || height == 0 {
         bail!(
-            "plakat.img2img: working size {width}x{height} collapsed to 0 \
+            "{word_tag}: working size {width}x{height} collapsed to 0 \
              after /8 snap. Input image is too small (< 8 pixels on a side)."
         );
     }
@@ -865,7 +1051,7 @@ pub fn img2img_one(
     let tmp = tempfile::Builder::new()
         .prefix("plakat-script-i2i-")
         .tempdir()
-        .context("creating tempdir for plakat.img2img output")?;
+        .with_context(|| format!("creating tempdir for {word_tag} output"))?;
     let tmp_path = tmp.path().to_path_buf();
 
     match PipelineFamily::detect(&alias) {
@@ -878,11 +1064,10 @@ pub fn img2img_one(
                 loras: Vec::new(),
                 lora_scale: 1.0,
                 input: input_path.to_path_buf(),
-                mask: None,
-                // v0.22 phase 11: knobs are declared but the mask
-                // path is not yet exposed at the script layer
-                // (v0.23 plakat.inpaint). The img2img pipeline
-                // honours these only when `mask` is set.
+                // v0.23 phase 5: mask threads through when plakat.inpaint
+                // is the caller. mask_feather / mask_invert (declared
+                // v0.22 phase 11) finally have a mask to act on.
+                mask: mask_path.map(|p| p.to_path_buf()),
                 mask_feather: ctx.config.mask_feather,
                 mask_invert: ctx.config.mask_invert,
                 width,
@@ -894,9 +1079,6 @@ pub fn img2img_one(
                 strength: ctx.config.strength,
                 seed: ctx.config.seed,
                 out_dir: tmp_path.clone(),
-                // v0.22 phase 5: ControlNet stack flows through
-                // img2img::Request.controls. img2img::run_with_pipeline
-                // resolves the specs internally.
                 controls: ctx.controlnets.clone(),
             };
             // v0.22 phase 7-9: post-process snapshots before pipeline borrow.
@@ -905,15 +1087,14 @@ pub fn img2img_one(
             let aargs = ArtefactArgs::from_ctx(ctx, &alias, prompt, width, height);
             if !aargs.is_empty() && hargs.enabled {
                 bail!(
-                    "plakat.img2img: hires-fix doesn't compose with artefacts \
-                     in v0.22. Disable one before plakat.img2img."
+                    "{word_tag}: hires-fix doesn't compose with artefacts \
+                     in v0.22. Disable one before {word_tag}."
                 );
             }
             let pipeline = ctx.get_or_load_sd_family(&alias)?;
-            // run_with_pipeline is async; bridge via block_in_place.
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
-                    "plakat.img2img: no tokio runtime in scope (eval must \
+                    "{word_tag}: no tokio runtime in scope (eval must \
                      run on a multi-threaded runtime). Underlying error: {e}"
                 )
             })?;
@@ -922,53 +1103,59 @@ pub fn img2img_one(
                     pipeline, &req,
                 ))
             })
-            .context("img2img::run_with_pipeline (plakat.img2img SD path)")?;
+            .with_context(|| format!("img2img::run_with_pipeline ({word_tag} SD path)"))?;
+            let shared_core = pipeline.core();
             if !aargs.is_empty() {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+                apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
             }
             if hargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+                apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
             }
             if adargs.enabled {
                 let rendered = find_rendered_png(&tmp_path)?;
-                apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+                apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
             }
         }
         PipelineFamily::Flux => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.img2img: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
-                     before plakat.img2img on Flux."
-                );
-            }
+            // v0.23 phase 6: Flux ControlNet wires through at load
+            // time. See `get_or_load_flux` for the resolve path.
             if ctx.adetailer_enabled {
                 bail!(
-                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                    "{word_tag}: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
             if ctx.hires_enabled {
                 bail!(
-                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                    "{word_tag}: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
             if !ctx.artefacts.is_empty() {
                 bail!(
-                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                    "{word_tag}: artefacts are SD-family only in v0.22 \
                      phase 9. Call plakat.artefact.clear before \
-                     plakat.img2img on Flux."
+                     {word_tag} on Flux."
                 );
             }
-            // Flux img2img threads `init_image` + `strength` through
-            // the same flux::GenRequest used for text-to-image.
-            // Working size override: width / height become the
-            // current values (size_explicit OR snapped input dims).
+            if mask_path.is_some() {
+                // v0.23 phase 5: Flux inpaint requires the
+                // flux-fill-dev variant + load-time channel-concat
+                // wiring on the img_in projection. That's its own
+                // refactor; not in scope for phase 5. Bail with a
+                // clear pointer.
+                bail!(
+                    "plakat.inpaint: Flux inpaint requires the \
+                     flux-fill-dev variant + per-load setup; not wired \
+                     in v0.23 phase 5. Workaround: use the CLI's \
+                     `plakat img2img --model flux-fill-dev --mask MASK` \
+                     directly, or stay on SD-family in scripts."
+                );
+            }
             let mut req = build_flux_gen_request(
                 ctx,
                 prompt,
@@ -979,40 +1166,32 @@ pub fn img2img_one(
             req.height = height;
             let pipeline = ctx.get_or_load_flux(&alias)?;
             pipeline.generate(&req)
-                .context("flux::Pipeline::generate (plakat.img2img Flux path)")?;
+                .with_context(|| format!("flux::Pipeline::generate ({word_tag} Flux path)"))?;
         }
         PipelineFamily::Sd3 => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.img2img: ControlNet on SD3 isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23). Call plakat.controlnet.clear \
-                     before plakat.img2img on SD3."
-                );
-            }
+            // v0.23 phase 7: SD3 ControlNet wires through at load
+            // time. See `get_or_load_sd3` for the resolve path.
             if ctx.adetailer_enabled {
                 bail!(
-                    "plakat.img2img: ADetailer is SD-family only in v0.22 \
+                    "{word_tag}: ADetailer is SD-family only in v0.22 \
                      phase 7. Call plakat.adetailer.disable before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
             if ctx.hires_enabled {
                 bail!(
-                    "plakat.img2img: hires-fix is SD-family only in v0.22 \
+                    "{word_tag}: hires-fix is SD-family only in v0.22 \
                      phase 8. Call plakat.hires.disable before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
             if !ctx.artefacts.is_empty() {
                 bail!(
-                    "plakat.img2img: artefacts are SD-family only in v0.22 \
+                    "{word_tag}: artefacts are SD-family only in v0.22 \
                      phase 9. Call plakat.artefact.clear before \
-                     plakat.img2img on SD3."
+                     {word_tag} on SD3."
                 );
             }
-            // SD3 img2img: GenRequest has init_image + strength
-            // built-in, same shape as Flux. Working size honours
-            // the snapped input dims.
             let mut req = build_sd3_gen_request(
                 ctx,
                 prompt,
@@ -1021,9 +1200,17 @@ pub fn img2img_one(
             );
             req.width = width;
             req.height = height;
+            // v0.23 phase 5: SD3 / SD3.5 support native RePaint
+            // inpaint via the mask field. Thread it through when
+            // plakat.inpaint is the caller.
+            if let Some(p) = mask_path {
+                req.mask = Some(p.to_path_buf());
+                req.mask_feather = ctx.config.mask_feather;
+                req.mask_invert = ctx.config.mask_invert;
+            }
             let pipeline = ctx.get_or_load_sd3(&alias)?;
             pipeline.generate(&req)
-                .context("sd3::Pipeline::generate (plakat.img2img SD3 path)")?;
+                .with_context(|| format!("sd3::Pipeline::generate ({word_tag} SD3 path)"))?;
         }
     }
     read_rendered_png(&tmp_path)
@@ -1104,17 +1291,18 @@ pub fn portrait_one(
     let pipeline = ctx.get_or_load_sd_family(&alias)?;
     pipeline.generate(&req, &[])
         .context("portrait::Pipeline::generate (plakat.portrait path)")?;
+    let shared_core = pipeline.core();
     if !aargs.is_empty() {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_artefacts_sd(&aargs, &rendered, pipeline)?;
+        apply_artefacts_sd(&aargs, &rendered, shared_core.clone())?;
     }
     if hargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_hires_sd(&hargs.cfg, &rendered, pipeline)?;
+        apply_hires_sd(&hargs.cfg, &rendered, shared_core.clone())?;
     }
     if adargs.enabled {
         let rendered = find_rendered_png(tmp.path())?;
-        apply_adetailer_sd(&adargs.cfg, &rendered, pipeline)?;
+        apply_adetailer_sd(&adargs.cfg, &rendered, shared_core)?;
     }
     read_rendered_png(tmp.path())
 }
@@ -1191,5 +1379,43 @@ mod tests {
     fn aspect_to_size_malformed_returns_none() {
         assert!(aspect_to_size("garbage", 768).is_none());
         assert!(aspect_to_size("16:0", 768).is_none());
+    }
+
+    // v0.23 phase 3: clip_skip + refiner_frac propagation.
+
+    /// `build_t2i_gen_request` carries the config-layer
+    /// clip_skip + refiner_frac through to `t2i::GenRequest`. We
+    /// dodge the loaded-pipeline requirement by setting
+    /// size_explicit = true so default_size_for_loaded isn't
+    /// called.
+    #[test]
+    fn build_t2i_gen_request_carries_clip_skip_and_refiner_frac() {
+        let mut ctx = ScriptCtx {
+            device: candle_core::Device::Cpu,
+            out_dir: std::env::temp_dir(),
+            loaded: None,
+            loaded_t2i: None,
+            images: Vec::new(),
+            config: crate::scripting::config::GenerationConfig::default(),
+            loras: Vec::new(),
+            controlnets: Vec::new(),
+            refiner_enabled: false,
+            adetailer_enabled: false,
+            hires_enabled: false,
+            artefacts: Vec::new(),
+            artefact_blend_enabled: false,
+            style_id: None,
+            style_ref: None,
+        };
+        ctx.config.size_explicit = true;
+        ctx.config.width = 512;
+        ctx.config.height = 512;
+        ctx.config.clip_skip = 2;
+        ctx.config.refiner_frac = 0.85;
+
+        let req = build_t2i_gen_request(&ctx, "a fox", std::env::temp_dir());
+        assert_eq!(req.clip_skip, 2);
+        assert_eq!(req.refiner_frac, Some(0.85));
+        assert_eq!(req.width, 512);
     }
 }

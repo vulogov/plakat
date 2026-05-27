@@ -98,20 +98,27 @@ pub struct GenerationConfig {
     /// Default 0.3. Lower = subtler (mostly preserves the main
     /// pass); higher = more rework of the existing image.
     pub refine_strength: f32,
-    /// v0.22 phase 6: fraction of the schedule at which the SDXL
-    /// refiner UNet takes over (default 0.8 = last 20% of steps).
-    /// Only meaningful when `plakat.refiner.enable` is in effect
-    /// AND the loaded model is SDXL. Declared in phase 6 for
-    /// completeness; the actual refiner-UNet load lands in v0.23
-    /// once the SD-family cache switches to `t2i::Pipeline`.
+    /// v0.22 phase 6 + v0.23 phase 2: fraction of the schedule at
+    /// which the SDXL refiner UNet takes over (default 0.8 = last
+    /// 20% of steps). Wired into `t2i::GenRequest.refiner_frac`
+    /// by [`super::script_entry::build_t2i_gen_request`]. Only
+    /// meaningful when `plakat.refiner.enable` is in effect AND
+    /// the loaded model is SDXL — otherwise the t2i pipeline's
+    /// refiner_unet slot is None and this field is ignored.
     pub refiner_frac: f32,
     /// v0.22 phase 6: `plakat.style.*`-related strength multiplier
-    /// in [0, 1]. Declared today; the apply / detect / clear
-    /// words are deferred to v0.23 (catalog-integration scope is
-    /// bigger than the phase-6 budget). Documented as a known
-    /// shipping-but-no-op key — same approach as Flux's
+    /// in [0, 1]. Declared today; the apply / detect / clear / list
+    /// words land in v0.23 phase 4 (catalog-integration scope is
+    /// bigger than the v0.22 phase-6 budget). Documented as a
+    /// known shipping-but-no-op key — same approach as Flux's
     /// `kontext_bucket` before phase 2 wired it.
     pub style_strength: f32,
+    /// v0.23 phase 4: optional override of the style catalog
+    /// directory. Empty (default) → CLI default
+    /// `assets/style_catalog`. Set with `plakat.config.set
+    /// "style_catalog" "path/to/catalog"`. Read by
+    /// `plakat.style.apply` / `.detect` / `.list` at resolve time.
+    pub style_catalog: String,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
     /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
     /// identity / colour; higher = more rework. Ignored when
@@ -220,26 +227,29 @@ pub struct GenerationConfig {
     /// meaningful when img2img is invoked with a mask.
     /// `plakat.img2img` doesn't yet expose a mask path argument
     /// in v0.22; the knob is declared today so the surface is
-    /// stable for v0.23's `plakat.inpaint`.
+    /// stable for v0.23 phase 5's `plakat.inpaint`.
     pub mask_feather: u32,
     /// v0.22 phase 11: invert mask polarity (treat black as
     /// inpaint). Default false. Same deferred-wiring story as
     /// `mask_feather`.
     pub mask_invert: bool,
-    /// v0.22 phase 11: CLIP-skip layer index. `1` (default) uses
-    /// the last hidden state. `2` uses the penultimate (Auto1111
-    /// / NovelAI SD 1.5 anime default). SD 1.5 / SD 2.1 only —
-    /// SDXL / Flux / SD3 ignore. The script-layer wiring is
-    /// **declared but no-op in v0.22 phase 11**: clip_skip lives
-    /// on `t2i::Pipeline`, not `portrait::Pipeline`; full
-    /// threading lands in v0.23 when the cache switches.
+    /// v0.22 phase 11 + v0.23 phase 3: CLIP-skip layer index.
+    /// `1` (default) uses the last hidden state. `2` uses the
+    /// penultimate (Auto1111 / NovelAI SD 1.5 anime default).
+    /// SD 1.5 / SD 2.1 only — SDXL / Flux / SD3 ignore (SDXL
+    /// already uses penultimate by training default; Flux + SD3
+    /// use T5 and have no equivalent knob). Wired into
+    /// `t2i::GenRequest.clip_skip` by
+    /// [`super::script_entry::build_t2i_gen_request`]; t2i's
+    /// `encode_prompt` reads it during the CLIP-L hidden-state
+    /// pick. Honoured by `plakat.generate` only.
     pub clip_skip: usize,
     /// v0.22 phase 11: wildcard directory for `__name__` prompt
     /// expansion. Empty (default) → no file-wildcard expansion
-    /// (inline `{a|b|c}` still works). Same deferred-wiring as
-    /// `clip_skip`: the prompt-expansion call site is in the
-    /// CLI's `expand_prompt_wildcards`; v0.22 declares the knob,
-    /// v0.23 will plumb it through `generate_one`.
+    /// (inline `{a|b|c}` still works). Wired into
+    /// [`super::script_entry::expand_prompt`], called at the top of
+    /// `generate_one` / `img2img_one` / `portrait_one` so all
+    /// three image-producing words honour it.
     pub wildcard_dir: String,
     /// v0.22 phase 11: bundled negative-prompt preset name. One
     /// of `photo` / `painting` / `anime` / `cinematic` (or any
@@ -286,6 +296,7 @@ impl Default for GenerationConfig {
             refine_strength: 0.3,
             refiner_frac: 0.8,
             style_strength: 1.0,
+            style_catalog: String::new(),
             adetailer_strength: 0.4,
             adetailer_padding: 0.25,
             adetailer_feather: 0.25,
@@ -503,6 +514,12 @@ impl GenerationConfig {
                 // library actually loads).
                 self.artefact_library = value.to_string();
             }
+            "style_catalog" => {
+                // v0.23 phase 4: same shape as artefact_library —
+                // empty resets to default. The catalog directory is
+                // loaded lazily inside the plakat.style.* words.
+                self.style_catalog = value.to_string();
+            }
             "artefact_blend_strength" => {
                 let f = parse_unit_float(value, key)? as f32;
                 self.artefact_blend_strength = f;
@@ -662,7 +679,7 @@ impl GenerationConfig {
                      enhance_provider, enhance_temp, enhance_max_tokens, \
                      enhance_cache, enhance_system, enhance_keep_original, \
                      aspect, base, mask_feather, mask_invert, clip_skip, \
-                     wildcard_dir, negative_preset."
+                     wildcard_dir, negative_preset, style_catalog."
                 ));
             }
         }
@@ -703,7 +720,8 @@ impl GenerationConfig {
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
-            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
+            | "aspect" | "wildcard_dir" | "negative_preset"
+            | "style_catalog" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -843,7 +861,8 @@ impl GenerationConfig {
             "negative" | "scheduler" | "adetailer_prompt"
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
-            | "aspect" | "wildcard_dir" | "negative_preset" => Err(anyhow!(
+            | "aspect" | "wildcard_dir" | "negative_preset"
+            | "style_catalog" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1322,6 +1341,8 @@ mod tests {
             "clip_skip",
             "wildcard_dir",
             "negative_preset",
+            // v0.23 phase 4 style key:
+            "style_catalog",
         ] {
             assert!(
                 msg.contains(new_key),
