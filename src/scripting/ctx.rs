@@ -287,7 +287,12 @@ impl ScriptCtx {
                 let pipeline = portrait::Pipeline::from_core(core);
                 self.loaded = Some((alias.to_string(), LoadedPipeline::SdFamily(pipeline)));
             } else {
-                let identity = pick_sd_family_identity(alias);
+                let override_kind = if self.config.identity_kind.is_empty() {
+                    None
+                } else {
+                    Some(self.config.identity_kind.as_str())
+                };
+                let identity = pick_sd_family_identity(alias, override_kind);
                 let device = self.device.clone();
                 let loras = self.loras.clone();
                 let lora_scale = self.config.lora_scale;
@@ -712,15 +717,34 @@ impl ScriptCtx {
     }
 }
 
-/// v0.22 phase 1: pick the identity strategy for an SD-family
-/// alias without bailing — sd21 returns `None` so the pipeline
-/// loads without an identity encoder. Caller is responsible for
-/// having validated SD-family-ness via
-/// [`crate::scripting::script_entry::validate_supported_for_phase_2`].
+/// v0.22 phase 1 + v0.24 phase 3: pick the identity strategy for
+/// an SD-family alias. `override_kind` (v0.24 phase 3) lets the
+/// script override the alias-based auto-pick via the
+/// `identity_kind` config key. When `override_kind` is `None`
+/// or empty, the v0.22 auto-pick rule applies: sd15 → PlusFace,
+/// sdxl → PlusFaceSdxl, sd21 → None (no shipped Plus-Face
+/// checkpoint; portrait bails at generate time on sd21).
+///
+/// Caller is responsible for having validated SD-family-ness.
 fn pick_sd_family_identity(
     alias: &str,
+    override_kind: Option<&str>,
 ) -> Option<crate::pipelines::ip_adapter::IdentityKind> {
     use crate::pipelines::ip_adapter::IdentityKind;
+    // v0.24 phase 3: override wins when non-empty. set_str
+    // validated the string at config-set time, so re-parsing
+    // here is effectively infallible — but bail loudly if not
+    // (a panic would mask a config-layer bug).
+    if let Some(s) = override_kind {
+        let s = s.trim();
+        if !s.is_empty() {
+            use std::str::FromStr;
+            return IdentityKind::from_str(s)
+                .ok()
+                .map(Some)
+                .unwrap_or(None);
+        }
+    }
     let resolved = if alias.contains('/') {
         alias.to_string()
     } else {
@@ -886,7 +910,7 @@ mod tests {
     #[test]
     fn pick_sd_family_identity_sd15_is_plus_face() {
         use crate::pipelines::ip_adapter::IdentityKind;
-        let id = pick_sd_family_identity("sd15");
+        let id = pick_sd_family_identity("sd15", None);
         assert!(matches!(id, Some(IdentityKind::PlusFace)));
     }
 
@@ -894,11 +918,11 @@ mod tests {
     fn pick_sd_family_identity_sdxl_is_plus_face_sdxl() {
         use crate::pipelines::ip_adapter::IdentityKind;
         assert!(matches!(
-            pick_sd_family_identity("sdxl"),
+            pick_sd_family_identity("sdxl", None),
             Some(IdentityKind::PlusFaceSdxl)
         ));
         assert!(matches!(
-            pick_sd_family_identity("sdxl-turbo"),
+            pick_sd_family_identity("sdxl-turbo", None),
             Some(IdentityKind::PlusFaceSdxl)
         ));
     }
@@ -908,7 +932,7 @@ mod tests {
         // SD 2.1 has no shipped Plus-Face checkpoint. The cache
         // loads without identity; plakat.portrait bails at
         // generate time, but plakat.generate works.
-        assert!(pick_sd_family_identity("sd21").is_none());
+        assert!(pick_sd_family_identity("sd21", None).is_none());
     }
 
     #[test]
@@ -918,8 +942,49 @@ mod tests {
         // first so the detection works.
         // The resolved-alias path is also exercised by the
         // canonical HF repo path:
-        assert!(pick_sd_family_identity("stabilityai/stable-diffusion-2-1")
-            .is_none());
+        assert!(
+            pick_sd_family_identity("stabilityai/stable-diffusion-2-1", None)
+                .is_none()
+        );
+    }
+
+    // v0.24 phase 3: identity_kind override.
+
+    /// Non-empty override wins over the alias-based auto-pick.
+    #[test]
+    fn pick_sd_family_identity_override_wins() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        // sd15 would auto-pick PlusFace; override to FaceId.
+        let id = pick_sd_family_identity("sd15", Some("face-id"));
+        assert!(matches!(id, Some(IdentityKind::FaceId)));
+        // sdxl with override.
+        let id = pick_sd_family_identity("sdxl", Some("face-id-sdxl"));
+        assert!(matches!(id, Some(IdentityKind::FaceIdSdxl)));
+    }
+
+    /// Empty override falls back to auto-pick.
+    #[test]
+    fn pick_sd_family_identity_empty_override_falls_back() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        assert!(matches!(
+            pick_sd_family_identity("sd15", Some("")),
+            Some(IdentityKind::PlusFace)
+        ));
+        assert!(matches!(
+            pick_sd_family_identity("sd15", Some("   ")),
+            Some(IdentityKind::PlusFace)
+        ));
+    }
+
+    /// Override can force PlusFaceSdxl even on a non-XL alias
+    /// (caller's responsibility to keep this sane — pipeline load
+    /// will bail at runtime if the override mismatches the
+    /// model's hidden dim).
+    #[test]
+    fn pick_sd_family_identity_override_on_sd21() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let id = pick_sd_family_identity("sd21", Some("plus-face"));
+        assert!(matches!(id, Some(IdentityKind::PlusFace)));
     }
 
     #[test]

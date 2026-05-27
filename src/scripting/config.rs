@@ -280,6 +280,17 @@ pub struct GenerationConfig {
     /// over `face_bbox` when both are set** — same precedence as
     /// the CLI's `--face-landmarks > --face-bbox` rule.
     pub face_landmarks: Option<[[f32; 2]; 5]>,
+    /// v0.24 phase 3: optional identity-encoder override for
+    /// `plakat.portrait`. Empty (default) → auto-pick by alias
+    /// (`pick_sd_family_identity`'s rule: sd15 → PlusFace,
+    /// sdxl → PlusFaceSdxl, sd21 → None). Non-empty values:
+    /// `"plus-face"`, `"plus-face-sdxl"`, `"face-id"`,
+    /// `"face-id-sdxl"` (validated via `IdentityKind::from_str`
+    /// — accepts the same aliases as `--identity-kind`).
+    /// Mutating this drops both SD slots via
+    /// `mark_loras_changed` since identity is a load-time
+    /// pipeline feature.
+    pub identity_kind: String,
     /// `true` while the script hasn't called `plakat.config.set` for
     /// width/height yet. When still `true` at generate time,
     /// [`super::script_entry::generate_one`] picks the SD-family
@@ -345,6 +356,7 @@ impl Default for GenerationConfig {
             negative_preset: String::new(),
             face_bbox: None,
             face_landmarks: None,
+            identity_kind: String::new(),
             size_explicit: false,
         }
     }
@@ -714,6 +726,25 @@ impl GenerationConfig {
                     self.face_landmarks = Some(parsed);
                 }
             }
+            "identity_kind" => {
+                // v0.24 phase 3: empty resets to auto-pick; non-empty
+                // validates via IdentityKind::FromStr. The stored
+                // string keeps the user's canonical form ("plus-face"
+                // etc.) since pick_sd_family_identity re-parses it.
+                if !value.is_empty() {
+                    use std::str::FromStr;
+                    crate::pipelines::ip_adapter::IdentityKind::from_str(value)
+                        .map_err(|e| {
+                            anyhow!(
+                                "plakat.config.set: identity_kind {value:?}: \
+                                 {e}. Accepted: plus-face, plus-face-sdxl, \
+                                 face-id, face-id-sdxl (plus aliases — see \
+                                 IdentityKind::from_str)."
+                            )
+                        })?;
+                }
+                self.identity_kind = value.to_string();
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -733,7 +764,7 @@ impl GenerationConfig {
                      enhance_cache, enhance_system, enhance_keep_original, \
                      aspect, base, mask_feather, mask_invert, clip_skip, \
                      wildcard_dir, negative_preset, style_catalog, \
-                     face_bbox, face_landmarks."
+                     face_bbox, face_landmarks, identity_kind."
                 ));
             }
         }
@@ -775,7 +806,8 @@ impl GenerationConfig {
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
             | "aspect" | "wildcard_dir" | "negative_preset"
-            | "style_catalog" | "face_bbox" | "face_landmarks" => Err(anyhow!(
+            | "style_catalog" | "face_bbox" | "face_landmarks"
+            | "identity_kind" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got integer {value}"
             )),
             other => Err(anyhow!(
@@ -916,7 +948,8 @@ impl GenerationConfig {
             | "hires_upscaler" | "artefact_library"
             | "enhance_provider" | "enhance_system"
             | "aspect" | "wildcard_dir" | "negative_preset"
-            | "style_catalog" | "face_bbox" | "face_landmarks" => Err(anyhow!(
+            | "style_catalog" | "face_bbox" | "face_landmarks"
+            | "identity_kind" => Err(anyhow!(
                 "plakat.config.set: key {key:?} expects a string value, got float {value}"
             )),
             other => Err(anyhow!(
@@ -1400,6 +1433,8 @@ mod tests {
             // v0.24 phase 2 face keys:
             "face_bbox",
             "face_landmarks",
+            // v0.24 phase 3 identity key:
+            "identity_kind",
         ] {
             assert!(
                 msg.contains(new_key),
@@ -2191,6 +2226,61 @@ mod tests {
     fn set_int_face_bbox_is_type_error() {
         let mut cfg = GenerationConfig::default();
         let err = cfg.set_int("face_bbox", 42).unwrap_err();
+        assert!(format!("{err}").contains("expects a string"));
+    }
+
+    // v0.24 phase 3: identity_kind config key.
+
+    #[test]
+    fn defaults_for_v024_phase3_identity_key() {
+        let cfg = GenerationConfig::default();
+        assert_eq!(cfg.identity_kind, "");
+    }
+
+    #[test]
+    fn set_str_identity_kind_accepts_canonical_variants() {
+        let mut cfg = GenerationConfig::default();
+        for name in &["plus-face", "plus-face-sdxl", "face-id", "face-id-sdxl"] {
+            cfg.set_str("identity_kind", name)
+                .unwrap_or_else(|e| panic!("identity_kind {name:?} should parse: {e}"));
+            assert_eq!(cfg.identity_kind, *name);
+        }
+    }
+
+    #[test]
+    fn set_str_identity_kind_accepts_aliases() {
+        // IdentityKind::from_str takes plus-face / plusface /
+        // plus_face all as PlusFace; we store the user's input
+        // verbatim, but the set should succeed.
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("identity_kind", "plusface").unwrap();
+        cfg.set_str("identity_kind", "face_id").unwrap();
+        cfg.set_str("identity_kind", "sdxl-faceid").unwrap();
+    }
+
+    #[test]
+    fn set_str_identity_kind_empty_clears() {
+        let mut cfg = GenerationConfig::default();
+        cfg.set_str("identity_kind", "face-id").unwrap();
+        assert_eq!(cfg.identity_kind, "face-id");
+        cfg.set_str("identity_kind", "").unwrap();
+        assert_eq!(cfg.identity_kind, "");
+    }
+
+    #[test]
+    fn set_str_identity_kind_rejects_unknown() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_str("identity_kind", "instant-id").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("instant-id"), "got {msg}");
+        // Error should mention accepted variants.
+        assert!(msg.contains("plus-face"), "got {msg}");
+    }
+
+    #[test]
+    fn set_int_identity_kind_is_type_error() {
+        let mut cfg = GenerationConfig::default();
+        let err = cfg.set_int("identity_kind", 0).unwrap_err();
         assert!(format!("{err}").contains("expects a string"));
     }
 }
