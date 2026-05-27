@@ -881,14 +881,13 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             }
         }
         PipelineFamily::Flux => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "plakat.generate: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (Flux CN needs load-time setup; deferred to v0.23 \
-                     phase 6). Call plakat.controlnet.clear before plakat.generate \
-                     on Flux."
-                );
-            }
+            // v0.23 phase 6: Flux ControlNet wires through the cache
+            // at load time. `ctx.controlnets` mutations call
+            // `mark_controlnets_changed` which drops the Flux slot,
+            // so the next plakat.generate reloads with the current
+            // CN stack. Image-only specs (plakat.controlnet.add KIND
+            // PATH) supported; auto-annotate bails inside the
+            // loader.
             if ctx.adetailer_enabled {
                 bail!(
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
@@ -1124,13 +1123,8 @@ fn img2img_or_inpaint_one(
             }
         }
         PipelineFamily::Flux => {
-            if !ctx.controlnets.is_empty() {
-                bail!(
-                    "{word_tag}: ControlNet on Flux isn't wired in v0.22 \
-                     phase 5 (deferred to v0.23 phase 6). Call \
-                     plakat.controlnet.clear before {word_tag} on Flux."
-                );
-            }
+            // v0.23 phase 6: Flux ControlNet wires through at load
+            // time. See `get_or_load_flux` for the resolve path.
             if ctx.adetailer_enabled {
                 bail!(
                     "{word_tag}: ADetailer is SD-family only in v0.22 \

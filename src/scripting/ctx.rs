@@ -78,11 +78,13 @@ pub struct ScriptCtx {
     /// controls)`). No cache invalidation needed for SD-family
     /// because the cached pipeline doesn't bake in the CN stack.
     ///
-    /// Flux + SD3 ControlNet need load-time wiring that doesn't
-    /// fit phase 5's scope — the SD-family generate / img2img
-    /// paths bail if `controlnets` is non-empty when running on
-    /// Flux or SD3 with a clear "v0.23" pointer (phase 6 wires
-    /// Flux; phase 7 wires SD3).
+    /// v0.23 phase 6 wires Flux ControlNet at load time (the
+    /// Flux pipeline's `LoadRequest.controlnets` bakes in the
+    /// CN stack on first generate; `mark_controlnets_changed`
+    /// drops the slot on stack mutations). SD3 CN follows in
+    /// phase 7. Note: Flux CN scripting supports `image=` specs
+    /// only — `from=` (auto-annotate) would need the per-generate
+    /// width/height at load time, which the loader doesn't know.
     pub controlnets: Vec<ControlSpec>,
     /// v0.22 phase 6 + v0.23 phase 2: SDXL refiner toggle.
     /// `plakat.refiner.enable` sets this to `true`;
@@ -178,6 +180,30 @@ impl ScriptCtx {
         // v0.23 phase 1: the t2i slot also caches LoRA-merged
         // weights; same invalidation rule.
         self.loaded_t2i = None;
+    }
+
+    /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
+    /// stack is baked in at LOAD time. Flux CN is load-time
+    /// (per phase 6); SD3 CN is also load-time (per phase 7,
+    /// when that wiring lands the SD3 branch here will start
+    /// firing). SD-family CN stays per-call (the
+    /// `pipeline.generate(req, &controls)` arg), so the SD slots
+    /// aren't touched — scripts that toggle CN on/off between SD
+    /// generates pay nothing.
+    ///
+    /// Called by `plakat.controlnet.*` mutations.
+    pub fn mark_controlnets_changed(&mut self) {
+        // The primary `loaded` slot is shared by Flux + SD3 + SD;
+        // drop it only when it's Flux (phase 6) or SD3 (phase 7).
+        let is_flux_or_sd3 = matches!(
+            self.loaded.as_ref().map(|(_, p)| p),
+            Some(LoadedPipeline::Flux(_)) | Some(LoadedPipeline::Sd3(_))
+        );
+        if is_flux_or_sd3 {
+            self.loaded = None;
+        }
+        // SD-family slots (loaded if SdFamily variant, loaded_t2i)
+        // are left intact: SD-family CN is per-call, not per-load.
     }
 
     /// v0.22 phase 1: read-only accessor for the currently-loaded
@@ -417,6 +443,55 @@ impl ScriptCtx {
                 }
             };
 
+            // v0.23 phase 6: resolve the script's ControlNet stack
+            // into Flux-flavoured load specs. Phase 6 supports
+            // `plakat.controlnet.add` (kind + image=PATH) only;
+            // `plakat.controlnet.annotate` / `.spec from=PATH`
+            // (auto-annotate) bails — annotation needs the
+            // width/height that aren't known at load time. Pre-
+            // render with `plakat upscale --method real-esrgan-x*`
+            // -free workflows or the standalone
+            // `plakat.controlnet.add` path.
+            let flux_cn_loads: Vec<flux::FluxControlNetLoad> = self
+                .controlnets
+                .iter()
+                .map(|spec| -> Result<flux::FluxControlNetLoad> {
+                    let cond = match (&spec.image, &spec.from) {
+                        (Some(path), None) => path.clone(),
+                        (None, Some(_)) => anyhow::bail!(
+                            "plakat.controlnet (Flux): auto-annotate \
+                             (`plakat.controlnet.annotate` / from=PATH) \
+                             isn't wired at load time in v0.23 phase 6 — \
+                             annotation needs the per-generate width/height \
+                             which the loader doesn't know. Pre-render the \
+                             conditioning image (depth map, canny edges, \
+                             etc.) and use `plakat.controlnet.add KIND PATH` \
+                             instead. (kind={:?})",
+                            spec.kind
+                        ),
+                        (Some(_), Some(_)) => anyhow::bail!(
+                            "plakat.controlnet (Flux): a single spec has \
+                             both image= and from= set; pick one. (kind={:?})",
+                            spec.kind
+                        ),
+                        (None, None) => anyhow::bail!(
+                            "plakat.controlnet (Flux): kind={:?} needs \
+                             either image=PATH (pre-rendered) or from=PATH \
+                             (auto-annotate). v0.23 phase 6 supports image= \
+                             only on Flux.",
+                            spec.kind
+                        ),
+                    };
+                    let mut cn_load = crate::pipelines::t2i::flux_controlnet_load_for(
+                        spec.kind, fvar, spec.strength,
+                    )?;
+                    cn_load.conditioning = Some(cond);
+                    cn_load.start = spec.start;
+                    cn_load.end = spec.end;
+                    Ok(cn_load)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
             let device = self.device.clone();
             let quantize_t5 = self.config.quantize_t5;
             let quant_level = self.config.quant_level.clone();
@@ -441,7 +516,7 @@ impl ScriptCtx {
                         device,
                         loras: resolved_loras,
                         lora_scale,
-                        controlnets: Vec::new(),
+                        controlnets: flux_cn_loads,
                         quantize_t5,
                         flux_quant_level: quant_level,
                         t5_quant_level,
@@ -803,6 +878,21 @@ mod tests {
         assert!(ctx.loaded.is_none());
         assert!(ctx.loaded_t2i.is_none());
         ctx.mark_loras_changed();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+    }
+
+    // v0.23 phase 6: mark_controlnets_changed is a no-op when
+    // both slots are empty (smoke test). The real semantics
+    // (drops Flux/SD3 slot, leaves SD-family alone) need a real
+    // loaded pipeline to verify; covered by CLI smoke + the
+    // documented invariant inside the method.
+    #[test]
+    fn mark_controlnets_changed_is_safe_when_empty() {
+        let mut ctx = mk_ctx();
+        assert!(ctx.loaded.is_none());
+        assert!(ctx.loaded_t2i.is_none());
+        ctx.mark_controlnets_changed();
         assert!(ctx.loaded.is_none());
         assert!(ctx.loaded_t2i.is_none());
     }
