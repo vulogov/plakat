@@ -17,6 +17,7 @@ pub mod hires_fix;
 pub mod img2img;
 pub mod motion_adapter;
 pub mod motion_module;
+pub mod sd15_motion_unet;
 pub mod face_models;
 pub mod faceid_lora;
 pub mod flux;
