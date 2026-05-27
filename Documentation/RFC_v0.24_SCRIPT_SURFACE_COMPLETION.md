@@ -1,7 +1,6 @@
-# RFC v0.24 — Script surface completion (research draft)
+# RFC v0.24 — Script surface completion
 
-**Status:** research draft — open questions in §6 need user
-sign-off before phase 0 can land.
+**Status:** decisions locked 2026-05-27 — ready for phase 0.
 
 **Predecessors:**
 - [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) — the 7-word MVP.
@@ -111,7 +110,7 @@ tests, release notes.
 **Total estimate:** 7.25–8.25 sessions. About the same size as
 v0.23.
 
-## 6. Decisions (open — lock these before phase 1)
+## 6. Decisions (locked 2026-05-27)
 
 ### Q1: Multi-photo portrait shape
 
@@ -129,10 +128,11 @@ options:
   handle )`. Bund lists exist but rust_dynamic LIST type is
   awkward in plakat scripts.
 
-**Recommend A.** Matches the established pattern; works at the
-REPL (`.s` shows the photo stack); naturally extends to the
-`face_bbox` / `face_landmarks` ops by living in the same
-namespace conceptually.
+**Locked: A.** New collection namespace
+`plakat.portrait.photo.{add, clear, list}` carrying the
+multi-photo state on `ScriptCtx.portrait_photos`.
+`plakat.portrait ( prompt -- handle )` reads it. Matches the
+LoRA/ControlNet pattern.
 
 ### Q2: Flux/SD3 CN `from=` annotation strategy
 
@@ -152,8 +152,10 @@ per-generate width/height the loader doesn't know. Options:
 - **C. Stay with the v0.23 bail.** Document the limitation;
   users pre-render maps.
 
-**Recommend A.** Matches CLI semantics (per-generate dim);
-correct conditioning resolution; modest implementation cost.
+**Locked: A.** Lazy first-generate annotation. The cached
+annotation lives on the loaded Flux/SD3 pipeline; pipeline
+invalidation drops it. Dim mismatch on a subsequent call
+forces a re-annotation.
 
 ### Q3: `plakat.metadata.*` subscope
 
@@ -169,9 +171,9 @@ JSON sidecar plakat writes. Options:
   metadata FILE.png` via the host system; not load-bearing for
   scripts.
 
-**Recommend A.** Read is the load-bearing affordance (scripts
-that consume `plakat generate` outputs); write can wait for
-v0.25 once `plakat.save` itself starts attaching sidecars.
+**Locked: A.** Read-only — `plakat.metadata.read ( path -- json )`
+plus field accessors. Write deferred to v0.25, gated on
+`plakat.save` attaching JSON sidecars.
 
 ### Q4: `identity_kind` override scope
 
@@ -185,9 +187,10 @@ sdxl → PlusFaceSdxl, sd21 → None). User override options:
   `plakat.identity.face-id`, etc. — 4 words.
 - **C. Single host word.** `plakat.identity.set ( kind -- )`.
 
-**Recommend A.** Same shape as the other `plakat.config.set`
-string keys (e.g. `scheduler`, `enhance_provider`); no new
-namespace; one less word.
+**Locked: A.** Config key. `plakat.config.set "identity_kind"
+"face-id"`. Validated at set-time against the 4 variants
+(`plus-face`, `plus-face-sdxl`, `face-id`, `face-id-sdxl`).
+Empty string → auto-pick by alias (today's behaviour).
 
 ### Q5: Phase ordering
 
@@ -201,14 +204,12 @@ Two viable orderings:
   outpaint wrapper), harder phases later (Flux inpaint,
   CN auto-annotate).
 
-**Recommend A.** Persona depth is the smaller half and has
-fewer cross-dependencies; finishing it first means the cycle's
-second half is uniformly scripting-completion work. Phase
-ordering matches the deliverable table in §5 above.
+**Locked: A.** Persona first. Phases 1–3 ship persona depth,
+then 4–9 ship scripting completion. Matches §5 table order.
 
-## 7. Phase plan (locked post-decision)
+## 7. Phase plan (locked 2026-05-27)
 
-See §5. Lock the open questions in §6, then phase 0 is good to go.
+See §5.
 
 ## 8. What's NOT in v0.24 (explicitly deferred to v0.25+)
 
