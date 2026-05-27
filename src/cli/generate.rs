@@ -400,6 +400,25 @@ pub struct GenerateArgs {
     #[arg(long = "fast", value_name = "PRESET")]
     pub fast: Option<crate::pipelines::flux_fast::FastPresetArg>,
 
+    /// **v0.25**: art-medium preset. Bundles a prompt prefix/suffix,
+    /// recommended `--scheduler` / `--steps` / `--guidance`, and
+    /// (phase 4+) automatic LoRA discovery matched to the medium.
+    /// Built-in: `ink-wash`, `watercolor`, `oil-painting`,
+    /// `charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`.
+    /// User-extensible via `$CONFIG_DIR/looks/*.json` (phase 9).
+    /// Override-only: flags you pass explicitly always win.
+    /// Composes with `--genre`, `--style`, `--fast`,
+    /// `--negative-preset`.
+    #[arg(long = "look", value_name = "NAME")]
+    pub look: Option<String>,
+
+    /// **v0.25**: subject-domain preset — independent axis from
+    /// `--look`. Built-in: `anime`. User-extensible via
+    /// `$CONFIG_DIR/genres/*.json` (phase 9). Combines additively
+    /// with `--look` (a watercolor anime composes both).
+    #[arg(long = "genre", value_name = "NAME")]
+    pub genre: Option<String>,
+
     /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
     /// conditioning to the standard Flux variants (`flux-dev`,
     /// `flux-schnell`, GGUF, NF4) by encoding the image through
@@ -860,6 +879,71 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                 .map(|s| format!(", scheduler={s}"))
                 .unwrap_or_default(),
         ));
+    }
+
+    // v0.25 phase 3: --look and --genre presets. Run AFTER --fast so
+    // distillation step counts (e.g. hyper-8 → 8 steps) aren't
+    // overwritten by a softer medium suggestion. Override-only-if-
+    // user-didn't-pass: matches the same clap-default-comparison
+    // trick the fast preset uses just above.
+    if args.look.is_some() || args.genre.is_some() {
+        use crate::preset::{GenerationParams, apply_presets};
+        use std::str::FromStr;
+
+        let mut params = GenerationParams {
+            prompt: args.prompt.clone(),
+            negative: args.negative.clone(),
+            // None == "user didn't touch" → preset may fill.
+            steps: (args.steps != 28).then_some(args.steps),
+            guidance: ((args.guidance - 7.5).abs() >= f64::EPSILON)
+                .then_some(args.guidance),
+            // Scheduler is an enum, not a string. Empty-string
+            // sentinel means "user passed something non-Default,
+            // block preset"; a non-empty string means "preset wrote
+            // a name we should parse back into SchedulerKind".
+            scheduler: (!matches!(args.scheduler, SchedulerKind::Default))
+                .then(String::new),
+        };
+        let (look_spec, genre_spec) = apply_presets(
+            args.look.as_deref(),
+            args.genre.as_deref(),
+            &mut params,
+        )?;
+
+        args.prompt = params.prompt;
+        args.negative = params.negative;
+        if let Some(s) = params.steps {
+            args.steps = s;
+        }
+        if let Some(g) = params.guidance {
+            args.guidance = g;
+        }
+        if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+            args.scheduler =
+                SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
+        }
+        // Log what was applied. lora_query is consumed by the
+        // discovery client (phase 4+) — for now we just note that
+        // discovery is pending.
+        if let Some(l) = &look_spec {
+            crate::ui::progress::println(&format!(
+                "  look '{}': prompt/negative composed, steps={}, guidance={}{}",
+                l.name,
+                args.steps,
+                args.guidance,
+                l.lora_query
+                    .as_ref()
+                    .filter(|_| args.loras.is_empty())
+                    .map(|_| ", lora-discovery=pending (phase 4)")
+                    .unwrap_or_default(),
+            ));
+        }
+        if let Some(g) = &genre_spec {
+            crate::ui::progress::println(&format!(
+                "  genre '{}': prompt/negative composed",
+                g.name
+            ));
+        }
     }
 
     // v0.16 phase 1: auto-annotation for the Flux "concept" variants.
@@ -1527,6 +1611,8 @@ mod tests {
             quant_level: None,
             t5_quant_level: None,
             fast: None,
+            look: None,
+            genre: None,
             redux_images: Vec::new(),
             concept_image: None,
             concept_from: None,

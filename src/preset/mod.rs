@@ -246,6 +246,60 @@ impl PresetSpec {
     }
 }
 
+/// Apply look + genre presets to `params`. Loads the bundled
+/// catalogs from `assets/{looks,genres}/catalog.json`. Order is
+/// **look first, genre second** — under the override-only rule
+/// the first applier fills `Option::None` fields; the second
+/// only contributes its compositional pieces (prompt
+/// prefix/suffix, negative_extras). This matches the natural
+/// reading "a watercolor anime" where the medium (look) governs
+/// sampler/steps and the genre (anime) adds subject framing.
+///
+/// Returns the resolved `(look_spec, genre_spec)` so the caller
+/// can log what was applied and feed `lora_query` into the
+/// discovery step (phases 4–5).
+pub fn apply_presets(
+    look_name: Option<&str>,
+    genre_name: Option<&str>,
+    params: &mut GenerationParams,
+) -> Result<(Option<PresetSpec>, Option<PresetSpec>)> {
+    let look_spec = match look_name {
+        Some(name) => {
+            let cat = Catalog::load_default(Kind::Look)?;
+            let spec = cat
+                .find(name)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "unknown --look {name:?} (try one of: {})",
+                        cat.names().join(", ")
+                    )
+                })?
+                .clone();
+            spec.apply(params);
+            Some(spec)
+        }
+        None => None,
+    };
+    let genre_spec = match genre_name {
+        Some(name) => {
+            let cat = Catalog::load_default(Kind::Genre)?;
+            let spec = cat
+                .find(name)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "unknown --genre {name:?} (try one of: {})",
+                        cat.names().join(", ")
+                    )
+                })?
+                .clone();
+            spec.apply(params);
+            Some(spec)
+        }
+        None => None,
+    };
+    Ok((look_spec, genre_spec))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +547,59 @@ mod tests {
         anime.apply(&mut p);
         assert_eq!(p.steps, Some(24));
         assert!(p.prompt.contains("anime"));
+    }
+
+    /// `apply_presets` end-to-end: looks up the bundled catalogs,
+    /// applies both presets in order, returns the resolved specs.
+    #[test]
+    fn apply_presets_resolves_both() {
+        let mut p = GenerationParams {
+            prompt: "a knight".into(),
+            ..Default::default()
+        };
+        let (l, g) = apply_presets(Some("watercolor"), Some("anime"), &mut p).unwrap();
+        assert_eq!(l.map(|s| s.name), Some("watercolor".into()));
+        assert_eq!(g.map(|s| s.name), Some("anime".into()));
+        // Look (applied first) sets the override fields.
+        assert_eq!(p.steps, Some(32));
+        // Compositional fields from both stack.
+        assert!(p.prompt.contains("watercolor"));
+        assert!(p.prompt.contains("anime"));
+        assert!(p.prompt.contains("a knight"));
+    }
+
+    /// `apply_presets` with neither name returns (None, None) and
+    /// leaves params untouched.
+    #[test]
+    fn apply_presets_no_names_is_noop() {
+        let before = GenerationParams {
+            prompt: "x".into(),
+            steps: Some(10),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        let (l, g) = apply_presets(None, None, &mut after).unwrap();
+        assert!(l.is_none() && g.is_none());
+        assert_eq!(after, before);
+    }
+
+    /// `apply_presets` errors on unknown look name with a helpful
+    /// message listing valid names.
+    #[test]
+    fn apply_presets_unknown_look_errors_with_choices() {
+        let mut p = GenerationParams::default();
+        let err = apply_presets(Some("not-a-real-look"), None, &mut p).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown --look"), "{msg}");
+        assert!(msg.contains("watercolor"), "{msg}");
+    }
+
+    /// `apply_presets` errors on unknown genre name.
+    #[test]
+    fn apply_presets_unknown_genre_errors() {
+        let mut p = GenerationParams::default();
+        let err = apply_presets(None, Some("not-a-real-genre"), &mut p).unwrap_err();
+        assert!(err.to_string().contains("unknown --genre"));
     }
 
     /// Composing a look + a genre on the same params: the second
