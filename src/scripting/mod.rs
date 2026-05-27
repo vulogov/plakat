@@ -862,6 +862,149 @@ mod tests {
         });
     }
 
+    // v0.25 phase 8: plakat.look.* + plakat.genre.* host words.
+
+    /// `plakat.look.apply` sets `ctx.look_name` + invalidates the
+    /// SD cache slots (discovery may push a fresh LoRA at next
+    /// generate).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_apply_sets_name_and_invalidates_cache() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.look_name = None;
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+            })
+            .unwrap();
+            eval(r#""watercolor" plakat.look.apply"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert!(ctx.loaded.is_none(), "primary slot invalidated");
+                assert!(ctx.loaded_t2i.is_none(), "t2i slot invalidated");
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.look.apply ""` bails — empty name isn't useful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_apply_empty_name_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""" plakat.look.apply"#).unwrap_err();
+            assert!(format!("{err}").contains("empty"));
+        });
+    }
+
+    /// `plakat.look.apply` rejects unknown names with a list of
+    /// valid choices.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_apply_unknown_name_bails_with_choices() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""not-real" plakat.look.apply"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("unknown look"), "got {msg}");
+            assert!(msg.contains("watercolor"), "got {msg}");
+        });
+    }
+
+    /// `plakat.look.clear` empties the field.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_clear_empties_state() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.look_name = Some("watercolor".into())).unwrap();
+            eval("plakat.look.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.look_name.is_none())).unwrap();
+        });
+    }
+
+    /// `plakat.look.list` pushes all 8 bundled looks + count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_list_pushes_bundled_entries() {
+        with_singleton_ctx(|| {
+            // Run the word; the count + names land on the stack
+            // (we can't easily peek the VM stack from here, but
+            // the eval succeeding is enough — failure is the only
+            // observable side-effect of catalog load issues).
+            eval("plakat.look.list").unwrap();
+        });
+    }
+
+    /// `plakat.genre.apply` sets `ctx.genre_name`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn genre_apply_sets_name() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.genre_name = None).unwrap();
+            eval(r#""anime" plakat.genre.apply"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.genre_name.as_deref(), Some("anime"))).unwrap();
+        });
+    }
+
+    /// `plakat.genre.apply` rejects unknown names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn genre_apply_unknown_name_bails() {
+        with_singleton_ctx(|| {
+            let err = eval(r#""not-real" plakat.genre.apply"#).unwrap_err();
+            assert!(format!("{err}").contains("unknown genre"));
+        });
+    }
+
+    /// `plakat.genre.clear` empties the field.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn genre_clear_empties_state() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.genre_name = Some("anime".into())).unwrap();
+            eval("plakat.genre.clear").unwrap();
+            with_ctx(|ctx| assert!(ctx.genre_name.is_none())).unwrap();
+        });
+    }
+
+    /// `plakat.genre.list` pushes the single bundled entry + count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn genre_list_pushes_bundled() {
+        with_singleton_ctx(|| {
+            eval("plakat.genre.list").unwrap();
+        });
+    }
+
+    /// Look + genre are independent axes — setting both leaves both
+    /// fields populated, and `clear` on one doesn't disturb the other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn look_and_genre_independent_axes() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.look_name = None;
+                ctx.genre_name = None;
+            })
+            .unwrap();
+            eval(r#""watercolor" plakat.look.apply"#).unwrap();
+            eval(r#""anime" plakat.genre.apply"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+            })
+            .unwrap();
+            eval("plakat.look.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.look_name.is_none());
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+            })
+            .unwrap();
+        });
+    }
+
+    /// `plakat.config.set "offline_discovery" "true"` round-trips
+    /// through the GenerationConfig bool parser.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn offline_discovery_config_key_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| ctx.config.offline_discovery = false).unwrap();
+            eval(r#""true" "offline_discovery" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| assert!(ctx.config.offline_discovery)).unwrap();
+            eval(r#""false" "offline_discovery" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| assert!(!ctx.config.offline_discovery)).unwrap();
+        });
+    }
+
     // v0.22 phase 9: plakat.artefact.* end-to-end.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

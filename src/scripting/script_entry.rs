@@ -944,10 +944,68 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     .context("parsing resolved style LoRAs into LoraSpec")?;
             }
 
+            // v0.25 phase 8: --look / --genre apply + auto-LoRA
+            // discovery. Runs AFTER style (style is more specific
+            // and already filled ctx.loras when active; discovery
+            // gates on loras.is_empty() so style-driven runs skip
+            // discovery). Mutates the local prompt + the request's
+            // negative + ctx.config sampler fields (override-only)
+            // + ctx.loras (discovery push).
+            let mut effective_prompt = effective_prompt;
+            let mut look_neg_extras = String::new();
+            if ctx.look_name.is_some() || ctx.genre_name.is_some() {
+                use crate::preset::{
+                    GenerationParams, apply_presets_with_discovery,
+                };
+                let look_name = ctx.look_name.clone();
+                let genre_name = ctx.genre_name.clone();
+                let offline = ctx.config.offline_discovery;
+                let base =
+                    crate::preset::discovery::BaseFamily::from_model_arg(&alias);
+                use crate::pipelines::scheduler::SchedulerKind;
+                use std::str::FromStr;
+                let mut params = GenerationParams {
+                    prompt: effective_prompt.clone(),
+                    negative: String::new(), // collect look's contribution
+                    steps: (ctx.config.steps != 28).then_some(ctx.config.steps),
+                    guidance: ((ctx.config.guidance - 7.5).abs() >= f64::EPSILON)
+                        .then_some(ctx.config.guidance),
+                    // Empty-string sentinel: user passed a non-Default
+                    // scheduler — block preset from overriding.
+                    scheduler: (!matches!(ctx.config.scheduler, SchedulerKind::Default))
+                        .then(String::new),
+                };
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(apply_presets_with_discovery(
+                    look_name.as_deref(),
+                    genre_name.as_deref(),
+                    offline,
+                    base,
+                    &mut params,
+                    &mut ctx.loras,
+                ))?;
+                effective_prompt = params.prompt;
+                look_neg_extras = params.negative;
+                if let Some(s) = params.steps {
+                    ctx.config.steps = s;
+                }
+                if let Some(g) = params.guidance {
+                    ctx.config.guidance = g;
+                }
+                if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+                    ctx.config.scheduler =
+                        SchedulerKind::from_str(&sched).unwrap_or(ctx.config.scheduler);
+                }
+            }
+
             let mut req = build_t2i_gen_request(ctx, &effective_prompt, tmp_path.clone());
             // Append style's negative_extras to the request negative.
             if !effective_negative_extras.is_empty() {
                 req.negative = crate::style::combine_negative(&req.negative, &effective_negative_extras);
+            }
+            // Append look/genre's negative_extras after style's.
+            if !look_neg_extras.is_empty() {
+                req.negative = crate::style::combine_negative(&req.negative, &look_neg_extras);
             }
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
@@ -1620,6 +1678,8 @@ mod tests {
             portrait_photos: Vec::new(),
             embeddings: Vec::new(),
             cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;
