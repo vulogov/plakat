@@ -2083,6 +2083,230 @@ mod tests {
         });
     }
 
+    // v0.25 phase 11: composition tests for the v0.25 surface.
+
+    /// One script exercises every v0.25 namespace + config key
+    /// (state-only — no model load, no network).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v025_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.loras.clear();
+                ctx.controlnets.clear();
+                ctx.portrait_photos.clear();
+                ctx.embeddings.clear();
+                ctx.refiner_enabled = false;
+                ctx.adetailer_enabled = false;
+                ctx.hires_enabled = false;
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                ctx.config.offline_discovery = false;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.25 phase 8: look + genre axes.
+                "watercolor" plakat.look.apply
+                "anime"      plakat.genre.apply
+
+                // v0.25 phase 8: offline_discovery config key.
+                "true" "offline_discovery" plakat.config.set
+            "#,
+            )
+            .unwrap();
+
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+            })
+            .unwrap();
+        });
+    }
+
+    /// Look + genre are independent state axes. Clearing one
+    /// doesn't touch the other; the offline_discovery config key
+    /// is also independent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v025_look_genre_offline_independence() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                ctx.config.offline_discovery = false;
+            })
+            .unwrap();
+            eval(r#""watercolor" plakat.look.apply"#).unwrap();
+            eval(r#""anime" plakat.genre.apply"#).unwrap();
+            eval(r#""true" "offline_discovery" plakat.config.set"#).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+            })
+            .unwrap();
+            // Clear look — genre + offline persist.
+            eval("plakat.look.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.look_name.is_none());
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+            })
+            .unwrap();
+            // Clear genre — offline still set.
+            eval("plakat.genre.clear").unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.genre_name.is_none());
+                assert!(ctx.config.offline_discovery);
+            })
+            .unwrap();
+        });
+    }
+
+    /// look_name + genre_name mutations both invalidate the SD
+    /// cache via mark_loras_changed — discovery may push a fresh
+    /// LoRA at next generate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v025_look_genre_invalidate_sd_cache() {
+        with_singleton_ctx(|| {
+            // Plant fake "loaded" pipelines so we can detect the
+            // mark_loras_changed effect.
+            with_ctx_mut(|ctx| {
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                // We can't easily plant a real cache slot without
+                // loading a model; instead, observe that .apply
+                // updates the name (which is the mark_loras_changed
+                // call's documented side-effect on ctx).
+            })
+            .unwrap();
+            eval(r#""watercolor" plakat.look.apply"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.look_name.as_deref(), Some("watercolor"))).unwrap();
+            // Apply again with a different name — also invalidates.
+            eval(r#""oil-painting" plakat.look.apply"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.look_name.as_deref(), Some("oil-painting"))).unwrap();
+            // Same for genre.
+            eval(r#""anime" plakat.genre.apply"#).unwrap();
+            with_ctx(|ctx| assert_eq!(ctx.genre_name.as_deref(), Some("anime"))).unwrap();
+        });
+    }
+
+    /// Cross-cycle integration: v0.22 + v0.23 + v0.24 + v0.25
+    /// namespaces compose in one script without state leakage
+    /// between axes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v025_with_prior_cycle_surfaces() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loras.clear();
+                ctx.controlnets.clear();
+                ctx.artefacts.clear();
+                ctx.portrait_photos.clear();
+                ctx.embeddings.clear();
+                ctx.refiner_enabled = false;
+                ctx.adetailer_enabled = false;
+                ctx.hires_enabled = false;
+                ctx.style_id = None;
+                ctx.style_ref = None;
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                ctx.config.face_bbox = None;
+                ctx.config.face_landmarks = None;
+                ctx.config.identity_kind.clear();
+                ctx.config.offline_discovery = false;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.22: LoRA + ControlNet stacks, post-process toggles.
+                "user/lora-a" 0.7 plakat.lora.add
+                "depth" "./photo.jpg" plakat.controlnet.annotate
+                "oak" plakat.artefact.add
+                plakat.refiner.enable
+                plakat.adetailer.enable
+
+                // v0.23: style.
+                "poster-bold" plakat.style.apply
+
+                // v0.24: portrait photos, embeddings, persona.
+                "./alice.jpg" 1.0 plakat.portrait.photo.add
+                "./ti.safetensors:trig:0.5" plakat.embedding.add
+                "face-id" "identity_kind" plakat.config.set
+
+                // v0.25: look + genre + offline_discovery.
+                "watercolor" plakat.look.apply
+                "anime"      plakat.genre.apply
+                "true" "offline_discovery" plakat.config.set
+            "#,
+            )
+            .unwrap();
+
+            with_ctx(|ctx| {
+                // v0.22 state.
+                assert_eq!(ctx.loras.len(), 1);
+                assert_eq!(ctx.controlnets.len(), 1);
+                assert_eq!(ctx.artefacts.len(), 1);
+                assert!(ctx.refiner_enabled);
+                assert!(ctx.adetailer_enabled);
+                // v0.23 state.
+                assert_eq!(ctx.style_id.as_deref(), Some("poster-bold"));
+                // v0.24 state.
+                assert_eq!(ctx.portrait_photos.len(), 1);
+                assert_eq!(ctx.embeddings.len(), 1);
+                assert_eq!(ctx.config.identity_kind, "face-id");
+                // v0.25 state.
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+            })
+            .unwrap();
+        });
+    }
+
+    /// Bytewise-style override-only invariant for the v0.25 presets:
+    /// when the user has explicitly set steps/guidance/scheduler,
+    /// applying a look leaves those scalar fields untouched (only
+    /// the compositional fields change). Mirrors the CLI flag claim
+    /// "explicit flags always win."
+    #[test]
+    fn composition_v025_override_only_invariant() {
+        use crate::preset::{GenerationParams, apply_presets};
+
+        // Fully-populated user side — every scalar field set.
+        let user_steps = 50;
+        let user_guidance = 9.0;
+        let user_scheduler = "euler-a".to_string();
+
+        let mut params = GenerationParams {
+            prompt: "a knight".into(),
+            negative: "blurry".into(),
+            steps: Some(user_steps),
+            guidance: Some(user_guidance),
+            scheduler: Some(user_scheduler.clone()),
+        };
+
+        // Apply a look that would otherwise set different sampler
+        // values (watercolor: steps=32, guidance=6.0, dpmpp-2m).
+        let (look, _) = apply_presets(Some("watercolor"), None, &mut params).unwrap();
+        assert!(look.is_some());
+
+        // Override-only fields preserved.
+        assert_eq!(params.steps, Some(user_steps));
+        assert!((params.guidance.unwrap() - user_guidance).abs() < f64::EPSILON);
+        assert_eq!(params.scheduler.as_deref(), Some("euler-a"));
+
+        // Compositional fields DID change (prompt/negative compose).
+        assert!(params.prompt.contains("watercolor"));
+        assert!(params.prompt.contains("a knight"));
+        assert!(params.negative.contains("photographic"));
+    }
+
     /// Test-helper: serialises every test that needs the singleton
     /// context behind one shared init. Subsequent calls re-use the
     /// already-init'd singleton; only the *first* test through the

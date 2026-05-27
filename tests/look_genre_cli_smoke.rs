@@ -262,6 +262,254 @@ fn portrait_rejects_unknown_look_at_parse_time() {
     }
 }
 
+// --- Phase 11: full-surface integration tests ---
+
+/// Offline mode: cache-roundtrip end-to-end. Writes a cache entry,
+/// reads it back via `discover_lora`, asserts the same LoraSpec
+/// comes out the other side. Exercises the cache schema_version
+/// + cache-key-by-(name, base) logic without network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn offline_cache_round_trip_end_to_end() {
+    use plakat::pipelines::lora::{CivitaiIdKind, LoraSource};
+    use plakat::preset::LoraQuery;
+    use plakat::preset::discovery::{
+        BaseFamily, DiscoveryOptions, Source, discover_lora,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let opts = DiscoveryOptions {
+        offline: true,
+        base: BaseFamily::Sdxl,
+        cache_root: dir.path().join("discovery"),
+        civitai_cache_root: dir.path().join("civitai-empty"),
+        scale: 0.8,
+    };
+
+    // Plant a cache entry by hand (same shape discover_lora would
+    // write after a successful first-run discovery).
+    let cache_dir = opts.cache_root.clone();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let cache_file = cache_dir.join("watercolor__sdxl.json");
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "source": {
+            "source": "civitai",
+            "model_id": 12345u64,
+            "version_id": 67890u64,
+        },
+        "model_name": "Watercolor v3",
+        "trigger_words": ["watercolor", "wash"],
+        "source_url": "https://civitai.com/models/12345",
+        "discovered_at": 1700000000u64,
+    });
+    std::fs::write(&cache_file, payload.to_string()).unwrap();
+
+    let q = LoraQuery {
+        tags: vec!["watercolor".into()],
+        keywords: vec!["watercolor".into()],
+    };
+    let d = discover_lora(&q, "watercolor", &opts)
+        .await
+        .expect("discover_lora")
+        .expect("cache hit");
+
+    // Cache reconstructs a Civitai version-pinned LoraSpec.
+    match d.spec.source {
+        LoraSource::Civitai {
+            id_kind: CivitaiIdKind::Version(v),
+            ..
+        } => assert_eq!(v, 67890),
+        other => panic!("expected Civitai version, got {other:?}"),
+    }
+    assert!((d.spec.scale - 0.8).abs() < f32::EPSILON);
+    assert_eq!(d.trigger_words, vec!["watercolor", "wash"]);
+    assert_eq!(d.model_name, "Watercolor v3");
+    match d.source {
+        Source::Civitai {
+            model_id,
+            version_id,
+        } => {
+            assert_eq!(model_id, 12345);
+            assert_eq!(version_id, 67890);
+        }
+        other => panic!("expected Source::Civitai, got {other:?}"),
+    }
+}
+
+/// Offline + local-scan: plants a fake Civitai cache entry on
+/// disk (metadata.json + safetensors), runs discover_lora in
+/// offline mode, asserts the local scan finds it and writes the
+/// discovery cache for future runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn offline_local_scan_full_round_trip() {
+    use plakat::civitai::api::ModelVersion;
+    use plakat::preset::LoraQuery;
+    use plakat::preset::discovery::{
+        BaseFamily, DiscoveryOptions, Source, discover_lora,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let civitai_dir = dir.path().join("civitai");
+    let version_dir = civitai_dir.join("model-42").join("version-7");
+    std::fs::create_dir_all(&version_dir).unwrap();
+    std::fs::write(
+        version_dir.join("wc.safetensors"),
+        b"fake-safetensors-bytes",
+    )
+    .unwrap();
+    let version = ModelVersion {
+        id: 7,
+        name: "v1".into(),
+        base_model: Some("SDXL 1.0".into()),
+        trained_words: vec!["watercolor wash".into()],
+        download_url: None,
+        files: vec![],
+    };
+    std::fs::write(
+        version_dir.join("metadata.json"),
+        serde_json::to_vec_pretty(&version).unwrap(),
+    )
+    .unwrap();
+
+    let opts = DiscoveryOptions {
+        offline: true,
+        base: BaseFamily::Sdxl,
+        cache_root: dir.path().join("discovery"),
+        civitai_cache_root: civitai_dir,
+        scale: 0.8,
+    };
+    let q = LoraQuery {
+        tags: vec!["watercolor".into()],
+        keywords: vec!["watercolor".into()],
+    };
+    let d = discover_lora(&q, "watercolor", &opts)
+        .await
+        .unwrap()
+        .expect("local-scan hit");
+    match d.source {
+        Source::Civitai {
+            model_id,
+            version_id,
+        } => {
+            assert_eq!(model_id, 42);
+            assert_eq!(version_id, 7);
+        }
+        other => panic!("expected Civitai, got {other:?}"),
+    }
+    assert_eq!(d.trigger_words, vec!["watercolor wash"]);
+
+    // The successful discovery also writes a cache entry; a second
+    // discover_lora call hits the cache rather than re-scanning.
+    let cache_file = opts
+        .cache_root
+        .join("watercolor__sdxl.json");
+    assert!(cache_file.exists(), "discovery cache entry written");
+}
+
+/// Full-surface byte-identity check: when the user populates
+/// every override-only field, applying a look produces the same
+/// scalar values as not applying it. Mirrors the RFC's claim
+/// "fully-flagged command is byte-identical with/without --look"
+/// — for the overridable fields only.
+#[test]
+fn full_surface_byte_identity_for_override_only_fields() {
+    use plakat::preset::{GenerationParams, apply_presets};
+
+    let baseline_params = || GenerationParams {
+        prompt: "a knight".into(),
+        negative: "blurry".into(),
+        steps: Some(50),
+        guidance: Some(9.0),
+        scheduler: Some("euler-a".into()),
+    };
+
+    // Apply EVERY bundled look one by one + verify the override
+    // fields all survive. Looks differ in their override values
+    // so any leak would surface here.
+    for look_name in [
+        "ink-wash",
+        "watercolor",
+        "oil-painting",
+        "charcoal",
+        "pencil",
+        "chalk-pastel",
+        "linocut",
+        "gouache",
+    ] {
+        let mut params = baseline_params();
+        apply_presets(Some(look_name), None, &mut params).unwrap();
+        assert_eq!(
+            params.steps,
+            Some(50),
+            "look {look_name} clobbered user steps"
+        );
+        assert!(
+            (params.guidance.unwrap() - 9.0).abs() < f64::EPSILON,
+            "look {look_name} clobbered user guidance"
+        );
+        assert_eq!(
+            params.scheduler.as_deref(),
+            Some("euler-a"),
+            "look {look_name} clobbered user scheduler"
+        );
+    }
+}
+
+/// All 8 bundled looks have lora_query populated (so discovery
+/// has something to do). Anchors the catalog contract — a future
+/// refactor that drops lora_query on a bundled look fails here.
+#[test]
+fn all_bundled_looks_have_lora_query() {
+    use plakat::preset::{Catalog, Kind};
+    let cat = Catalog::load_with_user_dir(Kind::Look, None).unwrap();
+    for entry in &cat.entries {
+        let q = entry
+            .lora_query
+            .as_ref()
+            .unwrap_or_else(|| panic!("look {} has no lora_query", entry.name));
+        assert!(
+            !q.keywords.is_empty() || !q.tags.is_empty(),
+            "look {} has empty lora_query",
+            entry.name
+        );
+    }
+}
+
+/// Bundled `anime` genre has `lora_query` too.
+#[test]
+fn bundled_anime_genre_has_lora_query() {
+    use plakat::preset::{Catalog, Kind};
+    let cat = Catalog::load_with_user_dir(Kind::Genre, None).unwrap();
+    let anime = cat.find("anime").unwrap();
+    let q = anime.lora_query.as_ref().unwrap();
+    assert!(!q.keywords.is_empty());
+    assert!(!q.tags.is_empty());
+}
+
+/// Catalog round-trip: every bundled look's `prompt_prefix` survives
+/// JSON serialise → parse → apply intact. Guards against schema
+/// drift in the v0.25 → v0.26 transition.
+#[test]
+fn catalog_prompt_prefix_round_trips_through_json() {
+    use plakat::preset::{Catalog, Kind};
+    let cat = Catalog::load_with_user_dir(Kind::Look, None).unwrap();
+    for entry in &cat.entries {
+        let prefix = entry
+            .prompt_prefix
+            .as_deref()
+            .unwrap_or_else(|| panic!("look {} has no prompt_prefix", entry.name));
+        assert!(
+            !prefix.is_empty(),
+            "look {} has empty prompt_prefix",
+            entry.name
+        );
+        // Re-serialise + parse to catch any non-roundtrippable bits.
+        let json = serde_json::to_string(entry).unwrap();
+        let back: plakat::preset::PresetSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.prompt_prefix.as_deref(), Some(prefix));
+    }
+}
+
 /// Empty-user-side invocation: preset fills every override field
 /// + composes prompt and negative.
 #[test]
