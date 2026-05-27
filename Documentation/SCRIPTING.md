@@ -1,13 +1,13 @@
-# `plakat run` — Bund scripting (v0.22)
+# `plakat run` — Bund scripting (v0.23)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
 with composition patterns, see
 [`Tutorials/SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md).
-For the v0.21 design (foundations) see
-[`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md); for the
-v0.22 expansion (the namespaces + cache + Category-B keys covered
-below) see [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md).
+Design RFCs:
+[`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) (foundations),
+[`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md) (the 7-namespace expansion),
+[`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md) (the v0.22 deferrals closed in v0.23).
 
 ## Modes
 
@@ -17,7 +17,7 @@ plakat run --repl               # Interactive REPL on the same surface
 plakat run --repl --out PATH    # REPL with a custom output dir
 ```
 
-Both modes share the same `ScriptCtx` singleton + the same 28
+Both modes share the same `ScriptCtx` singleton + the same 33
 `plakat.*` host words. One process invocation = one script eval
 (no concurrent scripts in one process — bundcore's VM has no
 per-eval isolation).
@@ -54,20 +54,21 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (28 total)
+## Host words (33 total)
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
 input (popped first).
 
-### Core image surface (v0.21 + cache-aware v0.22)
+### Core image surface (v0.21 + cache-aware v0.22 + v0.23 inpaint)
 
 | Word | Stack effect | Notes |
 |---|---|---|
 | `plakat.echo` | `( s -- s' )` | Phase 1 smoke word. |
-| `plakat.load` | `( alias -- )` | Resolve + cache pipeline. v0.22: cache-aware — same alias reuses the loaded model. |
-| `plakat.generate` | `( prompt -- handle )` | Text-to-image. |
+| `plakat.load` | `( alias -- )` | Resolve + cache pipeline. v0.22: cache-aware — same alias reuses the loaded model. v0.23: SD-family `plakat.load` warms the t2i slot by default. |
+| `plakat.generate` | `( prompt -- handle )` | Text-to-image. v0.23: uses the SdT2i slot (refiner + clip_skip ready). |
 | `plakat.img2img` | `( prompt input -- handle )` | `input` = path string OR image handle. |
+| `plakat.inpaint` | `( prompt input mask -- handle )` | **v0.23 phase 5.** Mask-guided img2img. `input` = path or handle; `mask` = path. Honours `mask_feather` + `mask_invert` config keys. SD-family + SD3 wired; Flux bails (use `plakat img2img --model flux-fill-dev --mask`). |
 | `plakat.portrait` | `( prompt photo -- handle )` | IP-Adapter-Plus-Face. SD-family only. |
 | `plakat.upscale` | `( handle scale -- handle )` | Lanczos-3, integer `2` or `4`. |
 | `plakat.save` | `( handle path -- )` | Relative paths resolve under `--out`. |
@@ -99,32 +100,45 @@ Full HF repo IDs are accepted and classify the same way as `--model`.
 invalidate the pipeline cache: the next image-producing word
 rebuilds with the current LoRA set merged in.
 
-### `plakat.controlnet.*` — ControlNet stack (phase 5)
+### `plakat.controlnet.*` — ControlNet stack (phase 5 + v0.23 phases 6–7)
 
 | Word | Stack effect | Behaviour |
 |---|---|---|
 | `plakat.controlnet.add` | `( kind image-path -- )` | Pre-rendered conditioning map. |
-| `plakat.controlnet.annotate` | `( kind from-path -- )` | Auto-annotate from a regular image. |
+| `plakat.controlnet.annotate` | `( kind from-path -- )` | Auto-annotate from a regular image. SD-family only. |
 | `plakat.controlnet.spec` | `( spec-string -- )` | Full grammar: `kind[:strength][:start][:end][@image=PATH][@from=PATH]`. |
 | `plakat.controlnet.clear` | `( -- )` | |
 | `plakat.controlnet.list` | `( -- s_1 … s_n n )` | |
 
-SD-family flows through `Request.controls` at generate time
-(per-call, not per-load). Flux + SD3 ControlNet need load-time
-setup; the generate paths bail loud with a v0.23 pointer.
+**SD-family** flows through `Request.controls` at generate time
+(per-call); stack mutations don't invalidate the cache.
 
-### `plakat.refiner.*` — SDXL refiner toggle (phase 6)
+**Flux + SD3** (v0.23 phases 6–7): the CN stack threads into
+`LoadRequest.controlnets` at pipeline-load time. Stack mutations
+call `mark_controlnets_changed` which drops the Flux/SD3 slot
+(SD-family slots stay intact). Only `image=` specs (pre-rendered
+conditioning) are supported — `from=` (auto-annotate) needs the
+per-generate width/height that the loader doesn't know.
+Workaround: pre-render the depth/canny map and use
+`plakat.controlnet.add`. Single-CN: Union Pro v2 (Flux) /
+InstantX SD3 family by kind. Multi-CN: residuals sum.
+
+### `plakat.refiner.*` — SDXL refiner toggle (phase 6 + v0.23 phase 2)
 
 | Word | Stack effect |
 |---|---|
 | `plakat.refiner.enable` | `( -- )` |
 | `plakat.refiner.disable` | `( -- )` |
 
-Toggle is wired today; the actual SDXL-refiner UNet load is
-deferred to v0.23 (needs `t2i::Pipeline` cache instead of
-`portrait::Pipeline`). `plakat.generate` with the toggle on bails
-with a v0.23 message. Same-model polish via `refine_steps`/
-`refine_strength` is fully wired.
+**Fully wired in v0.23.** Toggle drives `t2i::Pipeline.load`'s
+`use_refiner` flag at the SdT2i cache slot — `plakat.generate` on
+SDXL loads the official SDXL refiner UNet (~6 GB download on
+first run) and splits the schedule at `refiner_frac` (default
+0.8 = last 20% of steps). Non-SDXL aliases silently downgrade
+with a warn (matches CLI `--refiner` behaviour). Toggling
+mid-script invalidates the SdT2i slot so the next generate
+reloads with the new state. Same-model polish via
+`refine_steps` / `refine_strength` also wired.
 
 ### `plakat.adetailer.*` — face refinement (phase 7)
 
@@ -165,6 +179,26 @@ Post-process pipeline: alpha-composite each artefact (in add
 order), then optionally run a masked-img2img blend pass over the
 zones. Same grammar as the CLI's `--artefact` flag (full-object
 overrides remain HJSON-only). SD-family only.
+
+### `plakat.style.*` — style catalog (v0.23 phase 4)
+
+| Word | Stack effect |
+|---|---|
+| `plakat.style.apply` | `( id -- )` — pick a catalog style by id |
+| `plakat.style.detect` | `( photo -- )` — pick by CLIP-H matching against a reference photo |
+| `plakat.style.clear` | `( -- )` |
+| `plakat.style.list` | `( -- s_1 … s_n n )` — push every catalog id + count |
+
+State (`style_id` / `style_ref`) lives on `ScriptCtx`. Resolution
+runs lazily at `plakat.generate` request-build time: catalog
+LoRAs **override** the user LoRA stack for the load (CLI parity
+with `--style ID` / `--style-ref PATH`); trigger phrase prepends
+to the prompt; `negative_extras` appends to the negative via
+`combine_negative`. Subsequent generates with the same style
+cache-hit the style-laden pipeline. Stack mutations invalidate
+the SD cache slots via `mark_loras_changed`. SD-family only —
+Flux + SD3 bail. Tune with the `style_catalog` (path) +
+`style_strength` ([0,1]) config keys.
 
 ### `plakat.enhance` — prompt rewriter (phase 10)
 
@@ -243,8 +277,9 @@ list. Type mismatches bail.
 |---|---|---|---|
 | `refine_steps` | int (Option) | unset | `(0, 500]` (same-model polish) |
 | `refine_strength` | float | 0.3 | `[0, 1]` |
-| `refiner_frac` | float | 0.8 | `[0, 1]` (SDXL refiner UNet — deferred) |
-| `style_strength` | float | 1.0 | `[0, 1]` (style catalog — deferred) |
+| `refiner_frac` | float | 0.8 | `[0, 1]` — wired in v0.23 phase 2 (SDXL refiner UNet split) |
+| `style_strength` | float | 1.0 | `[0, 1]` — wired in v0.23 phase 4 (catalog LoRA multiplier) |
+| `style_catalog` | string | empty | v0.23 phase 4. Catalog directory; empty → `assets/style_catalog` |
 
 ### ADetailer (phase 7)
 
@@ -293,7 +328,7 @@ list. Type mismatches bail.
 | `base` | int | 768 | shorter-side resolution for `aspect`, /8 |
 | `mask_feather` | int | 8 | img2img mask edge feather (px) |
 | `mask_invert` | bool | false | img2img mask polarity |
-| `clip_skip` | int | 1 | `[1, 12]` — declared, **wiring deferred to v0.23** |
+| `clip_skip` | int | 1 | `[1, 12]` — wired in v0.23 phase 3 via t2i::Pipeline.encode_prompt. SD 1.5 / SD 2.1 only |
 | `wildcard_dir` | string | empty | `__name__` wildcard directory |
 | `negative_preset` | string | empty | `photo`/`painting`/`anime`/`cinematic` (combined with `negative`) |
 
@@ -331,22 +366,30 @@ or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
 
-## v0.22 limitations / deferred to v0.23
+## v0.23 limitations / deferred to v0.24+
+
+The seven v0.22 deferrals all closed in v0.23. The remaining
+items are longer-term carries:
 
 | Limitation | Tracking |
 |---|---|
-| Flux / SD3 ControlNet | needs load-time wiring (v0.23) |
-| SDXL refiner UNet load | needs t2i::Pipeline cache (v0.23) |
-| Style catalog (`plakat.style.*`) | scope deferred (v0.23) |
-| `plakat.inpaint` (mask path arg) | mask_feather/mask_invert knobs are declared |
-| `clip_skip` wiring | t2i::Pipeline encode path (v0.23) |
+| Flux + SD3 ControlNet `from=` (auto-annotate) | needs per-generate dims at load (v0.24+) |
+| Flux inpaint via `plakat.inpaint` | needs flux-fill-dev channel-concat wiring (v0.24+); use CLI's `plakat img2img --model flux-fill-dev --mask` |
+| AnimateDiff | new architecture (motion-adapter weights + temporal-attention); long-running carry from v0.20 |
+| SD3 / SD3.5 animate | 3-encoder lerp + MMDiT integrator (v0.20+ carry) |
+| FaceID + multi-photo portrait + manual landmarks | v0.20+ carry |
+| Real-ESRGAN ML upscaling in `plakat.upscale` | `plakat.hires_upscaler` exposes it via `hires_upscaler`; standalone upscale word is Lanczos-only |
+| `plakat.embedding.*` | Textual Inversion namespace |
+| `plakat.stylize`, `plakat.outpaint`, `plakat.metadata.*` | misc word carries |
 
 ## See also
 
 - [`Tutorials/SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md)
   — narrative walkthrough with composition patterns.
+- [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md)
+  — v0.23 design doc + locked decisions.
 - [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md)
-  — v0.22 design doc, locked decisions, phase plan.
+  — v0.22 design doc.
 - [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) —
   v0.21 foundations.
 - `vulogov/Bund` on GitHub — the language reference.
