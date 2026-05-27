@@ -103,6 +103,27 @@ pub struct AnimateArgs {
     #[arg(long, default_value_t = 100)]
     pub gif_delay_ms: u16,
 
+    /// **v0.26**: enable AnimateDiff mode (SD 1.5 only). Switches
+    /// from the v0.20 prompt-lerp morph to motion-coherent N-frame
+    /// generation using a downloaded AnimateDiff V3 motion adapter
+    /// (`guoyww/animatediff-motion-adapter-v1-5-3`, ~1.4 GB).
+    /// Single prompt is the same across all frames (`--from`);
+    /// `--to` is ignored. Frame count is the motion adapter's
+    /// trained window (default 16); the adapter's
+    /// `motion_max_seq_length = 32` is a hard cap. Output formats
+    /// expand in phase 5 (`--format mp4` / `webm`).
+    #[arg(long, default_value_t = false)]
+    pub animatediff: bool,
+
+    /// **v0.26**: motion LoRAs to stack onto the AnimateDiff
+    /// motion adapter. Same `LoraSpec` grammar as `--lora`:
+    /// `hf:user/repo:0.7`, `civitai:NNNNNN:0.5`, or a local path.
+    /// Lets you pick community motion LoRAs (zoom-in / pan-left /
+    /// panic / etc.) from `guoyww/animatediff-motion-lora-*`.
+    /// Repeatable. No-op outside `--animatediff` mode.
+    #[arg(long = "motion-lora", value_name = "SPEC")]
+    pub motion_loras: Vec<crate::pipelines::lora::LoraSpec>,
+
     /// v0.18 phase 6: skip the A1111 `parameters` PNG tEXt chunk
     /// and the `.json` sidecar that animate writes alongside each
     /// `frame-NNNN.png`. Default off — metadata helps you re-render
