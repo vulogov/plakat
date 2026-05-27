@@ -8,6 +8,8 @@
 //!
 //! See `Documentation/RFC_v0.25_LOOKS_AND_GENRES.md` for the design.
 
+pub mod discovery;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
