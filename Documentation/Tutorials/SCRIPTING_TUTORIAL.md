@@ -678,7 +678,105 @@ The v0.23 `plakat.inpaint` Flux bail is gone — when the loaded
 alias resolves to `FluxFillDev`, the mask threads through
 `flux::GenRequest.mask`.
 
-## 12. The full word reference
+## 12. What's new in v0.25
+
+v0.25 adds the **art-medium** (`--look`) and **subject-domain**
+(`--genre`) axes. Both ship as Bund host word namespaces alongside
+the CLI flags + scenario fields. Host word count: 42 → 48.
+
+The big new thing is **auto-LoRA discovery**: when you apply a
+look and your LoRA stack is empty, plakat searches Civitai → HF
+Hub → local cache for a compatible LoRA matched to the loaded
+base model and the look's tags/keywords. Trigger words from the
+discovered LoRA prepend to the prompt automatically.
+
+### The new namespaces
+
+```bund
+// Looks (the medium axis) — 3 words.
+"watercolor" plakat.look.apply         // pick a medium
+plakat.look.list                       // 8 bundled names + count
+plakat.look.clear                      // forget it
+
+// Genres (subject-domain axis) — 3 words, identical shape.
+"anime" plakat.genre.apply
+plakat.genre.list
+plakat.genre.clear
+
+// Discovery on/off — config key.
+"true" "offline_discovery" plakat.config.set
+```
+
+Bundled looks (8): `ink-wash`, `watercolor`, `oil-painting`,
+`charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`.
+Bundled genres (1): `anime`.
+
+### Override semantics
+
+Three field buckets, same rules as the CLI:
+
+| Bucket | Rule |
+|---|---|
+| Compositional (`prompt_prefix`, `prompt_suffix`, `negative_extras`) | **Always applied** — they compose your prompt + negative rather than replace them. |
+| Override-only (`steps`, `guidance`, `scheduler_hint`) | Fill `ctx.config` slots only when you left them at defaults. Explicit `plakat.config.set "steps" "50"` wins. |
+| Discovery-gating (`lora_query`, `base_compat`) | Discovery fires only when `ctx.loras` is empty. User-supplied LoRAs always win. |
+
+### Composing look + genre
+
+```bund
+"sdxl" plakat.load
+"watercolor" plakat.look.apply
+"anime"      plakat.genre.apply
+"a knight in a forest" plakat.generate
+"knight.png" plakat.save
+```
+
+Both axes' prompt prefixes/suffixes/negatives stack. Sampler
+fields follow the override-only rule with the **look applied
+first** — the genre fills only what the look left unset.
+
+### User-extension catalogs
+
+Drop a JSON file under `$CONFIG_DIR/looks/` or `$CONFIG_DIR/genres/`:
+
+```text
+~/Library/Application Support/ai.plakat.plakat/looks/cyberpunk.json
+~/.config/plakat/looks/cyberpunk.json
+```
+
+One PresetSpec object per file; filename stem is the catalog key.
+See [`LOOKS.md`](../LOOKS.md) for the field reference. User
+entries shadow bundled by name.
+
+`plakat.look.list` and `plakat.genre.list` enumerate the merged
+catalog (bundled + user).
+
+### Offline discovery
+
+```bund
+"true" "offline_discovery" plakat.config.set
+"watercolor" plakat.look.apply
+"a cottage" plakat.generate
+```
+
+Skips Civitai + HF Hub; uses on-disk discovery cache + local
+LoRA scan. First-time use still needs network access to populate
+the cache; subsequent calls are network-free.
+
+### Scope
+
+Bund-side apply currently fires on the SD-family `plakat.generate`
+path only. Flux + SD3 paths set the look/genre state correctly
+but don't apply the preset at generate time — for those families,
+use the CLI flags (`--look watercolor`) which apply on every
+pipeline family. v0.26 will extend the Bund apply to Flux/SD3.
+
+Scenario-mode auto-LoRA discovery is also deferred to v0.26 (the
+scenario LoRA pipeline has two stages and needs careful
+integration). The prompt prefix / sampler hints still apply in
+scenarios — set `loras:` explicitly if you want a specific LoRA.
+
+## 13. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"
