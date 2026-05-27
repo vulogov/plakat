@@ -1,12 +1,145 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.22. The current
+"What's new" sections for v0.13 through v0.24. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.24 — persona depth + scripting completion
+
+Eleven phases finish the Bund scripting surface. The
+v0.21/22/23 arc closes: after v0.24 there's no "use the CLI
+for X" gap for users staying in scripts. Word count 33 → 42.
+
+### Persona depth (phases 1–3)
+
+```bund
+// Multi-photo portrait (BREAKING — see migration below).
+"./alice.jpg" 0.7 plakat.portrait.photo.add
+"./bob.jpg"   0.3 plakat.portrait.photo.add
+"a couple at the beach" plakat.portrait
+
+// Face alignment overrides (CLI parity with --face-bbox /
+// --face-landmarks).
+"0.2,0.1,0.8,0.7" "face_bbox" plakat.config.set
+"0.40,0.40,0.60,0.40,0.50,0.55,0.42,0.68,0.58,0.68"
+    "face_landmarks" plakat.config.set
+
+// Identity-encoder variant override (the four FaceID kinds).
+"face-id-sdxl" "identity_kind" plakat.config.set
+```
+
+CLI flags `--photo` / `--face-bbox` / `--face-landmarks` / all
+four `--identity` variants already existed; v0.24 wires the
+scripting surface to them.
+
+### Scripting completion (phases 4–9)
+
+Six v0.20+ carries close:
+
+- **`plakat.outpaint`** — `( prompt input expand-spec -- handle )`.
+- **`plakat.embedding.*`** — Textual Inversion stack (add / clear / list).
+- **`plakat.stylize`** — IP-Adapter style transfer.
+- **`plakat.metadata.read`** — JSON sidecar reader (read-only).
+- **Flux + SD3 ControlNet `from=`** — lazy first-generate
+  annotation; cached per-pipeline; dim changes invalidate.
+- **Flux inpaint** via `plakat.inpaint` — wires the
+  flux-fill-dev variant + channel-concat path.
+
+### v0.23 → v0.24 migration
+
+One backwards-incompatible change in phase 1:
+
+```bund
+// v0.23:
+"alice.jpg" "a portrait" plakat.portrait
+
+// v0.24:
+"alice.jpg" 1.0 plakat.portrait.photo.add
+"a portrait" plakat.portrait
+```
+
+`plakat.portrait` no longer takes a photo arg; photos come from
+the `plakat.portrait.photo.add` collection stack.
+
+### By the numbers
+
+- 817 lib tests green (+45 across the cycle).
+- 11 phase commits + RFC.
+- 33 → 42 host words.
+- Three new config keys (face_bbox / face_landmarks /
+  identity_kind).
+
+### Documentation
+
+- [`SCRIPTING.md`](SCRIPTING.md) — full reference, updated for v0.24.
+- [`SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md) §11.
+- [`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) — design doc.
+
+## What's new in v0.23 — Bund deferrals closed
+
+Nine phases close every "deferred to v0.23" stub v0.22 explicitly
+took on, plus add two new things: the `plakat.style.*` catalog
+namespace and the `plakat.inpaint` host word. Word count
+28 → 33; smaller cycle than v0.22 (~7 phases of real work).
+
+### Cache architecture: the SdT2i slot
+
+`plakat.load "sdxl"` now warms a `t2i::Pipeline` slot in addition
+to (or sharing `Arc<SdCore>` with) the v0.22 `portrait::Pipeline`
+slot. `plakat.generate`'s SD-family path routes through SdT2i,
+which carries the SDXL refiner UNet hook + the CLIP-skip encode
+path that the v0.22 portrait cache didn't expose.
+
+### `plakat.style.*` namespace (phase 4)
+
+```bund
+"poster-bold" plakat.style.apply       // by id
+"./ref.jpg"   plakat.style.detect      // CLIP-H detect from photo
+plakat.style.list                      // ( -- ...ids count )
+plakat.style.clear
+0.7 "style_strength" plakat.config.set
+"a town square" plakat.generate
+```
+
+Resolution runs lazily at `plakat.generate` request-build time:
+catalog LoRAs override the user LoRA stack for the load (CLI
+parity with `--style ID`); trigger prepends to prompt;
+`negative_extras` appends to negative.
+
+### `plakat.inpaint` host word (phase 5)
+
+```bund
+"stained glass window in the wall"
+   "./photo.png" "./mask.png"
+   plakat.inpaint
+   "result.png" plakat.save
+```
+
+Stack: `( prompt input mask -- handle )`. SD-family + SD3 wired;
+Flux bail closed in v0.24.
+
+### Flux + SD3 ControlNet (phases 6–7)
+
+CN stack wires into `LoadRequest.controlnets` at pipeline-load
+time. Stack mutations call `mark_controlnets_changed` which
+drops the Flux/SD3 slot. v0.23 cap: `image=` specs only;
+auto-annotate (`from=`) deferred to v0.24 phase 8.
+
+### By the numbers
+
+- 772 lib tests green (+14 across the cycle).
+- 28 → 33 host words. `style_catalog` config key added; six v0.22
+  deferred items closed.
+
+### Documentation
+
+- [`SCRIPTING.md`](SCRIPTING.md) — full reference, updated for v0.23.
+- [`SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md) §10.
+- [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md) — design doc.
 
 ## What's new in v0.22 — Bund words expansion
 

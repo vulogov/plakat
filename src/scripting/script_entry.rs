@@ -167,6 +167,128 @@ fn resolve_style_for_generate(
 /// (`__name__` file wildcards + inline `{a|b|c}` alternation).
 /// When `wildcard_dir` is empty, only inline alternation expands.
 /// Seed: `config.seed` when set (reproducible), else OS entropy.
+/// v0.24 phase 8: ensure every `from=` ControlNet spec has an
+/// annotated PNG at the requested dims, returning the
+/// `(slot_idx, annotated_path)` pairs the caller should apply
+/// via the loaded pipeline's `set_controlnet_conditioning`.
+///
+/// Idempotent. Subsequent calls with the same dims hit the
+/// cache (`ctx.cn_annotation_cache.entries[i]`); dim mismatches
+/// re-annotate and overwrite. The two-step (collect → apply)
+/// shape keeps the borrow on `&mut ctx` (for the cache mutation)
+/// disjoint from the borrow on `&mut pipeline` (for the
+/// setter call).
+///
+/// Returns an empty vec when no `from=` specs exist — common
+/// path when scripts only use `image=`.
+fn collect_cn_annotations(
+    ctx: &mut ScriptCtx,
+    width: u32,
+    height: u32,
+) -> Result<Vec<(usize, std::path::PathBuf)>> {
+    if ctx.controlnets.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Lazy-init the cache. The tempdir holds annotated PNGs for
+    // this pipeline's lifetime; cleared by mark_controlnets_changed
+    // / mark_loras_changed.
+    if ctx.cn_annotation_cache.is_none() {
+        let tmpdir = tempfile::Builder::new()
+            .prefix("plakat-script-cn-annot-")
+            .tempdir()
+            .context("creating ControlNet annotation tempdir")?;
+        let entries = vec![None; ctx.controlnets.len()];
+        ctx.cn_annotation_cache = Some(crate::scripting::ctx::CnAnnotationCache {
+            entries,
+            _tmpdir: tmpdir,
+        });
+    }
+    // Defend: re-sync the cache entries vec to ctx.controlnets
+    // length if they drifted (shouldn't happen post-invalidation
+    // but cheap to enforce).
+    if let Some(cache) = ctx.cn_annotation_cache.as_mut() {
+        if cache.entries.len() != ctx.controlnets.len() {
+            cache.entries = vec![None; ctx.controlnets.len()];
+        }
+    }
+
+    // Snapshot from= specs.
+    let from_specs: Vec<Option<(crate::pipelines::controlnet::ControlKind, std::path::PathBuf)>> =
+        ctx.controlnets
+            .iter()
+            .map(|s| s.from.as_ref().map(|p| (s.kind, p.clone())))
+            .collect();
+
+    let device = ctx.device.clone();
+    let dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        anyhow!(
+            "plakat.controlnet (annotate): no tokio runtime in scope. {e}"
+        )
+    })?;
+
+    let mut to_apply: Vec<(usize, std::path::PathBuf)> = Vec::new();
+    for (idx, from) in from_specs.iter().enumerate() {
+        let Some((kind, src_path)) = from else {
+            continue;
+        };
+        // Cache hit: same dims.
+        let cache = ctx.cn_annotation_cache.as_ref().expect("just init'd");
+        let cached_path = match &cache.entries[idx] {
+            Some((cw, ch, p)) if *cw == width && *ch == height => Some(p.clone()),
+            _ => None,
+        };
+        let annotated_path = if let Some(p) = cached_path {
+            p
+        } else {
+            // Annotate now. Output goes into the cache tempdir.
+            let cache = ctx
+                .cn_annotation_cache
+                .as_ref()
+                .expect("just init'd");
+            let out_path = cache._tmpdir.path().join(format!(
+                "cn{idx}-{}-{width}x{height}.png",
+                kind.slug()
+            ));
+            let anno_tensor = tokio::task::block_in_place(|| {
+                handle.block_on(crate::pipelines::controlnet_annotator::annotate(
+                    *kind, src_path, width, height, &device, dtype,
+                ))
+            })
+            .with_context(|| {
+                format!(
+                    "auto-annotating {} for ControlNet[{idx}] (from={})",
+                    kind.slug(),
+                    src_path.display()
+                )
+            })?;
+            crate::pipelines::t2i::write_annotator_tensor_as_png(
+                &anno_tensor,
+                &out_path,
+            )
+            .with_context(|| {
+                format!(
+                    "writing annotated {} → {}",
+                    kind.slug(),
+                    out_path.display()
+                )
+            })?;
+            let cache = ctx
+                .cn_annotation_cache
+                .as_mut()
+                .expect("just init'd");
+            cache.entries[idx] = Some((width, height, out_path.clone()));
+            out_path
+        };
+        to_apply.push((idx, annotated_path));
+    }
+    Ok(to_apply)
+}
+
 fn expand_prompt(ctx: &ScriptCtx, prompt: &str) -> Result<String> {
     use crate::prompt::wildcards;
     let dir = if ctx.config.wildcard_dir.is_empty() {
@@ -376,8 +498,12 @@ fn build_gen_request(
         refine: ctx.config.refine_steps,
         refine_strength: ctx.config.refine_strength,
         face_strength: ctx.config.face_strength,
-        face_bbox: None,
-        face_landmarks: None,
+        // v0.24 phase 2: face_bbox + face_landmarks come from
+        // config keys. Read only by the portrait path; ignored
+        // by the SD-family generate/img2img paths which pass an
+        // empty `photos` vec.
+        face_bbox: ctx.config.face_bbox,
+        face_landmarks: ctx.config.face_landmarks,
     }
 }
 
@@ -818,10 +944,68 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     .context("parsing resolved style LoRAs into LoraSpec")?;
             }
 
+            // v0.25 phase 8: --look / --genre apply + auto-LoRA
+            // discovery. Runs AFTER style (style is more specific
+            // and already filled ctx.loras when active; discovery
+            // gates on loras.is_empty() so style-driven runs skip
+            // discovery). Mutates the local prompt + the request's
+            // negative + ctx.config sampler fields (override-only)
+            // + ctx.loras (discovery push).
+            let mut effective_prompt = effective_prompt;
+            let mut look_neg_extras = String::new();
+            if ctx.look_name.is_some() || ctx.genre_name.is_some() {
+                use crate::preset::{
+                    GenerationParams, apply_presets_with_discovery,
+                };
+                let look_name = ctx.look_name.clone();
+                let genre_name = ctx.genre_name.clone();
+                let offline = ctx.config.offline_discovery;
+                let base =
+                    crate::preset::discovery::BaseFamily::from_model_arg(&alias);
+                use crate::pipelines::scheduler::SchedulerKind;
+                use std::str::FromStr;
+                let mut params = GenerationParams {
+                    prompt: effective_prompt.clone(),
+                    negative: String::new(), // collect look's contribution
+                    steps: (ctx.config.steps != 28).then_some(ctx.config.steps),
+                    guidance: ((ctx.config.guidance - 7.5).abs() >= f64::EPSILON)
+                        .then_some(ctx.config.guidance),
+                    // Empty-string sentinel: user passed a non-Default
+                    // scheduler — block preset from overriding.
+                    scheduler: (!matches!(ctx.config.scheduler, SchedulerKind::Default))
+                        .then(String::new),
+                };
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(apply_presets_with_discovery(
+                    look_name.as_deref(),
+                    genre_name.as_deref(),
+                    offline,
+                    base,
+                    &mut params,
+                    &mut ctx.loras,
+                ))?;
+                effective_prompt = params.prompt;
+                look_neg_extras = params.negative;
+                if let Some(s) = params.steps {
+                    ctx.config.steps = s;
+                }
+                if let Some(g) = params.guidance {
+                    ctx.config.guidance = g;
+                }
+                if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+                    ctx.config.scheduler =
+                        SchedulerKind::from_str(&sched).unwrap_or(ctx.config.scheduler);
+                }
+            }
+
             let mut req = build_t2i_gen_request(ctx, &effective_prompt, tmp_path.clone());
             // Append style's negative_extras to the request negative.
             if !effective_negative_extras.is_empty() {
                 req.negative = crate::style::combine_negative(&req.negative, &effective_negative_extras);
+            }
+            // Append look/genre's negative_extras after style's.
+            if !look_neg_extras.is_empty() {
+                req.negative = crate::style::combine_negative(&req.negative, &look_neg_extras);
             }
             // v0.22 phase 5: resolve the script's controlnets to
             // OwnedControl + ControlRequest before borrowing the
@@ -881,13 +1065,11 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             }
         }
         PipelineFamily::Flux => {
-            // v0.23 phase 6: Flux ControlNet wires through the cache
-            // at load time. `ctx.controlnets` mutations call
-            // `mark_controlnets_changed` which drops the Flux slot,
-            // so the next plakat.generate reloads with the current
-            // CN stack. Image-only specs (plakat.controlnet.add KIND
-            // PATH) supported; auto-annotate bails inside the
-            // loader.
+            // v0.23 phase 6 + v0.24 phase 8: Flux ControlNet wires
+            // through the cache at load time. image= specs bake
+            // the conditioning path in; from= specs lazy-annotate
+            // at first generate using that call's width/height.
+            // Stack mutations clear via mark_controlnets_changed.
             if ctx.adetailer_enabled {
                 bail!(
                     "plakat.generate: ADetailer is SD-family only in v0.22 \
@@ -920,7 +1102,24 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                 );
             }
             let req = build_flux_gen_request(ctx, prompt, tmp_path.clone(), None);
+            // v0.24 phase 8: load the pipeline first (load is
+            // idempotent on a cache hit), then run the lazy
+            // annotation pass with the loaded slot's
+            // `set_controlnet_conditioning`. The borrow dance
+            // splits annotation (needs &mut ctx) from the
+            // generate call (needs &mut pipeline).
+            ctx.get_or_load_flux(&alias)?;
+            // Annotation pass: takes &mut ctx; needs a callback
+            // into the loaded pipeline. Use a scope to release the
+            // pipeline borrow before the cache mutation.
+            let cn_settings_to_apply = collect_cn_annotations(ctx, req.width, req.height)?;
+            // Apply via the pipeline's setter, then generate.
             let pipeline = ctx.get_or_load_flux(&alias)?;
+            for (idx, path) in cn_settings_to_apply {
+                pipeline
+                    .set_controlnet_conditioning(idx, Some(path))
+                    .context("flux::Pipeline::set_controlnet_conditioning")?;
+            }
             pipeline.generate(&req)
                 .context("flux::Pipeline::generate (plakat.generate Flux path)")?;
         }
@@ -961,7 +1160,18 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                 );
             }
             let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
+            // v0.24 phase 8: lazy-annotate from= CN specs at this
+            // call's width/height. Same two-step pattern as Flux:
+            // collect annotation paths, then apply via the loaded
+            // pipeline's setter, then generate.
+            ctx.get_or_load_sd3(&alias)?;
+            let cn_settings_to_apply = collect_cn_annotations(ctx, req.width, req.height)?;
             let pipeline = ctx.get_or_load_sd3(&alias)?;
+            for (idx, path) in cn_settings_to_apply {
+                pipeline
+                    .set_controlnet_conditioning(idx, Some(path))
+                    .context("sd3::Pipeline::set_controlnet_conditioning")?;
+            }
             pipeline.generate(&req)
                 .context("sd3::Pipeline::generate (plakat.generate SD3 path)")?;
         }
@@ -1142,19 +1352,30 @@ fn img2img_or_inpaint_one(
                      {word_tag} on Flux."
                 );
             }
+            // v0.24 phase 9: Flux inpaint via flux-fill-dev. The
+            // mask threads through `flux::GenRequest.mask`; the
+            // pipeline's `img_in` projection (loaded for the
+            // FluxFillDev variant) handles channel-concat of
+            // the init image + mask onto the noise tokens.
+            // Other Flux variants don't have that projection
+            // (img_in is 64-channel for vanilla Flux vs. 384 for
+            // Fill), so we bail with a clear pointer.
             if mask_path.is_some() {
-                // v0.23 phase 5: Flux inpaint requires the
-                // flux-fill-dev variant + load-time channel-concat
-                // wiring on the img_in projection. That's its own
-                // refactor; not in scope for phase 5. Bail with a
-                // clear pointer.
-                bail!(
-                    "plakat.inpaint: Flux inpaint requires the \
-                     flux-fill-dev variant + per-load setup; not wired \
-                     in v0.23 phase 5. Workaround: use the CLI's \
-                     `plakat img2img --model flux-fill-dev --mask MASK` \
-                     directly, or stay on SD-family in scripts."
-                );
+                let resolved = if alias.contains('/') {
+                    alias.clone()
+                } else {
+                    crate::hf::resolve_alias(&alias).to_string()
+                };
+                let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+                if !matches!(variant, crate::pipelines::t2i::Variant::FluxFillDev) {
+                    bail!(
+                        "plakat.inpaint: Flux inpaint requires the \
+                         flux-fill-dev variant (got {alias:?} → {variant:?}). \
+                         Use `\"flux-fill-dev\" plakat.load` before \
+                         plakat.inpaint, or stay on SD-family / SD3 (both \
+                         support inpaint natively)."
+                    );
+                }
             }
             let mut req = build_flux_gen_request(
                 ctx,
@@ -1164,7 +1385,29 @@ fn img2img_or_inpaint_one(
             );
             req.width = width;
             req.height = height;
+            // v0.24 phase 9: thread the mask through flux::GenRequest.
+            // build_flux_gen_request defaults this to None; we set it
+            // only when the caller is plakat.inpaint AND the variant
+            // checked out above.
+            if let Some(p) = mask_path {
+                req.mask = Some(p.to_path_buf());
+            }
+            // v0.24 phase 8: lazy-annotate from= CN specs on the
+            // img2img path too. Same pattern as generate_one.
+            ctx.get_or_load_flux(&alias)?;
+            let cn_settings_to_apply =
+                collect_cn_annotations(ctx, req.width, req.height)?;
             let pipeline = ctx.get_or_load_flux(&alias)?;
+            for (idx, path) in cn_settings_to_apply {
+                pipeline
+                    .set_controlnet_conditioning(idx, Some(path))
+                    .with_context(|| {
+                        format!(
+                            "flux::Pipeline::set_controlnet_conditioning \
+                             ({word_tag} Flux path)"
+                        )
+                    })?;
+            }
             pipeline.generate(&req)
                 .with_context(|| format!("flux::Pipeline::generate ({word_tag} Flux path)"))?;
         }
@@ -1208,7 +1451,22 @@ fn img2img_or_inpaint_one(
                 req.mask_feather = ctx.config.mask_feather;
                 req.mask_invert = ctx.config.mask_invert;
             }
+            // v0.24 phase 8: lazy-annotate from= CN specs on the
+            // SD3 img2img path too.
+            ctx.get_or_load_sd3(&alias)?;
+            let cn_settings_to_apply =
+                collect_cn_annotations(ctx, req.width, req.height)?;
             let pipeline = ctx.get_or_load_sd3(&alias)?;
+            for (idx, path) in cn_settings_to_apply {
+                pipeline
+                    .set_controlnet_conditioning(idx, Some(path))
+                    .with_context(|| {
+                        format!(
+                            "sd3::Pipeline::set_controlnet_conditioning \
+                             ({word_tag} SD3 path)"
+                        )
+                    })?;
+            }
             pipeline.generate(&req)
                 .with_context(|| format!("sd3::Pipeline::generate ({word_tag} SD3 path)"))?;
         }
@@ -1223,7 +1481,6 @@ fn img2img_or_inpaint_one(
 pub fn portrait_one(
     ctx: &mut ScriptCtx,
     prompt: &str,
-    photo_path: &Path,
 ) -> Result<DynamicImage> {
     let alias = ctx
         .loaded_model()
@@ -1234,6 +1491,19 @@ pub fn portrait_one(
             )
         })?
         .to_string();
+
+    // v0.24 phase 1: photos come from the multi-photo stack
+    // populated by `plakat.portrait.photo.add`. Empty stack →
+    // bail loudly so users get a clear "add at least one
+    // photo first" error.
+    if ctx.portrait_photos.is_empty() {
+        bail!(
+            "plakat.portrait: no photo configured. Push at least one \
+             photo onto the portrait stack with `plakat.portrait.photo.add \
+             ( path-or-handle weight -- )` before calling plakat.portrait."
+        );
+    }
+    let photos = ctx.portrait_photos.clone();
 
     // v0.22 phase 11: wildcard expansion (matches generate_one).
     let prompt_owned = expand_prompt(ctx, prompt)?;
@@ -1261,7 +1531,6 @@ pub fn portrait_one(
         .prefix("plakat-script-portrait-")
         .tempdir()
         .context("creating tempdir for plakat.portrait output")?;
-    let photos = vec![WeightedPhoto::single(photo_path.to_path_buf())];
     let mut req = build_gen_request(ctx, prompt, photos, tmp.path().to_path_buf());
     // Override per-family default size for portrait: 3:4
     // is the CLI default. Honour size_explicit override.
@@ -1406,6 +1675,11 @@ mod tests {
             artefact_blend_enabled: false,
             style_id: None,
             style_ref: None,
+            portrait_photos: Vec::new(),
+            embeddings: Vec::new(),
+            cn_annotation_cache: None,
+            look_name: None,
+            genre_name: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;

@@ -400,6 +400,34 @@ pub struct GenerateArgs {
     #[arg(long = "fast", value_name = "PRESET")]
     pub fast: Option<crate::pipelines::flux_fast::FastPresetArg>,
 
+    /// **v0.25**: art-medium preset. Bundles a prompt prefix/suffix,
+    /// recommended `--scheduler` / `--steps` / `--guidance`, and
+    /// (phase 4+) automatic LoRA discovery matched to the medium.
+    /// Built-in: `ink-wash`, `watercolor`, `oil-painting`,
+    /// `charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`.
+    /// User-extensible via `$CONFIG_DIR/looks/*.json` (phase 9).
+    /// Override-only: flags you pass explicitly always win.
+    /// Composes with `--genre`, `--style`, `--fast`,
+    /// `--negative-preset`.
+    #[arg(long = "look", value_name = "NAME")]
+    pub look: Option<String>,
+
+    /// **v0.25**: subject-domain preset — independent axis from
+    /// `--look`. Built-in: `anime`. User-extensible via
+    /// `$CONFIG_DIR/genres/*.json` (phase 9). Combines additively
+    /// with `--look` (a watercolor anime composes both).
+    #[arg(long = "genre", value_name = "NAME")]
+    pub genre: Option<String>,
+
+    /// **v0.25**: skip remote LoRA discovery for `--look` /
+    /// `--genre`. Discovery normally chains Civitai → HuggingFace
+    /// Hub → local-cache scan; with `--offline`, only the on-disk
+    /// discovery cache and the local-cache scan run. Useful for CI
+    /// / reproducibility / air-gapped runs. Has no effect when no
+    /// `--look` / `--genre` is set.
+    #[arg(long, default_value_t = false)]
+    pub offline: bool,
+
     /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
     /// conditioning to the standard Flux variants (`flux-dev`,
     /// `flux-schnell`, GGUF, NF4) by encoding the image through
@@ -860,6 +888,55 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                 .map(|s| format!(", scheduler={s}"))
                 .unwrap_or_default(),
         ));
+    }
+
+    // v0.25 phases 3–5: --look and --genre presets + auto-LoRA
+    // discovery. Runs AFTER --fast so distillation step counts
+    // (e.g. hyper-8 → 8 steps) aren't overwritten by a softer
+    // medium suggestion. Override-only-if-user-didn't-pass: matches
+    // the clap-default-comparison trick the fast preset uses above.
+    // The shared helper lives in src/preset/mod.rs so portrait /
+    // img2img / outpaint can reuse it (phase 6).
+    if args.look.is_some() || args.genre.is_some() {
+        use crate::preset::{GenerationParams, apply_presets_with_discovery};
+        use std::str::FromStr;
+
+        let mut params = GenerationParams {
+            prompt: args.prompt.clone(),
+            negative: args.negative.clone(),
+            // None == "user didn't touch" → preset may fill.
+            steps: (args.steps != 28).then_some(args.steps),
+            guidance: ((args.guidance - 7.5).abs() >= f64::EPSILON)
+                .then_some(args.guidance),
+            // Scheduler is an enum, not a string. Empty-string
+            // sentinel means "user passed something non-Default,
+            // block preset"; a non-empty string means "preset wrote
+            // a name we should parse back into SchedulerKind".
+            scheduler: (!matches!(args.scheduler, SchedulerKind::Default))
+                .then(String::new),
+        };
+        apply_presets_with_discovery(
+            args.look.as_deref(),
+            args.genre.as_deref(),
+            args.offline,
+            crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+            &mut params,
+            &mut args.loras,
+        )
+        .await?;
+
+        args.prompt = params.prompt;
+        args.negative = params.negative;
+        if let Some(s) = params.steps {
+            args.steps = s;
+        }
+        if let Some(g) = params.guidance {
+            args.guidance = g;
+        }
+        if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+            args.scheduler =
+                SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
+        }
     }
 
     // v0.16 phase 1: auto-annotation for the Flux "concept" variants.
@@ -1527,6 +1604,9 @@ mod tests {
             quant_level: None,
             t5_quant_level: None,
             fast: None,
+            look: None,
+            genre: None,
+            offline: false,
             redux_images: Vec::new(),
             concept_image: None,
             concept_from: None,

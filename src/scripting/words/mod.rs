@@ -14,17 +14,24 @@ pub mod artefact;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
+pub mod embedding;
 pub mod enhance;
 pub mod generate;
+pub mod genre;
 pub mod hires;
 pub mod img2img;
 pub mod inpaint;
 pub mod load;
+pub mod look;
 pub mod lora;
+pub mod metadata;
+pub mod outpaint;
 pub mod portrait;
+pub mod portrait_photo;
 pub mod refiner;
 pub mod save;
 pub mod style;
+pub mod stylize;
 pub mod upscale;
 
 /// Register every `plakat.*` word into `vm`. v0.21 shipped 7
@@ -156,9 +163,66 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.style.clear: {e}"))?;
     vm.register_inline("plakat.style.list".to_string(), style::plakat_style_list)
         .map_err(|e| anyhow!("registering plakat.style.list: {e}"))?;
+    // v0.25 phase 8: plakat.look.* + plakat.genre.* namespaces.
+    vm.register_inline("plakat.look.apply".to_string(), look::plakat_look_apply)
+        .map_err(|e| anyhow!("registering plakat.look.apply: {e}"))?;
+    vm.register_inline("plakat.look.clear".to_string(), look::plakat_look_clear)
+        .map_err(|e| anyhow!("registering plakat.look.clear: {e}"))?;
+    vm.register_inline("plakat.look.list".to_string(), look::plakat_look_list)
+        .map_err(|e| anyhow!("registering plakat.look.list: {e}"))?;
+    vm.register_inline("plakat.genre.apply".to_string(), genre::plakat_genre_apply)
+        .map_err(|e| anyhow!("registering plakat.genre.apply: {e}"))?;
+    vm.register_inline("plakat.genre.clear".to_string(), genre::plakat_genre_clear)
+        .map_err(|e| anyhow!("registering plakat.genre.clear: {e}"))?;
+    vm.register_inline("plakat.genre.list".to_string(), genre::plakat_genre_list)
+        .map_err(|e| anyhow!("registering plakat.genre.list: {e}"))?;
     // v0.23 phase 5: plakat.inpaint host word.
     vm.register_inline("plakat.inpaint".to_string(), inpaint::plakat_inpaint)
         .map_err(|e| anyhow!("registering plakat.inpaint: {e}"))?;
+    // v0.24 phase 1: plakat.portrait.photo.* multi-photo namespace.
+    vm.register_inline(
+        "plakat.portrait.photo.add".to_string(),
+        portrait_photo::plakat_portrait_photo_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.add: {e}"))?;
+    vm.register_inline(
+        "plakat.portrait.photo.clear".to_string(),
+        portrait_photo::plakat_portrait_photo_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.portrait.photo.list".to_string(),
+        portrait_photo::plakat_portrait_photo_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.portrait.photo.list: {e}"))?;
+    // v0.24 phase 4: plakat.outpaint host word.
+    vm.register_inline("plakat.outpaint".to_string(), outpaint::plakat_outpaint)
+        .map_err(|e| anyhow!("registering plakat.outpaint: {e}"))?;
+    // v0.24 phase 5: plakat.embedding.* (Textual Inversion).
+    vm.register_inline(
+        "plakat.embedding.add".to_string(),
+        embedding::plakat_embedding_add,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.add: {e}"))?;
+    vm.register_inline(
+        "plakat.embedding.clear".to_string(),
+        embedding::plakat_embedding_clear,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.clear: {e}"))?;
+    vm.register_inline(
+        "plakat.embedding.list".to_string(),
+        embedding::plakat_embedding_list,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.list: {e}"))?;
+    // v0.24 phase 6: plakat.stylize (IP-Adapter style transfer).
+    vm.register_inline("plakat.stylize".to_string(), stylize::plakat_stylize)
+        .map_err(|e| anyhow!("registering plakat.stylize: {e}"))?;
+    // v0.24 phase 7: plakat.metadata.read (JSON sidecar reader).
+    vm.register_inline(
+        "plakat.metadata.read".to_string(),
+        metadata::plakat_metadata_read,
+    )
+    .map_err(|e| anyhow!("registering plakat.metadata.read: {e}"))?;
     Ok(())
 }
 

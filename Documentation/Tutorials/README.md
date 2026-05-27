@@ -34,6 +34,19 @@ If you're new to plakat, work through these in order:
  to your generations: pick by name, detect from a reference photo,
  combine styles with portraits, use styles in scenarios.
 
+3a. [`LOOKS_TUTORIAL.md`](LOOKS_TUTORIAL.md) — **v0.25.** Art-medium
+ presets via `--look NAME`. Eight bundled mediums (ink-wash,
+ watercolor, oil-painting, charcoal, pencil, chalk-pastel, linocut,
+ gouache). Auto-LoRA discovery from Civitai → HF → local cache.
+ Override-only sampler / steps / guidance. Composes with `--style`,
+ `--fast`, `--lora`, `--genre`. User-extension directory for your
+ own mediums.
+
+3b. [`GENRES_TUTORIAL.md`](GENRES_TUTORIAL.md) — **v0.25.** Subject-
+ domain presets via `--genre NAME`. Independent axis from `--look`.
+ Bundled `anime` only; user-extension directory for photoreal /
+ fantasy / cyberpunk / etc. Same discovery + override semantics.
+
 4. [`HOW_TO_CREATE_MY_OWN_STYLE.md`](HOW_TO_CREATE_MY_OWN_STYLE.md) —
  build your own style catalog from a folder of images. Covers the
  end-to-end pipeline (organize → init → build → use) and adding
@@ -165,6 +178,8 @@ feature:
 | `GENERATE_TUTORIAL.md` | plakat installed; can run `plakat --help`. |
 | `PORTRAIT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. |
 | `STYLES_TUTORIAL.md` | Above + finished `PORTRAIT_TUTORIAL.md` (helpful but not required). |
+| `LOOKS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. First-time use of a look hits Civitai over the network; subsequent runs are network-free (or use `--offline`). |
+| `GENRES_TUTORIAL.md` | Above + finished `LOOKS_TUTORIAL.md` (mirrors the look axis). |
 | `HOW_TO_CREATE_MY_OWN_STYLE.md` | Above + finished `STYLES_TUTORIAL.md`. Plus a corpus of images you want to teach plakat. |
 | `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
 | `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
@@ -190,6 +205,8 @@ manuals in [`Documentation/`](..):
 - Looking up a specific `plakat generate` flag → [`GENERATE.md`](../GENERATE.md)
 - Identity strategies and ArcFace setup → [`PERSONA.md`](../PERSONA.md)
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
+- Look (art-medium) presets reference → [`LOOKS.md`](../LOOKS.md)
+- Genre (subject-domain) presets reference → [`GENRES.md`](../GENRES.md)
 - Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
 - Image-to-image and inpaint flags → [`IMG2IMG.md`](../IMG2IMG.md)
 - ControlNet conditioning flags → [`CONTROLNET.md`](../CONTROLNET.md)

@@ -133,6 +133,25 @@ pub struct PortraitArgs {
     #[arg(long = "negative-preset", value_name = "NAME")]
     pub negative_preset: Option<String>,
 
+    /// **v0.25**: art-medium preset. Bundles a prompt prefix/suffix,
+    /// recommended `--scheduler` / `--steps` / `--guidance`, and
+    /// automatic LoRA discovery matched to the medium. Built-in:
+    /// `ink-wash`, `watercolor`, `oil-painting`, `charcoal`,
+    /// `pencil`, `chalk-pastel`, `linocut`, `gouache`.
+    /// Override-only: flags you pass explicitly always win.
+    #[arg(long = "look", value_name = "NAME")]
+    pub look: Option<String>,
+
+    /// **v0.25**: subject-domain preset (independent axis from
+    /// `--look`). Built-in: `anime`.
+    #[arg(long = "genre", value_name = "NAME")]
+    pub genre: Option<String>,
+
+    /// **v0.25**: skip remote LoRA discovery for `--look` /
+    /// `--genre` (use only cache + local scan).
+    #[arg(long, default_value_t = false)]
+    pub offline: bool,
+
     /// Random seed.
     #[arg(long)]
     pub seed: Option<u64>,
@@ -306,8 +325,9 @@ pub struct PortraitArgs {
 }
 
 /// Parse `X0,Y0,X1,Y1` into a normalised bbox. Validates `[0, 1]` bounds
-/// and `x0 < x1`, `y0 < y1`.
-fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
+/// and `x0 < x1`, `y0 < y1`. v0.24 phase 2: `pub(crate)` so the script
+/// config layer (`face_bbox` key) can reuse the same grammar.
+pub(crate) fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
     let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
     if parts.len() != 4 {
         return Err(format!(
@@ -337,8 +357,10 @@ fn parse_face_bbox(s: &str) -> std::result::Result<[f32; 4], String> {
 
 /// Parse `LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY` (10 normalised floats) into
 /// the 5-point landmark array. Order matches `LANDMARK_ORDER`:
-/// left_eye, right_eye, nose, left_mouth, right_mouth.
-fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
+/// left_eye, right_eye, nose, left_mouth, right_mouth. v0.24 phase 2:
+/// `pub(crate)` so the script config layer (`face_landmarks` key)
+/// can reuse the same grammar.
+pub(crate) fn parse_face_landmarks(s: &str) -> std::result::Result<[[f32; 2]; 5], String> {
     let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
     if parts.len() != 10 {
         return Err(format!(
@@ -440,6 +462,50 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         let (cleaned, _dropped) =
             crate::prompt::lora_tags::extract(&negative)?;
         negative = cleaned;
+    }
+
+    // v0.25 phase 6: --look / --genre presets + auto-LoRA discovery.
+    // Runs after style + enhancer + inline-tag extraction so the
+    // preset's prompt prefix/suffix lands on the fully-resolved
+    // prompt. Portrait's `negative` is a local String (built from
+    // args.negative + negative_preset + DEFAULT_NEGATIVE) so we
+    // thread that through the helper, not `args.negative`.
+    if args.look.is_some() || args.genre.is_some() {
+        use crate::preset::{GenerationParams, apply_presets_with_discovery};
+        use std::str::FromStr;
+
+        let mut params = GenerationParams {
+            prompt: args.prompt.clone(),
+            negative: negative.clone(),
+            // Portrait clap defaults: steps=30, guidance=7.0.
+            steps: (args.steps != 30).then_some(args.steps),
+            guidance: ((args.guidance - 7.0).abs() >= f64::EPSILON)
+                .then_some(args.guidance),
+            scheduler: (!matches!(args.scheduler, SchedulerKind::Default))
+                .then(String::new),
+        };
+        apply_presets_with_discovery(
+            args.look.as_deref(),
+            args.genre.as_deref(),
+            args.offline,
+            crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+            &mut params,
+            &mut args.loras,
+        )
+        .await?;
+
+        args.prompt = params.prompt;
+        negative = params.negative;
+        if let Some(s) = params.steps {
+            args.steps = s;
+        }
+        if let Some(g) = params.guidance {
+            args.guidance = g;
+        }
+        if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+            args.scheduler =
+                SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
+        }
     }
 
     let (width, height) = crate::imaging::sizes::resolve(
