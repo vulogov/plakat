@@ -65,11 +65,14 @@ fn generate_omitting_both_leaves_none() {
 /// The bundled looks catalog is reachable from the binary's
 /// working directory (matches the convention used by
 /// `assets/style_catalog/`). Loaded via the same path the
-/// `run` dispatch will use.
+/// `run` dispatch will use. Uses `load_with_user_dir(.., None)`
+/// to skip the user-extension scan so a dev's `~/.config/plakat/
+/// looks/` doesn't perturb the pinned entry count.
 #[test]
 fn bundled_looks_catalog_loads_from_cwd() {
     use plakat::preset::{Catalog, Kind};
-    let cat = Catalog::load_default(Kind::Look).expect("load bundled looks");
+    let cat = Catalog::load_with_user_dir(Kind::Look, None)
+        .expect("load bundled looks");
     assert_eq!(cat.entries.len(), 8);
     assert!(cat.find("watercolor").is_some());
     assert!(cat.find("oil-painting").is_some());
@@ -79,7 +82,8 @@ fn bundled_looks_catalog_loads_from_cwd() {
 #[test]
 fn bundled_genres_catalog_loads_from_cwd() {
     use plakat::preset::{Catalog, Kind};
-    let cat = Catalog::load_default(Kind::Genre).expect("load bundled genres");
+    let cat = Catalog::load_with_user_dir(Kind::Genre, None)
+        .expect("load bundled genres");
     assert_eq!(cat.entries.len(), 1);
     assert!(cat.find("anime").is_some());
 }
