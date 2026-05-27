@@ -597,6 +597,64 @@ mod tests {
         });
     }
 
+    /// v0.26 phase 8: plakat.metadata.write bails when the handle
+    /// has no metadata attached. Verifies the friendly error message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_write_bails_on_handleless_metadata() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                // Push an image WITHOUT metadata.
+                ctx.push_image(image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([42, 42, 42])),
+                ));
+            })
+            .unwrap();
+            let err = eval(r#"1 "out.png" plakat.metadata.write"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("no metadata attached"),
+                "got {msg}"
+            );
+        });
+    }
+
+    /// v0.26 phase 8: push_image_with_metadata makes the metadata
+    /// retrievable via metadata_at.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn push_image_with_metadata_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])),
+                );
+                let meta = crate::imaging::metadata::GenerationMetadata::new(
+                    "test prompt",
+                    "sd15",
+                    42u64,
+                    20usize,
+                    7.5f64,
+                    "default",
+                    8u32,
+                    8u32,
+                );
+                let handle = ctx.push_image_with_metadata(img, meta);
+                assert_eq!(handle, 1);
+            })
+            .unwrap();
+            with_ctx(|ctx| {
+                let m = ctx.metadata_at(1).unwrap().expect("metadata present");
+                assert_eq!(m.prompt, "test prompt");
+                assert_eq!(m.model, "sd15");
+                assert_eq!(m.seed, 42);
+            })
+            .unwrap();
+        });
+    }
+
     /// v0.26 phase 7: stylize cache slot exists + gets dropped
     /// on LoRA stack mutation. Pure state test — doesn't actually
     /// load a pipeline.
