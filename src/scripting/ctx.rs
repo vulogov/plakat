@@ -74,6 +74,18 @@ pub struct ScriptCtx {
     /// script's lifetime; if scripts ever start producing hundreds
     /// of images we'll revisit (e.g. spill to disk).
     pub images: Vec<image::DynamicImage>,
+    /// v0.26 phase 8: per-image metadata, indexed parallel to
+    /// [`Self::images`]. `Some` when the rendering path attached
+    /// a [`crate::imaging::metadata::GenerationMetadata`] at push
+    /// time (full A1111-style record: prompt / negative / model /
+    /// seed / steps / guidance / scheduler / etc.); `None`
+    /// otherwise (e.g. images loaded from disk, or rendering paths
+    /// that don't yet populate metadata). Read by `plakat.save` to
+    /// route through `save_rgb_u8_with_metadata` (sidecar + PNG
+    /// tEXt) and by `plakat.metadata.write` to re-attach metadata
+    /// to existing files.
+    pub images_metadata:
+        Vec<Option<crate::imaging::metadata::GenerationMetadata>>,
     /// v0.21 phase 3: generation knobs the script accumulates via
     /// `plakat.config.set`. Persistent across calls within one
     /// script. Read by [`super::script_entry::generate_one`] when
@@ -233,6 +245,7 @@ impl ScriptCtx {
             loaded: None,
             loaded_t2i: None,
             images: Vec::new(),
+            images_metadata: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
@@ -875,9 +888,58 @@ impl ScriptCtx {
     /// v0.21 phase 2: register a rendered image and return the
     /// 1-based handle the script will see. Caller is responsible
     /// for serialising mutation through [`with_ctx_mut`].
+    ///
+    /// No metadata attached. For rendering paths that have
+    /// A1111-style metadata to carry, use
+    /// [`Self::push_image_with_metadata`].
     pub fn push_image(&mut self, img: image::DynamicImage) -> i64 {
         self.images.push(img);
+        self.images_metadata.push(None);
         self.images.len() as i64
+    }
+
+    /// v0.26 phase 8: register a rendered image with its
+    /// generation metadata attached. `plakat.save` writes the
+    /// JSON sidecar + PNG tEXt automatically; `plakat.metadata
+    /// .write` reads the metadata from the registered handle.
+    pub fn push_image_with_metadata(
+        &mut self,
+        img: image::DynamicImage,
+        meta: crate::imaging::metadata::GenerationMetadata,
+    ) -> i64 {
+        self.images.push(img);
+        self.images_metadata.push(Some(meta));
+        self.images.len() as i64
+    }
+
+    /// v0.26 phase 8: look up the metadata for a handle, if it
+    /// was registered with [`Self::push_image_with_metadata`].
+    /// Bails on unknown handles (same as [`Self::image_at`]).
+    ///
+    /// Lenient on size mismatch between `images` and
+    /// `images_metadata`: returns `Ok(None)` if the metadata Vec
+    /// is shorter than the image Vec at this handle. Lets tests
+    /// (and historical callers) pre-stuff `images` directly via
+    /// `ctx.images.push(...)` without breaking `plakat.save`.
+    pub fn metadata_at(
+        &self,
+        handle: i64,
+    ) -> Result<Option<&crate::imaging::metadata::GenerationMetadata>> {
+        if handle <= 0 {
+            return Err(anyhow!(
+                "image handle must be >= 1 (got {handle}); handle 0 is reserved"
+            ));
+        }
+        let idx = handle as usize - 1;
+        // image_at is the authority on handle validity; metadata
+        // is best-effort.
+        if idx >= self.images.len() {
+            return Err(anyhow!(
+                "image handle {handle} not found (only {} image(s) rendered so far)",
+                self.images.len()
+            ));
+        }
+        Ok(self.images_metadata.get(idx).and_then(|o| o.as_ref()))
     }
 
     /// v0.21 phase 2: look up an image by its script-visible
@@ -940,6 +1002,7 @@ mod tests {
             loaded: None,
             loaded_t2i: None,
             images: Vec::new(),
+            images_metadata: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),

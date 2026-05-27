@@ -223,6 +223,13 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         metadata::plakat_metadata_read,
     )
     .map_err(|e| anyhow!("registering plakat.metadata.read: {e}"))?;
+    // v0.26 phase 8: plakat.metadata.write (re-attach metadata
+    // to an existing file from an image handle).
+    vm.register_inline(
+        "plakat.metadata.write".to_string(),
+        metadata::plakat_metadata_write,
+    )
+    .map_err(|e| anyhow!("registering plakat.metadata.write: {e}"))?;
     Ok(())
 }
 

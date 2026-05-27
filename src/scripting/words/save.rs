@@ -7,6 +7,21 @@
 //! in the registry so a script can save the same image to multiple
 //! paths or chain it through later words (`plakat.upscale` in
 //! phase 6).
+//!
+//! ## v0.26 phase 8: metadata writes
+//!
+//! When the image's handle has [`GenerationMetadata`] attached
+//! (the rendering paths populate this), `plakat.save` routes
+//! through [`crate::imaging::io::save_rgb_u8_with_metadata`]
+//! which writes:
+//!   - The PNG with an A1111-compatible `parameters` tEXt chunk
+//!   - A `<name>.json` sidecar with the structured metadata
+//!
+//! When no metadata is attached (e.g. images loaded from disk
+//! via TBD future words, or rendering paths that don't yet
+//! populate it), `plakat.save` falls back to the plain
+//! [`DynamicImage::save`] path — byte-identical to the v0.21
+//! behaviour.
 
 use rust_multistackvm::multistackvm::VM;
 use std::path::PathBuf;
@@ -32,11 +47,12 @@ fn do_plakat_save(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let handle = value_to_int(handle_v, "handle", TAG)?;
 
     // Resolve relative paths against ctx.out_dir; absolute paths
-    // pass through. Reading the lock once here means we don't
-    // hold it across the image write.
-    let (out_dir, image_clone) = with_ctx(|ctx| {
+    // pass through. Read everything once so we don't hold the
+    // lock across the image write.
+    let (out_dir, image_clone, metadata_clone) = with_ctx(|ctx| {
         let img = ctx.image_at(handle)?;
-        Ok::<_, anyhow::Error>((ctx.out_dir.clone(), img.clone()))
+        let meta = ctx.metadata_at(handle)?.cloned();
+        Ok::<_, anyhow::Error>((ctx.out_dir.clone(), img.clone(), meta))
     })??;
     let path: PathBuf = {
         let p = PathBuf::from(&path_str);
@@ -51,13 +67,39 @@ fn do_plakat_save(vm: &mut VM) -> anyhow::Result<&mut VM> {
             )
         })?;
     }
-    image_clone.save(&path).map_err(|e| {
-        anyhow::anyhow!("{TAG}: writing {}: {e}", path.display())
-    })?;
-    tracing::info!(
-        target: "plakat",
-        "{TAG}: handle {handle} → {}",
-        path.display()
-    );
+
+    if let Some(meta) = metadata_clone {
+        // v0.26 phase 8: metadata-aware path. Writes the PNG
+        // with the A1111 `parameters` tEXt chunk PLUS the JSON
+        // sidecar. For non-PNG extensions, the tEXt chunk is
+        // skipped (per save_rgb_u8_with_metadata's extension-
+        // routing) but the sidecar still lands.
+        let rgb = image_clone.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        crate::imaging::io::save_rgb_u8_with_metadata(
+            rgb.as_raw(),
+            w,
+            h,
+            &path,
+            &meta,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!("{TAG}: writing {} with metadata: {e}", path.display())
+        })?;
+        tracing::info!(
+            target: "plakat",
+            "{TAG}: handle {handle} → {} (with metadata sidecar)",
+            path.display()
+        );
+    } else {
+        image_clone.save(&path).map_err(|e| {
+            anyhow::anyhow!("{TAG}: writing {}: {e}", path.display())
+        })?;
+        tracing::info!(
+            target: "plakat",
+            "{TAG}: handle {handle} → {}",
+            path.display()
+        );
+    }
     Ok(vm)
 }

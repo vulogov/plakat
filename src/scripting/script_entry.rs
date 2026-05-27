@@ -1665,6 +1665,7 @@ mod tests {
             loaded: None,
             loaded_t2i: None,
             images: Vec::new(),
+            images_metadata: Vec::new(),
             config: crate::scripting::config::GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
