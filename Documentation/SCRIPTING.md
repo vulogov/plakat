@@ -1,4 +1,4 @@
-# `plakat run` — Bund scripting (v0.24)
+# `plakat run` — Bund scripting (v0.25)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
@@ -8,7 +8,8 @@ Design RFCs:
 [`RFC_v0.21_BUND_SCRIPTING.md`](RFC_v0.21_BUND_SCRIPTING.md) (foundations),
 [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md) (the 7-namespace expansion),
 [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md) (the v0.22 deferrals closed in v0.23),
-[`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) (persona depth + scripting completion).
+[`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) (persona depth + scripting completion),
+[`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) (art-medium presets + auto-LoRA discovery).
 
 ## Modes
 
@@ -18,7 +19,7 @@ plakat run --repl               # Interactive REPL on the same surface
 plakat run --repl --out PATH    # REPL with a custom output dir
 ```
 
-Both modes share the same `ScriptCtx` singleton + the same 42
+Both modes share the same `ScriptCtx` singleton + the same 48
 `plakat.*` host words. One process invocation = one script eval
 (no concurrent scripts in one process — bundcore's VM has no
 per-eval isolation).
@@ -55,7 +56,7 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (42 total)
+## Host words (48 total)
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
@@ -206,6 +207,48 @@ cache-hit the style-laden pipeline. Stack mutations invalidate
 the SD cache slots via `mark_loras_changed`. SD-family only —
 Flux + SD3 bail. Tune with the `style_catalog` (path) +
 `style_strength` ([0,1]) config keys.
+
+### `plakat.look.*` — art-medium presets (v0.25 phase 8)
+
+| Word | Stack effect |
+|---|---|
+| `plakat.look.apply` | `( name -- )` — pick a medium by name |
+| `plakat.look.clear` | `( -- )` |
+| `plakat.look.list` | `( -- l_1 … l_n n )` — push every catalog name + count |
+
+State (`look_name`) on `ScriptCtx`. Apply runs lazily at
+`plakat.generate` SD-family request-build time:
+- Compositional fields (`prompt_prefix` / `prompt_suffix` /
+  `negative_extras`) always apply.
+- Override-only fields (`steps` / `guidance` / `scheduler_hint`)
+  fill `ctx.config` slots that were left at defaults — explicit
+  `plakat.config.set` values always win.
+- Auto-LoRA discovery: when `ctx.loras` is empty AND the look has
+  a `lora_query`, plakat searches Civitai → HF Hub → local cache
+  for a compatible LoRA (filtered by the loaded base model) and
+  prepends trigger words to the prompt.
+
+Bundled looks: `ink-wash`, `watercolor`, `oil-painting`,
+`charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`.
+User-extensible via `$CONFIG_DIR/looks/*.json` (one PresetSpec
+per file; filename stem is the catalog key). Stack mutations
+invalidate the SD cache slots via `mark_loras_changed`.
+
+Bund-side apply currently fires on the SD-family `plakat.generate`
+path only; Flux + SD3 set the state correctly but apply happens
+at the CLI level. See [`LOOKS.md`](LOOKS.md) for the full reference.
+
+### `plakat.genre.*` — subject-domain presets (v0.25 phase 8)
+
+| Word | Stack effect |
+|---|---|
+| `plakat.genre.apply` | `( name -- )` — pick a subject domain by name |
+| `plakat.genre.clear` | `( -- )` |
+| `plakat.genre.list` | `( -- g_1 … g_n n )` — push every catalog name + count |
+
+Same shape as `plakat.look.*`. Independent axis — composes
+additively with looks. Bundled: `anime`. User-extensible via
+`$CONFIG_DIR/genres/*.json`. See [`GENRES.md`](GENRES.md).
 
 ### `plakat.enhance` — prompt rewriter (phase 10)
 
@@ -403,6 +446,12 @@ list. Type mismatches bail.
 | `face_landmarks` | string | empty | CSV 10 floats: `"LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY"`. Mirrors `--face-landmarks`. Takes precedence over `face_bbox`. |
 | `identity_kind` | string | empty | One of `plus-face`, `plus-face-sdxl`, `face-id`, `face-id-sdxl` (plus aliases). Empty → auto-pick by alias. Overrides the v0.22 auto-pick rule for SD-family `plakat.portrait`. |
 
+### Looks / Genres discovery (v0.25)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `offline_discovery` | bool | false | Skip remote LoRA discovery for `plakat.look.*` / `plakat.genre.*`. Mirrors the CLI `--offline` flag. When true, only the on-disk discovery cache + the local-cache scan run. |
+
 ## REPL meta-commands
 
 `plakat run --repl` launches an interactive line editor against
@@ -437,18 +486,35 @@ or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
 
-## v0.24 limitations / deferred to v0.25+
+## v0.25 limitations / deferred to v0.26+
 
-All v0.23 carries closed in v0.24. The remaining items are
-longer-term:
+v0.25 added the `--look` / `--genre` axes + auto-LoRA discovery
+(Civitai → HF → local). Remaining items:
 
 | Limitation | Tracking |
 |---|---|
-| AnimateDiff | new architecture (motion-adapter weights + temporal-attention); long-running carry from v0.20 — natural v0.25 big swing |
+| Bund `plakat.look.*` apply on Flux + SD3 paths | SD-family wired in phase 8; Flux/SD3 set state but apply happens at the CLI level on those families. Wire when needed. |
+| Auto-LoRA discovery in scenarios | Scenario flow has a two-stage LoRA pipeline (scenario.loras at setup, task.loras per-task); discovery integration deferred to v0.26. Use `loras:` explicitly for now. |
+| AnimateDiff | new architecture (motion-adapter weights + temporal-attention); long-running carry from v0.20 |
 | SD3 / SD3.5 animate | 3-encoder lerp + MMDiT integrator (v0.20+ carry) |
 | Real-ESRGAN ML upscaling in `plakat.upscale` | `plakat.hires` already exposes ML upscalers via `hires_upscaler`; standalone upscale word is Lanczos-only |
-| `plakat.metadata.write` | gated on `plakat.save` attaching JSON sidecars; defer to v0.25 |
-| `plakat.stylize` caching | one-shot load per call today (~5 GB); cache slot is a v0.25+ optimisation |
+| `plakat.metadata.write` | gated on `plakat.save` attaching JSON sidecars |
+| `plakat.stylize` caching | one-shot load per call today (~5 GB); cache slot is a future optimisation |
+
+## v0.24 → v0.25 migration
+
+v0.25 is **additive**. No existing host word, config key, or
+stack effect changes shape. The new pieces are opt-in:
+
+```bund
+// Adopt the new axes:
+"watercolor" plakat.look.apply
+"anime"      plakat.genre.apply
+"a knight" plakat.generate
+```
+
+If you don't apply a look / genre, behavior is byte-identical to
+v0.24.
 
 ## v0.23 → v0.24 migration
 
@@ -471,8 +537,12 @@ relaxed-compat decision.
 
 - [`Tutorials/SCRIPTING_TUTORIAL.md`](Tutorials/SCRIPTING_TUTORIAL.md)
   — narrative walkthrough with composition patterns.
+- [`LOOKS.md`](LOOKS.md) — art-medium presets reference.
+- [`GENRES.md`](GENRES.md) — subject-domain axis reference.
+- [`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md)
+  — v0.25 design doc + locked decisions.
 - [`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md)
-  — v0.24 design doc + locked decisions.
+  — v0.24 design doc.
 - [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md)
   — v0.23 design doc.
 - [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md)
