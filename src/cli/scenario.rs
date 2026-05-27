@@ -130,6 +130,34 @@ struct ScenarioFile {
     #[serde(default)]
     fast: Option<String>,
 
+    /// v0.25: scenario-wide art-medium preset. Bundled choices: `ink-wash`,
+    /// `watercolor`, `oil-painting`, `charcoal`, `pencil`, `chalk-pastel`,
+    /// `linocut`, `gouache`. Composes the prompt + suggests sampler /
+    /// steps / guidance. Per-task `look:` overrides. Override-only:
+    /// scenario-level steps / guidance / scheduler / loras take
+    /// precedence.
+    ///
+    /// **Auto-LoRA discovery is NOT active in scenarios** (v0.25
+    /// scope). The prompt prefix / suffix / sampler hints still apply;
+    /// users who want a specific LoRA should supply `loras: [...]`
+    /// at the scenario or task level. Discovery integration is
+    /// deferred to v0.26.
+    #[serde(default)]
+    look: Option<String>,
+
+    /// v0.25: scenario-wide subject-domain preset (`anime`). Independent
+    /// axis from `look:`; composes additively. Per-task `genre:`
+    /// overrides.
+    #[serde(default)]
+    genre: Option<String>,
+
+    /// v0.25: skip remote LoRA discovery for `look:` / `genre:` —
+    /// effectively a no-op in v0.25 scenarios (discovery isn't wired
+    /// here yet) but accepted for forward-compatibility. Per-task
+    /// `offline:` overrides.
+    #[serde(default)]
+    offline: Option<bool>,
+
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
     ///   * `flux-canny-dev` — canny edge map (channel-concat 128ch img_in)
@@ -584,6 +612,22 @@ struct TaskDef {
     /// non-Flux task model.
     #[serde(default)]
     fast: Option<String>,
+
+    /// v0.25: per-task art-medium preset. Overrides scenario-level
+    /// `look:`. Same accepted names + semantics as the CLI `--look`
+    /// flag.
+    #[serde(default)]
+    look: Option<String>,
+
+    /// v0.25: per-task subject-domain preset (`anime`). Overrides
+    /// scenario-level `genre:`.
+    #[serde(default)]
+    genre: Option<String>,
+
+    /// v0.25: per-task `--offline` override. `None` inherits the
+    /// scenario-level setting.
+    #[serde(default)]
+    offline: Option<bool>,
 
     /// v0.15 phase 7a / v0.18: per-task conditioning image. Required
     /// on Flux concept variants (Canny-dev / Depth-dev) and Kontext
@@ -1791,7 +1835,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
         crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
 
-        let final_prompt = join_parts(&[&task_lora_header, &enhanced, &s.lora_footer]);
+        let mut final_prompt = join_parts(&[&task_lora_header, &enhanced, &s.lora_footer]);
         crate::ui::progress::println(&wrap_label("final", &final_prompt));
 
         if args.dry_run {
@@ -1813,6 +1857,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     "  {} overrides: {}",
                     style("(dry-run)").dim(),
                     describe_overrides(task)
+                ));
+            }
+            // v0.25 phase 7: surface effective look/genre/offline so users
+            // can validate that task / scenario fallbacks resolve to the
+            // intended preset before paying the inference cost.
+            let dry_look = task.look.as_ref().or(s.look.as_ref());
+            let dry_genre = task.genre.as_ref().or(s.genre.as_ref());
+            let dry_offline = task.offline.or(s.offline).unwrap_or(false);
+            if dry_look.is_some() || dry_genre.is_some() {
+                let parts = [
+                    dry_look.map(|n| format!("look={n}")),
+                    dry_genre.map(|n| format!("genre={n}")),
+                    dry_offline.then(|| "offline=true".to_string()),
+                ];
+                let s_parts: Vec<String> = parts.into_iter().flatten().collect();
+                crate::ui::progress::println(&format!(
+                    "  {} presets: {}",
+                    style("(dry-run)").dim(),
+                    s_parts.join(", ")
                 ));
             }
             if let Some(refs) = &task.personas {
@@ -1973,13 +2036,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         };
 
         let eff_count = task.count.unwrap_or(count);
-        let eff_steps = task.steps.unwrap_or(steps);
-        let eff_guidance = task.guidance.unwrap_or(guidance);
-        let eff_negative = task
+        let mut eff_steps = task.steps.unwrap_or(steps);
+        let mut eff_guidance = task.guidance.unwrap_or(guidance);
+        let mut eff_negative = task
             .negative
             .clone()
             .unwrap_or_else(|| task_negative_base.clone());
-        let eff_scheduler: SchedulerKind = match task.scheduler.as_deref() {
+        let mut eff_scheduler: SchedulerKind = match task.scheduler.as_deref() {
             Some(s) => s.parse().with_context(|| format!("task scheduler {s:?}"))?,
             None => scheduler,
         };
@@ -2022,6 +2085,70 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // `task.fast` is validated at scenario load (must equal
         // scenario.fast — true per-task swap is v0.15 phase 7b runtime
         // LoRA), so no per-task resolution is needed here.
+
+        // v0.25 phase 7: --look / --genre presets in scenarios. Task
+        // wins; scenario provides the default. Auto-LoRA discovery is
+        // NOT wired here (the scenario's two-stage LoRA pipeline
+        // makes integration non-trivial); the prompt prefix/suffix +
+        // sampler hints apply, and users who want a specific LoRA
+        // pass `loras:` at the scenario or task level.
+        //
+        // Override-only-if-user-didn't-pass: if scenario OR task
+        // explicitly sets steps / guidance / scheduler, that wins
+        // over the preset's recommendation.
+        let eff_look = task.look.clone().or_else(|| s.look.clone());
+        let eff_genre = task.genre.clone().or_else(|| s.genre.clone());
+        let _eff_offline = task.offline.or(s.offline).unwrap_or(false);
+        if eff_look.is_some() || eff_genre.is_some() {
+            use crate::preset::{GenerationParams, apply_presets};
+            use std::str::FromStr;
+
+            let user_set_steps = task.steps.is_some() || s.steps.is_some();
+            let user_set_guidance = task.guidance.is_some() || s.guidance.is_some();
+            let user_set_scheduler =
+                task.scheduler.is_some() || s.scheduler.is_some();
+
+            let mut params = GenerationParams {
+                prompt: final_prompt.clone(),
+                negative: eff_negative.clone(),
+                steps: user_set_steps.then_some(eff_steps),
+                guidance: user_set_guidance.then_some(eff_guidance),
+                scheduler: user_set_scheduler.then(String::new),
+            };
+            let (look_spec, genre_spec) = apply_presets(
+                eff_look.as_deref(),
+                eff_genre.as_deref(),
+                &mut params,
+            )
+            .with_context(|| format!("task {:?}: look/genre apply", task.name))?;
+
+            final_prompt = params.prompt;
+            eff_negative = params.negative;
+            if let Some(s_steps) = params.steps {
+                eff_steps = s_steps;
+            }
+            if let Some(g) = params.guidance {
+                eff_guidance = g;
+            }
+            if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+                eff_scheduler =
+                    SchedulerKind::from_str(&sched).unwrap_or(eff_scheduler);
+            }
+
+            if let Some(l) = &look_spec {
+                crate::ui::progress::println(&format!(
+                    "  look '{}': prompt/negative composed (scenario)",
+                    l.name
+                ));
+            }
+            if let Some(g) = &genre_spec {
+                crate::ui::progress::println(&format!(
+                    "  genre '{}': prompt/negative composed (scenario)",
+                    g.name
+                ));
+            }
+        }
+
         // Seed: per-task override picks an absolute seed; global path
         // advances seed_offset to keep later tasks reproducible.
         let task_seed = task.seed.unwrap_or(seed + seed_offset);
@@ -3740,6 +3867,81 @@ mod tests {
         let s = deser_hjson::from_str::<ScenarioFile>(src)
             .expect("scenario parses");
         assert_eq!(s.fast.as_deref(), Some("hyper-8"));
+    }
+
+    // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.
+
+    #[test]
+    fn scenario_file_parses_look_genre_offline_at_global() {
+        let src = r#"{
+            model: sdxl
+            look: watercolor
+            genre: anime
+            offline: true
+            lora-header: ""
+        }"#;
+        let s = deser_hjson::from_str::<ScenarioFile>(src)
+            .expect("scenario with look/genre parses");
+        assert_eq!(s.look.as_deref(), Some("watercolor"));
+        assert_eq!(s.genre.as_deref(), Some("anime"));
+        assert_eq!(s.offline, Some(true));
+    }
+
+    #[test]
+    fn scenario_file_look_genre_default_to_none() {
+        let src = r#"{
+            model: sdxl
+            lora-header: ""
+        }"#;
+        let s = deser_hjson::from_str::<ScenarioFile>(src)
+            .expect("scenario parses");
+        assert_eq!(s.look, None);
+        assert_eq!(s.genre, None);
+        assert_eq!(s.offline, None);
+    }
+
+    #[test]
+    fn task_parses_look_genre_offline() {
+        let src = format!(r#"{{{COMMON_TASK}
+            look: oil-painting
+            genre: anime
+            offline: false
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.look.as_deref(), Some("oil-painting"));
+        assert_eq!(t.genre.as_deref(), Some("anime"));
+        assert_eq!(t.offline, Some(false));
+    }
+
+    #[test]
+    fn task_omitting_look_genre_is_none() {
+        let src = format!(r#"{{{COMMON_TASK}
+        }}"#);
+        let t = parse_task(&src);
+        assert!(t.look.is_none());
+        assert!(t.genre.is_none());
+        assert!(t.offline.is_none());
+    }
+
+    /// Per-task `look:` overrides scenario-level — verified via the
+    /// `.or_else(scenario)` resolution. Pure-data test of the
+    /// override expression; the actual apply lives in run_one
+    /// (covered by phase 11 integration).
+    #[test]
+    fn task_look_overrides_scenario_look() {
+        let scenario_look = Some("watercolor".to_string());
+        let task_look = Some("oil-painting".to_string());
+        let eff = task_look.clone().or_else(|| scenario_look.clone());
+        assert_eq!(eff.as_deref(), Some("oil-painting"));
+    }
+
+    /// Task with no look: inherits from scenario.
+    #[test]
+    fn task_look_unset_inherits_scenario() {
+        let scenario_look = Some("watercolor".to_string());
+        let task_look: Option<String> = None;
+        let eff = task_look.or_else(|| scenario_look.clone());
+        assert_eq!(eff.as_deref(), Some("watercolor"));
     }
 
     // v0.15 phase 7b-7 — per-task LoRA schema parsing.
