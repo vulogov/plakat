@@ -420,11 +420,11 @@ pub struct GenerateArgs {
     pub genre: Option<String>,
 
     /// **v0.25**: skip remote LoRA discovery for `--look` /
-    /// `--genre`. Discovery normally hits Civitai (and, phase 5+,
-    /// HF Hub and a local-cache scan); with `--offline`, only the
-    /// on-disk discovery cache (and phase 5's local scan) are
-    /// consulted. Useful for CI / reproducibility / air-gapped runs.
-    /// Has no effect when no `--look` / `--genre` is set.
+    /// `--genre`. Discovery normally chains Civitai → HuggingFace
+    /// Hub → local-cache scan; with `--offline`, only the on-disk
+    /// discovery cache and the local-cache scan run. Useful for CI
+    /// / reproducibility / air-gapped runs. Has no effect when no
+    /// `--look` / `--genre` is set.
     #[arg(long, default_value_t = false)]
     pub offline: bool,
 

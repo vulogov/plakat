@@ -140,7 +140,7 @@ pub struct DiscoveredLora {
 }
 
 /// Knobs the caller passes in: offline switch, pipeline family,
-/// and the cache root.
+/// and the cache roots.
 #[derive(Debug, Clone)]
 pub struct DiscoveryOptions {
     pub offline: bool,
@@ -149,6 +149,10 @@ pub struct DiscoveryOptions {
     /// [`default_cache_root`] when constructed via
     /// [`DiscoveryOptions::with_defaults`].
     pub cache_root: PathBuf,
+    /// Civitai download cache root — scanned by [`try_local_scan`]
+    /// for already-downloaded LoRAs. Defaults via
+    /// [`crate::civitai::download::cache_root`]; tests override.
+    pub civitai_cache_root: PathBuf,
     /// LoRA scale used when constructing the [`LoraSpec`]. Curated
     /// default `0.8` — same as the v0.23 style catalog's typical
     /// LoRA scale.
@@ -161,6 +165,7 @@ impl DiscoveryOptions {
             offline,
             base,
             cache_root: default_cache_root(),
+            civitai_cache_root: crate::civitai::download::cache_root(),
             scale: 0.8,
         }
     }
@@ -228,13 +233,7 @@ impl CachedDiscovery {
                 scale,
             },
             Source::LocalCache { path } => LoraSpec {
-                source: LoraSource::Hub {
-                    // Local paths use Hub::repo as the path
-                    // (resolve() detects file:// or absolute paths).
-                    repo: path.display().to_string(),
-                    file: None,
-                    revision: None,
-                },
+                source: LoraSource::Local(path.clone()),
                 scale,
             },
         };
@@ -343,6 +342,286 @@ fn pick_best_version(
     None
 }
 
+/// HF Hub's model-search response shape (we only deserialize what
+/// we use — `full=true` adds `tags`).
+#[derive(Debug, Deserialize)]
+struct HfSearchEntry {
+    id: String,
+    #[serde(default)]
+    #[allow(dead_code)] // exposed for future ranking work
+    likes: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    downloads: u64,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Pattern-match a HuggingFace repo's `id` and tag list against a
+/// [`BaseFamily`]. HF doesn't standardize a per-LoRA `base_model`
+/// field accessible at search time, so we rely on naming
+/// conventions + the model card tags.
+fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> bool {
+    let id_l = repo_id.to_lowercase();
+    let id_check = match base {
+        BaseFamily::Sd15 => {
+            id_l.contains("sd15")
+                || id_l.contains("sd-1.5")
+                || id_l.contains("sd_1.5")
+                || id_l.contains("v1-5")
+                || id_l.contains("v1.5")
+        }
+        BaseFamily::Sd21 => {
+            id_l.contains("sd21")
+                || id_l.contains("sd-2.1")
+                || id_l.contains("v2-1")
+                || id_l.contains("v2.1")
+        }
+        BaseFamily::Sdxl => {
+            id_l.contains("sdxl")
+                || id_l.contains("sd-xl")
+                || id_l.contains("xl-base")
+                || id_l.contains("pony")
+        }
+        BaseFamily::Flux => id_l.contains("flux"),
+        BaseFamily::Sd3 => id_l.contains("sd3") || id_l.contains("sd-3"),
+    };
+    if id_check {
+        return true;
+    }
+    let tag_patterns: &[&str] = match base {
+        BaseFamily::Sd15 => &["sd15", "stable-diffusion-1.5", "stable-diffusion-v1-5", "sd-1.5"],
+        BaseFamily::Sd21 => &["sd21", "stable-diffusion-2.1", "stable-diffusion-2", "sd-2.1"],
+        BaseFamily::Sdxl => &["sdxl", "stable-diffusion-xl"],
+        BaseFamily::Flux => &["flux", "flux-dev", "flux-schnell", "flux.1"],
+        BaseFamily::Sd3 => &["sd3", "stable-diffusion-3"],
+    };
+    tags.iter().any(|t| {
+        let tl = t.to_lowercase();
+        tag_patterns.iter().any(|p| tl.contains(p))
+    })
+}
+
+/// HF Hub search fallback. Lower-quality metadata than Civitai
+/// (no trigger words, no reliable per-LoRA base-model field), but
+/// fills the gap when Civitai has no match — e.g., for art mediums
+/// where HF hosts the canonical LoRA.
+async fn try_hf_hub(
+    query: &LoraQuery,
+    base: BaseFamily,
+    scale: f32,
+) -> Result<Option<DiscoveredLora>> {
+    let q = build_query_string(query);
+    if q.is_empty() {
+        return Ok(None);
+    }
+    // Append "lora" to the search string so generic medium words
+    // ("watercolor") don't return base models / pipelines.
+    let q_with_lora = format!("{q} lora");
+    let limit = "20";
+    let url = reqwest::Url::parse_with_params(
+        "https://huggingface.co/api/models",
+        &[
+            ("search", q_with_lora.as_str()),
+            ("filter", "lora"),
+            ("sort", "downloads"),
+            ("direction", "-1"),
+            ("limit", limit),
+            ("full", "true"),
+        ],
+    )
+    .context("building HF Hub search URL")?;
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("plakat/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("building HF Hub client")?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .with_context(|| format!("HF Hub search GET {url}"))?;
+    if !resp.status().is_success() {
+        // HF returning 429 / 5xx isn't fatal — discovery chains to
+        // the next source. Log + soft-fail.
+        tracing::debug!(
+            target: "plakat",
+            "HF Hub search returned {} for {q_with_lora:?}",
+            resp.status()
+        );
+        return Ok(None);
+    }
+    let items: Vec<HfSearchEntry> = resp
+        .json()
+        .await
+        .context("parsing HF Hub search response")?;
+    for item in items {
+        if !hf_repo_matches_base(&item.id, &item.tags, base) {
+            continue;
+        }
+        let spec = LoraSpec {
+            source: LoraSource::Hub {
+                repo: item.id.clone(),
+                file: None,
+                revision: None,
+            },
+            scale,
+        };
+        return Ok(Some(DiscoveredLora {
+            spec,
+            // HF doesn't expose trigger words at search time. The
+            // model card's README may have them, but parsing it for
+            // every search is too chatty for v0.25. Caller skips
+            // the trigger-prepend step when this vec is empty.
+            trigger_words: vec![],
+            source: Source::HuggingFace {
+                repo: item.id.clone(),
+            },
+            model_name: item.id.clone(),
+            source_url: Some(format!("https://huggingface.co/{}", item.id)),
+        }));
+    }
+    Ok(None)
+}
+
+/// Local-cache scan. Walks `civitai_cache_root` (plakat's own
+/// download cache) and reads each `metadata.json` to find an
+/// already-downloaded LoRA whose base + trigger words match.
+///
+/// Useful for two cases:
+/// 1. **Offline mode**: when network is unavailable, we still want
+///    a previously discovered LoRA to be usable.
+/// 2. **User pre-pulled**: if a user did `plakat civitai download`
+///    for a watercolor LoRA, a later `--look watercolor` invocation
+///    can pick that up automatically.
+fn try_local_scan(
+    query: &LoraQuery,
+    base: BaseFamily,
+    scale: f32,
+    civitai_cache_root: &std::path::Path,
+) -> Result<Option<DiscoveredLora>> {
+    if !civitai_cache_root.exists() {
+        return Ok(None);
+    }
+    let keywords: Vec<String> = query
+        .keywords
+        .iter()
+        .chain(query.tags.iter())
+        .filter(|k| !k.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect();
+    if keywords.is_empty() {
+        return Ok(None);
+    }
+
+    let read = match fs::read_dir(civitai_cache_root) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    for model_entry in read.flatten() {
+        let model_path = model_entry.path();
+        if !model_path.is_dir() {
+            continue;
+        }
+        let Some(model_name) = model_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(model_id_str) = model_name.strip_prefix("model-") else {
+            continue;
+        };
+        let Ok(model_id) = model_id_str.parse::<u64>() else {
+            continue;
+        };
+
+        let Ok(version_read) = fs::read_dir(&model_path) else {
+            continue;
+        };
+        for version_entry in version_read.flatten() {
+            let version_path = version_entry.path();
+            if !version_path.is_dir() {
+                continue;
+            }
+            let Some(version_name) = version_path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(version_id_str) = version_name.strip_prefix("version-") else {
+                continue;
+            };
+            let Ok(version_id) = version_id_str.parse::<u64>() else {
+                continue;
+            };
+
+            let meta_path = version_path.join("metadata.json");
+            let Ok(bytes) = fs::read(&meta_path) else {
+                continue;
+            };
+            let version: api::ModelVersion = match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Base compatibility.
+            let Some(bm) = version.base_model.as_deref() else {
+                continue;
+            };
+            if !base.civitai_matches(bm) {
+                continue;
+            }
+
+            // Keyword match: trigger words OR safetensors filename.
+            let triggers_lower: Vec<String> = version
+                .trained_words
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect();
+            let safetensors_lower: Option<String> = fs::read_dir(&version_path)
+                .ok()
+                .and_then(|r| {
+                    r.flatten()
+                        .filter_map(|e| {
+                            let n = e.file_name().to_string_lossy().to_lowercase();
+                            n.ends_with(".safetensors").then_some(n)
+                        })
+                        .next()
+                });
+            let model_name_lower = version.name.to_lowercase();
+            let matches_keyword = keywords.iter().any(|k| {
+                triggers_lower.iter().any(|t| t.contains(k))
+                    || safetensors_lower
+                        .as_deref()
+                        .map(|f| f.contains(k))
+                        .unwrap_or(false)
+                    || model_name_lower.contains(k)
+            });
+            if !matches_keyword {
+                continue;
+            }
+
+            // Hit — attribute to Civitai (LoraSpec resolution will
+            // see the cached file and short-circuit the network).
+            let spec = LoraSpec {
+                source: LoraSource::Civitai {
+                    id_kind: CivitaiIdKind::Version(version_id),
+                    file: None,
+                },
+                scale,
+            };
+            return Ok(Some(DiscoveredLora {
+                spec,
+                trigger_words: version.trained_words.clone(),
+                source: Source::Civitai {
+                    model_id,
+                    version_id,
+                },
+                model_name: format!("(local) {}", version.name),
+                source_url: Some(format!("https://civitai.com/models/{model_id}")),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Hit Civitai for a LoRA matching `query` on `base`. Returns
 /// `Ok(None)` when no compatible LoRA shows up in the first page
 /// (we don't paginate — the top-20 results from Civitai's
@@ -383,16 +662,22 @@ async fn try_civitai(
 
 /// Public entry point.
 ///
-/// Returns `Ok(Some(_))` when a compatible LoRA was found (cache or
-/// network), `Ok(None)` when no match found, `Err` on a hard
-/// network / API error. Soft failures (transient HTTP, malformed
-/// response) bubble up as `Err`.
+/// Source order:
+/// 1. Discovery cache (on-disk JSON keyed by preset+base).
+/// 2. **If `offline`**: local-cache scan only (civitai download cache).
+/// 3. **Else**: Civitai → HuggingFace Hub → local-cache scan.
+///
+/// Returns `Ok(Some(_))` when a compatible LoRA was found,
+/// `Ok(None)` when every source missed, `Err` on a hard error
+/// (cache I/O failure, malformed API response). Network 4xx/5xx
+/// from any single source are downgraded to "no match" and chain
+/// to the next source.
 pub async fn discover_lora(
     query: &LoraQuery,
     preset_name: &str,
     options: &DiscoveryOptions,
 ) -> Result<Option<DiscoveredLora>> {
-    // 1. Cache check.
+    // 1. Cache check (cheap, always tried).
     if let Some(cached) = read_cache(options, preset_name) {
         tracing::debug!(
             target: "plakat",
@@ -402,25 +687,55 @@ pub async fn discover_lora(
         return Ok(Some(cached.to_discovered(options.scale)));
     }
 
-    // 2. Offline short-circuit (phase 5 will layer local-scan here).
+    // 2. Offline short-circuit: local-cache scan only, no network.
     if options.offline {
         tracing::debug!(
             target: "plakat",
-            "look-discovery offline + no cache for {preset_name}/{} — skipping",
+            "look-discovery offline path for {preset_name}/{}",
             options.base.cache_slug()
         );
-        return Ok(None);
+        let result = try_local_scan(
+            query,
+            options.base,
+            options.scale,
+            &options.civitai_cache_root,
+        )?;
+        if let Some(d) = &result {
+            write_cache(options, preset_name, d);
+        }
+        return Ok(result);
     }
 
-    // 3. Civitai (phase 5 will fall through to HF Hub on None).
-    let discovered = try_civitai(query, options.base, options.scale).await?;
+    // 3. Online chain: Civitai → HF Hub → local-cache scan.
+    if let Some(d) = try_civitai(query, options.base, options.scale).await? {
+        write_cache(options, preset_name, &d);
+        return Ok(Some(d));
+    }
+    tracing::debug!(
+        target: "plakat",
+        "look-discovery Civitai miss for {preset_name} — falling through to HF Hub"
+    );
 
-    // 4. Cache successful results.
-    if let Some(d) = &discovered {
-        write_cache(options, preset_name, d);
+    if let Some(d) = try_hf_hub(query, options.base, options.scale).await? {
+        write_cache(options, preset_name, &d);
+        return Ok(Some(d));
+    }
+    tracing::debug!(
+        target: "plakat",
+        "look-discovery HF Hub miss for {preset_name} — falling through to local scan"
+    );
+
+    if let Some(d) = try_local_scan(
+        query,
+        options.base,
+        options.scale,
+        &options.civitai_cache_root,
+    )? {
+        write_cache(options, preset_name, &d);
+        return Ok(Some(d));
     }
 
-    Ok(discovered)
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -577,7 +892,12 @@ mod tests {
         let opts = DiscoveryOptions {
             offline: false,
             base,
-            cache_root: dir.path().to_path_buf(),
+            cache_root: dir.path().join("discovery"),
+            // Point the civitai-cache-scan root inside the same
+            // tempdir so tests don't accidentally touch the user's
+            // real download cache. Default to a non-existent path
+            // (try_local_scan early-returns None).
+            civitai_cache_root: dir.path().join("civitai-empty"),
             scale: 0.8,
         };
         (dir, opts)
@@ -666,6 +986,7 @@ mod tests {
             offline: false,
             base,
             cache_root: dir.path().to_path_buf(),
+            civitai_cache_root: dir.path().to_path_buf(),
             scale: 0.8,
         };
         let sd15 = cache_path(&make(BaseFamily::Sd15), "watercolor");
@@ -674,6 +995,259 @@ mod tests {
         assert_ne!(sd15, sdxl);
         assert_ne!(sdxl, flux);
         assert_ne!(sd15, flux);
+    }
+
+    // --- HF Hub repo matching ---
+
+    #[test]
+    fn hf_repo_matches_sd15_by_id() {
+        assert!(hf_repo_matches_base(
+            "ostris/watercolor-sd-1.5",
+            &[],
+            BaseFamily::Sd15
+        ));
+        assert!(hf_repo_matches_base("user/awesome-sd15-style", &[], BaseFamily::Sd15));
+        assert!(!hf_repo_matches_base("user/awesome-sdxl-style", &[], BaseFamily::Sd15));
+    }
+
+    #[test]
+    fn hf_repo_matches_sdxl_by_id() {
+        assert!(hf_repo_matches_base("user/watercolor-sdxl", &[], BaseFamily::Sdxl));
+        assert!(hf_repo_matches_base("user/sd-xl-style", &[], BaseFamily::Sdxl));
+        assert!(hf_repo_matches_base("user/pony-style", &[], BaseFamily::Sdxl));
+        assert!(!hf_repo_matches_base("user/watercolor-flux", &[], BaseFamily::Sdxl));
+    }
+
+    #[test]
+    fn hf_repo_matches_flux_by_id() {
+        assert!(hf_repo_matches_base("strangerzonehf/flux-style", &[], BaseFamily::Flux));
+        assert!(!hf_repo_matches_base("user/watercolor-sdxl", &[], BaseFamily::Flux));
+    }
+
+    #[test]
+    fn hf_repo_matches_by_tag_when_id_silent() {
+        // Repo id doesn't say "sdxl"; tags do.
+        let tags = vec!["stable-diffusion-xl".to_string(), "lora".to_string()];
+        assert!(hf_repo_matches_base("user/cool-painting", &tags, BaseFamily::Sdxl));
+        // Same repo id, wrong tag set → no match.
+        let tags_sd15 = vec!["stable-diffusion-v1-5".to_string()];
+        assert!(hf_repo_matches_base("user/cool-painting", &tags_sd15, BaseFamily::Sd15));
+        assert!(!hf_repo_matches_base("user/cool-painting", &tags_sd15, BaseFamily::Sdxl));
+    }
+
+    // --- Local-cache scan ---
+
+    /// Helper: drop a fake Civitai cache entry at
+    /// `root/model-M/version-V/{file.safetensors, metadata.json}`.
+    fn make_fake_civitai_entry(
+        root: &std::path::Path,
+        model_id: u64,
+        version_id: u64,
+        base_model: &str,
+        trained_words: &[&str],
+        filename: &str,
+    ) {
+        let dir = root
+            .join(format!("model-{model_id}"))
+            .join(format!("version-{version_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(filename), b"fake-safetensors-bytes").unwrap();
+        let version = api::ModelVersion {
+            id: version_id,
+            name: format!("v{version_id}"),
+            base_model: Some(base_model.into()),
+            trained_words: trained_words.iter().map(|s| s.to_string()).collect(),
+            download_url: None,
+            files: vec![],
+        };
+        std::fs::write(
+            dir.join("metadata.json"),
+            serde_json::to_vec_pretty(&version).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn local_scan_finds_by_trigger_word() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            42,
+            7,
+            "SD 1.5",
+            &["watercolor wash", "soft"],
+            "wc.safetensors",
+        );
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["watercolor".into()],
+        };
+        let result = try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path())
+            .unwrap()
+            .expect("local-scan hit");
+        match result.source {
+            Source::Civitai { model_id, version_id } => {
+                assert_eq!(model_id, 42);
+                assert_eq!(version_id, 7);
+            }
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+        assert_eq!(result.trigger_words, vec!["watercolor wash", "soft"]);
+    }
+
+    #[test]
+    fn local_scan_finds_by_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            42,
+            7,
+            "SDXL 1.0",
+            &[], // no trigger words
+            "oil-painting-style.safetensors",
+        );
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["oil".into()],
+        };
+        let result = try_local_scan(&q, BaseFamily::Sdxl, 0.8, dir.path())
+            .unwrap()
+            .expect("local-scan hit");
+        match result.source {
+            Source::Civitai { version_id, .. } => assert_eq!(version_id, 7),
+            other => panic!("expected Civitai, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_scan_filters_by_base() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two LoRAs match the keyword but only one matches the base.
+        make_fake_civitai_entry(
+            dir.path(),
+            1,
+            100,
+            "SD 1.5",
+            &["watercolor"],
+            "a.safetensors",
+        );
+        make_fake_civitai_entry(
+            dir.path(),
+            2,
+            200,
+            "Flux.1 D",
+            &["watercolor"],
+            "b.safetensors",
+        );
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["watercolor".into()],
+        };
+        let flux = try_local_scan(&q, BaseFamily::Flux, 0.8, dir.path())
+            .unwrap()
+            .expect("flux hit");
+        match flux.source {
+            Source::Civitai { model_id, .. } => assert_eq!(model_id, 2),
+            other => panic!("got {other:?}"),
+        }
+        let sd15 = try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path())
+            .unwrap()
+            .expect("sd15 hit");
+        match sd15.source {
+            Source::Civitai { model_id, .. } => assert_eq!(model_id, 1),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_scan_misses_on_nonexistent_root() {
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["watercolor".into()],
+        };
+        let result = try_local_scan(
+            &q,
+            BaseFamily::Sd15,
+            0.8,
+            std::path::Path::new("/nonexistent-discovery-root-xyz123"),
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn local_scan_misses_when_no_keyword_match() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            1,
+            100,
+            "SD 1.5",
+            &["cyberpunk"],
+            "x.safetensors",
+        );
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["watercolor".into()],
+        };
+        assert!(try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn local_scan_misses_when_no_keywords() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            1,
+            100,
+            "SD 1.5",
+            &["watercolor"],
+            "x.safetensors",
+        );
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec![],
+        };
+        // Empty query → no scan.
+        assert!(try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none());
+    }
+
+    /// Offline + local-scan hit: full chain end-to-end with no
+    /// network. Also writes a cache entry so the next call is even
+    /// faster.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn offline_local_scan_promotes_to_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let civitai_dir = dir.path().join("civitai");
+        make_fake_civitai_entry(
+            &civitai_dir,
+            42,
+            7,
+            "SDXL 1.0",
+            &["oil painting"],
+            "oil.safetensors",
+        );
+        let opts = DiscoveryOptions {
+            offline: true,
+            base: BaseFamily::Sdxl,
+            cache_root: dir.path().join("discovery"),
+            civitai_cache_root: civitai_dir,
+            scale: 0.8,
+        };
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["oil".into()],
+        };
+        let result = discover_lora(&q, "oil-painting", &opts)
+            .await
+            .unwrap()
+            .expect("local-scan hit");
+        match result.source {
+            Source::Civitai { model_id, .. } => assert_eq!(model_id, 42),
+            other => panic!("got {other:?}"),
+        }
+        // Verify the cache got written.
+        assert!(read_cache(&opts, "oil-painting").is_some());
     }
 
     // --- Offline behaviour (no network, no cache → None) ---
