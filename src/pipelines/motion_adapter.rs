@@ -316,6 +316,20 @@ impl MotionAdapter {
         .await
     }
 
+    /// v0.28 phase 3: synthetic constructor for tests that need a
+    /// `MotionAdapter` without touching the network. Builds an
+    /// in-memory instance with the provided config + an empty
+    /// safetensors layout. Not for production use — the
+    /// `weights_path` points at a non-existent dummy path.
+    #[doc(hidden)]
+    pub fn synthetic_for_test(config: MotionAdapterConfig) -> Self {
+        Self {
+            config,
+            weights_path: std::path::PathBuf::from("/dev/null/synthetic-motion-adapter.safetensors"),
+            tensor_layout: Vec::new(),
+        }
+    }
+
     /// v0.28 phase 1: load AnimateLCM with motion LoRAs merged in.
     /// Same tensor-key convention as V3 / SDXL beta — the
     /// `MergeTarget::MOTION_ADAPTER` lookup table is shared.
