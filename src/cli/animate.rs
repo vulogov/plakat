@@ -160,14 +160,17 @@ pub struct AnimateArgs {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
-    /// **v0.27 phase 3**: ControlNet conditioning kind for the
-    /// AnimateDiff path. `depth | canny | openpose | lineart |
-    /// softedge`. Required to enable CN; without it the other
+    /// **v0.27 phase 3 / v0.28 phase 0**: ControlNet conditioning kind
+    /// for the AnimateDiff path. `depth | canny | openpose | lineart
+    /// | softedge`. Required to enable CN; without it the other
     /// `--control-*` flags are ignored. The single conditioning
     /// image is applied to every frame (the same hint at every
-    /// frame — per-frame video control deferred to v0.28+).
-    /// SD 1.5 only in v0.27 phase 3; SDXL adds in phase 4.
-    /// No-op outside `--animatediff` mode.
+    /// frame — per-frame video control deferred to v0.29+).
+    ///
+    /// For multi-ControlNet (depth + canny stacked etc.) use
+    /// `--control-spec` instead — see below.
+    ///
+    /// SD 1.5 + SDXL (v0.27 phase 4). No-op outside `--animatediff` mode.
     #[arg(long = "control", value_name = "KIND")]
     pub control: Option<String>,
 
@@ -185,6 +188,32 @@ pub struct AnimateArgs {
     /// 0.5 = soft guidance, 1.5+ = heavy.
     #[arg(long = "control-strength", default_value_t = 1.0)]
     pub control_strength: f32,
+
+    /// **v0.28 phase 0**: full ControlNet spec, repeatable for
+    /// multi-ControlNet AnimateDiff (depth + canny stacked etc.).
+    /// Each occurrence stacks one conditioner; residuals from every
+    /// conditioner are summed per denoise step inside the motion
+    /// UNet.
+    ///
+    /// Grammar: `KIND[:option=value]*` where KIND ∈ {depth, canny,
+    /// openpose, lineart, softedge} and options are `image=PATH`,
+    /// `from=PATH`, `strength=F`, `start=F`, `end=F`. Examples:
+    ///
+    ///   --control-spec 'depth:from=source.jpg'
+    ///   --control-spec 'canny:image=edges.png:strength=0.5'
+    ///
+    /// Mutually exclusive with the legacy single-conditioner flags
+    /// (`--control`, `--control-image`, `--control-from`,
+    /// `--control-strength`). All conditioners in the stack share
+    /// the model variant — mixing SD 1.5 / SDXL is not supported.
+    #[arg(
+        long = "control-spec",
+        value_name = "SPEC",
+        conflicts_with_all = [
+            "control", "control_image", "control_from", "control_strength",
+        ],
+    )]
+    pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 
     /// **v0.27 phase 5**: per-window frame count for long-form
     /// sliding-window AnimateDiff. The motion adapter is trained at
@@ -1250,38 +1279,51 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
     // every frame inside the pipeline. The model picker routes the
     // CN load to the right variant (SD 1.5 vs SDXL) via the standard
     // `ControlNetVariant::detect`.
-    let controls = if let Some(kind_str) = args.control.as_deref() {
-        use crate::pipelines::controlnet::{
-            ControlKind, ControlSpec, load_control_stack,
-        };
-        use std::str::FromStr;
-        let kind = ControlKind::from_str(kind_str).with_context(|| {
+    // v0.28 phase 0: merge legacy --control/--control-image/--control-from
+    // /--control-strength with the repeatable --control-spec. clap's
+    // conflicts_with_all already guarantees the two forms aren't mixed;
+    // resolve_control_specs prefers the spec list when non-empty,
+    // otherwise builds a single-CN list from the legacy flags.
+    use crate::pipelines::controlnet::{
+        ControlKind, load_control_stack, resolve_control_specs,
+    };
+    use std::str::FromStr;
+    if args.control_image.is_some() && args.control_from.is_some() {
+        anyhow::bail!(
+            "--control-image and --control-from are mutually exclusive"
+        );
+    }
+    let legacy_kind = match args.control.as_deref() {
+        Some(s) => Some(ControlKind::from_str(s).with_context(|| {
             format!(
-                "parsing --control {kind_str:?} — expected depth | canny \
-                 | openpose | lineart | softedge"
+                "parsing --control {s:?} — expected depth | canny | \
+                 openpose | lineart | softedge"
             )
-        })?;
-        if args.control_image.is_some() && args.control_from.is_some() {
-            anyhow::bail!(
-                "--control-image and --control-from are mutually exclusive"
-            );
-        }
-        if args.control_image.is_none() && args.control_from.is_none() {
-            anyhow::bail!(
-                "--control={kind_str} requires --control-image PATH or \
-                 --control-from PATH"
-            );
-        }
-        let spec = ControlSpec {
-            kind,
-            image: args.control_image.clone(),
-            from: args.control_from.clone(),
-            strength: args.control_strength,
-            start: 0.0,
-            end: 1.0,
-        };
+        })?),
+        None => None,
+    };
+    if legacy_kind.is_some()
+        && args.control_image.is_none()
+        && args.control_from.is_none()
+    {
+        anyhow::bail!(
+            "--control requires --control-image PATH or --control-from PATH"
+        );
+    }
+    let resolved_specs = resolve_control_specs(
+        args.control_specs.clone(),
+        legacy_kind,
+        args.control_image.clone(),
+        args.control_from.clone(),
+        args.control_strength,
+        0.0,
+        1.0,
+    );
+    let controls = if resolved_specs.is_empty() {
+        Vec::new()
+    } else {
         load_control_stack(
-            std::slice::from_ref(&spec),
+            &resolved_specs,
             &args.model,
             width,
             height,
@@ -1290,10 +1332,15 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
             None,
         )
         .await
-        .context("loading ControlNet for --animatediff")?
-    } else {
-        Vec::new()
+        .context("loading ControlNet stack for --animatediff")?
     };
+    if controls.len() > 1 {
+        tracing::info!(
+            target: "plakat",
+            "AnimateDiff multi-CN: {} conditioners stacked",
+            controls.len(),
+        );
+    }
 
     // Variant-specific load + inference. Both branches return
     // `Vec<DynamicImage>` so the output dispatch below is shared.

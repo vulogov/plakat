@@ -234,3 +234,54 @@ fn animate_motion_lora_scale_default_and_override() {
         other => panic!("expected Animate pair, got {other:?}"),
     }
 }
+
+/// v0.28 phase 0: `--control-spec` is repeatable for multi-CN.
+#[test]
+fn animate_control_spec_is_repeatable() {
+    let cli = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--control-spec",
+        "depth:image=/tmp/d.png",
+        "--control-spec",
+        "canny:image=/tmp/c.png:strength=0.5",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Animate(args) => {
+            use plakat::pipelines::controlnet::ControlKind;
+            assert_eq!(args.control_specs.len(), 2);
+            assert_eq!(args.control_specs[0].kind, ControlKind::Depth);
+            assert_eq!(args.control_specs[1].kind, ControlKind::Canny);
+            assert!((args.control_specs[1].strength - 0.5).abs() < f32::EPSILON);
+        }
+        other => panic!("expected Animate, got {other:?}"),
+    }
+}
+
+/// v0.28 phase 0: `--control-spec` conflicts with the legacy
+/// single-conditioner flags (clap-level enforcement so we don't have
+/// to disambiguate at runtime).
+#[test]
+fn animate_control_spec_conflicts_with_legacy_flags() {
+    let err = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--control",
+        "depth",
+        "--control-spec",
+        "canny:image=/tmp/c.png",
+    ])
+    .unwrap_err();
+    let s = err.to_string();
+    assert!(
+        s.contains("cannot be used with") || s.contains("the argument"),
+        "expected conflict error, got: {s}"
+    );
+}
