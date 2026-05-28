@@ -159,16 +159,56 @@ pub struct AnimateArgs {
     /// Mirrors the scenario `--resume` semantics added in v0.17.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// **v0.27 phase 3**: ControlNet conditioning kind for the
+    /// AnimateDiff path. `depth | canny | openpose | lineart |
+    /// softedge`. Required to enable CN; without it the other
+    /// `--control-*` flags are ignored. The single conditioning
+    /// image is applied to every frame (the same hint at every
+    /// frame — per-frame video control deferred to v0.28+).
+    /// SD 1.5 only in v0.27 phase 3; SDXL adds in phase 4.
+    /// No-op outside `--animatediff` mode.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<String>,
+
+    /// Pre-rendered conditioning image (depth map, canny edge map,
+    /// etc.). Mutually exclusive with `--control-from`.
+    #[arg(long = "control-image", value_name = "PATH")]
+    pub control_image: Option<PathBuf>,
+
+    /// Source image that the annotator auto-converts into the
+    /// conditioning. Mutually exclusive with `--control-image`.
+    #[arg(long = "control-from", value_name = "PATH")]
+    pub control_from: Option<PathBuf>,
+
+    /// ControlNet strength multiplier. 1.0 is the diffusers default;
+    /// 0.5 = soft guidance, 1.5+ = heavy.
+    #[arg(long = "control-strength", default_value_t = 1.0)]
+    pub control_strength: f32,
+
+    /// **v0.27 phase 5**: per-window frame count for long-form
+    /// sliding-window AnimateDiff. The motion adapter is trained at
+    /// 16 frames; values > 32 exceed the trained positional
+    /// embedding's `motion_max_seq_length`. No-op when `--frames` is
+    /// ≤ `--window-size` (single-window path).
+    #[arg(long = "window-size", default_value_t = 16)]
+    pub window_size: u32,
+
+    /// **v0.27 phase 5**: overlap between consecutive sliding-
+    /// windows in frames. Each window covers
+    /// `[i*stride, i*stride + window-size)` where
+    /// `stride = window-size - window-overlap`. Higher overlap
+    /// reduces seam artefacts at the cost of more redundant compute.
+    /// Default 4 (25 % of the 16-frame window) is the community
+    /// sweet spot.
+    #[arg(long = "window-overlap", default_value_t = 4)]
+    pub window_overlap: u32,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
-    // v0.26 phase 5: AnimateDiff dispatch routing. When
-    // --animatediff is set, route through the AnimateDiff stack
-    // (motion adapter + vendored UNet) instead of the v0.20
-    // prompt-lerp morph. The actual inference dispatch is
-    // deferred per RFC §12 — phase 5 ships the routing skeleton
-    // so the CLI surface is stable, and the implementation
-    // closure lands in v0.26.1.
+    // v0.27 phase 0: AnimateDiff dispatch. When --animatediff is
+    // set, route through the AnimateDiff stack (motion adapter +
+    // vendored motion UNet) instead of the v0.20 prompt-lerp morph.
     if args.animatediff {
         return run_animatediff(args, device).await;
     }
@@ -1116,42 +1156,69 @@ async fn run_flux(
     Ok(())
 }
 
-/// v0.26 phase 5: AnimateDiff dispatch. Loads the V3 motion
-/// stack (with optional motion LoRAs), then routes through
-/// [`crate::pipelines::animatediff::AnimateDiffPipeline::generate`]
-/// — which currently bails with a v0.26.1 deferral message. The
-/// stack assembly itself is real (network-required first-run,
-/// cached afterward); the inference loop closes in v0.26.1.
+/// v0.27 phase 0: AnimateDiff V3 dispatch. Loads the V3 motion
+/// stack (with optional motion LoRAs) on top of an SD 1.5 backbone,
+/// runs N-frame inference, and writes per-frame PNGs plus optional
+/// GIF / MP4 / WebM via the [`crate::imaging::video::Format`] enum.
 ///
 /// Single-prompt mode: `--from` is the prompt, `--to` is ignored
 /// (logged at info level if non-empty).
 async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
     use crate::pipelines::animatediff::AnimateDiffPipeline;
 
-    // Hard gate: SD 1.5 only. SDXL motion adapters exist but are
-    // less mature (RFC §6 Q2) — deferred to v0.27.
-    let alias_l = args.model.to_lowercase();
-    let is_sd15 = alias_l == "sd15"
-        || alias_l == "sd1.5"
-        || alias_l == "sd-1.5"
-        || alias_l.contains("v1-5")
-        || alias_l.contains("stable-diffusion-v1-5");
-    if !is_sd15 {
+    // Variant detection. SD 1.5 + SDXL both supported in v0.27;
+    // SD 2.1 / Flux / SD3 / etc. bail loud since no motion adapter
+    // exists upstream. Detect on the resolved repo path because
+    // `SdVariant::detect` keys off substrings like "xl" / "2-1"
+    // which are present in repo ids but not in plakat's short
+    // aliases ("sd21" doesn't match the "2-1" / "2.1" / "v2" gate).
+    let resolved_for_detect = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+    let variant = SdVariant::detect(&resolved_for_detect);
+    let is_sd15_or_sdxl =
+        matches!(variant, SdVariant::Sd15 | SdVariant::Sdxl);
+    if !is_sd15_or_sdxl {
         anyhow::bail!(
-            "`--animatediff` requires --model sd15 (got --model {}). \
-             SDXL motion adapters exist but are deferred to v0.27. \
-             v0.26 ships AnimateDiff V3 on SD 1.5 only.",
+            "`--animatediff` requires --model sd15 or an SDXL alias \
+             (got --model {} = {:?}). SD 2.1 / Flux / SD3 have no \
+             upstream motion adapter.",
             args.model,
+            variant,
         );
     }
+    // v0.27 phase 5: with --window-size ≤ 32, --frames > 32 is fine
+    // — the sliding-window stitcher handles it. The per-window
+    // bound is what actually matters.
     let max_seq = 32usize;
-    if (args.frames as usize) > max_seq {
+    let window_size = args.window_size as usize;
+    let window_overlap = args.window_overlap as usize;
+    if window_size > max_seq {
         anyhow::bail!(
-            "--frames {} exceeds AnimateDiff V3's motion_max_seq_length ({}). \
-             Use --frames ≤ {}.",
-            args.frames,
+            "--window-size {} exceeds AnimateDiff motion_max_seq_length ({}). \
+             Use --window-size ≤ {}.",
+            args.window_size,
             max_seq,
             max_seq,
+        );
+    }
+    if window_overlap >= window_size {
+        anyhow::bail!(
+            "--window-overlap {} must be < --window-size {}",
+            args.window_overlap,
+            args.window_size,
+        );
+    }
+    if args.frames < 1 {
+        anyhow::bail!("--frames must be ≥ 1 (got {})", args.frames);
+    }
+    let (width, height) = parse_size(&args.size)?;
+    if width % 8 != 0 || height % 8 != 0 {
+        anyhow::bail!(
+            "--size {} not divisible by 8 (VAE constraint).",
+            args.size
         );
     }
 
@@ -1167,39 +1234,239 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
         tracing::info!(target: "plakat", "ffmpeg detected: {v}");
     }
 
+    std::fs::create_dir_all(&args.out)
+        .with_context(|| format!("creating output dir {}", args.out.display()))?;
+
     let dtype = if matches!(device, Device::Cpu) {
         candle_core::DType::F32
     } else {
         candle_core::DType::BF16
     };
 
-    let pipeline = AnimateDiffPipeline::load_v3(
-        &device,
-        dtype,
-        &args.motion_loras,
-        args.motion_lora_scale,
-    )
-    .await
-    .context("loading AnimateDiff V3 stack")?;
+    let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
 
-    tracing::info!(
-        target: "plakat",
-        "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
-        pipeline.modules.modules.len(),
-        pipeline.max_frames,
-    );
-
-    let (width, height) = parse_size(&args.size)?;
-    pipeline
-        .generate(
-            &args.from,
-            &args.negative,
-            args.frames as usize,
-            args.seed.unwrap_or(0),
+    // v0.27 phase 3 (SD 1.5) + phase 4 (SDXL): optional ControlNet
+    // stack. Single conditioner for v0.27 — the same hint tiles to
+    // every frame inside the pipeline. The model picker routes the
+    // CN load to the right variant (SD 1.5 vs SDXL) via the standard
+    // `ControlNetVariant::detect`.
+    let controls = if let Some(kind_str) = args.control.as_deref() {
+        use crate::pipelines::controlnet::{
+            ControlKind, ControlSpec, load_control_stack,
+        };
+        use std::str::FromStr;
+        let kind = ControlKind::from_str(kind_str).with_context(|| {
+            format!(
+                "parsing --control {kind_str:?} — expected depth | canny \
+                 | openpose | lineart | softedge"
+            )
+        })?;
+        if args.control_image.is_some() && args.control_from.is_some() {
+            anyhow::bail!(
+                "--control-image and --control-from are mutually exclusive"
+            );
+        }
+        if args.control_image.is_none() && args.control_from.is_none() {
+            anyhow::bail!(
+                "--control={kind_str} requires --control-image PATH or \
+                 --control-from PATH"
+            );
+        }
+        let spec = ControlSpec {
+            kind,
+            image: args.control_image.clone(),
+            from: args.control_from.clone(),
+            strength: args.control_strength,
+            start: 0.0,
+            end: 1.0,
+        };
+        load_control_stack(
+            std::slice::from_ref(&spec),
+            &args.model,
             width,
             height,
+            &device,
+            dtype,
+            None,
         )
         .await
+        .context("loading ControlNet for --animatediff")?
+    } else {
+        Vec::new()
+    };
+
+    // Variant-specific load + inference. Both branches return
+    // `Vec<DynamicImage>` so the output dispatch below is shared.
+    let frames = match variant {
+        SdVariant::Sd15 => {
+            let pipeline = AnimateDiffPipeline::load_v3(
+                &device,
+                dtype,
+                &args.motion_loras,
+                args.motion_lora_scale,
+            )
+            .await
+            .context("loading AnimateDiff V3 stack")?;
+            tracing::info!(
+                target: "plakat",
+                "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
+                pipeline.modules.modules.len(),
+                pipeline.max_frames,
+            );
+            crate::ui::progress::println(&format!(
+                "  animatediff (SD 1.5): {} frames, seed {seed}, \
+                 model {}, {}x{}, steps={}, guidance={}",
+                args.frames, args.model, width, height, args.steps, args.guidance,
+            ));
+            // v0.27 phase 5: route through generate_long so frames >
+            // window_size triggers the sliding-window stitcher.
+            // When frames ≤ window_size, generate_long is a thin
+            // pass-through to generate.
+            pipeline.generate_long(
+                &args.from,
+                &args.negative,
+                args.frames as usize,
+                window_size,
+                window_overlap,
+                seed,
+                width,
+                height,
+                args.steps,
+                args.guidance,
+                args.scheduler,
+                &controls,
+            )?
+        }
+        SdVariant::Sdxl => {
+            use crate::pipelines::animatediff::AnimateDiffSdxlPipeline;
+            let pipeline = AnimateDiffSdxlPipeline::load_sdxl_beta(
+                &device,
+                dtype,
+                &args.model,
+                &args.motion_loras,
+                args.motion_lora_scale,
+            )
+            .await
+            .context("loading AnimateDiff SDXL beta stack")?;
+            tracing::info!(
+                target: "plakat",
+                "AnimateDiff SDXL beta stack loaded: {} motion modules, max_seq_length={}",
+                pipeline.modules.modules.len(),
+                pipeline.max_frames,
+            );
+            crate::ui::progress::println(&format!(
+                "  animatediff (SDXL beta): {} frames, seed {seed}, \
+                 model {}, {}x{}, steps={}, guidance={}",
+                args.frames, args.model, width, height, args.steps, args.guidance,
+            ));
+            // v0.27 phase 6: same long-form routing as SD 1.5 — when
+            // frames > window_size, the SDXL pipeline's generate_long
+            // engages the sliding-window stitcher.
+            pipeline.generate_long(
+                &args.from,
+                &args.negative,
+                args.frames as usize,
+                window_size,
+                window_overlap,
+                seed,
+                width,
+                height,
+                args.steps,
+                args.guidance,
+                args.scheduler,
+                &controls,
+            )?
+        }
+        // SdVariant::Sd21 already rejected above.
+        _ => unreachable!("variant gate filtered to SD 1.5 / SDXL"),
+    };
+
+    // -------- write per-frame PNGs (always) + optional GIF + MP4 + WebM.
+    let scheduler_name = format!("{:?}", args.scheduler).to_lowercase();
+    let mut frame_paths: Vec<PathBuf> = Vec::with_capacity(frames.len());
+    for (i, img) in frames.iter().enumerate() {
+        let frame_path = args.out.join(format!("frame-{i:04}.png"));
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        if args.no_metadata {
+            crate::imaging::io::save_rgb_u8(rgb.as_raw(), w, h, &frame_path)?;
+        } else {
+            let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+                args.from.clone(),
+                args.model.clone(),
+                seed,
+                args.steps,
+                args.guidance,
+                scheduler_name.clone(),
+                width,
+                height,
+            );
+            meta.negative = args.negative.clone();
+            meta.mode = Some("animatediff".to_string());
+            meta.extras.push((
+                "AnimateDiff frame".to_string(),
+                format!("{i}/{}", frames.len()),
+            ));
+            crate::imaging::io::save_rgb_u8_with_metadata(
+                rgb.as_raw(),
+                w,
+                h,
+                &frame_path,
+                &meta,
+            )?;
+        }
+        frame_paths.push(frame_path);
+    }
+    crate::ui::progress::println(&format!(
+        "  wrote {} PNG frame(s) → {}",
+        frame_paths.len(),
+        args.out.display()
+    ));
+
+    // GIF: triggered by --format gif|all OR the legacy --gif flag.
+    let want_gif = args.format.needs_gif() || args.gif;
+    if want_gif {
+        let gif_path = args.out.join("animation.gif");
+        let spin = crate::ui::progress::spinner(&format!(
+            "Bundling {} frame(s) → {}",
+            frame_paths.len(),
+            gif_path.display()
+        ));
+        write_gif(&frame_paths, &gif_path, args.gif_delay_ms)?;
+        spin.finish_with_message(format!("✓ {}", gif_path.display()));
+    }
+    // MP4 / WebM via ffmpeg pattern `frame-%04d.png` in args.out.
+    if args.format.needs_mp4() || args.format.needs_webm() {
+        // ffmpeg input pattern: literal path with the %04d format
+        // specifier. ffmpeg reads `frame-0000.png .. frame-NNNN.png`
+        // contiguous from disk.
+        let pattern = args
+            .out
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .to_string();
+        // 8 fps is the AnimateDiff default in the upstream community.
+        let fps = 8u32;
+        if args.format.needs_mp4() {
+            let mp4_path = args.out.join("animation.mp4");
+            let spin = crate::ui::progress::spinner(&format!(
+                "Encoding MP4 ({fps} fps) → {}",
+                mp4_path.display()
+            ));
+            crate::imaging::video::frames_to_mp4(&pattern, &mp4_path, fps)?;
+            spin.finish_with_message(format!("✓ {}", mp4_path.display()));
+        }
+        if args.format.needs_webm() {
+            let webm_path = args.out.join("animation.webm");
+            let spin = crate::ui::progress::spinner(&format!(
+                "Encoding WebM ({fps} fps) → {}",
+                webm_path.display()
+            ));
+            crate::imaging::video::frames_to_webm(&pattern, &webm_path, fps)?;
+            spin.finish_with_message(format!("✓ {}", webm_path.display()));
+        }
+    }
+    Ok(())
 }
 
 fn write_gif(

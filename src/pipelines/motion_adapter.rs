@@ -78,6 +78,11 @@ use serde::{Deserialize, Serialize};
 /// goes down, users can override via `--motion-adapter-from PATH`
 /// in phase 4.
 const REPO_V3: &str = "guoyww/animatediff-motion-adapter-v1-5-3";
+/// v0.27 phase 1: SDXL motion adapter (beta). Same `MotionAdapter`
+/// config schema as V3 — only `block_out_channels` differs
+/// (`[320, 640, 1280]` for SDXL vs `[320, 640, 1280, 1280]` for V3
+/// SD 1.5).
+const REPO_SDXL_BETA: &str = "guoyww/animatediff-motion-adapter-sdxl-beta";
 const CONFIG_FILE: &str = "config.json";
 const WEIGHTS_FILE: &str = "diffusion_pytorch_model.safetensors";
 
@@ -204,21 +209,39 @@ impl MotionAdapter {
     /// Download (if needed) and load the V3 motion adapter.
     /// Network-required on first run; cache-hits subsequently.
     pub async fn load_v3() -> Result<Self> {
-        // Config first — small file (~200 bytes); failure here is
-        // a clean "wrong repo / network down" diagnostic before
-        // the 1.4 GB safetensors fetch.
-        let config_path = crate::hf::download::get_file(REPO_V3, CONFIG_FILE)
+        Self::load_from_repo(REPO_V3).await
+    }
+
+    /// v0.27 phase 1: download (if needed) and load the SDXL beta
+    /// motion adapter from `guoyww/animatediff-motion-adapter-sdxl-beta`.
+    /// Same config schema as V3 — see [`MotionAdapterConfig`]. Differs
+    /// only in `block_out_channels` ([320, 640, 1280] for SDXL's
+    /// 3-block UNet vs V3's [320, 640, 1280, 1280] for SD 1.5's 4-block
+    /// UNet). Network-required on first run; cache-hits subsequently.
+    pub async fn load_sdxl_beta() -> Result<Self> {
+        Self::load_from_repo(REPO_SDXL_BETA).await
+    }
+
+    /// Inner loader shared by `load_v3` + `load_sdxl_beta`. Downloads
+    /// `config.json` + `diffusion_pytorch_model.safetensors` from the
+    /// given repo and returns the parsed pair.
+    async fn load_from_repo(repo: &str) -> Result<Self> {
+        // Config first — small file; failure here is a clean
+        // "wrong repo / network down" diagnostic before the >1 GB
+        // safetensors fetch.
+        let config_path = crate::hf::download::get_file(repo, CONFIG_FILE)
             .await
             .with_context(|| {
-                format!("downloading motion-adapter config from {REPO_V3}/{CONFIG_FILE}")
+                format!("downloading motion-adapter config from {repo}/{CONFIG_FILE}")
             })?;
         let config_bytes = std::fs::read_to_string(&config_path)
             .with_context(|| format!("reading {}", config_path.display()))?;
         let config = MotionAdapterConfig::from_json(&config_bytes)?;
 
-        let weights_path =
-            crate::hf::download::get_file(REPO_V3, WEIGHTS_FILE).await.with_context(|| {
-                format!("downloading motion-adapter weights from {REPO_V3}/{WEIGHTS_FILE}")
+        let weights_path = crate::hf::download::get_file(repo, WEIGHTS_FILE)
+            .await
+            .with_context(|| {
+                format!("downloading motion-adapter weights from {repo}/{WEIGHTS_FILE}")
             })?;
 
         let tensor_layout = read_tensor_layout(&weights_path)?;
@@ -230,7 +253,7 @@ impl MotionAdapter {
         })
     }
 
-    /// v0.26 phase 4: load with motion LoRAs merged in. Equivalent
+    /// v0.26 phase 4: load V3 with motion LoRAs merged in. Equivalent
     /// to `load_v3()` when `motion_loras` is empty; otherwise
     /// downloads each LoRA via [`crate::pipelines::lora::LoraSpec::resolve`],
     /// merges into a tempfile via [`crate::pipelines::lora::merge_loras_into_weights`]
@@ -242,13 +265,49 @@ impl MotionAdapter {
         default_scale: f32,
         device: &candle_core::Device,
     ) -> Result<Self> {
-        let base = Self::load_v3().await?;
+        Self::load_with_motion_loras(
+            Self::load_v3().await?,
+            motion_loras,
+            default_scale,
+            device,
+        )
+        .await
+    }
+
+    /// v0.27 phase 1: load SDXL beta with motion LoRAs merged in.
+    /// Parallels [`Self::load_v3_with_motion_loras`]. Motion-LoRA
+    /// tensor-key naming is the same across V3 and SDXL beta
+    /// (PEFT-bare keys; the `MergeTarget::MOTION_ADAPTER` lookup
+    /// table is shared).
+    pub async fn load_sdxl_beta_with_motion_loras(
+        motion_loras: &[crate::pipelines::lora::LoraSpec],
+        default_scale: f32,
+        device: &candle_core::Device,
+    ) -> Result<Self> {
+        Self::load_with_motion_loras(
+            Self::load_sdxl_beta().await?,
+            motion_loras,
+            default_scale,
+            device,
+        )
+        .await
+    }
+
+    /// Shared LoRA-merge step. Takes a freshly-loaded base adapter
+    /// and either returns it unchanged (empty LoRA list) or merges
+    /// the LoRAs into a tempfile and rebuilds the adapter from the
+    /// merged weights.
+    async fn load_with_motion_loras(
+        base: Self,
+        motion_loras: &[crate::pipelines::lora::LoraSpec],
+        default_scale: f32,
+        device: &candle_core::Device,
+    ) -> Result<Self> {
         if motion_loras.is_empty() {
             return Ok(base);
         }
 
-        let mut resolved =
-            Vec::with_capacity(motion_loras.len());
+        let mut resolved = Vec::with_capacity(motion_loras.len());
         for (i, spec) in motion_loras.iter().enumerate() {
             resolved.push(
                 spec.resolve()
@@ -512,6 +571,38 @@ mod tests {
         let cfg = MotionAdapterConfig::from_json(V3_CONFIG_JSON).unwrap();
         assert_eq!(cfg.num_blocks(), 4);
         assert_eq!(cfg.total_motion_modules(), 16);
+    }
+
+    /// v0.27 phase 1: the SDXL beta motion-adapter config from
+    /// `guoyww/animatediff-motion-adapter-sdxl-beta/config.json`,
+    /// captured 2026-05-28 via WebFetch. Pinned offline so the
+    /// schema test doesn't need network.
+    const SDXL_BETA_CONFIG_JSON: &str = r#"{
+        "_class_name": "MotionAdapter",
+        "_diffusers_version": "0.26.0.dev0",
+        "block_out_channels": [320, 640, 1280],
+        "motion_layers_per_block": 2,
+        "motion_max_seq_length": 32,
+        "motion_mid_block_layers_per_block": 1,
+        "motion_norm_num_groups": 32,
+        "motion_num_attention_heads": 8,
+        "use_motion_mid_block": false
+    }"#;
+
+    /// SDXL beta config parses with the same schema as V3; only
+    /// `block_out_channels` differs (3 blocks for SDXL vs 4 for V3).
+    #[test]
+    fn config_parses_sdxl_beta() {
+        let cfg = MotionAdapterConfig::from_json(SDXL_BETA_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.class_name, "MotionAdapter");
+        assert_eq!(cfg.block_out_channels, vec![320, 640, 1280]);
+        assert_eq!(cfg.motion_layers_per_block, 2);
+        assert_eq!(cfg.motion_max_seq_length, 32);
+        assert_eq!(cfg.motion_num_attention_heads, 8);
+        assert!(!cfg.use_motion_mid_block);
+        // 3 down × 2 + 3 up × 2 = 12 modules. No mid in SDXL beta.
+        assert_eq!(cfg.num_blocks(), 3);
+        assert_eq!(cfg.total_motion_modules(), 12);
     }
 
     /// V2-style config (mid block present) shifts the count.
