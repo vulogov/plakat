@@ -199,6 +199,12 @@ impl AnimateDiffPipeline {
     /// responsible for writing the frames (`cli::animate::run_animatediff`
     /// handles PNG + GIF + MP4 + WebM dispatch).
     ///
+    /// `controls`: v0.27 phase 3 — optional ControlNet stack (single
+    /// CN supported for v0.27; multi-CN sum lives in the standard
+    /// `sum_controlnet_residuals` helper but isn't wired through
+    /// animate yet). The conditioning image is tiled across every
+    /// frame: same hint at every t.
+    ///
     /// Width / height must be divisible by 8 (VAE constraint).
     /// `frames` must be ≤ `self.max_frames` (V3 = 32).
     #[allow(clippy::too_many_arguments)]
@@ -213,6 +219,7 @@ impl AnimateDiffPipeline {
         steps: usize,
         guidance: f64,
         scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
     ) -> Result<Vec<DynamicImage>> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -265,6 +272,34 @@ impl AnimateDiffPipeline {
         .to_dtype(self.dtype)?;
         latents = (latents * scheduler.init_noise_sigma())?;
 
+        // ---- ControlNet conditioning pre-tile ----
+        // Build a (batch, 3, H, W) conditioning Tensor matching the
+        // motion UNet's per-step input batch (2F with CFG, F otherwise).
+        // Same hint replicated across every frame — phase 3 spec.
+        // Multi-CN: only the first conditioner is honoured in v0.27;
+        // the contract for "controls.first()" matches what the
+        // denoise step below looks at.
+        let cn_cond_batch = if let Some(cr) = controls.first() {
+            // (1, 3, H, W) → (2 if cfg else 1, 3, H, W).
+            let base = if do_cfg {
+                Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+            } else {
+                cr.conditioning.clone()
+            };
+            // Tile across frames: (2 or 1, 3, H, W) → (2F or F, 3, H, W).
+            Some(base.repeat((frames, 1, 1, 1))?)
+        } else {
+            None
+        };
+        if controls.len() > 1 {
+            tracing::warn!(
+                target: "plakat",
+                "AnimateDiff v0.27 wires a single ControlNet; ignoring \
+                 the {} extra conditioner(s).",
+                controls.len() - 1,
+            );
+        }
+
         // ---- denoise loop ----
         let bar = progress::step_bar(
             timesteps.len() as u64,
@@ -278,12 +313,36 @@ impl AnimateDiffPipeline {
                 latents.clone()
             };
             let model_input = scheduler.scale_model_input(model_input, timestep)?;
+            // v0.27 phase 3: ControlNet residuals — single CN, one
+            // conditioning image, tiled across all frames. Run at
+            // the same batch as the UNet input (2F with CFG; F
+            // without). The conditioning was tiled to that batch
+            // outside the loop (see cn_cond_batch).
+            let (cn_down, cn_mid) = if let (Some(cr), Some(cond)) =
+                (controls.first(), cn_cond_batch.as_ref())
+            {
+                let (d, m) = cr.net.forward(
+                    &model_input,
+                    timestep as f64,
+                    &text_embeds,
+                    cond,
+                    cr.strength,
+                    None, // SD 1.5 — no SDXL pooled embeds
+                    None,
+                )?;
+                (Some(d), Some(m))
+            } else {
+                (None, None)
+            };
+
             let noise_pred = self.motion_unet.forward_with_motion(
                 &model_input,
                 timestep as f64,
                 &text_embeds,
                 Some(&self.modules),
                 frames,
+                cn_down.as_deref(),
+                cn_mid.as_ref(),
             )?;
             let noise_pred = if do_cfg {
                 // Split into [uncond (F), cond (F)] along batch.
@@ -770,6 +829,7 @@ mod tests {
                 2,
                 7.5,
                 SchedulerKind::Ddim,
+                &[],
             )
             .expect("inference");
         assert_eq!(frames.len(), 2);
