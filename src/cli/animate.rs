@@ -215,6 +215,17 @@ pub struct AnimateArgs {
     )]
     pub control_specs: Vec<crate::pipelines::controlnet::ControlSpec>,
 
+    /// **v0.28 phase 1**: AnimateLCM mode for 4-step generation
+    /// (~5× speedup vs V3 + DDIM at 20 steps). Switches the motion
+    /// adapter from V3 to `wangfuyun/AnimateLCM`, the scheduler to
+    /// `lcm`, and the defaults to `--steps 4 --guidance 1.5`.
+    /// User-supplied `--steps` / `--guidance` still take precedence
+    /// — pass `--lcm --steps 8` for higher quality at 2× cost.
+    /// SD 1.5 only in v0.28; SDXL AnimateLCM repo isn't publicly
+    /// available.
+    #[arg(long = "lcm", default_value_t = false)]
+    pub lcm: bool,
+
     /// **v0.27 phase 5**: per-window frame count for long-form
     /// sliding-window AnimateDiff. The motion adapter is trained at
     /// 16 frames; values > 32 exceed the trained positional
@@ -1342,28 +1353,68 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
         );
     }
 
+    // v0.28 phase 1: AnimateLCM mode. When --lcm is set, switch the
+    // motion adapter to wangfuyun/AnimateLCM, force the scheduler to
+    // LCM, and apply the diffusers-recommended LCM defaults for
+    // steps + guidance. User-supplied values for `--steps` /
+    // `--guidance` take precedence over the LCM defaults (detected
+    // by comparing against the args' built-in defaults of 20 / 7.5).
+    if args.lcm && matches!(variant, SdVariant::Sdxl) {
+        anyhow::bail!(
+            "--lcm + --model {} not supported: AnimateLCM-SDXL isn't \
+             publicly available. v0.28 ships AnimateLCM on SD 1.5 only.",
+            args.model
+        );
+    }
+    let (eff_scheduler, eff_steps, eff_guidance) = if args.lcm {
+        let s = if args.steps == 20 { 4 } else { args.steps };
+        let g = if (args.guidance - 7.5).abs() < f64::EPSILON {
+            1.5
+        } else {
+            args.guidance
+        };
+        (SchedulerKind::Lcm, s, g)
+    } else {
+        (args.scheduler, args.steps, args.guidance)
+    };
+
     // Variant-specific load + inference. Both branches return
     // `Vec<DynamicImage>` so the output dispatch below is shared.
     let frames = match variant {
         SdVariant::Sd15 => {
-            let pipeline = AnimateDiffPipeline::load_v3(
-                &device,
-                dtype,
-                &args.motion_loras,
-                args.motion_lora_scale,
-            )
-            .await
-            .context("loading AnimateDiff V3 stack")?;
+            let (pipeline, label) = if args.lcm {
+                let p = AnimateDiffPipeline::load_animatelcm(
+                    &device,
+                    dtype,
+                    &args.motion_loras,
+                    args.motion_lora_scale,
+                )
+                .await
+                .context("loading AnimateLCM stack")?;
+                (p, "AnimateLCM")
+            } else {
+                let p = AnimateDiffPipeline::load_v3(
+                    &device,
+                    dtype,
+                    &args.motion_loras,
+                    args.motion_lora_scale,
+                )
+                .await
+                .context("loading AnimateDiff V3 stack")?;
+                (p, "AnimateDiff V3")
+            };
             tracing::info!(
                 target: "plakat",
-                "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
+                "{label} stack loaded: {} motion modules, max_seq_length={}",
                 pipeline.modules.modules.len(),
                 pipeline.max_frames,
             );
             crate::ui::progress::println(&format!(
-                "  animatediff (SD 1.5): {} frames, seed {seed}, \
-                 model {}, {}x{}, steps={}, guidance={}",
-                args.frames, args.model, width, height, args.steps, args.guidance,
+                "  animatediff (SD 1.5{}): {} frames, seed {seed}, \
+                 model {}, {}x{}, steps={}, guidance={}, scheduler={:?}",
+                if args.lcm { ", LCM" } else { "" },
+                args.frames, args.model, width, height, eff_steps, eff_guidance,
+                eff_scheduler,
             ));
             // v0.27 phase 5: route through generate_long so frames >
             // window_size triggers the sliding-window stitcher.
@@ -1378,9 +1429,9 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 seed,
                 width,
                 height,
-                args.steps,
-                args.guidance,
-                args.scheduler,
+                eff_steps,
+                eff_guidance,
+                eff_scheduler,
                 &controls,
             )?
         }
