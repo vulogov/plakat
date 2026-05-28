@@ -8,178 +8,176 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.26 — AnimateDiff + every v0.25 carry closed
+## What's new in v0.27 — AnimateDiff feature complete
 
-Thirteen phases close **every v0.25 carry** in one cycle: SD3 /
-SD3.5 animate, Bund look/genre apply on Flux + SD3, scenario
-auto-LoRA discovery, Real-ESRGAN in `plakat.upscale`,
-`plakat.metadata.write`, `plakat.stylize` cache slot, plus the
-full **AnimateDiff infrastructure** (motion adapter, temporal
-modules, vendored UNet with motion splice, motion LoRAs, output
-formats). Host word count 48 → 49.
+Eight phases close **every AnimateDiff carry** from the v0.26 cycle.
+End-to-end inference now works on both SD 1.5 + SDXL, each with
+optional ControlNet conditioning and a sliding-window long-form
+mode that lifts V3's 32-frame cap. The v0.26 motion-adapter
+infrastructure, the v0.26.1 inference deferral, and the three
+themes named at the start of the cycle (SDXL motion adapter,
+AnimateDiff + ControlNet, long-form) all ship in one release.
 
-### SD3 / SD3.5 animate
-
-Closes the v0.20-era `plakat animate` SD3 bail:
+### AnimateDiff inference (SD 1.5 + SDXL)
 
 ```bash
-# Three-encoder lerp (CLIP-L + CLIP-G + T5) + flow-match per frame.
-plakat animate --model sd35-medium \
-    --from "a quiet temple at dawn" \
-    --to   "a quiet temple at sunset" \
-    --frames 16 --gif-delay-ms 125
-```
-
-New `sd3::Pipeline::animate_frame(pos_y, pos_ctx, neg_y, neg_ctx,
-...)` reuses the v0.20 Flux pattern: pre-encode both endpoint
-prompts once, lerp `(y, context)` per frame, run a single MMDiT
-inference per frame, VAE decode. Pure text-to-image morph
-contract.
-
-### `plakat.look.*` / `plakat.genre.*` now work on Flux + SD3
-
-The v0.25 look/genre apply was SD-family only. v0.26 wires it on
-the Flux + SD3 generate paths in `script_entry.rs`:
-
-```bund
-"flux-dev" plakat.load
-"watercolor" plakat.look.apply
-"a knight in a forest" plakat.generate
-// → Civitai discovers a Flux-compatible watercolor LoRA, applies
-//   prompt prefix + trigger words, runs Flux generate.
-```
-
-LoRA discovery filters by `BaseFamily::Flux` / `BaseFamily::Sd3`
-so the cache key `(name, base_family)` finds the right LoRAs.
-
-### Scenario auto-LoRA discovery (smart-cached)
-
-```hjson
-{
-    model: sd35-medium
-    look: watercolor            # → discover once at first task
-    tasks: [
-        { name: a, prompt: "a cottage" }
-        { name: b, prompt: "a knight" }
-        { name: c, prompt: "a temple", look: oil-painting }
-        // ... 100 more tasks ...
-    ]
-}
-```
-
-100 tasks with `look: watercolor` fire **one** network call —
-the discovered LoRA is cached per `(look_name, base_family)`
-across the scenario. Per-task `look:` overrides re-fire only when
-a new `(name, base)` tuple shows up.
-
-### Real-ESRGAN in `plakat.upscale`
-
-```bund
-1 "real-esrgan-x4" plakat.upscale         // ML x4 upscale
-1 "real-esrgan-anime-x4" plakat.upscale   // anime-tuned variant
-```
-
-`plakat.upscale` now dispatches on arg type: integer (2 / 4) =
-Lanczos, string = Real-ESRGAN ML method. Same set the CLI
-already supported via `plakat hires --hires-upscaler`.
-
-### `plakat.save` + `plakat.metadata.write`
-
-`plakat.save` now writes the A1111 `parameters` PNG tEXt chunk
-+ JSON sidecar automatically when the handle has metadata
-attached (every `plakat.generate` now populates it). New host
-word:
-
-```bund
-"a knight" plakat.generate              // handle 1, with metadata
-1 2 plakat.upscale                       // handle 2, no metadata
-"knight-2x.png" plakat.save              // plain PNG
-1 "knight-2x.png" plakat.metadata.write  // re-attach original metadata
-```
-
-### `plakat.stylize` cache slot
-
-Closes the v0.24 'caching is a v0.25+ optimisation' deferral.
-Multi-call scripts now amortise the ~5 GB SD1.5 + IP-Adapter
-weights load.
-
-### AnimateDiff infrastructure
-
-```bash
-# v0.26.0: loads the motion stack + bails with v0.26.1 deferral.
+# SD 1.5 baseline — 16 motion-coherent frames at 512²
 plakat animate --animatediff --model sd15 \
     --from "a watercolor cottage at dawn" \
-    --frames 16 --format mp4 \
-    --motion-lora civitai-version:67890:0.8
+    --frames 16 --format mp4
+
+# SDXL at training resolution — same surface, larger output
+plakat animate --animatediff --model sdxl \
+    --from "a knight in a forest, oil painting" \
+    --frames 16 --size 1024x1024 --format mp4
 ```
 
-What ships:
-- AnimateDiff V3 motion adapter loader (
-  `guoyww/animatediff-motion-adapter-v1-5-3`)
-- 16 per-block temporal-attention modules built from real V3 weights
-- Vendored SD 1.5 UNet (`Sd15MotionUNet`) with motion-module splice
-  at block-output boundaries
-- Motion LoRA composition (`--motion-lora SPEC`) — merges into the
-  motion-adapter weights via the existing LoRA-merge pipeline
-- `--format {frames, gif, mp4, webm, all}` with ffmpeg integration
-- `AnimateDiffPipeline` assembly type
+V3 SD 1.5 (`guoyww/animatediff-motion-adapter-v1-5-3`, 16 motion
+modules) and SDXL beta (`guoyww/animatediff-motion-adapter-sdxl-beta`,
+12 motion modules) share the same `MotionAdapterConfig` schema; the
+only difference is `block_out_channels` matching each base UNet's
+block layout. Both paths use the block-boundary motion splice from
+v0.26 phase 3 (sequential motion modules at each down/up block
+output).
 
-What ships in **v0.26.1**: the actual N-frame scheduler loop +
-per-frame VAE decode + quality validation. See [`Documentation/ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md)
-for the full status + roadmap.
+### AnimateDiff + ControlNet
+
+Single conditioning image, same hint applied to every frame.
+Five kinds supported (`depth` / `canny` / `openpose` / `lineart` /
+`softedge`). The CN runs at the full per-step batch (2F with CFG)
+and feeds residuals into the motion UNet's down + mid hooks:
+
+```bash
+# SD 1.5 with a pre-rendered depth map
+plakat animate --animatediff --model sd15 \
+    --from "a fox in a snowy meadow" \
+    --control depth --control-image ./depth.png \
+    --frames 16 --format mp4
+
+# SDXL with auto-annotation from a source image + strength dial
+plakat animate --animatediff --model sdxl \
+    --from "a knight in a forest, oil painting" \
+    --control canny --control-from ./reference.jpg \
+    --control-strength 0.75 \
+    --frames 16 --size 1024x1024 --format mp4
+```
+
+The CN model picker resolves automatically based on `--model`
+(lllyasviel + control_v11 family for SD 1.5; official SDXL CN
+variants for SDXL). Per-frame video control (a depth video as
+guide) is v0.28+ territory.
+
+### Long-form sliding window
+
+V3's 32-frame `motion_max_seq_length` is a hard cap on a single
+window — the positional embedding only has 32 rows. Long-form
+mode chains overlapping windows with linear-ramp latent-space
+blend:
+
+```bash
+# 64-frame clip (~4 seconds at 16 fps): five windows, 4-frame overlap
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --format mp4
+```
+
+```
+stride = window_size - window_overlap     # 12 for the defaults
+windows: [0..16), [12..28), [24..40), [36..52), [48..64)
+overlap region blended linearly per latent slot
+```
+
+Each window gets its own seed (`seed + win_i * window_size`) so
+windows produce distinct noise; the blended overlap region
+preserves visual continuity across boundaries. When `--frames ≤
+--window-size`, long-form is a zero-overhead pass-through to
+single-window inference. Works on both SD 1.5 + SDXL paths.
+
+### Motion-module tensor naming fix
+
+A latent bug from the v0.26 phase 2 motion-module code: the
+referenced tensor key paths (`motion_modules.{j}.temporal_transformer.norm`,
+`transformer_blocks.{i}.attention_blocks.{0,1}`,
+`transformer_blocks.{i}.norms.{0,1,2}`, `pos_encoder.pe`) don't
+exist in the real upstream safetensors. v0.27 phase 2 fixed all
+the paths and collapsed `Vec<TemporalTransformerBlock>` → a
+single inner block per motion module:
+
+| Was | Is |
+|---|---|
+| `motion_modules.{j}.temporal_transformer.norm` | `motion_modules.{j}.norm` |
+| `transformer_blocks.{i}.attention_blocks.{0,1}` | `transformer_blocks.0.attn{1,2}` |
+| `transformer_blocks.{i}.norms.{0,1,2}` | `transformer_blocks.0.norm{1,2,3}` |
+| `pos_encoder.pe` | `pos_embed.pe` |
+
+Phase 0 didn't catch this because its e2e test was `#[ignore]`-gated
+and the synthetic-weights unit tests used the same wrong key names.
+Phase 2's SDXL load against the real cached adapter surfaced it
+immediately. Verified upstream against V3 SD 1.5 (540 keys) and
+SDXL beta (405 keys); both share the same convention.
 
 ### Documentation
 
-- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — AnimateDiff
-  reference + v0.26.0/v0.26.1 status.
-- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — full host-word
-  reference, updated for v0.26 (49 words).
-- [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md)
-  §13 — what's new in v0.26.
-- [`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](Documentation/RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md)
-  — design doc, eight locked decisions, 14-phase plan, the cycle-cut
-  decision tree.
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — full v0.27
+  reference: status matrix, quick-starts, corrected motion-module
+  tensor layout, ControlNet + long-form sections, memory budget
+  table.
+- [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md)
+  — §10 AnimateDiff rewritten, §11 ControlNet + §12 long-form
+  added.
+- [`RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md`](Documentation/RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md)
+  — design doc, four locked decisions, 8-phase plan.
 
 ### By the numbers
 
-- 934 lib tests + 20 integration tests green (+32 lib across the cycle).
-- 13 phase commits + RFC.
-- 48 → 49 host words.
-- 7 v0.25 carries closed.
-- AnimateDiff infrastructure: motion adapter loader + 16 temporal
-  modules + vendored UNet (580 LOC) + motion LoRA merge + CLI surface
-  + 4 output formats.
-- Real-ESRGAN ML upscaling exposed on `plakat.upscale`.
-- New `MergeTarget::MOTION_ADAPTER` LoRA-merge variant.
-- New `loaded_stylize` cache slot on `ScriptCtx`.
+- 948 lib tests + 32 integration tests green (+14 lib across the
+  cycle: phase 1 SDXL config + UNet motion smoke; phase 3/4 CN
+  residual wiring; phase 5/6 stitch correctness).
+- 9 new integration tests for the animate CLI surface
+  (`tests/animate_cli_smoke.rs`).
+- 8 phase commits + RFC.
+- 49 host words (unchanged from v0.26; no new Bund integration in
+  this cycle — RFC §8 explicit exclusion).
+- SD 1.5 + SDXL motion adapter loaders share `load_from_repo` +
+  `load_with_motion_loras` helpers.
+- Shared free helpers `validate_long_form_window` +
+  `stitch_long_form<F>` agree the SD 1.5 and SDXL `generate_long`
+  paths on the blend math by construction.
 
-### v0.25 → v0.26 migration
+### v0.26 → v0.27 migration
 
-v0.26 is **fully additive**. Every existing host word, config key,
-scenario field, and CLI flag keeps its v0.25 shape. New surface
-is opt-in:
+v0.27 is **fully additive on the CLI** but contains a load-bearing
+internal fix:
 
-```bund
-// New: plakat.metadata.write
-1 "out.png" plakat.metadata.write
+- ✅ Every existing flag and host word keeps its v0.26 shape.
+- ✅ New `--control` / `--control-image` / `--control-from` /
+  `--control-strength` flags on `plakat animate --animatediff`.
+- ✅ New `--window-size` / `--window-overlap` flags on
+  `plakat animate --animatediff` for long-form output.
+- ⚠️ `motion_module.rs` tensor key naming changed (see
+  "Motion-module tensor naming fix" above). Any downstream
+  consumer that vendored the v0.26 module code will need to pick
+  up the v0.27 fix to load real adapter weights; pure CLI users
+  see no change.
 
-// New: Real-ESRGAN string variants on plakat.upscale
-1 "real-esrgan-x4" plakat.upscale
+### Deferred to v0.28+
 
-// Existing: plakat.look.* / plakat.genre.* now work on Flux + SD3
-// (no script changes needed — they automatically apply on those
-// families now where they were silently SD-family only before).
-```
+- Per-frame video control (a depth/canny video as conditioning
+  source) — v0.27 ships single-image-every-frame.
+- Multi-CN sum through `--animatediff` (the helper exists in
+  `sum_controlnet_residuals` but isn't wired through animate).
+- FreeNoise / FreeInit style shared-noise long-form (v0.27 uses
+  post-hoc latent blend; quality validation is a user-machine
+  step).
+- HotShot-XL integration (different architecture; out of scope
+  for this cycle).
+- `plakat.animate` Bund host word (CLI is the v0.27 primary
+  surface).
+- Per-layer motion splice (faithful diffusers `UNetMotionModel`
+  vs the block-boundary approximation v0.26/v0.27 ship).
 
-### Deferred to v0.26.1 + v0.27
-
-- AnimateDiff inference dispatch (v0.26.1 — infrastructure shipped here)
-- SDXL motion adapter (v0.27 — V3 is SD 1.5 only)
-- AnimateDiff + ControlNet (v0.27+ — per-frame coherent control signals)
-- Long-form AnimateDiff > 32 frames (v0.27+ — needs HotShot-XL or
-  similar architecture)
-
-**Earlier releases** (v0.13 – v0.25):
+**Earlier releases** (v0.13 – v0.26):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 
