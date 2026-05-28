@@ -597,6 +597,41 @@ mod tests {
         });
     }
 
+    /// v0.26 phase 9: plakat.upscale rejects unknown ML method
+    /// strings with a clear error pointing at the supported set.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upscale_rejects_unknown_ml_method_string() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([0, 0, 0])),
+                );
+                ctx.push_image(img);
+            })
+            .unwrap();
+            let err = eval(r#"1 "not-a-real-method" plakat.upscale"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("unknown") || msg.contains("parsing"),
+                "got {msg}"
+            );
+        });
+    }
+
+    /// v0.26 phase 9: plakat.upscale accepts the three Real-ESRGAN
+    /// string variants at the parse layer (no actual download
+    /// here — that's the network-required part).
+    #[test]
+    fn upscale_parses_real_esrgan_method_strings() {
+        use crate::imaging::upscale::Method;
+        use std::str::FromStr;
+        for s in ["real-esrgan-x2", "real-esrgan-x4", "real-esrgan-anime-x4"] {
+            let m = Method::from_str(s).expect(s);
+            assert!(m.is_ml(), "{s} should be ML");
+        }
+    }
+
     /// v0.26 phase 8: plakat.metadata.write bails when the handle
     /// has no metadata attached. Verifies the friendly error message.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1394,7 +1429,10 @@ mod tests {
             let err = eval("1 3 plakat.upscale").unwrap_err();
             let msg = format!("{err}");
             assert!(msg.contains("scale must be 2 or 4"), "got {msg}");
-            assert!(msg.contains("v0.22"), "got {msg}");
+            // v0.26 phase 9: error message updated to point at the
+            // new Real-ESRGAN string variants instead of the v0.22
+            // deferral note.
+            assert!(msg.contains("Real-ESRGAN"), "got {msg}");
         });
     }
 
