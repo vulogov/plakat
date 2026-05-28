@@ -143,10 +143,39 @@ jobs:
       - name: Install aarch64 Linux cross toolchain
         if: matrix.cross_linux
         run: |
-          # Restrict the default amd64 sources so apt doesn't try to
-          # fetch arm64 from archive.ubuntu.com (which doesn't host it
-          # and would 404 on every package).
-          sudo sed -i 's|^deb http|deb [arch=amd64] http|g' /etc/apt/sources.list
+          # Restrict every existing Ubuntu apt source to amd64 only,
+          # so `dpkg --add-architecture arm64` below doesn't make apt
+          # ask archive.ubuntu.com / security.ubuntu.com for arm64
+          # packages (those mirrors don't host arm64 — it lives on
+          # ports.ubuntu.com instead, and the 404s break the build).
+          #
+          # The runner image has historically used one of two layouts
+          # depending on the snapshot — and recent images carry sources
+          # under BOTH locations:
+          #   * legacy: /etc/apt/sources.list + .list files in
+          #             /etc/apt/sources.list.d/
+          #   * DEB822: /etc/apt/sources.list.d/*.sources (multi-line)
+          # We harden both. Idempotent (no-op when already restricted).
+          restrict_to_amd64() {
+            local f="$1"
+            case "$f" in
+              *.list)
+                sudo sed -i -E \
+                  's|^(deb(-src)?) (https?)|\1 [arch=amd64] \3|g' "$f"
+                ;;
+              *.sources)
+                if ! sudo grep -q '^Architectures:' "$f"; then
+                  sudo sed -i '/^Types: deb/a Architectures: amd64' "$f"
+                fi
+                ;;
+            esac
+          }
+          [ -f /etc/apt/sources.list ] && restrict_to_amd64 /etc/apt/sources.list
+          for f in /etc/apt/sources.list.d/*.list \
+                   /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] && restrict_to_amd64 "$f"
+          done
+
           # Add the arm64 ports mirror (Ubuntu jammy is what ubuntu-22.04
           # runs; if the runner image upgrades to 24.04 noble we'd need
           # to bump this).
