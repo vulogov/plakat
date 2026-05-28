@@ -111,7 +111,6 @@ impl AnimateDiffPipeline {
         motion_loras: &[LoraSpec],
         motion_lora_scale: f32,
     ) -> Result<Self> {
-        // -------- AnimateDiff motion stack (existing v0.26 path).
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_v3().await?
         } else {
@@ -122,6 +121,42 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
+        Self::load_with_adapter(device, dtype, adapter).await
+    }
+
+    /// v0.28 phase 1: load the AnimateLCM stack on top of SD 1.5
+    /// for 4-step animate generation. Same SD 1.5 backbone as
+    /// [`Self::load_v3`]; differs only in the motion adapter (
+    /// `wangfuyun/AnimateLCM` vs V3) which adds a V1/V2-style
+    /// mid-block motion module. Caller pairs with the LCM
+    /// scheduler at ~4 denoise steps for the speedup.
+    pub async fn load_animatelcm(
+        device: &Device,
+        dtype: DType,
+        motion_loras: &[LoraSpec],
+        motion_lora_scale: f32,
+    ) -> Result<Self> {
+        let adapter = if motion_loras.is_empty() {
+            MotionAdapter::load_animatelcm().await?
+        } else {
+            MotionAdapter::load_animatelcm_with_motion_loras(
+                motion_loras,
+                motion_lora_scale,
+                device,
+            )
+            .await?
+        };
+        Self::load_with_adapter(device, dtype, adapter).await
+    }
+
+    /// Shared SD 1.5 backbone loader. Takes an already-loaded motion
+    /// adapter (V3 or AnimateLCM) and assembles the full pipeline on
+    /// top of the canonical SD 1.5 base weights.
+    async fn load_with_adapter(
+        device: &Device,
+        dtype: DType,
+        adapter: MotionAdapter,
+    ) -> Result<Self> {
         let modules = adapter.build_modules(device, dtype)?;
         let max_frames = adapter.config.motion_max_seq_length;
 
