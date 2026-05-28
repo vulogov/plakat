@@ -1701,6 +1701,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // -------- main loop --------
     let mut seed_offset: u64 = 0;
     let mut ran_count: u32 = 0;
+
+    // v0.26 phase 12: scenario-level auto-LoRA discovery cache.
+    // Keyed by preset name; the base_family is constant for the
+    // whole scenario (scenarios don't override model per-task in
+    // v0.26). Per the locked decision Q7 of RFC v0.26:
+    // "Discovery cache key already includes the base_model.
+    //  Smart-cache across the scenario: first task with
+    //  `look: watercolor` fires discovery; tasks 2..100 with the
+    //  same look hit the cache."
+    let scenario_base_family =
+        crate::preset::discovery::BaseFamily::from_model_arg(&model);
+    let mut discovery_cache: std::collections::HashMap<
+        String,
+        Option<crate::preset::discovery::DiscoveredLora>,
+    > = std::collections::HashMap::new();
+
     for (idx, task) in s.tasks.iter().enumerate() {
         // v0.19: skip tasks excluded by --only / --limit. The
         // seed_offset advance still happens for skipped tasks so a
@@ -2098,7 +2114,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // over the preset's recommendation.
         let eff_look = task.look.clone().or_else(|| s.look.clone());
         let eff_genre = task.genre.clone().or_else(|| s.genre.clone());
-        let _eff_offline = task.offline.or(s.offline).unwrap_or(false);
+        let eff_offline = task.offline.or(s.offline).unwrap_or(false);
+        // v0.26 phase 12: per-task discovered LoRA spec strings.
+        // Filled inside the apply block below when a preset has a
+        // lora_query AND no user LoRAs are set (scenario or task
+        // level). Appended onto task.loras when handing off to
+        // apply_task_loras_for_dispatch.
+        let mut discovered_lora_strings: Vec<String> = Vec::new();
         if eff_look.is_some() || eff_genre.is_some() {
             use crate::preset::{GenerationParams, apply_presets};
             use std::str::FromStr;
@@ -2146,6 +2168,107 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     "  genre '{}': prompt/negative composed (scenario)",
                     g.name
                 ));
+            }
+
+            // v0.26 phase 12: scenario auto-LoRA discovery.
+            // Gated on:
+            //   1. No scenario-level loras (parsed earlier into
+            //      `loras: Vec<LoraSpec>` from `s.loras`).
+            //   2. No task-level loras (`task.loras` empty).
+            //   3. The look or genre carries a `lora_query`.
+            // Looks first (more specific), then genre as fallback.
+            // Per Q7 the discovery cache is keyed by preset name
+            // since the scenario_base_family is constant — 100
+            // tasks sharing `look: watercolor` fire one network call.
+            //
+            // Discovery is async — uses the scenario `run()` async
+            // context directly (no block_in_place needed).
+            if loras.is_empty() && task.loras.is_empty() && !args.dry_run {
+                use crate::pipelines::lora::{CivitaiIdKind, LoraSource};
+                let query_source = look_spec
+                    .as_ref()
+                    .filter(|p| p.lora_query.is_some())
+                    .or(genre_spec
+                        .as_ref()
+                        .filter(|p| p.lora_query.is_some()));
+                if let Some(preset) = query_source {
+                    let query = preset.lora_query.as_ref().expect("filter Some");
+                    // Cache lookup / fill.
+                    let discovered: Option<
+                        crate::preset::discovery::DiscoveredLora,
+                    > = match discovery_cache.get(&preset.name) {
+                        Some(opt) => opt.clone(),
+                        None => {
+                            let opts = crate::preset::discovery::DiscoveryOptions::with_defaults(
+                                eff_offline,
+                                scenario_base_family,
+                            );
+                            let result =
+                                crate::preset::discovery::discover_lora(
+                                    query,
+                                    &preset.name,
+                                    &opts,
+                                )
+                                .await;
+                            let value = match result {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "plakat",
+                                        "scenario discovery failed for {}: {e:#}",
+                                        preset.name
+                                    );
+                                    None
+                                }
+                            };
+                            discovery_cache
+                                .insert(preset.name.clone(), value.clone());
+                            value
+                        }
+                    };
+                    if let Some(d) = discovered {
+                        // Serialize the LoraSpec back to a string
+                        // that LoraSpec::from_str will parse — same
+                        // grammar as the user-supplied entries in
+                        // task.loras: Vec<String>.
+                        let spec_str = match &d.spec.source {
+                            LoraSource::Civitai { id_kind, .. } => {
+                                let id_part = match id_kind {
+                                    CivitaiIdKind::Version(n) => {
+                                        format!("civitai-version:{n}")
+                                    }
+                                    CivitaiIdKind::Model(n) => {
+                                        format!("civitai:{n}")
+                                    }
+                                };
+                                format!("{id_part}:{:.3}", d.spec.scale)
+                            }
+                            LoraSource::Hub { repo, .. } => {
+                                format!("{repo}:{:.3}", d.spec.scale)
+                            }
+                            LoraSource::Local(p) => {
+                                format!("{}:{:.3}", p.display(), d.spec.scale)
+                            }
+                        };
+                        crate::ui::progress::println(&format!(
+                            "  discovered LoRA '{}' (scale={}) for preset '{}'",
+                            d.model_name,
+                            d.spec.scale,
+                            preset.name,
+                        ));
+                        if !d.trigger_words.is_empty() {
+                            let trigger = d.trigger_words.join(", ");
+                            final_prompt = crate::style::prepend_trigger(
+                                &trigger,
+                                &final_prompt,
+                            );
+                            crate::ui::progress::println(&format!(
+                                "  trigger words prepended: {trigger}"
+                            ));
+                        }
+                        discovered_lora_strings.push(spec_str);
+                    }
+                }
             }
         }
 
@@ -2539,10 +2662,21 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             //     LoRA support not yet wired)
             //
             // Empty task.loras = no-op for every backbone.
-            let task_lora_applied = if !task.loras.is_empty() {
+            // v0.26 phase 12: combine task.loras with any
+            // auto-discovered LoRAs from the scenario look/genre.
+            // When both are empty, skip the dispatch (no-op for
+            // every backbone).
+            let effective_task_loras: Vec<String> = if discovered_lora_strings.is_empty() {
+                task.loras.clone()
+            } else {
+                let mut combined = task.loras.clone();
+                combined.extend(discovered_lora_strings.iter().cloned());
+                combined
+            };
+            let task_lora_applied = if !effective_task_loras.is_empty() {
                 apply_task_loras_for_dispatch(
                     task,
-                    &task.loras,
+                    &effective_task_loras,
                     task.lora_scale.unwrap_or(lora_scale),
                     flux_pipeline.as_mut(),
                     &pipeline,
