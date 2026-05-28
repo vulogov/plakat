@@ -159,6 +159,32 @@ pub struct AnimateArgs {
     /// Mirrors the scenario `--resume` semantics added in v0.17.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// **v0.27 phase 3**: ControlNet conditioning kind for the
+    /// AnimateDiff path. `depth | canny | openpose | lineart |
+    /// softedge`. Required to enable CN; without it the other
+    /// `--control-*` flags are ignored. The single conditioning
+    /// image is applied to every frame (the same hint at every
+    /// frame — per-frame video control deferred to v0.28+).
+    /// SD 1.5 only in v0.27 phase 3; SDXL adds in phase 4.
+    /// No-op outside `--animatediff` mode.
+    #[arg(long = "control", value_name = "KIND")]
+    pub control: Option<String>,
+
+    /// Pre-rendered conditioning image (depth map, canny edge map,
+    /// etc.). Mutually exclusive with `--control-from`.
+    #[arg(long = "control-image", value_name = "PATH")]
+    pub control_image: Option<PathBuf>,
+
+    /// Source image that the annotator auto-converts into the
+    /// conditioning. Mutually exclusive with `--control-image`.
+    #[arg(long = "control-from", value_name = "PATH")]
+    pub control_from: Option<PathBuf>,
+
+    /// ControlNet strength multiplier. 1.0 is the diffusers default;
+    /// 0.5 = soft guidance, 1.5+ = heavy.
+    #[arg(long = "control-strength", default_value_t = 1.0)]
+    pub control_strength: f32,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
@@ -1186,6 +1212,64 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
 
     let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
 
+    // v0.27 phase 3: optional ControlNet stack. Single conditioner
+    // for v0.27; the same hint tiles to every frame inside the
+    // pipeline. SDXL CN routing lands in phase 4 — emit a TODO
+    // warning for now and skip the load on the SDXL branch.
+    let controls = if let Some(kind_str) = args.control.as_deref() {
+        if matches!(variant, SdVariant::Sdxl) {
+            tracing::warn!(
+                target: "plakat",
+                "--control on SDXL AnimateDiff is deferred to v0.27 phase 4. \
+                 Ignoring --control={kind_str} for this run."
+            );
+            Vec::new()
+        } else {
+            use crate::pipelines::controlnet::{
+                ControlKind, ControlSpec, load_control_stack,
+            };
+            use std::str::FromStr;
+            let kind = ControlKind::from_str(kind_str).with_context(|| {
+                format!(
+                    "parsing --control {kind_str:?} — expected depth | canny \
+                     | openpose | lineart | softedge"
+                )
+            })?;
+            if args.control_image.is_some() && args.control_from.is_some() {
+                anyhow::bail!(
+                    "--control-image and --control-from are mutually exclusive"
+                );
+            }
+            if args.control_image.is_none() && args.control_from.is_none() {
+                anyhow::bail!(
+                    "--control={kind_str} requires --control-image PATH or \
+                     --control-from PATH"
+                );
+            }
+            let spec = ControlSpec {
+                kind,
+                image: args.control_image.clone(),
+                from: args.control_from.clone(),
+                strength: args.control_strength,
+                start: 0.0,
+                end: 1.0,
+            };
+            load_control_stack(
+                std::slice::from_ref(&spec),
+                &args.model,
+                width,
+                height,
+                &device,
+                dtype,
+                None,
+            )
+            .await
+            .context("loading ControlNet for --animatediff")?
+        }
+    } else {
+        Vec::new()
+    };
+
     // Variant-specific load + inference. Both branches return
     // `Vec<DynamicImage>` so the output dispatch below is shared.
     let frames = match variant {
@@ -1219,6 +1303,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 args.steps,
                 args.guidance,
                 args.scheduler,
+                &controls,
             )?
         }
         SdVariant::Sdxl => {
