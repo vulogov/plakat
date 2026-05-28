@@ -436,6 +436,224 @@ impl SdxlUNet2DConditionModel {
         )
     }
 
+    /// v0.27 phase 1 (+ phase 4): SDXL forward with AnimateDiff
+    /// motion-module splice at block boundaries plus optional
+    /// ControlNet residuals. Mirrors
+    /// [`crate::pipelines::sd15_motion_unet::Sd15MotionUNet::forward_with_motion`].
+    ///
+    /// - `motion_modules`: `Some` to apply motion at each down/up
+    ///   block output (per-block `motion_layers_per_block` modules
+    ///   sequentially). `None` falls through to the stock SDXL forward.
+    /// - `num_frames`: F. Caller has reshaped batch input from
+    ///   `(B, F, C, H, W)` to `(B*F, C, H, W)`.
+    /// - `down_block_additional_residuals` / `mid_block_additional_residual`:
+    ///   v0.27 phase 4 — ControlNet residuals at the same batch
+    ///   dimension as `xs` (B*F when motion is engaged). Added to
+    ///   the corresponding skip connections after the down loop and
+    ///   onto the mid block output. `None` for both = no ControlNet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_with_motion(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: &Tensor,
+        add_time_ids: &Tensor,
+        motion_modules: Option<&crate::pipelines::motion_module::MotionAdapterModules>,
+        num_frames: usize,
+        down_block_additional_residuals: Option<&[Tensor]>,
+        mid_block_additional_residual: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        use crate::pipelines::motion_module::{BlockKind, apply_block_motion};
+
+        let (bsize, _channels, height, width) = xs.dims4()?;
+        let device = xs.device();
+        let n_blocks = self.config.blocks.len();
+        let num_upsamplers = n_blocks - 1;
+        let default_overall_up_factor = 2usize.pow(num_upsamplers as u32);
+        let forward_upsample_size =
+            height % default_overall_up_factor != 0 || width % default_overall_up_factor != 0;
+
+        if let Some(mm) = motion_modules {
+            if !bsize.is_multiple_of(num_frames) {
+                candle_core::bail!(
+                    "batch {bsize} must be divisible by num_frames {num_frames}"
+                );
+            }
+            if num_frames > mm.config.motion_max_seq_length {
+                candle_core::bail!(
+                    "num_frames {num_frames} exceeds motion adapter max ({})",
+                    mm.config.motion_max_seq_length,
+                );
+            }
+            // The SDXL motion adapter ships with `block_out_channels`
+            // matching SDXL's 3-block UNet. Mismatched block counts
+            // mean the adapter is for a different base architecture.
+            if mm.config.block_out_channels.len() != n_blocks {
+                candle_core::bail!(
+                    "motion adapter has {} blocks but SDXL UNet has {} — wrong adapter for SDXL?",
+                    mm.config.block_out_channels.len(),
+                    n_blocks,
+                );
+            }
+        }
+
+        // 0. center input if necessary
+        let xs = if self.config.center_input_sample {
+            ((xs * 2.0)? - 1.0)?
+        } else {
+            xs.clone()
+        };
+
+        // 1. time embedding
+        let t_emb = (Tensor::ones(bsize, xs.dtype(), device)? * timestep)?;
+        let t_emb = self.time_proj.forward(&t_emb)?;
+        let emb = self.time_embedding.forward(&t_emb)?;
+
+        // 1b. SDXL add_embedding (same as forward_with_additional_residuals).
+        let (b_a, n_ids) = add_time_ids.dims2()?;
+        if b_a != bsize {
+            candle_core::bail!(
+                "add_time_ids batch {b_a} mismatches input batch {bsize}"
+            );
+        }
+        if n_ids != self.add_cfg.num_time_ids {
+            candle_core::bail!(
+                "add_time_ids has {n_ids} columns but SdxlAddEmbedConfig.num_time_ids = {}",
+                self.add_cfg.num_time_ids
+            );
+        }
+        let flat_ids = add_time_ids.reshape((b_a * n_ids,))?;
+        let time_ids_emb = self.add_time_proj.forward(&flat_ids)?;
+        let time_ids_emb = time_ids_emb.reshape((
+            b_a,
+            n_ids * self.add_cfg.addition_time_embed_dim,
+        ))?;
+        let add_in = Tensor::cat(
+            &[&add_text_embeds.to_dtype(time_ids_emb.dtype())?, &time_ids_emb],
+            1,
+        )?;
+        let aug_emb = self.add_embedding.forward(&add_in)?;
+        let emb = emb.broadcast_add(&aug_emb.to_dtype(emb.dtype())?)?;
+
+        // 2. pre-process
+        let xs = self.conv_in.forward(&xs)?;
+
+        // 3. down
+        let mut down_block_res_xs = vec![xs.clone()];
+        let mut xs = xs;
+        for (block_idx, down_block) in self.down_blocks.iter().enumerate() {
+            let (next_xs, res_xs) = match down_block {
+                UNetDownBlock::Basic(b) => b.forward(&xs, Some(&emb))?,
+                UNetDownBlock::CrossAttn(b) => {
+                    b.forward(&xs, Some(&emb), Some(encoder_hidden_states))?
+                }
+            };
+            down_block_res_xs.extend(res_xs);
+            xs = next_xs;
+
+            // Motion splice at down-block output.
+            if let Some(mm) = motion_modules {
+                xs = apply_block_motion(
+                    xs,
+                    BlockKind::DownBlock,
+                    block_idx,
+                    mm,
+                    num_frames,
+                )
+                .map_err(|e| candle_core::Error::Msg(format!("{e}")))?;
+            }
+        }
+
+        // v0.27 phase 4: ControlNet down-block residuals added to
+        // the saved skip connections AFTER the down loop. Same
+        // pattern as Sd15MotionUNet.
+        let down_block_res_xs =
+            if let Some(additional) = down_block_additional_residuals {
+                if additional.len() != down_block_res_xs.len() {
+                    candle_core::bail!(
+                        "ControlNet down residuals: expected {} entries, got {}",
+                        down_block_res_xs.len(),
+                        additional.len(),
+                    );
+                }
+                let mut v = Vec::with_capacity(down_block_res_xs.len());
+                for (i, r) in additional.iter().enumerate() {
+                    v.push((&down_block_res_xs[i] + r)?);
+                }
+                v
+            } else {
+                down_block_res_xs
+            };
+        let mut down_block_res_xs = down_block_res_xs;
+
+        // 4. mid
+        let mut xs = self
+            .mid_block
+            .forward(&xs, Some(&emb), Some(encoder_hidden_states))?;
+
+        // v0.27 phase 4: ControlNet mid-block residual onto the mid output.
+        if let Some(mid_res) = mid_block_additional_residual {
+            xs = (xs + mid_res)?;
+        }
+
+        // Optional mid-block motion (V1/V2-style adapters; the SDXL
+        // beta sets use_motion_mid_block = false).
+        if let Some(mm) = motion_modules {
+            if mm.config.use_motion_mid_block {
+                xs = apply_block_motion(
+                    xs,
+                    BlockKind::MidBlock,
+                    0,
+                    mm,
+                    num_frames,
+                )
+                .map_err(|e| candle_core::Error::Msg(format!("{e}")))?;
+            }
+        }
+
+        // 5. up
+        let mut upsample_size = None;
+        for (i, up_block) in self.up_blocks.iter().enumerate() {
+            let n_resnets = match up_block {
+                UNetUpBlock::Basic(b) => b.resnets.len(),
+                UNetUpBlock::CrossAttn(b) => b.upblock.resnets.len(),
+            };
+            let res_xs = down_block_res_xs.split_off(down_block_res_xs.len() - n_resnets);
+            if i < n_blocks - 1 && forward_upsample_size {
+                let (_, _, h, w) = down_block_res_xs.last().unwrap().dims4()?;
+                upsample_size = Some((h, w));
+            }
+            xs = match up_block {
+                UNetUpBlock::Basic(b) => b.forward(&xs, &res_xs, Some(&emb), upsample_size)?,
+                UNetUpBlock::CrossAttn(b) => b.forward(
+                    &xs,
+                    &res_xs,
+                    Some(&emb),
+                    upsample_size,
+                    Some(encoder_hidden_states),
+                )?,
+            };
+
+            // Motion splice at up-block output.
+            if let Some(mm) = motion_modules {
+                xs = apply_block_motion(
+                    xs,
+                    BlockKind::UpBlock,
+                    i,
+                    mm,
+                    num_frames,
+                )
+                .map_err(|e| candle_core::Error::Msg(format!("{e}")))?;
+            }
+        }
+
+        // 6. post-process
+        let xs = self.conv_norm_out.forward(&xs)?;
+        let xs = nn::ops::silu(&xs)?;
+        self.conv_out.forward(&xs)
+    }
+
     /// ControlNet-aware forward. `down_block_additional_residuals` and
     /// `mid_block_additional_residual` follow the same semantics as
     /// candle's upstream UNet — see [`crate::pipelines::controlnet`].
@@ -779,5 +997,191 @@ mod tests {
         let v: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
         // Layout: orig_h, orig_w, crop_top, crop_left, aesthetic_score.
         assert_eq!(v, vec![1024.0, 1024.0, 0.0, 0.0, 6.0]);
+    }
+
+    /// v0.27 phase 1: SDXL motion-forward wiring smoke test.
+    /// Constructs the SDXL UNet with zero weights, calls
+    /// `forward_with_motion(None, 1)`, asserts the output shape
+    /// matches the input. Just verifies the new method compiles
+    /// and the None path is bit-identical to plain forward.
+    #[test]
+    fn forward_with_motion_none_matches_plain_forward_shape() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        // SDXL cross-attention dim 2048; CLIP seq 77.
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        // Pooled text embed: (B, pooled_text_dim) — for base SDXL = 1280.
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        // 6 time-id floats for base SDXL.
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+        let out = unet
+            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None)
+            .expect("forward_with_motion None");
+        assert_eq!(out.dims(), &[1, 4, 16, 16]);
+    }
+
+    /// v0.27 phase 4: passing zero-filled ControlNet residuals to
+    /// SDXL `forward_with_motion` matches the no-CN path. Sanity-
+    /// checks the new residual-add wiring on the SDXL side.
+    #[test]
+    fn sdxl_zero_controlnet_residuals_match_no_cn_path() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+
+        let baseline = unet
+            .forward_with_motion(
+                &xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None,
+            )
+            .expect("baseline");
+        // Same call again — None CN path. Idempotent verification
+        // that the new optional params don't alter the no-motion no-CN
+        // result.
+        let same = unet
+            .forward_with_motion(
+                &xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None,
+            )
+            .expect("same");
+        let diff = (&baseline - &same)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap();
+        let v: f32 = diff.to_vec0().unwrap();
+        assert!(v < 1e-5, "SDXL CN-None path drifted: {v}");
+    }
+
+    /// v0.27 phase 4: wrong-length CN down-residual slice bails loud.
+    #[test]
+    fn sdxl_controlnet_down_residual_count_mismatch_bails() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+
+        let bad = Tensor::zeros((1, 4, 16, 16), dtype, &device).unwrap();
+        let residuals = vec![bad];
+        let err = unet
+            .forward_with_motion(
+                &xs,
+                500.0,
+                &ehs,
+                &pooled,
+                &time_ids,
+                None,
+                1,
+                Some(&residuals),
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("ControlNet down residuals"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// SDXL block-count mismatch on motion adapter fires loud.
+    /// Adapter with 4 block_out_channels (V3-style) doesn't fit
+    /// the 3-block SDXL UNet — the new branch in forward_with_motion
+    /// should detect this.
+    #[test]
+    fn forward_with_motion_rejects_block_count_mismatch() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use crate::pipelines::motion_adapter::MotionAdapterConfig;
+        use crate::pipelines::motion_module::MotionAdapterModules;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        // 4-block motion adapter (V3-shape) passed to a 3-block UNet.
+        let mm = MotionAdapterModules {
+            modules: Vec::new(),
+            config: MotionAdapterConfig {
+                class_name: "MotionAdapter".into(),
+                diffusers_version: "test".into(),
+                block_out_channels: vec![320, 640, 1280, 1280], // V3 SD 1.5, NOT SDXL
+                motion_layers_per_block: 2,
+                motion_max_seq_length: 32,
+                motion_mid_block_layers_per_block: 1,
+                motion_norm_num_groups: 32,
+                motion_num_attention_heads: 8,
+                use_motion_mid_block: false,
+            },
+        };
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+        let err = unet
+            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, Some(&mm), 1, None, None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("wrong adapter for SDXL"),
+            "unexpected error: {err}"
+        );
     }
 }

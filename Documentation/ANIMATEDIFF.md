@@ -1,122 +1,137 @@
-# AnimateDiff (v0.26)
+# AnimateDiff (v0.27)
 
 `plakat animate --animatediff` renders **motion-coherent N-frame
-sequences** from a single prompt using the AnimateDiff V3 motion
-adapter spliced into SD 1.5's UNet. Different from the v0.20
-`plakat animate` morph mode, which interpolates between two prompts
-without temporal-attention coherence.
+sequences** from a single prompt using AnimateDiff motion adapters
+spliced into the SD UNet. Different from `plakat animate`'s default
+prompt-morph mode, which interpolates between two prompts without
+temporal-attention coherence.
 
-**Status:** v0.26.0 ships the AnimateDiff **infrastructure**
-(motion adapter loader, temporal-attention modules, vendored SD 1.5
-UNet with motion splice, motion LoRA composition, CLI surface).
-The **inference dispatch** — the actual N-frame scheduler loop —
-closes in **v0.26.1**. Calling `--animatediff` in v0.26.0 loads
-the full motion stack successfully, then bails with a clean
-v0.26.1 deferral message. The phases 1-5 build infrastructure
-that v0.26.1 can wire end-to-end in one focused commit.
+**v0.27 ships the full AnimateDiff feature set:** SD 1.5 + SDXL, both
+with optional ControlNet conditioning and a sliding-window
+long-form mode that lifts the V3 32-frame cap.
 
-See [RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md §12](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md)
-for the cycle-cut decision tree.
+| Capability | SD 1.5 | SDXL |
+|---|---|---|
+| Inference dispatch | ✓ phase 0 (v0.27) | ✓ phase 2 |
+| Motion adapter | V3 (`guoyww/animatediff-motion-adapter-v1-5-3`) | beta (`guoyww/animatediff-motion-adapter-sdxl-beta`) |
+| Motion LoRAs | ✓ phase 4 (v0.26) | ✓ phase 1 |
+| ControlNet | ✓ phase 3 | ✓ phase 4 |
+| Long-form sliding window | ✓ phase 5 | ✓ phase 6 |
+| Per-block motion modules | 16 (4 down × 2 + 4 up × 2) | 12 (3 down × 2 + 3 up × 2) |
+| Hard frame cap per window | 32 | 32 |
+| Cross-fade long-form total | ~256 frames practical | ~256 frames practical |
 
-## What works today (v0.26.0)
+## Quick start
 
-- ✅ `--animatediff` flag (CLI surface)
-- ✅ `--motion-lora SPEC` flag (CLI surface, full Civitai/HF/local resolution)
-- ✅ `--format {gif, mp4, webm, frames, all}` (production-ready for
-  any animate mode — not just AnimateDiff)
-- ✅ Motion adapter V3 weights download + parse (loader + safetensors header inspection)
-- ✅ 16 temporal-transformer modules built from real V3 weights
-- ✅ Vendored SD 1.5 UNet with motion-module splice at block boundaries
-- ✅ Motion LoRA composition (merge into adapter weights via the
-  existing `MergeTarget::MOTION_ADAPTER` lora-merge infrastructure)
-- ✅ `AnimateDiffPipeline` assembly (motion adapter + modules)
-- ⚠️ End-to-end inference loop **(deferred to v0.26.1)**
-
-## Quick start (v0.26.1+)
-
-Once the inference dispatch lands:
+### SD 1.5, 16-frame loop
 
 ```bash
-# Watercolor cottage, 16 frames, 8 fps GIF
 plakat animate --animatediff --model sd15 \
     --from "a watercolor cottage at dawn" \
-    --frames 16 --gif-delay-ms 125
+    --frames 16 --format mp4
+```
 
-# With a zoom-in motion LoRA + MP4 output
+### SDXL, 16-frame loop at training resolution
+
+```bash
+plakat animate --animatediff --model sdxl \
+    --from "a knight in a forest, oil painting" \
+    --frames 16 --size 1024x1024 --format mp4
+```
+
+### Motion LoRA stack (zoom-in)
+
+```bash
 plakat animate --animatediff --model sd15 \
-    --from "a knight in a forest" \
-    --motion-lora civitai-version:67890:0.8 \
+    --from "a wizard's tower at sunset" \
+    --motion-lora hf:guoyww/animatediff-motion-lora-zoom-in:0.8 \
+    --format mp4
+```
+
+### ControlNet — same depth map applied to every frame
+
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "a fox in a snowy meadow" \
+    --control depth --control-image ./depth.png \
+    --frames 16 --format mp4
+```
+
+### Long-form (sliding window) — 64-frame clip
+
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
     --format mp4
 ```
 
 ## Architecture
 
-### Motion adapter (`guoyww/animatediff-motion-adapter-v1-5-3`)
+### Motion adapter
 
-Downloaded on first use (~1.4 GB safetensors). Cached afterward
-under `$PLAKAT_CACHE_DIR/huggingface/hub/`.
+| Variant | Repo | Block channels | Modules |
+|---|---|---|---|
+| V3 SD 1.5 | `guoyww/animatediff-motion-adapter-v1-5-3` | `[320, 640, 1280, 1280]` | 16 |
+| SDXL beta | `guoyww/animatediff-motion-adapter-sdxl-beta` | `[320, 640, 1280]` | 12 |
 
-V3 config:
-```jsonc
-{
-  "block_out_channels":              [320, 640, 1280, 1280],  // SD 1.5 channels
-  "motion_layers_per_block":         2,
-  "motion_max_seq_length":           32,   // hard frame-count cap
-  "motion_mid_block_layers_per_block": 1,
-  "motion_norm_num_groups":          32,
-  "motion_num_attention_heads":      8,
-  "use_motion_mid_block":            false  // V3 skips this; V1/V2 use it
-}
-```
+Both share the same `MotionAdapterConfig` schema. The only meaningful
+difference is `block_out_channels`, which matches each base UNet's
+block layout. Adapter weights download to
+`$PLAKAT_CACHE_DIR/huggingface/hub/` on first use (~1.4 GB for V3,
+~1.5 GB for SDXL beta).
 
 ### Per-block motion modules
 
-For V3 + SD 1.5: **16 motion modules total** = 4 down-blocks × 2
-layers + 4 up-blocks × 2 layers + 0 mid-block.
+Each `motion_modules.{j}` slot in the safetensors corresponds to
+one `TemporalTransformer`:
 
-Each module is a `TemporalTransformer`:
 - `GroupNorm` → `Linear` proj_in
-- N transformer blocks, each with:
-  - LayerNorm + temporal self-attention (across the F dimension)
-  - LayerNorm + cross-attention (identity in V3 — motion is text-agnostic)
-  - LayerNorm + GEGLU FFN
+- One inner `transformer_blocks.0`:
+  - `norm1` + `attn1` — temporal self-attention across the frame axis
+  - `norm2` + `attn2` — second attention slot (identity in V3/SDXL beta
+    since motion is text-agnostic)
+  - `norm3` + GEGLU FFN
 - `Linear` proj_out
-- Learnable positional embedding (`pe.weight`, shape `(1, 32, channels)`)
+- Learnable positional embedding (`pos_embed.pe`, shape `(1, 32, channels)`)
 
-Forward: `(B*F, C, H, W) → (B*H*W, F, C) → attention across F → (B*F, C, H, W)` + residual.
+The config field `motion_layers_per_block` (= 2) means **two
+`motion_modules.{j}` slots per UNet block**, not two inner
+transformer_blocks. Each motion module has exactly one
+`transformer_blocks.0`.
 
-### Vendored SD 1.5 UNet (`Sd15MotionUNet`)
+Forward shape: `(B*F, C, H, W) → (B*H*W, F, C) → attention across
+F → (B*F, C, H, W)` + residual.
 
-Outer UNet structure vendored from candle's stock SD 1.5 UNet
-(~580 LOC including tests). Reuses upstream block types
-(`CrossAttnDownBlock2D`, etc.) and splices motion modules **at the
-output of each down-/up- block**.
+### Block-boundary splice
 
-**Scope cap**: motion at block output boundaries (not interleaved
-per resnet+attn layer like the faithful diffusers
-`UNetMotionModel`). The faithful splice would need re-vendoring
-the block types themselves (~800 more LOC). v0.26.0 ships the
-coarser splice; v0.26.1 evaluates whether quality requires the
-full block vendoring.
+Both `Sd15MotionUNet` and `SdxlUNet2DConditionModel::forward_with_motion`
+splice motion modules at the **output boundary** of each down/up
+block. Per-block motion modules apply sequentially (in V3 / SDXL
+beta: two per block).
 
-**Parity property**: `forward_with_motion(..., motion_modules: None, ...)` is
-bit-identical to candle's stock SD 1.5 UNet. Verified by the
-`empty_motion_modules_behaves_like_none` test in
-`src/pipelines/sd15_motion_unet.rs`.
+**Tradeoff vs the faithful diffusers `UNetMotionModel`** (which
+interleaves motion modules per resnet+attn layer inside each block):
+fewer LOC vendored, simpler parity test (`motion_modules: None` is
+bit-identical to the stock UNet), but the skip-connection residuals
+saved from inside each down block are not motion-aware. Real-world
+quality validation against this approximation is the user-machine
+acceptance step — escalation to per-layer vendoring lives in the
+v0.27 RFC §3.2 escalation budget.
 
 ### Motion LoRAs
 
-Motion LoRAs from the community (e.g. `guoyww/animatediff-motion-lora-zoom-in`)
-target the motion adapter's attention tensors. They use bare
-PEFT-style keys (no `lora_unet_` / `text_encoder.` prefix):
+Motion LoRAs from the community (e.g.
+`guoyww/animatediff-motion-lora-zoom-in`) target the motion adapter's
+attention tensors. They use bare PEFT-style keys (no `lora_unet_` /
+`text_encoder.` prefix):
 
 ```text
-down_blocks.0.motion_modules.0.temporal_transformer
-  .transformer_blocks.0.attention_blocks.0.to_q
+down_blocks.0.motion_modules.0.transformer_blocks.0.attn1.to_q
   .lora.{down,up}.weight
 ```
 
-Loaded via the existing `MergeTarget::MOTION_ADAPTER` variant of
+Loaded via the `MergeTarget::MOTION_ADAPTER` variant of
 `merge_loras_into_weights`. The merged safetensors lands in a
 detached tempfile (`NamedTempFile::keep()`) that lives for the
 `MotionAdapter`'s lifetime; OS reclaims at process exit.
@@ -128,20 +143,82 @@ grammar as `--lora`:
 - `civitai-version:NNNNNN:0.8`
 - `/local/path/file.safetensors:0.6`
 
-## Frame budget
+### ControlNet conditioning (v0.27 phases 3 + 4)
 
-- **Default**: 16 frames at 8 fps (AnimateDiff's training window;
-  2-second loop). Per RFC Q3.
-- **Hard cap**: 32 frames (V3's `motion_max_seq_length`). The
-  positional embedding only has 32 rows; beyond that, the loader
-  bails loud.
+Single conditioning image, same hint applied to every frame.
+
+The pipeline pre-tiles the `(1, 3, H, W)` conditioning to the
+per-step batch (`2F` with CFG, `F` without) before the denoise
+loop. Each step runs ControlNet once at full batch with the
+replicated latents + replicated text embeddings (SDXL also gets
+pooled + add_time_ids), producing down + mid residuals that plug
+straight into the motion UNet's existing residual hooks.
+
+Multi-conditioner is honoured by the existing
+`pipelines::controlnet::sum_controlnet_residuals` helper but isn't
+wired through `--animatediff` yet — v0.27 ships single-CN only.
+Extras log a warning and are skipped.
+
+CLI flags:
+| Flag | Purpose |
+|---|---|
+| `--control KIND` | `depth` / `canny` / `openpose` / `lineart` / `softedge` |
+| `--control-image PATH` | Pre-rendered conditioning |
+| `--control-from PATH` | Auto-annotate this image (mutex with `--control-image`) |
+| `--control-strength F` | Residual scale (default 1.0) |
+
+### Long-form sliding window (v0.27 phases 5 + 6)
+
+V3's `motion_max_seq_length = 32` is a hard cap on a single window —
+the positional embedding only has 32 rows. Long-form mode chains
+overlapping windows with linear-ramp latent-space blend:
+
+```
+total_frames = 64, window_size = 16, window_overlap = 4
+↓
+window 0: frames 0..16   (frames 12..16 overlap with window 1)
+window 1: frames 12..28  (frames 24..28 overlap with window 2)
+window 2: frames 24..40  (frames 36..40 overlap with window 3)
+window 3: frames 36..52  (frames 48..52 overlap with window 4)
+window 4: frames 48..64
+```
+
+Per-window seed: `seed + win_i * window_size`. Distinct noise per
+window plus the blended overlap region produces visual continuity
+across boundaries.
+
+Blend math (linear ramp; k = 0..overlap):
+```
+t = (k + 1) / (overlap + 1)
+out[k] = (1 - t) * existing[k] + t * new[k]
+```
+Endpoint clipping (1/(N+1) and N/(N+1) rather than 0 and 1) keeps
+both sides contributing at the seam.
+
+CLI flags:
+| Flag | Default | Purpose |
+|---|---|---|
+| `--frames N` | 16 | Total output frames; `> --window-size` engages sliding |
+| `--window-size W` | 16 | Per-window frame count; must be ≤ 32 (V3 cap) |
+| `--window-overlap O` | 4 | Cross-fade region in frames; must be < `--window-size` |
+
+When `--frames ≤ --window-size`, sliding mode is a thin pass-through
+to single-window inference (no overhead).
+
+**Quality caveat (RFC §11)**: this is Approach B from the RFC
+design space (per-window independent denoising + post-hoc latent
+blend). FreeNoise / FreeInit style shared-noise schemes are
+deferred to v0.28+ if seams are visibly bad on real prompts.
 
 ## Output formats
+
+Every animate mode (prompt-lerp + AnimateDiff, SD 1.5 + SDXL,
+single-window + long-form) accepts `--format FMT`:
 
 | `--format` | Effect | Requires |
 |---|---|---|
 | `frames` (default) | `<out>/frame-NNNN.png` per frame | nothing |
-| `gif` | + animated GIF via the `image` crate's GIF encoder | nothing |
+| `gif` | + animated GIF via the `image` crate | nothing |
 | `mp4` | + MP4 via ffmpeg (libx264 + yuv420p + faststart) | ffmpeg on `$PATH` |
 | `webm` | + WebM via ffmpeg (libvpx-vp9 + CRF 30) | ffmpeg on `$PATH` |
 | `all` | every format above | ffmpeg on `$PATH` |
@@ -151,27 +228,52 @@ Install ffmpeg:
 - Ubuntu: `apt install ffmpeg`
 - Windows: `scoop install ffmpeg`
 
+## Memory budget
+
+Approximate peak VRAM for 16 frames × bf16 on GPU:
+
+| Backbone | 512² | 768² | 1024² |
+|---|---|---|---|
+| SD 1.5 + V3 | ~9 GB | ~14 GB | ~22 GB |
+| SDXL + beta | ~14 GB | ~20 GB | ~30 GB |
+| SD 1.5 + V3 + CN | ~12 GB | ~18 GB | OOM on 24 GB |
+| SDXL + beta + CN | ~18 GB | ~25 GB | OOM on 24 GB |
+
+Tactics if you OOM:
+- Drop frame count (16 → 8)
+- Drop resolution (1024² → 768² or 512²)
+- Drop the ControlNet
+- Use `--window-size 8 --window-overlap 2` for long-form to halve
+  the per-window batch
+
 ## Limitations
 
-- **SD 1.5 only**. SDXL motion adapters exist
-  (`guoyww/animatediff-motion-adapter-sdxl-beta`) but are less
-  mature; deferred to v0.27.
-- **16-frame training window**. Up to 32 frames work (max_seq_length),
-  but quality may degrade past 16 since that's where V3 was trained.
-- **Long-form (>32 frames)**: not in scope. Use HotShot-XL or
-  similar separate architecture.
-- **AnimateDiff + ControlNet**: not wired. Per-frame temporal-coherent
-  control signals would need new infrastructure. v0.27+ candidate.
-- **Multi-GPU**: single-GPU only. SD 1.5 + 1.4 GB adapter + N-frame
-  latent buffer fits in 12 GB without sharding.
+- **No SD 2.1 / Flux / SD3 motion adapters** upstream. SD 1.5 +
+  SDXL only.
+- **Single ControlNet per run**. Multi-CN sum exists in
+  `sum_controlnet_residuals` but isn't wired through animate yet.
+- **Per-frame video control deferred**. v0.27 ships
+  same-hint-every-frame conditioning; video-to-video (a depth
+  video as control) is v0.28+ territory.
+- **No img2img / inpaint hooks** on the animate path. Use
+  `plakat generate` / `plakat img2img` for those if you need a
+  single frame with the full adapter stack.
+- **Block-boundary motion splice** (not faithful per-layer
+  diffusers `UNetMotionModel`). Documented quality concern in
+  RFC §3.2; upgrade path budgeted.
 
 ## See also
 
+- [`RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md`](RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md)
+  — v0.27 design doc, four locked decisions, 8-phase plan.
 - [`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md)
-  — design doc, eight locked decisions, the cycle-cut tree.
+  — v0.26 infrastructure RFC, the eight original AnimateDiff
+  decisions.
 - [`Tutorials/ANIMATE_TUTORIAL.md`](Tutorials/ANIMATE_TUTORIAL.md)
-  — narrative walkthrough (v0.20 lerp mode + v0.26 AnimateDiff mode).
+  — narrative walkthrough (prompt-lerp + AnimateDiff).
 - [AnimateDiff paper (Guo et al., 2023)](https://arxiv.org/abs/2307.04725)
   — original architecture.
 - [`guoyww/animatediff-motion-adapter-v1-5-3`](https://huggingface.co/guoyww/animatediff-motion-adapter-v1-5-3)
-  — V3 motion adapter weights.
+  — V3 SD 1.5 adapter.
+- [`guoyww/animatediff-motion-adapter-sdxl-beta`](https://huggingface.co/guoyww/animatediff-motion-adapter-sdxl-beta)
+  — SDXL beta adapter.

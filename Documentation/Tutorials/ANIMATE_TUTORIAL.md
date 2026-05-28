@@ -18,8 +18,7 @@ and the trade-offs between frame count + step count + size.
   and the relationship between seed and noise.
 - A working `plakat generate` against SD 1.5 / SD 2.1 / SDXL or
   Flux Dev / Schnell. The animate path supports the full SD
-  family plus Flux Dev / Schnell as of v0.20; SD3 / 3.5 is
-  deferred (their three-encoder lerp needs separate machinery,
+  family plus Flux Dev / Schnell (v0.20) and SD3 / 3.5 (v0.26;
   see §9).
 - ~3 GB free for the SD 1.5 weights on first run (one-time cost);
   ~7 GB for SDXL; ~24 GB for Flux Dev BF16.
@@ -165,12 +164,12 @@ morph anchored to that composition.
 applies to every frame. Useful for keeping the morph cleaner
 through the noisy midpoints.
 
-**No LoRA / ControlNet / refiner in animate.** The animate path
-runs a narrow denoise loop without those adapters wired —
-keeping the implementation simple. If you need them, generate
-each frame manually via `plakat generate` and bundle into a GIF
-externally (the `image` crate's GIF encoder is what plakat uses
-internally).
+**No LoRA / refiner on the prompt-lerp path.** The §1-§7 animate
+path runs a narrow denoise loop without those adapters wired —
+keeping the implementation simple. If you need them with prompt-
+lerp, generate each frame manually via `plakat generate` and
+bundle into a GIF externally. AnimateDiff mode (§10) supports
+motion LoRAs natively and ControlNet via `--control` (§11).
 
 **Frame metadata** (v0.18). Every `frame-NNNN.png` carries an
 Auto1111-compatible `parameters` PNG tEXt chunk plus a sibling
@@ -265,42 +264,139 @@ Works on all four SD3 variants: `sd35-medium`, `sd35-large`,
 `sd35-large-turbo`, `sd3-medium`. Memory budget matches the
 non-animate generate (SD3 weights + per-frame latent buffer).
 
-## 10. AnimateDiff (v0.26 infrastructure, v0.26.1 inference)
+## 10. AnimateDiff (v0.27 — feature complete)
 
-**Status note**: v0.26.0 ships the AnimateDiff *infrastructure*
-(motion adapter loader, temporal modules, vendored UNet with
-motion splice, motion LoRA composition, output formats). The
-*inference dispatch* — the actual N-frame scheduler loop —
-closes in **v0.26.1**. Calling `--animatediff` today loads the
-full motion stack successfully then bails with a clear deferral
-message. Once v0.26.1 ships, the surface below is what works:
+Different from the §1-§7 prompt-lerp morph mode. AnimateDiff uses
+a downloaded motion adapter that adds **temporal attention** to the
+SD UNet — every frame's denoise gets to see every other frame's
+denoise state through the F dimension, producing motion that
+holds together across frames rather than morphing between
+independent renders.
+
+v0.27 ships the full AnimateDiff picture for SD 1.5 + SDXL, both
+with ControlNet and a sliding-window long-form mode:
 
 ```bash
-# Motion-coherent N-frame generation (different from the prompt-lerp
-# morph mode above — single prompt, with temporal attention).
+# SD 1.5 baseline — 16-frame motion-coherent loop at 512²
 plakat animate --animatediff --model sd15 \
-    --from "a watercolor cottage at dawn" \
-    --frames 16
+    --from "a watercolor cottage at dawn, gentle wind" \
+    --frames 16 --format mp4
 
-# Stack a motion LoRA (zoom-in, pan-left, etc.)
+# SDXL at training resolution — same flags, larger output
+plakat animate --animatediff --model sdxl \
+    --from "a knight in a forest, oil painting" \
+    --frames 16 --size 1024x1024 --format mp4
+
+# Motion LoRA: ride a zoom-in trajectory
 plakat animate --animatediff --model sd15 \
-    --from "a knight in a forest" \
-    --motion-lora civitai-version:67890:0.8
+    --from "a wizard's tower at sunset" \
+    --motion-lora hf:guoyww/animatediff-motion-lora-zoom-in:0.8 \
+    --frames 16 --format mp4
 
-# New output formats (work on every animate mode, not just AnimateDiff)
-plakat animate --animatediff --model sd15 --from "..." --format mp4
-plakat animate --animatediff --model sd15 --from "..." --format all  # GIF + MP4 + WebM + frames
+# Stack motion LoRAs (the per-spec :scale stacks with --motion-lora-scale)
+plakat animate --animatediff --model sd15 --from "..." \
+    --motion-lora hf:guoyww/animatediff-motion-lora-pan-left:0.7 \
+    --motion-lora hf:guoyww/animatediff-motion-lora-zoom-in:0.5
 ```
 
-Hard limits in V3: SD 1.5 only (SDXL motion adapter v0.27),
-32-frame `motion_max_seq_length`, no ControlNet, no img2img.
-See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
-full reference + cycle-cut roadmap.
+Hard frame-per-window cap: 32 (`motion_max_seq_length`). Default
+window is 16 frames (where V3 was trained). For longer outputs,
+see §13.
 
-## 11. `--format` flag (v0.26)
+Cold-cache download: ~1.4 GB for V3 SD 1.5, ~1.5 GB for SDXL beta.
+Cached afterward under `$PLAKAT_CACHE_DIR/huggingface/hub/`.
+
+## 11. AnimateDiff + ControlNet (v0.27)
+
+The same conditioning signal applies to every frame — depth map,
+canny edges, openpose skeleton, lineart, or HED softedge. Per-frame
+video control (a depth video as guide) is v0.28+ territory; v0.27
+ships single-image-applied-to-every-frame.
+
+```bash
+# Depth-guided motion (camera holds, subject moves through fixed scene)
+plakat animate --animatediff --model sd15 \
+    --from "a fox in a snowy meadow" \
+    --control depth --control-image ./depth.png \
+    --frames 16 --format mp4
+
+# Auto-annotate the conditioning from a source photo
+plakat animate --animatediff --model sd15 \
+    --from "a watercolor of {SUBJECT}" \
+    --control canny --control-from ./reference.jpg \
+    --frames 16 --format mp4
+
+# SDXL with strength dial
+plakat animate --animatediff --model sdxl \
+    --from "a knight standing in a forest, oil painting" \
+    --control depth --control-image ./depth.png --control-strength 0.75 \
+    --frames 16 --size 1024x1024 --format mp4
+```
+
+ControlNet runs at the full per-step batch (2F with CFG = 32 for 16
+frames), which is the main memory-driver beyond the motion UNet
+itself. If you OOM at 1024² + CN, drop to 768² first, then to
+`--frames 8`, then drop the ControlNet.
+
+Five kinds supported: `depth`, `canny`, `openpose`, `lineart`,
+`softedge`. The CN model picker resolves automatically based on
+`--model` (SD 1.5 → lllyasviel + control_v11 family; SDXL → official
+SDXL CN variants).
+
+## 12. Long-form AnimateDiff via sliding window (v0.27)
+
+V3's 32-frame `motion_max_seq_length` is a hard cap on a single
+window. For longer outputs, `plakat animate --animatediff` chains
+overlapping windows and blends them in latent space:
+
+```bash
+# 64-frame clip (~4-second at 16 fps): four windows, 4-frame overlap
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --format mp4
+```
+
+The math:
+
+```
+stride = window_size - window_overlap     # 12 for the defaults
+windows: [0..16), [12..28), [24..40), [36..52), [48..64)
+overlap region blended linearly per latent slot
+```
+
+Each window gets its own seed (`seed + win_i * window_size`) so
+different windows produce distinct noise patterns; the blended
+overlap region preserves visual continuity across boundaries.
+
+Practical reach: ~64 frames produces clean output reliably;
+~128–256 frames work but motion drift accumulates (the model
+doesn't see past the current window). For longer-than-256, expect
+to see the scene gradually re-converge to the prompt's "central"
+interpretation.
+
+Tuning:
+- **Default overlap (4)** is the community sweet spot. Halving to 2
+  speeds up generation (less redundant compute) at the cost of
+  more visible seams.
+- **Window size 16** is what V3 was trained on. Higher (24, 32)
+  works but quality starts degrading; lower (8) gives smaller per-
+  window memory but more windows total.
+- Long-form composes with ControlNet — the same conditioning image
+  applies to every frame across every window.
+
+When `--frames ≤ --window-size`, long-form is a pass-through to the
+single-window path (zero overhead from these flags).
+
+See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
+full reference + memory budget table + the architecture details
+(motion module layout, block-boundary splice tradeoff,
+ControlNet residual flow).
+
+## 13. `--format` flag (v0.26)
 
 Every animate mode (prompt-lerp on SD-family / Flux / SD3 +
-AnimateDiff) accepts `--format FMT`:
+AnimateDiff in every configuration) accepts `--format FMT`:
 
 | `--format` | Effect | Requires |
 |---|---|---|
@@ -316,8 +412,9 @@ ffmpeg`, Windows `scoop install ffmpeg`.
 `--format gif` is equivalent to passing `--gif` (the legacy
 v0.20 flag still works). When both are set, `--format` wins.
 
-## 12. Limitations
+## 14. Limitations
 
+**Prompt-lerp mode** (§1-§9):
 - **SDXL** lerps the dual CLIP-L + CLIP-G hidden states plus the
   pooled `add_text_embeds` micro-conditioning each frame; expect
   ~2-3× the per-frame cost of SD 1.5 in exchange for SDXL's
@@ -326,8 +423,21 @@ v0.20 flag still works). When both are set, `--format` wins.
 - **No keyframe-style trajectories.** It's a single A → B lerp,
   not a multi-keyframe spline. Chain multiple `plakat animate`
   runs + concat with ffmpeg for richer trajectories.
-- **AnimateDiff inference** lands in v0.26.1; v0.26.0 ships the
-  infrastructure + CLI surface only.
+
+**AnimateDiff mode** (§10-§12):
+- **SD 1.5 + SDXL only.** No SD 2.1 / Flux / SD3 motion adapters
+  exist upstream.
+- **Single ControlNet per run.** Multi-CN sum isn't wired through
+  animate yet; use one conditioning at a time.
+- **Same conditioning every frame.** Per-frame video control
+  (e.g. a depth video) is v0.28+ territory.
+- **No img2img / inpaint** on the animate path. Use
+  `plakat generate` / `plakat img2img` for those if you need a
+  single frame with the full adapter stack.
+- **Block-boundary motion splice** rather than the faithful
+  diffusers per-resnet+attn-layer splice. Quality concern
+  documented in RFC §3.2; upgrade path budgeted in the v0.27
+  cycle.
 
 ## Where to next
 
@@ -336,8 +446,9 @@ v0.20 flag still works). When both are set, `--format` wins.
 - **`GENERATE.md`** — full `plakat animate` flag reference (every
   knob covered in this tutorial is also documented there for
   copy-paste lookup).
-- **`Documentation/ANIMATEDIFF.md`** (v0.26) — AnimateDiff
-  architecture, motion adapter internals, cycle-cut roadmap.
+- **`Documentation/ANIMATEDIFF.md`** (v0.27) — AnimateDiff
+  architecture, motion adapter internals, ControlNet + long-form
+  reference, memory budget table.
 - **External tooling** — ffmpeg for MP4 / WebM bundling
   (now wired natively via `--format`), imagemagick `montage`
   for grids, gifski for higher-quality GIFs than the `image`
