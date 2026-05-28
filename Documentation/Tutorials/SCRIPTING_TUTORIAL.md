@@ -776,7 +776,68 @@ scenario LoRA pipeline has two stages and needs careful
 integration). The prompt prefix / sampler hints still apply in
 scenarios — set `loras:` explicitly if you want a specific LoRA.
 
-## 13. The full word reference
+## 13. What's new in v0.26
+
+v0.26 closes every v0.25 carry. From the Bund perspective:
+
+- **`plakat.metadata.write`** — new word; re-attaches metadata
+  from a handle to an existing file. Pairs with `plakat.save`
+  which now writes A1111 tEXt + JSON sidecar automatically.
+- **`plakat.upscale`** — accepts Real-ESRGAN method strings
+  (`"real-esrgan-x2"` / `"real-esrgan-x4"` / `"real-esrgan-anime-x4"`)
+  in addition to the integer Lanczos scales.
+- **`plakat.look.*` / `plakat.genre.*` on Flux + SD3** — the
+  v0.25 SD-family-only apply now runs on every pipeline family.
+  Auto-LoRA discovery filters by base family (`BaseFamily::Flux`
+  / `BaseFamily::Sd3`).
+- **`plakat.stylize` cache slot** — the IP-Adapter pipeline now
+  caches across multiple `plakat.stylize` calls in a script
+  (mirror of the v0.23 SdT2i pattern).
+- **`plakat.generate` populates metadata** — the SD-family
+  generate path now pushes a `GenerationMetadata` alongside
+  every image, so `plakat.save` emits the tEXt + sidecar for
+  free.
+
+Word count: 48 → 49 (`plakat.metadata.write` is the only
+addition).
+
+### Example: full v0.26 surface
+
+```bund
+"sd15" plakat.load
+"watercolor" plakat.look.apply
+
+// Generate. plakat.save now writes:
+//   cottage.png + cottage.json (sidecar) + A1111 tEXt chunk in the PNG.
+"a cottage at dawn" plakat.generate     // handle 1, with metadata
+"cottage.png" plakat.save
+
+// Upscale via ML. Handle 2 has no metadata (Lanczos / Real-ESRGAN
+// is a pure image op).
+1 "real-esrgan-x4" plakat.upscale       // handle 2, x4 upscaled
+"cottage-4k.png" plakat.save            // plain PNG, no sidecar
+
+// Re-attach handle 1's metadata to the 4K file:
+1 "cottage-4k.png" plakat.metadata.write
+// Now cottage-4k.png has the A1111 tEXt chunk + cottage-4k.json
+// sidecar describing the original prompt / seed / steps / etc.
+```
+
+### AnimateDiff scope note
+
+v0.26.0 ships AnimateDiff **infrastructure** (motion adapter
+loader, temporal-attention modules, vendored SD 1.5 UNet with
+motion splice, motion LoRA composition, CLI surface, GIF / MP4 /
+WebM / PNG-frame output formats). The end-to-end inference
+dispatch closes in **v0.26.1** — calling `--animatediff` today
+loads the motion stack successfully then bails with a clear
+deferral message. The Bund scripting surface is unaffected;
+`plakat animate --animatediff` is a CLI-only feature.
+
+See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
+full reference + roadmap.
+
+## 14. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"

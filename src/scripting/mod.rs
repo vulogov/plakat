@@ -2428,6 +2428,118 @@ mod tests {
         assert!(params.negative.contains("photographic"));
     }
 
+    // v0.26 phase 13: composition tests for the v0.26 surface.
+
+    /// One script exercises every v0.26 addition + v0.25 surface
+    /// alongside (state-only — no model load, no network).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                ctx.loras.clear();
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                ctx.loaded_stylize = None;
+                ctx.config.offline_discovery = false;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.25 surface still works (looks + genres + offline)
+                "watercolor" plakat.look.apply
+                "anime"      plakat.genre.apply
+                "true" "offline_discovery" plakat.config.set
+            "#,
+            )
+            .unwrap();
+
+            // v0.26 phase 7-8 state: caching + metadata Vec are
+            // both initialized to empty/None.
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+                // v0.26 phase 7: loaded_stylize slot present + empty.
+                assert!(ctx.loaded_stylize.is_none());
+                // v0.26 phase 8: images_metadata parallel Vec exists.
+                assert_eq!(ctx.images.len(), ctx.images_metadata.len());
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.26 phase 8 round-trip: push_image_with_metadata creates
+    /// an entry retrievable via metadata_at. push_image (no
+    /// metadata) creates a None entry. Both interleave correctly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_metadata_vec_stays_parallel() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                // Push one image WITHOUT metadata.
+                let img1 = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([10, 10, 10])),
+                );
+                let h1 = ctx.push_image(img1);
+                assert_eq!(h1, 1);
+                // Push one image WITH metadata.
+                let img2 = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([20, 20, 20])),
+                );
+                let meta = crate::imaging::metadata::GenerationMetadata::new(
+                    "test", "sd15", 42u64, 20usize, 7.5f64, "default",
+                    8u32, 8u32,
+                );
+                let h2 = ctx.push_image_with_metadata(img2, meta);
+                assert_eq!(h2, 2);
+                // Vecs stay parallel + correct length.
+                assert_eq!(ctx.images.len(), 2);
+                assert_eq!(ctx.images_metadata.len(), 2);
+            })
+            .unwrap();
+            // metadata_at gives None for h1, Some for h2.
+            with_ctx(|ctx| {
+                assert!(ctx.metadata_at(1).unwrap().is_none());
+                let m = ctx.metadata_at(2).unwrap().expect("metadata");
+                assert_eq!(m.model, "sd15");
+                assert_eq!(m.seed, 42);
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.26 phase 9: plakat.upscale dispatch on string vs int
+    /// scale args. Lanczos path (int) round-trips via the synthetic
+    /// 8x8 image without needing network. ML path (string) parses
+    /// without trying to download.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_upscale_dispatch_int_vs_string() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([42, 42, 42])),
+                );
+                ctx.push_image(img);
+            })
+            .unwrap();
+
+            // Int scale → Lanczos. No network needed.
+            eval("1 2 plakat.upscale").unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.images.len(), 2);
+                assert_eq!(ctx.images[1].width(), 16);
+                assert_eq!(ctx.images[1].height(), 16);
+            })
+            .unwrap();
+        });
+    }
+
     /// Test-helper: serialises every test that needs the singleton
     /// context behind one shared init. Subsequent calls re-use the
     /// already-init'd singleton; only the *first* test through the
