@@ -466,100 +466,28 @@ impl AnimateDiffPipeline {
                 controls,
             );
         }
-        anyhow::ensure!(
-            window_size >= 1,
-            "--window-size must be ≥ 1 (got {window_size})"
-        );
-        anyhow::ensure!(
-            window_size <= self.max_frames,
-            "--window-size {window_size} exceeds AnimateDiff V3 max_seq_length ({})",
-            self.max_frames,
-        );
-        anyhow::ensure!(
-            window_overlap < window_size,
-            "--window-overlap {window_overlap} must be < --window-size {window_size}"
-        );
-        let stride = window_size - window_overlap;
-
-        crate::ui::progress::println(&format!(
-            "  long-form: total={total_frames}, window={window_size}, overlap={window_overlap} \
-             (stride={stride})"
-        ));
-
-        // Accumulated per-frame latents, one (1, 4, H/8, W/8) Tensor each.
-        let mut acc: Vec<Tensor> = Vec::with_capacity(total_frames);
-        let mut win_i = 0usize;
-        loop {
-            let win_start = win_i * stride;
-            if win_start >= total_frames {
-                break;
-            }
-            let this_window = (total_frames - win_start).min(window_size);
-            let win_seed = seed.wrapping_add((win_i as u64).wrapping_mul(window_size as u64));
-
-            tracing::info!(
-                target: "plakat",
-                "AnimateDiff long-form window {win_i}: frames [{win_start}, {}) seed={win_seed}",
-                win_start + this_window,
-            );
-
-            let win_latents = self.denoise_window(
-                prompt,
-                negative,
-                this_window,
-                win_seed,
-                width,
-                height,
-                steps,
-                guidance,
-                scheduler_kind,
-                controls,
-            )?;
-
-            // Split window latents into per-frame slices.
-            let per_frame: Vec<Tensor> = (0..this_window)
-                .map(|f| {
-                    win_latents
-                        .i((f..f + 1, .., .., ..))
-                        .map_err(anyhow::Error::from)
-                })
-                .collect::<Result<_>>()?;
-
-            // Blend the overlap region with already-accumulated frames.
-            let overlap_with_existing = acc.len().saturating_sub(win_start);
-            for k in 0..overlap_with_existing {
-                // Linear ramp: t goes from 1/(N+1) to N/(N+1) so the
-                // first overlap frame is weighted mostly by the
-                // existing window and the last overlap frame is
-                // weighted mostly by the new window. The endpoints
-                // are clamped away from 0 and 1 so neither side
-                // dominates entirely.
-                let t = (k as f64 + 1.0) / (overlap_with_existing as f64 + 1.0);
-                let existing = &acc[win_start + k];
-                let new = &per_frame[k];
-                let blended = ((existing * (1.0 - t))? + (new * t)?)?;
-                acc[win_start + k] = blended;
-            }
-            // Append the new-only tail.
-            for k in overlap_with_existing..this_window {
-                acc.push(per_frame[k].clone());
-            }
-
-            win_i += 1;
-            if win_start + this_window >= total_frames {
-                break;
-            }
-        }
-
-        anyhow::ensure!(
-            acc.len() == total_frames,
-            "internal: accumulated {} frames, expected {total_frames}",
-            acc.len()
-        );
-
-        // Concat per-frame slices into a single (total_frames, 4, H/8, W/8)
-        // Tensor for the shared VAE-decode helper.
-        let refs: Vec<&Tensor> = acc.iter().collect();
+        validate_long_form_window(window_size, window_overlap, self.max_frames)?;
+        let per_frame = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            seed,
+            |frames, win_seed| {
+                self.denoise_window(
+                    prompt,
+                    negative,
+                    frames,
+                    win_seed,
+                    width,
+                    height,
+                    steps,
+                    guidance,
+                    scheduler_kind,
+                    controls,
+                )
+            },
+        )?;
+        let refs: Vec<&Tensor> = per_frame.iter().collect();
         let merged = Tensor::cat(&refs, 0)?;
         self.decode_latents(&merged, total_frames)
     }
@@ -590,6 +518,114 @@ impl AnimateDiffPipeline {
         let hidden = self.text_encoder.forward(&ids_t)?;
         Ok(hidden.to_dtype(self.dtype)?)
     }
+}
+
+// ============================================================
+// v0.27 phase 5/6: shared sliding-window helpers.
+// ============================================================
+
+/// Validate long-form window parameters against the motion adapter's
+/// `motion_max_seq_length`. Shared between the SD 1.5 and SDXL
+/// AnimateDiff pipelines.
+fn validate_long_form_window(
+    window_size: usize,
+    window_overlap: usize,
+    max_seq_length: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        window_size >= 1,
+        "--window-size must be ≥ 1 (got {window_size})"
+    );
+    anyhow::ensure!(
+        window_size <= max_seq_length,
+        "--window-size {window_size} exceeds motion adapter max_seq_length ({max_seq_length})"
+    );
+    anyhow::ensure!(
+        window_overlap < window_size,
+        "--window-overlap {window_overlap} must be < --window-size {window_size}"
+    );
+    Ok(())
+}
+
+/// Stitch overlapping AnimateDiff windows into `total_frames` worth
+/// of per-frame latents via linear-ramp blend in latent space.
+///
+/// `denoise(frames, win_seed) -> Tensor` runs one window's denoise
+/// loop and returns `(frames, 4, H/8, W/8)` latents. The closure
+/// owns the per-pipeline arguments (prompt, size, steps, controls,
+/// etc.) — this helper only knows about frame indices and seeds.
+///
+/// Returns a `Vec<Tensor>` of length `total_frames` where each entry
+/// is one frame's `(1, 4, H/8, W/8)` latent slice, ready for
+/// `Tensor::cat` + VAE-decode by the caller.
+fn stitch_long_form<F>(
+    total_frames: usize,
+    window_size: usize,
+    window_overlap: usize,
+    seed: u64,
+    mut denoise: F,
+) -> Result<Vec<Tensor>>
+where
+    F: FnMut(usize, u64) -> Result<Tensor>,
+{
+    let stride = window_size - window_overlap;
+    crate::ui::progress::println(&format!(
+        "  long-form: total={total_frames}, window={window_size}, overlap={window_overlap} \
+         (stride={stride})"
+    ));
+
+    let mut acc: Vec<Tensor> = Vec::with_capacity(total_frames);
+    let mut win_i = 0usize;
+    loop {
+        let win_start = win_i * stride;
+        if win_start >= total_frames {
+            break;
+        }
+        let this_window = (total_frames - win_start).min(window_size);
+        let win_seed = seed.wrapping_add((win_i as u64).wrapping_mul(window_size as u64));
+
+        tracing::info!(
+            target: "plakat",
+            "AnimateDiff long-form window {win_i}: frames [{win_start}, {}) seed={win_seed}",
+            win_start + this_window,
+        );
+
+        let win_latents = denoise(this_window, win_seed)?;
+
+        let per_frame: Vec<Tensor> = (0..this_window)
+            .map(|f| {
+                win_latents
+                    .i((f..f + 1, .., .., ..))
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<_>>()?;
+
+        let overlap_with_existing = acc.len().saturating_sub(win_start);
+        for k in 0..overlap_with_existing {
+            // Linear ramp on (0,1) — endpoints clipped away from 0
+            // and 1 so neither side dominates the seam.
+            let t = (k as f64 + 1.0) / (overlap_with_existing as f64 + 1.0);
+            let existing = &acc[win_start + k];
+            let new = &per_frame[k];
+            let blended = ((existing * (1.0 - t))? + (new * t)?)?;
+            acc[win_start + k] = blended;
+        }
+        for k in overlap_with_existing..this_window {
+            acc.push(per_frame[k].clone());
+        }
+
+        win_i += 1;
+        if win_start + this_window >= total_frames {
+            break;
+        }
+    }
+
+    anyhow::ensure!(
+        acc.len() == total_frames,
+        "internal: stitched {} frames, expected {total_frames}",
+        acc.len()
+    );
+    Ok(acc)
 }
 
 // ============================================================
@@ -784,6 +820,39 @@ impl AnimateDiffSdxlPipeline {
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
     ) -> Result<Vec<DynamicImage>> {
+        let latents = self.denoise_window(
+            prompt,
+            negative,
+            frames,
+            seed,
+            width,
+            height,
+            steps,
+            guidance,
+            scheduler_kind,
+            controls,
+        )?;
+        self.decode_latents(&latents, frames)
+    }
+
+    /// v0.27 phase 6: denoise a single SDXL AnimateDiff window into
+    /// per-frame latents `(F, 4, H/8, W/8)`. Encapsulates the
+    /// SDXL scheduler loop so [`Self::generate`] (single window)
+    /// and [`Self::generate_long`] (sliding stitch) can share it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn denoise_window(
+        &self,
+        prompt: &str,
+        negative: &str,
+        frames: usize,
+        seed: u64,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
+    ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
             frames <= self.max_frames,
@@ -929,8 +998,17 @@ impl AnimateDiffSdxlPipeline {
         }
         bar.finish_and_clear();
 
-        // ---- per-frame VAE decode (SDXL scaling factor) ----
-        let vae_scale = 0.13025f64;
+        Ok(latents)
+    }
+
+    /// v0.27 phase 6: VAE-decode an `(F, 4, H/8, W/8)` latent stack
+    /// to `Vec<DynamicImage>` using the SDXL scaling factor.
+    fn decode_latents(
+        &self,
+        latents: &Tensor,
+        frames: usize,
+    ) -> Result<Vec<DynamicImage>> {
+        let vae_scale = 0.13025f64; // SDXL KL VAE scaling factor
         let mut images: Vec<DynamicImage> = Vec::with_capacity(frames);
         let decode = progress::step_bar(frames as u64, "VAE decode");
         for f in 0..frames {
@@ -950,8 +1028,66 @@ impl AnimateDiffSdxlPipeline {
             decode.inc(1);
         }
         decode.finish_and_clear();
-
         Ok(images)
+    }
+
+    /// v0.27 phase 6: long-form SDXL AnimateDiff via sliding window.
+    /// Same algorithm as the SD 1.5 variant ([`AnimateDiffPipeline::generate_long`])
+    /// — chains overlapping windows with linear-ramp latent blend.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_long(
+        &self,
+        prompt: &str,
+        negative: &str,
+        total_frames: usize,
+        window_size: usize,
+        window_overlap: usize,
+        seed: u64,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
+    ) -> Result<Vec<DynamicImage>> {
+        if total_frames <= window_size {
+            return self.generate(
+                prompt,
+                negative,
+                total_frames,
+                seed,
+                width,
+                height,
+                steps,
+                guidance,
+                scheduler_kind,
+                controls,
+            );
+        }
+        validate_long_form_window(window_size, window_overlap, self.max_frames)?;
+        let per_frame = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            seed,
+            |frames, win_seed| {
+                self.denoise_window(
+                    prompt,
+                    negative,
+                    frames,
+                    win_seed,
+                    width,
+                    height,
+                    steps,
+                    guidance,
+                    scheduler_kind,
+                    controls,
+                )
+            },
+        )?;
+        let refs: Vec<&Tensor> = per_frame.iter().collect();
+        let merged = Tensor::cat(&refs, 0)?;
+        self.decode_latents(&merged, total_frames)
     }
 
     /// Dual CLIP-L + CLIP-G encode → `(hidden_2048, pooled_1280)`.
@@ -1067,6 +1203,115 @@ mod tests {
             assert_eq!(img.width(), 64);
             assert_eq!(img.height(), 64);
         }
+    }
+
+    /// v0.27 phase 5/6: stitch_long_form schedules windows correctly,
+    /// blends overlap with linear ramp, and produces exactly
+    /// `total_frames` per-frame slices. Uses synthetic latent stacks
+    /// (constant-valued per window) so the blend math is easy to
+    /// verify.
+    #[test]
+    fn stitch_long_form_schedules_and_blends_correctly() {
+        let device = candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+        let total_frames = 24usize;
+        let window_size = 16usize;
+        let window_overlap = 4usize;
+
+        // Each window's denoise returns (frames, 1, 1, 1) filled with
+        // `window_index + 1.0` — distinct per window so the blend is
+        // visible in the output.
+        let mut window_idx = 0u32;
+        let per_frame = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            0,
+            |frames, _seed| {
+                let v = (window_idx as f32) + 1.0;
+                window_idx += 1;
+                let t = Tensor::full(v, (frames, 1, 1, 1), &device)
+                    .unwrap()
+                    .to_dtype(dtype)
+                    .unwrap();
+                Ok(t)
+            },
+        )
+        .expect("stitch");
+
+        assert_eq!(per_frame.len(), total_frames);
+        // Each entry is (1, 1, 1, 1).
+        for f in &per_frame {
+            assert_eq!(f.dims(), &[1, 1, 1, 1]);
+        }
+        // Window 0 covers frames 0..16 (constant = 1.0).
+        // Window 1 covers frames 12..24, blended into frames 12..16.
+        // Non-overlap zone of window 0 (frames 0..12): value 1.0.
+        for (f, frame) in per_frame.iter().enumerate().take(12) {
+            let v = frame.flatten_all().unwrap().to_vec1::<f32>().unwrap()[0];
+            assert!((v - 1.0).abs() < 1e-5, "frame {f}: expected 1.0, got {v}");
+        }
+        // Overlap zone: frames 12..16, k = 0..4, t = (k+1)/5.
+        // out = 1.0 * (1 - t) + 2.0 * t = 1 + t.
+        for k in 0..4 {
+            let t = (k as f32 + 1.0) / 5.0;
+            let expected = 1.0 + t;
+            let frame = &per_frame[12 + k];
+            let v = frame.flatten_all().unwrap().to_vec1::<f32>().unwrap()[0];
+            assert!(
+                (v - expected).abs() < 1e-5,
+                "blend frame {} (k={k}): expected {expected}, got {v}",
+                12 + k,
+            );
+        }
+        // Window 1 non-overlap zone: frames 16..24, value 2.0.
+        for f in 16..24 {
+            let v = per_frame[f]
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap()[0];
+            assert!((v - 2.0).abs() < 1e-5, "frame {f}: expected 2.0, got {v}");
+        }
+    }
+
+    /// stitch_long_form handles a truncated final window correctly
+    /// (total_frames not a multiple of stride).
+    #[test]
+    fn stitch_long_form_truncates_final_window() {
+        let device = candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+        // total=20, window=16, overlap=4 → stride=12, windows: [0..16),
+        // [12..20). The second window is truncated to 8 frames.
+        let mut window_idx = 0u32;
+        let mut requested: Vec<usize> = Vec::new();
+        let per_frame = stitch_long_form(
+            20,
+            16,
+            4,
+            0,
+            |frames, _seed| {
+                requested.push(frames);
+                let v = (window_idx as f32) + 1.0;
+                window_idx += 1;
+                Ok(Tensor::full(v, (frames, 1, 1, 1), &device)
+                    .unwrap()
+                    .to_dtype(dtype)
+                    .unwrap())
+            },
+        )
+        .expect("stitch");
+        assert_eq!(requested, vec![16, 8]);
+        assert_eq!(per_frame.len(), 20);
+    }
+
+    /// validate_long_form_window enforces the constraints.
+    #[test]
+    fn validate_long_form_window_rejects_bad_params() {
+        assert!(validate_long_form_window(0, 0, 32).is_err());
+        assert!(validate_long_form_window(33, 4, 32).is_err());
+        assert!(validate_long_form_window(16, 16, 32).is_err());
+        assert!(validate_long_form_window(16, 4, 32).is_ok());
     }
 
     /// Frame-count out-of-range bails loud without doing any work.
