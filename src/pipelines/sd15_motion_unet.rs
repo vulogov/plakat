@@ -36,7 +36,7 @@
 //! Same UNet weights load — only `forward_with_motion` differs
 //! from the stock SD 1.5 UNet.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use candle_core::Tensor;
 use candle_nn::{self as nn, Conv2d, Module, conv2d};
 use candle_transformers::models::stable_diffusion::{
@@ -49,7 +49,7 @@ use candle_transformers::models::stable_diffusion::{
     },
 };
 
-use super::motion_module::{BlockKind, MotionAdapterModules, ModuleAddr};
+use super::motion_module::{BlockKind, MotionAdapterModules, apply_block_motion};
 
 /// Hard-coded SD 1.5 UNet config. Mirrors candle's
 /// `StableDiffusionConfig::v1_5(...).unet` (which is private — same
@@ -474,36 +474,6 @@ impl Sd15MotionUNet {
         let xs = self.conv_out.forward(&xs)?;
         Ok(xs)
     }
-}
-
-/// Apply every motion module for `(kind, block_idx)` sequentially
-/// to `xs`. V3 has `motion_layers_per_block = 2` modules per block;
-/// they apply one after the other.
-fn apply_block_motion(
-    xs: Tensor,
-    kind: BlockKind,
-    block_idx: usize,
-    mm: &MotionAdapterModules,
-    num_frames: usize,
-) -> Result<Tensor> {
-    let mut out = xs;
-    for layer_idx in 0..mm.config.motion_layers_per_block {
-        let addr = ModuleAddr {
-            kind,
-            block_idx,
-            layer_idx,
-        };
-        if let Some(module) = mm.get(addr) {
-            out = module
-                .forward(&out, num_frames)
-                .with_context(|| format!("applying motion module at {addr:?}"))?;
-        }
-        // Address not present → silently skip. Happens when the
-        // adapter's per-block count doesn't reach `layer_idx` for
-        // this block (won't happen with V3 + the standard SD 1.5
-        // config since both have 4 blocks × 2 layers).
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
