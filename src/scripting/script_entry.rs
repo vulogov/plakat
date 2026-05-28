@@ -1217,7 +1217,68 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                      plakat.generate on SD3."
                 );
             }
-            let req = build_sd3_gen_request(ctx, prompt, tmp_path.clone(), None);
+
+            // v0.26 phase 11: --look / --genre apply + auto-LoRA
+            // discovery on the SD3 generate path. Mirrors the
+            // v0.25 phase 8 SD-family + v0.26 phase 10 Flux blocks.
+            // SD3 supports CFG, so unlike Flux the preset's
+            // negative_extras IS threaded into req.negative below.
+            let mut effective_prompt = prompt.to_string();
+            let mut look_neg_extras = String::new();
+            if ctx.look_name.is_some() || ctx.genre_name.is_some() {
+                use crate::pipelines::scheduler::SchedulerKind;
+                use crate::preset::{GenerationParams, apply_presets_with_discovery};
+                use std::str::FromStr;
+
+                let look_name = ctx.look_name.clone();
+                let genre_name = ctx.genre_name.clone();
+                let offline = ctx.config.offline_discovery;
+                let base =
+                    crate::preset::discovery::BaseFamily::from_model_arg(&alias);
+                let mut params = GenerationParams {
+                    prompt: effective_prompt.clone(),
+                    negative: String::new(),
+                    steps: (ctx.config.steps != 28).then_some(ctx.config.steps),
+                    guidance: ((ctx.config.guidance - 7.5).abs() >= f64::EPSILON)
+                        .then_some(ctx.config.guidance),
+                    scheduler: (!matches!(
+                        ctx.config.scheduler,
+                        SchedulerKind::Default
+                    ))
+                    .then(String::new),
+                };
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(apply_presets_with_discovery(
+                    look_name.as_deref(),
+                    genre_name.as_deref(),
+                    offline,
+                    base,
+                    &mut params,
+                    &mut ctx.loras,
+                ))?;
+                effective_prompt = params.prompt;
+                look_neg_extras = params.negative;
+                if let Some(s) = params.steps {
+                    ctx.config.steps = s;
+                }
+                if let Some(g) = params.guidance {
+                    ctx.config.guidance = g;
+                }
+                if let Some(sched) = params.scheduler.filter(|s| !s.is_empty()) {
+                    ctx.config.scheduler = SchedulerKind::from_str(&sched)
+                        .unwrap_or(ctx.config.scheduler);
+                }
+            }
+
+            let mut req =
+                build_sd3_gen_request(ctx, &effective_prompt, tmp_path.clone(), None);
+            // SD3 uses CFG — append look/genre negative_extras
+            // onto req.negative (which build_sd3_gen_request just
+            // set from ctx.config via resolve_negative).
+            if !look_neg_extras.is_empty() {
+                req.negative =
+                    crate::style::combine_negative(&req.negative, &look_neg_extras);
+            }
             // v0.24 phase 8: lazy-annotate from= CN specs at this
             // call's width/height. Same two-step pattern as Flux:
             // collect annotation paths, then apply via the loaded
