@@ -7,3 +7,4 @@ pub mod preprocess;
 pub mod sizes;
 pub mod transparent;
 pub mod upscale;
+pub mod video;

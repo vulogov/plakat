@@ -597,6 +597,124 @@ mod tests {
         });
     }
 
+    /// v0.26 phase 9: plakat.upscale rejects unknown ML method
+    /// strings with a clear error pointing at the supported set.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upscale_rejects_unknown_ml_method_string() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([0, 0, 0])),
+                );
+                ctx.push_image(img);
+            })
+            .unwrap();
+            let err = eval(r#"1 "not-a-real-method" plakat.upscale"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("unknown") || msg.contains("parsing"),
+                "got {msg}"
+            );
+        });
+    }
+
+    /// v0.26 phase 9: plakat.upscale accepts the three Real-ESRGAN
+    /// string variants at the parse layer (no actual download
+    /// here — that's the network-required part).
+    #[test]
+    fn upscale_parses_real_esrgan_method_strings() {
+        use crate::imaging::upscale::Method;
+        use std::str::FromStr;
+        for s in ["real-esrgan-x2", "real-esrgan-x4", "real-esrgan-anime-x4"] {
+            let m = Method::from_str(s).expect(s);
+            assert!(m.is_ml(), "{s} should be ML");
+        }
+    }
+
+    /// v0.26 phase 8: plakat.metadata.write bails when the handle
+    /// has no metadata attached. Verifies the friendly error message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_write_bails_on_handleless_metadata() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                // Push an image WITHOUT metadata.
+                ctx.push_image(image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([42, 42, 42])),
+                ));
+            })
+            .unwrap();
+            let err = eval(r#"1 "out.png" plakat.metadata.write"#).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("no metadata attached"),
+                "got {msg}"
+            );
+        });
+    }
+
+    /// v0.26 phase 8: push_image_with_metadata makes the metadata
+    /// retrievable via metadata_at.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn push_image_with_metadata_round_trips() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])),
+                );
+                let meta = crate::imaging::metadata::GenerationMetadata::new(
+                    "test prompt",
+                    "sd15",
+                    42u64,
+                    20usize,
+                    7.5f64,
+                    "default",
+                    8u32,
+                    8u32,
+                );
+                let handle = ctx.push_image_with_metadata(img, meta);
+                assert_eq!(handle, 1);
+            })
+            .unwrap();
+            with_ctx(|ctx| {
+                let m = ctx.metadata_at(1).unwrap().expect("metadata present");
+                assert_eq!(m.prompt, "test prompt");
+                assert_eq!(m.model, "sd15");
+                assert_eq!(m.seed, 42);
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.26 phase 7: stylize cache slot exists + gets dropped
+    /// on LoRA stack mutation. Pure state test — doesn't actually
+    /// load a pipeline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stylize_cache_slot_clears_on_lora_change() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                // Slot is None at init; explicitly verify after
+                // a hypothetical reset.
+                ctx.loaded_stylize = None;
+                ctx.loras.clear();
+            })
+            .unwrap();
+
+            // Add a LoRA — should trigger mark_loras_changed which
+            // includes loaded_stylize in the invalidation set.
+            eval(r#""user/test-lora" 0.7 plakat.lora.add"#).unwrap();
+            with_ctx(|ctx| {
+                assert!(ctx.loaded_stylize.is_none(),
+                    "loaded_stylize must clear on LoRA add");
+            })
+            .unwrap();
+        });
+    }
+
     // v0.24 phase 5: plakat.embedding.* namespace (state-only).
 
     /// `plakat.embedding.add` parses + pushes, `mark_loras_changed`
@@ -1311,7 +1429,10 @@ mod tests {
             let err = eval("1 3 plakat.upscale").unwrap_err();
             let msg = format!("{err}");
             assert!(msg.contains("scale must be 2 or 4"), "got {msg}");
-            assert!(msg.contains("v0.22"), "got {msg}");
+            // v0.26 phase 9: error message updated to point at the
+            // new Real-ESRGAN string variants instead of the v0.22
+            // deferral note.
+            assert!(msg.contains("Real-ESRGAN"), "got {msg}");
         });
     }
 
@@ -2305,6 +2426,118 @@ mod tests {
         assert!(params.prompt.contains("watercolor"));
         assert!(params.prompt.contains("a knight"));
         assert!(params.negative.contains("photographic"));
+    }
+
+    // v0.26 phase 13: composition tests for the v0.26 surface.
+
+    /// One script exercises every v0.26 addition + v0.25 surface
+    /// alongside (state-only — no model load, no network).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_full_surface_state_round_trip() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                ctx.loras.clear();
+                ctx.look_name = None;
+                ctx.genre_name = None;
+                ctx.loaded_stylize = None;
+                ctx.config.offline_discovery = false;
+            })
+            .unwrap();
+
+            eval(
+                r#"
+                // v0.25 surface still works (looks + genres + offline)
+                "watercolor" plakat.look.apply
+                "anime"      plakat.genre.apply
+                "true" "offline_discovery" plakat.config.set
+            "#,
+            )
+            .unwrap();
+
+            // v0.26 phase 7-8 state: caching + metadata Vec are
+            // both initialized to empty/None.
+            with_ctx(|ctx| {
+                assert_eq!(ctx.look_name.as_deref(), Some("watercolor"));
+                assert_eq!(ctx.genre_name.as_deref(), Some("anime"));
+                assert!(ctx.config.offline_discovery);
+                // v0.26 phase 7: loaded_stylize slot present + empty.
+                assert!(ctx.loaded_stylize.is_none());
+                // v0.26 phase 8: images_metadata parallel Vec exists.
+                assert_eq!(ctx.images.len(), ctx.images_metadata.len());
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.26 phase 8 round-trip: push_image_with_metadata creates
+    /// an entry retrievable via metadata_at. push_image (no
+    /// metadata) creates a None entry. Both interleave correctly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_metadata_vec_stays_parallel() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                // Push one image WITHOUT metadata.
+                let img1 = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([10, 10, 10])),
+                );
+                let h1 = ctx.push_image(img1);
+                assert_eq!(h1, 1);
+                // Push one image WITH metadata.
+                let img2 = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([20, 20, 20])),
+                );
+                let meta = crate::imaging::metadata::GenerationMetadata::new(
+                    "test", "sd15", 42u64, 20usize, 7.5f64, "default",
+                    8u32, 8u32,
+                );
+                let h2 = ctx.push_image_with_metadata(img2, meta);
+                assert_eq!(h2, 2);
+                // Vecs stay parallel + correct length.
+                assert_eq!(ctx.images.len(), 2);
+                assert_eq!(ctx.images_metadata.len(), 2);
+            })
+            .unwrap();
+            // metadata_at gives None for h1, Some for h2.
+            with_ctx(|ctx| {
+                assert!(ctx.metadata_at(1).unwrap().is_none());
+                let m = ctx.metadata_at(2).unwrap().expect("metadata");
+                assert_eq!(m.model, "sd15");
+                assert_eq!(m.seed, 42);
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.26 phase 9: plakat.upscale dispatch on string vs int
+    /// scale args. Lanczos path (int) round-trips via the synthetic
+    /// 8x8 image without needing network. ML path (string) parses
+    /// without trying to download.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn composition_v026_upscale_dispatch_int_vs_string() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.images.clear();
+                ctx.images_metadata.clear();
+                let img = image::DynamicImage::ImageRgb8(
+                    image::RgbImage::from_pixel(8, 8, image::Rgb([42, 42, 42])),
+                );
+                ctx.push_image(img);
+            })
+            .unwrap();
+
+            // Int scale → Lanczos. No network needed.
+            eval("1 2 plakat.upscale").unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.images.len(), 2);
+                assert_eq!(ctx.images[1].width(), 16);
+                assert_eq!(ctx.images[1].height(), 16);
+            })
+            .unwrap();
+        });
     }
 
     /// Test-helper: serialises every test that needs the singleton

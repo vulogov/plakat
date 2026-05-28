@@ -154,3 +154,127 @@ fn do_plakat_metadata_read(vm: &mut VM) -> anyhow::Result<&mut VM> {
     );
     Ok(vm)
 }
+
+// =====================================================================
+// v0.26 phase 8: plakat.metadata.write ( handle path -- )
+// =====================================================================
+
+const WRITE_TAG: &str = "plakat.metadata.write";
+
+/// `plakat.metadata.write ( handle path -- )` — re-attach the
+/// metadata from an in-memory image handle to an existing file
+/// at `path`. Writes the JSON sidecar (`<name>.json`) AND
+/// re-encodes the PNG with the A1111 `parameters` tEXt chunk.
+///
+/// Use case: a script generates an image, saves it once, then
+/// edits or upscales the result and wants the new file to carry
+/// the same provenance. Or an external tool produces a PNG and
+/// the script wants to attach plakat metadata to it.
+///
+/// Stack effect: `( handle path -- )`. Top pops first (path).
+///
+/// Bails when:
+/// - The handle has no metadata attached (the rendering path
+///   didn't populate it).
+/// - The file at `path` doesn't exist or can't be read.
+/// - The file isn't a PNG (sidecar still writes; tEXt is PNG-only).
+///
+/// Relative paths resolve against `ScriptCtx.out_dir`.
+pub fn plakat_metadata_write(vm: &mut VM) -> BundResult<'_> {
+    do_plakat_metadata_write(vm).map_err(to_bund_err)
+}
+
+fn do_plakat_metadata_write(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    require_depth(vm, 2, WRITE_TAG)?;
+    let path_v = pull(vm, WRITE_TAG)?;
+    let handle_v = pull(vm, WRITE_TAG)?;
+    let path_str = value_to_string(path_v, "path", WRITE_TAG)?;
+    let handle = crate::scripting::helpers::value_to_int(
+        handle_v, "handle", WRITE_TAG,
+    )?;
+    if path_str.is_empty() {
+        anyhow::bail!("{WRITE_TAG}: path can't be empty");
+    }
+
+    // Pull out_dir + the metadata once.
+    let (out_dir, meta_clone) =
+        crate::scripting::ctx::with_ctx(|ctx| {
+            let meta = ctx.metadata_at(handle)?.cloned();
+            Ok::<_, anyhow::Error>((ctx.out_dir.clone(), meta))
+        })??;
+    let meta = meta_clone.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{WRITE_TAG}: handle {handle} has no metadata attached. \
+             The image was registered without metadata (e.g. via an \
+             older rendering path) — call plakat.generate / .img2img / \
+             .portrait / .stylize / .outpaint on it first."
+        )
+    })?;
+
+    let path: PathBuf = {
+        let p = PathBuf::from(&path_str);
+        if p.is_absolute() {
+            p
+        } else {
+            out_dir.join(p)
+        }
+    };
+    if !path.exists() {
+        anyhow::bail!(
+            "{WRITE_TAG}: target file doesn't exist: {}. Pass the path \
+             of an already-saved image (use plakat.save first if needed).",
+            path.display()
+        );
+    }
+
+    // JSON sidecar — write next to the file.
+    let json_path = path.with_extension("json");
+    let json = meta
+        .to_json_pretty()
+        .map_err(|e| anyhow::anyhow!("{WRITE_TAG}: serializing metadata: {e}"))?;
+    std::fs::write(&json_path, json).map_err(|e| {
+        anyhow::anyhow!("{WRITE_TAG}: writing sidecar {}: {e}", json_path.display())
+    })?;
+
+    // PNG tEXt re-attach. Only PNG files get the embedded chunk;
+    // other formats (WebP / JPEG) just get the sidecar.
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if ext.as_deref() == Some("png") {
+        // Round-trip through DynamicImage to re-encode the PNG
+        // with the tEXt chunk. The save_rgb_u8_with_metadata
+        // helper does both sidecar + tEXt; we already wrote the
+        // sidecar so this is for the tEXt only — and the helper
+        // overwriting the sidecar with the same bytes is fine.
+        let img = image::open(&path).map_err(|e| {
+            anyhow::anyhow!(
+                "{WRITE_TAG}: reading {} for re-encode: {e}",
+                path.display()
+            )
+        })?;
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        crate::imaging::io::save_rgb_u8_with_metadata(
+            rgb.as_raw(),
+            w,
+            h,
+            &path,
+            &meta,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{WRITE_TAG}: re-encoding PNG with tEXt {}: {e}",
+                path.display()
+            )
+        })?;
+    }
+
+    tracing::info!(
+        target: "plakat",
+        "{WRITE_TAG}: handle {handle} metadata re-attached to {}",
+        path.display()
+    );
+    Ok(vm)
+}

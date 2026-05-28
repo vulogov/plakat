@@ -42,8 +42,11 @@ pub struct AnimateArgs {
     #[arg(long)]
     pub from: String,
 
-    /// Second prompt — the last frame renders this.
-    #[arg(long)]
+    /// Second prompt — the last frame renders this. Required for
+    /// the v0.20 lerp morph (default mode); **optional and ignored**
+    /// in `--animatediff` mode (single-prompt motion-coherent
+    /// generation reuses `--from` for every frame).
+    #[arg(long, default_value = "")]
     pub to: String,
 
     /// Frame count (≥ 2). Frame N maps to lerp factor
@@ -103,6 +106,44 @@ pub struct AnimateArgs {
     #[arg(long, default_value_t = 100)]
     pub gif_delay_ms: u16,
 
+    /// **v0.26**: enable AnimateDiff mode (SD 1.5 only). Switches
+    /// from the v0.20 prompt-lerp morph to motion-coherent N-frame
+    /// generation using a downloaded AnimateDiff V3 motion adapter
+    /// (`guoyww/animatediff-motion-adapter-v1-5-3`, ~1.4 GB).
+    /// Single prompt is the same across all frames (`--from`);
+    /// `--to` is ignored. Frame count is the motion adapter's
+    /// trained window (default 16); the adapter's
+    /// `motion_max_seq_length = 32` is a hard cap. Output formats
+    /// expand in phase 5 (`--format mp4` / `webm`).
+    #[arg(long, default_value_t = false)]
+    pub animatediff: bool,
+
+    /// **v0.26**: motion LoRAs to stack onto the AnimateDiff
+    /// motion adapter. Same `LoraSpec` grammar as `--lora`:
+    /// `hf:user/repo:0.7`, `civitai:NNNNNN:0.5`, or a local path.
+    /// Lets you pick community motion LoRAs (zoom-in / pan-left /
+    /// panic / etc.) from `guoyww/animatediff-motion-lora-*`.
+    /// Repeatable. No-op outside `--animatediff` mode.
+    #[arg(long = "motion-lora", value_name = "SPEC")]
+    pub motion_loras: Vec<crate::pipelines::lora::LoraSpec>,
+
+    /// **v0.26**: per-LoRA scale multiplier for `--motion-lora`,
+    /// stacked on top of each spec's own `:scale` suffix. Mirrors
+    /// `--lora-scale` from `plakat generate`. Default `1.0`.
+    #[arg(long = "motion-lora-scale", default_value_t = 1.0)]
+    pub motion_lora_scale: f32,
+
+    /// **v0.26**: output format(s). `frames` is the default
+    /// (always writes per-frame PNGs). `gif` adds an animated
+    /// GIF (equivalent to the v0.20 `--gif` flag). `mp4` / `webm`
+    /// invoke ffmpeg (must be on `$PATH`) to encode a video.
+    /// `all` writes every format.
+    ///
+    /// Composes with `--gif`: passing `--gif` is equivalent to
+    /// `--format gif`. When both are set, `--format` wins.
+    #[arg(long, value_name = "FMT", default_value = "frames")]
+    pub format: crate::imaging::video::Format,
+
     /// v0.18 phase 6: skip the A1111 `parameters` PNG tEXt chunk
     /// and the `.json` sidecar that animate writes alongside each
     /// `frame-NNNN.png`. Default off — metadata helps you re-render
@@ -121,6 +162,25 @@ pub struct AnimateArgs {
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
+    // v0.26 phase 5: AnimateDiff dispatch routing. When
+    // --animatediff is set, route through the AnimateDiff stack
+    // (motion adapter + vendored UNet) instead of the v0.20
+    // prompt-lerp morph. The actual inference dispatch is
+    // deferred per RFC §12 — phase 5 ships the routing skeleton
+    // so the CLI surface is stable, and the implementation
+    // closure lands in v0.26.1.
+    if args.animatediff {
+        return run_animatediff(args, device).await;
+    }
+
+    if args.to.is_empty() {
+        anyhow::bail!(
+            "--to is required for prompt-lerp animate mode (SD-family, Flux, \
+             SD3). Pass `--to \"<second prompt>\"` for the lerp endpoint, or \
+             switch to AnimateDiff with `--animatediff` (single-prompt \
+             motion-coherent mode, SD 1.5 only)."
+        );
+    }
     if args.frames < 2 {
         anyhow::bail!("--frames must be ≥ 2 (got {})", args.frames);
     }
@@ -146,12 +206,10 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
     };
     let t2i_variant = crate::pipelines::t2i::Variant::detect(&repo);
     if t2i_variant.is_sd3() {
-        anyhow::bail!(
-            "`plakat animate` doesn't yet support SD3 / SD3.5 (got --model {}). \
-             SD3's three-encoder (CLIP-L + CLIP-G + T5) lerp + the rectified-\
-             flow MMDiT integrator lands in a follow-up. Flux variants work.",
-            args.model,
-        );
+        // v0.26 phase 6: SD3 / SD3.5 animate via 3-encoder lerp +
+        // rectified-flow MMDiT per frame. Mirrors the v0.20 Flux
+        // animate pattern (Flux has T5 + CLIP-L; SD3 adds CLIP-G).
+        return run_sd3(args, device, repo, t2i_variant).await;
     }
     if t2i_variant.is_flux() {
         // Flux Kontext / Fill / Canny / Depth need a reference or
@@ -730,6 +788,181 @@ fn map_to_flux_variant(
     }
 }
 
+/// v0.26 phase 6: SD3 / SD3.5 animate. Mirrors `run_flux` but
+/// uses SD3's three-encoder embeddings (pooled `y` + joint
+/// `context`). Loads sd3::Pipeline once, pre-encodes both
+/// endpoint prompts + the negative once, then per frame:
+/// lerp `(pos_y, pos_ctx)` → call `Pipeline::animate_frame` →
+/// save with metadata.
+async fn run_sd3(
+    args: AnimateArgs,
+    device: Device,
+    repo: String,
+    t2i_variant: crate::pipelines::t2i::Variant,
+) -> Result<()> {
+    use crate::pipelines::sd3;
+
+    if args.to.is_empty() {
+        anyhow::bail!(
+            "--to is required for `plakat animate --model sd3*` \
+             (it's the second-prompt endpoint of the lerp)."
+        );
+    }
+    let (width, height) = parse_size(&args.size)?;
+    if width % 16 != 0 || height % 16 != 0 {
+        anyhow::bail!(
+            "SD3 animate requires --size dims divisible by 16 (got {}x{}). \
+             Try 512x512 / 768x768 / 1024x1024.",
+            width,
+            height
+        );
+    }
+    if args.frames < 2 {
+        anyhow::bail!("--frames must be ≥ 2 (got {})", args.frames);
+    }
+
+    // Map t2i::Variant → sd3::Variant.
+    use crate::pipelines::t2i::Variant as TV;
+    let sd3_variant = match t2i_variant {
+        TV::Sd3Medium => sd3::Variant::Sd3Medium,
+        TV::Sd35Medium => sd3::Variant::Sd35Medium,
+        TV::Sd35Large => sd3::Variant::Sd35Large,
+        TV::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+        other => anyhow::bail!(
+            "internal: SD3 dispatch reached non-SD3 variant {other:?}"
+        ),
+    };
+
+    let load_spin = crate::ui::progress::spinner(&format!(
+        "Loading SD3 {:?} for animation",
+        sd3_variant
+    ));
+    let mut pipeline = sd3::Pipeline::load(sd3::LoadRequest {
+        variant: sd3_variant,
+        repo,
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        controlnets: Vec::new(),
+    })
+    .await?;
+    load_spin.finish_with_message("✓ SD3 backbone ready");
+
+    let encode_spin =
+        crate::ui::progress::spinner("Encoding SD3 endpoint prompts");
+    let (pos_y_a, pos_ctx_a) = pipeline.encode_for_animate(&args.from)?;
+    let (pos_y_b, pos_ctx_b) = pipeline.encode_for_animate(&args.to)?;
+    let (neg_y, neg_ctx) = pipeline.encode_for_animate(&args.negative)?;
+    encode_spin.finish_with_message("✓ endpoint embeddings ready");
+
+    let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
+    crate::ui::progress::println(&format!(
+        "  animation: {} frames, seed {seed}, model {}, {}x{}",
+        args.frames, args.model, width, height,
+    ));
+
+    let mut skipped = 0u32;
+    let mut frame_paths: Vec<PathBuf> = Vec::with_capacity(args.frames as usize);
+    for frame_i in 0..args.frames {
+        let t = if args.frames == 1 {
+            0.0
+        } else {
+            frame_i as f64 / (args.frames - 1) as f64
+        };
+        let frame_path = args.out.join(format!("frame-{frame_i:04}.png"));
+        if args.resume && frame_path.exists() {
+            skipped += 1;
+            frame_paths.push(frame_path.clone());
+            crate::ui::progress::println(&format!(
+                "  frame {}/{} → {} (t={:.3}) {}",
+                frame_i + 1,
+                args.frames,
+                frame_path.display(),
+                t,
+                console::style("(resume — already on disk)").dim(),
+            ));
+            continue;
+        }
+        let pos_y_lerp = lerp_tensors(&pos_y_a, &pos_y_b, t)?;
+        let pos_ctx_lerp = lerp_tensors(&pos_ctx_a, &pos_ctx_b, t)?;
+        let (buf, ow, oh) = pipeline.animate_frame(
+            &pos_y_lerp,
+            &pos_ctx_lerp,
+            &neg_y,
+            &neg_ctx,
+            width,
+            height,
+            args.steps,
+            args.guidance,
+            seed,
+        )?;
+        if !args.no_metadata {
+            let prompt_desc =
+                format!("lerp({t:.4}): {:?} | {:?}", args.from, args.to);
+            let mut m = crate::imaging::metadata::GenerationMetadata::new(
+                prompt_desc,
+                args.model.clone(),
+                seed,
+                args.steps,
+                args.guidance,
+                format!("{:?}", args.scheduler).to_lowercase(),
+                ow,
+                oh,
+            );
+            m.with_animate_lerp(t, &args.from, &args.to);
+            crate::imaging::io::save_rgb_u8_with_metadata(
+                &buf, ow, oh, &frame_path, &m,
+            )?;
+        } else {
+            crate::imaging::io::save_rgb_u8(&buf, ow, oh, &frame_path)?;
+        }
+        crate::ui::progress::println(&format!(
+            "  frame {}/{} → {} (t={:.3})",
+            frame_i + 1,
+            args.frames,
+            frame_path.display(),
+            t,
+        ));
+        frame_paths.push(frame_path);
+    }
+
+    if args.format.needs_gif() || args.gif {
+        let gif_path = args.out.join("animation.gif");
+        write_gif(&frame_paths, &gif_path, args.gif_delay_ms)?;
+        crate::ui::progress::println(&format!("→ {}", gif_path.display()));
+    }
+    if args.format.needs_mp4() {
+        let pattern = args
+            .out
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .into_owned();
+        crate::imaging::video::frames_to_mp4(
+            &pattern,
+            &args.out.join("animation.mp4"),
+            (1000 / args.gif_delay_ms.max(1) as u32).max(1),
+        )?;
+    }
+    if args.format.needs_webm() {
+        let pattern = args
+            .out
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .into_owned();
+        crate::imaging::video::frames_to_webm(
+            &pattern,
+            &args.out.join("animation.webm"),
+            (1000 / args.gif_delay_ms.max(1) as u32).max(1),
+        )?;
+    }
+
+    crate::ui::progress::println(&format!(
+        "✓ {} frames written ({skipped} skipped)",
+        args.frames as usize - skipped as usize,
+    ));
+    Ok(())
+}
+
 /// v0.20 #9: Flux animate dispatch. Loads `flux::Pipeline` once,
 /// pre-encodes both endpoint prompts via `Pipeline::encode_prompt`,
 /// then per frame: lerp `(clip_pooled, t5_emb)` → call
@@ -881,6 +1114,92 @@ async fn run_flux(
         spin.finish_with_message(format!("✓ {}", gif_path.display()));
     }
     Ok(())
+}
+
+/// v0.26 phase 5: AnimateDiff dispatch. Loads the V3 motion
+/// stack (with optional motion LoRAs), then routes through
+/// [`crate::pipelines::animatediff::AnimateDiffPipeline::generate`]
+/// — which currently bails with a v0.26.1 deferral message. The
+/// stack assembly itself is real (network-required first-run,
+/// cached afterward); the inference loop closes in v0.26.1.
+///
+/// Single-prompt mode: `--from` is the prompt, `--to` is ignored
+/// (logged at info level if non-empty).
+async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
+    use crate::pipelines::animatediff::AnimateDiffPipeline;
+
+    // Hard gate: SD 1.5 only. SDXL motion adapters exist but are
+    // less mature (RFC §6 Q2) — deferred to v0.27.
+    let alias_l = args.model.to_lowercase();
+    let is_sd15 = alias_l == "sd15"
+        || alias_l == "sd1.5"
+        || alias_l == "sd-1.5"
+        || alias_l.contains("v1-5")
+        || alias_l.contains("stable-diffusion-v1-5");
+    if !is_sd15 {
+        anyhow::bail!(
+            "`--animatediff` requires --model sd15 (got --model {}). \
+             SDXL motion adapters exist but are deferred to v0.27. \
+             v0.26 ships AnimateDiff V3 on SD 1.5 only.",
+            args.model,
+        );
+    }
+    let max_seq = 32usize;
+    if (args.frames as usize) > max_seq {
+        anyhow::bail!(
+            "--frames {} exceeds AnimateDiff V3's motion_max_seq_length ({}). \
+             Use --frames ≤ {}.",
+            args.frames,
+            max_seq,
+            max_seq,
+        );
+    }
+
+    if !args.to.is_empty() {
+        tracing::info!(
+            target: "plakat",
+            "--animatediff ignores --to (single-prompt mode). \
+             Using --from for every frame."
+        );
+    }
+    if args.format.needs_ffmpeg() {
+        let v = crate::imaging::video::ffmpeg_version()?;
+        tracing::info!(target: "plakat", "ffmpeg detected: {v}");
+    }
+
+    let dtype = if matches!(device, Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::BF16
+    };
+
+    let pipeline = AnimateDiffPipeline::load_v3(
+        &device,
+        dtype,
+        &args.motion_loras,
+        args.motion_lora_scale,
+    )
+    .await
+    .context("loading AnimateDiff V3 stack")?;
+
+    tracing::info!(
+        target: "plakat",
+        "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
+        pipeline.modules.modules.len(),
+        pipeline.max_frames,
+    );
+
+    let (width, height) = parse_size(&args.size)?;
+    pipeline
+        .generate(
+            &args.from,
+            &args.negative,
+            args.frames as usize,
+            args.seed.unwrap_or(0),
+            width,
+            height,
+        )
+        .await
 }
 
 fn write_gif(
