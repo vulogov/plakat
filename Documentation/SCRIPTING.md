@@ -1,4 +1,4 @@
-# `plakat run` — Bund scripting (v0.25)
+# `plakat run` — Bund scripting (v0.26)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
@@ -9,7 +9,8 @@ Design RFCs:
 [`RFC_v0.22_BUND_WORDS_EXPANSION.md`](RFC_v0.22_BUND_WORDS_EXPANSION.md) (the 7-namespace expansion),
 [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md) (the v0.22 deferrals closed in v0.23),
 [`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) (persona depth + scripting completion),
-[`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) (art-medium presets + auto-LoRA discovery).
+[`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) (art-medium presets + auto-LoRA discovery),
+[`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md) (AnimateDiff + every v0.25 carry).
 
 ## Modes
 
@@ -19,7 +20,7 @@ plakat run --repl               # Interactive REPL on the same surface
 plakat run --repl --out PATH    # REPL with a custom output dir
 ```
 
-Both modes share the same `ScriptCtx` singleton + the same 48
+Both modes share the same `ScriptCtx` singleton + the same 49
 `plakat.*` host words. One process invocation = one script eval
 (no concurrent scripts in one process — bundcore's VM has no
 per-eval isolation).
@@ -56,7 +57,7 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (48 total)
+## Host words (49 total)
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
@@ -74,8 +75,8 @@ input (popped first).
 | `plakat.outpaint` | `( prompt input expand-spec -- handle )` | **v0.24 phase 4.** Extend past borders. `expand-spec`: `"expand=N"` (all 4 sides) OR `"left=L,right=R,top=T,bottom=B"`. Replicates edges + builds mask + dispatches to inpaint. SD-family + SD3. |
 | `plakat.portrait` | `( prompt -- handle )` | **v0.24 phase 1**: photos come from `plakat.portrait.photo.add` stack (was `( prompt photo -- handle )` in v0.23). IP-Adapter-Plus-Face. SD-family only. |
 | `plakat.stylize` | `( subject style -- handle )` | **v0.24 phase 6.** IP-Adapter style transfer. No prompt (CLI parity). Strength from `config.strength`. SD 1.5 only. |
-| `plakat.upscale` | `( handle scale -- handle )` | Lanczos-3, integer `2` or `4`. |
-| `plakat.save` | `( handle path -- )` | Relative paths resolve under `--out`. |
+| `plakat.upscale` | `( handle scale -- handle )` | **v0.26 phase 9**: scale = integer 2/4 (Lanczos) OR string `"real-esrgan-x2"` / `"real-esrgan-x4"` / `"real-esrgan-anime-x4"` (ML). |
+| `plakat.save` | `( handle path -- )` | **v0.26 phase 8**: writes A1111 `parameters` tEXt + JSON sidecar when the handle has metadata (rendering paths populate it). Relative paths resolve under `--out`. |
 | `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. |
 
 #### Supported aliases (v0.22)
@@ -299,25 +300,39 @@ path** — `plakat.img2img` + `plakat.portrait` use
 `cli::img2img` + `cli::portrait` don't expose `--embedding`
 either).
 
-### `plakat.metadata.read` — sidecar reader (v0.24 phase 7)
+### `plakat.metadata.*` — A1111 sidecar reader + writer (v0.24 phase 7, v0.26 phase 8)
 
 | Word | Stack effect |
 |---|---|
 | `plakat.metadata.read` | `( path -- k_1 v_1 … k_n v_n n )` |
+| `plakat.metadata.write` | `( handle path -- )` — **v0.26 phase 8** |
 
-Reads the JSON sidecar plakat writes alongside every generated
-PNG (the structured form of the A1111 `parameters` tEXt chunk).
-Pushes every populated field as a `(key, value)` pair of strings
-plus a count.
+**Read** loads the JSON sidecar plakat writes alongside every
+generated PNG (the structured form of the A1111 `parameters`
+tEXt chunk). Pushes every populated field as a `(key, value)`
+pair of strings plus a count. Required fields: `prompt`, `model`,
+`seed`, `steps`, `guidance`, `scheduler`, `width`, `height`,
+`generator`. Optional fields push only when set/non-empty:
+`negative`, `loras`, `lora_scale`, `clip_skip`, `controls`,
+`refiner_frac`, `mode`, `strength`, plus per-key `extras`. Bails
+on missing sidecar / empty path / bad JSON.
 
-Required fields always present: `prompt`, `model`, `seed`,
-`steps`, `guidance`, `scheduler`, `width`, `height`, `generator`.
-Optional fields push only when set/non-empty: `negative`,
-`loras`, `lora_scale`, `clip_skip`, `controls`, `refiner_frac`,
-`mode`, `strength`, plus per-key `extras`.
+**Write** (v0.26 phase 8) re-attaches the metadata from an
+in-memory handle to an existing file: writes the JSON sidecar +
+re-encodes the PNG with the A1111 `parameters` tEXt chunk. Bails
+when the handle has no metadata attached (the rendering path
+didn't populate it) or when the target file doesn't exist.
 
-Bails on missing sidecar / empty path / bad JSON. Write deferred
-to v0.25.
+The full A1111-compatible writes flow:
+- `plakat.generate` populates `GenerationMetadata` on the
+  `ScriptCtx.images_metadata` slot at push time
+  (`push_image_with_metadata`)
+- `plakat.save` reads the metadata and writes both the PNG tEXt
+  chunk + the `<name>.json` sidecar via
+  `imaging::io::save_rgb_u8_with_metadata`
+- `plakat.metadata.write` is for re-attaching metadata after
+  edits (e.g. upscale → re-save with original generation
+  parameters)
 
 ## Post-process composition order
 
@@ -486,20 +501,48 @@ or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
 
-## v0.25 limitations / deferred to v0.26+
+## v0.26 limitations / deferred to v0.26.1 + v0.27
 
-v0.25 added the `--look` / `--genre` axes + auto-LoRA discovery
-(Civitai → HF → local). Remaining items:
+v0.26 closed **every v0.25 carry** at the infrastructure level.
+Remaining items:
 
 | Limitation | Tracking |
 |---|---|
-| Bund `plakat.look.*` apply on Flux + SD3 paths | SD-family wired in phase 8; Flux/SD3 set state but apply happens at the CLI level on those families. Wire when needed. |
-| Auto-LoRA discovery in scenarios | Scenario flow has a two-stage LoRA pipeline (scenario.loras at setup, task.loras per-task); discovery integration deferred to v0.26. Use `loras:` explicitly for now. |
-| AnimateDiff | new architecture (motion-adapter weights + temporal-attention); long-running carry from v0.20 |
-| SD3 / SD3.5 animate | 3-encoder lerp + MMDiT integrator (v0.20+ carry) |
-| Real-ESRGAN ML upscaling in `plakat.upscale` | `plakat.hires` already exposes ML upscalers via `hires_upscaler`; standalone upscale word is Lanczos-only |
-| `plakat.metadata.write` | gated on `plakat.save` attaching JSON sidecars |
-| `plakat.stylize` caching | one-shot load per call today (~5 GB); cache slot is a future optimisation |
+| AnimateDiff inference dispatch | Infrastructure shipped (motion adapter loader, temporal modules, vendored UNet with motion splice, motion LoRA composition, CLI surface, `--format` GIF/MP4/WebM). The N-frame scheduler loop + per-frame VAE decode + quality validation close in **v0.26.1**. See [`ANIMATEDIFF.md`](ANIMATEDIFF.md). |
+| SDXL motion adapter | AnimateDiff V3 is SD 1.5 only in v0.26. SDXL motion adapters exist (`guoyww/animatediff-motion-adapter-sdxl-beta`) but are less mature; v0.27 candidate. |
+| Per-block-internal motion splice | v0.26.0 splices at block-output boundaries; the faithful diffusers `UNetMotionModel` splices INSIDE each block (per resnet+attn layer). v0.26.1 evaluates whether quality requires full block vendoring (~800 more LOC). |
+| AnimateDiff + ControlNet | Per-frame temporal-coherent control signals would need new infrastructure. v0.27+ candidate. |
+| Long-form AnimateDiff (> 32 frames) | V3's `motion_max_seq_length = 32` is a hard cap. HotShot-XL or similar architectures land in a future cycle if pursued. |
+
+## v0.25 → v0.26 migration
+
+v0.26 is **fully additive**. No existing host word, config key,
+scenario field, or stack effect changes shape.
+
+What's new for Bund scripts:
+
+```bund
+// v0.26 phase 8: plakat.save automatically writes A1111 tEXt +
+// JSON sidecar when the handle has metadata (every plakat.generate
+// pushes metadata now). Existing scripts get sidecars for free.
+
+// v0.26 phase 8: plakat.metadata.write re-attaches metadata
+// after edits.
+"a cottage" plakat.generate              // handle 1 with metadata
+2 plakat.upscale                          // handle 2, no metadata
+"cottage-2x.png" plakat.save              // saves plain PNG
+1 "cottage-2x.png" plakat.metadata.write  // attach metadata after the fact
+
+// v0.26 phase 9: plakat.upscale accepts Real-ESRGAN method strings.
+"real-esrgan-x4" plakat.upscale          // ML upscale, x4
+"real-esrgan-anime-x4" plakat.upscale    // anime-tuned variant
+
+// v0.26 phase 10-11: plakat.look.* / plakat.genre.* now apply on
+// Flux + SD3 generate paths too (v0.25 was SD-family only).
+"flux-dev" plakat.load
+"watercolor" plakat.look.apply
+"a cottage" plakat.generate    // Flux auto-discovers a Flux-compatible LoRA
+```
 
 ## v0.24 → v0.25 migration
 

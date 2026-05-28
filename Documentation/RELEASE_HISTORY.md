@@ -1,12 +1,73 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.24. The current
+"What's new" sections for v0.13 through v0.25. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.25 — art-medium presets + auto-LoRA discovery
+
+Twelve phases ship two new preset axes — `--look` (art medium)
+and `--genre` (subject domain) — with **automatic LoRA discovery**
+from Civitai / HuggingFace / your local cache. Pick "watercolor"
+or "ink-wash" with one flag and plakat composes the prompt, picks
+a sampler, and finds a compatible LoRA matched to your loaded
+base model. Host word count 42 → 48.
+
+### `--look` — eight bundled art mediums
+
+```bash
+plakat generate --model sd15 --look watercolor "a cottage in the woods"
+plakat generate --model sdxl --look oil-painting "a still life"
+```
+
+Eight mediums ship: `ink-wash`, `watercolor`, `oil-painting`,
+`charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`. Each
+bundles a prompt prefix/suffix + recommended sampler/steps/guidance
++ a `lora_query` that drives auto-discovery.
+
+### `--genre` — independent subject-domain axis
+
+```bash
+plakat generate --model sdxl --look watercolor --genre anime "a knight"
+```
+
+`anime` ships built-in; user-extensible via `$CONFIG_DIR/genres/*.json`.
+
+### Auto-LoRA discovery chain (Civitai → HF → local)
+
+`--lora` empty → plakat searches for a compatible LoRA, filtering
+by base-model compatibility. Trigger words from the discovered LoRA
+auto-prepend to the prompt. `--offline` short-circuits to cache +
+local-scan only.
+
+### Surfaces
+
+`--look` / `--genre` / `--offline` work on every prompt-driven
+subcommand (`generate`, `portrait`, `img2img`, `inpaint`,
+`outpaint`), in scenarios at both global + per-task level, and via
+six new Bund host words (`plakat.look.{apply,clear,list}` +
+`plakat.genre.{apply,clear,list}`).
+
+### By the numbers
+
+- 902 lib tests + 20 integration tests green (+85 lib across the cycle).
+- 12 phase commits + RFC.
+- 42 → 48 host words.
+- 8 bundled looks + 1 bundled genre + user-extension directories wired.
+- 3-source discovery chain (Civitai + HF Hub + local-cache scan)
+  with on-disk caching keyed by `(name, base_model)`.
+
+### Documentation
+
+- [`LOOKS.md`](LOOKS.md) — flag reference + user-extension format.
+- [`GENRES.md`](GENRES.md) — subject-domain axis.
+- [`LOOKS_TUTORIAL.md`](Tutorials/LOOKS_TUTORIAL.md) — walkthrough.
+- [`GENRES_TUTORIAL.md`](Tutorials/GENRES_TUTORIAL.md) — companion.
+- [`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) — design doc.
 
 ## What's new in v0.24 — persona depth + scripting completion
 
