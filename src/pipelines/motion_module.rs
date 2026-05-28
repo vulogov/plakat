@@ -590,6 +590,39 @@ impl MotionAdapter {
     }
 }
 
+/// Apply every motion module for `(kind, block_idx)` sequentially
+/// to `xs`. V3 has `motion_layers_per_block = 2` modules per block;
+/// they apply one after the other. Used by both
+/// [`crate::pipelines::sd15_motion_unet::Sd15MotionUNet`] and the
+/// SDXL motion-UNet forward path.
+///
+/// Address not present → silently skip. Happens when the adapter's
+/// per-block count doesn't reach `layer_idx` for this block (won't
+/// fire with V3 / SDXL-beta + their standard configs since both
+/// pair `block_out_channels` with `motion_layers_per_block`).
+pub fn apply_block_motion(
+    xs: Tensor,
+    kind: BlockKind,
+    block_idx: usize,
+    mm: &MotionAdapterModules,
+    num_frames: usize,
+) -> Result<Tensor> {
+    let mut out = xs;
+    for layer_idx in 0..mm.config.motion_layers_per_block {
+        let addr = ModuleAddr {
+            kind,
+            block_idx,
+            layer_idx,
+        };
+        if let Some(module) = mm.get(addr) {
+            out = module
+                .forward(&out, num_frames)
+                .with_context(|| format!("applying motion module at {addr:?}"))?;
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
