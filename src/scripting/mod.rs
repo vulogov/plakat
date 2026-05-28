@@ -2567,4 +2567,85 @@ mod tests {
         }
         body()
     }
+
+    /// v0.28 phase 2: the four new animate-specific config keys
+    /// round-trip through `plakat.config.set`. Verifies the int
+    /// keys (frames / window-size / window-overlap) and the bool
+    /// key (animate_lcm).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn animate_config_keys_round_trip_via_host_word() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            // Defaults first.
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.animate_frames, 16);
+                assert_eq!(ctx.config.animate_window_size, 16);
+                assert_eq!(ctx.config.animate_window_overlap, 4);
+                assert!(!ctx.config.animate_lcm);
+            })
+            .unwrap();
+            let script = r#"
+                32   "animate_frames"          plakat.config.set
+                8    "animate_window_size"     plakat.config.set
+                2    "animate_window_overlap"  plakat.config.set
+                "true" "animate_lcm"           plakat.config.set
+            "#;
+            eval(script).unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.animate_frames, 32);
+                assert_eq!(ctx.config.animate_window_size, 8);
+                assert_eq!(ctx.config.animate_window_overlap, 2);
+                assert!(ctx.config.animate_lcm);
+            })
+            .unwrap();
+        });
+    }
+
+    /// v0.28 phase 2: `animate_window_size > 32` bails with the
+    /// motion_max_seq_length pointer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn animate_window_size_over_cap_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            let err = eval(
+                r#"33 "animate_window_size" plakat.config.set"#,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("max_seq_length") || err.contains("exceeds"),
+                "expected cap-exceeded error, got: {err}",
+            );
+        });
+    }
+
+    /// v0.28 phase 2: `plakat.animate` with no model loaded bails
+    /// with the "no model loaded" pointer at the script-side check —
+    /// fires before any network load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn animate_no_model_loaded_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            let err = eval(
+                r#""a prompt" "out_dir" plakat.animate"#,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("no model loaded"),
+                "expected no-model error, got: {err}",
+            );
+        });
+    }
 }

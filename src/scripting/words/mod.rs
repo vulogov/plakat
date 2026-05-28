@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use rust_multistackvm::multistackvm::VM;
 
 pub mod adetailer;
+pub mod animate;
 pub mod artefact;
 pub mod config;
 pub mod controlnet;
@@ -230,6 +231,14 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         metadata::plakat_metadata_write,
     )
     .map_err(|e| anyhow!("registering plakat.metadata.write: {e}"))?;
+    // v0.28 phase 2: plakat.animate ( prompt out_dir -- )
+    // — single-prompt AnimateDiff via the V3 or AnimateLCM motion
+    // adapter; writes frame-NNNN.png to the given dir.
+    vm.register_inline(
+        "plakat.animate".to_string(),
+        animate::plakat_animate,
+    )
+    .map_err(|e| anyhow!("registering plakat.animate: {e}"))?;
     Ok(())
 }
 
