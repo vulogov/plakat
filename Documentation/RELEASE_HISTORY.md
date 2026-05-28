@@ -1,12 +1,62 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.26. The current
+"What's new" sections for v0.13 through v0.27. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.27 — AnimateDiff feature complete
+
+Eight phases close every AnimateDiff carry from the v0.26 cycle.
+End-to-end inference now works on both SD 1.5 + SDXL, each with
+optional ControlNet conditioning and a sliding-window long-form
+mode that lifts V3's 32-frame cap.
+
+### AnimateDiff inference (SD 1.5 + SDXL)
+
+V3 SD 1.5 (`guoyww/animatediff-motion-adapter-v1-5-3`, 16 motion
+modules) and SDXL beta (`guoyww/animatediff-motion-adapter-sdxl-beta`,
+12 motion modules) share the same `MotionAdapterConfig` schema; the
+only difference is `block_out_channels` matching each base UNet's
+block layout. Both paths use the block-boundary motion splice
+(sequential motion modules at each down/up block output).
+
+### AnimateDiff + ControlNet
+
+Single conditioning image, same hint applied to every frame. Five
+kinds supported (`depth` / `canny` / `openpose` / `lineart` /
+`softedge`). The CN runs at the full per-step batch and feeds
+residuals into the motion UNet's down + mid hooks.
+
+### Long-form sliding window
+
+V3's 32-frame `motion_max_seq_length` was a hard cap on a single
+window. Long-form mode chains overlapping windows with linear-ramp
+latent-space blend, lifting the practical cap to ~256 frames.
+
+### Motion-module tensor naming fix
+
+A latent bug from the v0.26 phase 2 motion-module code: the
+referenced tensor key paths (`motion_modules.{j}.temporal_transformer.norm`,
+`attention_blocks.{0,1}`, `norms.{0,1,2}`, `pos_encoder.pe`) don't
+exist in the real upstream safetensors. v0.27 phase 2 fixed all the
+paths and collapsed `Vec<TemporalTransformerBlock>` → a single
+inner block per motion module. Verified upstream against V3 SD 1.5
+(540 keys) and SDXL beta (405 keys); both share the same convention.
+
+### By the numbers
+
+- 948 lib tests + 32 integration tests green (+14 lib across the cycle).
+- 8 phase commits + RFC.
+- 49 host words (unchanged from v0.26).
+- SD 1.5 + SDXL motion adapter loaders share `load_from_repo` +
+  `load_with_motion_loras` helpers.
+- Shared free helpers `validate_long_form_window` +
+  `stitch_long_form<F>` agree the SD 1.5 and SDXL `generate_long`
+  paths on the blend math by construction.
 
 ## What's new in v0.26 — AnimateDiff infrastructure + every v0.25 carry closed
 
