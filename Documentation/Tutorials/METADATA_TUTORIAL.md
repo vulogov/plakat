@@ -279,11 +279,41 @@ The positional `prompt` arg is ALWAYS taken from the CLI — the
 recipe never overrides it. If you want a byte-equivalent rerun
 (prompt + every other field), use `plakat clone` and pipe to bash.
 
+## From Bund scripts (v0.26)
+
+The Bund scripting layer now has both **read** and **write**
+host words:
+
+```bund
+// Read a sidecar from disk (v0.24 phase 7) — pushes
+// (k_1 v_1 ... k_n v_n n) onto the stack.
+"plakat-42.json" plakat.metadata.read
+
+// Write metadata to an existing file from an in-memory handle
+// (v0.26 phase 8). Useful for re-attaching metadata after
+// upscale / edit chains where intermediate steps strip it.
+"sd15" plakat.load
+"a cottage" plakat.generate            // handle 1, metadata attached
+1 2 plakat.upscale                      // handle 2, no metadata
+"cottage-2x.png" plakat.save            // plain PNG, no sidecar
+1 "cottage-2x.png" plakat.metadata.write
+// Now cottage-2x.png has cottage-2x.json + the A1111 tEXt chunk
+// pointing back at handle 1's original generation parameters.
+```
+
+`plakat.save` (v0.26 phase 8) also writes the JSON sidecar + PNG
+tEXt automatically when the handle has metadata attached
+(`plakat.generate` populates this for every image). No script
+changes needed — sidecars start landing in `./out/` next to every
+saved image.
+
 ## Where to next
 
 - **`GENERATE_TUTORIAL.md`** §22 — the write side of metadata
   (what `--no-metadata` opts out of).
 - **`GENERATE.md`** in the reference docs — the
   `parameters` chunk format reference and every field.
+- **`SCRIPTING_TUTORIAL.md`** §13 — the v0.26 Bund surface,
+  including `plakat.metadata.write` + `plakat.save` sidecar+tEXt.
 - **`CIVITAI_TUTORIAL.md`** — pairs naturally with this when
   inheriting Civitai community PNGs.

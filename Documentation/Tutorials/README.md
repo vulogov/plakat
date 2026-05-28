@@ -101,12 +101,17 @@ If you're new to plakat, work through these in order:
     cache layout, `CIVITAI_API_KEY` setup for gated assets, and
     inspecting downloaded Textual Inversion files.
 
-11. [`ANIMATE_TUTORIAL.md`](ANIMATE_TUTORIAL.md) — prompt-morph
-    animations via `plakat animate`. Linearly interpolate the
-    text-encoder embeddings between two prompts to produce a
-    smooth N-frame sequence at a fixed seed. Optional GIF
-    bundling. SD 1.5 / SD 2.1 / SDXL + **Flux Dev / Schnell**
-    (v0.20 — T5 + CLIP-L lerp, flow-match per frame).
+11. [`ANIMATE_TUTORIAL.md`](ANIMATE_TUTORIAL.md) — `plakat animate`.
+    Two modes:
+    - **Prompt-morph** (v0.20): lerp text-encoder embeddings between
+      `--from` and `--to` for a smooth N-frame morph. SD 1.5 /
+      SD 2.1 / SDXL + Flux Dev / Schnell + **SD3 / SD3.5** (v0.26).
+    - **AnimateDiff** (v0.26 infrastructure, v0.26.1 inference):
+      motion-coherent N-frame generation from a single prompt
+      via the V3 motion adapter. SD 1.5 only. Includes
+      `--motion-lora` stacking + `--format {gif,mp4,webm,frames,all}`.
+    See also [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md)
+    for the AnimateDiff architecture reference.
 
 12. [`ADVANCED_PROMPTING_TUTORIAL.md`](ADVANCED_PROMPTING_TUTORIAL.md) —
     three power-user prompt features as a coherent set: A1111
@@ -207,6 +212,7 @@ manuals in [`Documentation/`](..):
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
 - Look (art-medium) presets reference → [`LOOKS.md`](../LOOKS.md)
 - Genre (subject-domain) presets reference → [`GENRES.md`](../GENRES.md)
+- AnimateDiff architecture + roadmap → [`ANIMATEDIFF.md`](../ANIMATEDIFF.md)
 - Artefact compositing, smart zones, blend pass → [`ARTEFACTS.md`](../ARTEFACTS.md)
 - Image-to-image and inpaint flags → [`IMG2IMG.md`](../IMG2IMG.md)
 - ControlNet conditioning flags → [`CONTROLNET.md`](../CONTROLNET.md)
