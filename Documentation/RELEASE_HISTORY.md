@@ -1,12 +1,95 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.25. The current
+"What's new" sections for v0.13 through v0.26. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.26 — AnimateDiff infrastructure + every v0.25 carry closed
+
+Thirteen phases close **every v0.25 carry** in one cycle: SD3 /
+SD3.5 animate, Bund look/genre apply on Flux + SD3, scenario
+auto-LoRA discovery, Real-ESRGAN in `plakat.upscale`,
+`plakat.metadata.write`, `plakat.stylize` cache slot, plus the
+full **AnimateDiff infrastructure** (motion adapter, temporal
+modules, vendored UNet with motion splice, motion LoRAs, output
+formats). Host word count 48 → 49.
+
+End-to-end AnimateDiff inference was deferred to v0.26.1, then
+folded into v0.27 phase 0 (where it closed alongside SDXL +
+ControlNet + long-form sliding window).
+
+### SD3 / SD3.5 animate
+
+Closes the v0.20-era `plakat animate` SD3 bail:
+
+```bash
+# Three-encoder lerp (CLIP-L + CLIP-G + T5) + flow-match per frame.
+plakat animate --model sd35-medium \
+    --from "a quiet temple at dawn" \
+    --to   "a quiet temple at sunset" \
+    --frames 16 --gif-delay-ms 125
+```
+
+### `plakat.look.*` / `plakat.genre.*` on Flux + SD3
+
+The v0.25 look/genre apply was SD-family only. v0.26 wires it on
+the Flux + SD3 generate paths in `script_entry.rs`. LoRA
+discovery filters by `BaseFamily::Flux` / `BaseFamily::Sd3` so
+the cache key `(name, base_family)` finds the right LoRAs.
+
+### Scenario auto-LoRA discovery (smart-cached)
+
+100 tasks with `look: watercolor` fire **one** network call —
+the discovered LoRA is cached per `(look_name, base_family)`
+across the scenario.
+
+### Real-ESRGAN in `plakat.upscale`
+
+```bund
+1 "real-esrgan-x4" plakat.upscale         // ML x4 upscale
+1 "real-esrgan-anime-x4" plakat.upscale   // anime-tuned variant
+```
+
+`plakat.upscale` dispatches on arg type: integer (2 / 4) =
+Lanczos, string = Real-ESRGAN ML method.
+
+### `plakat.save` metadata + `plakat.metadata.write`
+
+`plakat.save` writes the A1111 `parameters` PNG tEXt chunk +
+JSON sidecar automatically when the handle has metadata
+attached. New host word `plakat.metadata.write` re-attaches
+metadata to an existing file.
+
+### `plakat.stylize` cache slot
+
+Closes the v0.24 'caching is a v0.25+ optimisation' deferral.
+Multi-call scripts amortise the ~5 GB SD1.5 + IP-Adapter
+weights load.
+
+### AnimateDiff infrastructure
+
+- AnimateDiff V3 motion adapter loader
+  (`guoyww/animatediff-motion-adapter-v1-5-3`)
+- 16 per-block temporal-attention modules built from real V3 weights
+- Vendored SD 1.5 UNet (`Sd15MotionUNet`) with motion-module splice
+  at block-output boundaries
+- Motion LoRA composition (`--motion-lora SPEC`) — merges into the
+  motion-adapter weights via the existing LoRA-merge pipeline
+- `--format {frames, gif, mp4, webm, all}` with ffmpeg integration
+- `AnimateDiffPipeline` assembly type
+
+### By the numbers
+
+- 934 lib tests + 20 integration tests green (+32 lib across the cycle).
+- 13 phase commits + RFC.
+- 48 → 49 host words.
+- 7 v0.25 carries closed.
+- New `MergeTarget::MOTION_ADAPTER` LoRA-merge variant.
+- New `loaded_stylize` cache slot on `ScriptCtx`.
 
 ## What's new in v0.25 — art-medium presets + auto-LoRA discovery
 
