@@ -1122,25 +1122,33 @@ async fn run_flux(
 async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
     use crate::pipelines::animatediff::AnimateDiffPipeline;
 
-    // Hard gate: SD 1.5 only. SDXL motion adapters land in v0.27
-    // phases 1-2 (sibling tasks #393 + #394).
-    let alias_l = args.model.to_lowercase();
-    let is_sd15 = alias_l == "sd15"
-        || alias_l == "sd1.5"
-        || alias_l == "sd-1.5"
-        || alias_l.contains("v1-5")
-        || alias_l.contains("stable-diffusion-v1-5");
-    if !is_sd15 {
+    // Variant detection. SD 1.5 + SDXL both supported in v0.27;
+    // SD 2.1 / Flux / SD3 / etc. bail loud since no motion adapter
+    // exists upstream. Detect on the resolved repo path because
+    // `SdVariant::detect` keys off substrings like "xl" / "2-1"
+    // which are present in repo ids but not in plakat's short
+    // aliases ("sd21" doesn't match the "2-1" / "2.1" / "v2" gate).
+    let resolved_for_detect = if args.model.contains('/') {
+        args.model.clone()
+    } else {
+        crate::hf::resolve_alias(&args.model).to_string()
+    };
+    let variant = SdVariant::detect(&resolved_for_detect);
+    let is_sd15_or_sdxl =
+        matches!(variant, SdVariant::Sd15 | SdVariant::Sdxl);
+    if !is_sd15_or_sdxl {
         anyhow::bail!(
-            "`--animatediff` requires --model sd15 (got --model {}). \
-             SDXL motion adapters land in v0.27 phase 1.",
+            "`--animatediff` requires --model sd15 or an SDXL alias \
+             (got --model {} = {:?}). SD 2.1 / Flux / SD3 have no \
+             upstream motion adapter.",
             args.model,
+            variant,
         );
     }
     let max_seq = 32usize;
     if (args.frames as usize) > max_seq {
         anyhow::bail!(
-            "--frames {} exceeds AnimateDiff V3's motion_max_seq_length ({}). \
+            "--frames {} exceeds AnimateDiff motion_max_seq_length ({}). \
              Use --frames ≤ {}.",
             args.frames,
             max_seq,
@@ -1176,39 +1184,80 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
         candle_core::DType::BF16
     };
 
-    let pipeline = AnimateDiffPipeline::load_v3(
-        &device,
-        dtype,
-        &args.motion_loras,
-        args.motion_lora_scale,
-    )
-    .await
-    .context("loading AnimateDiff V3 stack")?;
-
-    tracing::info!(
-        target: "plakat",
-        "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
-        pipeline.modules.modules.len(),
-        pipeline.max_frames,
-    );
-
     let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
-    crate::ui::progress::println(&format!(
-        "  animatediff: {} frames, seed {seed}, model {}, {}x{}, steps={}, guidance={}",
-        args.frames, args.model, width, height, args.steps, args.guidance,
-    ));
 
-    let frames = pipeline.generate(
-        &args.from,
-        &args.negative,
-        args.frames as usize,
-        seed,
-        width,
-        height,
-        args.steps,
-        args.guidance,
-        args.scheduler,
-    )?;
+    // Variant-specific load + inference. Both branches return
+    // `Vec<DynamicImage>` so the output dispatch below is shared.
+    let frames = match variant {
+        SdVariant::Sd15 => {
+            let pipeline = AnimateDiffPipeline::load_v3(
+                &device,
+                dtype,
+                &args.motion_loras,
+                args.motion_lora_scale,
+            )
+            .await
+            .context("loading AnimateDiff V3 stack")?;
+            tracing::info!(
+                target: "plakat",
+                "AnimateDiff V3 stack loaded: {} motion modules, max_seq_length={}",
+                pipeline.modules.modules.len(),
+                pipeline.max_frames,
+            );
+            crate::ui::progress::println(&format!(
+                "  animatediff (SD 1.5): {} frames, seed {seed}, \
+                 model {}, {}x{}, steps={}, guidance={}",
+                args.frames, args.model, width, height, args.steps, args.guidance,
+            ));
+            pipeline.generate(
+                &args.from,
+                &args.negative,
+                args.frames as usize,
+                seed,
+                width,
+                height,
+                args.steps,
+                args.guidance,
+                args.scheduler,
+            )?
+        }
+        SdVariant::Sdxl => {
+            use crate::pipelines::animatediff::AnimateDiffSdxlPipeline;
+            let pipeline = AnimateDiffSdxlPipeline::load_sdxl_beta(
+                &device,
+                dtype,
+                &args.model,
+                &args.motion_loras,
+                args.motion_lora_scale,
+            )
+            .await
+            .context("loading AnimateDiff SDXL beta stack")?;
+            tracing::info!(
+                target: "plakat",
+                "AnimateDiff SDXL beta stack loaded: {} motion modules, max_seq_length={}",
+                pipeline.modules.modules.len(),
+                pipeline.max_frames,
+            );
+            crate::ui::progress::println(&format!(
+                "  animatediff (SDXL beta): {} frames, seed {seed}, \
+                 model {}, {}x{}, steps={}, guidance={}",
+                args.frames, args.model, width, height, args.steps, args.guidance,
+            ));
+            pipeline.generate(
+                &args.from,
+                &args.negative,
+                args.frames as usize,
+                seed,
+                width,
+                height,
+                args.steps,
+                args.guidance,
+                args.scheduler,
+            )?
+        }
+        // SdVariant::Sd21 already rejected above.
+        _ => unreachable!("variant gate filtered to SD 1.5 / SDXL"),
+    };
 
     // -------- write per-frame PNGs (always) + optional GIF + MP4 + WebM.
     let scheduler_name = format!("{:?}", args.scheduler).to_lowercase();

@@ -67,6 +67,10 @@ use super::motion_adapter::MotionAdapter;
 use super::motion_module::MotionAdapterModules;
 use super::scheduler::SchedulerKind;
 use super::sd15_motion_unet::Sd15MotionUNet;
+use super::sdxl_clip::SdxlClipGTextTransformer;
+use super::sdxl_unet::{
+    SdxlAddEmbedConfig, SdxlUNet2DConditionModel, build_add_time_ids_base,
+};
 use crate::ui::progress;
 
 /// Loaded AnimateDiff stack: SD 1.5 backbone (tokenizer + CLIP-L
@@ -350,6 +354,386 @@ impl AnimateDiffPipeline {
     }
 }
 
+// ============================================================
+// v0.27 phase 2: SDXL AnimateDiff pipeline.
+// ============================================================
+
+/// SDXL counterpart to [`AnimateDiffPipeline`]. Uses the SDXL beta
+/// motion adapter (`guoyww/animatediff-motion-adapter-sdxl-beta`)
+/// on top of an SDXL base UNet + dual CLIP-L/CLIP-G text encoders.
+///
+/// ## Inference differences from SD 1.5
+///
+/// - **Dual text encoders.** CLIP-L's penultimate hidden state
+///   (768-dim) is concatenated with CLIP-G's penultimate (1280-dim)
+///   along the channel axis to form the `(1, 77, 2048)` SDXL
+///   cross-attention input.
+/// - **Pooled `add_text_embeds`.** CLIP-G also produces a pooled
+///   `(1, 1280)` vector that flows through the UNet's `add_embedding`
+///   chain alongside the time-ids.
+/// - **`add_time_ids`.** Six floats per frame
+///   `[orig_h, orig_w, crop_top, crop_left, target_h, target_w]`.
+///   Identical across frames (motion is the only frame-varying signal).
+/// - **VAE scaling factor 0.13025** (vs 0.18215 for SD 1.5).
+pub struct AnimateDiffSdxlPipeline {
+    pub device: Device,
+    pub dtype: DType,
+    pub cfg: StableDiffusionConfig,
+    pub tokenizer_l: Tokenizer,
+    pub tokenizer_g: Tokenizer,
+    pub text_encoder_l: sdclip::ClipTextTransformer,
+    pub text_encoder_g: SdxlClipGTextTransformer,
+    pub vae: AutoEncoderKL,
+    pub motion_unet: SdxlUNet2DConditionModel,
+    pub adapter: MotionAdapter,
+    pub modules: MotionAdapterModules,
+    pub max_frames: usize,
+}
+
+impl AnimateDiffSdxlPipeline {
+    /// Load the SDXL beta motion-adapter stack on top of an SDXL
+    /// base UNet. Network-required on first run; cache-hits
+    /// subsequently. Downloads ~6-7 GB on a cold cache (SDXL base +
+    /// motion adapter).
+    pub async fn load_sdxl_beta(
+        device: &Device,
+        dtype: DType,
+        model: &str,
+        motion_loras: &[LoraSpec],
+        motion_lora_scale: f32,
+    ) -> Result<Self> {
+        // -------- motion adapter (SDXL beta).
+        let adapter = if motion_loras.is_empty() {
+            MotionAdapter::load_sdxl_beta().await?
+        } else {
+            MotionAdapter::load_sdxl_beta_with_motion_loras(
+                motion_loras,
+                motion_lora_scale,
+                device,
+            )
+            .await?
+        };
+        let modules = adapter.build_modules(device, dtype)?;
+        let max_frames = adapter.config.motion_max_seq_length;
+
+        // -------- SDXL backbone.
+        // Resolve repo: prefer the user's --model alias (so they
+        // can pick SDXL / SDXL-Turbo / a community fine-tune).
+        let base_repo = if model.contains('/') {
+            model.to_string()
+        } else {
+            crate::hf::resolve_alias(model).to_string()
+        };
+
+        let dl = progress::spinner("Resolving SDXL weights for AnimateDiff");
+        let tokenizer_l_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "tokenizer/tokenizer.json"),
+            ("openai/clip-vit-large-patch14", "tokenizer.json"),
+        ])
+        .await
+        .with_context(|| format!("tokenizer (CLIP-L) for {base_repo}"))?;
+        let tokenizer_g_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "tokenizer_2/tokenizer.json"),
+            ("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json"),
+            ("openai/clip-vit-large-patch14", "tokenizer.json"),
+        ])
+        .await
+        .with_context(|| format!("tokenizer (CLIP-G) for {base_repo}"))?;
+        let text_enc_l_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "text_encoder/model.fp16.safetensors"),
+            (&base_repo, "text_encoder/model.safetensors"),
+        ])
+        .await?;
+        let text_enc_g_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "text_encoder_2/model.fp16.safetensors"),
+            (&base_repo, "text_encoder_2/model.safetensors"),
+        ])
+        .await
+        .with_context(|| format!("text_encoder_2 in {base_repo}"))?;
+        let unet_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "unet/diffusion_pytorch_model.fp16.safetensors"),
+            (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
+        ])
+        .await?;
+        let vae_path = crate::hf::download::get_first_of(&[
+            (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
+            (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
+        ])
+        .await?;
+        dl.finish_with_message("✓ SDXL base weights ready");
+
+        let build = progress::spinner("Building AnimateDiff SDXL backbone");
+        // 1024² is the SDXL training resolution; only `clip` /
+        // `clip2` / `vae` accessors get read.
+        let cfg = StableDiffusionConfig::sdxl(None, None, None);
+        let tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
+            .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
+        let tokenizer_g = Tokenizer::from_file(&tokenizer_g_path)
+            .map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?;
+        let text_encoder_l = stable_diffusion::build_clip_transformer(
+            &cfg.clip,
+            &text_enc_l_path,
+            device,
+            dtype,
+        )?;
+        let cfg_g = cfg
+            .clip2
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL config missing clip2"))?;
+        let vs_g = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[text_enc_g_path.as_path()],
+                dtype,
+                device,
+            )?
+        };
+        let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, cfg_g, 1280)?;
+        let vae = cfg.build_vae(&vae_path, device, dtype)?;
+        let vs_unet = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[unet_path.as_path()],
+                dtype,
+                device,
+            )?
+        };
+        let motion_unet = SdxlUNet2DConditionModel::new(
+            vs_unet,
+            4, // in_channels
+            4, // out_channels
+            false,
+            crate::pipelines::controlnet::sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )?;
+        build.finish_with_message("✓ AnimateDiff SDXL backbone ready");
+
+        Ok(Self {
+            device: device.clone(),
+            dtype,
+            cfg,
+            tokenizer_l,
+            tokenizer_g,
+            text_encoder_l,
+            text_encoder_g,
+            vae,
+            motion_unet,
+            adapter,
+            modules,
+            max_frames,
+        })
+    }
+
+    /// End-to-end SDXL AnimateDiff inference. Returns
+    /// `Vec<DynamicImage>` of length `frames`. Width / height must
+    /// be divisible by 8 (VAE constraint); SDXL's training
+    /// distribution is centered on 1024², so larger sizes work
+    /// better than the SD 1.5 default of 512².
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate(
+        &self,
+        prompt: &str,
+        negative: &str,
+        frames: usize,
+        seed: u64,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        scheduler_kind: SchedulerKind,
+    ) -> Result<Vec<DynamicImage>> {
+        anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
+        anyhow::ensure!(
+            frames <= self.max_frames,
+            "frames {frames} exceeds SDXL motion adapter max_seq_length ({})",
+            self.max_frames,
+        );
+        anyhow::ensure!(
+            width.is_multiple_of(8) && height.is_multiple_of(8),
+            "width/height must be divisible by 8 (got {width}x{height})"
+        );
+        let do_cfg = guidance > 1.0;
+        let w = width as usize;
+        let h = height as usize;
+        let latent_h = h / 8;
+        let latent_w = w / 8;
+
+        let seed = seed & (u32::MAX as u64);
+        if let Err(e) = self.device.set_seed(seed) {
+            tracing::debug!(target: "plakat", "set_seed ignored: {e}");
+        }
+
+        // ---- text encode: dual CLIP-L + CLIP-G ----
+        let (cond_hidden, cond_pooled) = self.encode_branch(prompt)?;
+        let (text_embeds, pooled_embeds) = if do_cfg {
+            let (uncond_hidden, uncond_pooled) = self.encode_branch(negative)?;
+            // (2, 77, 2048) — row 0 = uncond, row 1 = cond.
+            let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?;
+            // (2, 1280)
+            let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?;
+            (
+                hidden.repeat((frames, 1, 1))?,
+                pooled.repeat((frames, 1))?,
+            )
+        } else {
+            (
+                cond_hidden.repeat((frames, 1, 1))?,
+                cond_pooled.repeat((frames, 1))?,
+            )
+        };
+
+        // ---- add_time_ids: (1, 6) → (2, 6) for CFG → (2F, 6) ----
+        let time_ids_one =
+            build_add_time_ids_base(height, width, &self.device, self.dtype)?;
+        let time_ids = if do_cfg {
+            Tensor::cat(&[&time_ids_one, &time_ids_one], 0)?
+        } else {
+            time_ids_one
+        };
+        let time_ids = time_ids.repeat((frames, 1))?;
+
+        // ---- scheduler ----
+        let mut scheduler =
+            super::scheduler::build(scheduler_kind, &self.cfg, steps)?;
+        let timesteps = scheduler.timesteps().to_vec();
+
+        // ---- latents ----
+        let mut latents = Tensor::randn(
+            0f32,
+            1f32,
+            (frames, 4, latent_h, latent_w),
+            &self.device,
+        )?
+        .to_dtype(self.dtype)?;
+        latents = (latents * scheduler.init_noise_sigma())?;
+
+        // ---- denoise loop ----
+        let bar = progress::step_bar(
+            timesteps.len() as u64,
+            &format!("AnimateDiff SDXL {frames}f {w}x{h}"),
+        );
+        for &timestep in &timesteps {
+            let model_input = if do_cfg {
+                Tensor::cat(&[&latents, &latents], 0)?
+            } else {
+                latents.clone()
+            };
+            let model_input = scheduler.scale_model_input(model_input, timestep)?;
+            let noise_pred = self.motion_unet.forward_with_motion(
+                &model_input,
+                timestep as f64,
+                &text_embeds,
+                &pooled_embeds,
+                &time_ids,
+                Some(&self.modules),
+                frames,
+            )?;
+            let noise_pred = if do_cfg {
+                let pieces = noise_pred.chunk(2, 0)?;
+                let uncond = &pieces[0];
+                let cond = &pieces[1];
+                (uncond + ((cond - uncond)? * guidance)?)?
+            } else {
+                noise_pred
+            };
+            latents = scheduler.step(&noise_pred, timestep, &latents)?;
+            bar.inc(1);
+            bar.set_message(format!("t={timestep} seed={seed}"));
+        }
+        bar.finish_and_clear();
+
+        // ---- per-frame VAE decode (SDXL scaling factor) ----
+        let vae_scale = 0.13025f64;
+        let mut images: Vec<DynamicImage> = Vec::with_capacity(frames);
+        let decode = progress::step_bar(frames as u64, "VAE decode");
+        for f in 0..frames {
+            let frame_latent = latents.i((f..f + 1, .., .., ..))?;
+            let scaled = (&frame_latent / vae_scale)?;
+            let image = self.vae.decode(&scaled)?;
+            let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+            let image = (image * 255.0)?
+                .to_dtype(DType::U8)?
+                .i(0)?
+                .permute((1, 2, 0))?;
+            let (oh, ow, _) = image.dims3()?;
+            let buf = image.flatten_all()?.to_vec1::<u8>()?;
+            let img = image::RgbImage::from_raw(ow as u32, oh as u32, buf)
+                .ok_or_else(|| anyhow!("decoded frame {f} buffer size mismatch"))?;
+            images.push(DynamicImage::ImageRgb8(img));
+            decode.inc(1);
+        }
+        decode.finish_and_clear();
+
+        Ok(images)
+    }
+
+    /// Dual CLIP-L + CLIP-G encode → `(hidden_2048, pooled_1280)`.
+    /// Mirrors `cli::animate::encode_branch_xl` but local to the
+    /// SDXL animate pipeline.
+    fn encode_branch(&self, text: &str) -> Result<(Tensor, Tensor)> {
+        use candle_transformers::models::stable_diffusion::clip::ClipTextTransformer;
+
+        let cfg_g = self
+            .cfg
+            .clip2
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL config missing clip2"))?;
+
+        // CLIP-L tokenize + penultimate hidden state.
+        let pad_l: u32 = match &self.cfg.clip.pad_with {
+            Some(s) => self
+                .tokenizer_l
+                .token_to_id(s)
+                .ok_or_else(|| anyhow!("CLIP-L tokenizer missing pad token {s:?}"))?,
+            None => self
+                .tokenizer_l
+                .token_to_id("<|endoftext|>")
+                .ok_or_else(|| anyhow!("CLIP-L tokenizer missing <|endoftext|>"))?,
+        };
+        let mut ids_l = self
+            .tokenizer_l
+            .encode(text, true)
+            .map_err(|e| anyhow!("CLIP-L encode of {text:?}: {e}"))?
+            .get_ids()
+            .to_vec();
+        ids_l.resize(self.cfg.clip.max_position_embeddings, pad_l);
+        let ids_l_t = Tensor::new(ids_l.as_slice(), &self.device)?.unsqueeze(0)?;
+        let (_final_l, hidden_l) = ClipTextTransformer::forward_until_encoder_layer(
+            &self.text_encoder_l,
+            &ids_l_t,
+            usize::MAX,
+            -2,
+        )?;
+        let hidden_l = hidden_l.to_dtype(self.dtype)?;
+
+        // CLIP-G tokenize + (penult, pooled).
+        let pad_g: u32 = match &cfg_g.pad_with {
+            Some(s) => self
+                .tokenizer_g
+                .token_to_id(s)
+                .ok_or_else(|| anyhow!("CLIP-G tokenizer missing pad token {s:?}"))?,
+            None => self
+                .tokenizer_g
+                .token_to_id("<|endoftext|>")
+                .ok_or_else(|| anyhow!("CLIP-G tokenizer missing <|endoftext|>"))?,
+        };
+        let mut ids_g = self
+            .tokenizer_g
+            .encode(text, true)
+            .map_err(|e| anyhow!("CLIP-G encode of {text:?}: {e}"))?
+            .get_ids()
+            .to_vec();
+        ids_g.resize(cfg_g.max_position_embeddings, pad_g);
+        let ids_g_t = Tensor::new(ids_g.as_slice(), &self.device)?.unsqueeze(0)?;
+        let (hidden_g, pooled_g) = self.text_encoder_g.forward_for_sdxl(&ids_g_t)?;
+        let hidden_g = hidden_g.to_dtype(self.dtype)?;
+        let pooled_g = pooled_g.to_dtype(self.dtype)?;
+
+        // Concat penults along channel dim → (1, 77, 2048).
+        let hidden =
+            Tensor::cat(&[&hidden_l, &hidden_g], candle_core::D::Minus1)?;
+        Ok((hidden, pooled_g))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +795,44 @@ mod tests {
         // exercises the same constraint at the UNet boundary.
         let msg = "frames 64 exceeds AnimateDiff V3 max_seq_length (32)";
         assert!(msg.contains("exceeds"));
+    }
+
+    /// v0.27 phase 2: SDXL pipeline end-to-end. Network-required;
+    /// downloads ~6 GB on cold cache. Runs a tiny 2-frame inference
+    /// at 64x64 to exercise the new SDXL animate path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[ignore]
+    async fn load_sdxl_beta_runs_inference() {
+        let device = Device::Cpu;
+        let pipeline = AnimateDiffSdxlPipeline::load_sdxl_beta(
+            &device,
+            DType::F32,
+            "sdxl",
+            &[],
+            1.0,
+        )
+        .await
+        .expect("load SDXL beta stack");
+        // SDXL has 3 blocks × 2 layers × 2 (down+up) = 12 modules.
+        assert_eq!(pipeline.modules.modules.len(), 12);
+        assert_eq!(pipeline.max_frames, 32);
+        let frames = pipeline
+            .generate(
+                "a fox in a meadow",
+                "",
+                2,
+                42,
+                64,
+                64,
+                2,
+                7.5,
+                SchedulerKind::Ddim,
+            )
+            .expect("inference");
+        assert_eq!(frames.len(), 2);
+        for img in &frames {
+            assert_eq!(img.width(), 64);
+            assert_eq!(img.height(), 64);
+        }
     }
 }
