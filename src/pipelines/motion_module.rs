@@ -21,23 +21,32 @@
 //! is text-agnostic + FFN), then reshapes back. Final output is
 //! `proj_out(residual_added_to_input)`.
 //!
-//! Tensor naming matches the V3 safetensors layout enumerated in
-//! [`super::motion_adapter`]:
+//! Tensor naming matches the upstream safetensors layout for V3
+//! SD 1.5 AND SDXL beta (verified via safetensors header dump
+//! 2026-05-28):
 //!
 //! ```text
-//! temporal_transformer.norm.{weight,bias}                       (GroupNorm)
-//! temporal_transformer.proj_in.{weight,bias}                    (Linear)
-//! temporal_transformer.transformer_blocks.{0..N-1}.
-//!     attention_blocks.0.{to_q,to_k,to_v,to_out.0}.weight       (self-attn over frames)
-//!     attention_blocks.1.{to_q,to_k,to_v,to_out.0}.weight       (cross-attn slot)
-//!     ff.net.0.proj.{weight,bias}                               (GEGLU first half)
-//!     ff.net.2.{weight,bias}                                    (GEGLU second half)
-//!     norms.{0,1,2}.{weight,bias}                               (LayerNorms)
-//! temporal_transformer.proj_out.{weight,bias}                   (Linear)
+//! down_blocks.{i}.motion_modules.{j}.
+//!     norm.{weight,bias}                                       (GroupNorm)
+//!     proj_in.{weight,bias}                                    (Linear)
+//!     transformer_blocks.0.
+//!         attn1.{to_q,to_k,to_v}.weight                        (self-attn — no bias on q/k/v)
+//!         attn1.to_out.0.{weight,bias}                         (self-attn out projection)
+//!         attn2.{to_q,to_k,to_v}.weight                        (cross-attn slot)
+//!         attn2.to_out.0.{weight,bias}
+//!         norm1.{weight,bias}                                  (pre-attn1 LayerNorm)
+//!         norm2.{weight,bias}                                  (pre-attn2 LayerNorm)
+//!         norm3.{weight,bias}                                  (pre-FF LayerNorm)
+//!         ff.net.0.proj.{weight,bias}                          (GEGLU first half)
+//!         ff.net.2.{weight,bias}                               (GEGLU second half)
+//!         pos_embed.pe                                         (positional table; shape (1, max_seq, C))
+//!     proj_out.{weight,bias}                                   (Linear)
 //! ```
 //!
-//! Plus a [`PositionalEncoding`] table (`pe.weight`) of shape
-//! `(motion_max_seq_length, dim)` used to inject frame indices.
+//! The `motion_layers_per_block` config value is the number of
+//! `motion_modules.{j}` slots per UNet block (typically 2). Each
+//! slot has exactly one inner `transformer_blocks.0` — there is no
+//! N-fold inner loop.
 //!
 //! Phase 2 ships the modules + a `build_modules()` constructor on
 //! [`super::motion_adapter::MotionAdapter`] that yields the
@@ -258,13 +267,18 @@ pub struct TemporalTransformerBlock {
 
 impl TemporalTransformerBlock {
     fn new(vb: VarBuilder<'_>, dim: usize, num_heads: usize) -> Result<Self> {
-        let norm1 = layer_norm(dim, 1e-5, vb.pp("norms.0"))?;
-        let attn1 =
-            TemporalAttention::new(vb.pp("attention_blocks.0"), dim, num_heads)?;
-        let norm2 = layer_norm(dim, 1e-5, vb.pp("norms.1"))?;
-        let attn2 =
-            TemporalAttention::new(vb.pp("attention_blocks.1"), dim, num_heads)?;
-        let norm3 = layer_norm(dim, 1e-5, vb.pp("norms.2"))?;
+        // v0.27 phase 2: tensor naming matches the actual upstream
+        // safetensors for both V3 SD 1.5 + SDXL beta. (The v0.26
+        // phase 2 docstring referencing `attention_blocks.{0,1}` +
+        // `norms.{0,1,2}` was based on diffusers' Python class
+        // attribute names, but the on-disk safetensors use
+        // `attn1`/`attn2` + `norm1`/`norm2`/`norm3` — verified by
+        // safetensors header dump 2026-05-28.)
+        let norm1 = layer_norm(dim, 1e-5, vb.pp("norm1"))?;
+        let attn1 = TemporalAttention::new(vb.pp("attn1"), dim, num_heads)?;
+        let norm2 = layer_norm(dim, 1e-5, vb.pp("norm2"))?;
+        let attn2 = TemporalAttention::new(vb.pp("attn2"), dim, num_heads)?;
+        let norm3 = layer_norm(dim, 1e-5, vb.pp("norm3"))?;
         let ff = TemporalFeedForward::new(vb.pp("ff"), dim, 4)?;
         Ok(Self {
             norm1,
@@ -305,33 +319,42 @@ impl TemporalTransformerBlock {
 // Per-block motion module (the splice unit)
 // ---------------------------------------------------------------------------
 
-/// One full temporal-transformer wrapping N block layers. This is
-/// what attaches to a single SD 1.5 UNet block. The motion adapter
-/// holds one of these per (down_block × layer + up_block × layer).
+/// One full temporal-transformer attached to a single UNet
+/// down/up block. Each `motion_modules.N` slot in the safetensors
+/// is one of these; `motion_layers_per_block` in the config is the
+/// **number of `motion_modules.N`** per UNet block (typically 2),
+/// not the number of `transformer_blocks` inside one motion module
+/// (always 1 per upstream convention).
 ///
-/// Weights:
+/// On-disk weight layout (per motion_modules slot):
 /// * `norm` — GroupNorm before the in-projection
 /// * `proj_in` — Linear (channels → channels)
-/// * `transformer_blocks.{0..N-1}` — the temporal-transformer blocks
+/// * `transformer_blocks.0` — the single inner transformer block
+///   (attn1 + attn2 + ff with norm{1,2,3})
 /// * `proj_out` — Linear (channels → channels)
-/// * `pe` — positional encoding table (max_seq_length, channels)
+/// * `transformer_blocks.0.pos_embed.pe` — positional encoding
+///   table (1, max_seq_length, channels)
 #[derive(Debug)]
 pub struct TemporalTransformer {
     norm: GroupNorm,
     proj_in: Linear,
-    blocks: Vec<TemporalTransformerBlock>,
+    /// One inner transformer block (attn1 + attn2 + ff).
+    /// The upstream V3 and SDXL motion modules each carry exactly
+    /// one transformer_blocks slot per motion_modules slot.
+    block: TemporalTransformerBlock,
     proj_out: Linear,
     pos_embed: PositionalEncoding,
     /// Channels of the UNet block this motion module attaches to —
-    /// used by phase 3's splice code to verify shapes match.
+    /// used by the splice code to verify shapes match.
     pub channels: usize,
 }
 
 impl TemporalTransformer {
-    /// Build from a VarBuilder rooted at
-    /// `temporal_transformer.*` (i.e. one level above `norm`,
-    /// `proj_in`, etc.). The `pe` tensor lives under
-    /// `temporal_transformer.pe` per diffusers convention.
+    /// Build from a VarBuilder rooted at the motion-modules slot
+    /// (`down_blocks.{i}.motion_modules.{j}` — NOT one level deeper).
+    /// The v0.26 path that used a `.temporal_transformer.*` prefix
+    /// was based on a misread of the upstream JSON; the actual
+    /// safetensors keys live directly under `motion_modules.{j}`.
     fn new(
         vb: VarBuilder<'_>,
         config: &MotionAdapterConfig,
@@ -344,30 +367,25 @@ impl TemporalTransformer {
             vb.pp("norm"),
         )?;
         let proj_in = linear(channels, channels, vb.pp("proj_in"))?;
-        let mut blocks = Vec::with_capacity(config.motion_layers_per_block);
-        for i in 0..config.motion_layers_per_block {
-            let block = TemporalTransformerBlock::new(
-                vb.pp(&format!("transformer_blocks.{i}")),
-                channels,
-                config.motion_num_attention_heads,
-            )
-            .with_context(|| format!("loading transformer_blocks.{i}"))?;
-            blocks.push(block);
-        }
+        let block = TemporalTransformerBlock::new(
+            vb.pp("transformer_blocks.0"),
+            channels,
+            config.motion_num_attention_heads,
+        )
+        .context("loading transformer_blocks.0")?;
         let proj_out = linear(channels, channels, vb.pp("proj_out"))?;
         // Positional encoding lives at
-        // `temporal_transformer.transformer_blocks.0.pos_encoder.pe`
-        // in the diffusers V3 layout (verified by the phase 1
-        // enumeration). One pe per motion module (not per block).
+        // `transformer_blocks.0.pos_embed.pe`. One pe per motion
+        // module slot.
         let pos_embed = PositionalEncoding::new(
-            vb.pp("transformer_blocks.0.pos_encoder"),
+            vb.pp("transformer_blocks.0.pos_embed"),
             config.motion_max_seq_length,
             channels,
         )?;
         Ok(Self {
             norm,
             proj_in,
-            blocks,
+            block,
             proj_out,
             pos_embed,
             channels,
@@ -412,12 +430,10 @@ impl TemporalTransformer {
         let x = self.proj_in.forward(&x)?;
 
         // Add positional embedding.
-        let mut x = self.pos_embed.forward(&x)?;
+        let x = self.pos_embed.forward(&x)?;
 
-        // Run transformer blocks.
-        for block in &self.blocks {
-            x = block.forward(&x)?;
-        }
+        // Single inner transformer block (attn1 + attn2 + ff).
+        let x = self.block.forward(&x)?;
 
         // Project out.
         let x = self.proj_out.forward(&x)?;
@@ -527,7 +543,7 @@ impl MotionAdapter {
             let channels = cfg.block_out_channels[block_idx];
             for layer_idx in 0..cfg.motion_layers_per_block {
                 let prefix = format!(
-                    "down_blocks.{block_idx}.motion_modules.{layer_idx}.temporal_transformer"
+                    "down_blocks.{block_idx}.motion_modules.{layer_idx}"
                 );
                 let m = TemporalTransformer::new(vb.pp(&prefix), cfg, channels)
                     .with_context(|| format!("building {prefix}"))?;
@@ -548,7 +564,7 @@ impl MotionAdapter {
             let channels = cfg.block_out_channels[nb - 1 - block_idx];
             for layer_idx in 0..cfg.motion_layers_per_block {
                 let prefix = format!(
-                    "up_blocks.{block_idx}.motion_modules.{layer_idx}.temporal_transformer"
+                    "up_blocks.{block_idx}.motion_modules.{layer_idx}"
                 );
                 let m = TemporalTransformer::new(vb.pp(&prefix), cfg, channels)
                     .with_context(|| format!("building {prefix}"))?;
@@ -569,7 +585,7 @@ impl MotionAdapter {
             let channels = cfg.block_out_channels[nb - 1];
             for layer_idx in 0..cfg.motion_mid_block_layers_per_block {
                 let prefix =
-                    format!("mid_block.motion_modules.{layer_idx}.temporal_transformer");
+                    format!("mid_block.motion_modules.{layer_idx}");
                 let m = TemporalTransformer::new(vb.pp(&prefix), cfg, channels)
                     .with_context(|| format!("building {prefix}"))?;
                 modules.push((
@@ -642,69 +658,71 @@ mod tests {
         }
     }
 
+    /// Build a synthetic weight map matching the actual upstream
+    /// safetensors tensor names for ONE motion module slot
+    /// (`down_blocks.X.motion_modules.Y`). Used by the
+    /// shape/passthrough/channel-mismatch tests so the layout stays
+    /// in one place.
+    fn zero_weights_for_motion_module(
+        cfg: &MotionAdapterConfig,
+        channels: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> std::collections::HashMap<String, Tensor> {
+        use std::collections::HashMap;
+        let mut weights: HashMap<String, Tensor> = HashMap::new();
+        let z = Tensor::zeros((channels,), dtype, device).unwrap();
+        let zw = Tensor::zeros((channels, channels), dtype, device).unwrap();
+        let zw_ff_in =
+            Tensor::zeros((channels * 4 * 2, channels), dtype, device).unwrap();
+        let z_ff_in = Tensor::zeros((channels * 4 * 2,), dtype, device).unwrap();
+        let zw_ff_out =
+            Tensor::zeros((channels, channels * 4), dtype, device).unwrap();
+
+        // Outer projections + GroupNorm.
+        weights.insert("norm.weight".into(), z.clone());
+        weights.insert("norm.bias".into(), z.clone());
+        weights.insert("proj_in.weight".into(), zw.clone());
+        weights.insert("proj_in.bias".into(), z.clone());
+        weights.insert("proj_out.weight".into(), zw.clone());
+        weights.insert("proj_out.bias".into(), z.clone());
+        // pos_embed.pe — (1, max_seq_length, dim).
+        weights.insert(
+            "transformer_blocks.0.pos_embed.pe".into(),
+            Tensor::zeros((1, cfg.motion_max_seq_length, channels), dtype, device).unwrap(),
+        );
+        // Inner single transformer_block: norm{1,2,3} + attn{1,2} + ff.
+        let p = |s: &str| format!("transformer_blocks.0.{s}");
+        for n in 1..=3 {
+            weights.insert(p(&format!("norm{n}.weight")), z.clone());
+            weights.insert(p(&format!("norm{n}.bias")), z.clone());
+        }
+        for attn in 1..=2 {
+            let a = |s: &str| p(&format!("attn{attn}.{s}"));
+            weights.insert(a("to_q.weight"), zw.clone());
+            weights.insert(a("to_k.weight"), zw.clone());
+            weights.insert(a("to_v.weight"), zw.clone());
+            weights.insert(a("to_out.0.weight"), zw.clone());
+            weights.insert(a("to_out.0.bias"), z.clone());
+        }
+        weights.insert(p("ff.net.0.proj.weight"), zw_ff_in);
+        weights.insert(p("ff.net.0.proj.bias"), z_ff_in);
+        weights.insert(p("ff.net.2.weight"), zw_ff_out);
+        weights.insert(p("ff.net.2.bias"), z);
+        weights
+    }
+
     /// Pure-shape test: a synthetic motion module built from
     /// zero-tensors processes a `(B*F, C, H, W)` input and
     /// produces output of the SAME shape. Doesn't validate
     /// correctness of the math — just the reshape chain.
     #[test]
     fn temporal_transformer_preserves_shape() {
-        use std::collections::HashMap;
-
         let device = Device::Cpu;
         let dtype = DType::F32;
         let cfg = v3_config();
-        let channels = 320usize; // smallest block
-
-        // Build a synthetic weight map matching V3 tensor names
-        // for one motion module. Zero-init everything — output
-        // will be residual-passthrough since the projections all
-        // produce zeros and add to the input.
-        let mut weights: HashMap<String, Tensor> = HashMap::new();
-        let z1 = Tensor::zeros((channels,), dtype, &device).unwrap();
-        let zw_lin = Tensor::zeros((channels, channels), dtype, &device).unwrap();
-        let zw_ff_in =
-            Tensor::zeros((channels * 4 * 2, channels), dtype, &device).unwrap();
-        let z1_ff_in = Tensor::zeros((channels * 4 * 2,), dtype, &device).unwrap();
-        let zw_ff_out =
-            Tensor::zeros((channels, channels * 4), dtype, &device).unwrap();
-
-        // norm (GroupNorm)
-        weights.insert("norm.weight".into(), z1.clone());
-        weights.insert("norm.bias".into(), z1.clone());
-        // proj_in / proj_out (Linear)
-        weights.insert("proj_in.weight".into(), zw_lin.clone());
-        weights.insert("proj_in.bias".into(), z1.clone());
-        weights.insert("proj_out.weight".into(), zw_lin.clone());
-        weights.insert("proj_out.bias".into(), z1.clone());
-        // pe — (1, max_seq_length, dim)
-        let pe = Tensor::zeros(
-            (1, cfg.motion_max_seq_length, channels),
-            dtype,
-            &device,
-        )
-        .unwrap();
-        weights.insert("transformer_blocks.0.pos_encoder.pe".into(), pe);
-
-        for layer in 0..cfg.motion_layers_per_block {
-            let p = |s: &str| format!("transformer_blocks.{layer}.{s}");
-            for attn in 0..2 {
-                let a = |s: &str| p(&format!("attention_blocks.{attn}.{s}"));
-                weights.insert(a("to_q.weight"), zw_lin.clone());
-                weights.insert(a("to_k.weight"), zw_lin.clone());
-                weights.insert(a("to_v.weight"), zw_lin.clone());
-                weights.insert(a("to_out.0.weight"), zw_lin.clone());
-                weights.insert(a("to_out.0.bias"), z1.clone());
-            }
-            weights.insert(p("ff.net.0.proj.weight"), zw_ff_in.clone());
-            weights.insert(p("ff.net.0.proj.bias"), z1_ff_in.clone());
-            weights.insert(p("ff.net.2.weight"), zw_ff_out.clone());
-            weights.insert(p("ff.net.2.bias"), z1.clone());
-            for n in 0..3 {
-                weights.insert(p(&format!("norms.{n}.weight")), z1.clone());
-                weights.insert(p(&format!("norms.{n}.bias")), z1.clone());
-            }
-        }
-
+        let channels = 320usize;
+        let weights = zero_weights_for_motion_module(&cfg, channels, &device, dtype);
         let vb = VarBuilder::from_tensors(weights, dtype, &device);
         let tt = TemporalTransformer::new(vb, &cfg, channels)
             .expect("build temporal transformer");
@@ -722,52 +740,11 @@ mod tests {
     /// Validates the residual + reshape chain.
     #[test]
     fn zero_weight_temporal_transformer_is_residual_passthrough() {
-        use std::collections::HashMap;
-
         let device = Device::Cpu;
         let dtype = DType::F32;
         let cfg = v3_config();
         let channels = 320usize;
-
-        let mut weights: HashMap<String, Tensor> = HashMap::new();
-        let z = Tensor::zeros((channels,), dtype, &device).unwrap();
-        let zw = Tensor::zeros((channels, channels), dtype, &device).unwrap();
-        let zw_ff_in =
-            Tensor::zeros((channels * 4 * 2, channels), dtype, &device).unwrap();
-        let z_ff_in = Tensor::zeros((channels * 4 * 2,), dtype, &device).unwrap();
-        let zw_ff_out =
-            Tensor::zeros((channels, channels * 4), dtype, &device).unwrap();
-
-        weights.insert("norm.weight".into(), z.clone());
-        weights.insert("norm.bias".into(), z.clone());
-        weights.insert("proj_in.weight".into(), zw.clone());
-        weights.insert("proj_in.bias".into(), z.clone());
-        weights.insert("proj_out.weight".into(), zw.clone());
-        weights.insert("proj_out.bias".into(), z.clone());
-        weights.insert(
-            "transformer_blocks.0.pos_encoder.pe".into(),
-            Tensor::zeros((1, cfg.motion_max_seq_length, channels), dtype, &device).unwrap(),
-        );
-        for layer in 0..cfg.motion_layers_per_block {
-            let p = |s: &str| format!("transformer_blocks.{layer}.{s}");
-            for attn in 0..2 {
-                let a = |s: &str| p(&format!("attention_blocks.{attn}.{s}"));
-                weights.insert(a("to_q.weight"), zw.clone());
-                weights.insert(a("to_k.weight"), zw.clone());
-                weights.insert(a("to_v.weight"), zw.clone());
-                weights.insert(a("to_out.0.weight"), zw.clone());
-                weights.insert(a("to_out.0.bias"), z.clone());
-            }
-            weights.insert(p("ff.net.0.proj.weight"), zw_ff_in.clone());
-            weights.insert(p("ff.net.0.proj.bias"), z_ff_in.clone());
-            weights.insert(p("ff.net.2.weight"), zw_ff_out.clone());
-            weights.insert(p("ff.net.2.bias"), z.clone());
-            for n in 0..3 {
-                weights.insert(p(&format!("norms.{n}.weight")), z.clone());
-                weights.insert(p(&format!("norms.{n}.bias")), z.clone());
-            }
-        }
-
+        let weights = zero_weights_for_motion_module(&cfg, channels, &device, dtype);
         let vb = VarBuilder::from_tensors(weights, dtype, &device);
         let tt = TemporalTransformer::new(vb, &cfg, channels).unwrap();
 
@@ -776,8 +753,8 @@ mod tests {
         let w = 4;
         let input = Tensor::randn(0.0f32, 1.0f32, (f, channels, h, w), &device).unwrap();
         let out = tt.forward(&input, f).unwrap();
-        // With all weights zero, the per-block contribution is
-        // zero; residual passes through → out ≈ input.
+        // With all weights zero the per-block contribution is zero;
+        // residual passes through → out ≈ input.
         let diff = (&out - &input).unwrap().abs().unwrap().mean_all().unwrap();
         let v: f32 = diff.to_vec0().unwrap();
         assert!(v < 1e-5, "non-zero diff with zero weights: {v}");
@@ -859,50 +836,11 @@ mod tests {
     /// Channel mismatch on forward fails loud.
     #[test]
     fn motion_module_rejects_channel_mismatch() {
-        use std::collections::HashMap;
         let device = Device::Cpu;
         let dtype = DType::F32;
         let cfg = v3_config();
         let channels = 320usize;
-        // Use the same synthetic-weights path as
-        // `zero_weight_temporal_transformer_is_residual_passthrough`.
-        let mut weights: HashMap<String, Tensor> = HashMap::new();
-        let z = Tensor::zeros((channels,), dtype, &device).unwrap();
-        let zw = Tensor::zeros((channels, channels), dtype, &device).unwrap();
-        let zw_ff_in =
-            Tensor::zeros((channels * 4 * 2, channels), dtype, &device).unwrap();
-        let z_ff_in = Tensor::zeros((channels * 4 * 2,), dtype, &device).unwrap();
-        let zw_ff_out =
-            Tensor::zeros((channels, channels * 4), dtype, &device).unwrap();
-        weights.insert("norm.weight".into(), z.clone());
-        weights.insert("norm.bias".into(), z.clone());
-        weights.insert("proj_in.weight".into(), zw.clone());
-        weights.insert("proj_in.bias".into(), z.clone());
-        weights.insert("proj_out.weight".into(), zw.clone());
-        weights.insert("proj_out.bias".into(), z.clone());
-        weights.insert(
-            "transformer_blocks.0.pos_encoder.pe".into(),
-            Tensor::zeros((1, cfg.motion_max_seq_length, channels), dtype, &device).unwrap(),
-        );
-        for layer in 0..cfg.motion_layers_per_block {
-            let p = |s: &str| format!("transformer_blocks.{layer}.{s}");
-            for attn in 0..2 {
-                let a = |s: &str| p(&format!("attention_blocks.{attn}.{s}"));
-                weights.insert(a("to_q.weight"), zw.clone());
-                weights.insert(a("to_k.weight"), zw.clone());
-                weights.insert(a("to_v.weight"), zw.clone());
-                weights.insert(a("to_out.0.weight"), zw.clone());
-                weights.insert(a("to_out.0.bias"), z.clone());
-            }
-            weights.insert(p("ff.net.0.proj.weight"), zw_ff_in.clone());
-            weights.insert(p("ff.net.0.proj.bias"), z_ff_in.clone());
-            weights.insert(p("ff.net.2.weight"), zw_ff_out.clone());
-            weights.insert(p("ff.net.2.bias"), z.clone());
-            for n in 0..3 {
-                weights.insert(p(&format!("norms.{n}.weight")), z.clone());
-                weights.insert(p(&format!("norms.{n}.bias")), z.clone());
-            }
-        }
+        let weights = zero_weights_for_motion_module(&cfg, channels, &device, dtype);
         let vb = VarBuilder::from_tensors(weights, dtype, &device);
         let tt = TemporalTransformer::new(vb, &cfg, channels).unwrap();
         // Wrong number of channels.
