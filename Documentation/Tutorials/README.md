@@ -105,11 +105,14 @@ If you're new to plakat, work through these in order:
     Two modes:
     - **Prompt-morph** (v0.20): lerp text-encoder embeddings between
       `--from` and `--to` for a smooth N-frame morph. SD 1.5 /
-      SD 2.1 / SDXL + Flux Dev / Schnell + **SD3 / SD3.5** (v0.26).
-    - **AnimateDiff** (v0.26 infrastructure, v0.26.1 inference):
-      motion-coherent N-frame generation from a single prompt
-      via the V3 motion adapter. SD 1.5 only. Includes
-      `--motion-lora` stacking + `--format {gif,mp4,webm,frames,all}`.
+      SD 2.1 / SDXL + Flux Dev / Schnell + SD3 / SD3.5 (v0.26).
+    - **AnimateDiff** (**v0.27 feature complete**): motion-coherent
+      N-frame generation from a single prompt via the V3 (SD 1.5)
+      and SDXL beta motion adapters. Adds `--motion-lora` stacking,
+      `--control` (depth/canny/openpose/lineart/softedge — same hint
+      every frame), `--window-size` + `--window-overlap` for long-
+      form sliding-window output past V3's 32-frame cap, and
+      `--format {gif,mp4,webm,frames,all}`.
     See also [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md)
     for the AnimateDiff architecture reference.
 
