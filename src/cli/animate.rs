@@ -1212,60 +1212,52 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
 
     let seed = args.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
 
-    // v0.27 phase 3: optional ControlNet stack. Single conditioner
-    // for v0.27; the same hint tiles to every frame inside the
-    // pipeline. SDXL CN routing lands in phase 4 — emit a TODO
-    // warning for now and skip the load on the SDXL branch.
+    // v0.27 phase 3 (SD 1.5) + phase 4 (SDXL): optional ControlNet
+    // stack. Single conditioner for v0.27 — the same hint tiles to
+    // every frame inside the pipeline. The model picker routes the
+    // CN load to the right variant (SD 1.5 vs SDXL) via the standard
+    // `ControlNetVariant::detect`.
     let controls = if let Some(kind_str) = args.control.as_deref() {
-        if matches!(variant, SdVariant::Sdxl) {
-            tracing::warn!(
-                target: "plakat",
-                "--control on SDXL AnimateDiff is deferred to v0.27 phase 4. \
-                 Ignoring --control={kind_str} for this run."
-            );
-            Vec::new()
-        } else {
-            use crate::pipelines::controlnet::{
-                ControlKind, ControlSpec, load_control_stack,
-            };
-            use std::str::FromStr;
-            let kind = ControlKind::from_str(kind_str).with_context(|| {
-                format!(
-                    "parsing --control {kind_str:?} — expected depth | canny \
-                     | openpose | lineart | softedge"
-                )
-            })?;
-            if args.control_image.is_some() && args.control_from.is_some() {
-                anyhow::bail!(
-                    "--control-image and --control-from are mutually exclusive"
-                );
-            }
-            if args.control_image.is_none() && args.control_from.is_none() {
-                anyhow::bail!(
-                    "--control={kind_str} requires --control-image PATH or \
-                     --control-from PATH"
-                );
-            }
-            let spec = ControlSpec {
-                kind,
-                image: args.control_image.clone(),
-                from: args.control_from.clone(),
-                strength: args.control_strength,
-                start: 0.0,
-                end: 1.0,
-            };
-            load_control_stack(
-                std::slice::from_ref(&spec),
-                &args.model,
-                width,
-                height,
-                &device,
-                dtype,
-                None,
+        use crate::pipelines::controlnet::{
+            ControlKind, ControlSpec, load_control_stack,
+        };
+        use std::str::FromStr;
+        let kind = ControlKind::from_str(kind_str).with_context(|| {
+            format!(
+                "parsing --control {kind_str:?} — expected depth | canny \
+                 | openpose | lineart | softedge"
             )
-            .await
-            .context("loading ControlNet for --animatediff")?
+        })?;
+        if args.control_image.is_some() && args.control_from.is_some() {
+            anyhow::bail!(
+                "--control-image and --control-from are mutually exclusive"
+            );
         }
+        if args.control_image.is_none() && args.control_from.is_none() {
+            anyhow::bail!(
+                "--control={kind_str} requires --control-image PATH or \
+                 --control-from PATH"
+            );
+        }
+        let spec = ControlSpec {
+            kind,
+            image: args.control_image.clone(),
+            from: args.control_from.clone(),
+            strength: args.control_strength,
+            start: 0.0,
+            end: 1.0,
+        };
+        load_control_stack(
+            std::slice::from_ref(&spec),
+            &args.model,
+            width,
+            height,
+            &device,
+            dtype,
+            None,
+        )
+        .await
+        .context("loading ControlNet for --animatediff")?
     } else {
         Vec::new()
     };
@@ -1338,6 +1330,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 args.steps,
                 args.guidance,
                 args.scheduler,
+                &controls,
             )?
         }
         // SdVariant::Sd21 already rejected above.

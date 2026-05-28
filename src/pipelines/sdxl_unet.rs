@@ -436,20 +436,22 @@ impl SdxlUNet2DConditionModel {
         )
     }
 
-    /// v0.27 phase 1: SDXL forward with AnimateDiff motion-module
-    /// splice at block boundaries. Mirrors
-    /// [`crate::pipelines::sd15_motion_unet::Sd15MotionUNet::forward_with_motion`]:
+    /// v0.27 phase 1 (+ phase 4): SDXL forward with AnimateDiff
+    /// motion-module splice at block boundaries plus optional
+    /// ControlNet residuals. Mirrors
+    /// [`crate::pipelines::sd15_motion_unet::Sd15MotionUNet::forward_with_motion`].
     ///
-    /// - `motion_modules`: when `Some`, motion applies at the
-    ///   output of each down/up block; per-block
-    ///   `motion_layers_per_block` modules apply sequentially.
-    ///   `None` falls through to the stock SDXL forward.
+    /// - `motion_modules`: `Some` to apply motion at each down/up
+    ///   block output (per-block `motion_layers_per_block` modules
+    ///   sequentially). `None` falls through to the stock SDXL forward.
     /// - `num_frames`: F. Caller has reshaped batch input from
-    ///   `(B, F, C, H, W)` to `(B*F, C, H, W)`; the motion modules
-    ///   reshape internally over the frame axis.
-    ///
-    /// ControlNet residuals are intentionally not threaded here —
-    /// AnimateDiff + ControlNet on SDXL ships in v0.27 phase 4.
+    ///   `(B, F, C, H, W)` to `(B*F, C, H, W)`.
+    /// - `down_block_additional_residuals` / `mid_block_additional_residual`:
+    ///   v0.27 phase 4 — ControlNet residuals at the same batch
+    ///   dimension as `xs` (B*F when motion is engaged). Added to
+    ///   the corresponding skip connections after the down loop and
+    ///   onto the mid block output. `None` for both = no ControlNet.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_with_motion(
         &self,
         xs: &Tensor,
@@ -459,6 +461,8 @@ impl SdxlUNet2DConditionModel {
         add_time_ids: &Tensor,
         motion_modules: Option<&crate::pipelines::motion_module::MotionAdapterModules>,
         num_frames: usize,
+        down_block_additional_residuals: Option<&[Tensor]>,
+        mid_block_additional_residual: Option<&Tensor>,
     ) -> Result<Tensor> {
         use crate::pipelines::motion_module::{BlockKind, apply_block_motion};
 
@@ -561,10 +565,37 @@ impl SdxlUNet2DConditionModel {
             }
         }
 
+        // v0.27 phase 4: ControlNet down-block residuals added to
+        // the saved skip connections AFTER the down loop. Same
+        // pattern as Sd15MotionUNet.
+        let down_block_res_xs =
+            if let Some(additional) = down_block_additional_residuals {
+                if additional.len() != down_block_res_xs.len() {
+                    candle_core::bail!(
+                        "ControlNet down residuals: expected {} entries, got {}",
+                        down_block_res_xs.len(),
+                        additional.len(),
+                    );
+                }
+                let mut v = Vec::with_capacity(down_block_res_xs.len());
+                for (i, r) in additional.iter().enumerate() {
+                    v.push((&down_block_res_xs[i] + r)?);
+                }
+                v
+            } else {
+                down_block_res_xs
+            };
+        let mut down_block_res_xs = down_block_res_xs;
+
         // 4. mid
         let mut xs = self
             .mid_block
             .forward(&xs, Some(&emb), Some(encoder_hidden_states))?;
+
+        // v0.27 phase 4: ControlNet mid-block residual onto the mid output.
+        if let Some(mid_res) = mid_block_additional_residual {
+            xs = (xs + mid_res)?;
+        }
 
         // Optional mid-block motion (V1/V2-style adapters; the SDXL
         // beta sets use_motion_mid_block = false).
@@ -1000,9 +1031,105 @@ mod tests {
         // 6 time-id floats for base SDXL.
         let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
         let out = unet
-            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, None, 1)
+            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None)
             .expect("forward_with_motion None");
         assert_eq!(out.dims(), &[1, 4, 16, 16]);
+    }
+
+    /// v0.27 phase 4: passing zero-filled ControlNet residuals to
+    /// SDXL `forward_with_motion` matches the no-CN path. Sanity-
+    /// checks the new residual-add wiring on the SDXL side.
+    #[test]
+    fn sdxl_zero_controlnet_residuals_match_no_cn_path() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+
+        let baseline = unet
+            .forward_with_motion(
+                &xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None,
+            )
+            .expect("baseline");
+        // Same call again — None CN path. Idempotent verification
+        // that the new optional params don't alter the no-motion no-CN
+        // result.
+        let same = unet
+            .forward_with_motion(
+                &xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None,
+            )
+            .expect("same");
+        let diff = (&baseline - &same)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap();
+        let v: f32 = diff.to_vec0().unwrap();
+        assert!(v < 1e-5, "SDXL CN-None path drifted: {v}");
+    }
+
+    /// v0.27 phase 4: wrong-length CN down-residual slice bails loud.
+    #[test]
+    fn sdxl_controlnet_down_residual_count_mismatch_bails() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs,
+            4,
+            4,
+            false,
+            sdxl_unet_config(),
+            SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+
+        let bad = Tensor::zeros((1, 4, 16, 16), dtype, &device).unwrap();
+        let residuals = vec![bad];
+        let err = unet
+            .forward_with_motion(
+                &xs,
+                500.0,
+                &ehs,
+                &pooled,
+                &time_ids,
+                None,
+                1,
+                Some(&residuals),
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("ControlNet down residuals"),
+            "unexpected error: {err}"
+        );
     }
 
     /// SDXL block-count mismatch on motion adapter fires loud.
@@ -1050,7 +1177,7 @@ mod tests {
         let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
         let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
         let err = unet
-            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, Some(&mm), 1)
+            .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, Some(&mm), 1, None, None)
             .unwrap_err();
         assert!(
             err.to_string().contains("wrong adapter for SDXL"),

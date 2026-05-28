@@ -586,6 +586,11 @@ impl AnimateDiffSdxlPipeline {
     /// be divisible by 8 (VAE constraint); SDXL's training
     /// distribution is centered on 1024², so larger sizes work
     /// better than the SD 1.5 default of 512².
+    ///
+    /// `controls`: v0.27 phase 4 — optional ControlNet stack (single
+    /// CN supported in v0.27; same hint tiled to every frame). The
+    /// SDXL ControlNet receives pooled_text + add_time_ids alongside
+    /// the latents, identical to non-animate SDXL inference.
     #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &self,
@@ -598,6 +603,7 @@ impl AnimateDiffSdxlPipeline {
         steps: usize,
         guidance: f64,
         scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
     ) -> Result<Vec<DynamicImage>> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -664,6 +670,28 @@ impl AnimateDiffSdxlPipeline {
         .to_dtype(self.dtype)?;
         latents = (latents * scheduler.init_noise_sigma())?;
 
+        // ---- ControlNet conditioning pre-tile ----
+        // Same shape contract as the SD 1.5 path: tile a single hint
+        // to the per-step batch (2F or F).
+        let cn_cond_batch = if let Some(cr) = controls.first() {
+            let base = if do_cfg {
+                Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+            } else {
+                cr.conditioning.clone()
+            };
+            Some(base.repeat((frames, 1, 1, 1))?)
+        } else {
+            None
+        };
+        if controls.len() > 1 {
+            tracing::warn!(
+                target: "plakat",
+                "AnimateDiff SDXL v0.27 wires a single ControlNet; ignoring \
+                 the {} extra conditioner(s).",
+                controls.len() - 1,
+            );
+        }
+
         // ---- denoise loop ----
         let bar = progress::step_bar(
             timesteps.len() as u64,
@@ -676,6 +704,27 @@ impl AnimateDiffSdxlPipeline {
                 latents.clone()
             };
             let model_input = scheduler.scale_model_input(model_input, timestep)?;
+
+            // v0.27 phase 4: SDXL ControlNet residuals at batch=2F.
+            // The CN takes the same pooled + time-ids extras the
+            // SDXL UNet does.
+            let (cn_down, cn_mid) = if let (Some(cr), Some(cond)) =
+                (controls.first(), cn_cond_batch.as_ref())
+            {
+                let (d, m) = cr.net.forward(
+                    &model_input,
+                    timestep as f64,
+                    &text_embeds,
+                    cond,
+                    cr.strength,
+                    Some(&pooled_embeds),
+                    Some(&time_ids),
+                )?;
+                (Some(d), Some(m))
+            } else {
+                (None, None)
+            };
+
             let noise_pred = self.motion_unet.forward_with_motion(
                 &model_input,
                 timestep as f64,
@@ -684,6 +733,8 @@ impl AnimateDiffSdxlPipeline {
                 &time_ids,
                 Some(&self.modules),
                 frames,
+                cn_down.as_deref(),
+                cn_mid.as_ref(),
             )?;
             let noise_pred = if do_cfg {
                 let pieces = noise_pred.chunk(2, 0)?;
@@ -887,6 +938,7 @@ mod tests {
                 2,
                 7.5,
                 SchedulerKind::Ddim,
+                &[],
             )
             .expect("inference");
         assert_eq!(frames.len(), 2);
