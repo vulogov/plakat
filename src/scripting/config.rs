@@ -124,6 +124,25 @@ pub struct GenerationConfig {
     /// CLI `--offline` flag. Default `false`. Set with
     /// `plakat.config.set "offline_discovery" "true"`.
     pub offline_discovery: bool,
+    /// v0.28 phase 2: `plakat.animate` total output frames. Default
+    /// 16 (V3 / AnimateLCM training window). Values > 32 trigger the
+    /// long-form sliding-window stitch using `animate_window_size` +
+    /// `animate_window_overlap`. Read by `plakat.animate` at call
+    /// time. Set with `plakat.config.set "animate_frames" "32"`.
+    pub animate_frames: u32,
+    /// v0.28 phase 2: `plakat.animate` per-window frame count for
+    /// the long-form sliding-window path. Default 16 (V3 native).
+    /// Must be ≤ 32 (motion adapter `motion_max_seq_length`).
+    pub animate_window_size: u32,
+    /// v0.28 phase 2: `plakat.animate` overlap between consecutive
+    /// sliding-window windows. Default 4 (25 % of window). Must be
+    /// < `animate_window_size`.
+    pub animate_window_overlap: u32,
+    /// v0.28 phase 2: `plakat.animate` LCM mode toggle. When `true`,
+    /// uses the AnimateLCM motion adapter + LCM scheduler + 4-step
+    /// guidance-distilled defaults (~5× speedup vs V3 + DDIM).
+    /// SD 1.5 only. Default `false`.
+    pub animate_lcm: bool,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
     /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
     /// identity / colour; higher = more rework. Ignored when
@@ -334,6 +353,10 @@ impl Default for GenerationConfig {
             style_strength: 1.0,
             style_catalog: String::new(),
             offline_discovery: false,
+            animate_frames: 16,
+            animate_window_size: 16,
+            animate_window_overlap: 4,
+            animate_lcm: false,
             adetailer_strength: 0.4,
             adetailer_padding: 0.25,
             adetailer_feather: 0.25,
@@ -567,6 +590,25 @@ impl GenerationConfig {
                 // parse_bool below.
                 self.offline_discovery = parse_bool(value, key)?;
             }
+            "animate_frames" => {
+                self.animate_frames = parse_pos_int(value, key)? as u32;
+            }
+            "animate_window_size" => {
+                let v = parse_pos_int(value, key)? as u32;
+                if v > 32 {
+                    bail!(
+                        "plakat.config.set: animate_window_size {v} \
+                         exceeds motion adapter max_seq_length (32)"
+                    );
+                }
+                self.animate_window_size = v;
+            }
+            "animate_window_overlap" => {
+                self.animate_window_overlap = parse_pos_int(value, key)? as u32;
+            }
+            "animate_lcm" => {
+                self.animate_lcm = parse_bool(value, key)?;
+            }
             "artefact_blend_strength" => {
                 let f = parse_unit_float(value, key)? as f32;
                 self.artefact_blend_strength = f;
@@ -778,7 +820,8 @@ impl GenerationConfig {
                      aspect, base, mask_feather, mask_invert, clip_skip, \
                      wildcard_dir, negative_preset, style_catalog, \
                      face_bbox, face_landmarks, identity_kind, \
-                     offline_discovery."
+                     offline_discovery, animate_frames, animate_window_size, \
+                     animate_window_overlap, animate_lcm."
                 ));
             }
         }
@@ -800,12 +843,14 @@ impl GenerationConfig {
             | "hires_scale" | "hires_strength" | "hires_steps"
             | "artefact_blend_strength" | "enhance_temp"
             | "enhance_max_tokens" | "base" | "mask_feather"
-            | "clip_skip" => {
+            | "clip_skip"
+            | "animate_frames" | "animate_window_size"
+            | "animate_window_overlap" => {
                 self.set_str(key, &value.to_string())
             }
             "quantize_t5" | "kontext_bucket" | "tiled"
             | "artefact_smart_zones" | "enhance_cache"
-            | "enhance_keep_original" | "mask_invert" => {
+            | "enhance_keep_original" | "mask_invert" | "animate_lcm" => {
                 // Permissive bool ↔ int: accept 0 / 1 only.
                 match value {
                     0 => self.set_str(key, "false"),
