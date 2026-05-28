@@ -1359,10 +1359,15 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                  model {}, {}x{}, steps={}, guidance={}",
                 args.frames, args.model, width, height, args.steps, args.guidance,
             ));
-            pipeline.generate(
+            // v0.27 phase 6: same long-form routing as SD 1.5 — when
+            // frames > window_size, the SDXL pipeline's generate_long
+            // engages the sliding-window stitcher.
+            pipeline.generate_long(
                 &args.from,
                 &args.negative,
                 args.frames as usize,
+                window_size,
+                window_overlap,
                 seed,
                 width,
                 height,
