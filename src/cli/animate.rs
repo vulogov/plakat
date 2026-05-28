@@ -185,6 +185,24 @@ pub struct AnimateArgs {
     /// 0.5 = soft guidance, 1.5+ = heavy.
     #[arg(long = "control-strength", default_value_t = 1.0)]
     pub control_strength: f32,
+
+    /// **v0.27 phase 5**: per-window frame count for long-form
+    /// sliding-window AnimateDiff. The motion adapter is trained at
+    /// 16 frames; values > 32 exceed the trained positional
+    /// embedding's `motion_max_seq_length`. No-op when `--frames` is
+    /// ≤ `--window-size` (single-window path).
+    #[arg(long = "window-size", default_value_t = 16)]
+    pub window_size: u32,
+
+    /// **v0.27 phase 5**: overlap between consecutive sliding-
+    /// windows in frames. Each window covers
+    /// `[i*stride, i*stride + window-size)` where
+    /// `stride = window-size - window-overlap`. Higher overlap
+    /// reduces seam artefacts at the cost of more redundant compute.
+    /// Default 4 (25 % of the 16-frame window) is the community
+    /// sweet spot.
+    #[arg(long = "window-overlap", default_value_t = 4)]
+    pub window_overlap: u32,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
@@ -1171,15 +1189,30 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
             variant,
         );
     }
+    // v0.27 phase 5: with --window-size ≤ 32, --frames > 32 is fine
+    // — the sliding-window stitcher handles it. The per-window
+    // bound is what actually matters.
     let max_seq = 32usize;
-    if (args.frames as usize) > max_seq {
+    let window_size = args.window_size as usize;
+    let window_overlap = args.window_overlap as usize;
+    if window_size > max_seq {
         anyhow::bail!(
-            "--frames {} exceeds AnimateDiff motion_max_seq_length ({}). \
-             Use --frames ≤ {}.",
-            args.frames,
+            "--window-size {} exceeds AnimateDiff motion_max_seq_length ({}). \
+             Use --window-size ≤ {}.",
+            args.window_size,
             max_seq,
             max_seq,
         );
+    }
+    if window_overlap >= window_size {
+        anyhow::bail!(
+            "--window-overlap {} must be < --window-size {}",
+            args.window_overlap,
+            args.window_size,
+        );
+    }
+    if args.frames < 1 {
+        anyhow::bail!("--frames must be ≥ 1 (got {})", args.frames);
     }
     let (width, height) = parse_size(&args.size)?;
     if width % 8 != 0 || height % 8 != 0 {
@@ -1285,10 +1318,16 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                  model {}, {}x{}, steps={}, guidance={}",
                 args.frames, args.model, width, height, args.steps, args.guidance,
             ));
-            pipeline.generate(
+            // v0.27 phase 5: route through generate_long so frames >
+            // window_size triggers the sliding-window stitcher.
+            // When frames ≤ window_size, generate_long is a thin
+            // pass-through to generate.
+            pipeline.generate_long(
                 &args.from,
                 &args.negative,
                 args.frames as usize,
+                window_size,
+                window_overlap,
                 seed,
                 width,
                 height,

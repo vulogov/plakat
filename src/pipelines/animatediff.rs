@@ -221,6 +221,39 @@ impl AnimateDiffPipeline {
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
     ) -> Result<Vec<DynamicImage>> {
+        let latents = self.denoise_window(
+            prompt,
+            negative,
+            frames,
+            seed,
+            width,
+            height,
+            steps,
+            guidance,
+            scheduler_kind,
+            controls,
+        )?;
+        self.decode_latents(&latents, frames)
+    }
+
+    /// v0.27 phase 5: denoise a single AnimateDiff window into per-
+    /// frame latents `(F, 4, H/8, W/8)`. Encapsulates the scheduler
+    /// loop so [`Self::generate`] (single window) and
+    /// [`Self::generate_long`] (sliding-window stitch) can share it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn denoise_window(
+        &self,
+        prompt: &str,
+        negative: &str,
+        frames: usize,
+        seed: u64,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
+    ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
             frames <= self.max_frames,
@@ -359,19 +392,28 @@ impl AnimateDiffPipeline {
         }
         bar.finish_and_clear();
 
-        // ---- per-frame VAE decode ----
+        Ok(latents)
+    }
+
+    /// v0.27 phase 5: VAE-decode an `(F, 4, H/8, W/8)` latent stack
+    /// to `Vec<DynamicImage>`. Per-frame decode to bound the memory
+    /// peak.
+    fn decode_latents(
+        &self,
+        latents: &Tensor,
+        frames: usize,
+    ) -> Result<Vec<DynamicImage>> {
         let vae_scale = 0.18215f64; // SD 1.5 KL VAE scaling factor
         let mut images: Vec<DynamicImage> = Vec::with_capacity(frames);
         let decode = progress::step_bar(frames as u64, "VAE decode");
         for f in 0..frames {
-            // Take one frame's latents: (1, 4, H/8, W/8).
             let frame_latent = latents.i((f..f + 1, .., .., ..))?;
             let scaled = (&frame_latent / vae_scale)?;
             let image = self.vae.decode(&scaled)?;
             let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
             let image = (image * 255.0)?
                 .to_dtype(DType::U8)?
-                .i(0)? // pop the batch axis
+                .i(0)?
                 .permute((1, 2, 0))?;
             let (oh, ow, _) = image.dims3()?;
             let buf = image.flatten_all()?.to_vec1::<u8>()?;
@@ -381,8 +423,145 @@ impl AnimateDiffPipeline {
             decode.inc(1);
         }
         decode.finish_and_clear();
-
         Ok(images)
+    }
+
+    /// v0.27 phase 5: long-form AnimateDiff via sliding window.
+    ///
+    /// Generates `total_frames` (> `window_size` typical) by chaining
+    /// overlapping windows of `window_size` frames each, blending
+    /// the `window_overlap`-frame overlap region in **latent space**
+    /// with a linear ramp. Output up to ~256 frames reliably; quality
+    /// degrades past that as motion drift accumulates.
+    ///
+    /// When `total_frames ≤ window_size`, redirects to [`Self::generate`]
+    /// (no overhead).
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_long(
+        &self,
+        prompt: &str,
+        negative: &str,
+        total_frames: usize,
+        window_size: usize,
+        window_overlap: usize,
+        seed: u64,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        scheduler_kind: SchedulerKind,
+        controls: &[crate::pipelines::controlnet::OwnedControl],
+    ) -> Result<Vec<DynamicImage>> {
+        if total_frames <= window_size {
+            return self.generate(
+                prompt,
+                negative,
+                total_frames,
+                seed,
+                width,
+                height,
+                steps,
+                guidance,
+                scheduler_kind,
+                controls,
+            );
+        }
+        anyhow::ensure!(
+            window_size >= 1,
+            "--window-size must be ≥ 1 (got {window_size})"
+        );
+        anyhow::ensure!(
+            window_size <= self.max_frames,
+            "--window-size {window_size} exceeds AnimateDiff V3 max_seq_length ({})",
+            self.max_frames,
+        );
+        anyhow::ensure!(
+            window_overlap < window_size,
+            "--window-overlap {window_overlap} must be < --window-size {window_size}"
+        );
+        let stride = window_size - window_overlap;
+
+        crate::ui::progress::println(&format!(
+            "  long-form: total={total_frames}, window={window_size}, overlap={window_overlap} \
+             (stride={stride})"
+        ));
+
+        // Accumulated per-frame latents, one (1, 4, H/8, W/8) Tensor each.
+        let mut acc: Vec<Tensor> = Vec::with_capacity(total_frames);
+        let mut win_i = 0usize;
+        loop {
+            let win_start = win_i * stride;
+            if win_start >= total_frames {
+                break;
+            }
+            let this_window = (total_frames - win_start).min(window_size);
+            let win_seed = seed.wrapping_add((win_i as u64).wrapping_mul(window_size as u64));
+
+            tracing::info!(
+                target: "plakat",
+                "AnimateDiff long-form window {win_i}: frames [{win_start}, {}) seed={win_seed}",
+                win_start + this_window,
+            );
+
+            let win_latents = self.denoise_window(
+                prompt,
+                negative,
+                this_window,
+                win_seed,
+                width,
+                height,
+                steps,
+                guidance,
+                scheduler_kind,
+                controls,
+            )?;
+
+            // Split window latents into per-frame slices.
+            let per_frame: Vec<Tensor> = (0..this_window)
+                .map(|f| {
+                    win_latents
+                        .i((f..f + 1, .., .., ..))
+                        .map_err(anyhow::Error::from)
+                })
+                .collect::<Result<_>>()?;
+
+            // Blend the overlap region with already-accumulated frames.
+            let overlap_with_existing = acc.len().saturating_sub(win_start);
+            for k in 0..overlap_with_existing {
+                // Linear ramp: t goes from 1/(N+1) to N/(N+1) so the
+                // first overlap frame is weighted mostly by the
+                // existing window and the last overlap frame is
+                // weighted mostly by the new window. The endpoints
+                // are clamped away from 0 and 1 so neither side
+                // dominates entirely.
+                let t = (k as f64 + 1.0) / (overlap_with_existing as f64 + 1.0);
+                let existing = &acc[win_start + k];
+                let new = &per_frame[k];
+                let blended = ((existing * (1.0 - t))? + (new * t)?)?;
+                acc[win_start + k] = blended;
+            }
+            // Append the new-only tail.
+            for k in overlap_with_existing..this_window {
+                acc.push(per_frame[k].clone());
+            }
+
+            win_i += 1;
+            if win_start + this_window >= total_frames {
+                break;
+            }
+        }
+
+        anyhow::ensure!(
+            acc.len() == total_frames,
+            "internal: accumulated {} frames, expected {total_frames}",
+            acc.len()
+        );
+
+        // Concat per-frame slices into a single (total_frames, 4, H/8, W/8)
+        // Tensor for the shared VAE-decode helper.
+        let refs: Vec<&Tensor> = acc.iter().collect();
+        let merged = Tensor::cat(&refs, 0)?;
+        self.decode_latents(&merged, total_frames)
     }
 
     /// Encode one prompt branch into `(1, 77, 768)`. Same recipe as
