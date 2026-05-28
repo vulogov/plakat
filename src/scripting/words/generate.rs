@@ -30,7 +30,29 @@ fn do_plakat_generate(vm: &mut VM) -> anyhow::Result<&mut VM> {
 
     let handle_int = with_ctx_mut(|ctx| -> anyhow::Result<i64> {
         let img = script_entry::generate_one(ctx, &prompt)?;
-        Ok(ctx.push_image(img))
+        // v0.26 phase 8: build A1111-compatible metadata so
+        // plakat.save / plakat.metadata.write can attach the
+        // sidecar + tEXt chunk. Snapshot only the always-known
+        // fields here — optional bits (loras, controls, etc.)
+        // ship in v0.26.1.
+        let model = ctx
+            .loaded_model()
+            .unwrap_or("unknown")
+            .to_string();
+        let scheduler = format!("{:?}", ctx.config.scheduler).to_lowercase();
+        let (w, h) = (img.width(), img.height());
+        let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+            prompt.clone(),
+            model,
+            ctx.config.seed.unwrap_or(0),
+            ctx.config.steps,
+            ctx.config.guidance,
+            scheduler,
+            w,
+            h,
+        );
+        meta.negative = ctx.config.negative.clone();
+        Ok(ctx.push_image_with_metadata(img, meta))
     })??;
     tracing::info!(
         target: "plakat",

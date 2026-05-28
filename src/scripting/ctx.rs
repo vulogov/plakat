@@ -53,6 +53,20 @@ pub struct ScriptCtx {
     /// extras (refiner UNet vs. IP-Adapter encoder). Loading a
     /// non-SD-family alias drops this slot.
     pub loaded_t2i: Option<(String, t2i::Pipeline)>,
+    /// v0.26 phase 7: cached `stylize::Pipeline` for
+    /// `plakat.stylize` (IP-Adapter Plus + SD 1.5 base). Without
+    /// this slot, every `plakat.stylize` call pays the full ~5 GB
+    /// load (SD 1.5 weights + CLIP-H image encoder + IP-Adapter
+    /// projection). With the slot, multi-call scripts amortise.
+    ///
+    /// SD 1.5 only — stylize already bails on SDXL / Flux / SD3
+    /// at load time. Tuple is `(alias, pipeline)` matching the
+    /// `loaded_t2i` pattern. Invalidated by [`Self::mark_loras_changed`]
+    /// because the stylize pipeline holds an SD 1.5 UNet snapshot
+    /// — a LoRA stack mutation would need a fresh load to take
+    /// effect.
+    pub loaded_stylize:
+        Option<(String, crate::pipelines::stylize::Pipeline)>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -60,6 +74,18 @@ pub struct ScriptCtx {
     /// script's lifetime; if scripts ever start producing hundreds
     /// of images we'll revisit (e.g. spill to disk).
     pub images: Vec<image::DynamicImage>,
+    /// v0.26 phase 8: per-image metadata, indexed parallel to
+    /// [`Self::images`]. `Some` when the rendering path attached
+    /// a [`crate::imaging::metadata::GenerationMetadata`] at push
+    /// time (full A1111-style record: prompt / negative / model /
+    /// seed / steps / guidance / scheduler / etc.); `None`
+    /// otherwise (e.g. images loaded from disk, or rendering paths
+    /// that don't yet populate metadata). Read by `plakat.save` to
+    /// route through `save_rgb_u8_with_metadata` (sidecar + PNG
+    /// tEXt) and by `plakat.metadata.write` to re-attach metadata
+    /// to existing files.
+    pub images_metadata:
+        Vec<Option<crate::imaging::metadata::GenerationMetadata>>,
     /// v0.21 phase 3: generation knobs the script accumulates via
     /// `plakat.config.set`. Persistent across calls within one
     /// script. Read by [`super::script_entry::generate_one`] when
@@ -219,6 +245,7 @@ impl ScriptCtx {
             loaded: None,
             loaded_t2i: None,
             images: Vec::new(),
+            images_metadata: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
@@ -234,6 +261,7 @@ impl ScriptCtx {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            loaded_stylize: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -252,6 +280,10 @@ impl ScriptCtx {
         // v0.24 phase 8: annotation cache is bound to the loaded
         // pipeline; drop alongside.
         self.cn_annotation_cache = None;
+        // v0.26 phase 7: the stylize slot holds an SD 1.5 UNet
+        // snapshot — a LoRA stack mutation invalidates it. Same
+        // pattern as loaded_t2i.
+        self.loaded_stylize = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -477,6 +509,51 @@ impl ScriptCtx {
         }
 
         Ok(&mut self.loaded_t2i.as_mut().expect("just inserted").1)
+    }
+
+    /// v0.26 phase 7: get-or-load the IP-Adapter stylize pipeline
+    /// for `alias`. Caches into [`Self::loaded_stylize`].
+    ///
+    /// Mirrors the v0.23 SdT2i pattern: same-alias hit reuses the
+    /// loaded pipeline; alias change drops + reloads. Invalidated
+    /// on LoRA stack mutation via [`Self::mark_loras_changed`]
+    /// (the stylize pipeline holds a UNet snapshot that LoRAs
+    /// would need to re-merge into).
+    ///
+    /// Returns `&stylize::Pipeline` (immutable) because
+    /// `stylize::Pipeline::stylize_one` takes `&self` — no
+    /// per-call state mutation.
+    pub fn get_or_load_stylize(
+        &mut self,
+        alias: &str,
+    ) -> Result<&crate::pipelines::stylize::Pipeline> {
+        let hit = self
+            .loaded_stylize
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_stylize = None;
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_stylize: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(crate::pipelines::stylize::Pipeline::load(
+                    crate::pipelines::stylize::LoadRequest {
+                        model: alias.to_string(),
+                        device,
+                        shared_clip_h: None,
+                    },
+                ))
+            })?;
+            self.loaded_stylize = Some((alias.to_string(), pipeline));
+        }
+
+        Ok(&self.loaded_stylize.as_ref().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -811,9 +888,58 @@ impl ScriptCtx {
     /// v0.21 phase 2: register a rendered image and return the
     /// 1-based handle the script will see. Caller is responsible
     /// for serialising mutation through [`with_ctx_mut`].
+    ///
+    /// No metadata attached. For rendering paths that have
+    /// A1111-style metadata to carry, use
+    /// [`Self::push_image_with_metadata`].
     pub fn push_image(&mut self, img: image::DynamicImage) -> i64 {
         self.images.push(img);
+        self.images_metadata.push(None);
         self.images.len() as i64
+    }
+
+    /// v0.26 phase 8: register a rendered image with its
+    /// generation metadata attached. `plakat.save` writes the
+    /// JSON sidecar + PNG tEXt automatically; `plakat.metadata
+    /// .write` reads the metadata from the registered handle.
+    pub fn push_image_with_metadata(
+        &mut self,
+        img: image::DynamicImage,
+        meta: crate::imaging::metadata::GenerationMetadata,
+    ) -> i64 {
+        self.images.push(img);
+        self.images_metadata.push(Some(meta));
+        self.images.len() as i64
+    }
+
+    /// v0.26 phase 8: look up the metadata for a handle, if it
+    /// was registered with [`Self::push_image_with_metadata`].
+    /// Bails on unknown handles (same as [`Self::image_at`]).
+    ///
+    /// Lenient on size mismatch between `images` and
+    /// `images_metadata`: returns `Ok(None)` if the metadata Vec
+    /// is shorter than the image Vec at this handle. Lets tests
+    /// (and historical callers) pre-stuff `images` directly via
+    /// `ctx.images.push(...)` without breaking `plakat.save`.
+    pub fn metadata_at(
+        &self,
+        handle: i64,
+    ) -> Result<Option<&crate::imaging::metadata::GenerationMetadata>> {
+        if handle <= 0 {
+            return Err(anyhow!(
+                "image handle must be >= 1 (got {handle}); handle 0 is reserved"
+            ));
+        }
+        let idx = handle as usize - 1;
+        // image_at is the authority on handle validity; metadata
+        // is best-effort.
+        if idx >= self.images.len() {
+            return Err(anyhow!(
+                "image handle {handle} not found (only {} image(s) rendered so far)",
+                self.images.len()
+            ));
+        }
+        Ok(self.images_metadata.get(idx).and_then(|o| o.as_ref()))
     }
 
     /// v0.21 phase 2: look up an image by its script-visible
@@ -876,6 +1002,7 @@ mod tests {
             loaded: None,
             loaded_t2i: None,
             images: Vec::new(),
+            images_metadata: Vec::new(),
             config: GenerationConfig::default(),
             loras: Vec::new(),
             controlnets: Vec::new(),
@@ -891,6 +1018,7 @@ mod tests {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            loaded_stylize: None,
         }
     }
 

@@ -1172,6 +1172,109 @@ impl Pipeline {
         Ok(z_norm)
     }
 
+    /// v0.26 phase 6: public wrapper for the prompt encoder so
+    /// `plakat animate` can pre-encode endpoint prompts once and
+    /// lerp between them per frame. Returns
+    /// `(pooled_y, joint_context)` — same shape as the internal
+    /// `encode_prompt`.
+    pub fn encode_for_animate(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        self.encode_prompt(prompt)
+    }
+
+    /// v0.26 phase 6: single-frame SD3 / SD3.5 inference with
+    /// pre-lerped embeddings. Mirrors `flux::Pipeline::animate_frame`.
+    ///
+    /// Inputs:
+    /// - `pos_y` / `pos_ctx`: lerped positive embeddings for this
+    ///   frame (from `encode_for_animate(--from)` lerped with
+    ///   `encode_for_animate(--to)` at the per-frame `t`).
+    /// - `neg_y` / `neg_ctx`: encoded negative prompt (constant
+    ///   across frames since `--negative` doesn't lerp).
+    /// - `width` / `height`: pixel dims, must be divisible by 16.
+    /// - `steps`: per-frame denoise steps (animation typically uses
+    ///   fewer than single-image generation).
+    /// - `guidance`: CFG scale.
+    /// - `seed`: shared seed for every frame — locks the initial
+    ///   noise constant so only the prompt-driven trajectory
+    ///   varies. Matches v0.20 Flux animate convention.
+    ///
+    /// Returns `(rgb_bytes, width, height)`. No file I/O — caller
+    /// writes the frame.
+    ///
+    /// Scope cap:
+    /// - No ControlNets (animate is text-only morph)
+    /// - No tiled denoise (per-frame hi-res is impractical)
+    /// - No img2img / mask (per-frame conditioning images are out
+    ///   of scope for the morph contract — different design)
+    pub fn animate_frame(
+        &self,
+        pos_y: &Tensor,
+        pos_ctx: &Tensor,
+        neg_y: &Tensor,
+        neg_ctx: &Tensor,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        seed: u64,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        let w = (width as usize / 16) * 16;
+        let h = (height as usize / 16) * 16;
+        if w == 0 || h == 0 {
+            bail!("SD3 animate requires width and height divisible by 16, both ≥ 16");
+        }
+        let lat_h = h / 8;
+        let lat_w = w / 8;
+
+        // [neg, pos] batching for CFG.
+        let cfg_y = Tensor::cat(&[neg_y, pos_y], 0)?;
+        let cfg_ctx = Tensor::cat(&[neg_ctx, pos_ctx], 0)?;
+
+        // Init noise at the shared seed.
+        let seed_u32 = seed & (u32::MAX as u64);
+        if let Err(e) = self.device.set_seed(seed_u32) {
+            tracing::debug!(
+                target: "plakat",
+                "set_seed not supported ({e}); using global RNG"
+            );
+        }
+        let mut x =
+            Tensor::randn(0.0f32, 1.0f32, (1, 16, lat_h, lat_w), &self.device)?
+                .to_dtype(self.dtype)?;
+
+        // Rectified-flow schedule.
+        let time_shift = self.variant.default_time_shift();
+        let timesteps = build_img2img_timesteps(steps, time_shift, None);
+
+        // No ControlNets in animate (scope cap).
+        let no_cn: Vec<Option<Tensor>> = Vec::new();
+
+        let num_steps = timesteps.windows(2).count().max(1);
+        for (step_i, window) in timesteps.windows(2).enumerate() {
+            let (t_curr, t_prev) = match window {
+                [a, b] => (*a, *b),
+                _ => continue,
+            };
+            let progress = step_i as f32 / num_steps as f32;
+            let pred = self.predict_velocity_full(
+                &x, t_curr, &cfg_y, &cfg_ctx, guidance, &no_cn, progress,
+            )?;
+            x = (x + pred * (t_prev - t_curr))?;
+        }
+
+        // VAE decode + image-buffer extraction.
+        let pre_decode = ((&x / VAE_SCALE)? + VAE_SHIFT)?;
+        let decoded = self.vae.decode(&pre_decode)?;
+        let img_norm = ((decoded.clamp(-1f32, 1f32)? + 1.0)? * 0.5)?;
+        let img_u8 = (img_norm * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = img_u8.dims3()?;
+        let buf = img_u8.flatten_all()?.to_vec1::<u8>()?;
+        Ok((buf, ow as u32, oh as u32))
+    }
+
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
         // v0.18: BREAK is a CLIP-77-token-cap workaround. SD3's
         // T5 has a 256-token budget; per-CLIP chunking isn't wired

@@ -241,23 +241,93 @@ For long Flux animations, use `--resume` aggressively — a
 crashed Flux animate at frame 30 of 32 is much more painful to
 restart than the equivalent SD 1.5 run.
 
-## 9. Limitations
+## 9. SD3 / SD3.5 animate (v0.26)
+
+The v0.20-era SD3 bail is gone. v0.26 wires `plakat animate`
+through the SD3 / SD3.5 pipeline using the same A → B lerp
+contract, adapted to SD3's three text encoders (CLIP-L +
+CLIP-G + T5):
+
+```bash
+plakat animate --model sd35-medium \
+    --from "a quiet temple at dawn" \
+    --to   "a quiet temple at sunset" \
+    --frames 16 --gif-delay-ms 125
+```
+
+Internals: pre-encode both endpoint prompts into
+`(pooled_y, joint_context)` once, lerp per frame, run a single
+MMDiT inference per frame with rectified-flow scheduling, VAE
+decode. Pure text-to-image morph contract — no img2img / mask /
+ControlNet.
+
+Works on all four SD3 variants: `sd35-medium`, `sd35-large`,
+`sd35-large-turbo`, `sd3-medium`. Memory budget matches the
+non-animate generate (SD3 weights + per-frame latent buffer).
+
+## 10. AnimateDiff (v0.26 infrastructure, v0.26.1 inference)
+
+**Status note**: v0.26.0 ships the AnimateDiff *infrastructure*
+(motion adapter loader, temporal modules, vendored UNet with
+motion splice, motion LoRA composition, output formats). The
+*inference dispatch* — the actual N-frame scheduler loop —
+closes in **v0.26.1**. Calling `--animatediff` today loads the
+full motion stack successfully then bails with a clear deferral
+message. Once v0.26.1 ships, the surface below is what works:
+
+```bash
+# Motion-coherent N-frame generation (different from the prompt-lerp
+# morph mode above — single prompt, with temporal attention).
+plakat animate --animatediff --model sd15 \
+    --from "a watercolor cottage at dawn" \
+    --frames 16
+
+# Stack a motion LoRA (zoom-in, pan-left, etc.)
+plakat animate --animatediff --model sd15 \
+    --from "a knight in a forest" \
+    --motion-lora civitai-version:67890:0.8
+
+# New output formats (work on every animate mode, not just AnimateDiff)
+plakat animate --animatediff --model sd15 --from "..." --format mp4
+plakat animate --animatediff --model sd15 --from "..." --format all  # GIF + MP4 + WebM + frames
+```
+
+Hard limits in V3: SD 1.5 only (SDXL motion adapter v0.27),
+32-frame `motion_max_seq_length`, no ControlNet, no img2img.
+See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
+full reference + cycle-cut roadmap.
+
+## 11. `--format` flag (v0.26)
+
+Every animate mode (prompt-lerp on SD-family / Flux / SD3 +
+AnimateDiff) accepts `--format FMT`:
+
+| `--format` | Effect | Requires |
+|---|---|---|
+| `frames` (default) | Per-frame PNGs `<out>/frame-NNNN.png` | nothing |
+| `gif` | + animated GIF via the `image` crate | nothing |
+| `mp4` | + MP4 via ffmpeg (libx264 + yuv420p + faststart) | ffmpeg on `$PATH` |
+| `webm` | + WebM via ffmpeg (libvpx-vp9 + CRF 30) | ffmpeg on `$PATH` |
+| `all` | every format above | ffmpeg on `$PATH` |
+
+Install ffmpeg: macOS `brew install ffmpeg`, Ubuntu `apt install
+ffmpeg`, Windows `scoop install ffmpeg`.
+
+`--format gif` is equivalent to passing `--gif` (the legacy
+v0.20 flag still works). When both are set, `--format` wins.
+
+## 12. Limitations
 
 - **SDXL** lerps the dual CLIP-L + CLIP-G hidden states plus the
   pooled `add_text_embeds` micro-conditioning each frame; expect
   ~2-3× the per-frame cost of SD 1.5 in exchange for SDXL's
   trained resolution + visual quality.
-- **SD3 / SD3.5 deferred.** Three-encoder lerp + the MMDiT
-  rectified-flow integrator wiring is its own follow-up; the
-  pipeline bails with a clear "deferred" message.
-- **AnimateDiff deferred.** True motion-adapter wiring
-  (temporal-attention injection into the UNet) is a different
-  category from prompt-morph animation and slated for a later
-  cycle.
 - **No CFG variations across frames.** Guidance is constant.
 - **No keyframe-style trajectories.** It's a single A → B lerp,
   not a multi-keyframe spline. Chain multiple `plakat animate`
   runs + concat with ffmpeg for richer trajectories.
+- **AnimateDiff inference** lands in v0.26.1; v0.26.0 ships the
+  infrastructure + CLI surface only.
 
 ## Where to next
 
@@ -266,6 +336,9 @@ restart than the equivalent SD 1.5 run.
 - **`GENERATE.md`** — full `plakat animate` flag reference (every
   knob covered in this tutorial is also documented there for
   copy-paste lookup).
-- **External tooling** — ffmpeg for MP4 / WebM bundling,
-  imagemagick `montage` for grids, gifski for higher-quality
-  GIFs than the `image` crate produces.
+- **`Documentation/ANIMATEDIFF.md`** (v0.26) — AnimateDiff
+  architecture, motion adapter internals, cycle-cut roadmap.
+- **External tooling** — ffmpeg for MP4 / WebM bundling
+  (now wired natively via `--format`), imagemagick `montage`
+  for grids, gifski for higher-quality GIFs than the `image`
+  crate produces.

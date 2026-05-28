@@ -2733,7 +2733,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plakat"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "bund_language_parser",
@@ -2757,6 +2757,7 @@ dependencies = [
  "rust_dynamic",
  "rust_multistackvm",
  "rustyline",
+ "safetensors 0.7.0",
  "serde",
  "serde_json",
  "sha2",

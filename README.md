@@ -8,169 +8,180 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.25 — art-medium presets + auto-LoRA discovery
+## What's new in v0.26 — AnimateDiff + every v0.25 carry closed
 
-Twelve phases ship two new preset axes — `--look` (art medium)
-and `--genre` (subject domain) — with **automatic LoRA discovery**
-from Civitai / HuggingFace / your local cache. Pick "watercolor"
-or "ink-wash" with one flag and plakat composes the prompt, picks
-a sampler, and finds a compatible LoRA matched to your loaded
-base model. Host word count 42 → 48.
+Thirteen phases close **every v0.25 carry** in one cycle: SD3 /
+SD3.5 animate, Bund look/genre apply on Flux + SD3, scenario
+auto-LoRA discovery, Real-ESRGAN in `plakat.upscale`,
+`plakat.metadata.write`, `plakat.stylize` cache slot, plus the
+full **AnimateDiff infrastructure** (motion adapter, temporal
+modules, vendored UNet with motion splice, motion LoRAs, output
+formats). Host word count 48 → 49.
 
-### `--look` — eight bundled art mediums
+### SD3 / SD3.5 animate
 
-```bash
-plakat generate --model sd15 --look watercolor "a cottage in the woods"
-plakat generate --model sdxl --look oil-painting "a still life"
-plakat generate --model sd15 --look ink-wash "a mountain temple"
-```
-
-Eight mediums ship: `ink-wash`, `watercolor`, `oil-painting`,
-`charcoal`, `pencil`, `chalk-pastel`, `linocut`, `gouache`. Each
-bundles a prompt prefix/suffix + recommended sampler/steps/guidance
-+ a `lora_query` that drives auto-discovery.
-
-Override-only semantics: explicit `--steps` / `--guidance` /
-`--scheduler` always win. Compositional fields (prompt prefix +
-negative) always apply.
-
-### `--genre` — independent subject-domain axis
+Closes the v0.20-era `plakat animate` SD3 bail:
 
 ```bash
-plakat generate --model sdxl --genre anime "a knight in a forest"
-
-# Compose with --look (watercolor anime knight):
-plakat generate --model sdxl --look watercolor --genre anime "a knight"
+# Three-encoder lerp (CLIP-L + CLIP-G + T5) + flow-match per frame.
+plakat animate --model sd35-medium \
+    --from "a quiet temple at dawn" \
+    --to   "a quiet temple at sunset" \
+    --frames 16 --gif-delay-ms 125
 ```
 
-v0.25 ships `anime` only as the built-in genre. User-extensible
-via `$CONFIG_DIR/genres/*.json` — add `photoreal`, `fantasy`,
-`cyberpunk`, or anything else without waiting for a release.
+New `sd3::Pipeline::animate_frame(pos_y, pos_ctx, neg_y, neg_ctx,
+...)` reuses the v0.20 Flux pattern: pre-encode both endpoint
+prompts once, lerp `(y, context)` per frame, run a single MMDiT
+inference per frame, VAE decode. Pure text-to-image morph
+contract.
 
-### Auto-LoRA discovery (Civitai → HF → local)
+### `plakat.look.*` / `plakat.genre.*` now work on Flux + SD3
 
-When `--lora` is empty, plakat searches for a compatible LoRA:
+The v0.25 look/genre apply was SD-family only. v0.26 wires it on
+the Flux + SD3 generate paths in `script_entry.rs`:
 
-1. **Discovery cache** at `$PLAKAT_CACHE_DIR/look-discovery/`
-   keyed by `(name, base_model)`.
-2. **Civitai** REST API — filters by base-model compatibility
-   (`SD 1.5` / `SDXL 1.0` / `Pony` / `Illustrious` / `Flux.1 D` /
-   `SD 3.5 Medium`).
-3. **HuggingFace Hub** fallback — search by tag/repo-id patterns.
-4. **Local-cache scan** — walk `civitai/` download cache for
-   already-pulled LoRAs matching the look's keywords.
-
-Trigger words from the discovered LoRA auto-prepend to the prompt
-via the dedup-aware `style::prepend_trigger`. Failure is
-non-fatal — discovery soft-fails through to "no LoRA found" and
-the prompt prefix + sampler hints still apply.
-
-```bash
-# Offline mode: cache + local scan only (no network).
-plakat generate --model sd15 --look watercolor --offline "a cottage"
+```bund
+"flux-dev" plakat.load
+"watercolor" plakat.look.apply
+"a knight in a forest" plakat.generate
+// → Civitai discovers a Flux-compatible watercolor LoRA, applies
+//   prompt prefix + trigger words, runs Flux generate.
 ```
 
-### Surfaces — CLI + scenarios + Bund
+LoRA discovery filters by `BaseFamily::Flux` / `BaseFamily::Sd3`
+so the cache key `(name, base_family)` finds the right LoRAs.
 
-`--look` / `--genre` / `--offline` work on every prompt-driven
-subcommand: `generate`, `portrait`, `img2img`, `inpaint` (via
-`img2img --mask`), `outpaint`.
-
-Scenarios accept `look:` / `genre:` / `offline:` at both global
-and per-task levels:
+### Scenario auto-LoRA discovery (smart-cached)
 
 ```hjson
 {
-    model: sdxl
-    look: watercolor    # scenario-wide
-    genre: anime
-
+    model: sd35-medium
+    look: watercolor            # → discover once at first task
     tasks: [
-        { name: knight, prompt: "a knight" }
-        { name: temple, prompt: "a temple", look: oil-painting }
+        { name: a, prompt: "a cottage" }
+        { name: b, prompt: "a knight" }
+        { name: c, prompt: "a temple", look: oil-painting }
+        // ... 100 more tasks ...
     ]
 }
 ```
 
-Bund scripts get six new host words + one config key:
+100 tasks with `look: watercolor` fire **one** network call —
+the discovered LoRA is cached per `(look_name, base_family)`
+across the scenario. Per-task `look:` overrides re-fire only when
+a new `(name, base)` tuple shows up.
+
+### Real-ESRGAN in `plakat.upscale`
 
 ```bund
-"sdxl" plakat.load
-"watercolor" plakat.look.apply
-"anime"      plakat.genre.apply
-"true" "offline_discovery" plakat.config.set
-"a cottage at dawn" plakat.generate
-"cottage.png" plakat.save
+1 "real-esrgan-x4" plakat.upscale         // ML x4 upscale
+1 "real-esrgan-anime-x4" plakat.upscale   // anime-tuned variant
 ```
 
-| New host word | Effect |
-|---|---|
-| `plakat.look.{apply,clear,list}` | Set / unset / enumerate the active look |
-| `plakat.genre.{apply,clear,list}` | Same for the genre axis |
+`plakat.upscale` now dispatches on arg type: integer (2 / 4) =
+Lanczos, string = Real-ESRGAN ML method. Same set the CLI
+already supported via `plakat hires --hires-upscaler`.
 
-### User-extension catalogs
+### `plakat.save` + `plakat.metadata.write`
 
-Drop a JSON file under `$CONFIG_DIR/{looks,genres}/`:
+`plakat.save` now writes the A1111 `parameters` PNG tEXt chunk
++ JSON sidecar automatically when the handle has metadata
+attached (every `plakat.generate` now populates it). New host
+word:
 
-```text
-Linux:   ~/.config/plakat/looks/cyberpunk.json
-macOS:   ~/Library/Application Support/ai.plakat.plakat/looks/cyberpunk.json
-Windows: %APPDATA%\plakat\plakat\config\looks\cyberpunk.json
+```bund
+"a knight" plakat.generate              // handle 1, with metadata
+1 2 plakat.upscale                       // handle 2, no metadata
+"knight-2x.png" plakat.save              // plain PNG
+1 "knight-2x.png" plakat.metadata.write  // re-attach original metadata
 ```
 
-One `PresetSpec` JSON object per file; filename stem is the
-catalog key. User entries shadow bundled by name. Bad JSON /
-unsafe filenames log via `tracing::warn` and skip — the bundled
-catalog still loads.
+### `plakat.stylize` cache slot
+
+Closes the v0.24 'caching is a v0.25+ optimisation' deferral.
+Multi-call scripts now amortise the ~5 GB SD1.5 + IP-Adapter
+weights load.
+
+### AnimateDiff infrastructure
+
+```bash
+# v0.26.0: loads the motion stack + bails with v0.26.1 deferral.
+plakat animate --animatediff --model sd15 \
+    --from "a watercolor cottage at dawn" \
+    --frames 16 --format mp4 \
+    --motion-lora civitai-version:67890:0.8
+```
+
+What ships:
+- AnimateDiff V3 motion adapter loader (
+  `guoyww/animatediff-motion-adapter-v1-5-3`)
+- 16 per-block temporal-attention modules built from real V3 weights
+- Vendored SD 1.5 UNet (`Sd15MotionUNet`) with motion-module splice
+  at block-output boundaries
+- Motion LoRA composition (`--motion-lora SPEC`) — merges into the
+  motion-adapter weights via the existing LoRA-merge pipeline
+- `--format {frames, gif, mp4, webm, all}` with ffmpeg integration
+- `AnimateDiffPipeline` assembly type
+
+What ships in **v0.26.1**: the actual N-frame scheduler loop +
+per-frame VAE decode + quality validation. See [`Documentation/ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md)
+for the full status + roadmap.
 
 ### Documentation
 
-- [`LOOKS.md`](Documentation/LOOKS.md) — flag reference + the
-  field shape for user-extension files.
-- [`GENRES.md`](Documentation/GENRES.md) — the subject-domain
-  axis.
-- [`LOOKS_TUTORIAL.md`](Documentation/Tutorials/LOOKS_TUTORIAL.md)
-  — narrative walkthrough with worked examples.
-- [`GENRES_TUTORIAL.md`](Documentation/Tutorials/GENRES_TUTORIAL.md)
-  — companion tutorial.
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — AnimateDiff
+  reference + v0.26.0/v0.26.1 status.
 - [`SCRIPTING.md`](Documentation/SCRIPTING.md) — full host-word
-  reference, updated for v0.25 (48 words).
+  reference, updated for v0.26 (49 words).
 - [`SCRIPTING_TUTORIAL.md`](Documentation/Tutorials/SCRIPTING_TUTORIAL.md)
-  §12 — what's new in v0.25 from the Bund perspective.
-- [`RFC_v0.25_LOOKS_AND_GENRES.md`](Documentation/RFC_v0.25_LOOKS_AND_GENRES.md)
-  — design doc, eight locked decisions, 12-phase plan.
+  §13 — what's new in v0.26.
+- [`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](Documentation/RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md)
+  — design doc, eight locked decisions, 14-phase plan, the cycle-cut
+  decision tree.
 
 ### By the numbers
 
-- 902 lib tests green + 20 integration tests (+85 lib and +13
-  integration tests across the cycle).
-- 12 phase commits + RFC.
-- 42 → 48 host words. `offline_discovery` config key added.
-- 8 bundled looks + 1 bundled genre + user-extension directory
-  wired.
-- 3-source discovery chain (Civitai + HF Hub + local-cache scan)
-  with on-disk caching keyed by `(name, base_model)`.
+- 934 lib tests + 20 integration tests green (+32 lib across the cycle).
+- 13 phase commits + RFC.
+- 48 → 49 host words.
+- 7 v0.25 carries closed.
+- AnimateDiff infrastructure: motion adapter loader + 16 temporal
+  modules + vendored UNet (580 LOC) + motion LoRA merge + CLI surface
+  + 4 output formats.
+- Real-ESRGAN ML upscaling exposed on `plakat.upscale`.
+- New `MergeTarget::MOTION_ADAPTER` LoRA-merge variant.
+- New `loaded_stylize` cache slot on `ScriptCtx`.
 
-### v0.24 → v0.25 migration
+### v0.25 → v0.26 migration
 
-v0.25 is **additive** — no host word, config key, scenario field,
-or stack effect changes shape. If you don't pass `--look` or
-`--genre`, behavior is byte-identical to v0.24.
+v0.26 is **fully additive**. Every existing host word, config key,
+scenario field, and CLI flag keeps its v0.25 shape. New surface
+is opt-in:
 
-### Deferred to v0.26+
+```bund
+// New: plakat.metadata.write
+1 "out.png" plakat.metadata.write
 
-- Bund `plakat.look.*` apply on Flux + SD3 paths (state sets;
-  apply currently SD-family only — use the CLI on those families).
-- Scenario auto-LoRA discovery (the prompt prefix + sampler
-  still apply; supply `loras:` explicitly for now).
-- AnimateDiff (long-running carry from v0.20).
-- SD3 / SD3.5 animate.
-- Real-ESRGAN ML upscaling in `plakat.upscale` (`plakat.hires`
-  already exposes it).
-- `plakat.metadata.write` (gated on `plakat.save` sidecars).
+// New: Real-ESRGAN string variants on plakat.upscale
+1 "real-esrgan-x4" plakat.upscale
 
-**Earlier releases** (v0.13 – v0.24):
+// Existing: plakat.look.* / plakat.genre.* now work on Flux + SD3
+// (no script changes needed — they automatically apply on those
+// families now where they were silently SD-family only before).
+```
+
+### Deferred to v0.26.1 + v0.27
+
+- AnimateDiff inference dispatch (v0.26.1 — infrastructure shipped here)
+- SDXL motion adapter (v0.27 — V3 is SD 1.5 only)
+- AnimateDiff + ControlNet (v0.27+ — per-frame coherent control signals)
+- Long-form AnimateDiff > 32 frames (v0.27+ — needs HotShot-XL or
+  similar architecture)
+
+**Earlier releases** (v0.13 – v0.25):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
+
 
 ## Install
 
