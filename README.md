@@ -8,130 +8,147 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.28 — AnimateDiff productivity polish
+## What's new in v0.29 — batch productivity completion
 
-v0.27 made AnimateDiff **feature-complete**. v0.28 makes it
-**pleasant to use in practice** — closing the loudest v0.27
-deferrals with four targeted productivity wins. Six phases,
-~1500 LOC, zero new architectural risk.
+v0.28 made the **single-script** AnimateDiff surface pleasant.
+v0.29 makes it pleasant **at production scale** — closing the
+loudest v0.28 deferrals: animate in HJSON scenarios (the biggest
+plakat batch-driver gap), SDXL in `plakat.animate`, and the
+final `animate_format` Bund config key. Six phases, ~1100 LOC
+delta, zero new architectural risk.
 
-### 4-step animate via AnimateLCM
+### Animate in HJSON scenarios
 
-```bash
-# Default 16-frame loop. ~50s on a 24 GB GPU (vs ~4 min at V3 + 20 steps).
-plakat animate --animatediff --model sd15 --lcm \
-    --from "a fox in a snowy meadow" \
-    --format mp4
+```hjson
+{
+    model: sd15
+    type: animatediff       # scenario default — every task is animate
+    frames: 16
+    lcm: true               # 4-step AnimateLCM (~5× speedup)
+    format: gif
+    out: ./out/animations
+    scene:   [ { name: dawn,  prompt: "at dawn" } ]
+    weather: [ { name: mist,  prompt: "misty" } ]
+    tasks: [
+        { name: cottage, scene: dawn, weather: mist,
+          prompt: "a watercolor cottage" }
+        { name: knight,  scene: dawn, weather: mist,
+          prompt: "a knight in a forest, oil painting",
+          frames: 32, format: mp4 }     # per-row overrides
+    ]
+}
 ```
 
-`--lcm` switches the motion adapter to
-[`wangfuyun/AnimateLCM`](https://huggingface.co/wangfuyun/AnimateLCM)
-(17 modules: 16 + a V1/V2-style mid-block), the scheduler to LCM,
-and applies the diffusers-recommended defaults `steps=4 guidance=1.5`.
-User explicit `--steps` / `--guidance` still take precedence —
-`--lcm --steps 8` gets 8-step LCM at 2× wall-clock for sharper output.
-SD 1.5 only (SDXL AnimateLCM isn't publicly available; bails loud).
-
-### Multi-ControlNet stacking through animate
-
 ```bash
-# Each --control-spec stacks one conditioner; residuals sum per step.
-plakat animate --animatediff --model sdxl \
-    --from "a knight standing in a forest" \
-    --control-spec 'depth:image=./depth.png:strength=0.8' \
-    --control-spec 'canny:from=./reference.jpg:strength=0.4' \
-    --frames 16 --size 1024x1024 --format mp4
+plakat scenario animate.hjson --dry-run    # preview the plan
+plakat scenario animate.hjson              # render every task
+plakat scenario animate.hjson --resume     # skip rendered tasks
+plakat scenario animate.hjson --only knight
 ```
 
-The spec grammar mirrors `plakat generate`'s — `KIND[:image=PATH | from=PATH | strength=F | start=F | end=F]*`.
-Mutually exclusive at parse time with the legacy single-CN flags
-(`--control` / `--control-image` / `--control-from` /
-`--control-strength`). Closes the v0.27 RFC §8 "single ControlNet per
-run" deferral. SD 1.5 + SDXL both supported.
+The same scenario filters (`--resume` / `--only` / `--limit` /
+`--dry-run`) work unchanged. Per-task overrides for `frames`,
+`window-size`, `window-overlap`, `lcm`, `motion-lora`,
+`motion-lora-scale`, `format`, `gif-delay-ms` compose with
+scenario-level defaults. ControlNet through the existing
+`control:` / `controls:` fields (multi-CN sum). All-animate
+scenarios don't need the `enhancer:` field set (prompt
+enhancement is t2i-only). Mixed-kind scenarios still need it for
+the generate tasks.
 
-### `plakat.animate` Bund host word (49 → 50)
+Closes the **largest plakat batch-driver gap** identified in the
+v0.28 cycle audit: `cli/scenario.rs::TaskDef` had zero animate-
+related fields before this release.
+
+### SDXL `plakat.animate`
+
+```bund
+"sdxl" plakat.load
+16   "animate_frames" plakat.config.set
+1024 "width"          plakat.config.set
+1024 "height"         plakat.config.set
+"a knight in a forest, oil painting" "./out" plakat.animate
+```
+
+Removes the v0.28 SD-1.5-only restriction in scripting. New
+`ScriptCtx::loaded_animatediff_sdxl` cache slot mirrors the
+v0.26 stylize slot pattern so multi-call scripts amortise the
+~7 GB SDXL backbone load. SD 1.5 keeps its own cache slot
+(`loaded_animatediff`) with a key encoding the LCM mode —
+toggling `animate_lcm` between calls swaps the pipeline.
+AnimateLCM-SDXL still bails loud (upstream repo not publicly
+available).
+
+### `animate_format` Bund config key
 
 ```bund
 "sd15" plakat.load
-"true" "animate_lcm"     plakat.config.set       // 4-step AnimateLCM
-32     "animate_frames"  plakat.config.set       // long-form (>16 → sliding)
-"watercolor" plakat.look.apply                   // v0.25 preset
-"depth"  "./d.png" plakat.controlnet.add         // hint applied to every frame
-"a fox in a snowy meadow" "./out" plakat.animate
-// → ./out/frame-0000.png … ./out/frame-0031.png + sidecars
+"mp4" "animate_format" plakat.config.set
+"a watercolor cottage" "./out" plakat.animate
 ```
 
-The last major CLI verb missing from Bund scripting. Stack effect:
-`( prompt out_dir -- )`. Reads frames + window + LCM flag + size +
-steps + guidance + scheduler + ControlNet stack from `ctx.config` and
-`ctx.controlnets`. Four new config keys: `animate_frames` (16),
-`animate_window_size` (16), `animate_window_overlap` (4), `animate_lcm`
-(false). SD 1.5 only — SDXL animate scripting needs a shared cache
-slot for the ~7 GB SDXL backbone; deferred to v0.29.
+The final v0.28 Bund surface gap. `animate_format` accepts the
+same five strings as the CLI's `--format`: `frames | gif | mp4 |
+webm | all`. MP4 / WebM need ffmpeg on `$PATH`; the availability
+check fires before inference so install pointers come fast.
 
-### `plakat motion-adapter` inspection
+### CI workflow fix
 
-```bash
-# Enumerate plakat-supported repos + community refs
-plakat motion-adapter list
-
-# Dump one adapter's config + per-block tensor breakdown
-plakat motion-adapter info wangfuyun/AnimateLCM
-```
-
-Parallels `plakat civitai info` for adapter debugging. `info` routes
-through the same loader paths as the real animate runs, so cache
-behavior is identical (first call downloads, subsequent hit the cache).
+The arm64 cross-build matrix step in `.github/workflows/release.yml`
+gained a sed pass over `/etc/apt/apt-mirrors.txt` to drop
+`security.ubuntu.com` lines. The runner image recently started
+shipping a mirrorlist file (`URIs: mirror+file:///etc/apt/apt-
+mirrors.txt`) that includes security.ubuntu.com, which doesn't
+host arm64 packages. The v0.26 phase fix to `.list` and `.sources`
+files no longer reached the mirrorlist; v0.29 patches that hole.
 
 ### Documentation
 
-- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to v0.28
-  with AnimateLCM, multi-CN, Bund scripting, and inspection sections.
-- [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md)
-  — §13 AnimateLCM + §14 Bund scripting + §15 inspection.
-- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — `plakat.animate` row
-  + 4 new config keys + v0.27 → v0.28 migration.
-- [`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](Documentation/RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md)
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to v0.29
+  with scenario / SDXL Bund / format-from-Bund recipes.
+- [`SCENARIOS_TUTORIAL.md`](Documentation/Tutorials/SCENARIOS_TUTORIAL.md)
+  — new §9 "Animate scenarios (v0.29)" with field tables,
+  per-task LCM override pattern, multi-CN example.
+- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — bumped to v0.29
+  with the new `animate_format` config key + SDXL note +
+  v0.28 → v0.29 migration.
+- [`RFC_v0.29_BATCH_PRODUCTIVITY.md`](Documentation/RFC_v0.29_BATCH_PRODUCTIVITY.md)
   — design doc, two locked decisions, 6-phase plan.
 
 ### By the numbers
 
-- 953 lib tests + 37 integration tests green (+5 lib + +6 integration
-  across the cycle: animate config keys round-trip; AnimateLCM config
-  parse; detect_base_family; --lcm + --control-spec parsers;
-  motion-adapter subcommand smoke).
-- 6 phase commits + RFC.
-- 49 → 50 host words (`plakat.animate`).
-- AnimateLCM adapter loader added; shares `load_from_repo` +
-  `load_with_motion_loras` with V3 + SDXL beta.
-- Multi-CN compositing reuses the v0.10 `sum_controlnet_residuals`
-  contract directly — same math the t2i path uses.
+- 962 lib tests + 41 integration tests = **1003 active tests**
+  (+9 lib + +4 integration across the cycle).
+- 6 phase commits + RFC + CI workflow fix.
+- 50 host words (unchanged); 1 new config key (`animate_format`).
+- New `loaded_animatediff` + `loaded_animatediff_sdxl` cache slots
+  on `ScriptCtx` mirroring the v0.26 stylize pattern.
+- Scenario `TaskDef` gained 9 animate-related Optional fields plus
+  scenario-level defaults; merger via `effective_animate_config`
+  with `motion-lora` list APPEND semantics.
 
-### v0.27 → v0.28 migration
+### v0.28 → v0.29 migration
 
-v0.28 is **fully additive**. Every existing flag, host word, and
-config key keeps its v0.27 shape. New surface:
+v0.29 is **fully additive**. Every existing flag, host word,
+config key, and scenario field keeps its v0.28 shape. New surface:
 
-- ✅ `--lcm` flag on `plakat animate --animatediff` (SD 1.5).
-- ✅ `--control-spec` flag on `plakat animate --animatediff`
-  (repeatable; mutex with `--control` / `--control-image` /
-  `--control-from` / `--control-strength`).
-- ✅ `plakat motion-adapter info REPO` / `list` subcommand.
-- ✅ `plakat.animate` host word + 4 new config keys
-  (`animate_frames`, `animate_window_size`, `animate_window_overlap`,
-  `animate_lcm`).
+- ✅ `animate_format` config key on `plakat.animate` (Bund GIF /
+  MP4 / WebM dispatch).
+- ✅ `plakat.animate` works on SDXL via the new cache slot.
+- ✅ HJSON scenarios accept `type: animatediff` (alias `animate`)
+  at scenario or task level plus 8 new animate fields.
 
-### Deferred to v0.29+
+### Deferred to v0.30+
 
 - Per-frame video ControlNet (`--control-video PATH`).
-- AnimateLCM-SDXL (repo not publicly available upstream).
-- `plakat.animate` SDXL support (needs shared cache slot for the
-  ~7 GB SDXL backbone).
+- AnimateLCM-SDXL (upstream repo still not publicly available).
+- Mixed-kind scenarios sharing pipeline cache (currently pay both
+  t2i and animate pipeline costs).
 - FreeNoise / FreeInit shared-noise long-form.
 - Per-layer motion splice (RFC v0.27 §3.2 escalation).
 - HotShot-XL integration.
 
-**Earlier releases** (v0.13 – v0.27):
+**Earlier releases** (v0.13 – v0.28):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 

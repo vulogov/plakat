@@ -176,6 +176,22 @@ jobs:
             [ -f "$f" ] && restrict_to_amd64 "$f"
           done
 
+          # v0.29 fix: the runner image now ships a mirrorlist file at
+          # /etc/apt/apt-mirrors.txt that's referenced by a DEB822
+          # source with `URIs: mirror+file:///etc/apt/apt-mirrors.txt`.
+          # Apt fans out across every URL in the mirrorlist —
+          # including security.ubuntu.com, which doesn't host arm64
+          # and 404s every arm64 Packages probe.
+          #
+          # Drop security.ubuntu.com entries from the mirrorlist
+          # entirely. Ports.ubuntu.com (added below) carries the
+          # arm64 security updates we'd otherwise need. amd64 picks
+          # up security from azure.archive.ubuntu.com (also in the
+          # mirrorlist).
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/security\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+
           # Add the arm64 ports mirror (Ubuntu jammy is what ubuntu-22.04
           # runs; if the runner image upgrades to 24.04 noble we'd need
           # to bump this).
