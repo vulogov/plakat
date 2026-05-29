@@ -111,7 +111,6 @@ impl AnimateDiffPipeline {
         motion_loras: &[LoraSpec],
         motion_lora_scale: f32,
     ) -> Result<Self> {
-        // -------- AnimateDiff motion stack (existing v0.26 path).
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_v3().await?
         } else {
@@ -122,6 +121,42 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
+        Self::load_with_adapter(device, dtype, adapter).await
+    }
+
+    /// v0.28 phase 1: load the AnimateLCM stack on top of SD 1.5
+    /// for 4-step animate generation. Same SD 1.5 backbone as
+    /// [`Self::load_v3`]; differs only in the motion adapter (
+    /// `wangfuyun/AnimateLCM` vs V3) which adds a V1/V2-style
+    /// mid-block motion module. Caller pairs with the LCM
+    /// scheduler at ~4 denoise steps for the speedup.
+    pub async fn load_animatelcm(
+        device: &Device,
+        dtype: DType,
+        motion_loras: &[LoraSpec],
+        motion_lora_scale: f32,
+    ) -> Result<Self> {
+        let adapter = if motion_loras.is_empty() {
+            MotionAdapter::load_animatelcm().await?
+        } else {
+            MotionAdapter::load_animatelcm_with_motion_loras(
+                motion_loras,
+                motion_lora_scale,
+                device,
+            )
+            .await?
+        };
+        Self::load_with_adapter(device, dtype, adapter).await
+    }
+
+    /// Shared SD 1.5 backbone loader. Takes an already-loaded motion
+    /// adapter (V3 or AnimateLCM) and assembles the full pipeline on
+    /// top of the canonical SD 1.5 base weights.
+    async fn load_with_adapter(
+        device: &Device,
+        dtype: DType,
+        adapter: MotionAdapter,
+    ) -> Result<Self> {
         let modules = adapter.build_modules(device, dtype)?;
         let max_frames = adapter.config.motion_max_seq_length;
 
@@ -306,32 +341,23 @@ impl AnimateDiffPipeline {
         latents = (latents * scheduler.init_noise_sigma())?;
 
         // ---- ControlNet conditioning pre-tile ----
-        // Build a (batch, 3, H, W) conditioning Tensor matching the
+        // Build per-conditioner (batch, 3, H, W) Tensors matching the
         // motion UNet's per-step input batch (2F with CFG, F otherwise).
-        // Same hint replicated across every frame — phase 3 spec.
-        // Multi-CN: only the first conditioner is honoured in v0.27;
-        // the contract for "controls.first()" matches what the
-        // denoise step below looks at.
-        let cn_cond_batch = if let Some(cr) = controls.first() {
-            // (1, 3, H, W) → (2 if cfg else 1, 3, H, W).
-            let base = if do_cfg {
-                Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
-            } else {
-                cr.conditioning.clone()
-            };
-            // Tile across frames: (2 or 1, 3, H, W) → (2F or F, 3, H, W).
-            Some(base.repeat((frames, 1, 1, 1))?)
-        } else {
-            None
-        };
-        if controls.len() > 1 {
-            tracing::warn!(
-                target: "plakat",
-                "AnimateDiff v0.27 wires a single ControlNet; ignoring \
-                 the {} extra conditioner(s).",
-                controls.len() - 1,
-            );
-        }
+        // Same hint replicated across every frame for each conditioner —
+        // v0.27 phase 3 spec. v0.28 phase 0 extends to the full
+        // ControlNet stack: residuals from every conditioner sum
+        // per step inside the denoise loop.
+        let cn_cond_batches: Vec<Tensor> = controls
+            .iter()
+            .map(|cr| {
+                let base = if do_cfg {
+                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                } else {
+                    cr.conditioning.clone()
+                };
+                base.repeat((frames, 1, 1, 1)).map_err(anyhow::Error::from)
+            })
+            .collect::<Result<_>>()?;
 
         // ---- denoise loop ----
         let bar = progress::step_bar(
@@ -346,27 +372,45 @@ impl AnimateDiffPipeline {
                 latents.clone()
             };
             let model_input = scheduler.scale_model_input(model_input, timestep)?;
-            // v0.27 phase 3: ControlNet residuals — single CN, one
-            // conditioning image, tiled across all frames. Run at
-            // the same batch as the UNet input (2F with CFG; F
-            // without). The conditioning was tiled to that batch
-            // outside the loop (see cn_cond_batch).
-            let (cn_down, cn_mid) = if let (Some(cr), Some(cond)) =
-                (controls.first(), cn_cond_batch.as_ref())
-            {
+            // v0.28 phase 0: ControlNet residuals — sum across every
+            // conditioner. Each CN runs once at the same batch as
+            // the UNet input (2F with CFG; F without) and produces
+            // (down_residuals, mid_residual). We sum per residual
+            // slot across all CNs. SD 1.5 path — no SDXL pooled
+            // embeds passed.
+            let mut cn_down_sum: Option<Vec<Tensor>> = None;
+            let mut cn_mid_sum: Option<Tensor> = None;
+            for (cr, cond) in controls.iter().zip(cn_cond_batches.iter()) {
                 let (d, m) = cr.net.forward(
                     &model_input,
                     timestep as f64,
                     &text_embeds,
                     cond,
                     cr.strength,
-                    None, // SD 1.5 — no SDXL pooled embeds
+                    None,
                     None,
                 )?;
-                (Some(d), Some(m))
-            } else {
-                (None, None)
-            };
+                cn_down_sum = match cn_down_sum {
+                    None => Some(d),
+                    Some(acc) => {
+                        anyhow::ensure!(
+                            acc.len() == d.len(),
+                            "multi-CN residual slot mismatch ({} vs {})",
+                            acc.len(),
+                            d.len()
+                        );
+                        let mut out = Vec::with_capacity(acc.len());
+                        for (a, b) in acc.iter().zip(d.iter()) {
+                            out.push((a + b)?);
+                        }
+                        Some(out)
+                    }
+                };
+                cn_mid_sum = match cn_mid_sum {
+                    None => Some(m),
+                    Some(acc) => Some((acc + m)?),
+                };
+            }
 
             let noise_pred = self.motion_unet.forward_with_motion(
                 &model_input,
@@ -374,8 +418,8 @@ impl AnimateDiffPipeline {
                 &text_embeds,
                 Some(&self.modules),
                 frames,
-                cn_down.as_deref(),
-                cn_mid.as_ref(),
+                cn_down_sum.as_deref(),
+                cn_mid_sum.as_ref(),
             )?;
             let noise_pred = if do_cfg {
                 // Split into [uncond (F), cond (F)] along batch.
@@ -919,26 +963,19 @@ impl AnimateDiffSdxlPipeline {
         latents = (latents * scheduler.init_noise_sigma())?;
 
         // ---- ControlNet conditioning pre-tile ----
-        // Same shape contract as the SD 1.5 path: tile a single hint
-        // to the per-step batch (2F or F).
-        let cn_cond_batch = if let Some(cr) = controls.first() {
-            let base = if do_cfg {
-                Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
-            } else {
-                cr.conditioning.clone()
-            };
-            Some(base.repeat((frames, 1, 1, 1))?)
-        } else {
-            None
-        };
-        if controls.len() > 1 {
-            tracing::warn!(
-                target: "plakat",
-                "AnimateDiff SDXL v0.27 wires a single ControlNet; ignoring \
-                 the {} extra conditioner(s).",
-                controls.len() - 1,
-            );
-        }
+        // v0.28 phase 0: same multi-CN shape as the SD 1.5 path —
+        // build per-conditioner Tensors once, sum residuals per step.
+        let cn_cond_batches: Vec<Tensor> = controls
+            .iter()
+            .map(|cr| {
+                let base = if do_cfg {
+                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                } else {
+                    cr.conditioning.clone()
+                };
+                base.repeat((frames, 1, 1, 1)).map_err(anyhow::Error::from)
+            })
+            .collect::<Result<_>>()?;
 
         // ---- denoise loop ----
         let bar = progress::step_bar(
@@ -953,12 +990,11 @@ impl AnimateDiffSdxlPipeline {
             };
             let model_input = scheduler.scale_model_input(model_input, timestep)?;
 
-            // v0.27 phase 4: SDXL ControlNet residuals at batch=2F.
-            // The CN takes the same pooled + time-ids extras the
-            // SDXL UNet does.
-            let (cn_down, cn_mid) = if let (Some(cr), Some(cond)) =
-                (controls.first(), cn_cond_batch.as_ref())
-            {
+            // v0.28 phase 0: sum residuals across the full ControlNet
+            // stack. SDXL CN gets pooled + time-ids extras too.
+            let mut cn_down_sum: Option<Vec<Tensor>> = None;
+            let mut cn_mid_sum: Option<Tensor> = None;
+            for (cr, cond) in controls.iter().zip(cn_cond_batches.iter()) {
                 let (d, m) = cr.net.forward(
                     &model_input,
                     timestep as f64,
@@ -968,10 +1004,27 @@ impl AnimateDiffSdxlPipeline {
                     Some(&pooled_embeds),
                     Some(&time_ids),
                 )?;
-                (Some(d), Some(m))
-            } else {
-                (None, None)
-            };
+                cn_down_sum = match cn_down_sum {
+                    None => Some(d),
+                    Some(acc) => {
+                        anyhow::ensure!(
+                            acc.len() == d.len(),
+                            "multi-CN residual slot mismatch ({} vs {})",
+                            acc.len(),
+                            d.len()
+                        );
+                        let mut out = Vec::with_capacity(acc.len());
+                        for (a, b) in acc.iter().zip(d.iter()) {
+                            out.push((a + b)?);
+                        }
+                        Some(out)
+                    }
+                };
+                cn_mid_sum = match cn_mid_sum {
+                    None => Some(m),
+                    Some(acc) => Some((acc + m)?),
+                };
+            }
 
             let noise_pred = self.motion_unet.forward_with_motion(
                 &model_input,
@@ -981,8 +1034,8 @@ impl AnimateDiffSdxlPipeline {
                 &time_ids,
                 Some(&self.modules),
                 frames,
-                cn_down.as_deref(),
-                cn_mid.as_ref(),
+                cn_down_sum.as_deref(),
+                cn_mid_sum.as_ref(),
             )?;
             let noise_pred = if do_cfg {
                 let pieces = noise_pred.chunk(2, 0)?;

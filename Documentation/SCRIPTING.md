@@ -1,4 +1,4 @@
-# `plakat run` — Bund scripting (v0.26)
+# `plakat run` — Bund scripting (v0.28)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
@@ -10,7 +10,8 @@ Design RFCs:
 [`RFC_v0.23_BUND_DEFERRALS.md`](RFC_v0.23_BUND_DEFERRALS.md) (the v0.22 deferrals closed in v0.23),
 [`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) (persona depth + scripting completion),
 [`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) (art-medium presets + auto-LoRA discovery),
-[`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md) (AnimateDiff + every v0.25 carry).
+[`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md) (AnimateDiff + every v0.25 carry),
+[`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md) (multi-CN, AnimateLCM, `plakat.animate` bridge, motion-adapter inspection).
 
 ## Modes
 
@@ -20,7 +21,7 @@ plakat run --repl               # Interactive REPL on the same surface
 plakat run --repl --out PATH    # REPL with a custom output dir
 ```
 
-Both modes share the same `ScriptCtx` singleton + the same 49
+Both modes share the same `ScriptCtx` singleton + the same 50
 `plakat.*` host words. One process invocation = one script eval
 (no concurrent scripts in one process — bundcore's VM has no
 per-eval isolation).
@@ -76,6 +77,7 @@ input (popped first).
 | `plakat.portrait` | `( prompt -- handle )` | **v0.24 phase 1**: photos come from `plakat.portrait.photo.add` stack (was `( prompt photo -- handle )` in v0.23). IP-Adapter-Plus-Face. SD-family only. |
 | `plakat.stylize` | `( subject style -- handle )` | **v0.24 phase 6.** IP-Adapter style transfer. No prompt (CLI parity). Strength from `config.strength`. SD 1.5 only. |
 | `plakat.upscale` | `( handle scale -- handle )` | **v0.26 phase 9**: scale = integer 2/4 (Lanczos) OR string `"real-esrgan-x2"` / `"real-esrgan-x4"` / `"real-esrgan-anime-x4"` (ML). |
+| `plakat.animate` | `( prompt out_dir -- )` | **v0.28 phase 2.** AnimateDiff single-prompt N-frame generation. Writes `frame-NNNN.png` + JSON sidecars under `out_dir`. Reads `animate_frames` / `animate_window_size` / `animate_window_overlap` / `animate_lcm` from config. SD 1.5 only. |
 | `plakat.save` | `( handle path -- )` | **v0.26 phase 8**: writes A1111 `parameters` tEXt + JSON sidecar when the handle has metadata (rendering paths populate it). Relative paths resolve under `--out`. |
 | `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. |
 
@@ -466,6 +468,10 @@ list. Type mismatches bail.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `offline_discovery` | bool | false | Skip remote LoRA discovery for `plakat.look.*` / `plakat.genre.*`. Mirrors the CLI `--offline` flag. When true, only the on-disk discovery cache + the local-cache scan run. |
+| `animate_frames` | int | 16 | **v0.28.** Total output frames for `plakat.animate`. Values > `animate_window_size` engage the long-form sliding-window stitcher. |
+| `animate_window_size` | int | 16 | **v0.28.** Per-window frame count for `plakat.animate` long-form. Must be ≤ 32 (motion-adapter `motion_max_seq_length`). |
+| `animate_window_overlap` | int | 4 | **v0.28.** Cross-fade region in frames. Must be < `animate_window_size`. |
+| `animate_lcm` | bool | false | **v0.28.** Switch `plakat.animate` to the AnimateLCM motion adapter + LCM scheduler. Defaults `steps=4`, `guidance=1.5` unless user already overrode either. ~5× speedup. SD 1.5 only. |
 
 ## REPL meta-commands
 
@@ -501,18 +507,39 @@ or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
 
-## v0.26 limitations / deferred to v0.26.1 + v0.27
+## v0.28 limitations / deferred to v0.29+
 
-v0.26 closed **every v0.25 carry** at the infrastructure level.
-Remaining items:
+v0.28 closed the loudest v0.27 deferrals (multi-CN through animate,
+AnimateLCM 4-step generation, `plakat.animate` Bund word, motion-
+adapter inspection). Remaining items:
 
 | Limitation | Tracking |
 |---|---|
-| AnimateDiff inference dispatch | Infrastructure shipped (motion adapter loader, temporal modules, vendored UNet with motion splice, motion LoRA composition, CLI surface, `--format` GIF/MP4/WebM). The N-frame scheduler loop + per-frame VAE decode + quality validation close in **v0.26.1**. See [`ANIMATEDIFF.md`](ANIMATEDIFF.md). |
-| SDXL motion adapter | AnimateDiff V3 is SD 1.5 only in v0.26. SDXL motion adapters exist (`guoyww/animatediff-motion-adapter-sdxl-beta`) but are less mature; v0.27 candidate. |
-| Per-block-internal motion splice | v0.26.0 splices at block-output boundaries; the faithful diffusers `UNetMotionModel` splices INSIDE each block (per resnet+attn layer). v0.26.1 evaluates whether quality requires full block vendoring (~800 more LOC). |
-| AnimateDiff + ControlNet | Per-frame temporal-coherent control signals would need new infrastructure. v0.27+ candidate. |
-| Long-form AnimateDiff (> 32 frames) | V3's `motion_max_seq_length = 32` is a hard cap. HotShot-XL or similar architectures land in a future cycle if pursued. |
+| `plakat.animate` SDXL | SD 1.5 only in v0.28. SDXL animate via Bund needs a shared cache slot for the ~7 GB SDXL backbone so multi-call scripts don't reload it. v0.29 candidate. |
+| AnimateLCM SDXL | `wangfuyun/AnimateLCM-SDXL` isn't publicly available. `--lcm --model sdxl` bails. v0.29 if upstream changes. |
+| Per-frame video ControlNet | v0.28 ships same-hint-every-frame conditioning. Per-frame video-to-video (a depth / canny video as guide) is v0.29+ territory. |
+| Per-layer motion splice | v0.27/v0.28 splice at block-output boundaries; the faithful diffusers `UNetMotionModel` splices INSIDE each block. RFC v0.27 §3.2 escalation if quality requires it. |
+| Long-form > ~256 frames | Sliding-window long-form (v0.27 phase 5/6) caps at ~256 frames before motion drift dominates. FreeNoise / FreeInit shared-noise schemes are v0.29+ candidates for cleaner long-form. |
+
+## v0.27 → v0.28 migration
+
+v0.28 is **fully additive**. No existing host word, config key,
+or stack effect changes shape. New surface:
+
+```bund
+// v0.28 phase 2: plakat.animate
+"sd15" plakat.load
+"true" "animate_lcm"     plakat.config.set      // 4-step AnimateLCM
+32     "animate_frames"  plakat.config.set      // long-form (>16 → sliding window)
+"a watercolor cottage at dawn" "./out" plakat.animate
+// → ./out/frame-0000.png ... ./out/frame-0031.png + sidecars
+
+// Composes with every existing ControlNet / look / genre / lora word.
+"depth" "./depth.png" plakat.controlnet.add     // hint applied to every frame
+```
+
+Host word count: 49 → 50. See [`ANIMATEDIFF.md`](ANIMATEDIFF.md)
+for the full animate reference.
 
 ## v0.25 → v0.26 migration
 

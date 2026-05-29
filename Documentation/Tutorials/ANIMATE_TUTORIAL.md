@@ -306,12 +306,12 @@ see §13.
 Cold-cache download: ~1.4 GB for V3 SD 1.5, ~1.5 GB for SDXL beta.
 Cached afterward under `$PLAKAT_CACHE_DIR/huggingface/hub/`.
 
-## 11. AnimateDiff + ControlNet (v0.27)
+## 11. AnimateDiff + ControlNet (v0.27 + v0.28)
 
 The same conditioning signal applies to every frame — depth map,
 canny edges, openpose skeleton, lineart, or HED softedge. Per-frame
-video control (a depth video as guide) is v0.28+ territory; v0.27
-ships single-image-applied-to-every-frame.
+video control (a depth video as guide) is v0.29+ territory; v0.27/
+v0.28 ship single-image-applied-to-every-frame.
 
 ```bash
 # Depth-guided motion (camera holds, subject moves through fixed scene)
@@ -342,6 +342,33 @@ Five kinds supported: `depth`, `canny`, `openpose`, `lineart`,
 `softedge`. The CN model picker resolves automatically based on
 `--model` (SD 1.5 → lllyasviel + control_v11 family; SDXL → official
 SDXL CN variants).
+
+### v0.28: stacking multiple ControlNets
+
+When one conditioner isn't enough — depth for structure plus
+canny for edge fidelity, or openpose plus lineart for character
+animation — use the repeatable `--control-spec` flag:
+
+```bash
+# Depth (full strength) + canny (half strength), summed per step
+plakat animate --animatediff --model sdxl \
+    --from "a knight standing in a forest" \
+    --control-spec 'depth:image=./depth.png:strength=0.8' \
+    --control-spec 'canny:from=./reference.jpg:strength=0.4' \
+    --frames 16 --size 1024x1024 --format mp4
+```
+
+The spec grammar mirrors `plakat generate`'s `--control-spec`:
+`KIND[:option=value]*` with options `image=PATH`, `from=PATH`,
+`strength=F`, `start=F`, `end=F`. Mutually exclusive with the
+single-CN legacy flags (`--control` / `--control-image` /
+`--control-from` / `--control-strength`) — clap enforces the
+disambiguation at parse time.
+
+Each conditioner runs its full ControlNet pass per denoise step
+and the residuals sum into the motion UNet. Memory scales linearly
+with the number of conditioners; if you OOM, drop one (depth +
+canny is the most common pair).
 
 ## 12. Long-form AnimateDiff via sliding window (v0.27)
 
@@ -393,7 +420,130 @@ full reference + memory budget table + the architecture details
 (motion module layout, block-boundary splice tradeoff,
 ControlNet residual flow).
 
-## 13. `--format` flag (v0.26)
+## 13. 4-step animate via AnimateLCM (v0.28)
+
+V3 + DDIM at 20 steps × 16 frames takes ~4 minutes on a 24 GB
+GPU. That's expensive for iteration — you can't dial a prompt
+when each draft is 4 minutes. **AnimateLCM** is a guidance-
+distilled motion adapter trained for the LCM scheduler at
+**4 denoise steps** — ~50 seconds for the same 16-frame clip.
+Same quality bar (LCM is what every distillation paper since
+2024 targets), one CLI flag.
+
+```bash
+# 4-step animate. --lcm switches to AnimateLCM motion adapter,
+# the LCM scheduler, and the LCM-recommended defaults
+# (steps=4, guidance=1.5).
+plakat animate --animatediff --model sd15 --lcm \
+    --from "a fox in a snowy meadow" \
+    --format mp4
+```
+
+When you want more quality for a longer wall-clock:
+
+```bash
+# 8-step LCM at 2× the runtime — sharper for hero shots
+plakat animate --animatediff --model sd15 --lcm \
+    --steps 8 --guidance 2.0 \
+    --from "..." --format mp4
+```
+
+Override semantics: `--lcm` applies its defaults *only* when the
+underlying `--steps` / `--guidance` are still their built-in
+defaults (20 / 7.5). User explicit values win.
+
+Composes with motion LoRAs, ControlNet (single + multi),
+sliding-window long-form, and the Bund scripting bridge (§15).
+The motion-LoRA tensor key convention is identical to V3, so
+existing V3-targeting motion LoRAs (zoom-in, pan-left, etc.)
+apply unchanged.
+
+**SD 1.5 only in v0.28.** The SDXL AnimateLCM repo isn't publicly
+available; `--lcm --model sdxl` bails. v0.29 if upstream changes.
+
+## 14. Bund scripting bridge — `plakat.animate` (v0.28)
+
+Every other major animate use case is also reachable from
+[Bund scripts](SCRIPTING_TUTORIAL.md) via the v0.28 host word
+`plakat.animate ( prompt out_dir -- )`. Reads config knobs +
+ControlNet stack from `ctx.config` and `ctx.controlnets`; writes
+`frame-NNNN.png` plus per-frame JSON sidecars to the given dir.
+
+Four new config keys:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `animate_frames` | 16 | Total output frames |
+| `animate_window_size` | 16 | Per-window frame count (≤ 32) |
+| `animate_window_overlap` | 4 | Cross-fade region for long-form |
+| `animate_lcm` | false | Toggle AnimateLCM + LCM scheduler |
+
+```bund
+"sd15"   plakat.load
+"true"   "animate_lcm"     plakat.config.set
+32       "animate_frames"  plakat.config.set
+"watercolor" plakat.look.apply              // v0.25 preset
+"depth"  "./d.png" plakat.controlnet.add
+"a fox in a snowy meadow" "./out" plakat.animate
+// → ./out/frame-0000.png … ./out/frame-0031.png + sidecars
+```
+
+Save as `my-anim.bund` and run:
+
+```bash
+plakat run my-anim.bund
+```
+
+`plakat.animate` composes with every other host word that mutates
+config / loras / look / genre / controlnet. SD 1.5 only —
+SDXL animate in scripting is deferred to v0.29 (needs a shared
+cache slot for the ~7 GB SDXL backbone to avoid reloading on
+every call).
+
+See [`Documentation/SCRIPTING.md`](../SCRIPTING.md) for the full
+host-word reference.
+
+## 15. Inspecting motion adapters — `plakat motion-adapter` (v0.28)
+
+When a community motion adapter doesn't load, or you want to
+double-check what the V3 / SDXL beta / AnimateLCM adapters
+actually contain:
+
+```bash
+# Print all known plakat-supported repos + community refs
+plakat motion-adapter list
+
+# Dump one adapter's config + per-block tensor breakdown
+plakat motion-adapter info wangfuyun/AnimateLCM
+```
+
+Sample `info` output (V3 SD 1.5, abbreviated):
+
+```
+Motion adapter — guoyww/animatediff-motion-adapter-v1-5-3
+AnimateDiff V3 motion adapter
+──────────────────────────────
+weights:        /Users/.../diffusion_pytorch_model.safetensors
+tensor count:   540
+block channels: [320, 640, 1280, 1280]
+layers/block:   2
+attn heads:     8
+max frames:     32
+mid-block:      no (V3)
+total modules:  16
+
+Per-block tensor counts:
+  down_blocks: [54, 54, 54, 54]
+  up_blocks:   [81, 81, 81, 81]
+
+Detected base family: SD 1.5 (4-block UNet)
+```
+
+The `info` subcommand routes through the same loader as the real
+animate runs, so the cache behavior is identical — first call
+downloads, subsequent calls hit the cache.
+
+## 16. `--format` flag (v0.26)
 
 Every animate mode (prompt-lerp on SD-family / Flux / SD3 +
 AnimateDiff in every configuration) accepts `--format FMT`:
@@ -412,7 +562,7 @@ ffmpeg`, Windows `scoop install ffmpeg`.
 `--format gif` is equivalent to passing `--gif` (the legacy
 v0.20 flag still works). When both are set, `--format` wins.
 
-## 14. Limitations
+## 17. Limitations
 
 **Prompt-lerp mode** (§1-§9):
 - **SDXL** lerps the dual CLIP-L + CLIP-G hidden states plus the
@@ -424,20 +574,22 @@ v0.20 flag still works). When both are set, `--format` wins.
   not a multi-keyframe spline. Chain multiple `plakat animate`
   runs + concat with ffmpeg for richer trajectories.
 
-**AnimateDiff mode** (§10-§12):
+**AnimateDiff mode** (§10–§15):
 - **SD 1.5 + SDXL only.** No SD 2.1 / Flux / SD3 motion adapters
   exist upstream.
-- **Single ControlNet per run.** Multi-CN sum isn't wired through
-  animate yet; use one conditioning at a time.
+- **AnimateLCM is SD 1.5 only.** SDXL AnimateLCM repo isn't
+  publicly available; `--lcm --model sdxl` bails.
 - **Same conditioning every frame.** Per-frame video control
-  (e.g. a depth video) is v0.28+ territory.
+  (a depth/canny video as guide) is v0.29+ territory.
+- **`plakat.animate` is SD 1.5 only.** SDXL animate in scripting
+  needs a shared cache slot for the SDXL backbone (~7 GB);
+  v0.29.
 - **No img2img / inpaint** on the animate path. Use
   `plakat generate` / `plakat img2img` for those if you need a
   single frame with the full adapter stack.
 - **Block-boundary motion splice** rather than the faithful
   diffusers per-resnet+attn-layer splice. Quality concern
-  documented in RFC §3.2; upgrade path budgeted in the v0.27
-  cycle.
+  documented in RFC v0.27 §3.2; upgrade path budgeted.
 
 ## Where to next
 
