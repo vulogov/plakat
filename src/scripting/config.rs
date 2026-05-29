@@ -143,6 +143,12 @@ pub struct GenerationConfig {
     /// guidance-distilled defaults (~5× speedup vs V3 + DDIM).
     /// SD 1.5 only. Default `false`.
     pub animate_lcm: bool,
+    /// v0.29 phase 0: `plakat.animate` output format. `Frames`
+    /// (default) writes per-frame PNGs only. `Gif` / `Mp4` / `Webm`
+    /// also bundle the frames into the corresponding container; `All`
+    /// produces every format. MP4 / WebM require ffmpeg on `$PATH`.
+    /// Set with e.g. `"mp4" "animate_format" plakat.config.set`.
+    pub animate_format: crate::imaging::video::Format,
     /// v0.22 phase 7: ADetailer face img2img strength in [0, 1].
     /// Default 0.4 (Auto1111's ADetailer default). Lower preserves
     /// identity / colour; higher = more rework. Ignored when
@@ -357,6 +363,7 @@ impl Default for GenerationConfig {
             animate_window_size: 16,
             animate_window_overlap: 4,
             animate_lcm: false,
+            animate_format: crate::imaging::video::Format::Frames,
             adetailer_strength: 0.4,
             adetailer_padding: 0.25,
             adetailer_feather: 0.25,
@@ -609,6 +616,14 @@ impl GenerationConfig {
             "animate_lcm" => {
                 self.animate_lcm = parse_bool(value, key)?;
             }
+            "animate_format" => {
+                use std::str::FromStr;
+                self.animate_format = crate::imaging::video::Format::from_str(value)
+                    .with_context(|| format!(
+                        "plakat.config.set: animate_format {value:?} — \
+                         expected frames | gif | mp4 | webm | all"
+                    ))?;
+            }
             "artefact_blend_strength" => {
                 let f = parse_unit_float(value, key)? as f32;
                 self.artefact_blend_strength = f;
@@ -821,7 +836,7 @@ impl GenerationConfig {
                      wildcard_dir, negative_preset, style_catalog, \
                      face_bbox, face_landmarks, identity_kind, \
                      offline_discovery, animate_frames, animate_window_size, \
-                     animate_window_overlap, animate_lcm."
+                     animate_window_overlap, animate_lcm, animate_format."
                 ));
             }
         }

@@ -2604,6 +2604,65 @@ mod tests {
         });
     }
 
+    /// v0.29 phase 0: `animate_format` config key round-trips
+    /// through `plakat.config.set` for every supported Format
+    /// variant. Verifies the Frames default and all four named
+    /// formats plus the `all` aggregator.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn animate_format_config_key_round_trips() {
+        with_singleton_ctx(|| {
+            use crate::imaging::video::Format;
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            with_ctx(|ctx| {
+                assert_eq!(ctx.config.animate_format, Format::Frames);
+            })
+            .unwrap();
+            for (s, expected) in [
+                ("frames", Format::Frames),
+                ("gif", Format::Gif),
+                ("mp4", Format::Mp4),
+                ("webm", Format::Webm),
+                ("all", Format::All),
+            ] {
+                let script = format!(
+                    r#""{s}" "animate_format" plakat.config.set"#
+                );
+                eval(&script).unwrap();
+                with_ctx(|ctx| {
+                    assert_eq!(ctx.config.animate_format, expected);
+                })
+                .unwrap();
+            }
+        });
+    }
+
+    /// v0.29 phase 0: unknown animate_format strings bail with the
+    /// supported-formats hint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn animate_format_unknown_bails() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            let err = eval(
+                r#""avif" "animate_format" plakat.config.set"#,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("animate_format")
+                    && (err.contains("frames")
+                        || err.contains("gif")
+                        || err.contains("mp4")),
+                "expected supported-formats hint, got: {err}",
+            );
+        });
+    }
+
     /// v0.28 phase 2: `animate_window_size > 32` bails with the
     /// motion_max_seq_length pointer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
