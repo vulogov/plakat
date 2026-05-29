@@ -147,7 +147,11 @@ If you're new to plakat, work through these in order:
     (scene × weather × persona), per-task overrides, per-task
     LoRA stacks, partial-rerun filters (`--resume`, `--only`,
     `--limit`, `--dry-run`), real-world series-production
-    examples. The power-user feature that turns plakat from a
+    examples. **v0.29 §9 adds animate scenarios** (`type:
+    animatediff` tasks with per-task `frames` / `lcm` /
+    `motion-lora` / `format` overrides) — the same batch driver
+    now produces N-frame motion-coherent clips alongside single
+    images. The power-user feature that turns plakat from a
     one-shot CLI into a job runner.
 
 16. [`OUTPAINT_TUTORIAL.md`](OUTPAINT_TUTORIAL.md) — `plakat
