@@ -14,6 +14,7 @@ pub mod init;
 pub mod inspect;
 pub mod metadata;
 pub mod models;
+pub mod motion_adapter;
 pub mod outpaint;
 pub mod portrait;
 pub mod run;
@@ -95,6 +96,12 @@ pub enum Command {
     /// frames, fixed seed, optional GIF bundling. SD 1.5 / SD 2.1
     /// only in this release.
     Animate(animate::AnimateArgs),
+    /// v0.28 phase 3: inspect AnimateDiff motion adapters.
+    /// `plakat motion-adapter info REPO` downloads + dumps the
+    /// adapter's config + tensor breakdown; `plakat motion-adapter
+    /// list` enumerates the plakat-supported repos.
+    #[command(name = "motion-adapter", subcommand_value_name = "OP")]
+    MotionAdapter(motion_adapter::MotionAdapterArgs),
     /// v0.18: read back the Auto1111 `parameters` PNG tEXt chunk +
     /// JSON sidecar plakat writes alongside every generation.
     /// Reverse of the metadata write path — recover prompt / seed /
@@ -163,6 +170,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             animate::run(args, device).await
         }
+        Command::MotionAdapter(args) => motion_adapter::run(args).await,
         Command::Metadata(args) => metadata::run(args).await,
         Command::Clone(args) => clone::run(args).await,
         Command::Init(args) => init::run(args).await,

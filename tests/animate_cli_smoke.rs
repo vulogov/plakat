@@ -234,3 +234,111 @@ fn animate_motion_lora_scale_default_and_override() {
         other => panic!("expected Animate pair, got {other:?}"),
     }
 }
+
+/// v0.28 phase 1: `--lcm` flag parses + defaults off.
+#[test]
+fn animate_lcm_flag_parses() {
+    let off = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+    ])
+    .expect("parse");
+    let on = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--lcm",
+    ])
+    .expect("parse");
+    match (off.command, on.command) {
+        (Command::Animate(off), Command::Animate(on)) => {
+            assert!(!off.lcm, "default --lcm should be off");
+            assert!(on.lcm, "explicit --lcm should be on");
+        }
+        other => panic!("expected Animate pair, got {other:?}"),
+    }
+}
+
+/// v0.28 phase 1: `--lcm --steps 8` keeps the user's step count
+/// (parser-level — runtime applies LCM defaults only when step
+/// count matches the built-in default 20).
+#[test]
+fn animate_lcm_with_explicit_steps_parses() {
+    let cli = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--lcm",
+        "--steps",
+        "8",
+        "--guidance",
+        "2.0",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Animate(args) => {
+            assert!(args.lcm);
+            assert_eq!(args.steps, 8);
+            assert!((args.guidance - 2.0).abs() < f64::EPSILON);
+        }
+        other => panic!("expected Animate, got {other:?}"),
+    }
+}
+
+/// v0.28 phase 0: `--control-spec` is repeatable for multi-CN.
+#[test]
+fn animate_control_spec_is_repeatable() {
+    let cli = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--control-spec",
+        "depth:image=/tmp/d.png",
+        "--control-spec",
+        "canny:image=/tmp/c.png:strength=0.5",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Animate(args) => {
+            use plakat::pipelines::controlnet::ControlKind;
+            assert_eq!(args.control_specs.len(), 2);
+            assert_eq!(args.control_specs[0].kind, ControlKind::Depth);
+            assert_eq!(args.control_specs[1].kind, ControlKind::Canny);
+            assert!((args.control_specs[1].strength - 0.5).abs() < f32::EPSILON);
+        }
+        other => panic!("expected Animate, got {other:?}"),
+    }
+}
+
+/// v0.28 phase 0: `--control-spec` conflicts with the legacy
+/// single-conditioner flags (clap-level enforcement so we don't have
+/// to disambiguate at runtime).
+#[test]
+fn animate_control_spec_conflicts_with_legacy_flags() {
+    let err = Cli::try_parse_from([
+        "plakat",
+        "animate",
+        "--from",
+        "x",
+        "--animatediff",
+        "--control",
+        "depth",
+        "--control-spec",
+        "canny:image=/tmp/c.png",
+    ])
+    .unwrap_err();
+    let s = err.to_string();
+    assert!(
+        s.contains("cannot be used with") || s.contains("the argument"),
+        "expected conflict error, got: {s}"
+    );
+}

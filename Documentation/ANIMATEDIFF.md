@@ -1,4 +1,4 @@
-# AnimateDiff (v0.27)
+# AnimateDiff (v0.28)
 
 `plakat animate --animatediff` renders **motion-coherent N-frame
 sequences** from a single prompt using AnimateDiff motion adapters
@@ -6,20 +6,25 @@ spliced into the SD UNet. Different from `plakat animate`'s default
 prompt-morph mode, which interpolates between two prompts without
 temporal-attention coherence.
 
-**v0.27 ships the full AnimateDiff feature set:** SD 1.5 + SDXL, both
-with optional ControlNet conditioning and a sliding-window
-long-form mode that lifts the V3 32-frame cap.
+**v0.27 shipped the full AnimateDiff feature set** (SD 1.5 + SDXL,
+both with ControlNet + sliding-window long-form). **v0.28 makes
+it pleasant to use in practice** — multi-CN stacking,
+AnimateLCM 4-step generation, the `plakat.animate` Bund host word,
+and `plakat motion-adapter` inspection commands.
 
-| Capability | SD 1.5 | SDXL |
-|---|---|---|
-| Inference dispatch | ✓ phase 0 (v0.27) | ✓ phase 2 |
-| Motion adapter | V3 (`guoyww/animatediff-motion-adapter-v1-5-3`) | beta (`guoyww/animatediff-motion-adapter-sdxl-beta`) |
-| Motion LoRAs | ✓ phase 4 (v0.26) | ✓ phase 1 |
-| ControlNet | ✓ phase 3 | ✓ phase 4 |
-| Long-form sliding window | ✓ phase 5 | ✓ phase 6 |
-| Per-block motion modules | 16 (4 down × 2 + 4 up × 2) | 12 (3 down × 2 + 3 up × 2) |
-| Hard frame cap per window | 32 | 32 |
-| Cross-fade long-form total | ~256 frames practical | ~256 frames practical |
+| Capability | SD 1.5 | SDXL | Added in |
+|---|---|---|---|
+| Inference dispatch | ✓ | ✓ | v0.27 |
+| Motion adapter | V3 + AnimateLCM | beta | v0.27 / v0.28 |
+| Motion LoRAs | ✓ | ✓ | v0.26 / v0.27 |
+| ControlNet (single) | ✓ | ✓ | v0.27 |
+| **ControlNet stacking** (multi-CN) | ✓ | ✓ | **v0.28** |
+| Long-form sliding window | ✓ | ✓ | v0.27 |
+| **4-step LCM generation** | ✓ (AnimateLCM) | — (no public SDXL repo) | **v0.28** |
+| **Bund scripting (`plakat.animate`)** | ✓ | — (v0.29) | **v0.28** |
+| Per-block motion modules | 16 (V3) / 17 (LCM) | 12 | — |
+| Hard frame cap per window | 32 | 32 | — |
+| Cross-fade long-form total | ~256 frames practical | ~256 frames practical | — |
 
 ## Quick start
 
@@ -66,20 +71,71 @@ plakat animate --animatediff --model sd15 \
     --format mp4
 ```
 
+### v0.28: 4-step animate via AnimateLCM
+
+```bash
+# Switches motion adapter to wangfuyun/AnimateLCM, scheduler to LCM,
+# defaults to --steps 4 --guidance 1.5 (overrideable). ~5× speedup.
+plakat animate --animatediff --model sd15 --lcm \
+    --from "a fox in a snowy meadow" \
+    --format mp4
+```
+
+### v0.28: multi-CN stacking (depth + canny)
+
+```bash
+# Each --control-spec stacks one conditioner; residuals from every
+# ControlNet sum per denoise step. SD 1.5 + SDXL both supported.
+plakat animate --animatediff --model sdxl \
+    --from "a knight in a forest" \
+    --control-spec 'depth:image=./depth.png:strength=0.8' \
+    --control-spec 'canny:from=./source.jpg:strength=0.4' \
+    --frames 16 --size 1024x1024 --format mp4
+```
+
+### v0.28: Bund scripting bridge
+
+```bund
+"sd15"   plakat.load
+"true"   "animate_lcm"     plakat.config.set
+16       "animate_frames"  plakat.config.set
+"a watercolor cottage at dawn" "./out" plakat.animate
+// → ./out/frame-0000.png … ./out/frame-0015.png + sidecars
+```
+
+Run with `plakat run my-anim.bund`. See [`SCRIPTING.md`](SCRIPTING.md)
+for the full host-word reference.
+
+### v0.28: inspect a motion adapter
+
+```bash
+plakat motion-adapter list                            # known + community
+plakat motion-adapter info wangfuyun/AnimateLCM       # full dump
+```
+
 ## Architecture
 
 ### Motion adapter
 
-| Variant | Repo | Block channels | Modules |
-|---|---|---|---|
-| V3 SD 1.5 | `guoyww/animatediff-motion-adapter-v1-5-3` | `[320, 640, 1280, 1280]` | 16 |
-| SDXL beta | `guoyww/animatediff-motion-adapter-sdxl-beta` | `[320, 640, 1280]` | 12 |
+| Variant | Repo | Block channels | Mid? | Modules |
+|---|---|---|---|---|
+| V3 SD 1.5 | `guoyww/animatediff-motion-adapter-v1-5-3` | `[320, 640, 1280, 1280]` | no | 16 |
+| SDXL beta | `guoyww/animatediff-motion-adapter-sdxl-beta` | `[320, 640, 1280]` | no | 12 |
+| AnimateLCM (v0.28) | `wangfuyun/AnimateLCM` | `[320, 640, 1280, 1280]` | yes | 17 |
 
-Both share the same `MotionAdapterConfig` schema. The only meaningful
-difference is `block_out_channels`, which matches each base UNet's
-block layout. Adapter weights download to
-`$PLAKAT_CACHE_DIR/huggingface/hub/` on first use (~1.4 GB for V3,
-~1.5 GB for SDXL beta).
+All three share the same `MotionAdapterConfig` schema. Differences:
+
+- `block_out_channels` matches each base UNet's block layout
+  (SD 1.5 has 4 blocks; SDXL has 3).
+- AnimateLCM flips `use_motion_mid_block` to true (V1/V2-style),
+  adding 1 mid-block motion module — 17 total instead of V3's 16.
+
+Adapter weights download to `$PLAKAT_CACHE_DIR/huggingface/hub/` on
+first use (~1.4 GB for V3 / AnimateLCM, ~1.5 GB for SDXL beta).
+
+Inspect any of the supported adapters via `plakat motion-adapter
+info REPO` (config dump + per-block tensor breakdown + detected
+base family).
 
 ### Per-block motion modules
 
@@ -154,18 +210,32 @@ replicated latents + replicated text embeddings (SDXL also gets
 pooled + add_time_ids), producing down + mid residuals that plug
 straight into the motion UNet's existing residual hooks.
 
-Multi-conditioner is honoured by the existing
-`pipelines::controlnet::sum_controlnet_residuals` helper but isn't
-wired through `--animatediff` yet — v0.27 ships single-CN only.
-Extras log a warning and are skipped.
+**Multi-CN stacking** (v0.28 phase 0): each `--control-spec`
+stacks one conditioner; residuals from every conditioner sum
+per denoise step inside the motion UNet. The spec grammar mirrors
+`plakat generate`: `KIND[:option=value]*` with `KIND` ∈
+`depth / canny / openpose / lineart / softedge` and options
+`image=PATH`, `from=PATH`, `strength=F`, `start=F`, `end=F`.
 
 CLI flags:
 | Flag | Purpose |
 |---|---|
-| `--control KIND` | `depth` / `canny` / `openpose` / `lineart` / `softedge` |
+| `--control KIND` | (legacy single-CN) `depth` / `canny` / `openpose` / `lineart` / `softedge` |
 | `--control-image PATH` | Pre-rendered conditioning |
 | `--control-from PATH` | Auto-annotate this image (mutex with `--control-image`) |
 | `--control-strength F` | Residual scale (default 1.0) |
+| `--control-spec SPEC` (v0.28, repeatable) | Multi-CN spec grammar; mutex with the legacy flags above |
+
+```bash
+# Single CN via the legacy flags
+plakat animate --animatediff --model sd15 \
+    --control depth --control-image ./d.png ...
+
+# Multi CN via the spec form
+plakat animate --animatediff --model sdxl \
+    --control-spec 'depth:image=./d.png:strength=0.8' \
+    --control-spec 'canny:from=./source.jpg:strength=0.4' ...
+```
 
 ### Long-form sliding window (v0.27 phases 5 + 6)
 
@@ -210,6 +280,73 @@ design space (per-window independent denoising + post-hoc latent
 blend). FreeNoise / FreeInit style shared-noise schemes are
 deferred to v0.28+ if seams are visibly bad on real prompts.
 
+### AnimateLCM (v0.28 phase 1)
+
+`--lcm` switches the motion adapter to
+`wangfuyun/AnimateLCM`, the scheduler to LCM, and applies
+defaults `--steps 4 --guidance 1.5` for a **~5× speedup** vs V3
++ DDIM at 20 steps. User-supplied `--steps` / `--guidance` take
+precedence — `--lcm --steps 8` gets 8-step LCM at 2× the runtime
+of the default for higher quality.
+
+AnimateLCM is SD 1.5 only — the SDXL AnimateLCM repo isn't
+publicly available. `--lcm` + `--model sdxl` bails loud with
+the deferral pointer.
+
+Composes with motion LoRAs, ControlNet (single + multi), and
+sliding-window long-form. The motion-LoRA tensor key convention
+is the same as V3 / SDXL beta, so V3-targeting motion LoRAs from
+the community apply cleanly to AnimateLCM too.
+
+| Mode | Steps | Wall-clock @ 16 frames × 512² × bf16 GPU |
+|---|---|---|
+| V3 + DDIM (default) | 20 | ~4 min |
+| AnimateLCM + LCM | 4 | ~50 s |
+| AnimateLCM + LCM (high quality) | 8 | ~95 s |
+
+(Approximate — actual numbers depend on GPU. The speedup ratio
+is what matters.)
+
+### Bund scripting bridge (v0.28 phase 2)
+
+`plakat.animate ( prompt out_dir -- )` exposes AnimateDiff to
+the Bund scripting layer. Reads frames + window + LCM flag +
+size + steps + guidance + scheduler + controls from `ctx.config`
+and `ctx.controlnets`. Writes `frame-NNNN.png` plus JSON sidecars
+to the given dir, matching the CLI animate output layout.
+
+Four new config keys via `plakat.config.set`:
+- `animate_frames` (default 16)
+- `animate_window_size` (default 16, ≤ 32)
+- `animate_window_overlap` (default 4)
+- `animate_lcm` (default false)
+
+```bund
+"sd15" plakat.load
+"true" "animate_lcm" plakat.config.set
+"watercolor" plakat.look.apply             // v0.25 preset
+"depth" "./d.png" plakat.controlnet.add
+"a fox in a meadow" "./out" plakat.animate
+```
+
+Composes with every config / lora / look / genre / controlnet
+mutation. SD 1.5 only in v0.28 — SDXL animate in scripting needs
+a separate cache slot (v0.29). See [`SCRIPTING.md`](SCRIPTING.md).
+
+### Inspection: `plakat motion-adapter` (v0.28 phase 3)
+
+```bash
+plakat motion-adapter list
+plakat motion-adapter info <REPO>
+```
+
+`list` prints the plakat-supported repos (V3 SD 1.5, SDXL beta,
+AnimateLCM) plus community refs (V1 / V2 SD 1.5, Hotshot-XL).
+`info` downloads + dumps the adapter's config + per-block
+tensor breakdown + detected base family. Routes through the
+same loader paths as the real animate runs, so cache behavior
+is identical.
+
 ## Output formats
 
 Every animate mode (prompt-lerp + AnimateDiff, SD 1.5 + SDXL,
@@ -250,20 +387,26 @@ Tactics if you OOM:
 
 - **No SD 2.1 / Flux / SD3 motion adapters** upstream. SD 1.5 +
   SDXL only.
-- **Single ControlNet per run**. Multi-CN sum exists in
-  `sum_controlnet_residuals` but isn't wired through animate yet.
-- **Per-frame video control deferred**. v0.27 ships
-  same-hint-every-frame conditioning; video-to-video (a depth
-  video as control) is v0.28+ territory.
+- **AnimateLCM is SD 1.5 only**. The SDXL AnimateLCM repo isn't
+  publicly available; `--lcm --model sdxl` bails. v0.29 if
+  upstream changes.
+- **Per-frame video control deferred**. v0.28 ships
+  same-hint-every-frame conditioning; video-to-video (a depth /
+  canny video as control) is v0.29+ territory.
+- **`plakat.animate` is SD 1.5 only**. SDXL animate in scripting
+  needs a shared cache slot for the SDXL backbone (~7 GB);
+  v0.29.
 - **No img2img / inpaint hooks** on the animate path. Use
   `plakat generate` / `plakat img2img` for those if you need a
   single frame with the full adapter stack.
 - **Block-boundary motion splice** (not faithful per-layer
   diffusers `UNetMotionModel`). Documented quality concern in
-  RFC §3.2; upgrade path budgeted.
+  RFC v0.27 §3.2; upgrade path budgeted.
 
 ## See also
 
+- [`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md)
+  — v0.28 design doc, two locked decisions, 6-phase plan.
 - [`RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md`](RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md)
   — v0.27 design doc, four locked decisions, 8-phase plan.
 - [`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md)
@@ -271,9 +414,13 @@ Tactics if you OOM:
   decisions.
 - [`Tutorials/ANIMATE_TUTORIAL.md`](Tutorials/ANIMATE_TUTORIAL.md)
   — narrative walkthrough (prompt-lerp + AnimateDiff).
+- [`SCRIPTING.md`](SCRIPTING.md) — `plakat.animate` host word +
+  the four `animate_*` config keys.
 - [AnimateDiff paper (Guo et al., 2023)](https://arxiv.org/abs/2307.04725)
   — original architecture.
 - [`guoyww/animatediff-motion-adapter-v1-5-3`](https://huggingface.co/guoyww/animatediff-motion-adapter-v1-5-3)
   — V3 SD 1.5 adapter.
 - [`guoyww/animatediff-motion-adapter-sdxl-beta`](https://huggingface.co/guoyww/animatediff-motion-adapter-sdxl-beta)
   — SDXL beta adapter.
+- [`wangfuyun/AnimateLCM`](https://huggingface.co/wangfuyun/AnimateLCM)
+  — v0.28 4-step LCM motion adapter.

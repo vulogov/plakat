@@ -8,176 +8,130 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.27 — AnimateDiff feature complete
+## What's new in v0.28 — AnimateDiff productivity polish
 
-Eight phases close **every AnimateDiff carry** from the v0.26 cycle.
-End-to-end inference now works on both SD 1.5 + SDXL, each with
-optional ControlNet conditioning and a sliding-window long-form
-mode that lifts V3's 32-frame cap. The v0.26 motion-adapter
-infrastructure, the v0.26.1 inference deferral, and the three
-themes named at the start of the cycle (SDXL motion adapter,
-AnimateDiff + ControlNet, long-form) all ship in one release.
+v0.27 made AnimateDiff **feature-complete**. v0.28 makes it
+**pleasant to use in practice** — closing the loudest v0.27
+deferrals with four targeted productivity wins. Six phases,
+~1500 LOC, zero new architectural risk.
 
-### AnimateDiff inference (SD 1.5 + SDXL)
+### 4-step animate via AnimateLCM
 
 ```bash
-# SD 1.5 baseline — 16 motion-coherent frames at 512²
-plakat animate --animatediff --model sd15 \
-    --from "a watercolor cottage at dawn" \
-    --frames 16 --format mp4
-
-# SDXL at training resolution — same surface, larger output
-plakat animate --animatediff --model sdxl \
-    --from "a knight in a forest, oil painting" \
-    --frames 16 --size 1024x1024 --format mp4
-```
-
-V3 SD 1.5 (`guoyww/animatediff-motion-adapter-v1-5-3`, 16 motion
-modules) and SDXL beta (`guoyww/animatediff-motion-adapter-sdxl-beta`,
-12 motion modules) share the same `MotionAdapterConfig` schema; the
-only difference is `block_out_channels` matching each base UNet's
-block layout. Both paths use the block-boundary motion splice from
-v0.26 phase 3 (sequential motion modules at each down/up block
-output).
-
-### AnimateDiff + ControlNet
-
-Single conditioning image, same hint applied to every frame.
-Five kinds supported (`depth` / `canny` / `openpose` / `lineart` /
-`softedge`). The CN runs at the full per-step batch (2F with CFG)
-and feeds residuals into the motion UNet's down + mid hooks:
-
-```bash
-# SD 1.5 with a pre-rendered depth map
-plakat animate --animatediff --model sd15 \
+# Default 16-frame loop. ~50s on a 24 GB GPU (vs ~4 min at V3 + 20 steps).
+plakat animate --animatediff --model sd15 --lcm \
     --from "a fox in a snowy meadow" \
-    --control depth --control-image ./depth.png \
-    --frames 16 --format mp4
-
-# SDXL with auto-annotation from a source image + strength dial
-plakat animate --animatediff --model sdxl \
-    --from "a knight in a forest, oil painting" \
-    --control canny --control-from ./reference.jpg \
-    --control-strength 0.75 \
-    --frames 16 --size 1024x1024 --format mp4
-```
-
-The CN model picker resolves automatically based on `--model`
-(lllyasviel + control_v11 family for SD 1.5; official SDXL CN
-variants for SDXL). Per-frame video control (a depth video as
-guide) is v0.28+ territory.
-
-### Long-form sliding window
-
-V3's 32-frame `motion_max_seq_length` is a hard cap on a single
-window — the positional embedding only has 32 rows. Long-form
-mode chains overlapping windows with linear-ramp latent-space
-blend:
-
-```bash
-# 64-frame clip (~4 seconds at 16 fps): five windows, 4-frame overlap
-plakat animate --animatediff --model sd15 \
-    --from "a misty forest at dawn" \
-    --frames 64 --window-size 16 --window-overlap 4 \
     --format mp4
 ```
 
+`--lcm` switches the motion adapter to
+[`wangfuyun/AnimateLCM`](https://huggingface.co/wangfuyun/AnimateLCM)
+(17 modules: 16 + a V1/V2-style mid-block), the scheduler to LCM,
+and applies the diffusers-recommended defaults `steps=4 guidance=1.5`.
+User explicit `--steps` / `--guidance` still take precedence —
+`--lcm --steps 8` gets 8-step LCM at 2× wall-clock for sharper output.
+SD 1.5 only (SDXL AnimateLCM isn't publicly available; bails loud).
+
+### Multi-ControlNet stacking through animate
+
+```bash
+# Each --control-spec stacks one conditioner; residuals sum per step.
+plakat animate --animatediff --model sdxl \
+    --from "a knight standing in a forest" \
+    --control-spec 'depth:image=./depth.png:strength=0.8' \
+    --control-spec 'canny:from=./reference.jpg:strength=0.4' \
+    --frames 16 --size 1024x1024 --format mp4
 ```
-stride = window_size - window_overlap     # 12 for the defaults
-windows: [0..16), [12..28), [24..40), [36..52), [48..64)
-overlap region blended linearly per latent slot
+
+The spec grammar mirrors `plakat generate`'s — `KIND[:image=PATH | from=PATH | strength=F | start=F | end=F]*`.
+Mutually exclusive at parse time with the legacy single-CN flags
+(`--control` / `--control-image` / `--control-from` /
+`--control-strength`). Closes the v0.27 RFC §8 "single ControlNet per
+run" deferral. SD 1.5 + SDXL both supported.
+
+### `plakat.animate` Bund host word (49 → 50)
+
+```bund
+"sd15" plakat.load
+"true" "animate_lcm"     plakat.config.set       // 4-step AnimateLCM
+32     "animate_frames"  plakat.config.set       // long-form (>16 → sliding)
+"watercolor" plakat.look.apply                   // v0.25 preset
+"depth"  "./d.png" plakat.controlnet.add         // hint applied to every frame
+"a fox in a snowy meadow" "./out" plakat.animate
+// → ./out/frame-0000.png … ./out/frame-0031.png + sidecars
 ```
 
-Each window gets its own seed (`seed + win_i * window_size`) so
-windows produce distinct noise; the blended overlap region
-preserves visual continuity across boundaries. When `--frames ≤
---window-size`, long-form is a zero-overhead pass-through to
-single-window inference. Works on both SD 1.5 + SDXL paths.
+The last major CLI verb missing from Bund scripting. Stack effect:
+`( prompt out_dir -- )`. Reads frames + window + LCM flag + size +
+steps + guidance + scheduler + ControlNet stack from `ctx.config` and
+`ctx.controlnets`. Four new config keys: `animate_frames` (16),
+`animate_window_size` (16), `animate_window_overlap` (4), `animate_lcm`
+(false). SD 1.5 only — SDXL animate scripting needs a shared cache
+slot for the ~7 GB SDXL backbone; deferred to v0.29.
 
-### Motion-module tensor naming fix
+### `plakat motion-adapter` inspection
 
-A latent bug from the v0.26 phase 2 motion-module code: the
-referenced tensor key paths (`motion_modules.{j}.temporal_transformer.norm`,
-`transformer_blocks.{i}.attention_blocks.{0,1}`,
-`transformer_blocks.{i}.norms.{0,1,2}`, `pos_encoder.pe`) don't
-exist in the real upstream safetensors. v0.27 phase 2 fixed all
-the paths and collapsed `Vec<TemporalTransformerBlock>` → a
-single inner block per motion module:
+```bash
+# Enumerate plakat-supported repos + community refs
+plakat motion-adapter list
 
-| Was | Is |
-|---|---|
-| `motion_modules.{j}.temporal_transformer.norm` | `motion_modules.{j}.norm` |
-| `transformer_blocks.{i}.attention_blocks.{0,1}` | `transformer_blocks.0.attn{1,2}` |
-| `transformer_blocks.{i}.norms.{0,1,2}` | `transformer_blocks.0.norm{1,2,3}` |
-| `pos_encoder.pe` | `pos_embed.pe` |
+# Dump one adapter's config + per-block tensor breakdown
+plakat motion-adapter info wangfuyun/AnimateLCM
+```
 
-Phase 0 didn't catch this because its e2e test was `#[ignore]`-gated
-and the synthetic-weights unit tests used the same wrong key names.
-Phase 2's SDXL load against the real cached adapter surfaced it
-immediately. Verified upstream against V3 SD 1.5 (540 keys) and
-SDXL beta (405 keys); both share the same convention.
+Parallels `plakat civitai info` for adapter debugging. `info` routes
+through the same loader paths as the real animate runs, so cache
+behavior is identical (first call downloads, subsequent hit the cache).
 
 ### Documentation
 
-- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — full v0.27
-  reference: status matrix, quick-starts, corrected motion-module
-  tensor layout, ControlNet + long-form sections, memory budget
-  table.
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to v0.28
+  with AnimateLCM, multi-CN, Bund scripting, and inspection sections.
 - [`ANIMATE_TUTORIAL.md`](Documentation/Tutorials/ANIMATE_TUTORIAL.md)
-  — §10 AnimateDiff rewritten, §11 ControlNet + §12 long-form
-  added.
-- [`RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md`](Documentation/RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md)
-  — design doc, four locked decisions, 8-phase plan.
+  — §13 AnimateLCM + §14 Bund scripting + §15 inspection.
+- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — `plakat.animate` row
+  + 4 new config keys + v0.27 → v0.28 migration.
+- [`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](Documentation/RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md)
+  — design doc, two locked decisions, 6-phase plan.
 
 ### By the numbers
 
-- 948 lib tests + 32 integration tests green (+14 lib across the
-  cycle: phase 1 SDXL config + UNet motion smoke; phase 3/4 CN
-  residual wiring; phase 5/6 stitch correctness).
-- 9 new integration tests for the animate CLI surface
-  (`tests/animate_cli_smoke.rs`).
-- 8 phase commits + RFC.
-- 49 host words (unchanged from v0.26; no new Bund integration in
-  this cycle — RFC §8 explicit exclusion).
-- SD 1.5 + SDXL motion adapter loaders share `load_from_repo` +
-  `load_with_motion_loras` helpers.
-- Shared free helpers `validate_long_form_window` +
-  `stitch_long_form<F>` agree the SD 1.5 and SDXL `generate_long`
-  paths on the blend math by construction.
+- 953 lib tests + 37 integration tests green (+5 lib + +6 integration
+  across the cycle: animate config keys round-trip; AnimateLCM config
+  parse; detect_base_family; --lcm + --control-spec parsers;
+  motion-adapter subcommand smoke).
+- 6 phase commits + RFC.
+- 49 → 50 host words (`plakat.animate`).
+- AnimateLCM adapter loader added; shares `load_from_repo` +
+  `load_with_motion_loras` with V3 + SDXL beta.
+- Multi-CN compositing reuses the v0.10 `sum_controlnet_residuals`
+  contract directly — same math the t2i path uses.
 
-### v0.26 → v0.27 migration
+### v0.27 → v0.28 migration
 
-v0.27 is **fully additive on the CLI** but contains a load-bearing
-internal fix:
+v0.28 is **fully additive**. Every existing flag, host word, and
+config key keeps its v0.27 shape. New surface:
 
-- ✅ Every existing flag and host word keeps its v0.26 shape.
-- ✅ New `--control` / `--control-image` / `--control-from` /
-  `--control-strength` flags on `plakat animate --animatediff`.
-- ✅ New `--window-size` / `--window-overlap` flags on
-  `plakat animate --animatediff` for long-form output.
-- ⚠️ `motion_module.rs` tensor key naming changed (see
-  "Motion-module tensor naming fix" above). Any downstream
-  consumer that vendored the v0.26 module code will need to pick
-  up the v0.27 fix to load real adapter weights; pure CLI users
-  see no change.
+- ✅ `--lcm` flag on `plakat animate --animatediff` (SD 1.5).
+- ✅ `--control-spec` flag on `plakat animate --animatediff`
+  (repeatable; mutex with `--control` / `--control-image` /
+  `--control-from` / `--control-strength`).
+- ✅ `plakat motion-adapter info REPO` / `list` subcommand.
+- ✅ `plakat.animate` host word + 4 new config keys
+  (`animate_frames`, `animate_window_size`, `animate_window_overlap`,
+  `animate_lcm`).
 
-### Deferred to v0.28+
+### Deferred to v0.29+
 
-- Per-frame video control (a depth/canny video as conditioning
-  source) — v0.27 ships single-image-every-frame.
-- Multi-CN sum through `--animatediff` (the helper exists in
-  `sum_controlnet_residuals` but isn't wired through animate).
-- FreeNoise / FreeInit style shared-noise long-form (v0.27 uses
-  post-hoc latent blend; quality validation is a user-machine
-  step).
-- HotShot-XL integration (different architecture; out of scope
-  for this cycle).
-- `plakat.animate` Bund host word (CLI is the v0.27 primary
-  surface).
-- Per-layer motion splice (faithful diffusers `UNetMotionModel`
-  vs the block-boundary approximation v0.26/v0.27 ship).
+- Per-frame video ControlNet (`--control-video PATH`).
+- AnimateLCM-SDXL (repo not publicly available upstream).
+- `plakat.animate` SDXL support (needs shared cache slot for the
+  ~7 GB SDXL backbone).
+- FreeNoise / FreeInit shared-noise long-form.
+- Per-layer motion splice (RFC v0.27 §3.2 escalation).
+- HotShot-XL integration.
 
-**Earlier releases** (v0.13 – v0.26):
+**Earlier releases** (v0.13 – v0.27):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 

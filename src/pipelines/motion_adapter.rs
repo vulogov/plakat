@@ -83,6 +83,14 @@ const REPO_V3: &str = "guoyww/animatediff-motion-adapter-v1-5-3";
 /// (`[320, 640, 1280]` for SDXL vs `[320, 640, 1280, 1280]` for V3
 /// SD 1.5).
 const REPO_SDXL_BETA: &str = "guoyww/animatediff-motion-adapter-sdxl-beta";
+/// v0.28 phase 1: AnimateLCM motion adapter for 4-step generation.
+/// Same V3-compatible block channels for SD 1.5 (`[320, 640, 1280,
+/// 1280]`) but flips `use_motion_mid_block` to true (V1/V2 style)
+/// so the adapter has 17 modules instead of 16. Pairs with the LCM
+/// scheduler + 4-step guidance-distilled inference for a ~5x
+/// speedup vs V3 + DDIM at 20 steps. Upstream:
+/// <https://huggingface.co/wangfuyun/AnimateLCM>.
+const REPO_ANIMATELCM: &str = "wangfuyun/AnimateLCM";
 const CONFIG_FILE: &str = "config.json";
 const WEIGHTS_FILE: &str = "diffusion_pytorch_model.safetensors";
 
@@ -222,6 +230,21 @@ impl MotionAdapter {
         Self::load_from_repo(REPO_SDXL_BETA).await
     }
 
+    /// v0.28 phase 1: download (if needed) and load the AnimateLCM
+    /// motion adapter from `wangfuyun/AnimateLCM`. SD 1.5 base
+    /// architecture (`block_out_channels = [320, 640, 1280, 1280]`)
+    /// but uses the V1/V2-style mid-block motion module
+    /// (`use_motion_mid_block = true`) so the adapter has 17
+    /// modules instead of V3's 16.
+    ///
+    /// Pairs with the LCM scheduler at 4 denoise steps for ~5×
+    /// speedup vs V3 + DDIM at 20 steps. Caller is responsible
+    /// for setting the scheduler + step count appropriately.
+    /// Network-required on first run; cache-hits subsequently.
+    pub async fn load_animatelcm() -> Result<Self> {
+        Self::load_from_repo(REPO_ANIMATELCM).await
+    }
+
     /// Inner loader shared by `load_v3` + `load_sdxl_beta`. Downloads
     /// `config.json` + `diffusion_pytorch_model.safetensors` from the
     /// given repo and returns the parsed pair.
@@ -286,6 +309,37 @@ impl MotionAdapter {
     ) -> Result<Self> {
         Self::load_with_motion_loras(
             Self::load_sdxl_beta().await?,
+            motion_loras,
+            default_scale,
+            device,
+        )
+        .await
+    }
+
+    /// v0.28 phase 3: synthetic constructor for tests that need a
+    /// `MotionAdapter` without touching the network. Builds an
+    /// in-memory instance with the provided config + an empty
+    /// safetensors layout. Not for production use — the
+    /// `weights_path` points at a non-existent dummy path.
+    #[doc(hidden)]
+    pub fn synthetic_for_test(config: MotionAdapterConfig) -> Self {
+        Self {
+            config,
+            weights_path: std::path::PathBuf::from("/dev/null/synthetic-motion-adapter.safetensors"),
+            tensor_layout: Vec::new(),
+        }
+    }
+
+    /// v0.28 phase 1: load AnimateLCM with motion LoRAs merged in.
+    /// Same tensor-key convention as V3 / SDXL beta — the
+    /// `MergeTarget::MOTION_ADAPTER` lookup table is shared.
+    pub async fn load_animatelcm_with_motion_loras(
+        motion_loras: &[crate::pipelines::lora::LoraSpec],
+        default_scale: f32,
+        device: &candle_core::Device,
+    ) -> Result<Self> {
+        Self::load_with_motion_loras(
+            Self::load_animatelcm().await?,
             motion_loras,
             default_scale,
             device,
@@ -588,6 +642,36 @@ mod tests {
         "motion_num_attention_heads": 8,
         "use_motion_mid_block": false
     }"#;
+
+    /// v0.28 phase 1: AnimateLCM config from `wangfuyun/AnimateLCM`,
+    /// captured 2026-05-28 via WebFetch. Same SD 1.5 block channels
+    /// as V3, but flips `use_motion_mid_block` to true and adds a
+    /// `conv_in_channels: null` field that serde ignores. Total
+    /// motion modules = 17 (4 down × 2 + 4 up × 2 + 1 mid).
+    const ANIMATELCM_CONFIG_JSON: &str = r#"{
+        "_class_name": "MotionAdapter",
+        "_diffusers_version": "0.27.0.dev0",
+        "block_out_channels": [320, 640, 1280, 1280],
+        "conv_in_channels": null,
+        "motion_layers_per_block": 2,
+        "motion_max_seq_length": 32,
+        "motion_mid_block_layers_per_block": 1,
+        "motion_norm_num_groups": 32,
+        "motion_num_attention_heads": 8,
+        "use_motion_mid_block": true
+    }"#;
+
+    #[test]
+    fn config_parses_animatelcm() {
+        let cfg = MotionAdapterConfig::from_json(ANIMATELCM_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.block_out_channels, vec![320, 640, 1280, 1280]);
+        assert_eq!(cfg.motion_layers_per_block, 2);
+        assert_eq!(cfg.motion_max_seq_length, 32);
+        assert!(cfg.use_motion_mid_block, "AnimateLCM uses mid-block motion");
+        // 4 down × 2 + 4 up × 2 + 1 mid = 17.
+        assert_eq!(cfg.num_blocks(), 4);
+        assert_eq!(cfg.total_motion_modules(), 17);
+    }
 
     /// SDXL beta config parses with the same schema as V3; only
     /// `block_out_channels` differs (3 blocks for SDXL vs 4 for V3).
