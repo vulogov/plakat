@@ -1,4 +1,4 @@
-# AnimateDiff (v0.28)
+# AnimateDiff (v0.29)
 
 `plakat animate --animatediff` renders **motion-coherent N-frame
 sequences** from a single prompt using AnimateDiff motion adapters
@@ -112,6 +112,61 @@ for the full host-word reference.
 plakat motion-adapter list                            # known + community
 plakat motion-adapter info wangfuyun/AnimateLCM       # full dump
 ```
+
+### v0.29: HJSON scenario batches
+
+```hjson
+{
+  model: sd15
+  type: animatediff       # scenario default — every task is animate
+  frames: 16
+  lcm: true               # 4-step AnimateLCM
+  format: gif
+  out: ./out/animations
+  scene:   [ { name: dawn,  prompt: "at dawn" } ]
+  weather: [ { name: mist,  prompt: "misty" } ]
+  tasks: [
+    { name: cottage, scene: dawn, weather: mist, prompt: "a watercolor cottage" }
+    { name: knight,  scene: dawn, weather: mist, prompt: "a knight in a forest",
+      frames: 24, format: mp4 }   # per-task overrides
+  ]
+}
+```
+
+```bash
+plakat scenario animate.hjson --dry-run    # preview the plan
+plakat scenario animate.hjson              # render every task
+plakat scenario animate.hjson --resume     # skip already-rendered tasks
+plakat scenario animate.hjson --only fox   # render one task
+```
+
+Per-task overrides for `frames`, `window-size`, `window-overlap`,
+`lcm`, `motion-lora`, `motion-lora-scale`, `format`, `gif-delay-ms`
+compose with scenario-level defaults. ControlNet per-task via the
+existing `control:` / `controls:` fields.
+
+### v0.29: SDXL `plakat.animate` in Bund
+
+```bund
+"sdxl" plakat.load
+16 "animate_frames" plakat.config.set
+1024 "width" plakat.config.set
+1024 "height" plakat.config.set
+"a knight in a forest, oil painting" "./out" plakat.animate
+```
+
+Same scripting surface as v0.28's SD 1.5 path, now with the SDXL
+beta motion adapter. AnimateLCM remains SD 1.5 only (no public
+SDXL repo).
+
+### v0.29: format dispatch from Bund
+
+```bund
+"mp4" "animate_format" plakat.config.set
+```
+
+`animate_format` (`frames | gif | mp4 | webm | all`) closes the
+final v0.28 Bund surface gap. MP4 / WebM need ffmpeg on `$PATH`.
 
 ## Architecture
 
@@ -390,12 +445,13 @@ Tactics if you OOM:
 - **AnimateLCM is SD 1.5 only**. The SDXL AnimateLCM repo isn't
   publicly available; `--lcm --model sdxl` bails. v0.29 if
   upstream changes.
-- **Per-frame video control deferred**. v0.28 ships
+- **Per-frame video control deferred**. v0.28/v0.29 ship
   same-hint-every-frame conditioning; video-to-video (a depth /
-  canny video as control) is v0.29+ territory.
-- **`plakat.animate` is SD 1.5 only**. SDXL animate in scripting
-  needs a shared cache slot for the SDXL backbone (~7 GB);
-  v0.29.
+  canny video as control) is v0.30+ territory.
+- **Mixed-kind scenarios pay both pipeline costs**. A scenario
+  with some `type: generate` and some `type: animatediff` tasks
+  holds both the t2i and animate pipelines resident. All-animate
+  and all-generate scenarios pay only one. v0.30+ optimization.
 - **No img2img / inpaint hooks** on the animate path. Use
   `plakat generate` / `plakat img2img` for those if you need a
   single frame with the full adapter stack.
@@ -405,6 +461,9 @@ Tactics if you OOM:
 
 ## See also
 
+- [`RFC_v0.29_BATCH_PRODUCTIVITY.md`](RFC_v0.29_BATCH_PRODUCTIVITY.md)
+  — v0.29 design doc, two locked decisions, 6-phase plan
+  (animate-in-scenarios + SDXL scripting + Bund format key).
 - [`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md)
   — v0.28 design doc, two locked decisions, 6-phase plan.
 - [`RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md`](RFC_v0.27_ANIMATEDIFF_COMPLETENESS.md)

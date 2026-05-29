@@ -158,6 +158,61 @@ struct ScenarioFile {
     #[serde(default)]
     offline: Option<bool>,
 
+    // ---------- v0.29 phase 2: scenario-level animate defaults ----------
+
+    /// v0.29: task dispatch type. `"generate"` (default) runs the
+    /// existing t2i/img2img/portrait path. `"animatediff"` (alias
+    /// `"animate"`) routes each task through the AnimateDiff pipeline
+    /// — every `frames`/`from`/`lcm`/etc. field below becomes
+    /// meaningful. Per-task `type:` overrides.
+    #[serde(default, rename = "type")]
+    task_type: Option<String>,
+
+    /// v0.29 phase 2: scenario-level animate total frame count.
+    /// Per-task `frames:` overrides. Default 16 when omitted.
+    #[serde(rename = "frames", default)]
+    animate_frames: Option<u32>,
+
+    /// v0.29 phase 2: per-window frame count for long-form sliding-
+    /// window animate. Per-task `window-size:` overrides. Default 16.
+    #[serde(rename = "window-size", default)]
+    animate_window_size: Option<u32>,
+
+    /// v0.29 phase 2: cross-fade region for sliding-window animate.
+    /// Per-task `window-overlap:` overrides. Default 4.
+    #[serde(rename = "window-overlap", default)]
+    animate_window_overlap: Option<u32>,
+
+    /// v0.29 phase 2: AnimateLCM 4-step mode toggle. SD 1.5 only.
+    /// Per-task `lcm:` overrides. Default false.
+    #[serde(default)]
+    lcm: Option<bool>,
+
+    /// v0.29 phase 2: motion LoRAs stacked on top of the AnimateDiff
+    /// motion adapter. Same `LoraSpec` grammar as the CLI
+    /// `--motion-lora` flag. Per-task `motion-lora:` adds on top.
+    /// Ignored for non-animate tasks.
+    #[serde(rename = "motion-lora", default)]
+    motion_loras: Vec<String>,
+
+    /// v0.29 phase 2: global multiplier on each motion-LoRA's
+    /// per-spec scale. Default 1.0. Per-task `motion-lora-scale:`
+    /// overrides.
+    #[serde(rename = "motion-lora-scale", default)]
+    motion_lora_scale: Option<f32>,
+
+    /// v0.29 phase 2: animate output format. `frames | gif | mp4 |
+    /// webm | all`. Per-task `format:` overrides. Default `frames`.
+    /// MP4 / WebM require ffmpeg on `$PATH`.
+    #[serde(rename = "format", default)]
+    animate_format: Option<String>,
+
+    /// v0.29 phase 2: GIF frame delay in ms (when `format` is `gif`
+    /// or `all`). Default 100 (10 fps). Per-task `gif-delay-ms:`
+    /// overrides.
+    #[serde(rename = "gif-delay-ms", default)]
+    animate_gif_delay_ms: Option<u16>,
+
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
     ///   * `flux-canny-dev` — canny edge map (channel-concat 128ch img_in)
@@ -676,6 +731,55 @@ struct TaskDef {
     /// 1.0. Mirrors `--lora-scale` on the CLI.
     #[serde(rename = "lora-scale", default)]
     lora_scale: Option<f32>,
+
+    // ---------- v0.29 phase 2: per-task animate overrides ----------
+
+    /// v0.29 phase 2: per-task dispatch type override. Same accepted
+    /// values as the scenario-level field: `"generate"` (default,
+    /// inherits scenario) or `"animatediff"` (also `"animate"`).
+    #[serde(default, rename = "type")]
+    task_type: Option<String>,
+
+    /// v0.29 phase 2: per-task animate total frames. Overrides
+    /// scenario-level `frames:`. No effect on non-animate tasks.
+    #[serde(rename = "frames", default)]
+    animate_frames: Option<u32>,
+
+    /// v0.29 phase 2: per-task sliding-window size. Overrides
+    /// scenario-level `window-size:`.
+    #[serde(rename = "window-size", default)]
+    animate_window_size: Option<u32>,
+
+    /// v0.29 phase 2: per-task sliding-window overlap. Overrides
+    /// scenario-level `window-overlap:`.
+    #[serde(rename = "window-overlap", default)]
+    animate_window_overlap: Option<u32>,
+
+    /// v0.29 phase 2: per-task AnimateLCM toggle. Overrides
+    /// scenario-level `lcm:`. SD 1.5 only.
+    #[serde(default)]
+    lcm: Option<bool>,
+
+    /// v0.29 phase 2: motion LoRAs ADDED on top of the scenario-
+    /// level `motion-lora:` list. Same `LoraSpec` grammar.
+    #[serde(rename = "motion-lora", default)]
+    motion_loras: Vec<String>,
+
+    /// v0.29 phase 2: per-task motion-LoRA scale multiplier. Overrides
+    /// scenario-level `motion-lora-scale:`.
+    #[serde(rename = "motion-lora-scale", default)]
+    motion_lora_scale: Option<f32>,
+
+    /// v0.29 phase 2: per-task animate output format. Overrides
+    /// scenario-level `format:`. Values: `frames | gif | mp4 | webm
+    /// | all`.
+    #[serde(rename = "format", default)]
+    animate_format: Option<String>,
+
+    /// v0.29 phase 2: per-task GIF frame delay in ms. Overrides
+    /// scenario-level `gif-delay-ms:`.
+    #[serde(rename = "gif-delay-ms", default)]
+    animate_gif_delay_ms: Option<u16>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -685,6 +789,140 @@ struct TaskDef {
 enum EnhanceCfg {
     Provider(String),
     Toggle(bool),
+}
+
+/// v0.29 phase 2: an animate task's effective config after
+/// scenario-level defaults merge with per-task overrides. Computed
+/// once per task by [`effective_animate_config`] and threaded into
+/// the dispatch (phase 3).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields consumed by phase 3 dispatch
+struct EffectiveAnimateCfg {
+    pub frames: u32,
+    pub window_size: u32,
+    pub window_overlap: u32,
+    pub lcm: bool,
+    /// LoRA spec strings, scenario list + task list concatenated.
+    pub motion_loras: Vec<String>,
+    pub motion_lora_scale: f32,
+    pub format: crate::imaging::video::Format,
+    pub gif_delay_ms: u16,
+}
+
+impl EffectiveAnimateCfg {
+    /// Validate frame/window/overlap bounds. Mirrors the CLI animate
+    /// gate so users see the same diagnostics whether they're driving
+    /// from `plakat animate` or `plakat scenario`.
+    fn validate(&self, task_name: &str) -> Result<()> {
+        const MAX_SEQ: u32 = 32;
+        anyhow::ensure!(
+            self.frames >= 1,
+            "scenario task {task_name:?}: animate frames must be ≥ 1"
+        );
+        anyhow::ensure!(
+            self.window_size >= 1 && self.window_size <= MAX_SEQ,
+            "scenario task {task_name:?}: animate window-size {} \
+             must be in 1..={MAX_SEQ} (motion_max_seq_length)",
+            self.window_size,
+        );
+        anyhow::ensure!(
+            self.window_overlap < self.window_size,
+            "scenario task {task_name:?}: animate window-overlap {} \
+             must be < window-size {}",
+            self.window_overlap,
+            self.window_size,
+        );
+        Ok(())
+    }
+}
+
+/// v0.29 phase 2: parse a task-type string into a stable enum.
+/// Accepts `"generate"` (or omitted) for the existing pipeline path
+/// and `"animatediff"` / `"animate"` for the v0.29 animate dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskKind {
+    Generate,
+    Animate,
+}
+
+impl TaskKind {
+    fn from_strs(
+        task_level: Option<&str>,
+        scenario_level: Option<&str>,
+    ) -> Result<Self> {
+        let raw = task_level.or(scenario_level).unwrap_or("generate");
+        match raw.to_ascii_lowercase().as_str() {
+            "generate" | "gen" | "t2i" => Ok(Self::Generate),
+            "animatediff" | "animate" => Ok(Self::Animate),
+            other => bail!(
+                "scenario task type {other:?} not recognised \
+                 (expected: generate, animatediff)"
+            ),
+        }
+    }
+}
+
+/// v0.29 phase 2: compute the effective animate config for one task
+/// by merging scenario-level defaults with per-task overrides.
+/// Scenario `motion-lora` list is the BASE; task `motion-lora` list
+/// is APPENDED (same pattern as `loras:`).
+fn effective_animate_config(
+    scenario: &ScenarioFile,
+    task: &TaskDef,
+) -> Result<EffectiveAnimateCfg> {
+    use std::str::FromStr;
+
+    let frames = task
+        .animate_frames
+        .or(scenario.animate_frames)
+        .unwrap_or(16);
+    let window_size = task
+        .animate_window_size
+        .or(scenario.animate_window_size)
+        .unwrap_or(16);
+    let window_overlap = task
+        .animate_window_overlap
+        .or(scenario.animate_window_overlap)
+        .unwrap_or(4);
+    let lcm = task.lcm.or(scenario.lcm).unwrap_or(false);
+
+    // Motion LoRAs: scenario base + task add-on.
+    let mut motion_loras = scenario.motion_loras.clone();
+    motion_loras.extend(task.motion_loras.iter().cloned());
+
+    let motion_lora_scale = task
+        .motion_lora_scale
+        .or(scenario.motion_lora_scale)
+        .unwrap_or(1.0);
+
+    let format_str = task
+        .animate_format
+        .as_deref()
+        .or(scenario.animate_format.as_deref())
+        .unwrap_or("frames");
+    let format = crate::imaging::video::Format::from_str(format_str)
+        .with_context(|| {
+            format!(
+                "scenario task {:?}: animate format {format_str:?} not recognised",
+                task.name,
+            )
+        })?;
+
+    let gif_delay_ms = task
+        .animate_gif_delay_ms
+        .or(scenario.animate_gif_delay_ms)
+        .unwrap_or(100);
+
+    Ok(EffectiveAnimateCfg {
+        frames,
+        window_size,
+        window_overlap,
+        lcm,
+        motion_loras,
+        motion_lora_scale,
+        format,
+        gif_delay_ms,
+    })
 }
 
 /// v0.15 phase 7a: per-task tiled override. Accepts a full config
@@ -898,6 +1136,31 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     if s.tasks.is_empty() {
         bail!("scenario has no `tasks` to run");
     }
+
+    // v0.29 phases 2+3: classify each task by kind + validate the
+    // animate effective config up-front. Validation here means
+    // schema typos (window-size > 32, format: avif) bail before
+    // any pipeline load. Phase 3 wires the actual dispatch inside
+    // the task loop below. `has_generate_tasks` gates the enhancer
+    // requirement: all-animate scenarios don't need an enhancer
+    // (animate doesn't run prompt enhancement).
+    let mut has_generate_tasks = false;
+    for t in &s.tasks {
+        let kind = TaskKind::from_strs(
+            t.task_type.as_deref(),
+            s.task_type.as_deref(),
+        )?;
+        match kind {
+            TaskKind::Animate => {
+                let eff = effective_animate_config(&s, t)?;
+                eff.validate(&t.name)?;
+            }
+            TaskKind::Generate => {
+                has_generate_tasks = true;
+            }
+        }
+    }
+
     let scenes: HashMap<&str, &str> = s
         .scene
         .iter()
@@ -1085,11 +1348,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
     };
 
-    let enhancer = s
-        .enhancer
-        .clone()
-        .ok_or_else(|| anyhow!("scenario requires `enhancer` (deepseek | gemini)"))?;
-    validate_enhancer_keys(&enhancer)?;
+    // v0.29 phase 3: all-animate scenarios don't need an enhancer
+    // (the enhance step is t2i-only). Default to "local" for the
+    // logging/var-passing surface; the enhance cache stays empty
+    // for animate tasks regardless.
+    let enhancer = match s.enhancer.clone() {
+        Some(e) => {
+            validate_enhancer_keys(&e)?;
+            e
+        }
+        None if !has_generate_tasks => "local".to_string(),
+        None => {
+            bail!("scenario requires `enhancer` (deepseek | gemini)");
+        }
+    };
 
     // Parse the upscale method now so a bad string fails fast.
     let upscale_method: UpscaleMethod = s
@@ -1702,6 +1974,18 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let mut seed_offset: u64 = 0;
     let mut ran_count: u32 = 0;
 
+    // v0.29 phase 3: lazy-loaded AnimateDiff pipelines + cache keys.
+    // Initialised on the first animate task encountered. Key format:
+    //   SD 1.5: "{alias}:{v3|lcm}:{joined_motion_loras}"
+    //   SDXL:   "{alias}:{joined_motion_loras}"
+    // Slot changes when key changes (toggling lcm, swapping motion
+    // LoRAs, changing base alias). All-generate scenarios pay no
+    // animate-pipeline cost.
+    let mut animate_sd15: Option<crate::pipelines::animatediff::AnimateDiffPipeline> = None;
+    let mut animate_sd15_key: Option<String> = None;
+    let mut animate_sdxl: Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline> = None;
+    let mut animate_sdxl_key: Option<String> = None;
+
     // v0.26 phase 12: scenario-level auto-LoRA discovery cache.
     // Keyed by preset name; the base_family is constant for the
     // whole scenario (scenarios don't override model per-task in
@@ -1749,6 +2033,44 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             &task.prompt,
             &s.prompt_footer,
         ]);
+
+        // v0.29 phase 3: animate-task dispatch. Runs the AnimateDiff
+        // pipeline + writes frames + format output, then advances
+        // seed_offset and continues to the next task. Generate-path
+        // tasks fall through past this block to the existing
+        // pipeline.generate(...) logic below.
+        let task_kind = TaskKind::from_strs(
+            task.task_type.as_deref(),
+            s.task_type.as_deref(),
+        )
+        .expect("validated up-front");
+        if matches!(task_kind, TaskKind::Animate) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset)
+                & (u32::MAX as u64);
+            let task_out = out_root.join(safe_name(&task.name));
+            let eff = effective_animate_config(&s, task)?;
+            run_animate_task_inline(
+                &s,
+                task,
+                &eff,
+                &pre_refine,
+                idx + 1,
+                task_seed,
+                width,
+                height,
+                &task_out,
+                &args,
+                &device,
+                &model,
+                &mut animate_sd15,
+                &mut animate_sd15_key,
+                &mut animate_sdxl,
+                &mut animate_sdxl_key,
+            )
+            .await?;
+            seed_offset += count as u64;
+            continue;
+        }
 
         crate::ui::progress::println(&format!(
             "\n{} [{}/{}] {} (scene={}, weather={})",
@@ -3859,6 +4181,403 @@ fn write_flux_anno_png(anno: &candle_core::Tensor, out_path: &std::path::Path) -
     Ok(())
 }
 
+// ================================================================
+// v0.29 phase 3: animate-task dispatch.
+// ================================================================
+
+#[allow(clippy::too_many_arguments)]
+async fn run_animate_task_inline(
+    s: &ScenarioFile,
+    task: &TaskDef,
+    eff: &EffectiveAnimateCfg,
+    pre_refine: &str,
+    task_pos: usize,
+    task_seed: u64,
+    width: u32,
+    height: u32,
+    task_out: &std::path::Path,
+    args: &ScenarioArgs,
+    device: &candle_core::Device,
+    base_alias: &str,
+    animate_sd15: &mut Option<crate::pipelines::animatediff::AnimateDiffPipeline>,
+    animate_sd15_key: &mut Option<String>,
+    animate_sdxl: &mut Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline>,
+    animate_sdxl_key: &mut Option<String>,
+) -> Result<()> {
+    use crate::pipelines::animatediff::{AnimateDiffPipeline, AnimateDiffSdxlPipeline};
+    use crate::pipelines::controlnet::load_control_stack;
+    use crate::pipelines::lora::LoraSpec;
+    use crate::pipelines::scheduler::SchedulerKind;
+    use crate::pipelines::sd_core::SdVariant;
+
+    // Variant detect on the resolved repo path (mirrors animate CLI).
+    let resolved = if base_alias.contains('/') {
+        base_alias.to_string()
+    } else {
+        crate::hf::resolve_alias(base_alias).to_string()
+    };
+    let variant = SdVariant::detect(&resolved);
+    if !matches!(variant, SdVariant::Sd15 | SdVariant::Sdxl) {
+        bail!(
+            "scenario animate task {:?}: model {base_alias:?} resolves to \
+             {variant:?} which has no upstream motion adapter. Use sd15 or sdxl.",
+            task.name
+        );
+    }
+    if eff.lcm && matches!(variant, SdVariant::Sdxl) {
+        bail!(
+            "scenario animate task {:?}: lcm=true on SDXL not supported \
+             (wangfuyun/AnimateLCM-SDXL isn't publicly available).",
+            task.name
+        );
+    }
+
+    crate::ui::progress::println(&format!(
+        "\n{} [{}/{}] {} {} (scene={}, weather={}, frames={}, format={})",
+        style("▶").cyan().bold(),
+        task_pos,
+        s.tasks.len(),
+        style(&task.name).bold(),
+        style("animate").magenta(),
+        task.scene,
+        task.weather,
+        eff.frames,
+        eff.format,
+    ));
+    crate::ui::progress::println(&wrap_label("prompt", pre_refine));
+
+    // v0.27 phase 5: --resume detects an already-rendered task by
+    // the presence of frame-0000.png in the task's out_dir.
+    let frame0 = task_out.join("frame-0000.png");
+    if args.resume && frame0.exists() {
+        crate::ui::progress::println(&format!(
+            "  ↺ {}: frame-0000.png already on disk — skipping",
+            console::style(&task.name).cyan(),
+        ));
+        return Ok(());
+    }
+
+    if args.dry_run {
+        crate::ui::progress::println(&format!(
+            "  {} would render {} frames at {}x{} (seed={task_seed}, \
+             lcm={}, motion-loras={}, format={}, out={})",
+            style("[dry-run]").yellow(),
+            eff.frames,
+            width,
+            height,
+            eff.lcm,
+            eff.motion_loras.len(),
+            eff.format,
+            task_out.display(),
+        ));
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(task_out).with_context(|| {
+        format!(
+            "scenario animate task {:?}: creating out_dir {}",
+            task.name,
+            task_out.display()
+        )
+    })?;
+
+    if eff.format.needs_ffmpeg() {
+        let v = crate::imaging::video::ffmpeg_version()?;
+        tracing::info!(target: "plakat", "ffmpeg detected ({v})");
+    }
+
+    let dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::BF16
+    };
+
+    // Parse motion-LoRA specs.
+    let motion_lora_specs: Vec<LoraSpec> = eff
+        .motion_loras
+        .iter()
+        .map(|s| {
+            s.parse::<LoraSpec>().with_context(|| {
+                format!(
+                    "scenario animate task {:?}: parsing motion-lora {s:?}",
+                    task.name
+                )
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    // Cache key encodes everything that changes the loaded pipeline.
+    let motion_loras_joined = eff.motion_loras.join("|");
+    let mode_tag = if eff.lcm { "lcm" } else { "v3" };
+
+    // Per-task ControlNet stack. Translate scenario ControlSpec
+    // (local struct) → pipelines::controlnet::ControlSpec (library
+    // type) by parsing the kind string. Animate honours `start`/
+    // `end` ramps the same way the t2i path does (passes through
+    // to load_control_stack, which builds an active-step window).
+    let scenario_controls = task_effective_controls(task)?;
+    let mut cli_controls: Vec<crate::pipelines::controlnet::ControlSpec> =
+        Vec::with_capacity(scenario_controls.len());
+    for spec in &scenario_controls {
+        let kind: crate::pipelines::controlnet::ControlKind = spec
+            .kind
+            .parse()
+            .with_context(|| {
+                format!(
+                    "scenario animate task {:?}: parsing control kind {:?}",
+                    task.name, spec.kind
+                )
+            })?;
+        cli_controls.push(crate::pipelines::controlnet::ControlSpec {
+            kind,
+            image: spec.image.clone(),
+            from: spec.auto_from.clone(),
+            strength: spec.strength.unwrap_or(1.0),
+            start: spec.start.unwrap_or(0.0),
+            end: spec.end.unwrap_or(1.0),
+        });
+    }
+    let controls = if cli_controls.is_empty() {
+        Vec::new()
+    } else {
+        load_control_stack(
+            &cli_controls,
+            base_alias,
+            width,
+            height,
+            device,
+            dtype,
+            None,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "scenario animate task {:?}: loading ControlNet stack",
+                task.name
+            )
+        })?
+    };
+
+    // Effective steps / guidance / scheduler. LCM mode applies
+    // diffusers-recommended defaults when the user didn't override.
+    // We inherit the scenario steps/guidance if the task didn't
+    // override; same shape as the t2i path.
+    let cfg_steps = task
+        .steps
+        .or(s.steps)
+        .unwrap_or(if eff.lcm { 4 } else { 20 });
+    let cfg_guidance = task
+        .guidance
+        .or(s.guidance)
+        .unwrap_or(if eff.lcm { 1.5 } else { 7.5 });
+    let cfg_scheduler = if eff.lcm {
+        SchedulerKind::Lcm
+    } else {
+        match task.scheduler.as_deref().or(s.scheduler.as_deref()) {
+            Some(name) => name.parse::<SchedulerKind>().with_context(|| {
+                format!(
+                    "scenario animate task {:?}: scheduler {name:?}",
+                    task.name
+                )
+            })?,
+            None => SchedulerKind::Default,
+        }
+    };
+    let negative = task
+        .negative
+        .clone()
+        .unwrap_or_else(|| s.negative.clone());
+
+    // -------- variant-specific dispatch via cache slot --------
+    let images: Vec<image::DynamicImage> = match variant {
+        SdVariant::Sd15 => {
+            let key = format!("sd15:{mode_tag}:{motion_loras_joined}");
+            let hit = animate_sd15_key.as_deref() == Some(&key);
+            if !hit {
+                *animate_sd15 = None;
+                let p = if eff.lcm {
+                    AnimateDiffPipeline::load_animatelcm(
+                        device,
+                        dtype,
+                        &motion_lora_specs,
+                        eff.motion_lora_scale,
+                    )
+                    .await
+                } else {
+                    AnimateDiffPipeline::load_v3(
+                        device,
+                        dtype,
+                        &motion_lora_specs,
+                        eff.motion_lora_scale,
+                    )
+                    .await
+                }
+                .with_context(|| {
+                    format!(
+                        "scenario animate task {:?}: loading SD 1.5 AnimateDiff stack",
+                        task.name
+                    )
+                })?;
+                *animate_sd15 = Some(p);
+                *animate_sd15_key = Some(key);
+            }
+            let p = animate_sd15.as_ref().expect("just inserted");
+            tracing::info!(
+                target: "plakat",
+                "scenario animate task {:?}: {} stack — {} modules; \
+                 {frames} frames at {width}x{height}, steps={cfg_steps}, \
+                 guidance={cfg_guidance:.2}, scheduler={cfg_scheduler:?}, CN={}",
+                task.name,
+                if eff.lcm { "AnimateLCM" } else { "AnimateDiff V3" },
+                p.modules.modules.len(),
+                controls.len(),
+                frames = eff.frames,
+            );
+            p.generate_long(
+                pre_refine,
+                &negative,
+                eff.frames as usize,
+                eff.window_size as usize,
+                eff.window_overlap as usize,
+                task_seed,
+                width,
+                height,
+                cfg_steps,
+                cfg_guidance,
+                cfg_scheduler,
+                &controls,
+            )?
+        }
+        SdVariant::Sdxl => {
+            let key = format!("{base_alias}:{motion_loras_joined}");
+            let hit = animate_sdxl_key.as_deref() == Some(&key);
+            if !hit {
+                *animate_sdxl = None;
+                let p = AnimateDiffSdxlPipeline::load_sdxl_beta(
+                    device,
+                    dtype,
+                    base_alias,
+                    &motion_lora_specs,
+                    eff.motion_lora_scale,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "scenario animate task {:?}: loading SDXL AnimateDiff beta stack",
+                        task.name
+                    )
+                })?;
+                *animate_sdxl = Some(p);
+                *animate_sdxl_key = Some(key);
+            }
+            let p = animate_sdxl.as_ref().expect("just inserted");
+            tracing::info!(
+                target: "plakat",
+                "scenario animate task {:?}: AnimateDiff SDXL beta — {} modules; \
+                 {frames} frames at {width}x{height}, steps={cfg_steps}, \
+                 guidance={cfg_guidance:.2}, scheduler={cfg_scheduler:?}, CN={}",
+                task.name,
+                p.modules.modules.len(),
+                controls.len(),
+                frames = eff.frames,
+            );
+            p.generate_long(
+                pre_refine,
+                &negative,
+                eff.frames as usize,
+                eff.window_size as usize,
+                eff.window_overlap as usize,
+                task_seed,
+                width,
+                height,
+                cfg_steps,
+                cfg_guidance,
+                cfg_scheduler,
+                &controls,
+            )?
+        }
+        _ => unreachable!("variant gate filtered above"),
+    };
+
+    // -------- write per-frame PNGs + metadata --------
+    let scheduler_name = format!("{cfg_scheduler:?}").to_lowercase();
+    let mode_label = if eff.lcm {
+        "animatediff-lcm"
+    } else {
+        "animatediff"
+    };
+    let mut frame_paths: Vec<std::path::PathBuf> =
+        Vec::with_capacity(images.len());
+    for (i, img) in images.iter().enumerate() {
+        let frame_path = task_out.join(format!("frame-{i:04}.png"));
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+            pre_refine.to_string(),
+            base_alias.to_string(),
+            task_seed,
+            cfg_steps,
+            cfg_guidance,
+            scheduler_name.clone(),
+            width,
+            height,
+        );
+        meta.negative = negative.clone();
+        meta.mode = Some(mode_label.to_string());
+        meta.extras.push((
+            "Scenario task".to_string(),
+            task.name.clone(),
+        ));
+        meta.extras.push((
+            "AnimateDiff frame".to_string(),
+            format!("{i}/{}", images.len()),
+        ));
+        crate::imaging::io::save_rgb_u8_with_metadata(
+            rgb.as_raw(),
+            w,
+            h,
+            &frame_path,
+            &meta,
+        )?;
+        frame_paths.push(frame_path);
+    }
+
+    // Format dispatch — matches cli::animate::run_animatediff exactly.
+    if eff.format.needs_gif() {
+        let gif_path = task_out.join("animation.gif");
+        crate::cli::animate::write_gif(&frame_paths, &gif_path, eff.gif_delay_ms)?;
+    }
+    if eff.format.needs_mp4() || eff.format.needs_webm() {
+        let pattern = task_out
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .to_string();
+        let fps = 8u32;
+        if eff.format.needs_mp4() {
+            crate::imaging::video::frames_to_mp4(
+                &pattern,
+                &task_out.join("animation.mp4"),
+                fps,
+            )?;
+        }
+        if eff.format.needs_webm() {
+            crate::imaging::video::frames_to_webm(
+                &pattern,
+                &task_out.join("animation.webm"),
+                fps,
+            )?;
+        }
+    }
+
+    crate::ui::progress::println(&format!(
+        "  ✓ wrote {} frame(s) → {} (format={})",
+        images.len(),
+        task_out.display(),
+        eff.format,
+    ));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4314,5 +5033,196 @@ mod tests {
         // can self-correct without grepping the source.
         assert!(msg.contains("local"), "got {msg}");
         assert!(msg.contains("auto"), "got {msg}");
+    }
+
+    // ================================================================
+    // v0.29 phase 2 — animate scenario schema tests.
+    // ================================================================
+
+    fn parse_scenario(src: &str) -> ScenarioFile {
+        deser_hjson::from_str::<ScenarioFile>(src).expect("scenario parses")
+    }
+
+    /// Scenario-level animate defaults parse with the documented keys.
+    #[test]
+    fn scenario_parses_animate_defaults() {
+        let src = r#"{
+            model: sd15
+            type: animatediff
+            frames: 32
+            window-size: 16
+            window-overlap: 4
+            lcm: true
+            motion-lora: [ "hf:guoyww/animatediff-motion-lora-zoom-in:0.8" ]
+            motion-lora-scale: 0.7
+            format: mp4
+            gif-delay-ms: 125
+        }"#;
+        let s = parse_scenario(src);
+        assert_eq!(s.task_type.as_deref(), Some("animatediff"));
+        assert_eq!(s.animate_frames, Some(32));
+        assert_eq!(s.animate_window_size, Some(16));
+        assert_eq!(s.animate_window_overlap, Some(4));
+        assert_eq!(s.lcm, Some(true));
+        assert_eq!(s.motion_loras.len(), 1);
+        assert!(
+            (s.motion_lora_scale.unwrap() - 0.7).abs() < f32::EPSILON
+        );
+        assert_eq!(s.animate_format.as_deref(), Some("mp4"));
+        assert_eq!(s.animate_gif_delay_ms, Some(125));
+    }
+
+    /// Task-level animate overrides parse independently of the
+    /// scenario-level fields.
+    #[test]
+    fn task_parses_animate_overrides() {
+        let src = format!(
+            r#"{{{COMMON_TASK}
+                type: animate
+                frames: 48
+                window-size: 24
+                window-overlap: 8
+                lcm: false
+                motion-lora: [ "hf:repo:0.5" ]
+                motion-lora-scale: 1.2
+                format: webm
+                gif-delay-ms: 50
+            }}"#
+        );
+        let t = parse_task(&src);
+        assert_eq!(t.task_type.as_deref(), Some("animate"));
+        assert_eq!(t.animate_frames, Some(48));
+        assert_eq!(t.animate_window_size, Some(24));
+        assert_eq!(t.animate_window_overlap, Some(8));
+        assert_eq!(t.lcm, Some(false));
+        assert_eq!(t.motion_loras.len(), 1);
+        assert!(
+            (t.motion_lora_scale.unwrap() - 1.2).abs() < f32::EPSILON
+        );
+        assert_eq!(t.animate_format.as_deref(), Some("webm"));
+        assert_eq!(t.animate_gif_delay_ms, Some(50));
+    }
+
+    /// effective_animate_config merges scenario defaults with task
+    /// overrides; motion_loras list APPENDS (matches loras: pattern).
+    #[test]
+    fn effective_config_merges_scenario_and_task() {
+        let s = parse_scenario(
+            r#"{
+                model: sd15
+                type: animatediff
+                frames: 16
+                lcm: true
+                motion-lora: [ "hf:base:0.7" ]
+                format: gif
+            }"#,
+        );
+        // Empty task overrides → scenario defaults win.
+        let t1 = parse_task(&format!(
+            "{{{COMMON_TASK}\n        }}"
+        ));
+        let eff1 = effective_animate_config(&s, &t1).unwrap();
+        assert_eq!(eff1.frames, 16);
+        assert!(eff1.lcm);
+        assert_eq!(eff1.motion_loras, vec!["hf:base:0.7".to_string()]);
+        assert!((eff1.motion_lora_scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(eff1.format, crate::imaging::video::Format::Gif);
+        assert_eq!(eff1.gif_delay_ms, 100); // baked default
+
+        // Task overrides win + LoRAs ARE APPENDED.
+        let t2 = parse_task(&format!(
+            r#"{{{COMMON_TASK}
+                frames: 32
+                lcm: false
+                motion-lora: [ "hf:task:0.5" ]
+                format: mp4
+            }}"#
+        ));
+        let eff2 = effective_animate_config(&s, &t2).unwrap();
+        assert_eq!(eff2.frames, 32);
+        assert!(!eff2.lcm);
+        assert_eq!(
+            eff2.motion_loras,
+            vec!["hf:base:0.7".to_string(), "hf:task:0.5".to_string()]
+        );
+        assert_eq!(eff2.format, crate::imaging::video::Format::Mp4);
+    }
+
+    /// TaskKind dispatch: explicit `animatediff` / `animate` map
+    /// to Animate; absent / `generate` / `t2i` map to Generate;
+    /// unknown bails.
+    #[test]
+    fn task_kind_classifies_strings() {
+        assert_eq!(
+            TaskKind::from_strs(None, None).unwrap(),
+            TaskKind::Generate
+        );
+        assert_eq!(
+            TaskKind::from_strs(None, Some("animatediff")).unwrap(),
+            TaskKind::Animate
+        );
+        assert_eq!(
+            TaskKind::from_strs(Some("animate"), Some("generate")).unwrap(),
+            TaskKind::Animate
+        );
+        assert_eq!(
+            TaskKind::from_strs(Some("t2i"), None).unwrap(),
+            TaskKind::Generate
+        );
+        let err = TaskKind::from_strs(Some("video"), None).unwrap_err();
+        assert!(err.to_string().contains("not recognised"), "{err}");
+    }
+
+    /// EffectiveAnimateCfg::validate enforces frame/window/overlap
+    /// bounds at parse time (before any pipeline load).
+    #[test]
+    fn effective_config_validate_enforces_bounds() {
+        let mut eff = EffectiveAnimateCfg {
+            frames: 16,
+            window_size: 16,
+            window_overlap: 4,
+            lcm: false,
+            motion_loras: vec![],
+            motion_lora_scale: 1.0,
+            format: crate::imaging::video::Format::Frames,
+            gif_delay_ms: 100,
+        };
+        assert!(eff.validate("ok").is_ok());
+
+        // Window too large.
+        eff.window_size = 64;
+        eff.window_overlap = 4;
+        let err = eff.validate("oversize").unwrap_err().to_string();
+        assert!(err.contains("motion_max_seq_length"), "got {err}");
+
+        // Overlap >= window.
+        eff.window_size = 16;
+        eff.window_overlap = 16;
+        let err = eff.validate("overlap").unwrap_err().to_string();
+        assert!(err.contains("window-overlap"), "got {err}");
+
+        // Zero frames.
+        eff.window_overlap = 4;
+        eff.frames = 0;
+        let err = eff.validate("zero").unwrap_err().to_string();
+        assert!(err.contains("frames"), "got {err}");
+    }
+
+    /// Bad format string surfaces from effective_animate_config with
+    /// the task name for context.
+    #[test]
+    fn effective_config_bad_format_bails_with_task_name() {
+        let s = parse_scenario(
+            r#"{
+                model: sd15
+                type: animatediff
+                format: avif
+            }"#,
+        );
+        let t = parse_task(&format!("{{{COMMON_TASK}\n        }}"));
+        let err = effective_animate_config(&s, &t).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("\"t\""), "task name missing: {msg}");
+        assert!(msg.contains("avif"), "format value missing: {msg}");
     }
 }

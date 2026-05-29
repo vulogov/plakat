@@ -1567,7 +1567,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
     Ok(())
 }
 
-fn write_gif(
+pub(crate) fn write_gif(
     frame_paths: &[PathBuf],
     out_path: &std::path::Path,
     delay_ms: u16,

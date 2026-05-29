@@ -317,7 +317,156 @@ Regenerate every task even when outputs exist. Default behavior
 silently overwrites; `--force` makes the intent explicit.
 Mutually exclusive with `--resume`.
 
-## 9. The DEEPSEEK_API_KEY environment variable
+## 9. Animate scenarios (v0.29)
+
+Until v0.29, scenarios only drove `plakat generate` (single-image
+output). v0.29 adds AnimateDiff dispatch: every task can render a
+motion-coherent N-frame sequence using the same per-task
+override + filter machinery.
+
+The trigger is `type: animatediff` (alias `animate`) at scenario
+or task level. When set, every other animate flag the CLI
+exposes — `frames`, `window-size`, `window-overlap`, `lcm`,
+`motion-lora`, `motion-lora-scale`, `format`, `gif-delay-ms` —
+becomes meaningful.
+
+```hjson
+{
+    model: sd15
+    type: animatediff       # scenario default — every task is animate
+    frames: 16
+    lcm: true               # 4-step AnimateLCM (~5× speedup)
+    format: gif
+    out: ./out/animations
+
+    # Required scaffolding — even animate tasks need scene + weather
+    # for the cross-product expansion machinery. Often these are
+    # short additive phrases.
+    scene: [
+        { name: dawn,  prompt: "at dawn" }
+        { name: night, prompt: "under starlight" }
+    ]
+    weather: [
+        { name: mist,  prompt: "wreathed in mist" }
+        { name: clear, prompt: "under clear skies" }
+    ]
+
+    tasks: [
+        {
+            name: cottage
+            scene: dawn
+            weather: mist
+            prompt: "a watercolor cottage by a river"
+        }
+        {
+            name: knight
+            scene: night
+            weather: clear
+            prompt: "a knight in a forest, oil painting"
+            frames: 32              # per-task override
+            format: mp4
+        }
+    ]
+}
+```
+
+Run with the standard scenario subcommands — every filter you've
+already learned composes with animate tasks:
+
+```bash
+plakat scenario animate.hjson --dry-run       # preview the plan
+plakat scenario animate.hjson                 # render every task
+plakat scenario animate.hjson --resume        # skip rendered tasks
+plakat scenario animate.hjson --only cottage  # one task
+plakat scenario animate.hjson --limit 3       # cap run length
+```
+
+Each animate task lands in `<out>/<task_name>/frame-NNNN.png` +
+JSON sidecars. When `format` is `gif` / `mp4` / `webm` / `all`,
+an `animation.<ext>` lands in the same directory.
+
+### Composing with the existing scenario machinery
+
+Animate tasks honour the same overrides as generate tasks where
+the semantics align:
+
+| Field | Notes |
+|---|---|
+| `prompt` | Combined with `scene` + `weather` like generate. |
+| `negative` | Per-task or scenario default. |
+| `seed` | Per-task absolute seed (otherwise `seed + offset`). |
+| `size` / `aspect` / `base` | Resolves W×H the standard way. |
+| `steps` / `guidance` | LCM defaults override (4 / 1.5) unless explicit. |
+| `scheduler` | Forced to `lcm` when `lcm: true`. |
+| `control` / `controls` | Per-task ControlNet stack (multi-CN sums). |
+
+### What animate tasks ignore
+
+These fields stay scenario-level only or have no effect on
+animate dispatch (they target generate-only pipeline features):
+`count`, `refine`, `refine-strength`, `refiner-frac`, `personas`,
+`artefacts`, `style` (per-task IP-Adapter), `style-ref`,
+`init-image`, `mask`, `outpaint`, `redux-images`, `look`, `genre`,
+`enhance`.
+
+The scenario-level `enhancer` field is **optional** for all-
+animate scenarios (the prompt enhancement step doesn't apply to
+animate tasks). Mixed-kind scenarios (some `generate`, some
+`animatediff` tasks) still need it for the generate side.
+
+### Per-task LCM override
+
+```hjson
+{
+    model: sd15
+    type: animatediff
+    lcm: true               # AnimateLCM at scenario level
+    tasks: [
+        # Default — uses AnimateLCM at 4 steps
+        { name: quick,  scene: ..., weather: ..., prompt: "..." }
+        # Override — disable LCM for one task (uses V3 + DDIM at 20)
+        { name: hero,
+          scene: ..., weather: ..., prompt: "...",
+          lcm: false,
+          steps: 28 }
+    ]
+}
+```
+
+Toggling LCM causes a pipeline reload (V3 ↔ AnimateLCM are
+different motion adapters). Authors who want both modes in one
+batch can sort tasks by LCM mode to minimize reloads.
+
+### Multi-CN per animate task
+
+```hjson
+{
+    model: sdxl
+    type: animatediff
+    tasks: [
+        {
+            name: stacked
+            scene: ...
+            weather: ...
+            prompt: "..."
+            controls: [
+                { kind: depth, image: ./depth.png, strength: 0.8 }
+                { kind: canny, auto-from: ./ref.jpg, strength: 0.4 }
+            ]
+        }
+    ]
+}
+```
+
+Multi-CN through animate works the same way it does through
+generate — residuals from every conditioner sum per denoise step.
+SD 1.5 + SDXL both supported.
+
+See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
+animate reference (motion-adapter table, memory budget, sliding-
+window long-form math).
+
+## 10. The DEEPSEEK_API_KEY environment variable
 
 Scenarios use `${HOME}/.cache/huggingface` for model downloads but
 ALSO honor:
@@ -334,7 +483,7 @@ ALSO honor:
 `enhancer: local` (v0.18) doesn't need any API key — it runs an
 in-process Qwen2.5-1.5B by default.
 
-## 10. Worked example: character series
+## 11. Worked example: character series
 
 ```hjson
 {
@@ -397,7 +546,7 @@ plakat scenario alice_series.hjson --only morning_soft,morning_cine
 5 tasks × 2 images = 10 images, all of "alice" in different
 scenes / lightings, consistent identity, consistent style.
 
-## 11. Limitations
+## 12. Limitations
 
 - **Cross-product is explicit**, not implicit. You list every
   `(scene, weather, persona)` combo as its own task. Some users

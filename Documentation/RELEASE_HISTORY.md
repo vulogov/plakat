@@ -1,12 +1,55 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.27. The current
+"What's new" sections for v0.13 through v0.28. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.28 — AnimateDiff productivity polish
+
+v0.27 made AnimateDiff feature-complete. v0.28 made it pleasant
+to use in practice — closing the loudest v0.27 deferrals with
+four targeted productivity wins.
+
+### 4-step animate via AnimateLCM
+
+`--lcm` switches the motion adapter to `wangfuyun/AnimateLCM`
+(17 modules: 16 + a V1/V2-style mid-block), the scheduler to LCM,
+and applies the diffusers-recommended defaults `steps=4
+guidance=1.5`. SD 1.5 only (SDXL AnimateLCM not publicly
+available).
+
+### Multi-ControlNet stacking through animate
+
+`--control-spec` repeatable, same grammar as `plakat generate`'s.
+Mutually exclusive at parse time with the legacy single-CN flags.
+Both SD 1.5 + SDXL supported.
+
+### `plakat.animate` Bund host word
+
+The last major CLI verb missing from Bund scripting. Stack effect:
+`( prompt out_dir -- )`. Four new config keys: `animate_frames`
+(16), `animate_window_size` (16), `animate_window_overlap` (4),
+`animate_lcm` (false). SD 1.5 only in v0.28 (SDXL animate
+scripting landed in v0.29).
+
+### `plakat motion-adapter` inspection
+
+`plakat motion-adapter list` + `plakat motion-adapter info REPO`,
+parallel to `plakat civitai info`. Dumps motion adapter config +
+per-block tensor breakdown.
+
+### By the numbers
+
+- 953 lib + 37 integration tests green (+5 lib + +6 integration
+  across the cycle).
+- 6 phase commits + RFC.
+- 49 → 50 host words.
+- AnimateLCM loader added; shares `load_from_repo` +
+  `load_with_motion_loras` with V3 + SDXL beta.
 
 ## What's new in v0.27 — AnimateDiff feature complete
 

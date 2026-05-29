@@ -67,6 +67,35 @@ pub struct ScriptCtx {
     /// effect.
     pub loaded_stylize:
         Option<(String, crate::pipelines::stylize::Pipeline)>,
+    /// v0.29 phase 1: cached SD 1.5 AnimateDiff pipeline
+    /// (`pipelines::animatediff::AnimateDiffPipeline`) for
+    /// `plakat.animate`. Key is `format!("{alias}:{mode}")` where
+    /// `mode` is `"v3"` (default, V3 motion adapter) or `"lcm"`
+    /// (AnimateLCM adapter via `animate_lcm`). The mode in the key
+    /// means toggling `animate_lcm` between calls invalidates the
+    /// slot automatically.
+    ///
+    /// SD 1.5 + AnimateLCM both download ~3.5 GB on cold start; the
+    /// slot amortises that across multi-call scripts. Alias change
+    /// drops it; LoRA stack mutation drops it via
+    /// [`Self::mark_loras_changed`] (the motion-UNet was loaded
+    /// from the SD 1.5 weights with LoRA merge baked in).
+    pub loaded_animatediff:
+        Option<(String, crate::pipelines::animatediff::AnimateDiffPipeline)>,
+    /// v0.29 phase 1: cached SDXL AnimateDiff pipeline for
+    /// `plakat.animate`. Key is the SDXL alias. Independent slot
+    /// from `loaded_animatediff` because the pipeline types differ
+    /// (SDXL needs dual CLIP-L/G + add_text_embeds + add_time_ids
+    /// vs SD 1.5's single CLIP-L).
+    ///
+    /// Cold load downloads ~7 GB (SDXL base + SDXL beta motion
+    /// adapter). The slot amortises that across calls. Alias change
+    /// + LoRA mutation drop it on the same rules as the SD 1.5 slot.
+    pub loaded_animatediff_sdxl:
+        Option<(
+            String,
+            crate::pipelines::animatediff::AnimateDiffSdxlPipeline,
+        )>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -262,6 +291,8 @@ impl ScriptCtx {
             look_name: None,
             genre_name: None,
             loaded_stylize: None,
+            loaded_animatediff: None,
+            loaded_animatediff_sdxl: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -284,6 +315,11 @@ impl ScriptCtx {
         // snapshot — a LoRA stack mutation invalidates it. Same
         // pattern as loaded_t2i.
         self.loaded_stylize = None;
+        // v0.29 phase 1: the AnimateDiff slots hold motion UNets
+        // loaded from the SD 1.5 / SDXL base weights with LoRA
+        // merge baked in at load time. Drop on LoRA stack mutation.
+        self.loaded_animatediff = None;
+        self.loaded_animatediff_sdxl = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -554,6 +590,103 @@ impl ScriptCtx {
         }
 
         Ok(&self.loaded_stylize.as_ref().expect("just inserted").1)
+    }
+
+    /// v0.29 phase 1: get-or-load the SD 1.5 AnimateDiff pipeline
+    /// for `(alias, lcm)`. Cache key is `format!("{alias}:{mode}")`
+    /// where mode is `"v3"` or `"lcm"` — toggling `animate_lcm`
+    /// between calls invalidates the slot.
+    ///
+    /// Mirrors [`Self::get_or_load_stylize`]: same-key hit reuses
+    /// the loaded pipeline; key change drops + reloads. LoRA stack
+    /// mutation drops the slot via [`Self::mark_loras_changed`].
+    /// Network-required on cold load (~3.5 GB).
+    pub fn get_or_load_animatediff(
+        &mut self,
+        alias: &str,
+        lcm: bool,
+        dtype: candle_core::DType,
+    ) -> Result<&crate::pipelines::animatediff::AnimateDiffPipeline> {
+        let mode = if lcm { "lcm" } else { "v3" };
+        let key = format!("{alias}:{mode}");
+        let hit = self
+            .loaded_animatediff
+            .as_ref()
+            .map(|(k, _)| k == &key)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_animatediff = None;
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_animatediff: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    if lcm {
+                        crate::pipelines::animatediff::AnimateDiffPipeline::load_animatelcm(
+                            &device, dtype, &[], 1.0,
+                        )
+                        .await
+                    } else {
+                        crate::pipelines::animatediff::AnimateDiffPipeline::load_v3(
+                            &device, dtype, &[], 1.0,
+                        )
+                        .await
+                    }
+                })
+            })?;
+            self.loaded_animatediff = Some((key, pipeline));
+        }
+
+        Ok(&self.loaded_animatediff.as_ref().expect("just inserted").1)
+    }
+
+    /// v0.29 phase 1: get-or-load the SDXL AnimateDiff pipeline for
+    /// `alias`. Cache key is just the alias (SDXL beta is the only
+    /// supported SDXL motion adapter today; no LCM variant to
+    /// disambiguate). LoRA stack mutation drops via
+    /// [`Self::mark_loras_changed`].
+    ///
+    /// Network-required on cold load (~7 GB SDXL base + ~1.5 GB
+    /// motion adapter).
+    pub fn get_or_load_animatediff_sdxl(
+        &mut self,
+        alias: &str,
+        dtype: candle_core::DType,
+    ) -> Result<&crate::pipelines::animatediff::AnimateDiffSdxlPipeline> {
+        let hit = self
+            .loaded_animatediff_sdxl
+            .as_ref()
+            .map(|(a, _)| a == alias)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_animatediff_sdxl = None;
+            let device = self.device.clone();
+            let alias_owned = alias.to_string();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_animatediff_sdxl: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(
+                    crate::pipelines::animatediff::AnimateDiffSdxlPipeline::load_sdxl_beta(
+                        &device,
+                        dtype,
+                        &alias_owned,
+                        &[],
+                        1.0,
+                    ),
+                )
+            })?;
+            self.loaded_animatediff_sdxl = Some((alias.to_string(), pipeline));
+        }
+
+        Ok(&self.loaded_animatediff_sdxl.as_ref().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -1019,6 +1152,8 @@ mod tests {
             look_name: None,
             genre_name: None,
             loaded_stylize: None,
+            loaded_animatediff: None,
+            loaded_animatediff_sdxl: None,
         }
     }
 

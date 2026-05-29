@@ -1,4 +1,4 @@
-# `plakat run` — Bund scripting (v0.28)
+# `plakat run` — Bund scripting (v0.29)
 
 Reference for `plakat run SCRIPT.bund` (file mode) and
 `plakat run --repl` (REPL mode). For a tutorial-style walkthrough
@@ -11,7 +11,8 @@ Design RFCs:
 [`RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md`](RFC_v0.24_SCRIPT_SURFACE_COMPLETION.md) (persona depth + scripting completion),
 [`RFC_v0.25_LOOKS_AND_GENRES.md`](RFC_v0.25_LOOKS_AND_GENRES.md) (art-medium presets + auto-LoRA discovery),
 [`RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md`](RFC_v0.26_ANIMATEDIFF_AND_CARRIES.md) (AnimateDiff + every v0.25 carry),
-[`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md) (multi-CN, AnimateLCM, `plakat.animate` bridge, motion-adapter inspection).
+[`RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md`](RFC_v0.28_ANIMATEDIFF_PRODUCTIVITY.md) (multi-CN, AnimateLCM, `plakat.animate` bridge, motion-adapter inspection),
+[`RFC_v0.29_BATCH_PRODUCTIVITY.md`](RFC_v0.29_BATCH_PRODUCTIVITY.md) (animate in scenarios + SDXL `plakat.animate` + `animate_format` config key).
 
 ## Modes
 
@@ -77,7 +78,7 @@ input (popped first).
 | `plakat.portrait` | `( prompt -- handle )` | **v0.24 phase 1**: photos come from `plakat.portrait.photo.add` stack (was `( prompt photo -- handle )` in v0.23). IP-Adapter-Plus-Face. SD-family only. |
 | `plakat.stylize` | `( subject style -- handle )` | **v0.24 phase 6.** IP-Adapter style transfer. No prompt (CLI parity). Strength from `config.strength`. SD 1.5 only. |
 | `plakat.upscale` | `( handle scale -- handle )` | **v0.26 phase 9**: scale = integer 2/4 (Lanczos) OR string `"real-esrgan-x2"` / `"real-esrgan-x4"` / `"real-esrgan-anime-x4"` (ML). |
-| `plakat.animate` | `( prompt out_dir -- )` | **v0.28 phase 2.** AnimateDiff single-prompt N-frame generation. Writes `frame-NNNN.png` + JSON sidecars under `out_dir`. Reads `animate_frames` / `animate_window_size` / `animate_window_overlap` / `animate_lcm` from config. SD 1.5 only. |
+| `plakat.animate` | `( prompt out_dir -- )` | **v0.28 phase 2 + v0.29 phases 0/1.** AnimateDiff single-prompt N-frame generation. Writes `frame-NNNN.png` + JSON sidecars under `out_dir`. Reads `animate_frames` / `animate_window_size` / `animate_window_overlap` / `animate_lcm` / `animate_format` from config. **SD 1.5 + SDXL** (variant detected from `plakat.load` alias; AnimateLCM is SD 1.5 only). |
 | `plakat.save` | `( handle path -- )` | **v0.26 phase 8**: writes A1111 `parameters` tEXt + JSON sidecar when the handle has metadata (rendering paths populate it). Relative paths resolve under `--out`. |
 | `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. |
 
@@ -472,6 +473,7 @@ list. Type mismatches bail.
 | `animate_window_size` | int | 16 | **v0.28.** Per-window frame count for `plakat.animate` long-form. Must be ≤ 32 (motion-adapter `motion_max_seq_length`). |
 | `animate_window_overlap` | int | 4 | **v0.28.** Cross-fade region in frames. Must be < `animate_window_size`. |
 | `animate_lcm` | bool | false | **v0.28.** Switch `plakat.animate` to the AnimateLCM motion adapter + LCM scheduler. Defaults `steps=4`, `guidance=1.5` unless user already overrode either. ~5× speedup. SD 1.5 only. |
+| `animate_format` | string | `"frames"` | **v0.29 phase 0.** Output format for `plakat.animate`: `"frames"` (PNGs only, default) / `"gif"` / `"mp4"` / `"webm"` / `"all"`. MP4 / WebM require ffmpeg on `$PATH`. |
 
 ## REPL meta-commands
 
@@ -507,19 +509,57 @@ or `%APPDATA%\plakat\plakat\config\repl_history` (Windows).
   pipelines are `async`. Each pipeline-touching host word does
   `tokio::task::block_in_place(|| Handle::current().block_on(...))`.
 
-## v0.28 limitations / deferred to v0.29+
+## v0.29 limitations / deferred to v0.30+
 
-v0.28 closed the loudest v0.27 deferrals (multi-CN through animate,
-AnimateLCM 4-step generation, `plakat.animate` Bund word, motion-
-adapter inspection). Remaining items:
+v0.29 closed the v0.28 scripting + batch deferrals: `plakat.animate`
+SDXL now works (via the v0.26 stylize cache slot pattern), animate
+landed in HJSON scenarios (the largest plakat batch-driver gap),
+and `animate_format` reaches every CLI output format. Remaining items:
 
 | Limitation | Tracking |
 |---|---|
-| `plakat.animate` SDXL | SD 1.5 only in v0.28. SDXL animate via Bund needs a shared cache slot for the ~7 GB SDXL backbone so multi-call scripts don't reload it. v0.29 candidate. |
-| AnimateLCM SDXL | `wangfuyun/AnimateLCM-SDXL` isn't publicly available. `--lcm --model sdxl` bails. v0.29 if upstream changes. |
-| Per-frame video ControlNet | v0.28 ships same-hint-every-frame conditioning. Per-frame video-to-video (a depth / canny video as guide) is v0.29+ territory. |
-| Per-layer motion splice | v0.27/v0.28 splice at block-output boundaries; the faithful diffusers `UNetMotionModel` splices INSIDE each block. RFC v0.27 §3.2 escalation if quality requires it. |
-| Long-form > ~256 frames | Sliding-window long-form (v0.27 phase 5/6) caps at ~256 frames before motion drift dominates. FreeNoise / FreeInit shared-noise schemes are v0.29+ candidates for cleaner long-form. |
+| AnimateLCM SDXL | `wangfuyun/AnimateLCM-SDXL` still not publicly available. `--lcm --model sdxl` bails. v0.30 if upstream changes. |
+| Per-frame video ControlNet | v0.28/v0.29 ship same-hint-every-frame conditioning. Per-frame video-to-video (a depth / canny video as guide) is v0.30+ territory. |
+| Mixed-kind scenarios pay both pipeline costs | Scenarios with some generate + some animate tasks hold both pipelines resident. All-animate and all-generate pay only one. v0.30+ optimization. |
+| Per-layer motion splice | v0.27/v0.28/v0.29 splice at block-output boundaries; the faithful diffusers `UNetMotionModel` splices INSIDE each block. RFC v0.27 §3.2 escalation if quality requires it. |
+| Long-form > ~256 frames | Sliding-window long-form caps at ~256 frames before motion drift dominates. FreeNoise / FreeInit shared-noise schemes are v0.30+ candidates for cleaner long-form. |
+
+## v0.28 → v0.29 migration
+
+v0.29 is **fully additive**. No existing host word, config key,
+scenario field, or stack effect changes shape. New surface:
+
+```bund
+// v0.29 phase 0: animate_format Bund key — GIF / MP4 / WebM from scripts
+"sd15" plakat.load
+"mp4"  "animate_format" plakat.config.set
+"a watercolor cottage" "./out" plakat.animate
+
+// v0.29 phase 1: plakat.animate now works on SDXL too
+"sdxl" plakat.load
+16    "animate_frames" plakat.config.set
+1024  "width"          plakat.config.set
+1024  "height"         plakat.config.set
+"a knight in a forest, oil painting" "./out" plakat.animate
+```
+
+```hjson
+# v0.29 phases 2 + 3: animate tasks in scenarios
+{
+    model: sd15
+    type: animatediff       # scenario default
+    frames: 16
+    lcm: true
+    format: gif
+    tasks: [ { name: ..., scene: ..., weather: ..., prompt: "..." } ]
+}
+```
+
+50 host words (same as v0.28); v0.29 added one config key
+(`animate_format`) and the SDXL cache slot. See
+[`ANIMATEDIFF.md`](ANIMATEDIFF.md) for the full animate reference
+and [`Tutorials/SCENARIOS_TUTORIAL.md`](Tutorials/SCENARIOS_TUTORIAL.md)
+§9 for the animate-in-scenarios narrative.
 
 ## v0.27 → v0.28 migration
 
