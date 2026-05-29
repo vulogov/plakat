@@ -1801,6 +1801,8 @@ mod tests {
             look_name: None,
             genre_name: None,
             loaded_stylize: None,
+            loaded_animatediff: None,
+            loaded_animatediff_sdxl: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;
