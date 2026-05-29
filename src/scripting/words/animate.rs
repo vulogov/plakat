@@ -31,9 +31,15 @@
 //!
 //! ## Scope
 //!
-//! SD 1.5 only (matching the V3 / AnimateLCM motion adapters).
-//! SDXL motion adapter via `plakat.animate` deferred to v0.29
-//! (see RFC §10).
+//! SD 1.5 (V3 + AnimateLCM) and SDXL (beta) — variant detected from
+//! the loaded model alias. AnimateLCM is SD 1.5 only (no public SDXL
+//! repo); `animate_lcm + sdxl` bails. Flux / SD3 / SD 2.1 lack an
+//! upstream motion adapter and bail loud.
+//!
+//! Pipelines are cached on `ScriptCtx` (SD 1.5 + SDXL each have their
+//! own slot) so multi-call scripts amortise the ~3.5–7 GB load.
+//! Alias change drops; LoRA stack mutation drops via
+//! [`ScriptCtx::mark_loras_changed`].
 //!
 //! ```bund
 //! "sd15" plakat.load
@@ -114,17 +120,34 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
 
     let alias = alias.ok_or_else(|| {
         anyhow::anyhow!(
-            "{TAG}: no model loaded. Call \"sd15\" plakat.load before {TAG}."
+            "{TAG}: no model loaded. Call \"sd15\" or \"sdxl\" plakat.load before {TAG}."
         )
     })?;
-    // Hard gate: SD 1.5 only. SDXL motion adapters work via CLI but
-    // we don't have a scripting cache slot for them yet.
-    let alias_l = alias.to_lowercase();
-    if alias_l.contains("xl") || alias_l.contains("flux") || alias_l.contains("sd3") {
+    // v0.29 phase 1: variant dispatch — SD 1.5 + SDXL both supported.
+    // Detection mirrors `cli::animate::run_animatediff` (resolve alias
+    // first, then SdVariant::detect). Flux / SD3 still bail (no
+    // upstream motion adapter exists).
+    let resolved_for_detect = if alias.contains('/') {
+        alias.clone()
+    } else {
+        crate::hf::resolve_alias(&alias).to_string()
+    };
+    let variant = crate::pipelines::sd_core::SdVariant::detect(&resolved_for_detect);
+    use crate::pipelines::sd_core::SdVariant;
+    if !matches!(variant, SdVariant::Sd15 | SdVariant::Sdxl) {
         anyhow::bail!(
-            "{TAG}: AnimateDiff in scripting is SD 1.5 only (got {alias:?}). \
-             Call \"sd15\" plakat.load before {TAG}. SDXL animate in scripting \
-             is deferred to v0.29."
+            "{TAG}: AnimateDiff in scripting requires SD 1.5 or SDXL \
+             (got {alias:?} = {variant:?}). Flux / SD3 / SD 2.1 have no \
+             upstream motion adapter."
+        );
+    }
+    // AnimateLCM is SD 1.5 only — bail on SDXL + animate_lcm with the
+    // same pointer the CLI uses.
+    if animate_lcm && matches!(variant, SdVariant::Sdxl) {
+        anyhow::bail!(
+            "{TAG}: animate_lcm=true on SDXL not supported (wangfuyun/AnimateLCM-SDXL \
+             isn't publicly available). Use \"sd15\" plakat.load + animate_lcm, or \
+             SDXL without LCM."
         );
     }
 
@@ -188,40 +211,21 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
     // Seed: explicit when given, otherwise random per call.
     let seed = seed_cfg.unwrap_or_else(rand::random) & (u32::MAX as u64);
 
-    // Block on the async load (Bund VM is sync; we bridge via the
-    // ambient tokio runtime — `plakat run` installs one).
+    // Bund VM is sync; we bridge to async via the ambient tokio
+    // runtime that `plakat run` installs.
     let rt = tokio::runtime::Handle::try_current().map_err(|e| {
         anyhow::anyhow!(
             "{TAG}: AnimateDiff load requires a tokio runtime in scope ({e})"
         )
     })?;
-    let pipeline = tokio::task::block_in_place(|| {
-        rt.block_on(async {
-            if animate_lcm {
-                crate::pipelines::animatediff::AnimateDiffPipeline::load_animatelcm(
-                    &device,
-                    dtype,
-                    &[],
-                    1.0,
-                )
-                .await
-            } else {
-                crate::pipelines::animatediff::AnimateDiffPipeline::load_v3(
-                    &device,
-                    dtype,
-                    &[],
-                    1.0,
-                )
-                .await
-            }
-        })
-    })?;
 
-    // Load ControlNet stack (if any) at the resolved size.
+    // Load ControlNet stack (if any) at the resolved size. This is
+    // an async call independent of the AnimateDiff pipeline, so we
+    // do it before grabbing the (borrowed) pipeline reference from
+    // the cache slot.
     let controls = if cn_specs.is_empty() {
         Vec::new()
     } else {
-        let rt = rt.clone();
         tokio::task::block_in_place(|| {
             rt.block_on(crate::pipelines::controlnet::load_control_stack(
                 &cn_specs, &alias, width, height, &device, dtype, None,
@@ -229,31 +233,68 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
         })?
     };
 
-    tracing::info!(
-        target: "plakat",
-        "{TAG}: loaded {} motion modules; {frames} frames at {width}x{height}, \
-         steps={eff_steps}, guidance={eff_guidance:.2}, scheduler={eff_scheduler:?}, \
-         CN={}",
-        pipeline.modules.modules.len(),
-        controls.len(),
-    );
-
-    // Generate. Uses generate_long so frames > window_size triggers
-    // sliding-window stitching automatically.
-    let images = pipeline.generate_long(
-        &prompt,
-        &negative,
-        frames,
-        window_size,
-        window_overlap,
-        seed,
-        width,
-        height,
-        eff_steps,
-        eff_guidance,
-        eff_scheduler,
-        &controls,
-    )?;
+    // v0.29 phase 1: variant dispatch through cache slots. The
+    // pipeline reference is borrowed from ctx, so the generate call
+    // happens inside the with_ctx_mut block. images come out as an
+    // owned Vec<DynamicImage>.
+    let images = match variant {
+        SdVariant::Sd15 => {
+            with_ctx_mut(|ctx| -> anyhow::Result<Vec<image::DynamicImage>> {
+                let pipeline = ctx.get_or_load_animatediff(&alias, animate_lcm, dtype)?;
+                tracing::info!(
+                    target: "plakat",
+                    "{TAG}: {} stack — {} motion modules; {frames} frames at \
+                     {width}x{height}, steps={eff_steps}, guidance={eff_guidance:.2}, \
+                     scheduler={eff_scheduler:?}, CN={}",
+                    if animate_lcm { "AnimateLCM" } else { "AnimateDiff V3" },
+                    pipeline.modules.modules.len(),
+                    controls.len(),
+                );
+                pipeline.generate_long(
+                    &prompt,
+                    &negative,
+                    frames,
+                    window_size,
+                    window_overlap,
+                    seed,
+                    width,
+                    height,
+                    eff_steps,
+                    eff_guidance,
+                    eff_scheduler,
+                    &controls,
+                )
+            })??
+        }
+        SdVariant::Sdxl => {
+            with_ctx_mut(|ctx| -> anyhow::Result<Vec<image::DynamicImage>> {
+                let pipeline = ctx.get_or_load_animatediff_sdxl(&alias, dtype)?;
+                tracing::info!(
+                    target: "plakat",
+                    "{TAG}: AnimateDiff SDXL beta stack — {} motion modules; \
+                     {frames} frames at {width}x{height}, steps={eff_steps}, \
+                     guidance={eff_guidance:.2}, scheduler={eff_scheduler:?}, CN={}",
+                    pipeline.modules.modules.len(),
+                    controls.len(),
+                );
+                pipeline.generate_long(
+                    &prompt,
+                    &negative,
+                    frames,
+                    window_size,
+                    window_overlap,
+                    seed,
+                    width,
+                    height,
+                    eff_steps,
+                    eff_guidance,
+                    eff_scheduler,
+                    &controls,
+                )
+            })??
+        }
+        _ => unreachable!("variant gate filtered to SD 1.5 / SDXL above"),
+    };
 
     // v0.29 phase 0: ffmpeg availability check fires once when the
     // format wants it. Fails fast rather than after the (expensive)
