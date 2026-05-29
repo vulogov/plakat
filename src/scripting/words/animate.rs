@@ -89,6 +89,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
         animate_window_size,
         animate_window_overlap,
         animate_lcm,
+        animate_format,
         device,
     ) = with_ctx(|ctx| {
         (
@@ -106,6 +107,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
             ctx.config.animate_window_size,
             ctx.config.animate_window_overlap,
             ctx.config.animate_lcm,
+            ctx.config.animate_format,
             ctx.device.clone(),
         )
     })?;
@@ -253,13 +255,23 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
         &controls,
     )?;
 
-    // Build per-frame metadata + write each PNG.
+    // v0.29 phase 0: ffmpeg availability check fires once when the
+    // format wants it. Fails fast rather than after the (expensive)
+    // inference loop.
+    if animate_format.needs_ffmpeg() {
+        let v = crate::imaging::video::ffmpeg_version()?;
+        tracing::info!(target: "plakat", "{TAG}: ffmpeg detected ({v})");
+    }
+
+    // Build per-frame metadata + write each PNG. Collect paths so the
+    // format dispatch below can feed GIF / MP4 / WebM encoders.
     let scheduler_name = format!("{eff_scheduler:?}").to_lowercase();
     let mode_label = if animate_lcm {
         "animatediff-lcm"
     } else {
         "animatediff"
     };
+    let mut frame_paths: Vec<std::path::PathBuf> = Vec::with_capacity(images.len());
     for (i, img) in images.iter().enumerate() {
         let frame_path = out_dir.join(format!("frame-{i:04}.png"));
         let rgb = img.to_rgb8();
@@ -287,7 +299,45 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
             &frame_path,
             &meta,
         )?;
-        let _ = (w, h);
+        frame_paths.push(frame_path);
+    }
+
+    // v0.29 phase 0: format dispatch — GIF / MP4 / WebM / All. The
+    // `Frames` default skips this block entirely (only PNGs land).
+    if animate_format.needs_gif() {
+        let gif_path = out_dir.join("animation.gif");
+        // 100 ms = 10 fps; matches the CLI animate default.
+        crate::cli::animate::write_gif(&frame_paths, &gif_path, 100)?;
+        tracing::info!(
+            target: "plakat",
+            "{TAG}: wrote GIF → {}",
+            gif_path.display()
+        );
+    }
+    if animate_format.needs_mp4() || animate_format.needs_webm() {
+        let pattern = out_dir
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .to_string();
+        let fps = 8u32; // matches CLI animate default
+        if animate_format.needs_mp4() {
+            let mp4_path = out_dir.join("animation.mp4");
+            crate::imaging::video::frames_to_mp4(&pattern, &mp4_path, fps)?;
+            tracing::info!(
+                target: "plakat",
+                "{TAG}: wrote MP4 → {}",
+                mp4_path.display()
+            );
+        }
+        if animate_format.needs_webm() {
+            let webm_path = out_dir.join("animation.webm");
+            crate::imaging::video::frames_to_webm(&pattern, &webm_path, fps)?;
+            tracing::info!(
+                target: "plakat",
+                "{TAG}: wrote WebM → {}",
+                webm_path.display()
+            );
+        }
     }
 
     // Optional: register the first frame as a handle so the script
@@ -298,7 +348,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
     }
     tracing::info!(
         target: "plakat",
-        "{TAG}: wrote {frames} frame(s) → {}",
+        "{TAG}: wrote {frames} frame(s) → {} (format={animate_format})",
         out_dir.display()
     );
     Ok(vm)
