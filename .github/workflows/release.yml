@@ -176,20 +176,28 @@ jobs:
             [ -f "$f" ] && restrict_to_amd64 "$f"
           done
 
-          # v0.29 fix: the runner image now ships a mirrorlist file at
-          # /etc/apt/apt-mirrors.txt that's referenced by a DEB822
-          # source with `URIs: mirror+file:///etc/apt/apt-mirrors.txt`.
-          # Apt fans out across every URL in the mirrorlist —
-          # including security.ubuntu.com, which doesn't host arm64
-          # and 404s every arm64 Packages probe.
+          # v0.29 / v0.29.1 fix: the runner image ships a mirrorlist
+          # at /etc/apt/apt-mirrors.txt referenced by a DEB822 source
+          # with `URIs: mirror+file:///etc/apt/apt-mirrors.txt`. Apt
+          # fans out across EVERY URL in the mirrorlist for each
+          # architecture. The default mirrorlist contains
+          # azure.archive.ubuntu.com (the Azure-runner-local mirror,
+          # amd64-only) AND archive.ubuntu.com / security.ubuntu.com
+          # (the canonical Ubuntu mirrors, also amd64-only).
+          # `Architectures: amd64` on the DEB822 source doesn't stop
+          # apt from probing every URL for the arm64 indexes added
+          # by `dpkg --add-architecture arm64` below.
           #
-          # Drop security.ubuntu.com entries from the mirrorlist
-          # entirely. Ports.ubuntu.com (added below) carries the
-          # arm64 security updates we'd otherwise need. amd64 picks
-          # up security from azure.archive.ubuntu.com (also in the
-          # mirrorlist).
+          # Surgical sed passes (one per problem URL) keep regressing
+          # as the runner image's mirrorlist evolves. Replace the
+          # whole file with a single line pointing at the Azure
+          # mirror — it's amd64-only by virtue of being archive.ubuntu's
+          # mirror, fast from the runner (intra-Azure), and the
+          # explicit ports.ubuntu.com source added below handles
+          # everything arm64.
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i '/security\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            echo "http://azure.archive.ubuntu.com/ubuntu/" \
+              | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
           fi
 
           # Add the arm64 ports mirror (Ubuntu jammy is what ubuntu-22.04
