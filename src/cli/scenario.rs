@@ -1137,32 +1137,28 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         bail!("scenario has no `tasks` to run");
     }
 
-    // v0.29 phase 2: classify each task by kind + validate animate
-    // params per-task. Dispatch lands in phase 3 — for now we bail
-    // loud with a clear "deferred to v0.29 phase 3" message so the
-    // schema work can ship without breaking existing scenarios.
-    let mut animate_task_count = 0usize;
+    // v0.29 phases 2+3: classify each task by kind + validate the
+    // animate effective config up-front. Validation here means
+    // schema typos (window-size > 32, format: avif) bail before
+    // any pipeline load. Phase 3 wires the actual dispatch inside
+    // the task loop below. `has_generate_tasks` gates the enhancer
+    // requirement: all-animate scenarios don't need an enhancer
+    // (animate doesn't run prompt enhancement).
+    let mut has_generate_tasks = false;
     for t in &s.tasks {
         let kind = TaskKind::from_strs(
             t.task_type.as_deref(),
             s.task_type.as_deref(),
         )?;
-        if matches!(kind, TaskKind::Animate) {
-            // Validate the effective config now so schema typos
-            // (e.g. `format: avif`, `window-size: 99`) fail at parse
-            // time rather than after a multi-minute load.
-            let eff = effective_animate_config(&s, t)?;
-            eff.validate(&t.name)?;
-            animate_task_count += 1;
+        match kind {
+            TaskKind::Animate => {
+                let eff = effective_animate_config(&s, t)?;
+                eff.validate(&t.name)?;
+            }
+            TaskKind::Generate => {
+                has_generate_tasks = true;
+            }
         }
-    }
-    if animate_task_count > 0 {
-        bail!(
-            "scenario has {animate_task_count} animate task(s) — \
-             dispatch lands in v0.29 phase 3 (this phase ships the \
-             schema + validation only). Existing scenarios with no \
-             `type: animatediff` tasks keep working unchanged."
-        );
     }
 
     let scenes: HashMap<&str, &str> = s
@@ -1352,11 +1348,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
     };
 
-    let enhancer = s
-        .enhancer
-        .clone()
-        .ok_or_else(|| anyhow!("scenario requires `enhancer` (deepseek | gemini)"))?;
-    validate_enhancer_keys(&enhancer)?;
+    // v0.29 phase 3: all-animate scenarios don't need an enhancer
+    // (the enhance step is t2i-only). Default to "local" for the
+    // logging/var-passing surface; the enhance cache stays empty
+    // for animate tasks regardless.
+    let enhancer = match s.enhancer.clone() {
+        Some(e) => {
+            validate_enhancer_keys(&e)?;
+            e
+        }
+        None if !has_generate_tasks => "local".to_string(),
+        None => {
+            bail!("scenario requires `enhancer` (deepseek | gemini)");
+        }
+    };
 
     // Parse the upscale method now so a bad string fails fast.
     let upscale_method: UpscaleMethod = s
@@ -1969,6 +1974,18 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let mut seed_offset: u64 = 0;
     let mut ran_count: u32 = 0;
 
+    // v0.29 phase 3: lazy-loaded AnimateDiff pipelines + cache keys.
+    // Initialised on the first animate task encountered. Key format:
+    //   SD 1.5: "{alias}:{v3|lcm}:{joined_motion_loras}"
+    //   SDXL:   "{alias}:{joined_motion_loras}"
+    // Slot changes when key changes (toggling lcm, swapping motion
+    // LoRAs, changing base alias). All-generate scenarios pay no
+    // animate-pipeline cost.
+    let mut animate_sd15: Option<crate::pipelines::animatediff::AnimateDiffPipeline> = None;
+    let mut animate_sd15_key: Option<String> = None;
+    let mut animate_sdxl: Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline> = None;
+    let mut animate_sdxl_key: Option<String> = None;
+
     // v0.26 phase 12: scenario-level auto-LoRA discovery cache.
     // Keyed by preset name; the base_family is constant for the
     // whole scenario (scenarios don't override model per-task in
@@ -2016,6 +2033,44 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             &task.prompt,
             &s.prompt_footer,
         ]);
+
+        // v0.29 phase 3: animate-task dispatch. Runs the AnimateDiff
+        // pipeline + writes frames + format output, then advances
+        // seed_offset and continues to the next task. Generate-path
+        // tasks fall through past this block to the existing
+        // pipeline.generate(...) logic below.
+        let task_kind = TaskKind::from_strs(
+            task.task_type.as_deref(),
+            s.task_type.as_deref(),
+        )
+        .expect("validated up-front");
+        if matches!(task_kind, TaskKind::Animate) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset)
+                & (u32::MAX as u64);
+            let task_out = out_root.join(safe_name(&task.name));
+            let eff = effective_animate_config(&s, task)?;
+            run_animate_task_inline(
+                &s,
+                task,
+                &eff,
+                &pre_refine,
+                idx + 1,
+                task_seed,
+                width,
+                height,
+                &task_out,
+                &args,
+                &device,
+                &model,
+                &mut animate_sd15,
+                &mut animate_sd15_key,
+                &mut animate_sdxl,
+                &mut animate_sdxl_key,
+            )
+            .await?;
+            seed_offset += count as u64;
+            continue;
+        }
 
         crate::ui::progress::println(&format!(
             "\n{} [{}/{}] {} (scene={}, weather={})",
@@ -4123,6 +4178,403 @@ fn write_flux_anno_png(anno: &candle_core::Tensor, out_path: &std::path::Path) -
         .permute((1, 2, 0))?;
     let buf = scaled.flatten_all()?.to_vec1::<u8>()?;
     crate::imaging::io::save_rgb_u8(&buf, w as u32, h as u32, out_path)?;
+    Ok(())
+}
+
+// ================================================================
+// v0.29 phase 3: animate-task dispatch.
+// ================================================================
+
+#[allow(clippy::too_many_arguments)]
+async fn run_animate_task_inline(
+    s: &ScenarioFile,
+    task: &TaskDef,
+    eff: &EffectiveAnimateCfg,
+    pre_refine: &str,
+    task_pos: usize,
+    task_seed: u64,
+    width: u32,
+    height: u32,
+    task_out: &std::path::Path,
+    args: &ScenarioArgs,
+    device: &candle_core::Device,
+    base_alias: &str,
+    animate_sd15: &mut Option<crate::pipelines::animatediff::AnimateDiffPipeline>,
+    animate_sd15_key: &mut Option<String>,
+    animate_sdxl: &mut Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline>,
+    animate_sdxl_key: &mut Option<String>,
+) -> Result<()> {
+    use crate::pipelines::animatediff::{AnimateDiffPipeline, AnimateDiffSdxlPipeline};
+    use crate::pipelines::controlnet::load_control_stack;
+    use crate::pipelines::lora::LoraSpec;
+    use crate::pipelines::scheduler::SchedulerKind;
+    use crate::pipelines::sd_core::SdVariant;
+
+    // Variant detect on the resolved repo path (mirrors animate CLI).
+    let resolved = if base_alias.contains('/') {
+        base_alias.to_string()
+    } else {
+        crate::hf::resolve_alias(base_alias).to_string()
+    };
+    let variant = SdVariant::detect(&resolved);
+    if !matches!(variant, SdVariant::Sd15 | SdVariant::Sdxl) {
+        bail!(
+            "scenario animate task {:?}: model {base_alias:?} resolves to \
+             {variant:?} which has no upstream motion adapter. Use sd15 or sdxl.",
+            task.name
+        );
+    }
+    if eff.lcm && matches!(variant, SdVariant::Sdxl) {
+        bail!(
+            "scenario animate task {:?}: lcm=true on SDXL not supported \
+             (wangfuyun/AnimateLCM-SDXL isn't publicly available).",
+            task.name
+        );
+    }
+
+    crate::ui::progress::println(&format!(
+        "\n{} [{}/{}] {} {} (scene={}, weather={}, frames={}, format={})",
+        style("▶").cyan().bold(),
+        task_pos,
+        s.tasks.len(),
+        style(&task.name).bold(),
+        style("animate").magenta(),
+        task.scene,
+        task.weather,
+        eff.frames,
+        eff.format,
+    ));
+    crate::ui::progress::println(&wrap_label("prompt", pre_refine));
+
+    // v0.27 phase 5: --resume detects an already-rendered task by
+    // the presence of frame-0000.png in the task's out_dir.
+    let frame0 = task_out.join("frame-0000.png");
+    if args.resume && frame0.exists() {
+        crate::ui::progress::println(&format!(
+            "  ↺ {}: frame-0000.png already on disk — skipping",
+            console::style(&task.name).cyan(),
+        ));
+        return Ok(());
+    }
+
+    if args.dry_run {
+        crate::ui::progress::println(&format!(
+            "  {} would render {} frames at {}x{} (seed={task_seed}, \
+             lcm={}, motion-loras={}, format={}, out={})",
+            style("[dry-run]").yellow(),
+            eff.frames,
+            width,
+            height,
+            eff.lcm,
+            eff.motion_loras.len(),
+            eff.format,
+            task_out.display(),
+        ));
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(task_out).with_context(|| {
+        format!(
+            "scenario animate task {:?}: creating out_dir {}",
+            task.name,
+            task_out.display()
+        )
+    })?;
+
+    if eff.format.needs_ffmpeg() {
+        let v = crate::imaging::video::ffmpeg_version()?;
+        tracing::info!(target: "plakat", "ffmpeg detected ({v})");
+    }
+
+    let dtype = if matches!(device, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::BF16
+    };
+
+    // Parse motion-LoRA specs.
+    let motion_lora_specs: Vec<LoraSpec> = eff
+        .motion_loras
+        .iter()
+        .map(|s| {
+            s.parse::<LoraSpec>().with_context(|| {
+                format!(
+                    "scenario animate task {:?}: parsing motion-lora {s:?}",
+                    task.name
+                )
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    // Cache key encodes everything that changes the loaded pipeline.
+    let motion_loras_joined = eff.motion_loras.join("|");
+    let mode_tag = if eff.lcm { "lcm" } else { "v3" };
+
+    // Per-task ControlNet stack. Translate scenario ControlSpec
+    // (local struct) → pipelines::controlnet::ControlSpec (library
+    // type) by parsing the kind string. Animate honours `start`/
+    // `end` ramps the same way the t2i path does (passes through
+    // to load_control_stack, which builds an active-step window).
+    let scenario_controls = task_effective_controls(task)?;
+    let mut cli_controls: Vec<crate::pipelines::controlnet::ControlSpec> =
+        Vec::with_capacity(scenario_controls.len());
+    for spec in &scenario_controls {
+        let kind: crate::pipelines::controlnet::ControlKind = spec
+            .kind
+            .parse()
+            .with_context(|| {
+                format!(
+                    "scenario animate task {:?}: parsing control kind {:?}",
+                    task.name, spec.kind
+                )
+            })?;
+        cli_controls.push(crate::pipelines::controlnet::ControlSpec {
+            kind,
+            image: spec.image.clone(),
+            from: spec.auto_from.clone(),
+            strength: spec.strength.unwrap_or(1.0),
+            start: spec.start.unwrap_or(0.0),
+            end: spec.end.unwrap_or(1.0),
+        });
+    }
+    let controls = if cli_controls.is_empty() {
+        Vec::new()
+    } else {
+        load_control_stack(
+            &cli_controls,
+            base_alias,
+            width,
+            height,
+            device,
+            dtype,
+            None,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "scenario animate task {:?}: loading ControlNet stack",
+                task.name
+            )
+        })?
+    };
+
+    // Effective steps / guidance / scheduler. LCM mode applies
+    // diffusers-recommended defaults when the user didn't override.
+    // We inherit the scenario steps/guidance if the task didn't
+    // override; same shape as the t2i path.
+    let cfg_steps = task
+        .steps
+        .or(s.steps)
+        .unwrap_or(if eff.lcm { 4 } else { 20 });
+    let cfg_guidance = task
+        .guidance
+        .or(s.guidance)
+        .unwrap_or(if eff.lcm { 1.5 } else { 7.5 });
+    let cfg_scheduler = if eff.lcm {
+        SchedulerKind::Lcm
+    } else {
+        match task.scheduler.as_deref().or(s.scheduler.as_deref()) {
+            Some(name) => name.parse::<SchedulerKind>().with_context(|| {
+                format!(
+                    "scenario animate task {:?}: scheduler {name:?}",
+                    task.name
+                )
+            })?,
+            None => SchedulerKind::Default,
+        }
+    };
+    let negative = task
+        .negative
+        .clone()
+        .unwrap_or_else(|| s.negative.clone());
+
+    // -------- variant-specific dispatch via cache slot --------
+    let images: Vec<image::DynamicImage> = match variant {
+        SdVariant::Sd15 => {
+            let key = format!("sd15:{mode_tag}:{motion_loras_joined}");
+            let hit = animate_sd15_key.as_deref() == Some(&key);
+            if !hit {
+                *animate_sd15 = None;
+                let p = if eff.lcm {
+                    AnimateDiffPipeline::load_animatelcm(
+                        device,
+                        dtype,
+                        &motion_lora_specs,
+                        eff.motion_lora_scale,
+                    )
+                    .await
+                } else {
+                    AnimateDiffPipeline::load_v3(
+                        device,
+                        dtype,
+                        &motion_lora_specs,
+                        eff.motion_lora_scale,
+                    )
+                    .await
+                }
+                .with_context(|| {
+                    format!(
+                        "scenario animate task {:?}: loading SD 1.5 AnimateDiff stack",
+                        task.name
+                    )
+                })?;
+                *animate_sd15 = Some(p);
+                *animate_sd15_key = Some(key);
+            }
+            let p = animate_sd15.as_ref().expect("just inserted");
+            tracing::info!(
+                target: "plakat",
+                "scenario animate task {:?}: {} stack — {} modules; \
+                 {frames} frames at {width}x{height}, steps={cfg_steps}, \
+                 guidance={cfg_guidance:.2}, scheduler={cfg_scheduler:?}, CN={}",
+                task.name,
+                if eff.lcm { "AnimateLCM" } else { "AnimateDiff V3" },
+                p.modules.modules.len(),
+                controls.len(),
+                frames = eff.frames,
+            );
+            p.generate_long(
+                pre_refine,
+                &negative,
+                eff.frames as usize,
+                eff.window_size as usize,
+                eff.window_overlap as usize,
+                task_seed,
+                width,
+                height,
+                cfg_steps,
+                cfg_guidance,
+                cfg_scheduler,
+                &controls,
+            )?
+        }
+        SdVariant::Sdxl => {
+            let key = format!("{base_alias}:{motion_loras_joined}");
+            let hit = animate_sdxl_key.as_deref() == Some(&key);
+            if !hit {
+                *animate_sdxl = None;
+                let p = AnimateDiffSdxlPipeline::load_sdxl_beta(
+                    device,
+                    dtype,
+                    base_alias,
+                    &motion_lora_specs,
+                    eff.motion_lora_scale,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "scenario animate task {:?}: loading SDXL AnimateDiff beta stack",
+                        task.name
+                    )
+                })?;
+                *animate_sdxl = Some(p);
+                *animate_sdxl_key = Some(key);
+            }
+            let p = animate_sdxl.as_ref().expect("just inserted");
+            tracing::info!(
+                target: "plakat",
+                "scenario animate task {:?}: AnimateDiff SDXL beta — {} modules; \
+                 {frames} frames at {width}x{height}, steps={cfg_steps}, \
+                 guidance={cfg_guidance:.2}, scheduler={cfg_scheduler:?}, CN={}",
+                task.name,
+                p.modules.modules.len(),
+                controls.len(),
+                frames = eff.frames,
+            );
+            p.generate_long(
+                pre_refine,
+                &negative,
+                eff.frames as usize,
+                eff.window_size as usize,
+                eff.window_overlap as usize,
+                task_seed,
+                width,
+                height,
+                cfg_steps,
+                cfg_guidance,
+                cfg_scheduler,
+                &controls,
+            )?
+        }
+        _ => unreachable!("variant gate filtered above"),
+    };
+
+    // -------- write per-frame PNGs + metadata --------
+    let scheduler_name = format!("{cfg_scheduler:?}").to_lowercase();
+    let mode_label = if eff.lcm {
+        "animatediff-lcm"
+    } else {
+        "animatediff"
+    };
+    let mut frame_paths: Vec<std::path::PathBuf> =
+        Vec::with_capacity(images.len());
+    for (i, img) in images.iter().enumerate() {
+        let frame_path = task_out.join(format!("frame-{i:04}.png"));
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+            pre_refine.to_string(),
+            base_alias.to_string(),
+            task_seed,
+            cfg_steps,
+            cfg_guidance,
+            scheduler_name.clone(),
+            width,
+            height,
+        );
+        meta.negative = negative.clone();
+        meta.mode = Some(mode_label.to_string());
+        meta.extras.push((
+            "Scenario task".to_string(),
+            task.name.clone(),
+        ));
+        meta.extras.push((
+            "AnimateDiff frame".to_string(),
+            format!("{i}/{}", images.len()),
+        ));
+        crate::imaging::io::save_rgb_u8_with_metadata(
+            rgb.as_raw(),
+            w,
+            h,
+            &frame_path,
+            &meta,
+        )?;
+        frame_paths.push(frame_path);
+    }
+
+    // Format dispatch — matches cli::animate::run_animatediff exactly.
+    if eff.format.needs_gif() {
+        let gif_path = task_out.join("animation.gif");
+        crate::cli::animate::write_gif(&frame_paths, &gif_path, eff.gif_delay_ms)?;
+    }
+    if eff.format.needs_mp4() || eff.format.needs_webm() {
+        let pattern = task_out
+            .join("frame-%04d.png")
+            .to_string_lossy()
+            .to_string();
+        let fps = 8u32;
+        if eff.format.needs_mp4() {
+            crate::imaging::video::frames_to_mp4(
+                &pattern,
+                &task_out.join("animation.mp4"),
+                fps,
+            )?;
+        }
+        if eff.format.needs_webm() {
+            crate::imaging::video::frames_to_webm(
+                &pattern,
+                &task_out.join("animation.webm"),
+                fps,
+            )?;
+        }
+    }
+
+    crate::ui::progress::println(&format!(
+        "  ✓ wrote {} frame(s) → {} (format={})",
+        images.len(),
+        task_out.display(),
+        eff.format,
+    ));
     Ok(())
 }
 
