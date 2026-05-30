@@ -88,8 +88,8 @@ pub enum Command {
     #[command(subcommand_value_name = "OP")]
     Civitai(civitai::CivitaiArgs),
     /// Inspect Textual Inversion (embedding) `.safetensors` files.
-    /// Currently `info` only — runtime injection into the SD
-    /// pipeline lands when candle exposes `clip::Config.vocab_size`.
+    /// Runtime injection works via `plakat generate --embedding PATH`
+    /// (SD 1.5 / SD 2.1 / SDXL CLIP-L).
     #[command(subcommand_value_name = "OP")]
     Embedding(embedding::EmbeddingArgs),
     /// Animate between two prompts via CLIP-embedding lerp — N

@@ -389,7 +389,9 @@ impl Pipeline {
             Tokenizer::from_file(&clip_l_tok_path).map_err(|e| anyhow!("CLIP-L tokenizer: {e}"))?;
 
         // ---------- CLIP-G (with text_projection for pooled) ----------
-        let clip_g_cfg = sdclip::Config::sdxl2(); // SDXL CLIP-G = SD3 CLIP-G (77 tokens, 1280d, 32 layers)
+        // v0.30 phase 0: vendored CLIP Config for CLIP-G. Numerically
+        // identical to candle's `sdclip::Config::sdxl2()`.
+        let clip_g_cfg = crate::pipelines::vendored_clip::Config::sdxl2();
         let clip_g_vs = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&clip_g_w], dtype, &req.device)?
         };

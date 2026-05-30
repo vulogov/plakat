@@ -1720,7 +1720,7 @@ impl Pipeline {
 /// `text_encoder_l.forward(&ids)` call — both return the final hidden
 /// state.
 fn clip_skip_forward(
-    encoder: &candle_transformers::models::stable_diffusion::clip::ClipTextTransformer,
+    encoder: &crate::pipelines::vendored_clip::ClipTextTransformer,
     ids: &Tensor,
     clip_skip: usize,
 ) -> Result<Tensor> {
@@ -1869,7 +1869,7 @@ fn tokenize_with_attention(
 fn encode_with_attention(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
-    encoder: &sdclip::ClipTextTransformer,
+    encoder: &crate::pipelines::vendored_clip::ClipTextTransformer,
     prompt: &str,
     clip_skip: usize,
     device: &Device,
@@ -1931,7 +1931,7 @@ fn embed_xl(
     tok_g: &Tokenizer,
     cfg_l: &sdclip::Config,
     cfg_g: &sdclip::Config,
-    enc_l: &sdclip::ClipTextTransformer,
+    enc_l: &crate::pipelines::vendored_clip::ClipTextTransformer,
     enc_g: &crate::pipelines::sdxl_clip::SdxlClipGTextTransformer,
     device: &Device,
     dtype: DType,

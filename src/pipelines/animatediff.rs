@@ -794,10 +794,10 @@ impl AnimateDiffSdxlPipeline {
             device,
             dtype,
         )?;
-        let cfg_g = cfg
-            .clip2
-            .as_ref()
-            .ok_or_else(|| anyhow!("SDXL config missing clip2"))?;
+        // v0.30 phase 0: vendored CLIP Config for SDXL CLIP-G.
+        // Bit-identical to candle's `cfg.clip2` numerics.
+        let _ = cfg.clip2.as_ref();
+        let cfg_g = crate::pipelines::vendored_clip::Config::sdxl2();
         let vs_g = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[text_enc_g_path.as_path()],
@@ -805,7 +805,7 @@ impl AnimateDiffSdxlPipeline {
                 device,
             )?
         };
-        let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, cfg_g, 1280)?;
+        let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?;
         let vae = cfg.build_vae(&vae_path, device, dtype)?;
         let vs_unet = unsafe {
             VarBuilder::from_mmaped_safetensors(

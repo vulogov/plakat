@@ -178,10 +178,9 @@ async fn run_info(args: InfoArgs) -> Result<()> {
     }
     println!();
     println!(
-        "{} runtime injection into `plakat generate` is gated until candle 0.8+ exposes \
-         `clip::Config.vocab_size` for mutation. The parser + merger ship; pass \
-         `--embedding {}` once that lands.",
-        style("status:").dim(),
+        "{} pass `--embedding {}` to `plakat generate` to apply this TI at \
+         inference time (SD 1.5 / SD 2.1 / SDXL CLIP-L).",
+        style("usage:").dim(),
         args.source
     );
     Ok(())
