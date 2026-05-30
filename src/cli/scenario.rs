@@ -862,6 +862,35 @@ impl TaskKind {
     }
 }
 
+/// v0.31 phase 3: which cached pipeline (if any) the scenario loop
+/// should drop before running the next task. Used by the kind-
+/// switching evictor to close the v0.29 mixed-kind carry: scenarios
+/// that mix `type: generate` and `type: animatediff` used to hold
+/// both pipelines simultaneously (~10 GB SD 1.5 / worse on SDXL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheEviction {
+    /// No-op — same kind as last task, or this is the first task.
+    None,
+    /// Just switched FROM generate TO animate — drop the SD t2i
+    /// `pipeline` carrier so the animate load can fit.
+    DropT2i,
+    /// Just switched FROM animate TO generate — drop the
+    /// `animate_sd15` / `animate_sdxl` carriers.
+    DropAnimate,
+}
+
+/// Eviction decision for one (last, current) kind pair. Pure
+/// function — unit-testable without spinning up real pipelines.
+fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
+    match (last, current) {
+        (Some(TaskKind::Generate), TaskKind::Animate) => CacheEviction::DropT2i,
+        (Some(TaskKind::Animate), TaskKind::Generate) => CacheEviction::DropAnimate,
+        // First task (last == None) or same-kind continuation —
+        // no eviction needed.
+        _ => CacheEviction::None,
+    }
+}
+
 /// v0.29 phase 2: compute the effective animate config for one task
 /// by merging scenario-level defaults with per-task overrides.
 /// Scenario `motion-lora` list is the BASE; task `motion-lora` list
@@ -1628,26 +1657,37 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             None
         };
 
-    // -------- load pipeline once (skipped for dry-run) --------
+    // -------- load pipeline (lazy after v0.31 phase 3) --------
     // Three parallel pipeline types; exactly one is populated for
     // non-dry-run runs (SD-family / Flux / SD3-family).
+    //
+    // v0.31 phase 3: SD-family `pipeline` is now lazy — the
+    // initial Option<Pipeline> stays None for all-animate scenarios
+    // (no generate tasks → no t2i backbone needed) AND for the
+    // first task slot of mixed-kind scenarios (the loop's kind-
+    // switching evictor drops it on switch to animate, the first-
+    // generate-task path reloads it). For all-generate scenarios,
+    // we still pre-load it here so the user sees the load progress
+    // before the first task runs (preserves the v0.29 UX).
     let variant = Variant::detect(&model);
-    let pipeline: Option<Pipeline> = if args.dry_run || variant.is_flux() || variant.is_sd3() {
+    let any_animate_tasks = s.tasks.iter().any(|t| {
+        matches!(
+            TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()),
+            Ok(TaskKind::Animate)
+        )
+    });
+    let mut pipeline: Option<Pipeline> = if args.dry_run
+        || variant.is_flux()
+        || variant.is_sd3()
+        || !has_generate_tasks
+        || any_animate_tasks
+    {
+        // Mixed-kind (or all-animate, or non-SD-family) → defer.
         None
     } else {
-        Some(
-            Pipeline::load(LoadRequest {
-                model: model.clone(),
-                device: device.clone(),
-                loras: loras.clone(),
-                lora_scale,
-                use_refiner: s.refiner,
-                // v0.16 phase 9: scenarios don't surface --embedding
-                // (TI runtime injection is still gated by candle).
-                embeddings: Vec::new(),
-            })
-            .await?,
-        )
+        // All-generate SD-family scenario — pre-load as before so
+        // the user sees the "Loading SD core" spinner up front.
+        Some(load_sd_pipeline_for_scenario(&model, &device, &loras, lora_scale, s.refiner).await?)
     };
     // v0.16 phase 2: SD3 / SD3.5 backbone loaded once for the whole
     // scenario (previously the scenario fell through to t2i::Pipeline
@@ -2006,6 +2046,21 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         Option<crate::preset::discovery::DiscoveredLora>,
     > = std::collections::HashMap::new();
 
+    // v0.31 phase 3: kind-switch evictor state. Tracks the previous
+    // task's kind so we can drop the OTHER kind's pipeline before
+    // loading the new one. Closes the v0.29 carry where mixed-kind
+    // scenarios held both t2i and animate pipelines simultaneously
+    // (~10 GB SD 1.5 / much worse on SDXL).
+    let mut last_task_kind: Option<TaskKind> = None;
+    // SD-family lazy reload predicate: same condition used at
+    // pre-load time (line ~1635). When false (Flux / SD3 / dry-run),
+    // `pipeline` stays None for the whole loop and never gets
+    // touched by the evictor.
+    let sd_pipeline_applicable = !args.dry_run
+        && !variant.is_flux()
+        && !variant.is_sd3()
+        && has_generate_tasks;
+
     for (idx, task) in s.tasks.iter().enumerate() {
         // v0.19: skip tasks excluded by --only / --limit. The
         // seed_offset advance still happens for skipped tasks so a
@@ -2049,6 +2104,42 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             s.task_type.as_deref(),
         )
         .expect("validated up-front");
+
+        // v0.31 phase 3: drop the opposite-kind cached pipeline on
+        // switch. Closes the v0.29 carry — mixed-kind scenarios
+        // (some `type: generate`, some `type: animatediff`) used to
+        // hold BOTH pipelines for the whole run. Now we hold at
+        // most one at a time; switching incurs a reload, but peak
+        // memory drops by the size of whichever pipeline was just
+        // dropped (typically the bigger half wins back ~5-10 GB).
+        match evict_decision(last_task_kind, task_kind) {
+            CacheEviction::None => {}
+            CacheEviction::DropT2i => {
+                if pipeline.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "scenario kind switch: dropping cached t2i pipeline before animate task {:?}",
+                        task.name,
+                    );
+                    pipeline = None;
+                }
+            }
+            CacheEviction::DropAnimate => {
+                if animate_sd15.is_some() || animate_sdxl.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "scenario kind switch: dropping cached animate pipeline(s) before generate task {:?}",
+                        task.name,
+                    );
+                    animate_sd15 = None;
+                    animate_sd15_key = None;
+                    animate_sdxl = None;
+                    animate_sdxl_key = None;
+                }
+            }
+        }
+        last_task_kind = Some(task_kind);
+
         if matches!(task_kind, TaskKind::Animate) {
             let task_seed = task.seed.unwrap_or(seed + seed_offset)
                 & (u32::MAX as u64);
@@ -2075,6 +2166,26 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .await?;
             seed_offset += count as u64;
             continue;
+        }
+
+        // v0.31 phase 3: lazy reload of the SD-family t2i pipeline.
+        // Fires when (a) the scenario is mixed-kind and we just
+        // switched from animate back to generate (the evictor above
+        // set `pipeline = None`), or (b) the pre-load was skipped
+        // because `any_animate_tasks` was true (deferred to first
+        // generate task). All-generate scenarios already loaded
+        // up front and skip this branch.
+        if sd_pipeline_applicable && pipeline.is_none() {
+            pipeline = Some(
+                load_sd_pipeline_for_scenario(
+                    &model,
+                    &device,
+                    &loras,
+                    lora_scale,
+                    s.refiner,
+                )
+                .await?,
+            );
         }
 
         crate::ui::progress::println(&format!(
@@ -3676,6 +3787,36 @@ fn run_style_pass(
 /// Target file:
 ///   - If `style_attempted` and `<task>/plakat-<seed>-styled.png` exists → upscale it.
 ///   - Else → upscale `<task>/plakat-<seed>.png`.
+/// v0.31 phase 3: build a fresh SD-family t2i Pipeline for the
+/// scenario. Extracted from the per-scenario load site so the
+/// kind-switching evictor (mixed-kind scenarios) can reload the
+/// pipeline after the loop drops it on a switch to animate.
+///
+/// `loras` is the scenario-level LoRA spec stack; per-task LoRA
+/// overlays still happen via the v0.18 inline LoRA tag merger.
+/// `use_refiner` is the scenario-level `refiner` flag.
+async fn load_sd_pipeline_for_scenario(
+    model: &str,
+    device: &candle_core::Device,
+    loras: &[crate::pipelines::lora::LoraSpec],
+    lora_scale: f32,
+    use_refiner: bool,
+) -> Result<Pipeline> {
+    Pipeline::load(LoadRequest {
+        model: model.to_string(),
+        device: device.clone(),
+        loras: loras.to_vec(),
+        lora_scale,
+        use_refiner,
+        // v0.16 phase 9 / v0.30 phase 0 follow-up: scenarios still
+        // don't surface --embedding. The runtime TI path ships
+        // (v0.30 phase 0) but the scenario schema doesn't expose
+        // it; that's a v0.32+ candidate.
+        embeddings: Vec::new(),
+    })
+    .await
+}
+
 ///
 /// Output is written next to the source with `-upscaled` appended.
 async fn run_upscale_pass(
@@ -5232,5 +5373,102 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("\"t\""), "task name missing: {msg}");
         assert!(msg.contains("avif"), "format value missing: {msg}");
+    }
+
+    // -----------------------------------------------------------------
+    // v0.31 phase 3: kind-switch cache evictor decisions.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn evict_decision_first_task_no_eviction() {
+        // last_kind=None means "this is the first task" — there's
+        // nothing cached to evict.
+        assert_eq!(evict_decision(None, TaskKind::Generate), CacheEviction::None);
+        assert_eq!(evict_decision(None, TaskKind::Animate), CacheEviction::None);
+    }
+
+    #[test]
+    fn evict_decision_same_kind_no_eviction() {
+        // Same-kind continuation must NOT evict — that would
+        // reload the pipeline on every task, defeating the cache.
+        assert_eq!(
+            evict_decision(Some(TaskKind::Generate), TaskKind::Generate),
+            CacheEviction::None,
+        );
+        assert_eq!(
+            evict_decision(Some(TaskKind::Animate), TaskKind::Animate),
+            CacheEviction::None,
+        );
+    }
+
+    #[test]
+    fn evict_decision_generate_to_animate_drops_t2i() {
+        assert_eq!(
+            evict_decision(Some(TaskKind::Generate), TaskKind::Animate),
+            CacheEviction::DropT2i,
+        );
+    }
+
+    #[test]
+    fn evict_decision_animate_to_generate_drops_animate() {
+        assert_eq!(
+            evict_decision(Some(TaskKind::Animate), TaskKind::Generate),
+            CacheEviction::DropAnimate,
+        );
+    }
+
+    /// Walk a realistic task sequence and verify the evictions fire
+    /// at the right boundaries. This is the "behavioural" check —
+    /// not just (last, current) pair decisions but the cumulative
+    /// effect across a typical mixed-kind run.
+    #[test]
+    fn evict_decision_walks_mixed_kind_sequence() {
+        use TaskKind::*;
+        // Sequence: gen, gen, anim, gen, anim, anim
+        let sequence = [Generate, Generate, Animate, Generate, Animate, Animate];
+        let mut last: Option<TaskKind> = None;
+        let mut decisions: Vec<CacheEviction> = Vec::new();
+        for k in &sequence {
+            decisions.push(evict_decision(last, *k));
+            last = Some(*k);
+        }
+        // Expected: first task no-op; gen→gen no-op; gen→anim DropT2i;
+        // anim→gen DropAnimate; gen→anim DropT2i; anim→anim no-op.
+        assert_eq!(
+            decisions,
+            vec![
+                CacheEviction::None,
+                CacheEviction::None,
+                CacheEviction::DropT2i,
+                CacheEviction::DropAnimate,
+                CacheEviction::DropT2i,
+                CacheEviction::None,
+            ],
+        );
+    }
+
+    /// All-generate scenarios must NEVER evict — the t2i pipeline
+    /// stays loaded for the whole run, matching the v0.29 UX.
+    #[test]
+    fn evict_decision_all_generate_never_evicts() {
+        use TaskKind::*;
+        let sequence = [Generate, Generate, Generate, Generate];
+        let mut last: Option<TaskKind> = None;
+        for k in &sequence {
+            assert_eq!(evict_decision(last, *k), CacheEviction::None);
+            last = Some(*k);
+        }
+    }
+
+    /// All-animate scenarios must NEVER evict either.
+    #[test]
+    fn evict_decision_all_animate_never_evicts() {
+        use TaskKind::*;
+        let sequence = [Animate, Animate, Animate];
+        let mut last: Option<TaskKind> = None;
+        for k in &sequence {
+            assert_eq!(evict_decision(last, *k), CacheEviction::None);
+            last = Some(*k);
+        }
     }
 }

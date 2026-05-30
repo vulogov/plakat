@@ -104,11 +104,35 @@ impl std::str::FromStr for EmbeddingSpec {
 /// Resolved Textual Inversion ready to merge: trigger + the actual
 /// `(N, embed_dim)` tensor. `N` is the number of "vectors per
 /// token" — most TIs use 1, some use 2-8 for richer concepts.
+///
+/// v0.31 phase 0: SDXL dual-encoder TIs ship two tensors in the
+/// same file — a 768d `clip_l` and a 1280d `clip_g`. When the
+/// parser sees both, `vectors_g` is populated; otherwise it's
+/// `None` (SD 1.5 / SD 2.1 TIs, and CLIP-L-only SDXL TIs).
 #[derive(Debug, Clone)]
 pub struct ResolvedEmbedding {
     pub trigger: String,
+    /// CLIP-L vectors. Always present. 768d for SD 1.5 + SDXL
+    /// CLIP-L; 1024d for SD 2.1.
     pub vectors: Tensor,
+    /// CLIP-G vectors. Only present for SDXL dual-encoder TIs
+    /// (1280d). `None` for single-encoder TIs.
+    pub vectors_g: Option<Tensor>,
     pub scale: f32,
+}
+
+/// Which half of a dual-encoder TI a merge call operates on.
+/// SDXL CLIP-L and CLIP-G have independent tokenizers and
+/// `token_embedding.weight` matrices; each gets its own pass
+/// through the merger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingHalf {
+    /// CLIP-L weights — `emb.vectors`. Used for every TI (single
+    /// and dual). Single-encoder TIs only extend this half.
+    ClipL,
+    /// CLIP-G weights — `emb.vectors_g`. Used only on SDXL with
+    /// dual-encoder TIs. Skips TIs whose `vectors_g` is `None`.
+    ClipG,
 }
 
 impl ResolvedEmbedding {
@@ -118,9 +142,26 @@ impl ResolvedEmbedding {
         Ok(self.vectors.dim(0)?)
     }
 
-    /// Embedding dimension — must match the model's CLIP embed_dim.
+    /// CLIP-L embedding dimension. Always available.
     pub fn embed_dim(&self) -> Result<usize> {
         Ok(self.vectors.dim(1)?)
+    }
+
+    /// `true` when this TI carries a CLIP-G half (SDXL dual format).
+    pub fn has_clip_g(&self) -> bool {
+        self.vectors_g.is_some()
+    }
+
+    /// CLIP-G embedding dimension. Errors when `vectors_g` is `None`.
+    pub fn embed_dim_g(&self) -> Result<usize> {
+        let g = self
+            .vectors_g
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(
+                "embedding `{}` has no CLIP-G half — single-encoder TI",
+                self.trigger
+            ))?;
+        Ok(g.dim(1)?)
     }
 }
 
@@ -145,18 +186,62 @@ pub fn parse_safetensors(
         );
     }
 
-    // Reject SDXL dual-encoder format for now — needs a CLIP-G
-    // counterpart merge too, which the v0.16 phase 9 scope skips.
-    if tensors.contains_key("clip_g") {
+    // v0.31 phase 0: SDXL dual-encoder format. Files carry both
+    // `clip_l` (768d, SDXL CLIP-L) and `clip_g` (1280d, SDXL
+    // CLIP-G) top-level keys. Both halves apply during SDXL load.
+    let has_clip_l = tensors.contains_key("clip_l");
+    let has_clip_g = tensors.contains_key("clip_g");
+    if has_clip_g && !has_clip_l {
         bail!(
-            "embedding {} has a `clip_g` tensor — SDXL dual-encoder TIs aren't \
-             wired yet (v0.16 phase 9 is SD 1.5 / SD 2.1 only). Use the CLIP-L \
-             half via a LoRA-format SDXL embedding, or check if a LoRA \
-             replacement exists.",
+            "embedding {} has a `clip_g` tensor without a `clip_l` companion. \
+             SDXL dual-encoder TIs ship both halves in the same file. If \
+             you have a CLIP-G-only TI, rename the tensor under `clip_l` \
+             after confirming the embed_dim matches your SDXL CLIP-L (768).",
             path.display()
         );
     }
+    if has_clip_l && has_clip_g {
+        let vectors = tensors["clip_l"].clone();
+        let vectors_g = tensors["clip_g"].clone();
+        if vectors.rank() != 2 {
+            bail!(
+                "embedding {} CLIP-L tensor has rank {} — expected rank 2",
+                path.display(),
+                vectors.rank()
+            );
+        }
+        if vectors_g.rank() != 2 {
+            bail!(
+                "embedding {} CLIP-G tensor has rank {} — expected rank 2",
+                path.display(),
+                vectors_g.rank()
+            );
+        }
+        let n_l = vectors.dim(0)?;
+        let n_g = vectors_g.dim(0)?;
+        if n_l != n_g {
+            bail!(
+                "embedding {} dual-encoder TI mismatch: clip_l has {} vectors \
+                 but clip_g has {}. Both halves must agree on token count \
+                 (same trigger maps to the same N IDs in both encoders).",
+                path.display(),
+                n_l,
+                n_g
+            );
+        }
+        let trigger = spec
+            .trigger
+            .clone()
+            .unwrap_or_else(|| derive_trigger_from_path(path));
+        return Ok(ResolvedEmbedding {
+            trigger,
+            vectors,
+            vectors_g: Some(vectors_g),
+            scale: spec.scale,
+        });
+    }
 
+    // Single-encoder TI (SD 1.5, SD 2.1, or CLIP-L-only SDXL).
     // Pick the vector tensor. Prefer well-known A1111 keys; fall
     // back to the only/single 2D tensor in the file.
     let preferred_keys = ["emb_params", "string_to_param", "clip_l", "*"];
@@ -208,6 +293,7 @@ pub fn parse_safetensors(
     Ok(ResolvedEmbedding {
         trigger,
         vectors,
+        vectors_g: None,
         scale: spec.scale,
     })
 }
@@ -238,6 +324,7 @@ pub fn merge_embeddings_into_te_weights(
     embeddings: &[ResolvedEmbedding],
     expected_embed_dim: usize,
     device: &Device,
+    half: EmbeddingHalf,
 ) -> Result<MergeReport> {
     let mut weights: HashMap<String, Tensor> = candle_core::safetensors::load(base_path, device)
         .with_context(|| format!("loading text encoder weights {}", base_path.display()))?;
@@ -255,7 +342,8 @@ pub fn merge_embeddings_into_te_weights(
     if base_dim != expected_embed_dim {
         bail!(
             "TI merge: base token embedding has dim {} but model expects {} \
-             (mismatched SD variant — SD 1.5 = 768, SD 2.1 = 1024)",
+             (mismatched SD variant — SD 1.5 / SDXL CLIP-L = 768, SD 2.1 = 1024, \
+             SDXL CLIP-G = 1280)",
             base_dim,
             expected_embed_dim
         );
@@ -266,21 +354,31 @@ pub fn merge_embeddings_into_te_weights(
     let mut running_offset = 0usize;
 
     for emb in embeddings {
-        let emb_dim = emb.embed_dim()?;
+        // v0.31 phase 0: pick the half this pass operates on. CLIP-G
+        // skips embeddings without a clip_g tensor (single-encoder
+        // TIs only extend CLIP-L).
+        let (vectors_src, emb_dim) = match half {
+            EmbeddingHalf::ClipL => (Some(&emb.vectors), emb.embed_dim()?),
+            EmbeddingHalf::ClipG => match emb.vectors_g.as_ref() {
+                None => continue, // single-encoder TI — skip CLIP-G pass
+                Some(v) => (Some(v), emb.embed_dim_g()?),
+            },
+        };
+        let Some(vec_src) = vectors_src else { continue };
+
         if emb_dim != expected_embed_dim {
             bail!(
-                "embedding `{}` has dim {} but model expects {} — mismatched \
-                 SD variant (use an SD 1.5 TI on --model sd15, SD 2.1 on sd21, \
-                 etc.)",
+                "embedding `{}` ({:?} half) has dim {} but model expects {} — \
+                 mismatched SD variant",
                 emb.trigger,
+                half,
                 emb_dim,
                 expected_embed_dim
             );
         }
         // Coerce the TI rows to the base token_embedding dtype +
         // device so the cat works cleanly.
-        let rows = emb
-            .vectors
+        let rows = vec_src
             .to_dtype(base_token_emb.dtype())?
             .to_device(base_token_emb.device())?;
         // Apply user-supplied scale (default 1.0).
@@ -472,26 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_safetensors_rejects_sdxl_dual_format() {
-        // Build a minimal safetensors with a `clip_g` key →
-        // should bail with the SDXL-not-supported message.
-        let tmp = tempfile::Builder::new()
-            .suffix(".safetensors")
-            .tempfile()
-            .unwrap();
-        let clip_l = Tensor::zeros((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap();
-        let clip_g = Tensor::zeros((1, 1280), candle_core::DType::F32, &Device::Cpu).unwrap();
-        let mut map = HashMap::new();
-        map.insert("clip_l".to_string(), clip_l);
-        map.insert("clip_g".to_string(), clip_g);
-        candle_core::safetensors::save(&map, tmp.path()).unwrap();
-        let spec = EmbeddingSpec::from_str("ignored").unwrap();
-        let err = parse_safetensors(tmp.path(), &spec, &Device::Cpu).unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("SDXL"), "got {msg}");
-    }
-
-    #[test]
     fn parse_safetensors_picks_emb_params_key() {
         let tmp = tempfile::Builder::new()
             .suffix(".safetensors")
@@ -545,6 +623,170 @@ mod tests {
         assert!(msg.contains("candidate 2D tensors"), "got {msg}");
     }
 
+    // -------------------------------------------------------------
+    // v0.31 phase 0: SDXL dual-encoder TI parser.
+    // -------------------------------------------------------------
+
+    fn save_dual_ti(path: &Path, n: usize) {
+        let mut map = HashMap::new();
+        map.insert(
+            "clip_l".to_string(),
+            Tensor::ones((n, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        map.insert(
+            "clip_g".to_string(),
+            Tensor::ones((n, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        candle_core::safetensors::save(&map, path).unwrap();
+    }
+
+    #[test]
+    fn parse_sdxl_dual_ti_populates_both_halves() {
+        let tmp = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        save_dual_ti(tmp.path(), 2);
+        let spec: EmbeddingSpec = "ignored:dual-style".parse().unwrap();
+        let r = parse_safetensors(tmp.path(), &spec, &Device::Cpu).unwrap();
+        assert_eq!(r.trigger, "dual-style");
+        assert!(r.has_clip_g(), "dual-format TI must populate vectors_g");
+        assert_eq!(r.embed_dim().unwrap(), 768);
+        assert_eq!(r.embed_dim_g().unwrap(), 1280);
+        assert_eq!(r.num_tokens().unwrap(), 2);
+    }
+
+    #[test]
+    fn parse_clip_g_only_bails_with_pointer() {
+        let tmp = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let mut map = HashMap::new();
+        map.insert(
+            "clip_g".to_string(),
+            Tensor::ones((1, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        candle_core::safetensors::save(&map, tmp.path()).unwrap();
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(tmp.path(), &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("clip_l` companion"), "got {msg}");
+    }
+
+    #[test]
+    fn parse_dual_ti_token_count_mismatch_bails() {
+        // clip_l with 2 vectors, clip_g with 3 — bail (both halves
+        // must agree on N so the trigger maps to the same number
+        // of new IDs in both encoders).
+        let tmp = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let mut map = HashMap::new();
+        map.insert(
+            "clip_l".to_string(),
+            Tensor::ones((2, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        map.insert(
+            "clip_g".to_string(),
+            Tensor::ones((3, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        candle_core::safetensors::save(&map, tmp.path()).unwrap();
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(tmp.path(), &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("dual-encoder TI mismatch"), "got {msg}");
+    }
+
+    #[test]
+    fn merge_clip_g_half_skips_single_encoder_tis() {
+        let tmp_base = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let tmp_out = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let mut base = HashMap::new();
+        base.insert(
+            "text_model.embeddings.token_embedding.weight".to_string(),
+            Tensor::zeros((10, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        candle_core::safetensors::save(&base, tmp_base.path()).unwrap();
+
+        let single = ResolvedEmbedding {
+            trigger: "single".into(),
+            vectors: Tensor::ones((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: None,
+            scale: 1.0,
+        };
+        let dual = ResolvedEmbedding {
+            trigger: "dual".into(),
+            vectors: Tensor::ones((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: Some(
+                Tensor::ones((1, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            ),
+            scale: 1.0,
+        };
+
+        let report = merge_embeddings_into_te_weights(
+            tmp_base.path(),
+            tmp_out.path(),
+            &[single, dual],
+            1280,
+            &Device::Cpu,
+            EmbeddingHalf::ClipG,
+        )
+        .unwrap();
+
+        // CLIP-G pass: only the dual TI extends. Original 10 + 1 = 11.
+        assert_eq!(report.new_vocab_size, 11);
+        assert_eq!(report.registered.len(), 1);
+        assert_eq!(report.registered[0].trigger, "dual");
+        assert_eq!(report.registered[0].base_token_id, 10);
+    }
+
+    #[test]
+    fn merge_clip_g_bails_on_dim_mismatch() {
+        // CLIP-G expects 1280; the dual TI's clip_g half is 768 — bail.
+        let tmp_base = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let tmp_out = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let mut base = HashMap::new();
+        base.insert(
+            "text_model.embeddings.token_embedding.weight".to_string(),
+            Tensor::zeros((10, 1280), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        candle_core::safetensors::save(&base, tmp_base.path()).unwrap();
+
+        let bad_dual = ResolvedEmbedding {
+            trigger: "bad".into(),
+            vectors: Tensor::ones((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: Some(
+                Tensor::ones((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            ),
+            scale: 1.0,
+        };
+        let err = merge_embeddings_into_te_weights(
+            tmp_base.path(),
+            tmp_out.path(),
+            &[bad_dual],
+            1280,
+            &Device::Cpu,
+            EmbeddingHalf::ClipG,
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("dim 768"), "got {msg}");
+    }
+
     #[test]
     fn merge_extends_vocab_and_records_registrations() {
         let tmp_base = tempfile::Builder::new()
@@ -570,11 +812,13 @@ mod tests {
         let ti_a = ResolvedEmbedding {
             trigger: "style-a".to_string(),
             vectors: Tensor::ones((2, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: None,
             scale: 1.0,
         };
         let ti_b = ResolvedEmbedding {
             trigger: "style-b".to_string(),
             vectors: Tensor::ones((1, 768), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: None,
             scale: 0.5,
         };
 
@@ -584,6 +828,7 @@ mod tests {
             &[ti_a, ti_b],
             768,
             &Device::Cpu,
+            EmbeddingHalf::ClipL,
         )
         .unwrap();
 
@@ -625,6 +870,7 @@ mod tests {
         let mismatched = ResolvedEmbedding {
             trigger: "x".into(),
             vectors: Tensor::ones((1, 1024), candle_core::DType::F32, &Device::Cpu).unwrap(),
+            vectors_g: None,
             scale: 1.0,
         };
         let err = merge_embeddings_into_te_weights(
@@ -633,6 +879,7 @@ mod tests {
             &[mismatched],
             768,
             &Device::Cpu,
+            EmbeddingHalf::ClipL,
         )
         .unwrap_err();
         let msg = format!("{err}");

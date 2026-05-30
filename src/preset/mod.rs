@@ -562,7 +562,7 @@ mod tests {
         let cat = Catalog::load_with_user_dir(Kind::Look, None)
             .expect("load bundled looks");
         assert_eq!(cat.schema_version, 1);
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
         let names = cat.names();
         for must_have in [
             "ink-wash",
@@ -573,9 +573,46 @@ mod tests {
             "chalk-pastel",
             "linocut",
             "gouache",
+            "pony",
         ] {
             assert!(names.contains(&must_have), "missing {must_have}");
         }
+    }
+
+    /// v0.31 phase 1 swap: Pony Diffusion preset shape pins.
+    /// `--look pony` MUST carry the score-based prompt prefix (the
+    /// Pony v6 convention is `score_9, score_8_up, ...` as the
+    /// leading quality tag) and SDXL-only base_compat (Pony is an
+    /// SDXL fine-tune; score tags are noise on SD 1.5).
+    #[test]
+    fn pony_look_carries_score_prefix_and_sdxl_compat() {
+        let cat = Catalog::load_with_user_dir(Kind::Look, None)
+            .expect("load bundled looks");
+        let pony = cat
+            .find("pony")
+            .expect("pony look must ship in v0.31 bundled catalog");
+        let prefix = pony
+            .prompt_prefix
+            .as_deref()
+            .expect("pony look must carry a score prefix");
+        assert!(
+            prefix.contains("score_9"),
+            "pony prefix missing score_9 quality tag: {prefix:?}"
+        );
+        assert!(
+            prefix.contains("score_8_up"),
+            "pony prefix missing score_8_up: {prefix:?}"
+        );
+        assert_eq!(
+            pony.base_compat.as_deref(),
+            Some(&["sdxl".to_string()][..]),
+            "pony look must be SDXL-only — score tags are noise on SD 1.5",
+        );
+        // SDXL compat: the look should refuse non-SDXL family for
+        // discovery filtering.
+        assert!(pony.is_compatible_with("sdxl"));
+        assert!(!pony.is_compatible_with("sd15"));
+        assert!(!pony.is_compatible_with("flux"));
     }
 
     #[test]
@@ -867,7 +904,7 @@ mod tests {
 
         let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
         // 8 bundled + 1 user.
-        assert_eq!(cat.entries.len(), 9);
+        assert_eq!(cat.entries.len(), 10);
         let my = cat.find("my-style").expect("user look present");
         assert_eq!(my.prompt_prefix.as_deref(), Some("my-style painting, custom"));
     }
@@ -878,9 +915,9 @@ mod tests {
         write_user_preset(dir.path(), "watercolor", "STRICTER WATERCOLOR PREFIX");
 
         let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
-        // Still 8 entries — the user file shadows the bundled
+        // Still 9 entries — the user file shadows the bundled
         // watercolor entry rather than adding a duplicate.
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
         let wc = cat.find("watercolor").unwrap();
         assert_eq!(wc.prompt_prefix.as_deref(), Some("STRICTER WATERCOLOR PREFIX"));
     }
@@ -891,7 +928,7 @@ mod tests {
         // where ~/.config/plakat/looks/ has files (the pinned-count
         // tests rely on this).
         let cat = Catalog::load_with_user_dir(Kind::Look, None).unwrap();
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
     }
 
     #[test]
@@ -901,7 +938,7 @@ mod tests {
             Some(std::path::Path::new("/does-not-exist-xyz123")),
         )
         .unwrap();
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
     }
 
     #[test]
@@ -910,7 +947,7 @@ mod tests {
         std::fs::write(dir.path().join("broken.json"), "{ not valid json").unwrap();
         // Bundled catalog still loads; corrupt file is logged + skipped.
         let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
         assert!(cat.find("broken").is_none());
     }
 
@@ -923,7 +960,7 @@ mod tests {
         std::fs::write(dir.path().join("evil name.json"), "{}").unwrap();
         std::fs::write(dir.path().join("..hidden.json"), "{}").unwrap();
         let cat = Catalog::load_with_user_dir(Kind::Look, Some(dir.path())).unwrap();
-        assert_eq!(cat.entries.len(), 8);
+        assert_eq!(cat.entries.len(), 9);
     }
 
     #[test]

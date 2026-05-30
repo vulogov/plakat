@@ -245,6 +245,49 @@ fn client() -> Result<reqwest::Client> {
 ///   final page's response. Each cursor walk is one HTTP round-trip
 ///   — fine for typical `--page 2`/`--page 3` browsing; brittle for
 ///   deep paging where it'd be cheaper to refine the query.
+/// v0.31 phase 1 (swap): list a Civitai creator's full library by
+/// `username`, walking the API's cursor chain until no more pages
+/// remain. Caller passes an optional `asset_type` filter (`lora`,
+/// `checkpoint`, etc.) and a per-page batch size.
+///
+/// Returns every matched model across all pages flattened into a
+/// single `Vec`. Civitai's per-page limit caps at 100; pages of 100
+/// minimise API round-trips during a sync. Honours `CIVITAI_API_KEY`
+/// for higher rate limits (same Authorization header the other
+/// helpers use).
+pub async fn list_by_username(
+    username: &str,
+    asset_type: Option<AssetType>,
+    page_size: u32,
+) -> Result<Vec<Model>> {
+    let page_size = page_size.clamp(1, 100);
+    let client = client()?;
+    let mut all: Vec<Model> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut url = reqwest::Url::parse(&format!("{BASE_URL}/models"))?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("username", username);
+            q.append_pair("limit", &page_size.to_string());
+            if let Some(c) = cursor.as_deref() {
+                q.append_pair("cursor", c);
+            }
+            if let Some(t) = asset_type {
+                q.append_pair("types", t.as_query());
+            }
+        }
+        let resp = fetch_search_page(&client, &url).await?;
+        let next = resp.metadata.next_cursor.clone();
+        all.extend(resp.items);
+        match next {
+            Some(c) if !c.is_empty() => cursor = Some(c),
+            _ => break,
+        }
+    }
+    Ok(all)
+}
+
 pub async fn search(
     query: &str,
     asset_type: Option<AssetType>,
