@@ -726,6 +726,20 @@ Auto1111 / NovelAI / ComfyUI grammar.
 * **Inline alternation**: `{red|blue|green}` picks one of the three
  at random. Nestable: `{a {b|c}|d}` → `a b`, `a c`, or `d`. Works
  without `--wildcard-dir`.
+* **Weighted alternation (v0.31)**: any option may be prefixed with
+ `WEIGHT::` to bias the random pick. Weights are relative —
+ normalized over the group:
+   * `{2::common|rare}` — "common" is **twice as likely** as "rare"
+     (omitted weight defaults to `1.0`).
+   * `{0.7::a|0.3::b}` — explicit probabilities.
+   * `{4::landscape|1::portrait|0::wide}` — `0::` excludes
+     "wide" entirely.
+
+  Malformed weight prefixes (negative, NaN, non-numeric) fall back
+  to treating the option as literal text — `{foo::bar|baz}` is two
+  options, `foo::bar` and `baz`, each at weight 1.0. Nestable with
+  unweighted groups: `{9::{a|b}|1::c}` picks an inner-uniform
+  `a`/`b` 90% of the time, `c` 10%.
 * **File wildcards**: `__name__` reads
  `<wildcard-dir>/<name>.txt` and picks a uniformly-random
  non-empty, non-comment (`#`) line. Names accept letters, digits,
@@ -734,6 +748,10 @@ Auto1111 / NovelAI / ComfyUI grammar.
 
 ```bash
 plakat generate "a {red|blue|green} {fox|cat|owl}" \
+ --model sd15 --count 4 --seed 42
+
+# v0.31 weighted — landscape twice as likely as portrait
+plakat generate "a {2::landscape|portrait} of a runner" \
  --model sd15 --count 4 --seed 42
 
 mkdir -p wildcards
