@@ -182,6 +182,52 @@ impl FromStr for LoraSpec {
     }
 }
 
+/// v0.30 phase 1: LCM-LoRA detection. Matches the substring `"lcm"`
+/// (case-insensitive) anywhere in the LoRA's source identifier —
+/// local path, HF repo (`latent-consistency/lcm-lora-sdv1-5`),
+/// HF file (`lcm-lora-sdxl.safetensors`), or Civitai filename. The
+/// substring choice is intentionally conservative: every community
+/// LCM-LoRA we've seen on HF or Civitai includes `lcm` in either
+/// repo or file name; misfires on incidental matches (e.g. a LoRA
+/// named after a person whose handle contains "lcm") are acceptable
+/// because the trade-off (4 steps + CFG=1.5) is still reasonable.
+///
+/// Used by `cli/generate.rs` to auto-enable the LCM scheduler +
+/// 4-step + CFG=1.5 override when the user's LoRA stack includes
+/// an LCM-LoRA. Mirrors the v0.28 `--lcm` flag handling in
+/// `cli/animate.rs`.
+pub fn is_lcm_lora_spec(spec: &LoraSpec) -> bool {
+    match &spec.source {
+        LoraSource::Local(p) => {
+            p.to_string_lossy().to_lowercase().contains("lcm")
+        }
+        LoraSource::Hub { repo, file, .. } => {
+            repo.to_lowercase().contains("lcm")
+                || file
+                    .as_deref()
+                    .map(|f| f.to_lowercase().contains("lcm"))
+                    .unwrap_or(false)
+        }
+        LoraSource::Civitai { file, .. } => {
+            // Civitai numeric IDs carry no name info, but if the user
+            // explicitly named a file the heuristic can still match.
+            file.as_deref()
+                .map(|f| f.to_lowercase().contains("lcm"))
+                .unwrap_or(false)
+        }
+    }
+}
+
+/// Same heuristic applied to a resolved LoRA (after download). Used
+/// by code paths that only see `ResolvedLora` (e.g. preset-discovery
+/// pipelines, animation stacks). For specs that came from Civitai
+/// IDs, this is the only chance to detect — the resolved `path`
+/// includes the downloaded filename.
+pub fn is_lcm_lora_resolved(resolved: &ResolvedLora) -> bool {
+    resolved.path.to_string_lossy().to_lowercase().contains("lcm")
+        || resolved.display.to_lowercase().contains("lcm")
+}
+
 impl LoraSpec {
     /// Construct a hub-sourced LoRA spec with a pinned revision. Used by
     /// the style runtime when forwarding catalog-resolved LoRAs whose
@@ -1262,5 +1308,93 @@ mod tests {
         assert_eq!(CivitaiIdKind::Model(1), CivitaiIdKind::Model(1));
         assert_ne!(CivitaiIdKind::Model(1), CivitaiIdKind::Model(2));
         assert_ne!(CivitaiIdKind::Model(1), CivitaiIdKind::Version(1));
+    }
+
+    // ------------------------------------------------------------------
+    // v0.30 phase 1: LCM-LoRA detection heuristic.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn lcm_detect_matches_canonical_hf_repo() {
+        let s = parse("latent-consistency/lcm-lora-sdv1-5");
+        assert!(is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_matches_hf_repo_case_insensitive() {
+        let s = parse("Tencent-ARC/LCM-Whatever");
+        assert!(is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_matches_explicit_hf_file() {
+        let s = parse("anyorg/some-bundle#weights/LcmAdapter.safetensors");
+        assert!(is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_matches_local_path() {
+        let p = std::path::PathBuf::from("./my-lcm-adapter.safetensors");
+        let spec = LoraSpec {
+            source: LoraSource::Local(p),
+            scale: 1.0,
+        };
+        assert!(is_lcm_lora_spec(&spec));
+    }
+
+    #[test]
+    fn lcm_detect_no_false_positive_on_unrelated_repo() {
+        let s = parse("stabilityai/sd-vae-ft-mse");
+        assert!(!is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_no_false_positive_on_anime_lora() {
+        let s = parse("user/anime-style-lora-v3");
+        assert!(!is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_civitai_without_file_misses_silently() {
+        // Civitai numeric IDs carry no name info — detection bails
+        // false. User must pass `--lcm` to enable LCM mode for these.
+        let s = LoraSpec::from_str("civitai:12345").unwrap();
+        assert!(!is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_civitai_with_lcm_filename_matches() {
+        let s = LoraSpec::from_str("civitai:12345#lcm-v2.safetensors").unwrap();
+        assert!(is_lcm_lora_spec(&s));
+    }
+
+    #[test]
+    fn lcm_detect_resolved_lora_via_path() {
+        let r = ResolvedLora {
+            path: std::path::PathBuf::from("/cache/lcm-lora-sdxl.safetensors"),
+            scale: 1.0,
+            display: "some-display".to_string(),
+        };
+        assert!(is_lcm_lora_resolved(&r));
+    }
+
+    #[test]
+    fn lcm_detect_resolved_lora_via_display() {
+        let r = ResolvedLora {
+            path: std::path::PathBuf::from("/cache/abcdef.safetensors"),
+            scale: 1.0,
+            display: "latent-consistency/lcm-lora-sdv1-5".to_string(),
+        };
+        assert!(is_lcm_lora_resolved(&r));
+    }
+
+    #[test]
+    fn lcm_detect_resolved_no_false_positive() {
+        let r = ResolvedLora {
+            path: std::path::PathBuf::from("/cache/anime-v3.safetensors"),
+            scale: 1.0,
+            display: "user/anime-v3".to_string(),
+        };
+        assert!(!is_lcm_lora_resolved(&r));
     }
 }

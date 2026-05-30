@@ -120,6 +120,7 @@ pub async fn run_with_pipeline(
         &req.device,
         cn_dtype,
         Some(&req.input),
+        None, // img2img is single-image — no per-frame video CN
     )
     .await?;
 

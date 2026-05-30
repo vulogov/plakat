@@ -512,7 +512,7 @@ fn encode_branch(core: &SdCore, text: &str, dtype: DType) -> Result<Tensor> {
 /// / `--to` prompts still benefit from the full SDXL micro-
 /// conditioning chain at frame time.
 fn encode_branch_xl(core: &SdCore, text: &str, dtype: DType) -> Result<(Tensor, Tensor)> {
-    use candle_transformers::models::stable_diffusion::clip::ClipTextTransformer;
+    use crate::pipelines::vendored_clip::ClipTextTransformer;
 
     let tok_g = core
         .tokenizer_g
@@ -1341,6 +1341,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
             &device,
             dtype,
             None,
+            Some(args.frames as usize), // v0.30 phase 2: per-frame video CN
         )
         .await
         .context("loading ControlNet stack for --animatediff")?

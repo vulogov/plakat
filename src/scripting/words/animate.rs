@@ -229,6 +229,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
         tokio::task::block_in_place(|| {
             rt.block_on(crate::pipelines::controlnet::load_control_stack(
                 &cn_specs, &alias, width, height, &device, dtype, None,
+                Some(frames),
             ))
         })?
     };

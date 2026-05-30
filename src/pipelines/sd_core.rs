@@ -41,7 +41,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip,
+    StableDiffusionConfig,
     vae::AutoEncoderKL,
 };
 use tokenizers::Tokenizer;
@@ -162,7 +162,7 @@ pub struct SdCore {
     pub tokenizer_l: Tokenizer,
     /// SDXL only — the CLIP-G tokenizer. `None` for SD 1.5.
     pub tokenizer_g: Option<Tokenizer>,
-    pub text_encoder_l: sdclip::ClipTextTransformer,
+    pub text_encoder_l: crate::pipelines::vendored_clip::ClipTextTransformer,
     /// SDXL only — CLIP-G (text_encoder_2) wrapped with the v0.11
     /// `text_projection` pooling head needed by the UNet's
     /// `add_embedding`. `None` for SD 1.5 / SD 2.1.
@@ -227,30 +227,19 @@ impl SdCore {
         let variant = SdVariant::detect(&base_repo);
         let is_inpaint = detect_inpaint(&base_repo);
         let cfg = variant.config(512, 512);
-        // v0.16 phase 9: Textual Inversion runtime injection is
-        // gated at load time. The parser + merger
-        // (`pipelines::embedding`) are ready, but candle 0.8's
-        // `clip::Config.vocab_size` is private — we can't bump it
-        // to accept the extended `token_embedding.weight` matrix
-        // without forking the text encoder. Tracking item: revisit
-        // when candle exposes a public `Config` builder, or
-        // alongside a vendored CLIP path (likely combined with
-        // phase 11 SD UNet vendor work).
+        // v0.30 phase 0: Textual Inversion runtime injection.
+        // The parser + merger from v0.16 phase 9 produce an extended
+        // token_embedding matrix (tempfile) + a MergeReport with the
+        // new vocab size and per-embedding token registration. The
+        // load path below builds CLIP-L via the vendored CLIP module
+        // with a `Config::with_vocab(new_vocab_size)` override, then
+        // adds the trigger tokens to the tokenizer so user prompts
+        // resolve them to the new IDs.
         //
-        // Until then: bail loud with the `plakat embedding info`
-        // pointer so users can still inspect their TI files via
-        // the parser path that IS shipped.
-        if !req.embeddings.is_empty() {
-            bail!(
-                "Textual Inversion runtime injection isn't wired yet — candle 0.8's \
-                 clip::Config.vocab_size is private, blocking the in-place vocab \
-                 extension. The parser + merger ship (see `plakat embedding info \
-                 PATH` to inspect your TI file). Runtime wiring lands alongside a \
-                 vendored CLIP path in a follow-up phase. For now: drop --embedding \
-                 or convert the TI to a LoRA via the kohya-ss conversion script \
-                 and use --lora."
-            );
-        }
+        // SDXL CLIP-G is not yet TI-extended — the parser still
+        // rejects SDXL dual-encoder TIs. Full SDXL dual TI lands
+        // alongside a parser extension (stretch goal this phase,
+        // otherwise phase 1 of v0.31).
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {
@@ -317,7 +306,7 @@ impl SdCore {
 
         // -------- build models --------
         let build = progress::spinner("Loading SD core");
-        let tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
+        let mut tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
             .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
         let tokenizer_g = match tokenizer_g_path.as_ref() {
             Some(p) => Some(
@@ -421,21 +410,98 @@ impl SdCore {
             lora_tmps.push(tmp);
             p
         };
-        let text_encoder_l = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
-            &effective_te_l_path,
-            &req.device,
-            dtype,
-        )?;
+        // v0.30 phase 0: pick the matching vendored CLIP-L config.
+        // Numerically identical to candle's `cfg.clip` for the variant,
+        // but with a public `vocab_size` we can override for TI.
+        let base_clip_l_cfg = match variant {
+            SdVariant::Sd15 => crate::pipelines::vendored_clip::Config::v1_5(),
+            SdVariant::Sd21 => crate::pipelines::vendored_clip::Config::v2_1(),
+            SdVariant::Sdxl => crate::pipelines::vendored_clip::Config::sdxl(),
+        };
+
+        // If the caller passed embeddings, merge their token vectors
+        // into the (already LoRA-merged) CLIP-L safetensors via a
+        // tempfile, then build the encoder with an extended-vocab
+        // Config. Otherwise the CLIP-L path is exactly the v0.29
+        // build (numerically identical via the vendored module).
+        let (text_encoder_l, ti_registrations) = if req.embeddings.is_empty() {
+            let enc = crate::pipelines::vendored_clip::build_clip_transformer(
+                &base_clip_l_cfg,
+                &effective_te_l_path,
+                &req.device,
+                dtype,
+            )?;
+            (enc, Vec::new())
+        } else {
+            let spin = progress::spinner(&format!(
+                "Merging {} Textual Inversion embedding(s) into CLIP-L",
+                req.embeddings.len()
+            ));
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-sd-te-l-ti-")
+                .suffix(".safetensors")
+                .tempfile()?;
+            let report = crate::pipelines::embedding::merge_embeddings_into_te_weights(
+                &effective_te_l_path,
+                tmp.path(),
+                &req.embeddings,
+                base_clip_l_cfg.embed_dim,
+                &req.device,
+            )?;
+            spin.finish_with_message(format!(
+                "✓ TI extended CLIP-L vocab to {} (added {} token(s))",
+                report.new_vocab_size,
+                report
+                    .registered
+                    .iter()
+                    .map(|r| r.num_tokens)
+                    .sum::<usize>()
+            ));
+            let extended_cfg = base_clip_l_cfg.with_vocab(report.new_vocab_size);
+            let extended_path = tmp.path().to_path_buf();
+            // Keep the tempfile alive past the load (mmap stays valid
+            // for the lifetime of the SdCore).
+            lora_tmps.push(tmp);
+            let enc = crate::pipelines::vendored_clip::build_clip_transformer(
+                &extended_cfg,
+                &extended_path,
+                &req.device,
+                dtype,
+            )?;
+            (enc, report.registered)
+        };
+
+        // v0.30 phase 0: mutate the CLIP-L tokenizer so user prompts
+        // referencing a TI trigger word resolve to the new vocab IDs
+        // we just appended. Each registered embedding contributes
+        // `num_tokens` IDs (the trigger string itself + `<trigger>_1`,
+        // `<trigger>_2`, ... for multi-vector TIs).
+        if !ti_registrations.is_empty() {
+            let mut added: Vec<tokenizers::AddedToken> = Vec::new();
+            for reg in &ti_registrations {
+                for tok_str in reg.token_strings() {
+                    added.push(tokenizers::AddedToken::from(tok_str, false));
+                }
+            }
+            let n = tokenizer_l.add_tokens(&added);
+            tracing::info!(
+                target: "plakat",
+                "TI registered {} new tokenizer entries ({} embedding(s))",
+                n,
+                ti_registrations.len()
+            );
+        }
 
         // SDXL only: CLIP-G text encoder (with optional LoRA merge).
         let text_encoder_g = match variant {
             SdVariant::Sd15 | SdVariant::Sd21 => None,
             SdVariant::Sdxl => {
-                let cfg_g = cfg
-                    .clip2
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("SDXL config is missing clip2"))?;
+                // v0.30 phase 0: vendored CLIP Config for SDXL CLIP-G.
+                // Numerically identical to candle's `clip2`; the only
+                // difference is the vendored type's public `vocab_size`
+                // (needed by future SDXL TI support, no-op here).
+                let _ = cfg.clip2.as_ref(); // keep the StableDiffusionConfig
+                let cfg_g = crate::pipelines::vendored_clip::Config::sdxl2();
                 let p = text_enc_g_path
                     .as_ref()
                     .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
@@ -467,8 +533,7 @@ impl SdCore {
                 // v0.11 phase 8b: load via the SdxlClipGTextTransformer
                 // wrapper so the `text_projection` Linear is also
                 // pulled out of the safetensors. embed_dim = 1280 is
-                // the stock SDXL CLIP-G width (candle's Config::embed_dim
-                // is private so we pass it explicitly).
+                // the stock SDXL CLIP-G width.
                 let vs_g = unsafe {
                     VarBuilder::from_mmaped_safetensors(
                         &[effective_te_g_path.as_path()],
@@ -476,7 +541,7 @@ impl SdCore {
                         &req.device,
                     )?
                 };
-                Some(SdxlClipGTextTransformer::new(vs_g, cfg_g, 1280)?)
+                Some(SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?)
             }
         };
 

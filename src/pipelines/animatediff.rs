@@ -267,6 +267,7 @@ impl AnimateDiffPipeline {
             guidance,
             scheduler_kind,
             controls,
+            0, // single-window — no per-frame video CN offset
         )?;
         self.decode_latents(&latents, frames)
     }
@@ -275,6 +276,11 @@ impl AnimateDiffPipeline {
     /// frame latents `(F, 4, H/8, W/8)`. Encapsulates the scheduler
     /// loop so [`Self::generate`] (single window) and
     /// [`Self::generate_long`] (sliding-window stitch) can share it.
+    ///
+    /// `frame_offset` (v0.30 phase 2) is the index of this window's
+    /// first frame within the full animate run. Used only for slicing
+    /// per-frame video ControlNet conditioning — `0` for the single-
+    /// window path, the window start for long-form.
     #[allow(clippy::too_many_arguments)]
     pub fn denoise_window(
         &self,
@@ -288,6 +294,7 @@ impl AnimateDiffPipeline {
         guidance: f64,
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
+        frame_offset: usize,
     ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -343,19 +350,37 @@ impl AnimateDiffPipeline {
         // ---- ControlNet conditioning pre-tile ----
         // Build per-conditioner (batch, 3, H, W) Tensors matching the
         // motion UNet's per-step input batch (2F with CFG, F otherwise).
-        // Same hint replicated across every frame for each conditioner —
-        // v0.27 phase 3 spec. v0.28 phase 0 extends to the full
-        // ControlNet stack: residuals from every conditioner sum
-        // per step inside the denoise loop.
+        //
+        // Two source modes:
+        //   * Static (v0.27): the same hint replicated across every
+        //     frame — `cr.conditioning.repeat((frames, 1, 1, 1))`.
+        //   * Per-frame (v0.30 phase 2): a stack of N=`frames`
+        //     per-frame tensors built from a `--control-spec ...video=...`.
+        //     Concatenate along dim 0 to (F, 3, H, W).
+        // Either way, CFG doubling stacks the resulting batch with
+        // itself (uncond + cond) to reach (2F, 3, H, W).
         let cn_cond_batches: Vec<Tensor> = controls
             .iter()
             .map(|cr| {
-                let base = if do_cfg {
-                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                let per_frame = if let Some(stack) = cr.per_frame.as_ref() {
+                    let end = frame_offset + frames;
+                    anyhow::ensure!(
+                        end <= stack.len(),
+                        "control-video frame slice [{}..{}) exceeds stack size {}",
+                        frame_offset,
+                        end,
+                        stack.len()
+                    );
+                    let refs: Vec<&Tensor> = stack[frame_offset..end].iter().collect();
+                    Tensor::cat(&refs, 0)?
                 } else {
-                    cr.conditioning.clone()
+                    cr.conditioning.repeat((frames, 1, 1, 1))?
                 };
-                base.repeat((frames, 1, 1, 1)).map_err(anyhow::Error::from)
+                if do_cfg {
+                    Tensor::cat(&[&per_frame, &per_frame], 0).map_err(anyhow::Error::from)
+                } else {
+                    Ok(per_frame)
+                }
             })
             .collect::<Result<_>>()?;
 
@@ -516,7 +541,7 @@ impl AnimateDiffPipeline {
             window_size,
             window_overlap,
             seed,
-            |frames, win_seed| {
+            |win_start, frames, win_seed| {
                 self.denoise_window(
                     prompt,
                     negative,
@@ -528,6 +553,7 @@ impl AnimateDiffPipeline {
                     guidance,
                     scheduler_kind,
                     controls,
+                    win_start, // v0.30 phase 2: per-frame video CN slice offset
                 )
             },
         )?;
@@ -610,7 +636,10 @@ fn stitch_long_form<F>(
     mut denoise: F,
 ) -> Result<Vec<Tensor>>
 where
-    F: FnMut(usize, u64) -> Result<Tensor>,
+    // v0.30 phase 2: closure receives `(win_start, this_window, win_seed)`.
+    // The win_start is needed by per-frame video CN to slice the
+    // conditioning stack down to the current window.
+    F: FnMut(usize, usize, u64) -> Result<Tensor>,
 {
     let stride = window_size - window_overlap;
     crate::ui::progress::println(&format!(
@@ -634,7 +663,7 @@ where
             win_start + this_window,
         );
 
-        let win_latents = denoise(this_window, win_seed)?;
+        let win_latents = denoise(win_start, this_window, win_seed)?;
 
         let per_frame: Vec<Tensor> = (0..this_window)
             .map(|f| {
@@ -794,10 +823,10 @@ impl AnimateDiffSdxlPipeline {
             device,
             dtype,
         )?;
-        let cfg_g = cfg
-            .clip2
-            .as_ref()
-            .ok_or_else(|| anyhow!("SDXL config missing clip2"))?;
+        // v0.30 phase 0: vendored CLIP Config for SDXL CLIP-G.
+        // Bit-identical to candle's `cfg.clip2` numerics.
+        let _ = cfg.clip2.as_ref();
+        let cfg_g = crate::pipelines::vendored_clip::Config::sdxl2();
         let vs_g = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[text_enc_g_path.as_path()],
@@ -805,7 +834,7 @@ impl AnimateDiffSdxlPipeline {
                 device,
             )?
         };
-        let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, cfg_g, 1280)?;
+        let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?;
         let vae = cfg.build_vae(&vae_path, device, dtype)?;
         let vs_unet = unsafe {
             VarBuilder::from_mmaped_safetensors(
@@ -875,6 +904,7 @@ impl AnimateDiffSdxlPipeline {
             guidance,
             scheduler_kind,
             controls,
+            0, // single-window — no per-frame video CN offset
         )?;
         self.decode_latents(&latents, frames)
     }
@@ -883,6 +913,8 @@ impl AnimateDiffSdxlPipeline {
     /// per-frame latents `(F, 4, H/8, W/8)`. Encapsulates the
     /// SDXL scheduler loop so [`Self::generate`] (single window)
     /// and [`Self::generate_long`] (sliding stitch) can share it.
+    ///
+    /// `frame_offset` (v0.30 phase 2): see SD 1.5 counterpart.
     #[allow(clippy::too_many_arguments)]
     pub fn denoise_window(
         &self,
@@ -896,6 +928,7 @@ impl AnimateDiffSdxlPipeline {
         guidance: f64,
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
+        frame_offset: usize,
     ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -965,15 +998,31 @@ impl AnimateDiffSdxlPipeline {
         // ---- ControlNet conditioning pre-tile ----
         // v0.28 phase 0: same multi-CN shape as the SD 1.5 path —
         // build per-conditioner Tensors once, sum residuals per step.
+        // v0.30 phase 2: when `cr.per_frame` is populated, stack the
+        // per-frame tensors instead of repeating the single image.
         let cn_cond_batches: Vec<Tensor> = controls
             .iter()
             .map(|cr| {
-                let base = if do_cfg {
-                    Tensor::cat(&[&cr.conditioning, &cr.conditioning], 0)?
+                let per_frame = if let Some(stack) = cr.per_frame.as_ref() {
+                    let end = frame_offset + frames;
+                    anyhow::ensure!(
+                        end <= stack.len(),
+                        "control-video frame slice [{}..{}) exceeds stack size {} \
+                         (SDXL animate)",
+                        frame_offset,
+                        end,
+                        stack.len()
+                    );
+                    let refs: Vec<&Tensor> = stack[frame_offset..end].iter().collect();
+                    Tensor::cat(&refs, 0)?
                 } else {
-                    cr.conditioning.clone()
+                    cr.conditioning.repeat((frames, 1, 1, 1))?
                 };
-                base.repeat((frames, 1, 1, 1)).map_err(anyhow::Error::from)
+                if do_cfg {
+                    Tensor::cat(&[&per_frame, &per_frame], 0).map_err(anyhow::Error::from)
+                } else {
+                    Ok(per_frame)
+                }
             })
             .collect::<Result<_>>()?;
 
@@ -1123,7 +1172,7 @@ impl AnimateDiffSdxlPipeline {
             window_size,
             window_overlap,
             seed,
-            |frames, win_seed| {
+            |win_start, frames, win_seed| {
                 self.denoise_window(
                     prompt,
                     negative,
@@ -1135,6 +1184,7 @@ impl AnimateDiffSdxlPipeline {
                     guidance,
                     scheduler_kind,
                     controls,
+                    win_start, // v0.30 phase 2: per-frame video CN slice offset
                 )
             },
         )?;
@@ -1280,7 +1330,7 @@ mod tests {
             window_size,
             window_overlap,
             0,
-            |frames, _seed| {
+            |_win_start, frames, _seed| {
                 let v = (window_idx as f32) + 1.0;
                 window_idx += 1;
                 let t = Tensor::full(v, (frames, 1, 1, 1), &device)
@@ -1337,14 +1387,14 @@ mod tests {
         // total=20, window=16, overlap=4 → stride=12, windows: [0..16),
         // [12..20). The second window is truncated to 8 frames.
         let mut window_idx = 0u32;
-        let mut requested: Vec<usize> = Vec::new();
+        let mut requested: Vec<(usize, usize)> = Vec::new();
         let per_frame = stitch_long_form(
             20,
             16,
             4,
             0,
-            |frames, _seed| {
-                requested.push(frames);
+            |win_start, frames, _seed| {
+                requested.push((win_start, frames));
                 let v = (window_idx as f32) + 1.0;
                 window_idx += 1;
                 Ok(Tensor::full(v, (frames, 1, 1, 1), &device)
@@ -1354,7 +1404,9 @@ mod tests {
             },
         )
         .expect("stitch");
-        assert_eq!(requested, vec![16, 8]);
+        // v0.30 phase 2: closure now also receives win_start.
+        // total=20, stride=12 → windows start at 0 and 12.
+        assert_eq!(requested, vec![(0, 16), (12, 8)]);
         assert_eq!(per_frame.len(), 20);
     }
 

@@ -1075,6 +1075,11 @@ struct ControlSpec {
     /// **v0.10**: source image to auto-annotate. Mutually exclusive with `image`.
     #[serde(default, rename = "auto-from")]
     auto_from: Option<PathBuf>,
+    /// **v0.30 phase 2**: input video — per-frame extract + annotate.
+    /// Only valid for animate-kind tasks. Mutually exclusive with
+    /// `image` and `auto-from`.
+    #[serde(default)]
+    video: Option<PathBuf>,
     #[serde(default)]
     strength: Option<f32>,
     /// Timestep window. `start` defaults to 0.0 when omitted; `end`
@@ -4120,6 +4125,7 @@ async fn run_sd_img2img_task(
             kind,
             image: spec.image.clone(),
             from: spec.auto_from.clone(),
+            video: None,
             strength: spec.strength.unwrap_or(1.0),
             start: spec.start.unwrap_or(0.0),
             end: spec.end.unwrap_or(1.0),
@@ -4332,6 +4338,7 @@ async fn run_animate_task_inline(
             kind,
             image: spec.image.clone(),
             from: spec.auto_from.clone(),
+            video: spec.video.clone(),
             strength: spec.strength.unwrap_or(1.0),
             start: spec.start.unwrap_or(0.0),
             end: spec.end.unwrap_or(1.0),
@@ -4348,6 +4355,7 @@ async fn run_animate_task_inline(
             device,
             dtype,
             None,
+            Some(eff.frames as usize), // v0.30 phase 2: per-frame video CN
         )
         .await
         .with_context(|| {
