@@ -1,12 +1,89 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.29. The current
+"What's new" sections for v0.13 through v0.30. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.30 — diversify + one animate theme
+
+After three consecutive AnimateDiff cycles (v0.27 scope, v0.28
+single-script polish, v0.29 batch polish), v0.30 picked fresh
+ground. It closed the **longest-running open carry** (Textual
+Inversion runtime injection, deferred since v0.16 — eight cycles
+ago), extended v0.28's LCM scheduler wiring to single-image t2i,
+shipped the **most-requested animate carry** (per-frame video
+ControlNet), and enriched `plakat doctor` to cover the new
+surface. Five phases, ~2150 LOC delta.
+
+### Embedding (Textual Inversion) runtime injection
+
+```bash
+plakat generate "a portrait in <my-style> art" \
+    --embedding ./my-style.safetensors
+```
+
+Civitai TIs now apply at inference time on SD 1.5 / SD 2.1 / SDXL
+CLIP-L. The parser, merger, and `plakat embedding info`
+inspector had shipped since v0.16; what was missing was a text
+encoder that would accept a vocab larger than candle's stock
+`clip::Config.vocab_size` (private). v0.30 vendors a minimal
+~430-LOC CLIP text encoder (`src/pipelines/vendored_clip.rs`)
+with a public `vocab_size` + `Config::with_vocab()` builder. The
+existing merger appends TI vectors to `token_embedding.weight`
+via a tempfile (mirroring LoRA's merge pattern); the tokenizer
+gets the new trigger tokens registered via
+`Tokenizer::add_tokens`. Multi-vector TIs render as `N`
+consecutive tokens (`trigger`, `trigger_1`, ..., `trigger_{N-1}`).
+SDXL dual-encoder TIs (files with both `clip_l` and `clip_g`)
+were still rejected in v0.30; closed in v0.31 phase 0.
+
+### LCM-LoRA in t2i
+
+```bash
+# Auto-detects from the LoRA source — no flag needed for canonical names
+plakat generate "a misty forest, dawn light" \
+    --lora latent-consistency/lcm-lora-sdv1-5
+# → scheduler=lcm, steps=4, guidance=1.5 (~10× speedup)
+```
+
+Extends v0.28's AnimateLCM scheduler wiring to single-image
+generation. Substring heuristic on `--lora` sources catches the
+canonical `latent-consistency/lcm-lora-*` repos automatically;
+explicit `--lcm` flag covers non-canonical names. SD 1.5 + SDXL.
+
+### Per-frame video ControlNet (video-to-video)
+
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "a glowing neon dragon, cyberpunk alley, rain" \
+    --control-spec 'openpose:video=./reference.mp4:strength=0.9' \
+    --frames 16 --format mp4
+```
+
+The headline animate carry on every deferral list since v0.27.
+`video=PATH` triggers ffmpeg input decode, even sub-sampling to
+the animate frame budget, per-frame annotation, and per-frame CN
+residuals injected through SD 1.5 + SDXL AnimateDiff sampling.
+Composes with sliding-window long-form. HJSON scenarios pick up
+the new `video:` field on `controls[]` entries.
+
+### `plakat doctor` enrichment
+
+Two new sections (human + `--json`): ffmpeg version probe (warn
+when missing) and HF / Civitai API token presence (boolean only —
+never the value).
+
+### By the numbers
+
+- 997 lib + 47 integration tests = **1044 active tests** (+35
+  lib + +6 integration across the cycle).
+- New module: `pipelines::vendored_clip` (~430 LOC).
+- v0.16 phase 9 carry **closed**.
+- v0.27 video CN deferral **closed**.
 
 ## What's new in v0.29 — batch productivity completion
 
