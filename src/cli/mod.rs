@@ -68,9 +68,12 @@ pub enum Command {
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
-    /// Health-check the FaceID / SCRFD / cache configuration without
-    /// downloading or loading anything. Run before a long generation
-    /// to verify setup.
+    /// Health-check the environment without downloading or loading
+    /// anything: ArcFace / SCRFD identity weights, build vs runtime
+    /// device alignment, HF cache disk usage, ffmpeg presence
+    /// (v0.30), and HF / Civitai API token presence (v0.30 — never
+    /// the value). Add `--json` for a structured report or
+    /// `--benchmark` for a synthetic per-op latency measure.
     Doctor(doctor::DoctorArgs),
     /// Inspect a .safetensors file — list every tensor name, dtype,
     /// and shape. Useful when a weight load fails and you want to see
