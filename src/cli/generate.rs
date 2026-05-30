@@ -176,6 +176,18 @@ pub struct GenerateArgs {
     #[arg(long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
+    /// v0.30 phase 1: explicit LCM-LoRA mode. Forces the LCM
+    /// scheduler and the LCM-LoRA defaults (`--steps 4 --guidance
+    /// 1.5`) so a Civitai LCM-LoRA you've named with something
+    /// other than `lcm` still gets the right schedule. Without the
+    /// flag, plakat auto-detects LCM-LoRAs by matching `lcm` in any
+    /// `--lora` source — explicit `--lcm` is the override for the
+    /// auto-detect's blind spots. User-supplied `--steps` /
+    /// `--guidance` still take precedence — `--lcm --steps 8` runs
+    /// at higher quality. SD 1.5 / SDXL.
+    #[arg(long = "lcm", default_value_t = false)]
+    pub lcm: bool,
+
     /// Add a low-strength img2img polish pass at the end (extra denoise steps
     /// on the generated latents using the SAME base model). Sharpens details
     /// and removes some artifacts. Not the official SDXL refiner.
@@ -939,6 +951,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         }
     }
 
+    // v0.30 phase 1: LCM-LoRA auto-detection.
+    apply_lcm_override(&mut args);
+
     // v0.16 phase 1: auto-annotation for the Flux "concept" variants.
     // When `--concept-from PATH` is set on `--model flux-canny-dev` /
     // `flux-depth-dev`, run the matching annotator (canny or depth)
@@ -1542,6 +1557,46 @@ async fn apply_style(args: &mut GenerateArgs, device: &Device) -> Result<()> {
     Ok(())
 }
 
+/// v0.30 phase 1: apply the LCM-LoRA override to `GenerateArgs`.
+///
+/// Runs after `--fast` / `--look` / `--genre` preset application so
+/// preset-added LoRAs participate. Fires when either:
+///   * `--lcm` is explicit, OR
+///   * any LoRA in the (possibly preset-extended) stack matches the
+///     `lcm` substring heuristic (see `pipelines::lora::is_lcm_lora_spec`).
+///
+/// Override applies only to args still at their clap defaults
+/// (steps=28, guidance=7.5, scheduler=Default) — explicit user
+/// values stay honoured. Mirrors the v0.28 `--lcm` flag handling
+/// in `cli/animate.rs`.
+fn apply_lcm_override(args: &mut GenerateArgs) {
+    let lcm_active = args.lcm
+        || args
+            .loras
+            .iter()
+            .any(crate::pipelines::lora::is_lcm_lora_spec);
+    if !lcm_active {
+        return;
+    }
+    if matches!(args.scheduler, SchedulerKind::Default) {
+        args.scheduler = SchedulerKind::Lcm;
+    }
+    if args.steps == 28 {
+        args.steps = 4;
+    }
+    if (args.guidance - 7.5).abs() < f64::EPSILON {
+        args.guidance = 1.5;
+    }
+    tracing::info!(
+        target: "plakat",
+        "LCM-LoRA detected (explicit={}): scheduler={:?}, steps={}, guidance={}",
+        args.lcm,
+        args.scheduler,
+        args.steps,
+        args.guidance
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1577,6 +1632,7 @@ mod tests {
             loras: Vec::new(),
             lora_scale: 1.0,
             scheduler: SchedulerKind::Default,
+            lcm: false,
             refine: None,
             refine_strength: 0.4,
             refiner: false,
@@ -1861,5 +1917,74 @@ mod tests {
             true,
         );
         assert_eq!(out, "enhanced");
+    }
+
+    // ------------------------------------------------------------------
+    // v0.30 phase 1: LCM-LoRA override.
+    // ------------------------------------------------------------------
+
+    use crate::pipelines::lora::LoraSpec;
+    use std::str::FromStr;
+
+    #[test]
+    fn lcm_override_noops_without_flag_or_matching_lora() {
+        let mut args = mk_default_args("a cat");
+        apply_lcm_override(&mut args);
+        assert_eq!(args.steps, 28);
+        assert!((args.guidance - 7.5).abs() < f64::EPSILON);
+        assert!(matches!(args.scheduler, SchedulerKind::Default));
+    }
+
+    #[test]
+    fn lcm_override_explicit_flag_overrides_defaults() {
+        let mut args = mk_default_args("a cat");
+        args.lcm = true;
+        apply_lcm_override(&mut args);
+        assert_eq!(args.steps, 4);
+        assert!((args.guidance - 1.5).abs() < f64::EPSILON);
+        assert!(matches!(args.scheduler, SchedulerKind::Lcm));
+    }
+
+    #[test]
+    fn lcm_override_detects_via_lora_repo_name() {
+        let mut args = mk_default_args("a cat");
+        args.loras.push(LoraSpec::from_str("latent-consistency/lcm-lora-sdv1-5").unwrap());
+        apply_lcm_override(&mut args);
+        assert_eq!(args.steps, 4);
+        assert!(matches!(args.scheduler, SchedulerKind::Lcm));
+    }
+
+    #[test]
+    fn lcm_override_preserves_explicit_steps() {
+        let mut args = mk_default_args("a cat");
+        args.lcm = true;
+        args.steps = 8; // user wants higher quality at 2× cost
+        apply_lcm_override(&mut args);
+        assert_eq!(args.steps, 8); // not clobbered
+        // Scheduler still flipped because it was at Default.
+        assert!(matches!(args.scheduler, SchedulerKind::Lcm));
+    }
+
+    #[test]
+    fn lcm_override_preserves_explicit_guidance() {
+        let mut args = mk_default_args("a cat");
+        args.lcm = true;
+        args.guidance = 3.0;
+        apply_lcm_override(&mut args);
+        assert!((args.guidance - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn lcm_override_preserves_explicit_scheduler() {
+        let mut args = mk_default_args("a cat");
+        args.lcm = true;
+        args.scheduler = SchedulerKind::EulerA;
+        apply_lcm_override(&mut args);
+        // User picked Euler-A explicitly; LCM stays off the scheduler
+        // slot. (This is a known foot-gun documented in --lcm help —
+        // most users will want the implicit LCM scheduler too.)
+        assert!(matches!(args.scheduler, SchedulerKind::EulerA));
+        // But steps + guidance still flip because they were at default.
+        assert_eq!(args.steps, 4);
     }
 }
