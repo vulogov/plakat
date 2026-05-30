@@ -983,21 +983,29 @@ plakat generate "a vintage travel poster of Tokyo at night" \
  --adetailer
 ```
 
-### Textual Inversion (partial)
+### Textual Inversion
 
 | Flag | Description |
 |---|---|
 | `--embedding <SPEC>` (repeatable) | Textual Inversion `.safetensors`. Format: `PATH_OR_REPO[:trigger][:scale]`. |
 
-**Status**: parser + `plakat embedding info` inspector ship and
-work today. Runtime injection into the SD CLIP-L tokenizer +
-token_embedding matrix is gated by candle 0.8's private
-`clip::Config.vocab_size` — `--embedding` plumbs end-to-end and
-bails loud at SD load with a deferral message + the "convert TI
-to LoRA via kohya-ss" workaround. SD 1.5 / SD 2.1 only when the
-runtime path opens; SDXL dual-encoder TIs bail in the parser.
+**Status (v0.30):** runtime injection works for SD 1.5 / SD 2.1 / SDXL
+CLIP-L. At load time plakat appends the TI's vectors to the CLIP-L
+`token_embedding.weight` matrix (via a tempfile, mirroring LoRA's
+merge pattern) and registers the trigger tokens with the tokenizer —
+prompts referencing the trigger word resolve to the new vocab IDs.
 
-Use `plakat embedding info PATH` to inspect a TI file today.
+Multiple `--embedding` flags stack: each one adds its rows
+sequentially. Multi-vector TIs (e.g. `(N, 768)` with N > 1) are
+rendered as `N` consecutive tokens in the prompt — each new vector
+becomes one new vocab entry (`trigger`, `trigger_1`, ...).
+
+**SDXL dual-encoder TIs** (files carrying both `clip_l` and `clip_g`
+tensors) still bail in the parser — full SDXL TI support follows in a
+later cycle. CLIP-L-only TIs work against SDXL today.
+
+Use `plakat embedding info PATH` to inspect a TI file before
+applying it.
 
 ---
 

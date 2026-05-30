@@ -1,7 +1,7 @@
 //! SDXL CLIP-G wrapper with `text_projection` + EOT-token pooling
 //! (phase 8b).
 //!
-//! candle 0.8's `ClipTextTransformer` loads `text_model.embeddings`,
+//! candle's `ClipTextTransformer` loads `text_model.embeddings`,
 //! `text_model.encoder`, and `text_model.final_layer_norm` — but it
 //! stops there. SDXL's CLIP-G text encoder (a.k.a. text_encoder_2)
 //! additionally carries a top-level `text_projection` Linear that
@@ -19,11 +19,16 @@
 //! Used only for SDXL (base + refiner). SD 1.5 / SD 2.1 keep their
 //! existing single-encoder CLIP path — they have no pooled output to
 //! consume.
+//!
+//! v0.30 phase 0: the inner CLIP is now plakat's vendored CLIP
+//! (`pipelines::vendored_clip`). The wrapper API is unchanged; the
+//! swap is transparent to callers. AnimateDiff and SdCore both use
+//! this wrapper for SDXL CLIP-G.
 
 use candle_core::{D, Result, Tensor};
 use candle_nn as nn;
 use candle_nn::Module;
-use candle_transformers::models::stable_diffusion::clip::{ClipTextTransformer, Config};
+use crate::pipelines::vendored_clip::{ClipTextTransformer, Config};
 
 /// SDXL CLIP-G text encoder = candle's CLIP + a top-level
 /// `text_projection` Linear (no bias) for the pooled output path.
@@ -37,11 +42,13 @@ pub struct SdxlClipGTextTransformer {
 
 impl SdxlClipGTextTransformer {
     /// Build the wrapper. `vs` is the **root** of the text encoder's
-    /// safetensors (the same root candle's `ClipTextTransformer::new`
-    /// expects — i.e. the dir/file under which `text_model.*` sits;
-    /// `text_projection.weight` is a sibling of `text_model`).
-    /// `embed_dim` mirrors `Config::embed_dim` (which is private in
-    /// candle 0.8) — 1280 for stock SDXL CLIP-G.
+    /// safetensors — the dir/file under which `text_model.*` sits;
+    /// `text_projection.weight` is a sibling of `text_model`.
+    /// `embed_dim` should match `Config::embed_dim` — 1280 for stock
+    /// SDXL CLIP-G. Kept as an explicit arg to preserve the original
+    /// signature (callers used to need it because candle's
+    /// `Config::embed_dim` was private; on the vendored Config it's
+    /// public but we still take it explicitly for symmetry).
     pub fn new(vs: nn::VarBuilder, c: &Config, embed_dim: usize) -> Result<Self> {
         let inner = ClipTextTransformer::new(vs.clone(), c)?;
         // Diffusers' CLIP-G ships text_projection as a square Linear
