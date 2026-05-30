@@ -160,11 +160,23 @@ jobs:
             local f="$1"
             case "$f" in
               *.list)
+                # Single-line `deb http://...` entries — inject [arch=amd64]
+                # if not already present.
                 sudo sed -i -E \
                   's|^(deb(-src)?) (https?)|\1 [arch=amd64] \3|g' "$f"
                 ;;
               *.sources)
-                if ! sudo grep -q '^Architectures:' "$f"; then
+                # DEB822 multi-line block — force `Architectures: amd64`.
+                # Recent GH-hosted runner images ship the ubuntu.sources
+                # file with `Architectures: amd64 arm64` already set
+                # (multi-arch by default), so the old `grep -q` skip-if-
+                # already-set check left arm64 unrestricted — apt then
+                # probed the Azure mirror for arm64 indexes and 404ed.
+                # Idempotent: existing Architectures: line is rewritten;
+                # if missing, a new one is inserted after Types: deb.
+                if sudo grep -q '^Architectures:' "$f"; then
+                  sudo sed -i -E 's|^Architectures:.*|Architectures: amd64|' "$f"
+                else
                   sudo sed -i '/^Types: deb/a Architectures: amd64' "$f"
                 fi
                 ;;
