@@ -352,6 +352,7 @@ fn resolve_sd_controlnets(
             &device,
             dtype,
             fallback.as_deref(),
+            None, // generic script-entry CN load — animate dispatches separately
         ))
     })
     .context("loading ControlNet stack for script generate")

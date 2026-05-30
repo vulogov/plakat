@@ -2423,6 +2423,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         &req.device,
         dtype,
         None, // t2i has no fallback input image to auto-annotate.
+        None, // t2i is single-image — no per-frame video CN.
     )
     .await?;
 

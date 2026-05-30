@@ -200,6 +200,99 @@ pub fn frames_to_webm(
     Ok(())
 }
 
+/// v0.30 phase 2: extract every frame of an input video into
+/// `out_dir` as zero-padded PNGs (`frame_000001.png`, ...) via
+/// ffmpeg. Returns the sorted list of extracted paths. The caller
+/// is responsible for keeping `out_dir` alive (typically a
+/// `tempfile::TempDir`).
+///
+/// This extracts all frames — for very long inputs that's wasteful,
+/// but for the typical AnimateDiff control-video use case (a few
+/// seconds of footage feeding a 16–32 frame animation) it's
+/// simplest and most predictable. Callers should subsample via
+/// [`pick_evenly_spaced`] to get the exact frame count they need.
+pub fn extract_frames(input: &Path, out_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let pattern = out_dir.join("frame_%06d.png");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            input.to_str().context("non-UTF8 input video path")?,
+            "-vsync",
+            "0", // pass through raw decode timing (no duplication)
+            "-f",
+            "image2",
+            pattern.to_str().context("non-UTF8 output frame pattern")?,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("invoking ffmpeg to decode {}", input.display()))?;
+    if !status.status.success() {
+        anyhow::bail!(
+            "ffmpeg decode failed (exit {}) on {} — stderr: {}",
+            status.status,
+            input.display(),
+            String::from_utf8_lossy(&status.stderr).trim_end(),
+        );
+    }
+    // Collect, sort, return. ffmpeg numbers `frame_000001.png` onward.
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(out_dir)
+        .with_context(|| format!("reading frame dir {}", out_dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("frame_") && n.ends_with(".png"))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
+        anyhow::bail!(
+            "ffmpeg decoded 0 frames from {} — is this a valid video?",
+            input.display()
+        );
+    }
+    Ok(paths)
+}
+
+/// v0.30 phase 2: pick `n` frames from a pool of available frames,
+/// evenly spaced. Used to map a raw video frame sequence onto a
+/// fixed animate frame budget regardless of the input video's
+/// length.
+///
+/// Behaviour:
+/// - `n == 0`: returns empty.
+/// - `available.is_empty()`: returns empty (caller should validate).
+/// - `available.len() >= n`: returns `n` paths sampled at
+///   `idx = i * len / n` (`i` in `0..n`) — first/last anchored.
+/// - `available.len() < n`: returns all available frames followed
+///   by repeats of the last frame to pad to `n`. (The common case
+///   is a short looping reference; repeating the tail is the
+///   least surprising default.)
+pub fn pick_evenly_spaced(available: &[std::path::PathBuf], n: usize) -> Vec<std::path::PathBuf> {
+    if n == 0 || available.is_empty() {
+        return Vec::new();
+    }
+    if available.len() >= n {
+        (0..n)
+            .map(|i| available[(i * available.len()) / n].clone())
+            .collect()
+    } else {
+        let mut out: Vec<_> = available.iter().cloned().collect();
+        let last = available
+            .last()
+            .expect("available non-empty by branch")
+            .clone();
+        while out.len() < n {
+            out.push(last.clone());
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +360,67 @@ mod tests {
     fn ffmpeg_is_available_on_dev_machine() {
         let v = ffmpeg_version().expect("ffmpeg installed");
         assert!(v.starts_with("ffmpeg version"));
+    }
+
+    // --------------------------------------------------------------
+    // v0.30 phase 2: pick_evenly_spaced — pure logic, no ffmpeg.
+    // --------------------------------------------------------------
+
+    fn mk_paths(n: usize) -> Vec<std::path::PathBuf> {
+        (0..n)
+            .map(|i| std::path::PathBuf::from(format!("/tmp/frame_{i:06}.png")))
+            .collect()
+    }
+
+    #[test]
+    fn pick_evenly_spaced_zero_count_returns_empty() {
+        let pool = mk_paths(100);
+        assert!(pick_evenly_spaced(&pool, 0).is_empty());
+    }
+
+    #[test]
+    fn pick_evenly_spaced_empty_pool_returns_empty() {
+        let empty: Vec<std::path::PathBuf> = Vec::new();
+        assert!(pick_evenly_spaced(&empty, 16).is_empty());
+    }
+
+    #[test]
+    fn pick_evenly_spaced_equal_size_returns_all_in_order() {
+        let pool = mk_paths(16);
+        let picked = pick_evenly_spaced(&pool, 16);
+        assert_eq!(picked, pool);
+    }
+
+    #[test]
+    fn pick_evenly_spaced_larger_pool_subsamples() {
+        // 100 input frames → 4 output frames at 0, 25, 50, 75.
+        let pool = mk_paths(100);
+        let picked = pick_evenly_spaced(&pool, 4);
+        assert_eq!(picked.len(), 4);
+        assert_eq!(picked[0], pool[0]);
+        assert_eq!(picked[1], pool[25]);
+        assert_eq!(picked[2], pool[50]);
+        assert_eq!(picked[3], pool[75]);
+    }
+
+    #[test]
+    fn pick_evenly_spaced_short_pool_pads_with_last_frame() {
+        // 3 frames into 8 slots: 3 originals + 5 copies of frame 2.
+        let pool = mk_paths(3);
+        let picked = pick_evenly_spaced(&pool, 8);
+        assert_eq!(picked.len(), 8);
+        assert_eq!(picked[0], pool[0]);
+        assert_eq!(picked[1], pool[1]);
+        assert_eq!(picked[2], pool[2]);
+        for i in 3..8 {
+            assert_eq!(picked[i], pool[2], "slot {i} should repeat last frame");
+        }
+    }
+
+    #[test]
+    fn pick_evenly_spaced_singleton_pool_fills_with_repeat() {
+        let pool = mk_paths(1);
+        let picked = pick_evenly_spaced(&pool, 4);
+        assert_eq!(picked, vec![pool[0].clone(); 4]);
     }
 }

@@ -1341,6 +1341,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
             &device,
             dtype,
             None,
+            Some(args.frames as usize), // v0.30 phase 2: per-frame video CN
         )
         .await
         .context("loading ControlNet stack for --animatediff")?
