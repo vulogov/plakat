@@ -4595,6 +4595,7 @@ async fn run_animate_task_inline(
                 cfg_guidance,
                 cfg_scheduler,
                 &controls,
+                false, // v0.32 phase 0: FreeNoise opt-in not yet on scenarios
             )?
         }
         SdVariant::Sdxl => {
@@ -4643,6 +4644,7 @@ async fn run_animate_task_inline(
                 cfg_guidance,
                 cfg_scheduler,
                 &controls,
+                false, // v0.32 phase 0: FreeNoise opt-in not yet on scenarios
             )?
         }
         _ => unreachable!("variant gate filtered above"),

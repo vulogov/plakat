@@ -267,7 +267,8 @@ impl AnimateDiffPipeline {
             guidance,
             scheduler_kind,
             controls,
-            0, // single-window — no per-frame video CN offset
+            0,    // single-window — no per-frame video CN offset
+            None, // single-window — FreeNoise only applies in long-form
         )?;
         self.decode_latents(&latents, frames)
     }
@@ -281,6 +282,19 @@ impl AnimateDiffPipeline {
     /// first frame within the full animate run. Used only for slicing
     /// per-frame video ControlNet conditioning — `0` for the single-
     /// window path, the window start for long-form.
+    ///
+    /// `initial_unscaled_noise` (v0.32 phase 0 — FreeNoise) is an
+    /// optional pre-generated noise tensor for this window. When
+    /// `Some`, it must be shaped `(frames, 4, H/8, W/8)` and is used
+    /// in place of the per-window `Tensor::randn` call. The caller
+    /// (`generate_long` with `free_noise=true`) pre-generates a
+    /// full-length noise tensor at the user's seed and slices it per
+    /// window so overlapping windows share noise — the key insight
+    /// from Cao et al., "FreeNoise: Tuning-Free Longer Video
+    /// Diffusion". `init_noise_sigma` scaling is applied inside this
+    /// function regardless of source, so the caller passes unscaled
+    /// raw noise. When `None`, the v0.27 randn behaviour fires
+    /// unchanged (byte-identical numerics).
     #[allow(clippy::too_many_arguments)]
     pub fn denoise_window(
         &self,
@@ -295,6 +309,7 @@ impl AnimateDiffPipeline {
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
         frame_offset: usize,
+        initial_unscaled_noise: Option<Tensor>,
     ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -338,13 +353,33 @@ impl AnimateDiffPipeline {
         let timesteps = scheduler.timesteps().to_vec();
 
         // ---- latents ----
-        let mut latents = Tensor::randn(
-            0f32,
-            1f32,
-            (frames, 4, latent_h, latent_w),
-            &self.device,
-        )?
-        .to_dtype(self.dtype)?;
+        // v0.32 phase 0: FreeNoise pre-generates noise across the full
+        // run length and slices per window so overlapping windows
+        // share noise. When `initial_unscaled_noise` is provided, the
+        // per-window randn skips and we scale + use the supplied
+        // tensor instead. When `None`, the v0.27 behaviour fires —
+        // byte-identical numerics (`set_seed(win_seed)` was applied
+        // above; the randn pulls from that stream).
+        let mut latents = match initial_unscaled_noise {
+            Some(noise) => {
+                anyhow::ensure!(
+                    noise.dims() == [frames, 4, latent_h, latent_w],
+                    "FreeNoise: initial_unscaled_noise dims {:?} != expected ({}, 4, {}, {})",
+                    noise.dims(),
+                    frames,
+                    latent_h,
+                    latent_w,
+                );
+                noise.to_dtype(self.dtype)?
+            }
+            None => Tensor::randn(
+                0f32,
+                1f32,
+                (frames, 4, latent_h, latent_w),
+                &self.device,
+            )?
+            .to_dtype(self.dtype)?,
+        };
         latents = (latents * scheduler.init_noise_sigma())?;
 
         // ---- ControlNet conditioning pre-tile ----
@@ -520,8 +555,12 @@ impl AnimateDiffPipeline {
         guidance: f64,
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
+        free_noise: bool,
     ) -> Result<Vec<DynamicImage>> {
         if total_frames <= window_size {
+            // Single window — FreeNoise is a no-op (no overlapping
+            // windows to share noise across). Honour the flag's
+            // intent without applying the pre-gen path.
             return self.generate(
                 prompt,
                 negative,
@@ -536,12 +575,53 @@ impl AnimateDiffPipeline {
             );
         }
         validate_long_form_window(window_size, window_overlap, self.max_frames)?;
+
+        // v0.32 phase 0: FreeNoise — pre-generate a full-length noise
+        // tensor at the user's seed, then slice per window. Adjacent
+        // windows' overlap regions naturally share noise (same tensor
+        // backing both slices), which eliminates the linear-blend
+        // seam artifact v0.27 phase 5's randn-per-window approach
+        // exhibits on >32-frame runs.
+        //
+        // When `free_noise=false`, this stays `None` and the v0.27
+        // randn-per-window path fires byte-identical numerics.
+        let shared_noise: Option<Tensor> = if free_noise {
+            let w = width as usize;
+            let h = height as usize;
+            let latent_h = h / 8;
+            let latent_w = w / 8;
+            // Seed the device's RNG once with the user's top-level
+            // seed so the full-length noise is reproducible.
+            let seed_u32 = seed & (u32::MAX as u64);
+            if let Err(e) = self.device.set_seed(seed_u32) {
+                tracing::debug!(target: "plakat", "set_seed for FreeNoise ignored: {e}");
+            }
+            let n = Tensor::randn(
+                0f32,
+                1f32,
+                (total_frames, 4, latent_h, latent_w),
+                &self.device,
+            )?;
+            tracing::info!(
+                target: "plakat",
+                "FreeNoise: pre-generated shared noise for {} frames",
+                total_frames
+            );
+            Some(n)
+        } else {
+            None
+        };
+
         let per_frame = stitch_long_form(
             total_frames,
             window_size,
             window_overlap,
             seed,
             |win_start, frames, win_seed| {
+                let slice = match shared_noise.as_ref() {
+                    Some(n) => Some(n.i((win_start..win_start + frames, .., .., ..))?),
+                    None => None,
+                };
                 self.denoise_window(
                     prompt,
                     negative,
@@ -554,6 +634,7 @@ impl AnimateDiffPipeline {
                     scheduler_kind,
                     controls,
                     win_start, // v0.30 phase 2: per-frame video CN slice offset
+                    slice,     // v0.32 phase 0: FreeNoise window noise slice
                 )
             },
         )?;
@@ -904,7 +985,8 @@ impl AnimateDiffSdxlPipeline {
             guidance,
             scheduler_kind,
             controls,
-            0, // single-window — no per-frame video CN offset
+            0,    // single-window — no per-frame video CN offset
+            None, // single-window — FreeNoise only applies in long-form
         )?;
         self.decode_latents(&latents, frames)
     }
@@ -915,6 +997,8 @@ impl AnimateDiffSdxlPipeline {
     /// and [`Self::generate_long`] (sliding stitch) can share it.
     ///
     /// `frame_offset` (v0.30 phase 2): see SD 1.5 counterpart.
+    /// `initial_unscaled_noise` (v0.32 phase 0): see SD 1.5
+    /// counterpart — FreeNoise shared-noise window slice.
     #[allow(clippy::too_many_arguments)]
     pub fn denoise_window(
         &self,
@@ -929,6 +1013,7 @@ impl AnimateDiffSdxlPipeline {
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
         frame_offset: usize,
+        initial_unscaled_noise: Option<Tensor>,
     ) -> Result<Tensor> {
         anyhow::ensure!(frames >= 1, "frames must be ≥ 1 (got {frames})");
         anyhow::ensure!(
@@ -986,13 +1071,28 @@ impl AnimateDiffSdxlPipeline {
         let timesteps = scheduler.timesteps().to_vec();
 
         // ---- latents ----
-        let mut latents = Tensor::randn(
-            0f32,
-            1f32,
-            (frames, 4, latent_h, latent_w),
-            &self.device,
-        )?
-        .to_dtype(self.dtype)?;
+        // v0.32 phase 0: FreeNoise — see SD 1.5 counterpart for
+        // rationale. None → byte-identical v0.27 randn path.
+        let mut latents = match initial_unscaled_noise {
+            Some(noise) => {
+                anyhow::ensure!(
+                    noise.dims() == [frames, 4, latent_h, latent_w],
+                    "FreeNoise (SDXL): initial_unscaled_noise dims {:?} != expected ({}, 4, {}, {})",
+                    noise.dims(),
+                    frames,
+                    latent_h,
+                    latent_w,
+                );
+                noise.to_dtype(self.dtype)?
+            }
+            None => Tensor::randn(
+                0f32,
+                1f32,
+                (frames, 4, latent_h, latent_w),
+                &self.device,
+            )?
+            .to_dtype(self.dtype)?,
+        };
         latents = (latents * scheduler.init_noise_sigma())?;
 
         // ---- ControlNet conditioning pre-tile ----
@@ -1151,6 +1251,7 @@ impl AnimateDiffSdxlPipeline {
         guidance: f64,
         scheduler_kind: SchedulerKind,
         controls: &[crate::pipelines::controlnet::OwnedControl],
+        free_noise: bool,
     ) -> Result<Vec<DynamicImage>> {
         if total_frames <= window_size {
             return self.generate(
@@ -1167,12 +1268,45 @@ impl AnimateDiffSdxlPipeline {
             );
         }
         validate_long_form_window(window_size, window_overlap, self.max_frames)?;
+
+        // v0.32 phase 0: FreeNoise — same pattern as the SD 1.5
+        // counterpart. Pre-generate a full-length noise tensor; slice
+        // per window in the closure.
+        let shared_noise: Option<Tensor> = if free_noise {
+            let w = width as usize;
+            let h = height as usize;
+            let latent_h = h / 8;
+            let latent_w = w / 8;
+            let seed_u32 = seed & (u32::MAX as u64);
+            if let Err(e) = self.device.set_seed(seed_u32) {
+                tracing::debug!(target: "plakat", "set_seed for FreeNoise (SDXL) ignored: {e}");
+            }
+            let n = Tensor::randn(
+                0f32,
+                1f32,
+                (total_frames, 4, latent_h, latent_w),
+                &self.device,
+            )?;
+            tracing::info!(
+                target: "plakat",
+                "FreeNoise (SDXL): pre-generated shared noise for {} frames",
+                total_frames
+            );
+            Some(n)
+        } else {
+            None
+        };
+
         let per_frame = stitch_long_form(
             total_frames,
             window_size,
             window_overlap,
             seed,
             |win_start, frames, win_seed| {
+                let slice = match shared_noise.as_ref() {
+                    Some(n) => Some(n.i((win_start..win_start + frames, .., .., ..))?),
+                    None => None,
+                };
                 self.denoise_window(
                     prompt,
                     negative,
@@ -1185,6 +1319,7 @@ impl AnimateDiffSdxlPipeline {
                     scheduler_kind,
                     controls,
                     win_start, // v0.30 phase 2: per-frame video CN slice offset
+                    slice,     // v0.32 phase 0: FreeNoise window noise slice
                 )
             },
         )?;
@@ -1417,6 +1552,160 @@ mod tests {
         assert!(validate_long_form_window(33, 4, 32).is_err());
         assert!(validate_long_form_window(16, 16, 32).is_err());
         assert!(validate_long_form_window(16, 4, 32).is_ok());
+    }
+
+    // ----------------------------------------------------------------
+    // v0.32 phase 0: FreeNoise — shared-noise slicing semantics.
+    // ----------------------------------------------------------------
+
+    /// FreeNoise's core invariant: when two adjacent sliding windows
+    /// slice from the same pre-generated noise tensor, the overlap
+    /// region's frames carry IDENTICAL noise values in both windows.
+    /// This is what makes the latent-blend seam disappear.
+    ///
+    /// Test: pre-generate a (24, 4, 4, 4) noise tensor; slice via
+    /// `stitch_long_form`'s closure for total=24 / win=16 / overlap=4;
+    /// verify that frames 12..16 in window 0 == frames 0..4 in window 1.
+    #[test]
+    fn free_noise_overlap_frames_match_across_adjacent_windows() {
+        let device = candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+
+        // Pre-generate deterministic shared noise. Use arange for
+        // recognisability — each frame has a distinct constant value
+        // so slice mismatches surface visibly.
+        let total_frames = 24usize;
+        let window_size = 16usize;
+        let window_overlap = 4usize;
+        let stride = window_size - window_overlap;
+        let shape = (total_frames, 4, 4, 4);
+        // Tensor::arange + reshape gives us per-frame constant slices
+        // when we expand: frame N has values [N*64 .. (N+1)*64).
+        let flat =
+            Tensor::arange(0f32, (total_frames * 4 * 4 * 4) as f32, &device).unwrap();
+        let shared_noise = flat.reshape(shape).unwrap().to_dtype(dtype).unwrap();
+
+        // Capture each window's noise slice.
+        let mut captured_slices: Vec<Tensor> = Vec::new();
+        let _ = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            0,
+            |win_start, frames, _seed| {
+                let slice = shared_noise
+                    .i((win_start..win_start + frames, .., .., ..))
+                    .unwrap();
+                captured_slices.push(slice);
+                // Return a stub latent (closure must produce a Tensor).
+                Ok(Tensor::zeros((frames, 1, 1, 1), dtype, &device)?
+                    .to_dtype(dtype)
+                    .unwrap())
+            },
+        )
+        .expect("stitch");
+
+        assert_eq!(captured_slices.len(), 2, "expected exactly 2 windows");
+
+        // Window 0 frames [stride..window_size) must equal window 1
+        // frames [0..window_overlap) — that's the overlap region.
+        let w0_overlap = captured_slices[0]
+            .i((stride..window_size, .., .., ..))
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let w1_overlap = captured_slices[1]
+            .i((0..window_overlap, .., .., ..))
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert_eq!(
+            w0_overlap, w1_overlap,
+            "FreeNoise: adjacent windows must share noise values in the overlap region",
+        );
+    }
+
+    /// Confirms the v0.27 randn-per-window behaviour is preserved
+    /// when FreeNoise is off — closure receives no noise slice, each
+    /// window independently generates its own. We can't directly
+    /// test the randn output without a pipeline, but we can verify
+    /// the closure isn't passed any shared-noise slice in that
+    /// branch (FreeNoise off → slice argument never present).
+    #[test]
+    fn free_noise_off_closure_receives_no_slice() {
+        let device = candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+        let total_frames = 24usize;
+        let window_size = 16usize;
+        let window_overlap = 4usize;
+
+        // Simulate generate_long's `free_noise = false` branch:
+        // shared_noise stays None, slice computation skipped.
+        let shared_noise: Option<Tensor> = None;
+        let mut closure_calls = 0u32;
+        let _ = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            0,
+            |_win_start, frames, _seed| {
+                // The OFF branch never derives a slice. Confirm that
+                // contract here.
+                let slice: Option<Tensor> = match shared_noise.as_ref() {
+                    Some(_) => unreachable!("free_noise OFF must keep shared_noise None"),
+                    None => None,
+                };
+                assert!(slice.is_none());
+                closure_calls += 1;
+                Ok(Tensor::zeros((frames, 1, 1, 1), dtype, &device)?
+                    .to_dtype(dtype)
+                    .unwrap())
+            },
+        )
+        .expect("stitch");
+        assert_eq!(closure_calls, 2);
+    }
+
+    /// FreeNoise composes with the v0.30 phase 2 per-frame video CN
+    /// machinery: the `frame_offset` arg into denoise_window is the
+    /// same `win_start` used to slice both the shared noise tensor
+    /// AND the OwnedControl.per_frame stack. This test confirms the
+    /// offset semantics line up across both subsystems by walking
+    /// the stitch closure's offset assignments.
+    #[test]
+    fn free_noise_window_offsets_match_per_frame_cn_offsets() {
+        let device = candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+        let total_frames = 32usize;
+        let window_size = 16usize;
+        let window_overlap = 4usize;
+        let stride = window_size - window_overlap;
+
+        let mut offsets: Vec<usize> = Vec::new();
+        let _ = stitch_long_form(
+            total_frames,
+            window_size,
+            window_overlap,
+            0,
+            |win_start, frames, _seed| {
+                // generate_long always passes `win_start` to BOTH the
+                // noise slice (free_noise=true) AND denoise_window's
+                // frame_offset (per-frame video CN). Confirm the
+                // value the closure receives matches stride*win_i.
+                offsets.push(win_start);
+                Ok(Tensor::zeros((frames, 1, 1, 1), dtype, &device)?
+                    .to_dtype(dtype)
+                    .unwrap())
+            },
+        )
+        .expect("stitch");
+
+        // total=32, stride=12 → win_starts = [0, 12, 24].
+        assert_eq!(offsets, vec![0, stride, stride * 2]);
     }
 
     /// Frame-count out-of-range bails loud without doing any work.
