@@ -1,7 +1,7 @@
-//! `plakat doctor` — identity-pipeline health check.
+//! `plakat doctor` — environment health check.
 //!
 //! Inspects the user's environment and prints a verdict for each
-//! configurable surface the identity pipelines depend on:
+//! configurable surface plakat depends on:
 //!
 //! * **ArcFace** weights — local file (`PLAKAT_ARCFACE_WEIGHTS`) or HF
 //!   spec (`PLAKAT_ARCFACE_HF`). Verifies the local file exists; for
@@ -10,11 +10,20 @@
 //!   (`PLAKAT_SCRFD_HF`). Same offline checks.
 //! * **FaceID UNet LoRA** — checks the `PLAKAT_FACEID_LORA` opt-out
 //!   env var and reports whether it's active.
-//! * **Device + cache** — current device selection, HF cache root.
+//! * **Device + cache** — build / runtime device alignment, HF cache
+//!   root, disk usage.
+//! * **v0.30 ffmpeg** — version probe for the v0.28 video output
+//!   formats and v0.30 `--control-spec video=` per-frame video CN
+//!   input decode.
+//! * **v0.30 API keys** — presence (never value) of `HF_TOKEN` /
+//!   `HUGGING_FACE_HUB_TOKEN` (gated HF repos) and
+//!   `CIVITAI_API_KEY` (Civitai rate limits + gated assets).
 //!
 //! Default mode is fully offline. Pass `--verify` to actively probe
 //! configured HF specs by attempting the download — confirms remote
 //! files actually resolve before a long generation hits a 404.
+//! `--json` emits a structured report covering the device, CUDA
+//! driver, cache, ffmpeg, and API-key sections for CI consumption.
 
 use anyhow::Result;
 use clap::Args as ClapArgs;
@@ -268,12 +277,81 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     section_cache_disk_usage();
     println!();
 
+    // -------- v0.30 phase 4: ffmpeg presence --------
+    section_ffmpeg();
+    println!();
+
+    // -------- v0.30 phase 4: API keys probe --------
+    section_api_keys();
+    println!();
+
     println!(
         "  {}\n",
         style("If you've fixed any of the issues above, re-run `plakat doctor` to confirm.").dim()
     );
 
     Ok(())
+}
+
+/// v0.30 phase 4: ffmpeg presence + version. Required by `plakat
+/// animate --format mp4|webm` (output encoding) and by the new v0.30
+/// phase 2 `--control-spec ...video=PATH` (input decode). `Frames`
+/// and `gif` output formats work without ffmpeg.
+fn section_ffmpeg() {
+    section_header("ffmpeg (video output + v0.30 control-video decode)");
+    match crate::imaging::video::ffmpeg_version() {
+        Ok(v) => ok(&format!("ffmpeg present: {v}")),
+        Err(_) => {
+            warn(
+                "ffmpeg not found on PATH. Without it: `plakat animate --format mp4|webm` \
+                 bails, and v0.30 `--control-spec ...video=PATH` per-frame video CN can't \
+                 decode. `--format frames` and `--format gif` still work.",
+            );
+            note("Install: macOS `brew install ffmpeg` / Ubuntu `apt install ffmpeg` / Windows `scoop install ffmpeg`.");
+        }
+    }
+}
+
+/// v0.30 phase 4: probe optional API key env vars. Reports presence
+/// only — NEVER prints the value, even truncated. Token absence is
+/// fine for non-gated workflows; the goal is to surface "I set
+/// CIVITAI_API_KEY but the shell didn't export it" before a 401 hits
+/// in the middle of a long generation.
+fn section_api_keys() {
+    section_header("API tokens (optional — gated repos + Civitai rate limits)");
+    let hf_set = std::env::var("HF_TOKEN").map(|v| !v.is_empty()).unwrap_or(false);
+    let hf_legacy_set = std::env::var("HUGGING_FACE_HUB_TOKEN")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if hf_set || hf_legacy_set {
+        let which = if hf_set && hf_legacy_set {
+            "HF_TOKEN + HUGGING_FACE_HUB_TOKEN"
+        } else if hf_set {
+            "HF_TOKEN"
+        } else {
+            "HUGGING_FACE_HUB_TOKEN"
+        };
+        ok(&format!("HuggingFace token: present ({which})"));
+    } else {
+        note(
+            "No HF_TOKEN set. Public repos still work; gated ones (Flux Dev, \
+             SD3 Medium, ...) bail at download time. Set via \
+             `export HF_TOKEN=hf_...`.",
+        );
+    }
+
+    let civitai_set = std::env::var("CIVITAI_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if civitai_set {
+        ok("Civitai token: present (CIVITAI_API_KEY)");
+    } else {
+        note(
+            "No CIVITAI_API_KEY set. Anonymous downloads work for ungated assets \
+             but you'll hit rate limits faster; gated NSFW-toggle assets bail. \
+             Set via `export CIVITAI_API_KEY=...`.",
+        );
+    }
 }
 
 /// Reports the backend flags the binary was compiled with vs the
@@ -530,6 +608,63 @@ mod tests {
         assert!(json.contains("\"device\""));
         assert!(json.contains("\"cuda_driver\""));
         assert!(json.contains("\"cache\""));
+        // v0.30 phase 4 sections.
+        assert!(json.contains("\"ffmpeg\""));
+        assert!(json.contains("\"api_keys\""));
+    }
+
+    // v0.30 phase 4 — ffmpeg + API keys.
+
+    #[test]
+    fn ffmpeg_report_internal_consistency() {
+        let r = collect_ffmpeg_report();
+        // `present` must align with `version.is_some()` — the two
+        // fields can't disagree.
+        assert_eq!(r.present, r.version.is_some());
+    }
+
+    #[test]
+    fn api_keys_report_serializes_without_leaking_values() {
+        // Even when tokens are present in the test env, the JSON
+        // serialization must only carry booleans — never the value.
+        // Set a synthetic value, generate JSON, confirm the value
+        // string doesn't appear anywhere in the output.
+        // SAFETY: setting env vars in a test is racy across threads
+        // running other env-dependent tests; we use a value unlikely
+        // to collide with any real fixture string.
+        const SECRET: &str = "do-not-leak-this-token-XKCD-2347";
+        unsafe {
+            std::env::set_var("HF_TOKEN", SECRET);
+        }
+        let report = collect_report();
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(report.api_keys.hf_token_set);
+        assert!(
+            !json.contains(SECRET),
+            "doctor JSON leaked the HF_TOKEN value"
+        );
+        unsafe {
+            std::env::remove_var("HF_TOKEN");
+        }
+    }
+
+    #[test]
+    fn api_keys_report_empty_string_counts_as_absent() {
+        // Shells that `export FOO=` (no value) leave the env var
+        // present but empty. Doctor should treat that as "not set"
+        // rather than "set" — otherwise users get spurious "token
+        // present" reports.
+        unsafe {
+            std::env::set_var("CIVITAI_API_KEY", "");
+        }
+        let report = collect_api_keys_report();
+        assert!(
+            !report.civitai_token_set,
+            "empty CIVITAI_API_KEY should report as absent"
+        );
+        unsafe {
+            std::env::remove_var("CIVITAI_API_KEY");
+        }
     }
 }
 
@@ -576,6 +711,13 @@ struct DoctorReport {
     device: DeviceReport,
     cuda_driver: CudaDriverReport,
     cache: CacheReport,
+    /// v0.30 phase 4: ffmpeg presence + version. Required for
+    /// MP4/WebM output and the v0.30 `--control-spec video=` input
+    /// decode.
+    ffmpeg: FfmpegReport,
+    /// v0.30 phase 4: presence of optional API tokens. Reports
+    /// boolean presence ONLY — never the value.
+    api_keys: ApiKeysReport,
 }
 
 #[derive(serde::Serialize)]
@@ -614,12 +756,61 @@ struct CacheReport {
     severity: &'static str,
 }
 
+#[derive(serde::Serialize)]
+struct FfmpegReport {
+    /// `true` when `ffmpeg -version` resolved successfully.
+    present: bool,
+    /// First line of `ffmpeg -version` output (e.g. `"ffmpeg version
+    /// 6.1.1 ..."`), or `null` when not present.
+    version: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ApiKeysReport {
+    /// `true` iff `HF_TOKEN` env var is set + non-empty.
+    hf_token_set: bool,
+    /// `true` iff legacy `HUGGING_FACE_HUB_TOKEN` env var is set + non-empty.
+    hf_legacy_token_set: bool,
+    /// `true` iff `CIVITAI_API_KEY` env var is set + non-empty.
+    civitai_token_set: bool,
+}
+
 fn collect_report() -> DoctorReport {
     DoctorReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
         device: collect_device_report(),
         cuda_driver: collect_cuda_driver_report(),
         cache: collect_cache_report(),
+        ffmpeg: collect_ffmpeg_report(),
+        api_keys: collect_api_keys_report(),
+    }
+}
+
+fn collect_ffmpeg_report() -> FfmpegReport {
+    match crate::imaging::video::ffmpeg_version() {
+        Ok(v) => FfmpegReport {
+            present: true,
+            version: Some(v),
+        },
+        Err(_) => FfmpegReport {
+            present: false,
+            version: None,
+        },
+    }
+}
+
+fn collect_api_keys_report() -> ApiKeysReport {
+    let hf = std::env::var("HF_TOKEN").map(|v| !v.is_empty()).unwrap_or(false);
+    let hf_legacy = std::env::var("HUGGING_FACE_HUB_TOKEN")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let civitai = std::env::var("CIVITAI_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    ApiKeysReport {
+        hf_token_set: hf,
+        hf_legacy_token_set: hf_legacy,
+        civitai_token_set: civitai,
     }
 }
 
