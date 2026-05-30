@@ -128,6 +128,22 @@
         "keywords": ["gouache", "opaque watercolor", "matte paint"]
       },
       "base_compat": null
+    },
+    {
+      "name": "pony",
+      "display_name": "Pony Diffusion",
+      "description": "Pony Diffusion v6 XL prompt convention: score-based quality tagging (score_9, score_8_up, score_7_up, ...). SDXL-only fine-tune popular on Civitai for character + scene work. Pair with `--model pony`.",
+      "prompt_prefix": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up",
+      "prompt_suffix": null,
+      "negative_extras": "score_6, score_5, score_4, source_pony, source_furry, source_cartoon, source_anime, 3d, monochrome, bad anatomy, bad hands, watermark, signature",
+      "scheduler_hint": "dpmpp-2m",
+      "steps": 30,
+      "guidance": 7.0,
+      "lora_query": {
+        "tags": ["pony", "pony-diffusion"],
+        "keywords": ["pony", "pony diffusion", "pony xl", "ponyxl"]
+      },
+      "base_compat": ["sdxl"]
     }
   ]
 }
