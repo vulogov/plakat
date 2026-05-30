@@ -207,6 +207,39 @@ where 2× UNet evaluations is fine: `heun`.
 > A1111/ComfyUI convention. The aliases `euler-a`, `eulera`, and
 > `euler-ancestral` all hit Euler-Ancestral.
 
+#### `--lcm` (v0.30, default off)
+
+Force LCM-LoRA mode: flip `--scheduler` to `lcm`, drop `--steps` to
+`4`, drop `--guidance` to `1.5`. The 10× speedup that LCM-LoRAs deliver
+on SD 1.5 / SDXL t2i.
+
+Two ways to trigger:
+
+1. **Auto-detect** (no flag) — plakat scans your `--lora` stack for
+   anything matching `lcm` (case-insensitive) in the source. Canonical
+   Hub repos like `latent-consistency/lcm-lora-sdv1-5` and
+   `latent-consistency/lcm-lora-sdxl` flip the switch automatically.
+2. **Explicit `--lcm`** — for LCM-LoRAs you've stored under names that
+   don't contain `lcm` (some Civitai uploads), or when you want
+   diagnostic certainty.
+
+User-supplied `--steps` / `--guidance` / `--scheduler` take precedence
+over the override — they only fire when those args are still at their
+clap defaults. So `--lcm --steps 8` runs at 8 steps for higher quality
+at 2× cost; `--lcm --scheduler euler-a` keeps Euler-A.
+
+Example:
+
+```
+plakat generate "a misty forest, dawn light" \
+    --lora latent-consistency/lcm-lora-sdv1-5
+# auto-detects: --scheduler lcm --steps 4 --guidance 1.5
+```
+
+Composes with `--look` / `--genre` / `--fast` presets — detection runs
+*after* preset application, so preset-added LCM-LoRAs trigger the
+override too.
+
 #### `--refine <N>` + `--refine-strength <FLOAT>` (defaults: off, 0.3)
 
 After the main denoise loop completes, run `N` extra steps of img2img on
