@@ -143,71 +143,39 @@ jobs:
       - name: Install aarch64 Linux cross toolchain
         if: matrix.cross_linux
         run: |
-          # v0.31.0 phase 4 (third attempt): wholesale replacement of
-          # Ubuntu apt sources. Earlier attempts (v0.29.1 single-mirror
-          # mirrorlist, v0.31.0 `Architectures: amd64` rewrite) didn't
-          # fully stop apt from probing arm64 against amd64-only
-          # mirrors. The recurring issue: `Architectures:` on the
-          # DEB822 source doesn't restrict `mirror+file:` URI fan-out,
-          # so `dpkg --add-architecture arm64` re-triggers arm64
-          # probes against every URL the mirrorlist resolves to.
+          # v0.31.0 phase 4 (fourth attempt): wholesale wipe of runner-
+          # image apt sources, write only ours. Previous attempts
+          # tried surgical edits (per-source `Architectures: amd64`
+          # in v0.31.0, .sources file deletion when matching
+          # mirror+file in v0.31.0 wholesale-replace) but the runner
+          # image's mirror+file source lives somewhere our deletion
+          # heuristic didn't catch — apt still resolved `mirror+file:
+          # /etc/apt/apt-mirrors.txt` against a now-deleted mirrorlist
+          # and bailed.
           #
-          # New strategy — bypass the runner image's source files
-          # entirely:
-          #
-          # 1. Delete any `.sources` file in /etc/apt/sources.list.d/
-          #    that uses `mirror+file:` URIs (catches ubuntu.sources
-          #    and any siblings with the same shape).
-          # 2. Delete any `mirror+file:` reference from .list files.
-          # 3. Restrict every remaining .list file to amd64 via
-          #    `[arch=amd64]` (catches azure-cli, google-chrome, etc.).
-          # 4. Restrict /etc/apt/sources.list (legacy global) to amd64.
-          # 5. Write OUR explicit amd64 sources via a new
-          #    /etc/apt/sources.list.d/ubuntu-amd64.list pointing at
-          #    azure.archive.ubuntu.com (fast from Azure runners).
-          # 6. Add explicit arm64 sources via /etc/apt/sources.list.d/
-          #    arm64.list pointing at ports.ubuntu.com.
-          # 7. dpkg --add-architecture arm64; apt-get update.
-          #
-          # Net effect: deterministic source layout, no apt-mirrors.txt
-          # in the picture, no DEB822 sources, no mirror+file: URIs.
-          # Idempotent on rerun.
+          # New strategy: delete EVERY existing apt source first, then
+          # write only what we need. The plakat cross-compile needs
+          # gcc-aarch64-linux-gnu + g++-aarch64-linux-gnu + pkg-config
+          # + libfontconfig1-dev:arm64 — all in Ubuntu main, none
+          # need third-party repos (microsoft / google-chrome / etc.).
 
-          # Step 1: delete .sources files that use mirror+file.
-          for f in /etc/apt/sources.list.d/*.sources; do
-            [ -f "$f" ] || continue
-            if sudo grep -q 'mirror+file' "$f"; then
-              echo "removing $f (uses mirror+file:)"
-              sudo rm "$f"
-            fi
-          done
+          # Debug: snapshot what's there before we touch it.
+          echo "=== /etc/apt before wipe ==="
+          ls -la /etc/apt/sources.list 2>/dev/null || echo "(no /etc/apt/sources.list)"
+          ls -la /etc/apt/sources.list.d/ 2>/dev/null || echo "(no /etc/apt/sources.list.d/)"
+          grep -rl 'mirror+file' /etc/apt/ 2>/dev/null \
+            || echo "(no mirror+file references found)"
 
-          # Step 2 + 3: lock remaining .list sources to amd64. The
-          # `[arch=amd64]` qualifier IS honoured by apt for `.list`
-          # sources (unlike DEB822 mirror+file:).
-          restrict_list_to_amd64() {
-            local f="$1"
-            # Strip any pre-existing [arch=...] qualifier, then
-            # re-inject [arch=amd64]. Idempotent.
-            sudo sed -i -E \
-              -e 's|^(deb(-src)?) \[arch=[^]]*\] |\1 |g' \
-              -e 's|^(deb(-src)?) (https?)|\1 [arch=amd64] \3|g' "$f"
-          }
-          [ -f /etc/apt/sources.list ] && restrict_list_to_amd64 /etc/apt/sources.list
-          for f in /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] && restrict_list_to_amd64 "$f"
-          done
+          # Wipe legacy + DEB822 + apt-mirrors file. The directories
+          # themselves stay so apt has somewhere to put our writes.
+          sudo rm -rf /etc/apt/sources.list
+          sudo rm -rf /etc/apt/sources.list.d
+          sudo mkdir -p /etc/apt/sources.list.d
+          sudo rm -f /etc/apt/apt-mirrors.txt
 
-          # Step 4: also nuke the mirrorlist file itself if present —
-          # it has no consumers left after step 1, but leaving it
-          # around invites a future runner-image source file to start
-          # using it again.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo rm /etc/apt/apt-mirrors.txt
-          fi
-
-          # Step 5: explicit amd64 source. azure.archive.ubuntu.com is
-          # the Azure-runner-local mirror — fast intra-DC.
+          # Write OUR amd64 source. azure.archive.ubuntu.com is the
+          # Azure-runner-local mirror — fast intra-DC. Ubuntu jammy
+          # = ubuntu-22.04 runner.
           sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list > /dev/null <<'EOF'
           deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse
           deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse
@@ -215,13 +183,17 @@ jobs:
           deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse
           EOF
 
-          # Step 6: explicit arm64 source via ports.ubuntu.com (the
-          # only mirror that hosts non-x86 Ubuntu binaries).
+          # Write OUR arm64 source via ports.ubuntu.com (the only
+          # mirror that hosts non-x86 Ubuntu binaries).
           sudo tee /etc/apt/sources.list.d/arm64.list > /dev/null <<'EOF'
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
           EOF
+
+          # Debug: confirm only our sources remain.
+          echo "=== /etc/apt after wipe ==="
+          ls -la /etc/apt/sources.list.d/
           sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
