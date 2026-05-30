@@ -8,147 +8,174 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.29 — batch productivity completion
+## What's new in v0.30 — diversify + one animate theme
 
-v0.28 made the **single-script** AnimateDiff surface pleasant.
-v0.29 makes it pleasant **at production scale** — closing the
-loudest v0.28 deferrals: animate in HJSON scenarios (the biggest
-plakat batch-driver gap), SDXL in `plakat.animate`, and the
-final `animate_format` Bund config key. Six phases, ~1100 LOC
-delta, zero new architectural risk.
+After three consecutive AnimateDiff cycles (v0.27 scope, v0.28
+single-script polish, v0.29 batch polish), v0.30 picks fresh
+ground. It closes the **longest-running open carry** (Textual
+Inversion runtime injection, deferred since v0.16 — eight cycles
+ago), extends v0.28's LCM scheduler wiring to single-image t2i,
+ships the **most-requested animate carry** (per-frame video
+ControlNet), and enriches `plakat doctor` to cover the new
+surface. Five phases, ~2150 LOC delta.
 
-### Animate in HJSON scenarios
-
-```hjson
-{
-    model: sd15
-    type: animatediff       # scenario default — every task is animate
-    frames: 16
-    lcm: true               # 4-step AnimateLCM (~5× speedup)
-    format: gif
-    out: ./out/animations
-    scene:   [ { name: dawn,  prompt: "at dawn" } ]
-    weather: [ { name: mist,  prompt: "misty" } ]
-    tasks: [
-        { name: cottage, scene: dawn, weather: mist,
-          prompt: "a watercolor cottage" }
-        { name: knight,  scene: dawn, weather: mist,
-          prompt: "a knight in a forest, oil painting",
-          frames: 32, format: mp4 }     # per-row overrides
-    ]
-}
-```
+### Embedding (Textual Inversion) runtime injection
 
 ```bash
-plakat scenario animate.hjson --dry-run    # preview the plan
-plakat scenario animate.hjson              # render every task
-plakat scenario animate.hjson --resume     # skip rendered tasks
-plakat scenario animate.hjson --only knight
+plakat generate "a portrait in <my-style> art" \
+    --embedding ./my-style.safetensors
 ```
 
-The same scenario filters (`--resume` / `--only` / `--limit` /
-`--dry-run`) work unchanged. Per-task overrides for `frames`,
-`window-size`, `window-overlap`, `lcm`, `motion-lora`,
-`motion-lora-scale`, `format`, `gif-delay-ms` compose with
-scenario-level defaults. ControlNet through the existing
-`control:` / `controls:` fields (multi-CN sum). All-animate
-scenarios don't need the `enhancer:` field set (prompt
-enhancement is t2i-only). Mixed-kind scenarios still need it for
-the generate tasks.
+Civitai TIs now apply at inference time on SD 1.5 / SD 2.1 / SDXL
+CLIP-L. Parser, merger, and `plakat embedding info` inspector
+have shipped since v0.16; what was missing was a text encoder
+that would accept a vocab larger than candle's stock
+`clip::Config.vocab_size` (private). v0.30 vendors a minimal
+~430-LOC CLIP text encoder (`src/pipelines/vendored_clip.rs`)
+with a public `vocab_size` + `Config::with_vocab()` builder. The
+existing merger appends TI vectors to `token_embedding.weight`
+via a tempfile (mirroring LoRA's merge pattern); the tokenizer
+gets the new trigger tokens registered via `Tokenizer::add_tokens`.
+Multi-vector TIs (e.g. `(N, 768)` with N > 1) render as N
+consecutive tokens — `trigger`, `trigger_1`, ..., `trigger_{N-1}`.
+SDXL dual-encoder TIs (files with both `clip_l` and `clip_g`)
+still bail in the parser — CLIP-L-only SDXL TIs work today.
 
-Closes the **largest plakat batch-driver gap** identified in the
-v0.28 cycle audit: `cli/scenario.rs::TaskDef` had zero animate-
-related fields before this release.
+### LCM-LoRA in t2i
 
-### SDXL `plakat.animate`
+```bash
+# Auto-detects from the LoRA source — no flag needed for canonical names
+plakat generate "a misty forest, dawn light" \
+    --lora latent-consistency/lcm-lora-sdv1-5
+# → scheduler=lcm, steps=4, guidance=1.5 (~10× speedup)
 
-```bund
-"sdxl" plakat.load
-16   "animate_frames" plakat.config.set
-1024 "width"          plakat.config.set
-1024 "height"         plakat.config.set
-"a knight in a forest, oil painting" "./out" plakat.animate
+# Explicit --lcm covers Civitai uploads stored under non-canonical names
+plakat generate "a knight in a forest" --lcm \
+    --lora /path/to/my-distilled.safetensors
 ```
 
-Removes the v0.28 SD-1.5-only restriction in scripting. New
-`ScriptCtx::loaded_animatediff_sdxl` cache slot mirrors the
-v0.26 stylize slot pattern so multi-call scripts amortise the
-~7 GB SDXL backbone load. SD 1.5 keeps its own cache slot
-(`loaded_animatediff`) with a key encoding the LCM mode —
-toggling `animate_lcm` between calls swaps the pipeline.
-AnimateLCM-SDXL still bails loud (upstream repo not publicly
-available).
+Extends v0.28's AnimateLCM scheduler wiring to single-image
+generation. Two detection paths: a substring heuristic on
+`--lora` sources (matches `lcm` case-insensitively, catches the
+canonical `latent-consistency/lcm-lora-*` repos), and an
+explicit `--lcm` flag for files stored under non-canonical
+names. User-supplied `--steps` / `--guidance` / `--scheduler`
+take precedence over the override — `--lcm --steps 8` runs at
+8 steps for higher quality at 2× cost. Detection runs after
+`--look` / `--genre` / `--fast` preset application so
+preset-added LCM-LoRAs trigger it too. SD 1.5 + SDXL.
 
-### `animate_format` Bund config key
+### Per-frame video ControlNet (video-to-video)
 
-```bund
-"sd15" plakat.load
-"mp4" "animate_format" plakat.config.set
-"a watercolor cottage" "./out" plakat.animate
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "a glowing neon dragon, cyberpunk alley, rain" \
+    --control-spec 'openpose:video=./reference.mp4:strength=0.9' \
+    --frames 16 --format mp4
 ```
 
-The final v0.28 Bund surface gap. `animate_format` accepts the
-same five strings as the CLI's `--format`: `frames | gif | mp4 |
-webm | all`. MP4 / WebM need ffmpeg on `$PATH`; the availability
-check fires before inference so install pointers come fast.
+The headline animate carry on every deferral list since v0.27.
+`video=PATH` in any `--control-spec` triggers ffmpeg input
+decode, even sub-sampling to the animate frame budget,
+per-frame annotation, and per-frame CN residuals injected
+through SD 1.5 + SDXL AnimateDiff sampling. Composes with
+sliding-window long-form: `--frames 32 --window-size 16
+--window-overlap 4` slices the video CN stack per window with
+no re-decoding. Composes with multi-CN — one `video=` for macro
+motion, a separate `image=` for edge anchoring:
 
-### CI workflow fix
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "watercolor rendering of a runner, soft light" \
+    --control-spec 'depth:video=./jog.mp4:strength=0.7' \
+    --control-spec 'canny:image=./reference.png:strength=0.3' \
+    --frames 32 --window-size 16 --format mp4
+```
 
-The arm64 cross-build matrix step in `.github/workflows/release.yml`
-gained a sed pass over `/etc/apt/apt-mirrors.txt` to drop
-`security.ubuntu.com` lines. The runner image recently started
-shipping a mirrorlist file (`URIs: mirror+file:///etc/apt/apt-
-mirrors.txt`) that includes security.ubuntu.com, which doesn't
-host arm64 packages. The v0.26 phase fix to `.list` and `.sources`
-files no longer reached the mirrorlist; v0.29 patches that hole.
+Architectural change: `OwnedControl.per_frame: Option<Vec<Tensor>>`
++ `load_control_stack` gains `animate_frames: Option<usize>` +
+`denoise_window` gains `frame_offset: usize`. v0.28/v0.29 numerics
+unchanged when `per_frame.is_none()`. HJSON scenarios also pick
+up the new `video:` field on `controls[]` entries.
+
+### `plakat doctor` enrichment
+
+```
+$ plakat doctor
+...
+◆ ffmpeg (video output + v0.30 control-video decode)
+  ! ffmpeg not found on PATH. Without it: --format mp4|webm bails,
+    and v0.30 --control-spec ...video= per-frame video CN can't decode.
+  · Install: macOS `brew install ffmpeg` / ...
+
+◆ API tokens (optional — gated repos + Civitai rate limits)
+  ✓ HuggingFace token: present (HF_TOKEN)
+  · No CIVITAI_API_KEY set. ...
+
+$ plakat doctor --json   # CI-consumable structured report
+```
+
+Two new sections (also in `--json`): ffmpeg version probe (warn
+when missing — required by the v0.28 video output formats and
+the new v0.30 `video=` input decode) and HF / Civitai API token
+presence (boolean only — **never the value**, even in JSON). The
+existing FaceID/SCRFD/cache/CUDA-driver sections are unchanged.
 
 ### Documentation
 
-- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to v0.29
-  with scenario / SDXL Bund / format-from-Bund recipes.
-- [`SCENARIOS_TUTORIAL.md`](Documentation/Tutorials/SCENARIOS_TUTORIAL.md)
-  — new §9 "Animate scenarios (v0.29)" with field tables,
-  per-task LCM override pattern, multi-CN example.
-- [`SCRIPTING.md`](Documentation/SCRIPTING.md) — bumped to v0.29
-  with the new `animate_format` config key + SDXL note +
-  v0.28 → v0.29 migration.
-- [`RFC_v0.29_BATCH_PRODUCTIVITY.md`](Documentation/RFC_v0.29_BATCH_PRODUCTIVITY.md)
-  — design doc, two locked decisions, 6-phase plan.
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to
+  v0.30 with the video-to-video quick-start + hybrid (depth-video
+  + canny-still) example. Capability matrix adds the per-frame
+  video CN row.
+- [`GENERATE.md`](Documentation/GENERATE.md) — new `--lcm`
+  subsection with auto-detect explanation. Textual Inversion
+  section rewritten — no more "blocked" language.
+- [`RFC_v0.30_DIVERSIFY.md`](Documentation/RFC_v0.30_DIVERSIFY.md)
+  — design doc, two locked decisions, 5-phase plan.
 
 ### By the numbers
 
-- 962 lib tests + 41 integration tests = **1003 active tests**
-  (+9 lib + +4 integration across the cycle).
-- 6 phase commits + RFC + CI workflow fix.
-- 50 host words (unchanged); 1 new config key (`animate_format`).
-- New `loaded_animatediff` + `loaded_animatediff_sdxl` cache slots
-  on `ScriptCtx` mirroring the v0.26 stylize pattern.
-- Scenario `TaskDef` gained 9 animate-related Optional fields plus
-  scenario-level defaults; merger via `effective_animate_config`
-  with `motion-lora` list APPEND semantics.
+- **997 lib + 47 integration tests = 1044 active tests** (+35 lib
+  + +6 integration across the cycle).
+- 5 phase commits + RFC + close-out commit.
+- New module: `pipelines::vendored_clip` (~430 LOC, bit-faithful
+  copy of candle's CLIP text encoder + public `vocab_size`).
+- `OwnedControl.per_frame: Option<Vec<Tensor>>` + `load_control_stack`
+  + both AnimateDiff `denoise_window`s gain a per-frame conditioning
+  path.
+- v0.16 phase 9 carry **closed**.
+- v0.27 video CN deferral **closed**.
 
-### v0.28 → v0.29 migration
+### v0.29 → v0.30 migration
 
-v0.29 is **fully additive**. Every existing flag, host word,
-config key, and scenario field keeps its v0.28 shape. New surface:
+v0.30 is **fully additive**. Every existing flag, host word,
+config key, and scenario field keeps its v0.29 shape. New surface:
 
-- ✅ `animate_format` config key on `plakat.animate` (Bund GIF /
-  MP4 / WebM dispatch).
-- ✅ `plakat.animate` works on SDXL via the new cache slot.
-- ✅ HJSON scenarios accept `type: animatediff` (alias `animate`)
-  at scenario or task level plus 8 new animate fields.
+- ✅ `--embedding PATH` on `plakat generate` works end-to-end
+  (was a load-time bail in v0.29 and earlier).
+- ✅ `--lcm` flag on `plakat generate`; LCM-LoRA auto-detection
+  from `--lora` source.
+- ✅ `--control-spec 'KIND:video=PATH...'` on `plakat animate`
+  (SD 1.5 + SDXL); same `video:` field on HJSON scenario
+  `controls[]`.
+- ✅ `plakat doctor` gains ffmpeg + API-key sections (human and
+  `--json`).
 
-### Deferred to v0.30+
+### Deferred to v0.31+
 
-- Per-frame video ControlNet (`--control-video PATH`).
-- AnimateLCM-SDXL (upstream repo still not publicly available).
-- Mixed-kind scenarios sharing pipeline cache (currently pay both
-  t2i and animate pipeline costs).
-- FreeNoise / FreeInit shared-noise long-form.
+- FreeNoise / FreeInit long-form (animate quality).
 - Per-layer motion splice (RFC v0.27 §3.2 escalation).
 - HotShot-XL integration.
+- AnimateLCM-SDXL (upstream repo still not publicly available).
+- Mixed-kind scenarios sharing pipeline cache.
+- Better wildcards (nested + weighted).
+- Pony Diffusion preset.
+- INT8 SDXL UNet quantization.
+- `plakat civitai sync DIR` bulk download.
+- SDXL dual-encoder TI parser support (`clip_l` + `clip_g` both
+  applied) — CLIP-L-only TIs work today.
 
-**Earlier releases** (v0.13 – v0.28):
+**Earlier releases** (v0.13 – v0.29):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 

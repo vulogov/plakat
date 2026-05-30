@@ -1,12 +1,118 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.28. The current
+"What's new" sections for v0.13 through v0.29. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.29 — batch productivity completion
+
+v0.28 made the **single-script** AnimateDiff surface pleasant.
+v0.29 makes it pleasant **at production scale** — closing the
+loudest v0.28 deferrals: animate in HJSON scenarios (the biggest
+plakat batch-driver gap), SDXL in `plakat.animate`, and the
+final `animate_format` Bund config key. Six phases, ~1100 LOC
+delta, zero new architectural risk.
+
+### Animate in HJSON scenarios
+
+```hjson
+{
+    model: sd15
+    type: animatediff       # scenario default — every task is animate
+    frames: 16
+    lcm: true               # 4-step AnimateLCM (~5× speedup)
+    format: gif
+    out: ./out/animations
+    scene:   [ { name: dawn,  prompt: "at dawn" } ]
+    weather: [ { name: mist,  prompt: "misty" } ]
+    tasks: [
+        { name: cottage, scene: dawn, weather: mist,
+          prompt: "a watercolor cottage" }
+        { name: knight,  scene: dawn, weather: mist,
+          prompt: "a knight in a forest, oil painting",
+          frames: 32, format: mp4 }     # per-row overrides
+    ]
+}
+```
+
+```bash
+plakat scenario animate.hjson --dry-run    # preview the plan
+plakat scenario animate.hjson              # render every task
+plakat scenario animate.hjson --resume     # skip rendered tasks
+plakat scenario animate.hjson --only knight
+```
+
+The same scenario filters (`--resume` / `--only` / `--limit` /
+`--dry-run`) work unchanged. Per-task overrides for `frames`,
+`window-size`, `window-overlap`, `lcm`, `motion-lora`,
+`motion-lora-scale`, `format`, `gif-delay-ms` compose with
+scenario-level defaults. ControlNet through the existing
+`control:` / `controls:` fields (multi-CN sum). All-animate
+scenarios don't need the `enhancer:` field set (prompt
+enhancement is t2i-only). Mixed-kind scenarios still need it for
+the generate tasks.
+
+Closes the **largest plakat batch-driver gap** identified in the
+v0.28 cycle audit: `cli/scenario.rs::TaskDef` had zero animate-
+related fields before this release.
+
+### SDXL `plakat.animate`
+
+```bund
+"sdxl" plakat.load
+16   "animate_frames" plakat.config.set
+1024 "width"          plakat.config.set
+1024 "height"         plakat.config.set
+"a knight in a forest, oil painting" "./out" plakat.animate
+```
+
+Removes the v0.28 SD-1.5-only restriction in scripting. New
+`ScriptCtx::loaded_animatediff_sdxl` cache slot mirrors the
+v0.26 stylize slot pattern so multi-call scripts amortise the
+~7 GB SDXL backbone load. SD 1.5 keeps its own cache slot
+(`loaded_animatediff`) with a key encoding the LCM mode —
+toggling `animate_lcm` between calls swaps the pipeline.
+AnimateLCM-SDXL still bails loud (upstream repo not publicly
+available).
+
+### `animate_format` Bund config key
+
+```bund
+"sd15" plakat.load
+"mp4" "animate_format" plakat.config.set
+"a watercolor cottage" "./out" plakat.animate
+```
+
+The final v0.28 Bund surface gap. `animate_format` accepts the
+same five strings as the CLI's `--format`: `frames | gif | mp4 |
+webm | all`. MP4 / WebM need ffmpeg on `$PATH`; the availability
+check fires before inference so install pointers come fast.
+
+### CI workflow fix
+
+The arm64 cross-build matrix step in `.github/workflows/release.yml`
+gained a rewrite over `/etc/apt/apt-mirrors.txt` to use only the
+single Azure mirror. The runner image's mirrorlist
+(`URIs: mirror+file:///etc/apt/apt-mirrors.txt`) had grown
+multiple amd64-only entries (security.ubuntu.com,
+archive.ubuntu.com) that the v0.26 phase fix to `.list` / `.sources`
+files didn't reach. v0.29 patches that hole.
+
+### By the numbers
+
+- 962 lib tests + 41 integration tests = **1003 active tests**
+  (+9 lib + +4 integration across the cycle).
+- 6 phase commits + RFC + CI workflow fix.
+- 50 host words (unchanged); 1 new config key (`animate_format`).
+
+### v0.28 → v0.29 migration
+
+v0.29 was **fully additive**. Every existing flag, host word,
+config key, and scenario field kept its v0.28 shape.
 
 ## What's new in v0.28 — AnimateDiff productivity polish
 
