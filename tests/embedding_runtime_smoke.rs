@@ -19,7 +19,8 @@
 
 use candle_core::{DType, Device, Tensor};
 use plakat::pipelines::embedding::{
-    EmbeddingRegistration, ResolvedEmbedding, merge_embeddings_into_te_weights,
+    EmbeddingHalf, EmbeddingRegistration, ResolvedEmbedding,
+    merge_embeddings_into_te_weights,
 };
 use plakat::pipelines::vendored_clip::{Config, build_clip_transformer};
 use std::collections::HashMap;
@@ -147,6 +148,7 @@ fn merged_ti_safetensors_loads_with_extended_vocab() {
     let ti = ResolvedEmbedding {
         trigger: "tiny-style".into(),
         vectors: ti_vecs,
+        vectors_g: None,
         scale: 0.5,
     };
 
@@ -157,6 +159,7 @@ fn merged_ti_safetensors_loads_with_extended_vocab() {
         std::slice::from_ref(&ti),
         8, // expected_embed_dim
         &dev,
+        EmbeddingHalf::ClipL,
     )
     .unwrap();
 
@@ -188,6 +191,108 @@ fn merged_ti_safetensors_loads_with_extended_vocab() {
 }
 
 #[test]
+fn sdxl_dual_ti_round_trips_through_both_halves() {
+    // v0.31 phase 0 end-to-end seam: synthesize TWO synthetic
+    // safetensors files (one CLIP-L-shaped, one CLIP-G-shaped)
+    // plus a dual TI carrying both halves. Merge each half
+    // independently and verify the vendored CLIP loader accepts
+    // the resulting extended-vocab matrices.
+    let base_l = tempfile::NamedTempFile::new().unwrap();
+    let base_g = tempfile::NamedTempFile::new().unwrap();
+    write_tiny_clip_safetensors(base_l.path(), 4);
+    write_tiny_clip_safetensors(base_g.path(), 4);
+
+    let dev = Device::Cpu;
+    let dual_ti = ResolvedEmbedding {
+        trigger: "dual-style".into(),
+        vectors: Tensor::full(0.1f32, (2, 8), &dev).unwrap(),
+        vectors_g: Some(Tensor::full(0.2f32, (2, 8), &dev).unwrap()),
+        scale: 1.0,
+    };
+
+    // CLIP-L pass — extends by 2 rows.
+    let merged_l = tempfile::NamedTempFile::new().unwrap();
+    let report_l = merge_embeddings_into_te_weights(
+        base_l.path(),
+        merged_l.path(),
+        std::slice::from_ref(&dual_ti),
+        8,
+        &dev,
+        EmbeddingHalf::ClipL,
+    )
+    .unwrap();
+    assert_eq!(report_l.new_vocab_size, 6);
+    assert_eq!(report_l.registered.len(), 1);
+    assert_eq!(report_l.registered[0].trigger, "dual-style");
+    assert_eq!(report_l.registered[0].num_tokens, 2);
+
+    // CLIP-G pass — extends by the same 2 rows (matching IDs).
+    let merged_g = tempfile::NamedTempFile::new().unwrap();
+    let report_g = merge_embeddings_into_te_weights(
+        base_g.path(),
+        merged_g.path(),
+        std::slice::from_ref(&dual_ti),
+        8,
+        &dev,
+        EmbeddingHalf::ClipG,
+    )
+    .unwrap();
+    // CLIP-G half registers the SAME trigger at the SAME vocab
+    // offset (both base vocabs are size 4 in this synthetic
+    // fixture, so both extend [4..6) for the dual-style trigger).
+    assert_eq!(report_g.new_vocab_size, 6);
+    assert_eq!(report_g.registered.len(), 1);
+    assert_eq!(report_g.registered[0].trigger, "dual-style");
+    assert_eq!(report_g.registered[0].num_tokens, 2);
+    assert_eq!(
+        report_l.registered[0].base_token_id,
+        report_g.registered[0].base_token_id,
+        "dual TI must register the trigger at the same vocab offset in both halves",
+    );
+
+    // Both extended-vocab files load through the vendored CLIP
+    // builder without error.
+    let mut cfg = Config::v1_5().with_vocab(6);
+    cfg.embed_dim = 8;
+    cfg.intermediate_size = 12;
+    cfg.max_position_embeddings = 4;
+    cfg.num_hidden_layers = 1;
+    cfg.num_attention_heads = 2;
+    let _ = build_clip_transformer(&cfg, merged_l.path(), &dev, DType::F32).unwrap();
+    let _ = build_clip_transformer(&cfg, merged_g.path(), &dev, DType::F32).unwrap();
+}
+
+#[test]
+fn clip_g_pass_with_only_single_encoder_tis_is_noop() {
+    // If a stack contains only single-encoder TIs and the caller
+    // runs the CLIP-G pass anyway (the load path always runs both
+    // passes on SDXL when at least one TI is dual), the CLIP-G
+    // pass must produce an empty registration list and leave the
+    // base vocab unchanged.
+    let base = tempfile::NamedTempFile::new().unwrap();
+    write_tiny_clip_safetensors(base.path(), 4);
+    let dev = Device::Cpu;
+    let single = ResolvedEmbedding {
+        trigger: "clipl-only".into(),
+        vectors: Tensor::ones((1, 8), DType::F32, &dev).unwrap(),
+        vectors_g: None,
+        scale: 1.0,
+    };
+    let merged = tempfile::NamedTempFile::new().unwrap();
+    let report = merge_embeddings_into_te_weights(
+        base.path(),
+        merged.path(),
+        std::slice::from_ref(&single),
+        8,
+        &dev,
+        EmbeddingHalf::ClipG,
+    )
+    .unwrap();
+    assert_eq!(report.new_vocab_size, 4, "single-encoder TI skipped on CLIP-G pass");
+    assert!(report.registered.is_empty());
+}
+
+#[test]
 fn multi_embedding_merge_chains_correctly() {
     // Two embeddings stack: each appends its rows, registered with
     // sequentially advancing base_token_ids.
@@ -198,11 +303,13 @@ fn multi_embedding_merge_chains_correctly() {
     let ti_a = ResolvedEmbedding {
         trigger: "alpha".into(),
         vectors: Tensor::ones((1, 8), DType::F32, &dev).unwrap(),
+        vectors_g: None,
         scale: 1.0,
     };
     let ti_b = ResolvedEmbedding {
         trigger: "beta".into(),
         vectors: Tensor::ones((3, 8), DType::F32, &dev).unwrap(),
+        vectors_g: None,
         scale: 1.0,
     };
 
@@ -213,6 +320,7 @@ fn multi_embedding_merge_chains_correctly() {
         &[ti_a, ti_b],
         8,
         &dev,
+        EmbeddingHalf::ClipL,
     )
     .unwrap();
 
