@@ -1265,6 +1265,7 @@ mod tests {
                         kind: crate::pipelines::controlnet::ControlKind::Canny,
                         image: Some(std::path::PathBuf::from("/tmp/x.png")),
                         from: None,
+                        video: None,
                         strength: 1.0,
                         start: 0.0,
                         end: 1.0,
