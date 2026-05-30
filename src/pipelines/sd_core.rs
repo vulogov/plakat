@@ -308,7 +308,7 @@ impl SdCore {
         let build = progress::spinner("Loading SD core");
         let mut tokenizer_l = Tokenizer::from_file(&tokenizer_l_path)
             .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
-        let tokenizer_g = match tokenizer_g_path.as_ref() {
+        let mut tokenizer_g = match tokenizer_g_path.as_ref() {
             Some(p) => Some(
                 Tokenizer::from_file(p).map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?,
             ),
@@ -447,6 +447,7 @@ impl SdCore {
                 &req.embeddings,
                 base_clip_l_cfg.embed_dim,
                 &req.device,
+                crate::pipelines::embedding::EmbeddingHalf::ClipL,
             )?;
             spin.finish_with_message(format!(
                 "✓ TI extended CLIP-L vocab to {} (added {} token(s))",
@@ -494,14 +495,25 @@ impl SdCore {
 
         // SDXL only: CLIP-G text encoder (with optional LoRA merge).
         let text_encoder_g = match variant {
-            SdVariant::Sd15 | SdVariant::Sd21 => None,
+            SdVariant::Sd15 | SdVariant::Sd21 => {
+                // v0.31 phase 0: dual-encoder TI on a non-SDXL model
+                // doesn't make sense — bail loud so the user gets a
+                // pointer toward the CLIP-L-only variant.
+                if req.embeddings.iter().any(|e| e.has_clip_g()) {
+                    bail!(
+                        "Textual Inversion: dual-encoder TI (clip_l + clip_g \
+                         in the same file) requires SDXL — got {variant:?}. \
+                         Either pick an SDXL model (`--model sdxl`) or use a \
+                         CLIP-L-only TI."
+                    );
+                }
+                None
+            }
             SdVariant::Sdxl => {
                 // v0.30 phase 0: vendored CLIP Config for SDXL CLIP-G.
-                // Numerically identical to candle's `clip2`; the only
-                // difference is the vendored type's public `vocab_size`
-                // (needed by future SDXL TI support, no-op here).
+                // Numerically identical to candle's `clip2`.
                 let _ = cfg.clip2.as_ref(); // keep the StableDiffusionConfig
-                let cfg_g = crate::pipelines::vendored_clip::Config::sdxl2();
+                let base_cfg_g = crate::pipelines::vendored_clip::Config::sdxl2();
                 let p = text_enc_g_path
                     .as_ref()
                     .ok_or_else(|| anyhow!("missing text_encoder_2 path"))?;
@@ -530,6 +542,44 @@ impl SdCore {
                     lora_tmps.push(tmp);
                     path
                 };
+
+                // v0.31 phase 0: dual-encoder TI extension for CLIP-G.
+                // Mirrors the CLIP-L pattern above. Only fires when at
+                // least one TI in the stack carries a clip_g half.
+                let dual_count = req.embeddings.iter().filter(|e| e.has_clip_g()).count();
+                let (effective_te_g_path, cfg_g, dual_registrations) = if dual_count == 0 {
+                    (effective_te_g_path, base_cfg_g, Vec::new())
+                } else {
+                    let spin = progress::spinner(&format!(
+                        "Merging {dual_count} dual-encoder TI clip_g half(s) into SDXL CLIP-G"
+                    ));
+                    let tmp = tempfile::Builder::new()
+                        .prefix("plakat-sd-te-g-ti-")
+                        .suffix(".safetensors")
+                        .tempfile()?;
+                    let report = crate::pipelines::embedding::merge_embeddings_into_te_weights(
+                        &effective_te_g_path,
+                        tmp.path(),
+                        &req.embeddings,
+                        base_cfg_g.embed_dim,
+                        &req.device,
+                        crate::pipelines::embedding::EmbeddingHalf::ClipG,
+                    )?;
+                    spin.finish_with_message(format!(
+                        "✓ TI extended CLIP-G vocab to {} (added {} token(s))",
+                        report.new_vocab_size,
+                        report
+                            .registered
+                            .iter()
+                            .map(|r| r.num_tokens)
+                            .sum::<usize>()
+                    ));
+                    let extended_cfg = base_cfg_g.with_vocab(report.new_vocab_size);
+                    let extended_path = tmp.path().to_path_buf();
+                    lora_tmps.push(tmp);
+                    (extended_path, extended_cfg, report.registered)
+                };
+
                 // v0.11 phase 8b: load via the SdxlClipGTextTransformer
                 // wrapper so the `text_projection` Linear is also
                 // pulled out of the safetensors. embed_dim = 1280 is
@@ -541,7 +591,31 @@ impl SdCore {
                         &req.device,
                     )?
                 };
-                Some(SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?)
+                let wrapper = SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?;
+
+                // v0.31 phase 0: register the dual TI triggers in
+                // tokenizer_g so prompts referencing the trigger
+                // resolve to the new CLIP-G vocab IDs. Mirror of the
+                // tokenizer_l mutation above.
+                if !dual_registrations.is_empty() {
+                    let tok_g = tokenizer_g
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("SDXL missing tokenizer_g for TI registration"))?;
+                    let mut added: Vec<tokenizers::AddedToken> = Vec::new();
+                    for reg in &dual_registrations {
+                        for tok_str in reg.token_strings() {
+                            added.push(tokenizers::AddedToken::from(tok_str, false));
+                        }
+                    }
+                    let n = tok_g.add_tokens(&added);
+                    tracing::info!(
+                        target: "plakat",
+                        "TI registered {} new CLIP-G tokenizer entries ({} dual embedding(s))",
+                        n,
+                        dual_registrations.len()
+                    );
+                }
+                Some(wrapper)
             }
         };
 

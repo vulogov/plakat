@@ -179,7 +179,8 @@ async fn run_info(args: InfoArgs) -> Result<()> {
     println!();
     println!(
         "{} pass `--embedding {}` to `plakat generate` to apply this TI at \
-         inference time (SD 1.5 / SD 2.1 / SDXL CLIP-L).",
+         inference time (SD 1.5 / SD 2.1 / SDXL — both CLIP-L-only and dual \
+         CLIP-L+CLIP-G formats).",
         style("usage:").dim(),
         args.source
     );
