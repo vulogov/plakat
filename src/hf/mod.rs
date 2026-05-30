@@ -95,6 +95,14 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "SDXL inpainting — 9-channel UNet matching the SD 1.5 inpaint contract",
     },
+    AliasEntry {
+        aliases: &["pony", "pony-v6", "pony-diffusion-v6"],
+        repo: "AstraliteHeart/pony-diffusion-v6-xl",
+        family: "SDXL",
+        kind: "base",
+        gated: false,
+        note: "Pony Diffusion v6 XL — popular SDXL fine-tune. Pair with `--look pony` for score-based prompt conventions.",
+    },
     // ── SD 3.x ───────────────────────────────────────────────────
     AliasEntry {
         aliases: &["sd35-medium", "sd3.5-medium", "stable-diffusion-3.5-medium"],
@@ -353,6 +361,18 @@ mod tests {
                 !first.contains('/'),
                 "canonical alias '{first}' for {} looks like a repo id",
                 entry.repo
+            );
+        }
+    }
+
+    /// v0.31 phase 1 swap: Pony Diffusion v6 XL alias resolves.
+    #[test]
+    fn resolves_pony_diffusion_v6_xl() {
+        for alias in ["pony", "pony-v6", "pony-diffusion-v6"] {
+            assert_eq!(
+                resolve_alias(alias),
+                "AstraliteHeart/pony-diffusion-v6-xl",
+                "alias {alias} should resolve to Pony Diffusion v6 XL",
             );
         }
     }

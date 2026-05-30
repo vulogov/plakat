@@ -726,6 +726,20 @@ Auto1111 / NovelAI / ComfyUI grammar.
 * **Inline alternation**: `{red|blue|green}` picks one of the three
  at random. Nestable: `{a {b|c}|d}` → `a b`, `a c`, or `d`. Works
  without `--wildcard-dir`.
+* **Weighted alternation (v0.31)**: any option may be prefixed with
+ `WEIGHT::` to bias the random pick. Weights are relative —
+ normalized over the group:
+   * `{2::common|rare}` — "common" is **twice as likely** as "rare"
+     (omitted weight defaults to `1.0`).
+   * `{0.7::a|0.3::b}` — explicit probabilities.
+   * `{4::landscape|1::portrait|0::wide}` — `0::` excludes
+     "wide" entirely.
+
+  Malformed weight prefixes (negative, NaN, non-numeric) fall back
+  to treating the option as literal text — `{foo::bar|baz}` is two
+  options, `foo::bar` and `baz`, each at weight 1.0. Nestable with
+  unweighted groups: `{9::{a|b}|1::c}` picks an inner-uniform
+  `a`/`b` 90% of the time, `c` 10%.
 * **File wildcards**: `__name__` reads
  `<wildcard-dir>/<name>.txt` and picks a uniformly-random
  non-empty, non-comment (`#`) line. Names accept letters, digits,
@@ -734,6 +748,10 @@ Auto1111 / NovelAI / ComfyUI grammar.
 
 ```bash
 plakat generate "a {red|blue|green} {fox|cat|owl}" \
+ --model sd15 --count 4 --seed 42
+
+# v0.31 weighted — landscape twice as likely as portrait
+plakat generate "a {2::landscape|portrait} of a runner" \
  --model sd15 --count 4 --seed 42
 
 mkdir -p wildcards
@@ -1022,20 +1040,25 @@ plakat generate "a vintage travel poster of Tokyo at night" \
 |---|---|
 | `--embedding <SPEC>` (repeatable) | Textual Inversion `.safetensors`. Format: `PATH_OR_REPO[:trigger][:scale]`. |
 
-**Status (v0.30):** runtime injection works for SD 1.5 / SD 2.1 / SDXL
-CLIP-L. At load time plakat appends the TI's vectors to the CLIP-L
-`token_embedding.weight` matrix (via a tempfile, mirroring LoRA's
-merge pattern) and registers the trigger tokens with the tokenizer —
+**Status (v0.31):** runtime injection works for SD 1.5 / SD 2.1 /
+SDXL — both **CLIP-L-only** TIs (single tensor) and **SDXL dual-
+encoder** TIs (files carrying both `clip_l` and `clip_g` tensors
+in the same safetensors). At load time plakat appends the TI's
+vectors to the matching `token_embedding.weight` matrix — CLIP-L
+for single-encoder TIs and SD 1.5 / SD 2.1; both CLIP-L and
+CLIP-G when the file carries the dual format on SDXL. The
+trigger tokens are registered with the matching tokenizer(s) so
 prompts referencing the trigger word resolve to the new vocab IDs.
 
 Multiple `--embedding` flags stack: each one adds its rows
 sequentially. Multi-vector TIs (e.g. `(N, 768)` with N > 1) are
 rendered as `N` consecutive tokens in the prompt — each new vector
-becomes one new vocab entry (`trigger`, `trigger_1`, ...).
+becomes one new vocab entry (`trigger`, `trigger_1`, ...). Dual-
+encoder TIs must agree on N across both halves (the parser bails
+if `clip_l` has 2 vectors but `clip_g` has 3).
 
-**SDXL dual-encoder TIs** (files carrying both `clip_l` and `clip_g`
-tensors) still bail in the parser — full SDXL TI support follows in a
-later cycle. CLIP-L-only TIs work against SDXL today.
+A stack can mix single- and dual-encoder TIs on SDXL: single-
+encoder TIs only extend CLIP-L; dual-encoder TIs extend both.
 
 Use `plakat embedding info PATH` to inspect a TI file before
 applying it.

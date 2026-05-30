@@ -92,7 +92,8 @@ pub enum Command {
     Civitai(civitai::CivitaiArgs),
     /// Inspect Textual Inversion (embedding) `.safetensors` files.
     /// Runtime injection works via `plakat generate --embedding PATH`
-    /// (SD 1.5 / SD 2.1 / SDXL CLIP-L).
+    /// (SD 1.5 / SD 2.1 / SDXL — both CLIP-L-only and dual
+    /// CLIP-L+CLIP-G formats).
     #[command(subcommand_value_name = "OP")]
     Embedding(embedding::EmbeddingArgs),
     /// Animate between two prompts via CLIP-embedding lerp — N
