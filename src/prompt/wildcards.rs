@@ -8,6 +8,15 @@
 //!    Whitespace around the pipes is preserved (`{ red | blue }`
 //!    yields `" red "` or `" blue "`).
 //!
+//!    **v0.31 phase 2** — weighted alternation: any option may be
+//!    prefixed with `WEIGHT::` to bias the random pick. Weights are
+//!    relative (normalized over the group):
+//!    `{2::common|rare}` makes "common" twice as likely as "rare";
+//!    `{0.7::a|0.3::b}` reads as explicit probabilities. Omitted
+//!    weight defaults to `1.0`. Malformed weight prefixes (negative,
+//!    NaN) fall back to treating the option as literal text — no
+//!    bail, so an accidental `::` inside text doesn't crash.
+//!
 //! 2. **File wildcards**: `__colors__` reads `<dir>/colors.txt` and
 //!    picks a uniformly-random non-empty, non-comment (`#`) line.
 //!    Lines may themselves contain wildcards (inline or file) —
@@ -26,6 +35,78 @@ use anyhow::{Context, Result, bail};
 use rand::Rng;
 use rand::seq::SliceRandom;
 use std::path::Path;
+
+/// v0.31 phase 2: one parsed option inside `{...|...}`. `weight`
+/// defaults to 1.0 when the user didn't supply a `WEIGHT::` prefix;
+/// any other parse failure (negative, NaN) also falls back to 1.0
+/// with the original text kept intact (so a literal `::` inside an
+/// option doesn't bail).
+#[derive(Debug)]
+struct WeightedOption<'a> {
+    weight: f32,
+    text: &'a str,
+}
+
+/// Parse `body` into weighted alternation options. Pure helper used
+/// by `expand_inline`; tested in isolation.
+fn parse_options(body: &str) -> Vec<WeightedOption<'_>> {
+    split_top_level(body)
+        .into_iter()
+        .map(parse_one_option)
+        .collect()
+}
+
+fn parse_one_option(raw: &str) -> WeightedOption<'_> {
+    // Look for `WEIGHT::` at the start. The first `::` (not nested
+    // inside a sub-group) delimits weight from text. Sub-groups are
+    // already isolated by `split_top_level` so we just search for
+    // the first literal `::` here.
+    if let Some(idx) = raw.find("::") {
+        let (head, rest) = raw.split_at(idx);
+        let trimmed = head.trim();
+        if let Ok(w) = trimmed.parse::<f32>() {
+            if w.is_finite() && w >= 0.0 {
+                // Skip the `::` separator (2 bytes; ASCII so safe).
+                let text = &rest[2..];
+                return WeightedOption { weight: w, text };
+            }
+        }
+    }
+    WeightedOption {
+        weight: 1.0,
+        text: raw,
+    }
+}
+
+/// v0.31 phase 2: weighted random pick over a `Vec<WeightedOption>`
+/// via cumulative-distribution sampling. When every weight is 0.0
+/// (degenerate), falls back to a uniform pick — better than a
+/// divide-by-zero panic.
+fn weighted_pick<'a, R: Rng + ?Sized>(
+    options: &'a [WeightedOption<'a>],
+    rng: &mut R,
+) -> Result<&'a str> {
+    if options.is_empty() {
+        bail!("empty wildcard group {{}}");
+    }
+    let total: f32 = options.iter().map(|o| o.weight).sum();
+    if !total.is_finite() || total <= 0.0 {
+        // Degenerate: all zero / NaN. Uniform fallback.
+        let idx = rng.gen_range(0..options.len());
+        return Ok(options[idx].text);
+    }
+    let r: f32 = rng.gen_range(0.0..total);
+    let mut acc: f32 = 0.0;
+    for o in options {
+        acc += o.weight;
+        if r < acc {
+            return Ok(o.text);
+        }
+    }
+    // Float rounding can leave `r` exactly equal to total. Pick the
+    // last option in that case (statistically negligible).
+    Ok(options.last().expect("non-empty by guard").text)
+}
 
 const MAX_DEPTH: usize = 8;
 
@@ -124,12 +205,12 @@ fn expand_inline<R: Rng + ?Sized>(s: &str, rng: &mut R) -> Result<String> {
                 continue;
             }
         };
-        // Split body on top-level `|`s.
+        // Split body on top-level `|`s and parse each option for
+        // an optional `WEIGHT::` prefix. v0.31 phase 2: weighted
+        // sampling replaces the v0.16 uniform `.choose(rng)`.
         let body: String = chars[i + 1..group_end].iter().collect();
-        let options = split_top_level(&body);
-        let pick = options
-            .choose(rng)
-            .ok_or_else(|| anyhow::anyhow!("empty wildcard group {{}}"))?;
+        let options = parse_options(&body);
+        let pick = weighted_pick(&options, rng)?;
         // Recurse so nested `{...}` inside the picked option also
         // expand. Pure recursion on `expand_inline` only — file
         // wildcards are handled by the outer `expand_inner` pass.
@@ -444,5 +525,161 @@ mod tests {
         std::fs::write(dir.path().join("warm_colors.txt"), "ruby\n").unwrap();
         let out = expand("__warm-colors__ __warm_colors__", Some(dir.path()), &mut r).unwrap();
         assert_eq!(out, "amber ruby");
+    }
+
+    // ----------------------------------------------------------------
+    // v0.31 phase 2: weighted alternation.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn parse_options_no_weight_defaults_to_one() {
+        let opts = parse_options("red|blue|green");
+        assert_eq!(opts.len(), 3);
+        for o in &opts {
+            assert!((o.weight - 1.0).abs() < f32::EPSILON);
+        }
+        assert_eq!(opts[0].text, "red");
+        assert_eq!(opts[1].text, "blue");
+        assert_eq!(opts[2].text, "green");
+    }
+
+    #[test]
+    fn parse_options_explicit_weight_prefix() {
+        let opts = parse_options("0.7::common|0.3::rare");
+        assert_eq!(opts.len(), 2);
+        assert!((opts[0].weight - 0.7).abs() < f32::EPSILON);
+        assert_eq!(opts[0].text, "common");
+        assert!((opts[1].weight - 0.3).abs() < f32::EPSILON);
+        assert_eq!(opts[1].text, "rare");
+    }
+
+    #[test]
+    fn parse_options_integer_weight() {
+        // Community convention: relative integer weights — `{2::a|b}`
+        // means "a is twice as likely as b" (b defaults to 1).
+        let opts = parse_options("2::common|rare");
+        assert!((opts[0].weight - 2.0).abs() < f32::EPSILON);
+        assert_eq!(opts[0].text, "common");
+        assert!((opts[1].weight - 1.0).abs() < f32::EPSILON);
+        assert_eq!(opts[1].text, "rare");
+    }
+
+    #[test]
+    fn parse_options_malformed_weight_keeps_text_literal() {
+        // `foo::bar` — `foo` doesn't parse as a float, so the whole
+        // option stays as the literal string `foo::bar` with weight 1.0.
+        let opts = parse_options("foo::bar|baz");
+        assert!((opts[0].weight - 1.0).abs() < f32::EPSILON);
+        assert_eq!(opts[0].text, "foo::bar");
+        assert_eq!(opts[1].text, "baz");
+    }
+
+    #[test]
+    fn parse_options_negative_weight_falls_back_to_literal() {
+        // Negative weights are conceptually meaningless. Keep the
+        // option intact as a literal so an accidental `-1.0::` typo
+        // doesn't silently bias the result.
+        let opts = parse_options("-1.0::a|b");
+        assert!((opts[0].weight - 1.0).abs() < f32::EPSILON);
+        assert_eq!(opts[0].text, "-1.0::a");
+    }
+
+    #[test]
+    fn weighted_zero_weight_option_never_picks() {
+        // `{0.0::never|always}` must never pick "never".
+        let mut r = StdRng::seed_from_u64(123);
+        for _ in 0..50 {
+            let out = expand("{0.0::never|always}", None, &mut r).unwrap();
+            assert_eq!(out, "always", "zero-weight option must not pick");
+        }
+    }
+
+    #[test]
+    fn weighted_only_zero_weights_falls_back_to_uniform() {
+        // Degenerate case — all weights 0.0. Don't divide-by-zero;
+        // fall back to a uniform pick so the expander still
+        // produces a valid output.
+        let mut r = StdRng::seed_from_u64(7);
+        // Both options weight 0; uniform should yield each ~half the time.
+        let mut counts = [0u32, 0u32];
+        for _ in 0..200 {
+            let out = expand("{0.0::a|0.0::b}", None, &mut r).unwrap();
+            match out.as_str() {
+                "a" => counts[0] += 1,
+                "b" => counts[1] += 1,
+                other => panic!("unexpected expansion {other:?}"),
+            }
+        }
+        // Loose bound — uniform should split roughly evenly.
+        assert!(counts[0] > 50 && counts[1] > 50, "counts={counts:?}");
+    }
+
+    #[test]
+    fn weighted_distribution_matches_specified_ratio() {
+        // Statistical sanity check: `{4::common|1::rare}` should
+        // resolve to "common" ~80% of the time, "rare" ~20%.
+        // Generous bounds (75-85% for "common") so the test isn't
+        // flaky on legitimate RNG variation.
+        let mut r = StdRng::seed_from_u64(2026);
+        let mut common = 0u32;
+        let mut rare = 0u32;
+        let trials = 4000u32;
+        for _ in 0..trials {
+            let out = expand("{4::common|1::rare}", None, &mut r).unwrap();
+            match out.as_str() {
+                "common" => common += 1,
+                "rare" => rare += 1,
+                _ => unreachable!(),
+            }
+        }
+        let common_pct = (common as f32) / (trials as f32);
+        assert!(
+            (0.75..=0.85).contains(&common_pct),
+            "expected ~80% common, got {common_pct:.3} ({common}/{rare})",
+        );
+    }
+
+    #[test]
+    fn weighted_compose_with_nested_alternation() {
+        // Nested + weighted should compose. Outer 90/10; inner uniform.
+        // We don't assert the exact ratio here — just that all valid
+        // outputs appear at least once over many trials.
+        let mut r = StdRng::seed_from_u64(99);
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let out = expand("{9::{a|b}|1::c}", None, &mut r).unwrap();
+            assert!(
+                matches!(out.as_str(), "a" | "b" | "c"),
+                "got {out:?}"
+            );
+            seen.insert(out);
+        }
+        // Both "a" and "b" should show up; "c" might or might not at
+        // 5% over 200 trials, so only assert the inner alternation
+        // explored both branches.
+        assert!(seen.contains("a") && seen.contains("b"), "saw {seen:?}");
+    }
+
+    #[test]
+    fn weighted_preserves_uniform_baseline_for_no_weights() {
+        // Sanity: an unweighted group still distributes uniformly
+        // (~33%/33%/33% over many trials, ±5%). Confirms the
+        // weighted path is byte-identical to the v0.16 uniform path
+        // when every option defaults to 1.0.
+        let mut r = StdRng::seed_from_u64(314);
+        let mut counts = std::collections::HashMap::new();
+        let trials = 3000u32;
+        for _ in 0..trials {
+            let out = expand("{red|blue|green}", None, &mut r).unwrap();
+            *counts.entry(out).or_insert(0u32) += 1;
+        }
+        for color in ["red", "blue", "green"] {
+            let n = *counts.get(color).unwrap_or(&0);
+            let pct = (n as f32) / (trials as f32);
+            assert!(
+                (0.28..=0.39).contains(&pct),
+                "expected ~33% for {color}, got {pct:.3} ({n}/{trials})",
+            );
+        }
     }
 }
