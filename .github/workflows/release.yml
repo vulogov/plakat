@@ -143,83 +143,85 @@ jobs:
       - name: Install aarch64 Linux cross toolchain
         if: matrix.cross_linux
         run: |
-          # Restrict every existing Ubuntu apt source to amd64 only,
-          # so `dpkg --add-architecture arm64` below doesn't make apt
-          # ask archive.ubuntu.com / security.ubuntu.com for arm64
-          # packages (those mirrors don't host arm64 — it lives on
-          # ports.ubuntu.com instead, and the 404s break the build).
+          # v0.31.0 phase 4 (third attempt): wholesale replacement of
+          # Ubuntu apt sources. Earlier attempts (v0.29.1 single-mirror
+          # mirrorlist, v0.31.0 `Architectures: amd64` rewrite) didn't
+          # fully stop apt from probing arm64 against amd64-only
+          # mirrors. The recurring issue: `Architectures:` on the
+          # DEB822 source doesn't restrict `mirror+file:` URI fan-out,
+          # so `dpkg --add-architecture arm64` re-triggers arm64
+          # probes against every URL the mirrorlist resolves to.
           #
-          # The runner image has historically used one of two layouts
-          # depending on the snapshot — and recent images carry sources
-          # under BOTH locations:
-          #   * legacy: /etc/apt/sources.list + .list files in
-          #             /etc/apt/sources.list.d/
-          #   * DEB822: /etc/apt/sources.list.d/*.sources (multi-line)
-          # We harden both. Idempotent (no-op when already restricted).
-          restrict_to_amd64() {
-            local f="$1"
-            case "$f" in
-              *.list)
-                # Single-line `deb http://...` entries — inject [arch=amd64]
-                # if not already present.
-                sudo sed -i -E \
-                  's|^(deb(-src)?) (https?)|\1 [arch=amd64] \3|g' "$f"
-                ;;
-              *.sources)
-                # DEB822 multi-line block — force `Architectures: amd64`.
-                # Recent GH-hosted runner images ship the ubuntu.sources
-                # file with `Architectures: amd64 arm64` already set
-                # (multi-arch by default), so the old `grep -q` skip-if-
-                # already-set check left arm64 unrestricted — apt then
-                # probed the Azure mirror for arm64 indexes and 404ed.
-                # Idempotent: existing Architectures: line is rewritten;
-                # if missing, a new one is inserted after Types: deb.
-                if sudo grep -q '^Architectures:' "$f"; then
-                  sudo sed -i -E 's|^Architectures:.*|Architectures: amd64|' "$f"
-                else
-                  sudo sed -i '/^Types: deb/a Architectures: amd64' "$f"
-                fi
-                ;;
-            esac
-          }
-          [ -f /etc/apt/sources.list ] && restrict_to_amd64 /etc/apt/sources.list
-          for f in /etc/apt/sources.list.d/*.list \
-                   /etc/apt/sources.list.d/*.sources; do
-            [ -f "$f" ] && restrict_to_amd64 "$f"
+          # New strategy — bypass the runner image's source files
+          # entirely:
+          #
+          # 1. Delete any `.sources` file in /etc/apt/sources.list.d/
+          #    that uses `mirror+file:` URIs (catches ubuntu.sources
+          #    and any siblings with the same shape).
+          # 2. Delete any `mirror+file:` reference from .list files.
+          # 3. Restrict every remaining .list file to amd64 via
+          #    `[arch=amd64]` (catches azure-cli, google-chrome, etc.).
+          # 4. Restrict /etc/apt/sources.list (legacy global) to amd64.
+          # 5. Write OUR explicit amd64 sources via a new
+          #    /etc/apt/sources.list.d/ubuntu-amd64.list pointing at
+          #    azure.archive.ubuntu.com (fast from Azure runners).
+          # 6. Add explicit arm64 sources via /etc/apt/sources.list.d/
+          #    arm64.list pointing at ports.ubuntu.com.
+          # 7. dpkg --add-architecture arm64; apt-get update.
+          #
+          # Net effect: deterministic source layout, no apt-mirrors.txt
+          # in the picture, no DEB822 sources, no mirror+file: URIs.
+          # Idempotent on rerun.
+
+          # Step 1: delete .sources files that use mirror+file.
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            if sudo grep -q 'mirror+file' "$f"; then
+              echo "removing $f (uses mirror+file:)"
+              sudo rm "$f"
+            fi
           done
 
-          # v0.29 / v0.29.1 fix: the runner image ships a mirrorlist
-          # at /etc/apt/apt-mirrors.txt referenced by a DEB822 source
-          # with `URIs: mirror+file:///etc/apt/apt-mirrors.txt`. Apt
-          # fans out across EVERY URL in the mirrorlist for each
-          # architecture. The default mirrorlist contains
-          # azure.archive.ubuntu.com (the Azure-runner-local mirror,
-          # amd64-only) AND archive.ubuntu.com / security.ubuntu.com
-          # (the canonical Ubuntu mirrors, also amd64-only).
-          # `Architectures: amd64` on the DEB822 source doesn't stop
-          # apt from probing every URL for the arm64 indexes added
-          # by `dpkg --add-architecture arm64` below.
-          #
-          # Surgical sed passes (one per problem URL) keep regressing
-          # as the runner image's mirrorlist evolves. Replace the
-          # whole file with a single line pointing at the Azure
-          # mirror — it's amd64-only by virtue of being archive.ubuntu's
-          # mirror, fast from the runner (intra-Azure), and the
-          # explicit ports.ubuntu.com source added below handles
-          # everything arm64.
+          # Step 2 + 3: lock remaining .list sources to amd64. The
+          # `[arch=amd64]` qualifier IS honoured by apt for `.list`
+          # sources (unlike DEB822 mirror+file:).
+          restrict_list_to_amd64() {
+            local f="$1"
+            # Strip any pre-existing [arch=...] qualifier, then
+            # re-inject [arch=amd64]. Idempotent.
+            sudo sed -i -E \
+              -e 's|^(deb(-src)?) \[arch=[^]]*\] |\1 |g' \
+              -e 's|^(deb(-src)?) (https?)|\1 [arch=amd64] \3|g' "$f"
+          }
+          [ -f /etc/apt/sources.list ] && restrict_list_to_amd64 /etc/apt/sources.list
+          for f in /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] && restrict_list_to_amd64 "$f"
+          done
+
+          # Step 4: also nuke the mirrorlist file itself if present —
+          # it has no consumers left after step 1, but leaving it
+          # around invites a future runner-image source file to start
+          # using it again.
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            echo "http://azure.archive.ubuntu.com/ubuntu/" \
-              | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+            sudo rm /etc/apt/apt-mirrors.txt
           fi
 
-          # Add the arm64 ports mirror (Ubuntu jammy is what ubuntu-22.04
-          # runs; if the runner image upgrades to 24.04 noble we'd need
-          # to bump this).
-          {
-            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse"
-            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse"
-            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse"
-          } | sudo tee /etc/apt/sources.list.d/arm64.list
+          # Step 5: explicit amd64 source. azure.archive.ubuntu.com is
+          # the Azure-runner-local mirror — fast intra-DC.
+          sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list > /dev/null <<'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse
+          EOF
+
+          # Step 6: explicit arm64 source via ports.ubuntu.com (the
+          # only mirror that hosts non-x86 Ubuntu binaries).
+          sudo tee /etc/apt/sources.list.d/arm64.list > /dev/null <<'EOF'
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+          EOF
           sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y \
