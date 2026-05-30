@@ -1025,9 +1025,23 @@ fn run_one(
 /// prepared conditioning Tensor, and the per-conditioner runtime
 /// parameters (strength + timestep window). `ControlRequest`s used by
 /// the denoise loop borrow from these.
+///
+/// `conditioning` is always populated with the "static" image (single
+/// `(1, 3, H, W)` Tensor). Non-animate pipelines (t2i, img2img,
+/// portrait, stylize) only ever look at this field — they treat the
+/// CN stack as a single image per conditioner.
+///
+/// v0.30 phase 2: `per_frame` carries per-frame conditioning for
+/// `plakat animate --control-spec ...video=...`. When `Some(vec)`,
+/// the vec length matches the animate frame count and each
+/// `(1, 3, H, W)` tensor is the conditioning for one output frame.
+/// AnimateDiff's per-step path uses `per_frame` if present, falling
+/// back to `conditioning.repeat(frames, 1, 1, 1)` (the v0.28 static
+/// behaviour) when it's `None`.
 pub struct OwnedControl {
     pub net: ControlNet,
     pub conditioning: Tensor,
+    pub per_frame: Option<Vec<Tensor>>,
     pub strength: f32,
     pub start: f32,
     pub end: f32,
@@ -1039,6 +1053,16 @@ pub struct OwnedControl {
 /// when a spec has neither `image=` nor `from=` set — pipelines like
 /// `img2img` pass `Some(&req.input)`; `t2i` passes `None` (which causes
 /// the spec to error out, matching the pre-v0.11 behaviour).
+///
+/// `animate_frames` activates v0.30 phase 2's per-frame video CN:
+/// - `None` — non-animate caller. Specs with `video=` bail loud since
+///   per-frame conditioning is meaningless for single-image pipelines.
+/// - `Some(n)` — animate caller. Specs with `video=` get their video
+///   decoded via ffmpeg, sub-sampled to `n` frames evenly distributed,
+///   each frame annotated, and the stack lands in `OwnedControl.per_frame`.
+///   The single `OwnedControl.conditioning` is also populated with the
+///   first frame's tensor so the active-step check + static fallback
+///   paths still work.
 pub async fn load_control_stack(
     specs: &[ControlSpec],
     model: &str,
@@ -1047,6 +1071,7 @@ pub async fn load_control_stack(
     device: &Device,
     dtype: DType,
     fallback_input: Option<&std::path::Path>,
+    animate_frames: Option<usize>,
 ) -> Result<Vec<OwnedControl>> {
     if specs.is_empty() {
         return Ok(Vec::new());
@@ -1059,47 +1084,107 @@ pub async fn load_control_stack(
             .with_context(|| {
                 format!("loading ControlNet weights for kind={:?}", spec.kind)
             })?;
-        let cond = match (spec.image.as_ref(), spec.from.as_ref(), fallback_input) {
-            (Some(path), None, _) => prepare_conditioning(path, width, height, device, dtype)
-                .with_context(|| {
-                    format!(
-                        "preparing ControlNet conditioning image for kind={:?}",
-                        spec.kind
-                    )
-                })?,
-            (None, Some(path), _) => {
-                crate::pipelines::controlnet_annotator::annotate(
-                    spec.kind, path, width, height, device, dtype,
+        // v0.30 phase 2: video= takes priority when set. Both single
+        // and per-frame fields get populated for compatibility with
+        // active-step checks and static fallback.
+        let (cond, per_frame) = if let Some(video_path) = spec.video.as_ref() {
+            let n_frames = animate_frames.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--control-spec for kind={:?}: video= is only supported on \
+                     `plakat animate` (per-frame conditioning is meaningless for \
+                     single-image pipelines)",
+                    spec.kind
+                )
+            })?;
+            let frame_tmp = tempfile::Builder::new()
+                .prefix("plakat-controlvideo-")
+                .tempdir()
+                .with_context(|| "creating tempdir for video frame decode")?;
+            let raw_frames =
+                crate::imaging::video::extract_frames(video_path, frame_tmp.path())
+                    .with_context(|| {
+                        format!(
+                            "decoding control video {} for kind={:?}",
+                            video_path.display(),
+                            spec.kind
+                        )
+                    })?;
+            let picked =
+                crate::imaging::video::pick_evenly_spaced(&raw_frames, n_frames);
+            anyhow::ensure!(
+                picked.len() == n_frames,
+                "video frame pick yielded {} (wanted {})",
+                picked.len(),
+                n_frames
+            );
+            let mut per_frame_tensors: Vec<Tensor> = Vec::with_capacity(n_frames);
+            for fp in &picked {
+                let t = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, fp, width, height, device, dtype,
                 )
                 .await
                 .with_context(|| {
-                    format!("running --control-from annotator for kind={:?}", spec.kind)
-                })?
-            }
-            (None, None, Some(fallback)) => {
-                crate::pipelines::controlnet_annotator::annotate(
-                    spec.kind, fallback, width, height, device, dtype,
-                )
-                .await
-                .with_context(|| {
                     format!(
-                        "auto-annotating fallback input for kind={:?} (img2img default)",
+                        "annotating control-video frame {} for kind={:?}",
+                        fp.display(),
                         spec.kind
                     )
-                })?
+                })?;
+                per_frame_tensors.push(t);
             }
-            (Some(_), Some(_), _) => anyhow::bail!(
-                "--control-spec for kind={:?}: image= and from= are mutually exclusive",
-                spec.kind
-            ),
-            (None, None, None) => anyhow::bail!(
-                "--control-spec for kind={:?}: requires image=PATH or from=PATH",
-                spec.kind
-            ),
+            let first = per_frame_tensors[0].clone();
+            // `frame_tmp` drops here, deleting the extracted PNGs — but
+            // every tensor is already on-device, so the on-disk files
+            // can go.
+            drop(frame_tmp);
+            (first, Some(per_frame_tensors))
+        } else {
+            let single = match (spec.image.as_ref(), spec.from.as_ref(), fallback_input) {
+                (Some(path), None, _) => {
+                    prepare_conditioning(path, width, height, device, dtype).with_context(|| {
+                        format!(
+                            "preparing ControlNet conditioning image for kind={:?}",
+                            spec.kind
+                        )
+                    })?
+                }
+                (None, Some(path), _) => {
+                    crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind, path, width, height, device, dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("running --control-from annotator for kind={:?}", spec.kind)
+                    })?
+                }
+                (None, None, Some(fallback)) => {
+                    crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind, fallback, width, height, device, dtype,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "auto-annotating fallback input for kind={:?} (img2img default)",
+                            spec.kind
+                        )
+                    })?
+                }
+                (Some(_), Some(_), _) => anyhow::bail!(
+                    "--control-spec for kind={:?}: image= and from= are mutually exclusive",
+                    spec.kind
+                ),
+                (None, None, None) => anyhow::bail!(
+                    "--control-spec for kind={:?}: requires image=PATH, from=PATH, \
+                     or video=PATH (the last only on `plakat animate`)",
+                    spec.kind
+                ),
+            };
+            (single, None)
         };
         out.push(OwnedControl {
             net,
             conditioning: cond,
+            per_frame,
             strength: spec.strength,
             start: spec.start,
             end: spec.end,
@@ -1191,6 +1276,13 @@ pub struct ControlSpec {
     pub kind: ControlKind,
     pub image: Option<std::path::PathBuf>,
     pub from: Option<std::path::PathBuf>,
+    /// v0.30 phase 2: per-frame video control. When set, the input
+    /// is treated as a video; frames are extracted via ffmpeg and
+    /// sub-sampled to the animate frame budget. Each animate frame
+    /// receives its own ControlNet conditioning. Mutually exclusive
+    /// with `image` and `from`. Only consumed by AnimateDiff
+    /// (per-frame is meaningless for single-image t2i / img2img).
+    pub video: Option<std::path::PathBuf>,
     pub strength: f32,
     pub start: f32,
     pub end: f32,
@@ -1213,6 +1305,7 @@ impl ControlSpec {
             kind: k,
             image,
             from,
+            video: None,
             strength,
             start,
             end,
@@ -1263,6 +1356,7 @@ impl std::str::FromStr for ControlSpec {
             .with_context(|| format!("parsing kind in --control-spec {s:?}"))?;
         let mut image = None;
         let mut from = None;
+        let mut video = None;
         let mut strength: f32 = 1.0;
         let mut start: f32 = 0.0;
         let mut end: f32 = 1.0;
@@ -1285,6 +1379,12 @@ impl std::str::FromStr for ControlSpec {
                     }
                     from = Some(std::path::PathBuf::from(v));
                 }
+                "video" => {
+                    if video.is_some() {
+                        anyhow::bail!("--control-spec {s:?}: duplicate video=");
+                    }
+                    video = Some(std::path::PathBuf::from(v));
+                }
                 "strength" => {
                     strength = v.parse::<f32>().with_context(|| {
                         format!("--control-spec {s:?}: strength={v:?} must be a float")
@@ -1302,12 +1402,18 @@ impl std::str::FromStr for ControlSpec {
                 }
                 other => anyhow::bail!(
                     "--control-spec {s:?}: unknown option {other:?} \
-                     (supported: image, from, strength, start, end)"
+                     (supported: image, from, video, strength, start, end)"
                 ),
             }
         }
-        if image.is_some() && from.is_some() {
-            anyhow::bail!("--control-spec {s:?}: pass image= OR from=, not both");
+        let sources = [image.is_some(), from.is_some(), video.is_some()]
+            .iter()
+            .filter(|b| **b)
+            .count();
+        if sources > 1 {
+            anyhow::bail!(
+                "--control-spec {s:?}: pass at most one of image= / from= / video="
+            );
         }
         if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) || start > end {
             anyhow::bail!(
@@ -1319,6 +1425,7 @@ impl std::str::FromStr for ControlSpec {
             kind,
             image,
             from,
+            video,
             strength,
             start,
             end,
@@ -1369,6 +1476,61 @@ mod tests {
     #[test]
     fn control_spec_rejects_unknown_option() {
         assert!("depth:strenth=1.0".parse::<ControlSpec>().is_err()); // typo
+    }
+
+    // ---------------------------------------------------------------
+    // v0.30 phase 2: video= parsing + multi-source mutual exclusion.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn control_spec_parses_video_only() {
+        let s: ControlSpec = "canny:video=./drive.mp4".parse().unwrap();
+        assert_eq!(s.kind, ControlKind::Canny);
+        assert!(s.image.is_none());
+        assert!(s.from.is_none());
+        assert_eq!(s.video.as_ref().unwrap().to_str(), Some("./drive.mp4"));
+        assert_eq!(s.strength, 1.0);
+    }
+
+    #[test]
+    fn control_spec_parses_video_with_strength_and_window() {
+        let s: ControlSpec =
+            "openpose:video=./pose.mp4:strength=0.6:start=0.0:end=0.8".parse().unwrap();
+        assert_eq!(s.kind, ControlKind::OpenPose);
+        assert!(s.video.is_some());
+        assert_eq!(s.strength, 0.6);
+        assert_eq!(s.start, 0.0);
+        assert_eq!(s.end, 0.8);
+    }
+
+    #[test]
+    fn control_spec_rejects_image_and_video() {
+        assert!(
+            "depth:image=a.png:video=b.mp4".parse::<ControlSpec>().is_err()
+        );
+    }
+
+    #[test]
+    fn control_spec_rejects_from_and_video() {
+        assert!(
+            "depth:from=a.png:video=b.mp4".parse::<ControlSpec>().is_err()
+        );
+    }
+
+    #[test]
+    fn control_spec_rejects_all_three_sources() {
+        assert!(
+            "depth:image=a.png:from=b.png:video=c.mp4"
+                .parse::<ControlSpec>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn control_spec_rejects_duplicate_video() {
+        assert!(
+            "depth:video=a.mp4:video=b.mp4".parse::<ControlSpec>().is_err()
+        );
     }
 
     #[test]

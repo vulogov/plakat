@@ -11,6 +11,7 @@ pub mod openpose_post;
 pub mod sd_core;
 pub mod sdxl_clip;
 pub mod sdxl_unet;
+pub mod vendored_clip;
 pub mod tiled;
 pub mod extra_schedulers;
 pub mod hires_fix;

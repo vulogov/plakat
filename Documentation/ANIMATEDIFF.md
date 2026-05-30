@@ -1,4 +1,4 @@
-# AnimateDiff (v0.29)
+# AnimateDiff (v0.30)
 
 `plakat animate --animatediff` renders **motion-coherent N-frame
 sequences** from a single prompt using AnimateDiff motion adapters
@@ -7,10 +7,11 @@ prompt-morph mode, which interpolates between two prompts without
 temporal-attention coherence.
 
 **v0.27 shipped the full AnimateDiff feature set** (SD 1.5 + SDXL,
-both with ControlNet + sliding-window long-form). **v0.28 makes
-it pleasant to use in practice** — multi-CN stacking,
-AnimateLCM 4-step generation, the `plakat.animate` Bund host word,
-and `plakat motion-adapter` inspection commands.
+both with ControlNet + sliding-window long-form). **v0.28 made
+it pleasant to use** (multi-CN stacking, AnimateLCM 4-step,
+`plakat.animate` Bund word). **v0.29 brought it to scenarios**.
+**v0.30 phase 2 closes the headline carry**: per-frame video
+ControlNet via `--control-spec ...:video=PATH`.
 
 | Capability | SD 1.5 | SDXL | Added in |
 |---|---|---|---|
@@ -19,6 +20,7 @@ and `plakat motion-adapter` inspection commands.
 | Motion LoRAs | ✓ | ✓ | v0.26 / v0.27 |
 | ControlNet (single) | ✓ | ✓ | v0.27 |
 | **ControlNet stacking** (multi-CN) | ✓ | ✓ | **v0.28** |
+| **Per-frame video ControlNet** | ✓ | ✓ | **v0.30** |
 | Long-form sliding window | ✓ | ✓ | v0.27 |
 | **4-step LCM generation** | ✓ (AnimateLCM) | — (no public SDXL repo) | **v0.28** |
 | **Bund scripting (`plakat.animate`)** | ✓ | — (v0.29) | **v0.28** |
@@ -92,6 +94,36 @@ plakat animate --animatediff --model sdxl \
     --control-spec 'canny:from=./source.jpg:strength=0.4' \
     --frames 16 --size 1024x1024 --format mp4
 ```
+
+### v0.30: per-frame video ControlNet (video-to-video)
+
+```bash
+# ffmpeg decodes the input video; frames are sub-sampled evenly to
+# match --frames, each frame independently annotated, residuals
+# injected per-frame during AnimateDiff sampling. SD 1.5 + SDXL.
+plakat animate --animatediff --model sd15 \
+    --from "a glowing neon dragon, cyberpunk alley, rain" \
+    --control-spec 'openpose:video=./reference.mp4:strength=0.9' \
+    --frames 16 --format mp4 --gif-delay-ms 80
+```
+
+Compose `video=` with the static `image=` / `from=` modes — each
+`--control-spec` is independent. A typical recipe: one depth `video=`
+controls macro motion, a canny `image=` from a frozen frame locks
+edges:
+
+```bash
+plakat animate --animatediff --model sd15 \
+    --from "watercolor rendering of a runner, soft light" \
+    --control-spec 'depth:video=./jog.mp4:strength=0.7' \
+    --control-spec 'canny:image=./reference.png:strength=0.3' \
+    --frames 32 --window-size 16 --window-overlap 4 --format mp4
+```
+
+When `--frames` exceeds `--window-size`, sliding-window long-form
+slices the video CN stack per window (no re-decoding). Input video
+length is independent of `--frames`: short videos are tail-padded,
+long videos are uniformly sub-sampled.
 
 ### v0.28: Bund scripting bridge
 

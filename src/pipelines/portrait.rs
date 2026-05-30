@@ -1167,6 +1167,7 @@ pub async fn run(req: Request) -> Result<std::sync::Arc<crate::pipelines::sd_cor
         &req.device,
         dtype,
         None,
+        None, // portrait is single-image — no per-frame video CN
     )
     .await?;
 
