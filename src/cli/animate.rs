@@ -777,9 +777,10 @@ fn denoise_one_frame(
     let w = width as usize;
     let h = height as usize;
 
-    // Same seeding path the t2i pipeline uses. Metal accepts only
-    // u32 seeds; mask before calling.
-    if let Err(e) = core.device.set_seed(seed) {
+    // v0.34 phase 1: device-aware seed prep replaces u32 mask.
+    // Metal high seeds hash through SplitMix64; identity below 2^32.
+    let prepared = crate::pipelines::seeds::prepare_seed(seed, &core.device);
+    if let Err(e) = core.device.set_seed(prepared) {
         tracing::debug!(target: "plakat", "set_seed ignored: {e}");
     }
 

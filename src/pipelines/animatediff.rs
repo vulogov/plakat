@@ -331,9 +331,11 @@ impl AnimateDiffPipeline {
         let latent_h = h / 8;
         let latent_w = w / 8;
 
-        // Same seeding path as t2i / animate. Metal accepts only u32.
-        let seed = seed & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed) {
+        // Same seeding path as t2i / animate. v0.34 phase 1: device-
+        // aware seed prep replaces u32 mask (Metal high seeds hashed
+        // through SplitMix64; CPU/CUDA get full u64).
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
             tracing::debug!(target: "plakat", "set_seed ignored: {e}");
         }
 
@@ -598,8 +600,9 @@ impl AnimateDiffPipeline {
             let latent_w = w / 8;
             // Seed the device's RNG once with the user's top-level
             // seed so the full-length noise is reproducible.
-            let seed_u32 = seed & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed_u32) {
+            // v0.34 phase 1: device-aware seed prep.
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+            if let Err(e) = self.device.set_seed(prepared) {
                 tracing::debug!(target: "plakat", "set_seed for FreeNoise ignored: {e}");
             }
             let n = Tensor::randn(
@@ -1041,8 +1044,9 @@ impl AnimateDiffSdxlPipeline {
         let latent_h = h / 8;
         let latent_w = w / 8;
 
-        let seed = seed & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed) {
+        // v0.34 phase 1: device-aware seed prep.
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
             tracing::debug!(target: "plakat", "set_seed ignored: {e}");
         }
 
@@ -1287,8 +1291,9 @@ impl AnimateDiffSdxlPipeline {
             let h = height as usize;
             let latent_h = h / 8;
             let latent_w = w / 8;
-            let seed_u32 = seed & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed_u32) {
+            // v0.34 phase 1: device-aware seed prep.
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+            if let Err(e) = self.device.set_seed(prepared) {
                 tracing::debug!(target: "plakat", "set_seed for FreeNoise (SDXL) ignored: {e}");
             }
             let n = Tensor::randn(
