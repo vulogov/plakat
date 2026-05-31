@@ -11,14 +11,52 @@
 //!   `candle_transformers::models::t5`. Same `T5EncoderModel` SD3
 //!   uses.
 //! * **DiT-XL/2 backbone** (~600M params) — vendored in
-//!   `pipelines::pixart_dit` (v0.35 phase 1). adaLN-single + per-
-//!   block scale_shift_table; KV-compression deferred to v0.36+
-//!   (only used by the 2K-MS variant).
+//!   `pipelines::pixart_dit` (v0.35 phase 1, v0.36 phase 3 added
+//!   KV-compression). adaLN-single + per-block scale_shift_table.
 //! * **SD-family KL-VAE** — Arc-shared via the v0.34 phase 3 cache.
 //! * **DPM++ sampler** via `pipelines::scheduler` (PixArt-Σ's
-//!   recommendation).
+//!   recommendation). v0.36 phase 4: LCM scheduler composes too
+//!   when paired with a PixArt LCM-LoRA (see below).
 //! * **Seed plumbing** through `pipelines::seeds::prepare_seed`
 //!   (v0.34 phase 1 chokepoint).
+//!
+//! ## v0.36 phase 4: LCM with PixArt
+//!
+//! PixArt-Σ-LCM is not published as a standalone checkpoint, but
+//! 2-step (or 4-step) PixArt generation composes from existing
+//! infrastructure today:
+//!
+//! ```bash
+//! plakat generate "a misty forest at dawn" \
+//!     --model pixart \
+//!     --lora civitai:NNNNNN:1.0 \   # PixArt LCM-LoRA
+//!     --scheduler lcm --steps 4 --guidance 1.5
+//! ```
+//!
+//! Mechanism:
+//! - `SchedulerKind::Lcm` (v0.28 phase 1) routes through
+//!   `lcm_scheduler::LcmSchedulerConfig` inside `scheduler::build`
+//!   — already wired into PixArt's denoise loop at line ~271.
+//! - PixArt LoRA merge (v0.35 phase 4) handles the LCM-LoRA via
+//!   the diffusers PEFT format — no PixArt-specific changes
+//!   needed.
+//! - Recommended hyperparameters mirror the SD-family LCM-LoRA
+//!   pattern: 4 steps + guidance 1.5 (the LCM-LoRA was distilled
+//!   under those conditions).
+//!
+//! ## What's NOT here (deferred to v0.37+)
+//!
+//! - **Native PixArt-α-LCM checkpoint integration**
+//!   (`PixArt-alpha/PixArt-LCM-XL-2-1024-MS`). α-LCM uses the
+//!   PixArt-α architecture, which lacks the Σ-specific
+//!   `resolution_embedder` + `aspect_ratio_embedder` inside
+//!   `adaln_single.emb`. Loading α weights into the Σ DiT would
+//!   fail at the VarBuilder for those missing tensors. Supporting
+//!   α-LCM requires an α/Σ architectural fork in `pixart_dit`
+//!   (`Config::sigma_conditioning: bool` flag + optional
+//!   embedders) — well-scoped but deferred to keep v0.36 tight.
+//!   The early bail in `Pipeline::load` (below) surfaces this
+//!   clearly when a user passes an α repo path.
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -69,11 +107,57 @@ pub struct Pipeline {
     sd_cfg: StableDiffusionConfig,
 }
 
+/// v0.36 phase 4: verify the repo is a PixArt-Σ checkpoint (not
+/// α / α-LCM). The Σ DiT requires `adaln_single.emb.resolution_
+/// embedder` + `aspect_ratio_embedder` weights that α checkpoints
+/// don't ship. Detection: every Σ checkpoint published by
+/// `PixArt-alpha` carries the substring `Sigma` (case-insensitive)
+/// in the repo path. PixArt-α + PixArt-LCM (the α-distilled LCM)
+/// do NOT.
+///
+/// Returns `Ok(())` for Σ repos (and unrecognised paths — best-
+/// effort; users can override by passing their own fork's full
+/// HF id). Bails on `PixArt-LCM` / `PixArt-XL-2-*` strings that
+/// match α with the LCM-LoRA composition pointer.
+fn is_pixart_sigma_repo(repo: &str) -> Result<()> {
+    let r = repo.to_lowercase();
+    let has_sigma = r.contains("sigma");
+    if has_sigma {
+        return Ok(());
+    }
+    let looks_like_alpha = r.contains("pixart-xl-2") || r.contains("pixart-lcm");
+    if looks_like_alpha {
+        anyhow::bail!(
+            "PixArt-α / α-LCM checkpoints are not yet supported — \
+             this plakat build loads only PixArt-Σ DiT weights, which \
+             carry Σ-specific resolution + aspect_ratio embedders that \
+             α checkpoints don't ship.\n\n\
+             For LCM-style 2-step / 4-step PixArt generation, compose \
+             PixArt-Σ with a PixArt LCM-LoRA instead:\n\n  \
+             plakat generate \"...\" --model pixart \\\n    \
+             --lora civitai:NNNNNN:1.0 \\\n    \
+             --scheduler lcm --steps 4 --guidance 1.5\n\n\
+             Native α-LCM checkpoint integration is a v0.37+ deferral \
+             (requires an α/Σ architectural fork in `pixart_dit`)."
+        );
+    }
+    Ok(())
+}
+
 impl Pipeline {
     /// v0.35 phase 2: full load. Downloads T5 (3 shards) + DiT +
     /// VAE from the canonical diffusers layout, builds each module,
     /// returns the assembled pipeline.
     pub async fn load(req: LoadRequest) -> Result<Self> {
+        // v0.36 phase 4: detect PixArt-α (non-Σ) repos and bail
+        // early with a pointer at the LCM-LoRA composition path.
+        // Plakat's DiT loads Σ-specific `adaln_single.emb.
+        // resolution_embedder` + `aspect_ratio_embedder` tensors
+        // which α checkpoints (including α-LCM) don't ship —
+        // VarBuilder would surface this as an opaque missing-key
+        // error mid-load. Better to fail fast at the boundary.
+        is_pixart_sigma_repo(&req.repo)?;
+
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {
@@ -172,7 +256,11 @@ impl Pipeline {
         build.finish_with_message("✓ T5-XXL ready");
 
         let dit_build = progress::spinner("Loading DiT-XL/2 backbone");
-        let dit_cfg = DitConfig::sigma_xl_1024();
+        // v0.36 phase 2: pick the right config from the repo path.
+        // 512-MS shares the architecture with 1024-MS — only the
+        // sample_size differs (informational, see `pixart_dit::
+        // Config::sigma_xl_512` doc).
+        let dit_cfg = DitConfig::for_pixart_repo(&req.repo);
         let dit_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[dit_load_path.as_path()],
@@ -480,12 +568,142 @@ mod tests {
         );
     }
 
+    /// v0.36 phase 2: 512-MS alias resolves to the smaller checkpoint.
+    #[test]
+    fn alias_pixart_512_resolves_to_sigma_512_repo() {
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-512"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-512-MS"
+        );
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-sigma-512"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-512-MS"
+        );
+    }
+
+    /// v0.36 phase 3: 2K-MS alias resolves to the heavyweight
+    /// checkpoint with KV-compression.
+    #[test]
+    fn alias_pixart_2k_resolves_to_sigma_2k_repo() {
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-2k"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS"
+        );
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-sigma-2k"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS"
+        );
+    }
+
+    // v0.36 phase 4: LCM-LoRA composition path + α-LCM rejection.
+
+    /// Σ repos pass `is_pixart_sigma_repo`. Mixed-case + the three
+    /// shipped variants (1024 / 512 / 2K) all succeed.
+    #[test]
+    fn is_pixart_sigma_repo_accepts_sigma_variants() {
+        for repo in [
+            "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+            "PixArt-alpha/PixArt-Sigma-XL-2-512-MS",
+            "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS",
+            "PIXART-ALPHA/PIXART-SIGMA-XL-2-1024-MS",
+            // A community fork that follows the Σ naming convention.
+            "user/some-sigma-finetune",
+        ] {
+            is_pixart_sigma_repo(repo).unwrap_or_else(|e| {
+                panic!("{repo}: expected Ok, got {e}");
+            });
+        }
+    }
+
+    /// α / α-LCM repo paths bail with the LCM-LoRA composition
+    /// pointer. The error text references `--lora` + `--scheduler
+    /// lcm` so users get the exact recipe.
+    #[test]
+    fn is_pixart_sigma_repo_bails_on_alpha_lcm() {
+        for alpha_repo in [
+            "PixArt-alpha/PixArt-LCM-XL-2-1024-MS",
+            "PixArt-alpha/PixArt-XL-2-1024-MS",
+            "PixArt-alpha/PixArt-XL-2-512x512",
+        ] {
+            let err = is_pixart_sigma_repo(alpha_repo).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("PixArt-α"),
+                "{alpha_repo}: error should reference PixArt-α, got: {msg}"
+            );
+            assert!(
+                msg.contains("--lora") && msg.contains("--scheduler lcm"),
+                "{alpha_repo}: error should point at LCM-LoRA composition, got: {msg}"
+            );
+            assert!(
+                msg.contains("v0.37"),
+                "{alpha_repo}: error should mention the v0.37 deferral, got: {msg}"
+            );
+        }
+    }
+
+    /// Unrecognised repo paths default to Ok (best-effort — users
+    /// with their own forks shouldn't get spurious bails). The
+    /// VarBuilder will surface mismatches downstream.
+    #[test]
+    fn is_pixart_sigma_repo_passes_unrecognised_paths() {
+        is_pixart_sigma_repo("user/my-fork").unwrap();
+        is_pixart_sigma_repo("local/path/to/model").unwrap();
+    }
+
+    /// LCM scheduler composes with PixArt's SD config — same build
+    /// path SD-family / Flux / SD3 use. The scheduler trait's
+    /// timesteps + init_noise_sigma are reachable. This pins the
+    /// LCM-LoRA composition path: any PixArt run with
+    /// `--scheduler lcm --steps 4` produces a valid scheduler.
+    #[test]
+    fn lcm_scheduler_composes_with_pixart_sd_config() {
+        let sd_cfg = StableDiffusionConfig::sdxl(None, None, None);
+        let scheduler =
+            build_scheduler(SchedulerKind::Lcm, &sd_cfg, 4).expect(
+                "LCM scheduler must build with PixArt's SD config and 4 steps",
+            );
+        let timesteps = scheduler.timesteps();
+        assert_eq!(
+            timesteps.len(),
+            4,
+            "LCM scheduler at --steps 4 must produce 4 timesteps",
+        );
+        // init_noise_sigma is a finite positive number (the
+        // scheduler picks the right value for LCM-LoRA distillation).
+        let sigma = scheduler.init_noise_sigma();
+        assert!(
+            sigma.is_finite() && sigma > 0.0,
+            "LCM init_noise_sigma must be finite + positive, got {sigma}"
+        );
+    }
+
     #[test]
     fn pixart_aliases_listed_in_all_known() {
         let known = crate::hf::all_known_aliases();
         assert!(known.contains(&"pixart"), "got {known:?}");
         assert!(known.contains(&"pixart-sigma"), "got {known:?}");
         assert!(known.contains(&"pixart-1024"), "got {known:?}");
+        assert!(known.contains(&"pixart-512"), "got {known:?}");
+        assert!(known.contains(&"pixart-sigma-512"), "got {known:?}");
+        assert!(known.contains(&"pixart-2k"), "got {known:?}");
+        assert!(known.contains(&"pixart-sigma-2k"), "got {known:?}");
+    }
+
+    /// v0.36 phase 2: variant detection routes both 1024 and 512
+    /// repo strings through `Variant::PixArt` — the dispatch
+    /// branch is shared because the architecture is identical.
+    #[test]
+    fn variant_detect_covers_both_pixart_sizes() {
+        use crate::pipelines::t2i::Variant;
+        assert_eq!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"),
+            Variant::PixArt
+        );
+        assert_eq!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-512-MS"),
+            Variant::PixArt
+        );
     }
 
     #[test]
