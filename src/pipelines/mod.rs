@@ -40,6 +40,7 @@ pub mod nf4_loader;
 pub mod portrait;
 pub mod real_esrgan;
 pub mod pixart;
+pub mod pixart_dit;
 pub mod scheduler;
 pub mod seeds;
 pub mod scrfd;
