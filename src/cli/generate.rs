@@ -1106,6 +1106,22 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // v0.19: pass through the --format flag. SD-family
         // pipeline honours; Flux + SD3 fallback below.
         output_format: args.format,
+        // v0.33 phase 0 — metadata polish fields. Flow into
+        // `GenerationMetadata` for downstream tooling. None when
+        // the user didn't supply the corresponding flag.
+        look: args.look.clone(),
+        genre: args.genre.clone(),
+        negative_preset: args.negative_preset.clone(),
+        // The structured stacks aren't built from CLI args directly —
+        // the t2i pipeline resolves loras / TIs / controls during
+        // load and we'd surface the resolved info here. For phase 0
+        // we leave them as None; later in the cycle (phase 2 JSON
+        // sidecar) the pipeline will fill them from its resolved
+        // state at write-metadata time.
+        lora_stack: None,
+        embedding_stack: None,
+        control_stack: None,
+        enhancement: None,
     })
     .await?;
 
