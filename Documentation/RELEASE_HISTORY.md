@@ -1,12 +1,133 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.31. The current
+"What's new" sections for v0.13 through v0.32. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.32 — animate-lite + diversify-3
+
+After two consecutive diversify cycles (v0.30 + v0.31), v0.32
+pays down the animate quality backlog with the single most-
+visible item — **FreeNoise long-form** — while continuing the
+diversify momentum with two architectural / perf wins: a
+**vendored CLIP rollout** to every SD-family pipeline (unlocks
+`--embedding` everywhere in future cycles), and **SDXL VAE
+caching** across scenario kind switches.
+
+Three phases shipped: one animate quality win + two carry
+closures. Cleanest cycle in five turns.
+
+### FreeNoise long-form for AnimateDiff (closes v0.27 deferral)
+
+```bash
+# Existing long-form syntax — random noise per window (v0.27).
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --format mp4
+
+# Add --free-noise to share noise across overlapping windows —
+# eliminates the cross-fade seam artefact (v0.32).
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --free-noise --format mp4
+```
+
+Cao et al., "FreeNoise: Tuning-Free Longer Video Diffusion." The
+flag pre-generates a `(total_frames, 4, H/8, W/8)` noise tensor
+at the user's seed, then slices it per sliding-window — adjacent
+windows automatically share noise in the overlap region because
+they slice the SAME underlying tensor. The v0.27 phase 5
+linear-ramp latent blend still runs, but the two sides being
+blended now come from the same noise sequence, so the seam
+disappears.
+
+SD 1.5 + SDXL both ship. Opt-in flag preserves byte-identical
+output on `--seed N --frames 64` when the flag is OFF (existing
+runs unchanged). Composes with multi-CN, AnimateLCM, motion LoRAs.
+Single-window runs (frames ≤ window-size) are no-ops.
+
+### Vendored CLIP rollout (closes v0.30 architectural deferral)
+
+v0.30 phase 0 vendored CLIP for `SdCore` only (to enable TI
+runtime injection). v0.32 phase 1 finishes the rollout —
+every SD-family pipeline now holds plakat's vendored CLIP-L
+text encoder instead of candle's:
+
+- `AnimateDiffPipeline::text_encoder` (SD 1.5)
+- `AnimateDiffSdxlPipeline::text_encoder_l`
+- `sd3::Pipeline::clip_l + clip_l_cfg`
+- `flux::Pipeline::clip_text + clip_cfg`
+- `stylize::Pipeline::text_encoder`
+
+Numerically identical to candle's path (per the v0.30 phase 0
+forward-pass tests). User-visible impact: zero in v0.32 — but
+this is the architectural foundation. Future cycles can wire
+`--embedding` (TI runtime injection) through the same
+`Config::with_vocab(n)` pattern v0.30 phase 0 established for
+SdCore, now that every pipeline holds the vendored type. A new
+compile-time type-lock test in `vendored_clip::tests` prevents
+silent regressions.
+
+### SDXL VAE caching across mixed-kind scenarios
+
+Scenarios that mix `type: generate` and `type: animatediff`
+tasks used to rebuild the ~330 MB SDXL VAE on every kind switch
+(after v0.31 phase 3's pipeline eviction kicked in). v0.32 phase
+2 wraps `SdCore.vae` in `Arc<AutoEncoderKL>` and adds a
+scenario-level cache keyed by base alias — subsequent t2i loads
+against the same SDXL base reuse the cached Arc instead of
+rebuilding from disk.
+
+Auto-deref keeps every `.vae.encode(...)` / `.vae.decode(...)`
+call site at the pipeline boundary unchanged.
+
+```
+INFO plakat: SdCore: reusing cached VAE (skipping ...vae.safetensors build)
+```
+
+shows up in logs when the cache hits. AnimateDiff load functions
+don't yet take a vae param — animate-side sharing waits for
+v0.33+. The cache helper itself (`vae_cache_lookup`) is a pure
+generic function unit-tested with 6 decision cases.
+
+### Documentation
+
+- [`ANIMATEDIFF.md`](ANIMATEDIFF.md) — bumped to v0.32 with the
+  FreeNoise long-form quick-start. Capability matrix adds the
+  "shared-noise long-form" row.
+- [`RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md`](RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md)
+  — design doc, locked decisions, 4-phase plan.
+
+### By the numbers
+
+- **1030 lib + 47 integration tests = 1077 active tests** (+10
+  lib across the cycle).
+- 3 phase commits + RFC + close-out.
+- v0.27 FreeNoise animate quality deferral **closed**.
+- v0.30 vendored CLIP architectural deferral **closed**
+  (rollout to all SD-family pipelines).
+- v0.32 phase 2 partially closes the mixed-kind VAE rebuild
+  cost — t2i side complete; animate-side sharing defers to v0.33.
+
+### v0.31 → v0.32 migration
+
+v0.32 is **fully additive**. Every existing flag, host word,
+config key, and scenario field keeps its v0.31 shape. New surface:
+
+- ✅ `--free-noise` flag on `plakat animate` (opt-in; off by
+  default preserves byte-identical numerics).
+- ✅ `SdLoadRequest.vae_cache` + `t2i::LoadRequest.vae_cache`
+  fields (`Option<Arc<AutoEncoderKL>>`). External callers pass
+  `None` for the v0.31 behaviour.
+- ✅ Every SD-family pipeline's CLIP-L field type is now the
+  vendored CLIP — same forward-pass numerics, source-level
+  type-lock prevents future regressions.
 
 ## What's new in v0.31 — diversify-2 (INT8 bail, four wins)
 
