@@ -1804,6 +1804,7 @@ mod tests {
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
+            vae_cache: None,
         };
         ctx.config.size_explicit = true;
         ctx.config.width = 512;

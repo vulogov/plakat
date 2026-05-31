@@ -21,6 +21,17 @@ use crate::pipelines::{
 use crate::scripting::config::GenerationConfig;
 use crate::scripting::loaded_pipeline::{LoadedPipeline, PipelineFamily};
 
+/// v0.34 phase 3: VAE cache lookup helper for the scripting ctx.
+/// Mirrors `cli::scenario::vae_cache_lookup` — returns a fresh Arc
+/// handle to the cached VAE when the alias matches, `None`
+/// otherwise. The Arc clone is cheap (refcount bump).
+fn vae_cache_lookup_script<T: Clone>(
+    cache: Option<&(String, T)>,
+    alias: &str,
+) -> Option<T> {
+    cache.filter(|(k, _)| k == alias).map(|(_, v)| v.clone())
+}
+
 /// Process-wide script context. Holds the device + output dir +
 /// the in-script image registry + the active model alias.
 ///
@@ -96,6 +107,19 @@ pub struct ScriptCtx {
             String,
             crate::pipelines::animatediff::AnimateDiffSdxlPipeline,
         )>,
+    /// v0.34 phase 3: scripting-side VAE cache. Mirrors the scenario
+    /// runner's v0.32 phase 2 / v0.34 phase 3 cross-kind sharing.
+    /// Each load (`plakat.load`, `plakat.animate`) looks this up by
+    /// alias before building a fresh VAE; on miss the load populates
+    /// it. Mixed-kind scripts (`plakat.load sdxl; plakat.animate
+    /// sdxl`) stop paying the ~330 MB SDXL VAE rebuild cost on the
+    /// kind switch — closes the v0.32 phase 2 deferral.
+    pub vae_cache: Option<(
+        String,
+        std::sync::Arc<
+            candle_transformers::models::stable_diffusion::vae::AutoEncoderKL,
+        >,
+    )>,
     /// v0.21 phase 2: rendered images, addressable by the integer
     /// handle pushed onto the stack by `plakat.generate`. Index =
     /// handle (1-based — handle 0 is reserved as "no image").
@@ -293,6 +317,7 @@ impl ScriptCtx {
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
+            vae_cache: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
     }
@@ -526,6 +551,18 @@ impl ScriptCtx {
             // invalidation on stack mutation uses the same
             // `mark_loras_changed` path.
             let embeddings = self.embeddings.clone();
+            // v0.34 phase 3: lookup pre-built VAE from the scripting
+            // ctx's cross-kind cache. Cache HIT lets a `plakat.animate
+            // sdxl` followed by `plakat.load sdxl` (or vice versa)
+            // skip the ~330 MB SDXL VAE rebuild — same pattern as the
+            // scenario runner.
+            let cached_vae = vae_cache_lookup_script(self.vae_cache.as_ref(), alias);
+            if cached_vae.is_some() {
+                tracing::info!(
+                    target: "plakat",
+                    "v0.34 phase 3: VAE cache HIT on scripting t2i load (alias={alias})"
+                );
+            }
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_sd_t2i: no tokio runtime in scope. {e}"
@@ -539,9 +576,15 @@ impl ScriptCtx {
                     lora_scale,
                     use_refiner,
                     embeddings,
-                    vae_cache: None, // v0.32 phase 2: scripting ctx has no VAE share path yet
+                    vae_cache: cached_vae,
                 }))
             })?;
+            // Populate cache from freshly loaded pipeline's VAE so
+            // subsequent plakat.animate loads can reuse.
+            self.vae_cache = Some((
+                alias.to_string(),
+                std::sync::Arc::clone(&pipeline.core().vae),
+            ));
             self.loaded_t2i = Some((alias.to_string(), pipeline));
         }
 
@@ -619,6 +662,17 @@ impl ScriptCtx {
         if !hit {
             self.loaded_animatediff = None;
             let device = self.device.clone();
+            // v0.34 phase 3: SD 1.5 animate hard-codes the canonical
+            // sd15 base; cache key is "sd15" so this pairs with a
+            // preceding `plakat.load sd15`.
+            let vae_cache_key = "sd15";
+            let cached_vae = vae_cache_lookup_script(self.vae_cache.as_ref(), vae_cache_key);
+            if cached_vae.is_some() {
+                tracing::info!(
+                    target: "plakat",
+                    "v0.34 phase 3: VAE cache HIT on scripting animate SD 1.5 load"
+                );
+            }
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_animatediff: no tokio runtime in scope. {e}"
@@ -628,17 +682,21 @@ impl ScriptCtx {
                 handle.block_on(async {
                     if lcm {
                         crate::pipelines::animatediff::AnimateDiffPipeline::load_animatelcm(
-                            &device, dtype, &[], 1.0,
+                            &device, dtype, &[], 1.0, cached_vae,
                         )
                         .await
                     } else {
                         crate::pipelines::animatediff::AnimateDiffPipeline::load_v3(
-                            &device, dtype, &[], 1.0,
+                            &device, dtype, &[], 1.0, cached_vae,
                         )
                         .await
                     }
                 })
             })?;
+            self.vae_cache = Some((
+                vae_cache_key.to_string(),
+                std::sync::Arc::clone(&pipeline.vae),
+            ));
             self.loaded_animatediff = Some((key, pipeline));
         }
 
@@ -668,6 +726,16 @@ impl ScriptCtx {
             self.loaded_animatediff_sdxl = None;
             let device = self.device.clone();
             let alias_owned = alias.to_string();
+            // v0.34 phase 3: SDXL animate uses the user's alias as
+            // cache key — pairs with SDXL `plakat.load` of the same
+            // alias and avoids the ~330 MB SDXL VAE rebuild.
+            let cached_vae = vae_cache_lookup_script(self.vae_cache.as_ref(), alias);
+            if cached_vae.is_some() {
+                tracing::info!(
+                    target: "plakat",
+                    "v0.34 phase 3: VAE cache HIT on scripting animate SDXL load (alias={alias})"
+                );
+            }
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_animatediff_sdxl: no tokio runtime in scope. {e}"
@@ -681,9 +749,14 @@ impl ScriptCtx {
                         &alias_owned,
                         &[],
                         1.0,
+                        cached_vae,
                     ),
                 )
             })?;
+            self.vae_cache = Some((
+                alias.to_string(),
+                std::sync::Arc::clone(&pipeline.vae),
+            ));
             self.loaded_animatediff_sdxl = Some((alias.to_string(), pipeline));
         }
 
@@ -1155,6 +1228,7 @@ mod tests {
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
+            vae_cache: None,
         }
     }
 

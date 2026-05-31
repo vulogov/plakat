@@ -1406,6 +1406,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                     dtype,
                     &args.motion_loras,
                     args.motion_lora_scale,
+                    None, // v0.34 phase 3: standalone animate — no cache
                 )
                 .await
                 .context("loading AnimateLCM stack")?;
@@ -1416,6 +1417,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                     dtype,
                     &args.motion_loras,
                     args.motion_lora_scale,
+                    None, // v0.34 phase 3: standalone animate — no cache
                 )
                 .await
                 .context("loading AnimateDiff V3 stack")?;
@@ -1462,6 +1464,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 &args.model,
                 &args.motion_loras,
                 args.motion_lora_scale,
+                None, // v0.34 phase 3: standalone animate — no cache
             )
             .await
             .context("loading AnimateDiff SDXL beta stack")?;

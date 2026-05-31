@@ -2319,6 +2319,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     &mut animate_sd15_key,
                     &mut animate_sdxl,
                     &mut animate_sdxl_key,
+                    &mut vae_cache, // v0.34 phase 3: cross-kind VAE share
                 )
                 .await?;
                 Ok(())
@@ -4692,6 +4693,15 @@ async fn run_animate_task_inline(
     animate_sd15_key: &mut Option<String>,
     animate_sdxl: &mut Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline>,
     animate_sdxl_key: &mut Option<String>,
+    // v0.34 phase 3: scenario-level VAE cache (shared with t2i path
+    // via the v0.32 phase 2 mechanism). Pre-load: lookup by alias
+    // to skip the ~330 MB SDXL VAE rebuild. Post-load: populate so
+    // subsequent t2i loads of the same alias reuse this pipeline's
+    // VAE.
+    vae_cache: &mut Option<(
+        String,
+        std::sync::Arc<candle_transformers::models::stable_diffusion::vae::AutoEncoderKL>,
+    )>,
 ) -> Result<()> {
     use crate::pipelines::animatediff::{AnimateDiffPipeline, AnimateDiffSdxlPipeline};
     use crate::pipelines::controlnet::load_control_stack;
@@ -4886,12 +4896,24 @@ async fn run_animate_task_inline(
             let hit = animate_sd15_key.as_deref() == Some(&key);
             if !hit {
                 *animate_sd15 = None;
+                // v0.34 phase 3: SD 1.5 animate hard-codes the
+                // canonical sd15 base; cache key is "sd15" so it
+                // pairs with t2i loads of the same alias.
+                let vae_cache_key = "sd15";
+                let cached_vae = vae_cache_lookup(vae_cache.as_ref(), vae_cache_key);
+                if cached_vae.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "v0.34 phase 3: VAE cache HIT on AnimateDiff SD 1.5 load (key={vae_cache_key})"
+                    );
+                }
                 let p = if eff.lcm {
                     AnimateDiffPipeline::load_animatelcm(
                         device,
                         dtype,
                         &motion_lora_specs,
                         eff.motion_lora_scale,
+                        cached_vae,
                     )
                     .await
                 } else {
@@ -4900,6 +4922,7 @@ async fn run_animate_task_inline(
                         dtype,
                         &motion_lora_specs,
                         eff.motion_lora_scale,
+                        cached_vae,
                     )
                     .await
                 }
@@ -4909,6 +4932,10 @@ async fn run_animate_task_inline(
                         task.name
                     )
                 })?;
+                // v0.34 phase 3: populate cache from freshly loaded
+                // animate pipeline so subsequent t2i tasks for sd15
+                // reuse this VAE (closing the mixed-kind rebuild gap).
+                *vae_cache = Some((vae_cache_key.to_string(), std::sync::Arc::clone(&p.vae)));
                 *animate_sd15 = Some(p);
                 *animate_sd15_key = Some(key);
             }
@@ -4945,12 +4972,24 @@ async fn run_animate_task_inline(
             let hit = animate_sdxl_key.as_deref() == Some(&key);
             if !hit {
                 *animate_sdxl = None;
+                // v0.34 phase 3: SDXL animate uses the user's
+                // base_alias; cache key is `base_alias` so it pairs
+                // with SDXL t2i loads of the same alias (closing the
+                // mixed-kind rebuild gap from v0.32 phase 2).
+                let cached_vae = vae_cache_lookup(vae_cache.as_ref(), base_alias);
+                if cached_vae.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "v0.34 phase 3: VAE cache HIT on AnimateDiff SDXL load (key={base_alias})"
+                    );
+                }
                 let p = AnimateDiffSdxlPipeline::load_sdxl_beta(
                     device,
                     dtype,
                     base_alias,
                     &motion_lora_specs,
                     eff.motion_lora_scale,
+                    cached_vae,
                 )
                 .await
                 .with_context(|| {
@@ -4959,6 +4998,7 @@ async fn run_animate_task_inline(
                         task.name
                     )
                 })?;
+                *vae_cache = Some((base_alias.to_string(), std::sync::Arc::clone(&p.vae)));
                 *animate_sdxl = Some(p);
                 *animate_sdxl_key = Some(key);
             }
