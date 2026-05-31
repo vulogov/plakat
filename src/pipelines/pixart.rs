@@ -497,6 +497,20 @@ mod tests {
         );
     }
 
+    /// v0.36 phase 3: 2K-MS alias resolves to the heavyweight
+    /// checkpoint with KV-compression.
+    #[test]
+    fn alias_pixart_2k_resolves_to_sigma_2k_repo() {
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-2k"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS"
+        );
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-sigma-2k"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS"
+        );
+    }
+
     #[test]
     fn pixart_aliases_listed_in_all_known() {
         let known = crate::hf::all_known_aliases();
@@ -505,6 +519,8 @@ mod tests {
         assert!(known.contains(&"pixart-1024"), "got {known:?}");
         assert!(known.contains(&"pixart-512"), "got {known:?}");
         assert!(known.contains(&"pixart-sigma-512"), "got {known:?}");
+        assert!(known.contains(&"pixart-2k"), "got {known:?}");
+        assert!(known.contains(&"pixart-sigma-2k"), "got {known:?}");
     }
 
     /// v0.36 phase 2: variant detection routes both 1024 and 512
