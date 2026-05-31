@@ -2032,15 +2032,23 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
-    // v0.35 phase 0: PixArt routing. Detection precedes SD3/Flux/SD
-    // because PixArt is its own model family (DiT-XL/2 + T5-XXL).
-    // Phase 0 calls into pixart::run, which loads T5 + VAE then bails
-    // with a "phase 1 not yet implemented" message — proves dispatch.
+    // v0.35 phase 2: PixArt routing — full inference dispatch.
+    // PixArt is DiT-XL/2 + T5-XXL; detection precedes SD3/Flux/SD.
     if variant.is_pixart() {
         use crate::pipelines::pixart;
         pixart::run(pixart::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width: req.width,
+            height: req.height,
+            steps: req.steps,
+            guidance: req.guidance as f64,
+            seed: req.seed,
+            scheduler: req.scheduler,
+            out_dir: req.out_dir.clone(),
+            count: req.count,
         })
         .await?;
         return Ok(None);
