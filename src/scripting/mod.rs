@@ -2740,4 +2740,58 @@ mod tests {
             );
         });
     }
+
+    /// v0.36 phase 1: `plakat.pixart` with no model loaded bails
+    /// before any network load. Mirrors the animate "no model loaded"
+    /// pattern.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pixart_no_model_loaded_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            let err = eval(r#""a misty forest" plakat.pixart"#)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("no model loaded"),
+                "expected no-model error, got: {err}",
+            );
+            // Points the user at `plakat.load` with the right alias.
+            assert!(
+                err.contains("pixart") && err.contains("plakat.load"),
+                "expected `pixart plakat.load` pointer, got: {err}",
+            );
+        });
+    }
+
+    /// v0.36 phase 1: `plakat.pixart` with PixArt detected on the
+    /// resolved repo path. Doesn't actually run inference (no
+    /// network); just pins that `is_pixart()` recognises every
+    /// alias `plakat.pixart`'s variant guard will match.
+    #[test]
+    fn pixart_variant_detection_covers_every_alias() {
+        use crate::pipelines::t2i::Variant;
+        for alias in ["pixart", "pixart-sigma", "pixart-1024"] {
+            let v = Variant::detect(crate::hf::resolve_alias(alias));
+            assert!(
+                v.is_pixart(),
+                "{alias}: expected is_pixart(), got {v:?}"
+            );
+        }
+        assert!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS")
+                .is_pixart(),
+            "canonical PixArt repo must also detect"
+        );
+        // Non-PixArt aliases must NOT match — guards the
+        // `plakat.pixart` bail path for SD-family / Flux / SD3.
+        assert!(!Variant::detect("sd15").is_pixart());
+        assert!(!Variant::detect("sdxl").is_pixart());
+        assert!(!Variant::detect("flux-dev").is_pixart());
+        assert!(!Variant::detect("sd35-medium").is_pixart());
+    }
 }

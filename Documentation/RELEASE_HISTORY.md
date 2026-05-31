@@ -1,12 +1,124 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.34. The current
+"What's new" sections for v0.13 through v0.35. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.35 — PixArt Sigma (diversify-4)
+
+plakat's **fourth model family** lands: PixArt-Σ-XL-2-1024-MS, a
+Diffusion Transformer (DiT) with a T5-XXL text encoder. Breaks
+the two-cycle polish chain (v0.33 + v0.34) and reuses the T5
+infrastructure SD3 and Flux already ship for partial
+implementation savings.
+
+Five phases shipped. Test count grew 1099 → 1123 lib tests (+24
+across the cycle).
+
+### `plakat generate "..." --model pixart`
+
+```bash
+# Canonical 1024² PixArt-Σ inference.
+plakat generate "a misty forest at dawn, painterly" \
+    --model pixart --size 1024x1024 --steps 20 \
+    --guidance 4.5 --seed 42 --scheduler dpmpp-karras
+```
+
+Aliases: `pixart`, `pixart-sigma`, `pixart-1024` — all resolve to
+`PixArt-alpha/PixArt-Sigma-XL-2-1024-MS`. CFG denoise loop with
+DPM++ as the recommended scheduler.
+
+### DiT-XL/2 architecture in candle (v0.35 phase 1)
+
+`src/pipelines/pixart_dit.rs` ships the full transformer with
+tensor names matching the diffusers `PixArtTransformer2DModel`
+safetensors layout verbatim:
+
+- **DiT-XL/2 backbone** — 28 layers, hidden 1152, 16 heads, ~600M
+  params.
+- **adaLN-single + scale_shift_table** — PixArt-α's parameter-
+  saving trick. Single global MLP turns timestep + Σ-conditioning
+  (resolution + aspect_ratio) into one `(6 × hidden)` vector;
+  each block adds its own `(6, hidden)` `scale_shift_table`.
+- **adaLN-zero modulation** — shift/scale/gate for MSA and MLP
+  (6-way split per block).
+- **Cross-attention to T5** — image tokens form Q; T5 hidden
+  states (after `caption_projection`) form K/V. No KV-compression
+  on cross-attn — `kv_compression: None` per the 1024-MS config;
+  2K-MS variant deferred.
+- **Σ-specific conditioning** — `resolution_embedder` +
+  `aspect_ratio_embedder` sit alongside the timestep embedder
+  inside `adaln_single.emb`.
+
+### T5-XXL + DiT + VAE assembly (v0.35 phase 2)
+
+`pixart::Pipeline` carries `t5_enc + t5_tok` (same
+`candle_transformers::models::t5::T5EncoderModel` SD3 uses),
+`dit` (the v0.35 phase 1 module), and `vae` (`Arc<AutoEncoderKL>`
+shared via the v0.34 phase 3 cache).
+
+Seed plumbing routes through `pipelines::seeds::prepare_seed`
+(v0.34 phase 1 chokepoint) — PixArt earns a ✓ row in
+`plakat doctor --reproducibility-check`.
+
+### PixArt LoRA + sidecar metadata (v0.35 phase 4)
+
+```bash
+plakat generate "a cat in a meadow" --model pixart \
+    --lora civitai:12345:0.7 --lora-scale 1.0
+```
+
+Diffusers-format PEFT LoRA parser (`pipelines/pixart_lora.rs`).
+Accepts every per-block target: `attn1/2.{to_q,to_k,to_v,
+to_out.0}`, `ff.net.{0.proj,2}`. Civitai PixArt LoRAs match via
+`BaseFamily::PixArt::civitai_matches`.
+
+PixArt is the **first non-t2i pipeline since v0.34 phase 0 to
+emit `GenerationMetadata`** — closes one corner of the v0.34
+"no metadata for non-t2i pipelines" deferral. PNG sidecars carry
+prompt / negative / model / seed / steps / guidance / scheduler /
+size / `lora_stack` / `lora_scale`:
+
+```json
+{
+  "lora_stack": [
+    {"display": "civitai:12345", "scale": 0.7, "source": "civitai"}
+  ]
+}
+```
+
+### Documentation
+
+- [`RFC_v0.35_PIXART_SIGMA.md`](RFC_v0.35_PIXART_SIGMA.md)
+  — design doc, locked decisions (1024-MS first, LoRA locked
+  phase 4 not stretch), 5-phase plan.
+
+### By the numbers
+
+- **1123 lib + 47 integration tests = 1170 active tests** (+24
+  lib across the cycle).
+- 5 phase commits + RFC + close-out.
+- Fourth model family alongside SD-family, SD3, and Flux.
+
+### v0.34 → v0.35 migration
+
+v0.35 is fully additive. Every existing flag, host word, config
+key, scenario field, and PNG sidecar from v0.34 still works
+unchanged. New surface:
+
+- ✅ `--model pixart` / `pixart-sigma` / `pixart-1024`.
+- ✅ `pixart::Pipeline` + `pixart_dit::PixArtSigmaXL` +
+  `pixart_lora::merge_pixart_loras_into_weights` — public APIs
+  for scripting / scenario integration in v0.36+.
+- ✅ `Variant::PixArt` + `BaseFamily::PixArt` +
+  `BaseModel::PixArt` — exhaustive matches across the codebase
+  stay sound.
+- ✅ Doctor row, look preset routing, sidecar `lora_stack` — all
+  populated for PixArt.
 
 ## What's new in v0.34 — audit follow-through
 

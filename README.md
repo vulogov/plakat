@@ -8,140 +8,164 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.35 — PixArt Sigma (diversify-4)
+## What's new in v0.36 — PixArt completeness
 
-plakat's **fourth model family** lands: PixArt-Σ-XL-2-1024-MS, a
-Diffusion Transformer (DiT) with a T5-XXL text encoder. Breaks
-the two-cycle polish chain (v0.33 + v0.34) and reuses the T5
-infrastructure SD3 and Flux already ship for partial
-implementation savings.
+Closes every PixArt deferral from v0.35 while DiT / T5 / LoRA
+context was fresh. Mirrors v0.34's audit follow-through after
+v0.33 — finish what got started before context fades. Five
+phases shipped; PixArt is now usable in scenarios, scripting,
+across three resolution variants (512 / 1024 / 2K), with LCM-LoRA
+composition.
 
-Five phases shipped. Test count grew 1099 → 1123 lib tests (+24
-across the cycle).
+Test count grew 1123 → 1141 lib tests (+18 across the cycle).
 
-### `plakat generate "..." --model pixart`
+### Scenario PixArt dispatch (phase 0)
+
+PixArt models now run in scenarios alongside SDXL t2i / Flux /
+SD3 / AnimateDiff, with VAE-cache sharing across kind switches:
+
+```hjson
+model: pixart
+out: ./out
+size: 1024x1024
+steps: 20
+guidance: 4.5
+
+scene: [{name: meadow, prompt: "a sunny meadow"}]
+weather: [{name: clear, prompt: "blue sky"}]
+
+tasks:
+  - {name: alpha, scene: meadow, weather: clear, prompt: "a fox", enhance: false}
+```
+
+`pixart_pipeline` cache slot mirrors `flux_pipeline` /
+`sd3_pipeline`: load once at scenario start; mixed-kind
+scenarios that share an alias with SDXL t2i reuse the VAE Arc
+via the v0.34 phase 3 cache.
+
+### Scripting `plakat.pixart` Bund word (phase 1)
+
+```bund
+"pixart" plakat.load
+"1024" "width" plakat.config.set
+"1024" "height" plakat.config.set
+"20" "steps" plakat.config.set
+"a misty forest at dawn" plakat.pixart   // → image handle
+```
+
+Same shape as `plakat.generate`: pulls prompt off the stack,
+pushes the 1-based image handle. Pipeline cached on
+`ScriptCtx.loaded_pixart` — multi-call scripts amortise the
+~12 GB cold load. LoRAs from `ctx.loras` merge at load via v0.35
+phase 4's tempfile-merge path; PNG metadata includes the
+`lora_stack` populated through v0.34 phase 0's `LoraSpec::to_entry`.
+
+### PixArt-Σ-XL-2-512-MS variant (phase 2)
 
 ```bash
-# Canonical 1024² PixArt-Σ inference.
-plakat generate "a misty forest at dawn, painterly" \
-    --model pixart --size 1024x1024 --steps 20 \
-    --guidance 4.5 --seed 42 --scheduler dpmpp-karras
+plakat generate "..." --model pixart-512 --size 512x512
 ```
 
-Aliases: `pixart`, `pixart-sigma`, `pixart-1024` — all resolve to
-`PixArt-alpha/PixArt-Sigma-XL-2-1024-MS`. CFG denoise loop with
-DPM++ as the recommended scheduler.
+New aliases `pixart-512` + `pixart-sigma-512`. Same DiT-XL/2
+architecture as 1024-MS — `sample_size: 32` is informational
+(plakat computes the positional embedding from the actual grid
+at forward time). Faster CPU smoke + smaller VRAM at 512².
 
-### DiT-XL/2 architecture in candle (v0.35 phase 1)
+### KV-compression + PixArt-Σ-XL-2-2K-MS variant (phase 3)
 
-`src/pipelines/pixart_dit.rs` ships the full transformer with
-tensor names matching the diffusers `PixArtTransformer2DModel`
-safetensors layout verbatim:
-
-- **DiT-XL/2 backbone** — 28 layers, hidden 1152, 16 heads, ~600M
-  params.
-- **adaLN-single + scale_shift_table** — PixArt-α's parameter-
-  saving trick. Single global MLP turns timestep + Σ-conditioning
-  (resolution + aspect_ratio) into one `(6 × hidden)` vector;
-  each block adds its own `(6, hidden)` `scale_shift_table`.
-- **adaLN-zero modulation** — shift/scale/gate for MSA and MLP
-  (6-way split per block).
-- **Cross-attention to T5** — image tokens form Q; T5 hidden
-  states (after `caption_projection`) form K/V. No KV-compression
-  on cross-attn — `kv_compression: None` per the 1024-MS config;
-  2K-MS variant deferred.
-- **Σ-specific conditioning** — `resolution_embedder` +
-  `aspect_ratio_embedder` sit alongside the timestep embedder
-  inside `adaln_single.emb`.
-
-### T5-XXL + DiT + VAE assembly (v0.35 phase 2)
-
-`pixart::Pipeline` carries `t5_enc + t5_tok` (same
-`candle_transformers::models::t5::T5EncoderModel` SD3 uses),
-`dit` (the v0.35 phase 1 module), and `vae` (`Arc<AutoEncoderKL>`
-shared via the v0.34 phase 3 cache).
-
-Seed plumbing routes through `pipelines::seeds::prepare_seed`
-(v0.34 phase 1 chokepoint) — PixArt earns a ✓ row in
-`plakat doctor --reproducibility-check`.
-
-### PixArt LoRA + sidecar metadata (v0.35 phase 4)
+PixArt-Σ's headline addition over PixArt-α: a per-block depthwise
+Conv2d downsamples the image-token K/V sequence in self-attention,
+making 2048² output computationally tractable (a 128×128 = 16384-
+token grid). Σ paper §3.2: "We apply KV compression on all 28
+transformer blocks."
 
 ```bash
-plakat generate "a cat in a meadow" --model pixart \
-    --lora civitai:12345:0.7 --lora-scale 1.0
+plakat generate "..." --model pixart-2k --size 2048x2048
 ```
 
-Diffusers-format PEFT LoRA parser (`pipelines/pixart_lora.rs`).
-Accepts every per-block target: `attn1/2.{to_q,to_k,to_v,
-to_out.0}`, `ff.net.{0.proj,2}`. Civitai PixArt LoRAs match via
-`BaseFamily::PixArt::civitai_matches`.
+Architecture changes:
+- `Config::sigma_xl_2k` with `kv_compression: Some(scale=2)`.
+- `Attention::new_with_compression` registers a depthwise Conv2d
+  (`groups=hidden_size`, `kernel=stride=2`). Tensor key
+  `<attn-prefix>.kv_proj_conv2d.{weight,bias}` matches the
+  diffusers PixArt-Σ convention.
+- `Attention::forward_self_attn(x, grid_dims)` — image-token Q
+  stays full; KV reshapes spatially → Conv2d → flattens back at
+  the downsampled size. Attention matrix shrinks to `T × T/4`.
+- `PixArtBlock` + `PixArtSigmaXL::forward` thread `(grid_h,
+  grid_w)` through every layer; only `attn1` (self-attn) uses
+  compression — `attn2` (cross-attn to T5) stays uncompressed.
 
-PixArt is the **first non-t2i pipeline since v0.34 phase 0 to
-emit `GenerationMetadata`** — closes one corner of the v0.34
-"no metadata for non-t2i pipelines" deferral. PNG sidecars carry
-prompt / negative / model / seed / steps / guidance / scheduler /
-size / `lora_stack` / `lora_scale`:
+### LCM with PixArt — composition path (phase 4)
 
-```json
-{
-  "lora_stack": [
-    {"display": "civitai:12345", "scale": 0.7, "source": "civitai"}
-  ]
-}
+LCM 2-step / 4-step PixArt generation works today via the
+existing v0.35 phase 4 LoRA merge + v0.28 phase 1 LCM scheduler:
+
+```bash
+plakat generate "..." \
+    --model pixart \
+    --lora civitai:NNNNNN:1.0 \   # PixArt LCM-LoRA
+    --scheduler lcm --steps 4 --guidance 1.5
 ```
+
+Native PixArt-α-LCM checkpoint integration is deferred to v0.37+
+(requires an α/Σ architectural fork in `pixart_dit`). A new
+`is_pixart_sigma_repo` guard at `Pipeline::load` detects α-style
+repo paths (`pixart-lcm`, `pixart-xl-2`) and surfaces the exact
+LCM-LoRA recipe + v0.37 deferral note instead of letting
+VarBuilder fail mid-load.
 
 ### Documentation
 
-- [`RFC_v0.35_PIXART_SIGMA.md`](Documentation/RFC_v0.35_PIXART_SIGMA.md)
-  — design doc, locked decisions (1024-MS first, LoRA locked
-  phase 4 not stretch), 5-phase plan.
+- [`RFC_v0.36_PIXART_COMPLETENESS.md`](Documentation/RFC_v0.36_PIXART_COMPLETENESS.md)
+  — design doc, locked decisions (phase 3 KV-compression locked,
+  not stretch), 5-phase plan.
 
 ### By the numbers
 
-- **1123 lib + 47 integration tests = 1170 active tests** (+24
+- **1141 lib + 47 integration tests = 1188 active tests** (+18
   lib across the cycle).
 - 5 phase commits + RFC + close-out.
-- Fourth model family alongside SD-family, SD3, and Flux.
+- All 6 PixArt items from the v0.35 deferral list closed (4
+  shipped, 2 deferred to v0.37 with documented mitigations).
 
-### v0.34 → v0.35 migration
+### v0.35 → v0.36 migration
 
-v0.35 is fully additive. Every existing flag, host word, config
-key, scenario field, and PNG sidecar from v0.34 still works
+v0.36 is fully additive. Every existing flag, host word, config
+key, scenario field, and PNG sidecar from v0.35 still works
 unchanged. New surface:
 
-- ✅ `--model pixart` / `pixart-sigma` / `pixart-1024`.
-- ✅ `pixart::Pipeline` + `pixart_dit::PixArtSigmaXL` +
-  `pixart_lora::merge_pixart_loras_into_weights` — public APIs
-  for scripting / scenario integration in v0.36+.
-- ✅ `Variant::PixArt` + `BaseFamily::PixArt` +
-  `BaseModel::PixArt` — exhaustive matches across the codebase
-  stay sound.
-- ✅ Doctor row, look preset routing, sidecar `lora_stack` — all
-  populated for PixArt.
+- ✅ `--model pixart-512` / `pixart-sigma-512` / `pixart-2k` /
+  `pixart-sigma-2k`.
+- ✅ Scenarios accept `model: pixart` (and aliases) for batch
+  PixArt runs.
+- ✅ `plakat.pixart` Bund word for single-image scripting.
+- ✅ `pixart_dit::KvCompressionConfig` +
+  `Attention::new_with_compression` +
+  `Attention::forward_self_attn(x, grid_dims)` — public APIs.
+- ✅ `is_pixart_sigma_repo` early bail at `Pipeline::load`.
 
-### Deferred to v0.36+
+### Deferred to v0.37+
 
-- **Scenario PixArt dispatch** — `scenario.rs` needs a parallel
-  `pixart_pipeline` cache slot (mirrors `flux_pipeline` /
-  `sd3_pipeline`) before PixArt tasks can land in batches. The
-  VAE cache mechanism (v0.34 phase 3) is ready to receive PixArt
-  the moment dispatch lands.
-- **Scripting `plakat.pixart` Bund word** — same shape as
-  `plakat.load` / `plakat.animate`. `ScriptCtx.vae_cache` already
-  supports PixArt aliases.
-- **PixArt-Σ-XL-2-512-MS + 2K-MS variants.** 2K-MS needs KV-
-  compression (deferred from phase 1).
-- **PixArt LCM variants** (2-step generation).
-- **PixArt ControlNet / portrait** integration.
+- **PixArt-α-LCM native checkpoint** (`PixArt-alpha/PixArt-LCM-
+  XL-2-1024-MS`). Requires α/Σ architectural fork in
+  `pixart_dit` — well-scoped but kept out of v0.36 to maintain
+  cycle tightness.
+- **PixArt ControlNet integration.**
+- **PixArt portrait / face-preservation.**
+- **PixArt tiled / img2img.**
+- **PixArt per-task runtime LoRA swap in scenarios** (today
+  scenario-level LoRAs apply; per-task overrides need either a
+  per-task reload or a true runtime swap path).
 - **T5 loader extraction** to a shared module across PixArt +
-  SD3 + Flux (each duplicates today).
-- v0.34 carries: per-layer motion splice, HotShot-XL, AnimateLCM-
-  SDXL, INT8 SDXL UNet, plakat server mode, Stable Cascade,
-  embedding-stack metadata, `GenerationMetadata` for the
-  remaining non-t2i pipelines.
+  SD3 + Flux.
+- v0.34 / v0.35 carries: metadata completion for non-t2i
+  pipelines, embedding-stack population, plakat server mode,
+  per-layer motion splice, HotShot-XL, AnimateLCM-SDXL
+  (externally blocked), INT8 SDXL UNet (externally blocked),
+  Stable Cascade.
 
-**Earlier releases** (v0.13 – v0.34):
+**Earlier releases** (v0.13 – v0.35):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
