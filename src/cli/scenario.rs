@@ -879,6 +879,17 @@ enum CacheEviction {
     DropAnimate,
 }
 
+/// v0.32 phase 2: pure VAE cache decision. Returns `Some(value.clone())`
+/// when the cache holds a matching key, `None` otherwise. Generic
+/// over the cached value type so the decision logic is unit-testable
+/// without constructing a real `AutoEncoderKL`.
+///
+/// The real call site uses `T = Arc<AutoEncoderKL>` and the `clone()`
+/// produces another Arc-handle to the same VAE — no tensor copies.
+fn vae_cache_lookup<T: Clone>(cache: Option<&(String, T)>, model: &str) -> Option<T> {
+    cache.filter(|(k, _)| k == model).map(|(_, v)| v.clone())
+}
+
 /// Eviction decision for one (last, current) kind pair. Pure
 /// function — unit-testable without spinning up real pipelines.
 fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
@@ -1687,7 +1698,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     } else {
         // All-generate SD-family scenario — pre-load as before so
         // the user sees the "Loading SD core" spinner up front.
-        Some(load_sd_pipeline_for_scenario(&model, &device, &loras, lora_scale, s.refiner).await?)
+        Some(load_sd_pipeline_for_scenario(&model, &device, &loras, lora_scale, s.refiner, None).await?)
     };
     // v0.16 phase 2: SD3 / SD3.5 backbone loaded once for the whole
     // scenario (previously the scenario fell through to t2i::Pipeline
@@ -2052,6 +2063,29 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // scenarios held both t2i and animate pipelines simultaneously
     // (~10 GB SD 1.5 / much worse on SDXL).
     let mut last_task_kind: Option<TaskKind> = None;
+
+    // v0.32 phase 2: VAE cache. SD-family pipelines hold the VAE
+    // behind an `Arc<AutoEncoderKL>` so the scenario runner can keep
+    // one shared instance alive across mixed-kind pipeline reloads
+    // (t2i ↔ animate). The cache key is the resolved base alias —
+    // any reload against the same base hits, reloads against a
+    // different base miss. Saves the ~330 MB SDXL VAE rebuild on
+    // every kind switch in a mixed-kind scenario.
+    let mut vae_cache: Option<(
+        String,
+        std::sync::Arc<candle_transformers::models::stable_diffusion::vae::AutoEncoderKL>,
+    )> = None;
+    // Populate the cache from the eager pre-load if it happened
+    // (all-generate SD-family scenarios pre-load at the function
+    // top). The `pipeline.as_ref()` keeps the field type stable
+    // even though the eager-load may have already taken ownership.
+    if let Some(p) = pipeline.as_ref() {
+        vae_cache = Some((model.clone(), std::sync::Arc::clone(&p.core().vae)));
+        tracing::info!(
+            target: "plakat",
+            "v0.32 phase 2: VAE cache primed from eager pre-load (model={model})"
+        );
+    }
     // SD-family lazy reload predicate: same condition used at
     // pre-load time (line ~1635). When false (Flux / SD3 / dry-run),
     // `pipeline` stays None for the whole loop and never gets
@@ -2176,16 +2210,28 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // generate task). All-generate scenarios already loaded
         // up front and skip this branch.
         if sd_pipeline_applicable && pipeline.is_none() {
-            pipeline = Some(
-                load_sd_pipeline_for_scenario(
-                    &model,
-                    &device,
-                    &loras,
-                    lora_scale,
-                    s.refiner,
-                )
-                .await?,
-            );
+            // v0.32 phase 2: pull from VAE cache if the key matches.
+            let cached = vae_cache_lookup(vae_cache.as_ref(), &model);
+            if cached.is_some() {
+                tracing::info!(
+                    target: "plakat",
+                    "v0.32 phase 2: VAE cache HIT on lazy SD reload (model={model})"
+                );
+            }
+            let p = load_sd_pipeline_for_scenario(
+                &model,
+                &device,
+                &loras,
+                lora_scale,
+                s.refiner,
+                cached,
+            )
+            .await?;
+            // Cache the VAE from the freshly loaded pipeline. Idempotent
+            // if it was already cached (same Arc — cache holds one of
+            // the two clones already alive).
+            vae_cache = Some((model.clone(), std::sync::Arc::clone(&p.core().vae)));
+            pipeline = Some(p);
         }
 
         crate::ui::progress::println(&format!(
@@ -3795,12 +3841,20 @@ fn run_style_pass(
 /// `loras` is the scenario-level LoRA spec stack; per-task LoRA
 /// overlays still happen via the v0.18 inline LoRA tag merger.
 /// `use_refiner` is the scenario-level `refiner` flag.
+///
+/// `vae_cache` (v0.32 phase 2): when `Some`, the SD core load reuses
+/// the cached `AutoEncoderKL` instead of materializing a fresh one
+/// from disk. Mixed-kind scenarios populate the cache from the
+/// first SD-family pipeline load and pass it on every subsequent
+/// reload, skipping ~330 MB SDXL VAE rebuild per kind switch.
+#[allow(clippy::too_many_arguments)]
 async fn load_sd_pipeline_for_scenario(
     model: &str,
     device: &candle_core::Device,
     loras: &[crate::pipelines::lora::LoraSpec],
     lora_scale: f32,
     use_refiner: bool,
+    vae_cache: Option<std::sync::Arc<candle_transformers::models::stable_diffusion::vae::AutoEncoderKL>>,
 ) -> Result<Pipeline> {
     Pipeline::load(LoadRequest {
         model: model.to_string(),
@@ -3811,8 +3865,9 @@ async fn load_sd_pipeline_for_scenario(
         // v0.16 phase 9 / v0.30 phase 0 follow-up: scenarios still
         // don't surface --embedding. The runtime TI path ships
         // (v0.30 phase 0) but the scenario schema doesn't expose
-        // it; that's a v0.32+ candidate.
+        // it; that's a v0.33+ candidate.
         embeddings: Vec::new(),
+        vae_cache,
     })
     .await
 }
@@ -5472,5 +5527,82 @@ mod tests {
             assert_eq!(evict_decision(last, *k), CacheEviction::None);
             last = Some(*k);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // v0.32 phase 2: VAE cache decision logic.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn vae_cache_lookup_empty_returns_none() {
+        // No cache → nothing to hit on.
+        let cache: Option<&(String, String)> = None;
+        assert_eq!(vae_cache_lookup(cache, "sdxl"), None);
+    }
+
+    #[test]
+    fn vae_cache_lookup_matching_key_returns_value() {
+        let entry = ("sdxl".to_string(), "VAE_marker".to_string());
+        assert_eq!(
+            vae_cache_lookup(Some(&entry), "sdxl"),
+            Some("VAE_marker".to_string())
+        );
+    }
+
+    #[test]
+    fn vae_cache_lookup_mismatched_key_returns_none() {
+        // Cached SDXL VAE; lookup for SD 1.5 must miss so we don't
+        // hand out an incompatible VAE.
+        let entry = ("sdxl".to_string(), "SDXL_VAE".to_string());
+        assert_eq!(vae_cache_lookup(Some(&entry), "sd15"), None);
+    }
+
+    #[test]
+    fn vae_cache_lookup_case_sensitive() {
+        // Aliases pass through resolve_alias before reaching the
+        // cache, so case-sensitivity matches reality. A user typing
+        // `SDXL` vs `sdxl` would resolve to the same canonical
+        // string before lookup; the cache trusts that contract.
+        let entry = ("sdxl".to_string(), "v".to_string());
+        assert_eq!(vae_cache_lookup(Some(&entry), "SDXL"), None);
+    }
+
+    /// Simulates a mixed-kind scenario's cache trace. Walk a
+    /// [gen, anim, gen, anim] sequence; each kind boundary either
+    /// HITs (key matches) or MISSes (different key). The test
+    /// confirms the helper's decision shape across the full sequence.
+    #[test]
+    fn vae_cache_lookup_walks_mixed_kind_sequence_with_same_model() {
+        let model = "sdxl";
+        let mut cache: Option<(String, String)> = None;
+        // First load — cache miss (empty).
+        assert_eq!(vae_cache_lookup(cache.as_ref(), model), None);
+        // Populate.
+        cache = Some((model.to_string(), "SDXL_VAE_arc".to_string()));
+        // Each subsequent reload against the same model — cache HIT.
+        for _round in 0..3 {
+            assert_eq!(
+                vae_cache_lookup(cache.as_ref(), model),
+                Some("SDXL_VAE_arc".to_string()),
+            );
+        }
+    }
+
+    #[test]
+    fn vae_cache_lookup_walks_model_switch_invalidates() {
+        // Scenario switches from SDXL to SD 1.5 mid-run. Cache
+        // misses on the new model, the caller is responsible for
+        // re-populating with the SD 1.5 VAE on next load.
+        let mut cache: Option<(String, String)> = Some(("sdxl".to_string(), "v_xl".to_string()));
+        assert_eq!(
+            vae_cache_lookup(cache.as_ref(), "sd15"),
+            None,
+            "model swap must miss cache",
+        );
+        cache = Some(("sd15".to_string(), "v_15".to_string()));
+        assert_eq!(
+            vae_cache_lookup(cache.as_ref(), "sd15"),
+            Some("v_15".to_string()),
+        );
     }
 }

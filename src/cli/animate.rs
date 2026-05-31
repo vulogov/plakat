@@ -349,6 +349,7 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         loras: Vec::new(),
         lora_scale: 1.0,
         embeddings: Vec::new(),
+        vae_cache: None, // animate-CLIP-lerp doesn't reload, no cache to plumb
     })
     .await?;
     load_spin.finish_with_message("✓ SD backbone ready");
