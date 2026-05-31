@@ -281,11 +281,22 @@ pub enum Variant {
     Sd35LargeTurbo,
     /// v0.14 phase 8a: original Stable Diffusion 3 Medium (June 2024).
     Sd3Medium,
+    /// v0.35 phase 0: PixArt-Σ-XL-2-1024-MS (DiT-XL/2 + T5-XXL). Fourth
+    /// model family; routes to `pipelines::pixart::run`. Phase 0
+    /// ships T5 + VAE foundation; DiT inference in phase 1.
+    PixArt,
 }
 
 impl Variant {
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
+        // v0.35 phase 0: PixArt detection precedes everything else.
+        // PixArt-Σ repo ids contain "pixart" — distinct from any
+        // SD-family / Flux / SD3 string, so a substring match is
+        // unambiguous. Routes to pipelines::pixart::run.
+        if m.contains("pixart") {
+            return Self::PixArt;
+        }
         // SD3 detection precedes SDXL/SD because "sd3" / "sd3.5" /
         // "stable-diffusion-3.5" contain "sd" but should route to the
         // MMDiT pipeline. Sub-variant differentiation:
@@ -385,6 +396,13 @@ impl Variant {
                 | Self::Sd35Large
                 | Self::Sd35LargeTurbo
         )
+    }
+    /// v0.35 phase 0: PixArt-Σ family. Routes to
+    /// `pipelines::pixart::run`. The DiT-XL/2 backbone differs from
+    /// SD-family UNet, Flux's transformer, and SD3's MMDiT — own
+    /// pipeline module.
+    pub fn is_pixart(self) -> bool {
+        matches!(self, Self::PixArt)
     }
 }
 
@@ -705,6 +723,12 @@ impl Pipeline {
             anyhow::bail!(
                 "Pipeline::load is SD-only; SD3 / SD3.5 models use \
                  pipelines::sd3::Pipeline::load"
+            );
+        }
+        if variant.is_pixart() {
+            anyhow::bail!(
+                "Pipeline::load is SD-only; PixArt models use \
+                 pipelines::pixart::Pipeline::load"
             );
         }
         let repo = resolve_repo(&req.model);
@@ -2008,6 +2032,31 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
+    // v0.35 phase 2: PixArt routing — full inference dispatch.
+    // PixArt is DiT-XL/2 + T5-XXL; detection precedes SD3/Flux/SD.
+    // v0.35 phase 4: --lora / --lora-scale carry through.
+    if variant.is_pixart() {
+        use crate::pipelines::pixart;
+        pixart::run(pixart::RunRequest {
+            model: req.model.clone(),
+            device: req.device.clone(),
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width: req.width,
+            height: req.height,
+            steps: req.steps,
+            guidance: req.guidance as f64,
+            seed: req.seed,
+            scheduler: req.scheduler,
+            out_dir: req.out_dir.clone(),
+            count: req.count,
+            loras: req.loras.clone(),
+            lora_scale: req.lora_scale,
+        })
+        .await?;
+        return Ok(None);
+    }
+
     // v0.20: --format webp honoured across SD-family, Flux, and SD3.
     // The previous v0.19 warn-and-fallback for Flux/SD3 was lifted
     // when those pipelines' filename construction sites started
@@ -2690,6 +2739,43 @@ mod tests {
         assert!(!Variant::FluxDev.is_flux_concept());
         assert!(!Variant::FluxFillDev.is_flux_concept());
         assert!(!Variant::Sd15.is_flux_concept());
+    }
+
+    // v0.35 phase 0: PixArt variant detection + predicate.
+
+    #[test]
+    fn detect_pixart_alias() {
+        assert_eq!(Variant::detect("pixart"), Variant::PixArt);
+        assert_eq!(Variant::detect("pixart-sigma"), Variant::PixArt);
+        assert_eq!(Variant::detect("pixart-1024"), Variant::PixArt);
+    }
+
+    #[test]
+    fn detect_pixart_canonical_repo() {
+        // Full HF repo path also matches via substring lowercase.
+        assert_eq!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"),
+            Variant::PixArt
+        );
+    }
+
+    #[test]
+    fn is_pixart_predicate() {
+        assert!(Variant::PixArt.is_pixart());
+        assert!(!Variant::Sd15.is_pixart());
+        assert!(!Variant::Sdxl.is_pixart());
+        assert!(!Variant::FluxDev.is_pixart());
+        assert!(!Variant::Sd35Medium.is_pixart());
+    }
+
+    #[test]
+    fn pixart_not_misclassified_as_sd_or_flux() {
+        // "pixart" string doesn't contain "xl" / "flux" / "sd3" /
+        // "v2" / "turbo" so SD-family heuristics shouldn't grab it.
+        let v = Variant::detect("pixart-sigma");
+        assert!(!v.is_xl());
+        assert!(!v.is_flux());
+        assert!(!v.is_sd3());
     }
 
     // v0.16 phase 3e — SD3 ControlNet resolver.

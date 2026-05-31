@@ -50,6 +50,10 @@ pub enum BaseFamily {
     Sdxl,
     Flux,
     Sd3,
+    /// v0.35 phase 0: PixArt-Σ family. Routes through
+    /// `pipelines::pixart`. Preset discovery (look / genre /
+    /// LoRA per-family) gets PixArt coverage in v0.35 phase 3.
+    PixArt,
 }
 
 impl BaseFamily {
@@ -70,6 +74,7 @@ impl BaseFamily {
             | Variant::Sd35Large
             | Variant::Sd35LargeTurbo
             | Variant::Sd3Medium => Self::Sd3,
+            Variant::PixArt => Self::PixArt,
         }
     }
 
@@ -82,6 +87,7 @@ impl BaseFamily {
             Self::Sdxl => "sdxl",
             Self::Flux => "flux",
             Self::Sd3 => "sd3",
+            Self::PixArt => "pixart",
         }
     }
 
@@ -107,6 +113,11 @@ impl BaseFamily {
             }
             Self::Flux => b.contains("flux"),
             Self::Sd3 => b.contains("sd 3") || b.contains("sd3") || b.contains("stable-diffusion-3"),
+            // v0.35 phase 0: Civitai PixArt LoRA discovery comes in
+            // v0.35 phase 4. Conservative match for now — Civitai
+            // tags PixArt LoRAs as "PixArt", "PixArt Sigma", or
+            // similar; capture all of those.
+            Self::PixArt => b.contains("pixart"),
         }
     }
 }
@@ -385,6 +396,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         }
         BaseFamily::Flux => id_l.contains("flux"),
         BaseFamily::Sd3 => id_l.contains("sd3") || id_l.contains("sd-3"),
+        BaseFamily::PixArt => id_l.contains("pixart"),
     };
     if id_check {
         return true;
@@ -395,6 +407,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::Sdxl => &["sdxl", "stable-diffusion-xl"],
         BaseFamily::Flux => &["flux", "flux-dev", "flux-schnell", "flux.1"],
         BaseFamily::Sd3 => &["sd3", "stable-diffusion-3"],
+        BaseFamily::PixArt => &["pixart", "pixart-sigma", "pixart-alpha"],
     };
     tags.iter().any(|t| {
         let tl = t.to_lowercase();
