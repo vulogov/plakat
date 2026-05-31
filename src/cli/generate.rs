@@ -678,6 +678,14 @@ pub struct GenerateArgs {
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    // v0.33 phase 1: actionable hint when --model is a typo'd alias.
+    // The check skips org/name shapes (those go through the HF
+    // resolver's friendly_error path) and the recipe-load path
+    // below (which may replace args.model from the recipe's
+    // serialized canonical name).
+    let known = crate::hf::all_known_aliases();
+    crate::error_hints::hint_unknown_alias(&args.model, &known)?;
+
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
     // resolution (negative-preset combine, wildcards, enhance,
     // dispatch) operate against the merged config. Recipe fields
@@ -1040,6 +1048,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // through the Flux pipeline — Flux has its own backbone and the
     // blend pass would need to load SD anyway (Flux portraits aren't
     // supported by the blend path).
+    // v0.33 phase 1: capture model name before move for the OOM
+    // decorator below.
+    let model_for_oom = args.model.clone();
     let shared_core = t2i::run(t2i::Request {
         prompt: args.prompt,
         negative: args.negative,
@@ -1123,7 +1134,21 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         control_stack: None,
         enhancement: None,
     })
-    .await?;
+    .await
+    .map_err(|e| {
+        // v0.33 phase 1: decorate OOM errors with pipeline-specific
+        // mitigation suggestions. Detection is conservative (looks
+        // for "out of memory" / "OOM" substrings); unrelated errors
+        // pass through unchanged.
+        let ctx = if model_for_oom.contains("flux") {
+            crate::error_hints::OomContext::Flux
+        } else if model_for_oom.contains("xl") {
+            crate::error_hints::OomContext::Sdxl
+        } else {
+            crate::error_hints::OomContext::Sd
+        };
+        crate::error_hints::decorate_oom(e, ctx)
+    })?;
 
     // Composite any --artefact flags onto the generated images. t2i
     // writes `plakat-<seed>.png` files (one per image in `count`).

@@ -1175,6 +1175,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let text = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
     let s: ScenarioFile = deser_hjson::from_str(&text)
+        .map_err(|e| {
+            // v0.33 phase 1: enrich with the surrounding task name
+            // when discoverable. Best-effort — falls through to the
+            // bare error when the line-number heuristic can't find
+            // a task boundary above the failure.
+            crate::error_hints::decorate_scenario_parse(
+                anyhow::Error::msg(e.to_string()),
+                &text,
+            )
+        })
         .with_context(|| format!("parsing HJSON {}", args.file.display()))?;
 
     // -------- validate structure --------
