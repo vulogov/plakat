@@ -172,7 +172,11 @@ impl Pipeline {
         build.finish_with_message("✓ T5-XXL ready");
 
         let dit_build = progress::spinner("Loading DiT-XL/2 backbone");
-        let dit_cfg = DitConfig::sigma_xl_1024();
+        // v0.36 phase 2: pick the right config from the repo path.
+        // 512-MS shares the architecture with 1024-MS — only the
+        // sample_size differs (informational, see `pixart_dit::
+        // Config::sigma_xl_512` doc).
+        let dit_cfg = DitConfig::for_pixart_repo(&req.repo);
         let dit_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[dit_load_path.as_path()],
@@ -480,12 +484,43 @@ mod tests {
         );
     }
 
+    /// v0.36 phase 2: 512-MS alias resolves to the smaller checkpoint.
+    #[test]
+    fn alias_pixart_512_resolves_to_sigma_512_repo() {
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-512"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-512-MS"
+        );
+        assert_eq!(
+            crate::hf::resolve_alias("pixart-sigma-512"),
+            "PixArt-alpha/PixArt-Sigma-XL-2-512-MS"
+        );
+    }
+
     #[test]
     fn pixart_aliases_listed_in_all_known() {
         let known = crate::hf::all_known_aliases();
         assert!(known.contains(&"pixart"), "got {known:?}");
         assert!(known.contains(&"pixart-sigma"), "got {known:?}");
         assert!(known.contains(&"pixart-1024"), "got {known:?}");
+        assert!(known.contains(&"pixart-512"), "got {known:?}");
+        assert!(known.contains(&"pixart-sigma-512"), "got {known:?}");
+    }
+
+    /// v0.36 phase 2: variant detection routes both 1024 and 512
+    /// repo strings through `Variant::PixArt` — the dispatch
+    /// branch is shared because the architecture is identical.
+    #[test]
+    fn variant_detect_covers_both_pixart_sizes() {
+        use crate::pipelines::t2i::Variant;
+        assert_eq!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"),
+            Variant::PixArt
+        );
+        assert_eq!(
+            Variant::detect("PixArt-alpha/PixArt-Sigma-XL-2-512-MS"),
+            Variant::PixArt
+        );
     }
 
     #[test]

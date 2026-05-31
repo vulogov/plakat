@@ -60,6 +60,8 @@ pub struct Config {
 
 impl Config {
     /// PixArt-Σ-XL-2-1024-MS — v0.35 phase 2's first ship target.
+    /// `sample_size: 64` covers a 64×64 token grid at patch 2
+    /// (latent 128×128, output 1024²).
     pub fn sigma_xl_1024() -> Self {
         Self {
             in_channels: 4,
@@ -72,6 +74,38 @@ impl Config {
             sample_size: 64,
             caption_channels: 4096,
             max_caption_tokens: 300,
+        }
+    }
+
+    /// v0.36 phase 2: PixArt-Σ-XL-2-512-MS. Same DiT-XL/2
+    /// architecture as 1024-MS (identical num_layers / hidden_size
+    /// / num_heads / patch_size / out_channels) — only the upstream
+    /// training distribution + `sample_size` differ. `sample_size:
+    /// 32` covers a 32×32 token grid (latent 64×64, output 512²).
+    ///
+    /// In practice `sample_size` is informational only — plakat
+    /// computes the 2D sincos positional embedding from the actual
+    /// (grid_h, grid_w) at forward time, so it's robust to any
+    /// width/height the user requests. The variant constructor
+    /// exists to document the upstream config and to make the
+    /// `Pipeline::load` repo-detection branch self-explanatory.
+    pub fn sigma_xl_512() -> Self {
+        Self {
+            sample_size: 32,
+            ..Self::sigma_xl_1024()
+        }
+    }
+
+    /// v0.36 phase 2: pick the right config from a resolved repo
+    /// path. Falls back to the 1024-MS config when the repo isn't
+    /// recognised (safe — the architecture is identical and
+    /// `sample_size` is informational).
+    pub fn for_pixart_repo(repo: &str) -> Self {
+        let r = repo.to_lowercase();
+        if r.contains("sigma-xl-2-512-ms") {
+            Self::sigma_xl_512()
+        } else {
+            Self::sigma_xl_1024()
         }
     }
 }
@@ -741,5 +775,47 @@ mod tests {
         let device = Device::Cpu;
         let pe = build_2d_sincos_pos_embed(64, 4, 4, &device, DType::F32).unwrap();
         assert_eq!(pe.dims(), &[1, 16, 64]);
+    }
+
+    /// v0.36 phase 2: 512-MS config differs from 1024-MS ONLY in
+    /// `sample_size` — every other field (which affects parameter
+    /// shapes + safetensors loading) must match exactly.
+    #[test]
+    fn sigma_xl_512_differs_only_in_sample_size() {
+        let c1024 = Config::sigma_xl_1024();
+        let c512 = Config::sigma_xl_512();
+        assert_eq!(c1024.in_channels, c512.in_channels);
+        assert_eq!(c1024.out_channels, c512.out_channels);
+        assert_eq!(c1024.hidden_size, c512.hidden_size);
+        assert_eq!(c1024.num_layers, c512.num_layers);
+        assert_eq!(c1024.num_heads, c512.num_heads);
+        assert_eq!(c1024.mlp_ratio, c512.mlp_ratio);
+        assert_eq!(c1024.patch_size, c512.patch_size);
+        assert_eq!(c1024.caption_channels, c512.caption_channels);
+        assert_eq!(c1024.max_caption_tokens, c512.max_caption_tokens);
+        // The one intentional difference.
+        assert_eq!(c1024.sample_size, 64);
+        assert_eq!(c512.sample_size, 32);
+    }
+
+    /// v0.36 phase 2: `Config::for_pixart_repo` routes to the right
+    /// constructor based on the canonical repo path. Case-insensitive
+    /// substring match; unrecognised repos fall back to 1024-MS.
+    #[test]
+    fn for_pixart_repo_picks_correct_variant() {
+        let c1024 = Config::for_pixart_repo("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS");
+        assert_eq!(c1024.sample_size, 64);
+
+        let c512 = Config::for_pixart_repo("PixArt-alpha/PixArt-Sigma-XL-2-512-MS");
+        assert_eq!(c512.sample_size, 32);
+
+        // Mixed case still matches.
+        let c512_mixed = Config::for_pixart_repo("PIXART-ALPHA/PIXART-SIGMA-XL-2-512-MS");
+        assert_eq!(c512_mixed.sample_size, 32);
+
+        // Unknown repo string falls back to 1024 (safe — architecture
+        // is identical; sample_size is informational).
+        let c_fallback = Config::for_pixart_repo("user/some-fork");
+        assert_eq!(c_fallback.sample_size, 64);
     }
 }
