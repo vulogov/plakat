@@ -68,11 +68,28 @@ pub struct DoctorArgs {
     /// structured queries. Mutually exclusive with `--benchmark`.
     #[arg(long, default_value_t = false, conflicts_with = "benchmark")]
     pub json: bool,
+
+    /// v0.33 phase 3: walk every RNG-touching code path across
+    /// pipelines and surface its determinism guarantee. Output
+    /// covers SD t2i / AnimateDiff / SDXL / SD3 / Flux / stylize /
+    /// portrait + scheduler / wildcard / enhancer paths. Surfaces
+    /// known gaps (Metal u32 seed truncation, VAE-encode placement
+    /// needing verification, non-deterministic --enhance-temp >
+    /// 0.0) without fixing them — fixes that need deep changes
+    /// defer to v0.34+.
+    ///
+    /// Combine with `--json` for a machine-readable report.
+    /// Mutually exclusive with `--benchmark`.
+    #[arg(long = "reproducibility-check", default_value_t = false, conflicts_with = "benchmark")]
+    pub reproducibility_check: bool,
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
     if args.benchmark {
         return run_benchmark(&args.device);
+    }
+    if args.reproducibility_check {
+        return run_reproducibility_check(args.json);
     }
     if args.json {
         return run_json();
@@ -666,6 +683,100 @@ mod tests {
             std::env::remove_var("CIVITAI_API_KEY");
         }
     }
+
+    // -----------------------------------------------------------------
+    // v0.33 phase 3 — reproducibility audit shape.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn repro_audit_covers_every_major_pipeline() {
+        let rows = audit_rows();
+        // Each major surface should have at least one row pointing
+        // at it. Use substring matching against `pipeline` to stay
+        // robust against future copy edits.
+        let must_cover = [
+            "t2i",
+            "AnimateDiff (SD 1.5)",
+            "AnimateDiff (SDXL",
+            "SD3",
+            "Flux",
+            "Stylize",
+            "Portrait",
+            "img2img",
+            "wildcards",
+            "enhancer",
+        ];
+        for needle in must_cover {
+            let hit = rows.iter().any(|r| r.pipeline.contains(needle));
+            assert!(hit, "audit table missing coverage for `{needle}`");
+        }
+    }
+
+    #[test]
+    fn repro_guarantee_label_and_symbol_round_trip() {
+        // Each guarantee tier has a stable label + symbol so the
+        // table renders consistently across runs.
+        use ReproGuarantee::*;
+        assert_eq!(Guaranteed.label(), "GUARANTEED");
+        assert_eq!(GuaranteedMetalU32.label(), "GUARANTEED-but-Metal-only-u32");
+        assert_eq!(NeedsVerification.label(), "NEEDS-VERIFICATION");
+        assert_eq!(NonDeterministic.label(), "NON-DETERMINISTIC");
+        // Every symbol is non-empty so the human table never
+        // falls back to whitespace.
+        assert!(!Guaranteed.symbol().is_empty());
+        assert!(!GuaranteedMetalU32.symbol().is_empty());
+        assert!(!NeedsVerification.symbol().is_empty());
+        assert!(!NonDeterministic.symbol().is_empty());
+    }
+
+    #[test]
+    fn repro_report_serializes_with_expected_top_level_keys() {
+        let r = ReproReport::collect();
+        let json = serde_json::to_string_pretty(&r).unwrap();
+        assert!(json.contains("\"plakat_version\""));
+        assert!(json.contains("\"generated_at\""));
+        assert!(json.contains("\"warnings\""));
+        assert!(json.contains("\"rows\""));
+        // Rows expose the documented field set.
+        assert!(json.contains("\"pipeline\""));
+        assert!(json.contains("\"code_path\""));
+        assert!(json.contains("\"file_line\""));
+        assert!(json.contains("\"guarantee\""));
+        assert!(json.contains("\"note\""));
+    }
+
+    #[test]
+    fn repro_report_warnings_cover_top_gaps() {
+        let r = ReproReport::collect();
+        let joined = r.warnings.join(" || ");
+        // Top three documented gaps from the v0.33 phase 3 survey.
+        assert!(joined.contains("--seed N"));
+        assert!(joined.contains("Metal"));
+        // VAE encode placement gap from the survey.
+        assert!(joined.contains("VAE encode"));
+    }
+
+    #[test]
+    fn repro_audit_classifies_at_least_one_non_deterministic_path() {
+        let rows = audit_rows();
+        let any_non_det = rows
+            .iter()
+            .any(|r| r.guarantee == ReproGuarantee::NonDeterministic);
+        assert!(
+            any_non_det,
+            "audit table must surface at least one NonDeterministic path \
+             (rand::random() fallback when --seed is omitted, or remote LLMs)"
+        );
+    }
+
+    #[test]
+    fn repro_audit_classifies_at_least_one_metal_u32_path() {
+        let rows = audit_rows();
+        let any_metal = rows
+            .iter()
+            .any(|r| r.guarantee == ReproGuarantee::GuaranteedMetalU32);
+        assert!(any_metal, "every major SD pipeline truncates seeds on Metal");
+    }
 }
 
 fn section_header(label: &str) {
@@ -904,6 +1015,244 @@ fn run_json() -> Result<()> {
     let json = serde_json::to_string_pretty(&report)
         .map_err(|e| anyhow::anyhow!("serializing doctor report: {e}"))?;
     println!("{json}");
+    Ok(())
+}
+
+// =====================================================================
+// v0.33 phase 3: reproducibility audit.
+// =====================================================================
+
+/// Determinism guarantee tier for one RNG-touching code path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ReproGuarantee {
+    /// Fully deterministic when `--seed N` is set. No backend-
+    /// specific gotchas.
+    Guaranteed,
+    /// Deterministic when `--seed N` is set, BUT the seed gets
+    /// truncated to `u32` on Metal — so user seeds > 2^32 lose
+    /// entropy silently. Documented in v0.33 phase 3 audit.
+    GuaranteedMetalU32,
+    /// Plumbing looks correct on the surface but hasn't been
+    /// exercised under a hostile test — could harbour a silent
+    /// gap. Listed for v0.34 verification.
+    NeedsVerification,
+    /// Never deterministic. Either consumes thread_rng / system
+    /// entropy, or runs without an enclosing seed call.
+    NonDeterministic,
+}
+
+impl ReproGuarantee {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Guaranteed => "GUARANTEED",
+            Self::GuaranteedMetalU32 => "GUARANTEED-but-Metal-only-u32",
+            Self::NeedsVerification => "NEEDS-VERIFICATION",
+            Self::NonDeterministic => "NON-DETERMINISTIC",
+        }
+    }
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Guaranteed => "✓",
+            Self::GuaranteedMetalU32 => "⚠",
+            Self::NeedsVerification => "?",
+            Self::NonDeterministic => "✗",
+        }
+    }
+}
+
+/// One row of the reproducibility audit table — a single
+/// RNG-touching code path with its determinism classification.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReproRow {
+    pub pipeline: &'static str,
+    pub code_path: &'static str,
+    pub file_line: &'static str,
+    pub guarantee: ReproGuarantee,
+    pub note: &'static str,
+}
+
+/// The static survey table. Derived from the v0.33 phase 3 audit
+/// (recorded in `Documentation/RFC_v0.33_PRODUCTION_POLISH.md`).
+/// Each row is hand-curated; future cycles update it when seed
+/// plumbing changes.
+pub fn audit_rows() -> Vec<ReproRow> {
+    vec![
+        ReproRow {
+            pipeline: "t2i (SD-family)",
+            code_path: "Pipeline::run pre-loop latent randn",
+            file_line: "pipelines/t2i.rs:~1225",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Seed masked to u32 + `device.set_seed()` before randn.",
+        },
+        ReproRow {
+            pipeline: "AnimateDiff (SD 1.5)",
+            code_path: "denoise_window noise init + FreeNoise pre-gen",
+            file_line: "pipelines/animatediff.rs:~340",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "set_seed() before randn; per-window seed for v0.27 path, full-length pre-gen for v0.32 FreeNoise.",
+        },
+        ReproRow {
+            pipeline: "AnimateDiff (SDXL beta)",
+            code_path: "denoise_window noise init",
+            file_line: "pipelines/animatediff.rs:~1075",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Same seed plumbing as SD 1.5; FreeNoise path identical.",
+        },
+        ReproRow {
+            pipeline: "SD3 / SD3.5",
+            code_path: "Pipeline::run init latents",
+            file_line: "pipelines/sd3.rs:~813",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Seed masked + set_seed() before randn. Falls back to rand::random() when --seed absent.",
+        },
+        ReproRow {
+            pipeline: "Flux (BF16 / GGUF / NF4)",
+            code_path: "sampling::get_noise",
+            file_line: "pipelines/flux.rs:~1565",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Routes through candle's `flux::sampling` after `device.set_seed()`.",
+        },
+        ReproRow {
+            pipeline: "Stylize (SD 1.5)",
+            code_path: "init noise + VAE encode",
+            file_line: "pipelines/stylize.rs:~260",
+            guarantee: ReproGuarantee::NeedsVerification,
+            note: "set_seed before init noise OK; VAE encode samples DiagonalGaussianDistribution — placement of set_seed relative to encode not audited end-to-end.",
+        },
+        ReproRow {
+            pipeline: "Portrait (FaceID / Plus-Face)",
+            code_path: "Pipeline::generate t2i + inpaint blend",
+            file_line: "pipelines/portrait.rs:~420 + ~751",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Multiple randn sites; each guarded by a set_seed. Verified for the t2i path.",
+        },
+        ReproRow {
+            pipeline: "img2img / inpaint",
+            code_path: "init latents from VAE-encoded init image",
+            file_line: "pipelines/img2img.rs:~173",
+            guarantee: ReproGuarantee::NeedsVerification,
+            note: "VAE encode runs before init-noise set_seed in some paths. v0.34 verification candidate.",
+        },
+        ReproRow {
+            pipeline: "LCM scheduler",
+            code_path: "per-step re-noise",
+            file_line: "pipelines/lcm_scheduler.rs:~222",
+            guarantee: ReproGuarantee::GuaranteedMetalU32,
+            note: "Reuses parent pipeline's set_seed RNG stream — deterministic only if parent seeded.",
+        },
+        ReproRow {
+            pipeline: "Prompt wildcards",
+            code_path: "expand() RNG from --seed",
+            file_line: "src/prompt/wildcards.rs",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "StdRng seeded from --seed at CLI layer (cli/generate.rs:~1555).",
+        },
+        ReproRow {
+            pipeline: "Prompt enhancer (local LLM)",
+            code_path: "LogitsProcessor sampling",
+            file_line: "src/llm/enhancer.rs:~189",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "Greedy (--enhance-temp 0.0, default) → deterministic. --enhance-temp > 0.0 sampling honours --seed but is inherently stochastic.",
+        },
+        ReproRow {
+            pipeline: "Prompt enhancer (DeepSeek / Gemini)",
+            code_path: "HTTP request",
+            file_line: "src/llm/deepseek.rs + gemini.rs",
+            guarantee: ReproGuarantee::NonDeterministic,
+            note: "Remote LLM call — server-side sampling is outside plakat's control.",
+        },
+        ReproRow {
+            pipeline: "Any pipeline (no --seed flag)",
+            code_path: "Fallback rand::random()",
+            file_line: "(multiple)",
+            guarantee: ReproGuarantee::NonDeterministic,
+            note: "Pipelines fall back to `rand::random()` for seed when --seed is omitted. Reproducibility REQUIRES --seed N.",
+        },
+    ]
+}
+
+/// v0.33 phase 3: full reproducibility report as one struct. JSON
+/// serialisation matches the `--json` output.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReproReport {
+    pub plakat_version: String,
+    pub generated_at: String,
+    /// Top-level warnings that summarise the most-common gaps.
+    /// Shown above the table in human output so users hit them
+    /// without scanning every row.
+    pub warnings: Vec<&'static str>,
+    pub rows: Vec<ReproRow>,
+}
+
+impl ReproReport {
+    pub fn collect() -> Self {
+        Self {
+            plakat_version: env!("CARGO_PKG_VERSION").to_string(),
+            generated_at: format!("{:?}", std::time::SystemTime::now()),
+            warnings: vec![
+                "Reproducibility REQUIRES `--seed N`. Without it, pipelines fall back to `rand::random()` and produce different output each run.",
+                "Metal backend truncates seeds to u32. User seeds > 2^32 lose entropy silently across SD t2i / AnimateDiff / SD3 / Flux / portrait / stylize / LCM scheduler.",
+                "VAE encode in img2img / stylize paths: `set_seed()` placement relative to encode not audited end-to-end. May affect determinism on hostile reseeding patterns. v0.34 verification candidate.",
+                "Prompt enhancer with `--enhance-temp > 0.0` honours `--seed N` but local LLM sampling is inherently stochastic. Use `--enhance-temp 0.0` (default) for deterministic enhancement.",
+                "DeepSeek / Gemini providers are remote — server-side sampling is outside plakat's control. No reproducibility guarantee for those.",
+            ],
+            rows: audit_rows(),
+        }
+    }
+}
+
+fn run_reproducibility_check(as_json: bool) -> Result<()> {
+    let report = ReproReport::collect();
+    if as_json {
+        let json = serde_json::to_string_pretty(&report)
+            .map_err(|e| anyhow::anyhow!("serializing reproducibility report: {e}"))?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    println!(
+        "\n{}  reproducibility audit (v0.33 phase 3)\n",
+        style("doctor --reproducibility-check").yellow().bold()
+    );
+
+    section_header("Top warnings");
+    for w in &report.warnings {
+        println!("    {} {}", style("!").yellow(), w);
+    }
+    println!();
+
+    section_header("Per-pipeline determinism table");
+    println!(
+        "    {:^7} {:<26} {:<40} {}",
+        style("status").dim(),
+        style("pipeline").dim(),
+        style("code path").dim(),
+        style("note").dim(),
+    );
+    for row in &report.rows {
+        let sym = match row.guarantee {
+            ReproGuarantee::Guaranteed => style(row.guarantee.symbol()).green(),
+            ReproGuarantee::GuaranteedMetalU32 => style(row.guarantee.symbol()).yellow(),
+            ReproGuarantee::NeedsVerification => style(row.guarantee.symbol()).cyan(),
+            ReproGuarantee::NonDeterministic => style(row.guarantee.symbol()).red(),
+        };
+        println!(
+            "    {sym:^7} {:<26} {:<40} {}",
+            row.pipeline,
+            row.code_path,
+            style(row.note).dim(),
+        );
+    }
+    println!();
+    println!(
+        "    {} legend: {}=GUARANTEED  {}=Metal-u32-truncation  {}=NEEDS-VERIFICATION  {}=NON-DETERMINISTIC",
+        style("·").dim(),
+        style("✓").green(),
+        style("⚠").yellow(),
+        style("?").cyan(),
+        style("✗").red(),
+    );
+    println!();
     Ok(())
 }
 
