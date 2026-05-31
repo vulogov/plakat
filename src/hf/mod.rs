@@ -257,6 +257,15 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "PixArt-Σ XL 2 512-MS — same DiT-XL/2 as 1024-MS, trained at 512² (faster, smaller VRAM)",
     },
+    // v0.36 phase 3: 2K-MS variant with KV-compression.
+    AliasEntry {
+        aliases: &["pixart-2k", "pixart-sigma-2k"],
+        repo: "PixArt-alpha/PixArt-Sigma-XL-2-2K-MS",
+        family: "PixArt",
+        kind: "base",
+        gated: false,
+        note: "PixArt-Σ XL 2 2K-MS — 2x KV-compression in self-attn (Σ paper §3.2) for 2048² output viability",
+    },
 ];
 
 /// Map short aliases to canonical HuggingFace repo ids.
