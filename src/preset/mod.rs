@@ -607,6 +607,32 @@ mod tests {
         );
     }
 
+    /// v0.37 phase 5: Stable Cascade is a new model family; same
+    /// pattern as PixArt — the look catalog's `base_compat: null`
+    /// entries apply universally. Verify ≥3 looks render cleanly
+    /// on `--model stable-cascade`; Pony stays SDXL-only.
+    #[test]
+    fn most_looks_apply_to_stable_cascade_family() {
+        let cat = Catalog::load_with_user_dir(Kind::Look, None)
+            .expect("load bundled looks");
+        let cascade_compat: Vec<&str> = cat
+            .entries
+            .iter()
+            .filter(|e| e.is_compatible_with("cascade"))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            cascade_compat.len() >= 3,
+            "v0.37 phase 5 requires ≥3 looks compatible with Stable Cascade — \
+             got {} ({cascade_compat:?})",
+            cascade_compat.len(),
+        );
+        assert!(
+            !cascade_compat.contains(&"pony"),
+            "pony look must remain SDXL-only (score tags don't apply to Cascade)"
+        );
+    }
+
     /// v0.31 phase 1 swap: Pony Diffusion preset shape pins.
     /// `--look pony` MUST carry the score-based prompt prefix (the
     /// Pony v6 convention is `score_9, score_8_up, ...` as the
