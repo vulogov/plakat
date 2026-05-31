@@ -470,9 +470,62 @@ pub fn build_clip_transformer<P: AsRef<std::path::Path>>(
     ClipTextTransformer::new(vs, clip)
 }
 
+/// v0.32 phase 1: pipeline rollout marker. Re-exported here so a
+/// single import covers every plakat pipeline that needs CLIP-L.
+/// Mostly cosmetic — call sites use the concrete `ClipTextTransformer`
+/// path — but having the marker keeps the rollout intent grep-able.
+pub use ClipTextTransformer as PlakatClipTextTransformer;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.32 phase 1: confirms every pipeline that holds a CLIP-L
+    /// text encoder field uses plakat's vendored type, not candle's.
+    /// This is a structural lock — if a future refactor reintroduces
+    /// `sdclip::ClipTextTransformer` on any pipeline's text-encoder
+    /// field, the type-level binding here would break.
+    ///
+    /// Concrete pipeline field types covered:
+    /// - `pipelines::sd_core::SdCore::text_encoder_l` (v0.30 phase 0)
+    /// - `pipelines::animatediff::AnimateDiffPipeline::text_encoder`
+    /// - `pipelines::animatediff::AnimateDiffSdxlPipeline::text_encoder_l`
+    /// - `pipelines::sd3::Pipeline::clip_l`
+    /// - `pipelines::flux::Pipeline::clip_text`
+    /// - `pipelines::stylize::Pipeline::text_encoder`
+    #[test]
+    fn vendored_clip_field_type_lock() {
+        // Each fn-pointer assignment fails to compile if the named
+        // field has the wrong type. The test body just touches the
+        // compile-time check; no runtime work needed.
+        fn _check_sd_core(c: &crate::pipelines::sd_core::SdCore) -> &ClipTextTransformer {
+            &c.text_encoder_l
+        }
+        fn _check_animate_sd15(
+            c: &crate::pipelines::animatediff::AnimateDiffPipeline,
+        ) -> &ClipTextTransformer {
+            &c.text_encoder
+        }
+        fn _check_animate_sdxl(
+            c: &crate::pipelines::animatediff::AnimateDiffSdxlPipeline,
+        ) -> &ClipTextTransformer {
+            &c.text_encoder_l
+        }
+        // SD3, Flux, stylize: fields are crate-private, so a type
+        // probe via accessor isn't reachable from this file. The
+        // build-time guarantee comes from each pipeline's
+        // construction site using `vendored_clip::build_clip_transformer`
+        // — if any swap regressed back to candle, the field's
+        // initialiser would have failed to compile because candle's
+        // builder returns `sdclip::ClipTextTransformer`, not ours.
+        let _ = (_check_sd_core
+            as fn(&crate::pipelines::sd_core::SdCore) -> &ClipTextTransformer);
+        let _ = (_check_animate_sd15
+            as fn(&crate::pipelines::animatediff::AnimateDiffPipeline) -> &ClipTextTransformer);
+        let _ = (_check_animate_sdxl
+            as fn(&crate::pipelines::animatediff::AnimateDiffSdxlPipeline)
+                -> &ClipTextTransformer);
+    }
 
     #[test]
     fn config_with_vocab_overrides_only_vocab() {

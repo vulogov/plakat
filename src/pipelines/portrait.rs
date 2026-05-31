@@ -249,6 +249,8 @@ impl Pipeline {
                 // --embedding (sd_core bails loud when set). Pass
                 // empty to stay byte-compatible with pre-phase-9.
                 embeddings: Vec::new(),
+                // v0.32 phase 2: portrait doesn't yet plumb VAE cache.
+                vae_cache: None,
             },
         )
         .await

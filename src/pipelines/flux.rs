@@ -30,7 +30,6 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::{
     flux::{autoencoder as fae, sampling},
     quantized_t5 as qt5,
-    stable_diffusion::clip as sdclip,
     t5,
 };
 // v0.12 phase 2a: use plakat's vendored Flux model (with the
@@ -429,9 +428,9 @@ pub struct Pipeline {
     pub repo: String,
     device: Device,
     dtype: DType,
-    clip_text: sdclip::ClipTextTransformer,
+    clip_text: crate::pipelines::vendored_clip::ClipTextTransformer,
     clip_tok: Tokenizer,
-    clip_cfg: sdclip::Config,
+    clip_cfg: crate::pipelines::vendored_clip::Config,
     // T5EncoderModel::forward needs &mut self (KV cache), so generate is
     // &mut self too. The scenario loop is sequential so this is fine.
     // v0.13 phase 1b: BF16 or Quantized via the T5Backbone enum.
@@ -857,14 +856,17 @@ impl Pipeline {
 
         // ---------- load text encoders ----------
         let build = progress::spinner("Loading text encoders");
-        let clip_cfg = sdclip::Config::v1_5(); // CLIP-L
-        let clip_text =
-            candle_transformers::models::stable_diffusion::build_clip_transformer(
-                &clip_cfg,
-                &clip_weights,
-                &req.device,
-                dtype,
-            )?;
+        // v0.32 phase 1: vendored CLIP-L. Numerically identical to
+        // candle's `sdclip::Config::v1_5()` — same 77 tokens / 768d /
+        // 12 layers, same QuickGelu activation. Flux uses CLIP-L as
+        // the secondary encoder alongside T5.
+        let clip_cfg = crate::pipelines::vendored_clip::Config::v1_5();
+        let clip_text = crate::pipelines::vendored_clip::build_clip_transformer(
+            &clip_cfg,
+            &clip_weights,
+            &req.device,
+            dtype,
+        )?;
         let clip_tok = Tokenizer::from_file(&clip_tokenizer)
             .map_err(|e| anyhow!("CLIP tokenizer: {e}"))?;
 
