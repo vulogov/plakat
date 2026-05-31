@@ -101,6 +101,10 @@ pub enum BaseModel {
     /// SD3 isn't wired yet — this slot reserves the name so the
     /// variant enum stays exhaustive.
     Sd3,
+    /// v0.35 phase 0: PixArt-Σ family. Catalog-LoRA support lands in
+    /// v0.35 phase 4 (PixArt LoRA format parser); the slot reserves
+    /// the name so the variant enum stays exhaustive.
+    PixArt,
 }
 
 impl BaseModel {
@@ -125,6 +129,7 @@ impl BaseModel {
             | Variant::Sd35Medium
             | Variant::Sd35Large
             | Variant::Sd35LargeTurbo => Self::Sd3,
+            Variant::PixArt => Self::PixArt,
         }
     }
 
@@ -135,6 +140,7 @@ impl BaseModel {
             Self::Sdxl => "sdxl",
             Self::Flux => "flux",
             Self::Sd3 => "sd3",
+            Self::PixArt => "pixart",
         }
     }
 }
