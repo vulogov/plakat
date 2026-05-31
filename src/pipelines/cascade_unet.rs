@@ -121,13 +121,61 @@ impl Config {
         }
     }
 
-    /// Pick the right config from a Stable Cascade alias. Defaults
-    /// to Full when no `-lite` substring is present.
+    /// Pick the right Stage B config from a Stable Cascade alias.
+    /// Defaults to Full when no `-lite` substring is present.
     pub fn stage_b_for_alias(alias: &str) -> Self {
         if alias.to_lowercase().contains("lite") {
             Self::stage_b_lite()
         } else {
             Self::stage_b_full()
+        }
+    }
+
+    /// v0.37 phase 3: Stable Cascade Stage C Full (~3.6B params
+    /// upstream).
+    ///
+    /// Operates in the super-compressed prior latent space:
+    /// **16 input/output channels** (vs Stage B's 4) at a tiny
+    /// spatial grid (24×24 at upstream 1024² output). The small
+    /// spatial extent means fewer levels are useful — 3 here vs
+    /// Stage B's 4. Attention at every level (the tiny sequence
+    /// keeps attention affordable + Stage C carries the heaviest
+    /// text-conditioned reasoning).
+    pub fn stage_c_full() -> Self {
+        Self {
+            channels: 16,
+            level_channels: vec![1024, 1536, 2048],
+            attention_levels: vec![true, true, true],
+            blocks_per_level: 4,
+            text_hidden_size: 1280,
+            num_heads: 32,
+            norm_groups: 32,
+        }
+    }
+
+    /// Stable Cascade Stage C Lite — smaller channel widths +
+    /// fewer blocks per level than Full. Same level structure +
+    /// attention placement.
+    pub fn stage_c_lite() -> Self {
+        Self {
+            channels: 16,
+            level_channels: vec![768, 1024, 1536],
+            attention_levels: vec![true, true, true],
+            blocks_per_level: 2,
+            text_hidden_size: 1280,
+            num_heads: 24,
+            norm_groups: 32,
+        }
+    }
+
+    /// v0.37 phase 3: pick the right Stage C config from a Stable
+    /// Cascade alias. Defaults to Full when no `-lite` substring
+    /// is present.
+    pub fn stage_c_for_alias(alias: &str) -> Self {
+        if alias.to_lowercase().contains("lite") {
+            Self::stage_c_lite()
+        } else {
+            Self::stage_c_full()
         }
     }
 }
@@ -833,6 +881,86 @@ mod tests {
         // Mixed case still routes correctly.
         let lite_mixed = Config::stage_b_for_alias("STABLE-CASCADE-LITE");
         assert_eq!(lite_mixed.num_heads, Config::stage_b_lite().num_heads);
+    }
+
+    // v0.37 phase 3: Stage C config + forward pass.
+
+    #[test]
+    fn stage_c_full_config_has_three_levels_all_attention() {
+        let cfg = Config::stage_c_full();
+        // Stage C operates on the super-compressed prior latent
+        // (16 channels at 24×24 spatial upstream). All 3 levels
+        // carry attention because the sequence stays short even
+        // at the shallowest level.
+        assert_eq!(cfg.channels, 16);
+        assert_eq!(cfg.level_channels.len(), 3);
+        assert_eq!(cfg.attention_levels, vec![true, true, true]);
+        assert_eq!(cfg.text_hidden_size, 1280);
+        assert!(
+            cfg.num_heads >= 16,
+            "Stage C Full uses more heads than Stage B Full"
+        );
+    }
+
+    #[test]
+    fn stage_c_lite_smaller_than_full() {
+        let full = Config::stage_c_full();
+        let lite = Config::stage_c_lite();
+        for (f, l) in full.level_channels.iter().zip(lite.level_channels.iter()) {
+            assert!(l < f, "Stage C lite channel {l} should be < full channel {f}");
+        }
+        assert!(lite.blocks_per_level <= full.blocks_per_level);
+        assert!(lite.num_heads < full.num_heads);
+    }
+
+    #[test]
+    fn stage_c_for_alias_picks_lite_or_full() {
+        let lite = Config::stage_c_for_alias("stable-cascade-lite");
+        assert_eq!(lite.num_heads, Config::stage_c_lite().num_heads);
+        let full = Config::stage_c_for_alias("stable-cascade");
+        assert_eq!(full.num_heads, Config::stage_c_full().num_heads);
+        // Mixed case still routes.
+        let lite_mixed = Config::stage_c_for_alias("STABILITYAI/STABLE-CASCADE-LITE");
+        assert_eq!(lite_mixed.num_heads, Config::stage_c_lite().num_heads);
+    }
+
+    #[test]
+    fn stage_c_uses_more_channels_than_stage_b() {
+        // Stage C operates on a more-compressed latent space with
+        // more conditioning info per token — pixel-wise it has
+        // 16 channels vs Stage B's 4. The architectural widths
+        // also reflect Stage C's role as the heavyweight prior.
+        assert_eq!(Config::stage_b_full().channels, 4);
+        assert_eq!(Config::stage_c_full().channels, 16);
+    }
+
+    /// Small Stage C cfg for fast end-to-end forward test.
+    /// 3 levels with attention everywhere; tiny channels so the
+    /// UNet instantiation stays cheap on CPU.
+    fn small_stage_c_cfg() -> Config {
+        Config {
+            channels: 16,
+            level_channels: vec![32, 48, 64],
+            attention_levels: vec![true, true, true],
+            blocks_per_level: 1,
+            text_hidden_size: 24,
+            num_heads: 4,
+            norm_groups: 8,
+        }
+    }
+
+    #[test]
+    fn stage_c_unet_full_forward_preserves_shape() {
+        let (unet, _) = random_unet(small_stage_c_cfg());
+        let device = &unet.device;
+        // (1, 16, 8, 8) noisy prior latent — Stage C's input shape
+        // at a smaller resolution for test speed. Output must match
+        // input shape (it's a denoising prediction).
+        let latent = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let out = unet.forward(&latent, &timestep, &text).unwrap();
+        assert_eq!(out.dims(), &[1, 16, 8, 8]);
     }
 }
 
