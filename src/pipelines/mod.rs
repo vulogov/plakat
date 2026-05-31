@@ -41,6 +41,7 @@ pub mod portrait;
 pub mod real_esrgan;
 pub mod cascade;
 pub mod cascade_stage_a;
+pub mod cascade_unet;
 pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;
