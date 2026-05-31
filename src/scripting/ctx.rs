@@ -107,6 +107,18 @@ pub struct ScriptCtx {
             String,
             crate::pipelines::animatediff::AnimateDiffSdxlPipeline,
         )>,
+    /// v0.36 phase 1: cached PixArt-Σ pipeline for `plakat.pixart`.
+    /// Key is the user's PixArt alias (`pixart` / `pixart-sigma` /
+    /// `pixart-1024`). Same-alias hit reuses; alias change drops +
+    /// reloads. LoRA stack mutation drops via
+    /// [`Self::mark_loras_changed`] (PixArt LoRAs merge at load
+    /// time per v0.35 phase 4, so stack mutation needs a fresh
+    /// load).
+    ///
+    /// Cold load downloads ~12 GB (T5-XXL + DiT-XL/2 + VAE). The
+    /// slot amortises that across calls.
+    pub loaded_pixart:
+        Option<(String, crate::pipelines::pixart::Pipeline)>,
     /// v0.34 phase 3: scripting-side VAE cache. Mirrors the scenario
     /// runner's v0.32 phase 2 / v0.34 phase 3 cross-kind sharing.
     /// Each load (`plakat.load`, `plakat.animate`) looks this up by
@@ -317,6 +329,7 @@ impl ScriptCtx {
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
+            loaded_pixart: None,
             vae_cache: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
@@ -345,6 +358,10 @@ impl ScriptCtx {
         // merge baked in at load time. Drop on LoRA stack mutation.
         self.loaded_animatediff = None;
         self.loaded_animatediff_sdxl = None;
+        // v0.36 phase 1: PixArt LoRAs merge into the DiT
+        // transformer tempfile at load time (v0.35 phase 4 pattern);
+        // any stack mutation needs a fresh load to take effect.
+        self.loaded_pixart = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -761,6 +778,92 @@ impl ScriptCtx {
         }
 
         Ok(&self.loaded_animatediff_sdxl.as_ref().expect("just inserted").1)
+    }
+
+    /// v0.36 phase 1: get-or-load the PixArt-Σ pipeline for `alias`.
+    /// Cache key is the user's alias (`pixart` / `pixart-sigma` /
+    /// `pixart-1024`); same-alias hit reuses; alias change drops +
+    /// reloads. LoRA stack mutation drops via
+    /// [`Self::mark_loras_changed`].
+    ///
+    /// LoRAs: passes the current `self.loras` stack into the PixArt
+    /// load (which merges via the v0.35 phase 4 tempfile-merge
+    /// path). LoRA stack mutation between calls drops the cache.
+    pub fn get_or_load_pixart(
+        &mut self,
+    ) -> Result<&mut crate::pipelines::pixart::Pipeline> {
+        let alias = self.loaded_model().ok_or_else(|| {
+            anyhow!(
+                "ScriptCtx::get_or_load_pixart: no model loaded. \
+                 Call `\"pixart\" plakat.load` before `plakat.pixart`."
+            )
+        })?;
+        let alias_owned = alias.to_string();
+        let hit = self
+            .loaded_pixart
+            .as_ref()
+            .map(|(a, _)| a == &alias_owned)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_pixart = None;
+            let device = self.device.clone();
+            let lora_scale = self.config.lora_scale;
+            // Resolve scenario-level LoRAs once for the lifetime of
+            // this pipeline. Network-required if any are HF / Civitai.
+            let loras_snapshot = self.loras.clone();
+            // VAE cache lookup: pairs with `plakat.load <pixart-alias>`
+            // of the same alias and avoids the ~330 MB VAE rebuild.
+            let cached_vae =
+                vae_cache_lookup_script(self.vae_cache.as_ref(), &alias_owned);
+            if cached_vae.is_some() {
+                tracing::info!(
+                    target: "plakat",
+                    "v0.36 phase 1: VAE cache HIT on scripting PixArt load (alias={alias_owned})"
+                );
+            }
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_pixart: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    // Resolve LoRA specs inside the async block —
+                    // matches the v0.35 phase 4 pixart::run pattern.
+                    let mut resolved: Vec<
+                        crate::pipelines::lora::ResolvedLora,
+                    > = Vec::with_capacity(loras_snapshot.len());
+                    for spec in &loras_snapshot {
+                        resolved.push(spec.resolve().await?);
+                    }
+                    let repo = if alias_owned.contains('/') {
+                        alias_owned.clone()
+                    } else {
+                        crate::hf::resolve_alias(&alias_owned).to_string()
+                    };
+                    crate::pipelines::pixart::Pipeline::load(
+                        crate::pipelines::pixart::LoadRequest {
+                            repo,
+                            device,
+                            vae_cache: cached_vae,
+                            loras: resolved,
+                            lora_scale,
+                        },
+                    )
+                    .await
+                })
+            })?;
+            // Populate VAE cache from the freshly loaded pipeline so
+            // subsequent SDXL t2i loads with the same alias reuse it.
+            self.vae_cache = Some((
+                alias_owned.clone(),
+                std::sync::Arc::clone(&pipeline.vae),
+            ));
+            self.loaded_pixart = Some((alias_owned, pipeline));
+        }
+
+        Ok(&mut self.loaded_pixart.as_mut().expect("just inserted").1)
     }
 
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
@@ -1228,6 +1331,7 @@ mod tests {
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
+            loaded_pixart: None,
             vae_cache: None,
         }
     }
