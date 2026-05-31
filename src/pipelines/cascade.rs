@@ -70,6 +70,7 @@ use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
 use tokenizers::Tokenizer;
 
+use crate::pipelines::cascade_stage_a::{Config as StageAConfig, StageAVae};
 use crate::pipelines::sdxl_clip::SdxlClipGTextTransformer;
 use crate::pipelines::vendored_clip;
 use crate::ui::progress;
@@ -87,9 +88,9 @@ pub struct LoadRequest {
 
 /// Stable Cascade pipeline.
 ///
-/// Phase 0 ships CLIP-G + tokenizer only. Stage A / B / C fields
-/// will land in phases 1 / 2 / 3 — the struct grows additively
-/// (no field renames; existing callers stay compatible).
+/// Phase 0 shipped CLIP-G + tokenizer. v0.37 phase 1 adds Stage A
+/// VAE (the small Paella-v3 design for image ↔ latent mapping).
+/// Stage B and Stage C land in phases 2 / 3.
 pub struct Pipeline {
     pub device: Device,
     pub dtype: DType,
@@ -98,6 +99,12 @@ pub struct Pipeline {
     /// the `text_projection` Linear). 1280-dim embed.
     pub clip_g_enc: SdxlClipGTextTransformer,
     pub clip_g_tok: Tokenizer,
+    /// v0.37 phase 1: Stage A VAE. ~3.6M-param small VAE that
+    /// compresses 1024×1024×3 images to 32×32×4 latents (32× per
+    /// axis). Used to encode training images (during img2img /
+    /// future ControlNet) and decode generated latents at the end
+    /// of the 3-stage pipeline.
+    pub stage_a: StageAVae,
 }
 
 impl Pipeline {
@@ -147,7 +154,18 @@ impl Pipeline {
         .with_context(|| {
             format!("downloading CLIP-G tokenizer for Stable Cascade ({})", req.repo)
         })?;
-        dl.finish_with_message("✓ Stable Cascade text-encoder weights resolved");
+        // v0.37 phase 1: Stage A VAE weights. Diffusers calls
+        // Stage A `vqgan` even though it's not vector-quantized;
+        // the path convention follows.
+        let stage_a_w = crate::hf::download::get_first_of(&[
+            (&req.repo, "vqgan/diffusion_pytorch_model.safetensors"),
+            (&req.repo, "vqgan/diffusion_pytorch_model.fp16.safetensors"),
+        ])
+        .await
+        .with_context(|| {
+            format!("downloading Stage A VAE weights for Stable Cascade ({})", req.repo)
+        })?;
+        dl.finish_with_message("✓ Stable Cascade text-encoder + Stage A weights resolved");
 
         let build = progress::spinner("Loading CLIP-G text encoder");
         // v0.30 phase 0 vendored CLIP Config for the bigG variant.
@@ -162,11 +180,20 @@ impl Pipeline {
             .map_err(|e| anyhow!("CLIP-G tokenizer: {e}"))?;
         build.finish_with_message("✓ CLIP-G ready");
 
+        let stage_a_build = progress::spinner("Loading Stage A VAE");
+        let stage_a_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_a_w.as_path()], dtype, &req.device)?
+        };
+        let stage_a = StageAVae::new(StageAConfig::paella_v3(), stage_a_vb)
+            .context("building Stage A VAE for Stable Cascade")?;
+        stage_a_build.finish_with_message("✓ Stage A VAE ready");
+
         Ok(Self {
             device: req.device,
             dtype,
             clip_g_enc,
             clip_g_tok,
+            stage_a,
         })
     }
 }
@@ -190,17 +217,18 @@ pub async fn run(req: RunRequest) -> Result<()> {
 
     tracing::info!(
         target: "plakat",
-        "Stable Cascade phase 0: CLIP-G loaded (dtype={:?}). \
-         Stage A / B / C land in v0.37 phases 1-3; 3-stage orchestration in phase 4.",
+        "Stable Cascade phase 1: CLIP-G + Stage A loaded (dtype={:?}). \
+         Stage B lands in v0.37 phase 2; Stage C in phase 3; 3-stage orchestration in phase 4.",
         pipeline.dtype
     );
 
     anyhow::bail!(
-        "Stable Cascade inference is not yet implemented — phase 0 ships the \
-         CLIP-G text-encoder foundation (this load succeeded). Stage A VAE lands \
-         in v0.37 phase 1; Stage B in phase 2; Stage C in phase 3; 3-stage \
-         orchestration (text → Stage C → Stage B → Stage A → image) in phase 4. \
-         Track progress against `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
+        "Stable Cascade inference is not yet implemented — phase 1 ships the \
+         CLIP-G text encoder + Stage A VAE foundation (this load succeeded). \
+         Stage B latent prior lands in v0.37 phase 2; Stage C high-res prior \
+         in phase 3; 3-stage orchestration (text → Stage C → Stage B → Stage A \
+         → image) in phase 4. Track progress against \
+         `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
     )
 }
 
