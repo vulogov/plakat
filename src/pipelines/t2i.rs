@@ -152,6 +152,31 @@ pub struct Request {
     /// (SD 1.5 / 2.1 / SDXL / SDXL-Turbo) only — Flux / SD3 force
     /// PNG with a warn when this is set to Webp.
     pub output_format: crate::imaging::io::OutputFormat,
+
+    /// v0.33 phase 0: metadata polish — names of v0.25 presets
+    /// applied by the CLI before this Request was built. The
+    /// pipeline doesn't use these for inference; they flow only
+    /// into the saved `GenerationMetadata` so downstream tooling
+    /// (sidecar parsers, Civitai uploaders) sees the recipe in
+    /// full.
+    pub look: Option<String>,
+    /// v0.33 phase 0: metadata polish — `--genre` preset name.
+    pub genre: Option<String>,
+    /// v0.33 phase 0: metadata polish — `--negative-preset` name.
+    pub negative_preset: Option<String>,
+    /// v0.33 phase 0: metadata polish — structured LoRA stack with
+    /// per-entry source / revision. When `None`, the metadata
+    /// builder synthesises the flat `loras` Vec<String> from
+    /// `self.loras` alone (legacy path).
+    pub lora_stack: Option<Vec<crate::imaging::metadata::LoraEntry>>,
+    /// v0.33 phase 0: metadata polish — embedding (TI) stack.
+    pub embedding_stack: Option<Vec<crate::imaging::metadata::EmbeddingEntry>>,
+    /// v0.33 phase 0: metadata polish — ControlNet stack with
+    /// per-entry kind / source / strength / window.
+    pub control_stack: Option<Vec<crate::imaging::metadata::ControlEntry>>,
+    /// v0.33 phase 0: metadata polish — v0.19 prompt enhancement
+    /// details (provider, system prompt, original prompt).
+    pub enhancement: Option<crate::imaging::metadata::EnhancementMetadata>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -2415,6 +2440,23 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         }
         if req.tiled.is_some() {
             m.extras.push(("Tiled".into(), "on".into()));
+        }
+        // v0.33 phase 0: plumb the polish fields from Request into
+        // GenerationMetadata. All Option fields; the helpers skip
+        // population when the source is None / empty.
+        m.with_look_genre(req.look.as_deref(), req.genre.as_deref());
+        m.negative_preset = req.negative_preset.clone();
+        if let Some(stack) = req.lora_stack.clone() {
+            m.with_lora_stack(stack);
+        }
+        if let Some(stack) = req.embedding_stack.clone() {
+            m.with_embedding_stack(stack);
+        }
+        if let Some(stack) = req.control_stack.clone() {
+            m.with_control_stack(stack);
+        }
+        if let Some(enh) = req.enhancement.clone() {
+            m.with_enhancement(enh);
         }
         Some(m)
     } else {
