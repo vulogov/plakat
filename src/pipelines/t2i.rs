@@ -167,6 +167,11 @@ pub struct LoadRequest {
     /// v0.16 phase 9: TI embedding specs to resolve + register at
     /// load time. See `Request.embeddings` for the runtime gating.
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
+    /// v0.32 phase 2: optional pre-built VAE for the cache plumbing.
+    /// `Some(arc)` reuses the cached `AutoEncoderKL` (skipping the
+    /// ~330 MB SDXL VAE rebuild); `None` builds fresh. The scenario
+    /// runner threads a shared Arc across mixed-kind reloads.
+    pub vae_cache: Option<std::sync::Arc<candle_transformers::models::stable_diffusion::vae::AutoEncoderKL>>,
 }
 
 /// Stuff that can vary per `Pipeline::generate` call.
@@ -724,6 +729,7 @@ impl Pipeline {
                 loras: resolved_loras,
                 lora_scale: req.lora_scale,
                 embeddings: resolved_embeddings,
+                vae_cache: req.vae_cache.clone(), // v0.32 phase 2: VAE share
             },
         )
         .await
@@ -2434,6 +2440,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         lora_scale: req.lora_scale,
         use_refiner: req.use_refiner,
         embeddings: req.embeddings,
+        vae_cache: None, // v0.32 phase 2: hires-fix internal load — no cache
     })
     .await?;
 
