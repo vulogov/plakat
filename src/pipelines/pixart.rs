@@ -1,95 +1,71 @@
 //! PixArt Sigma pipeline — fourth model family.
 //!
-//! v0.35 phase 0 (this commit): foundational stub. Pipeline::load
-//! downloads and assembles the T5-XXL text encoder + SDXL-shape
-//! VAE for the canonical `PixArt-Σ-XL-2-1024-MS` checkpoint, but
-//! the DiT-XL/2 backbone is NOT yet implemented. `run()` bails
-//! with a clear "DiT inference lands in phase 1" message.
+//! v0.35 phase 2: end-to-end inference. `Pipeline::load` assembles
+//! T5-XXL + DiT-XL/2 + VAE; `run` executes the standard CFG
+//! denoise loop and saves the resulting PNG. Output target is the
+//! canonical `PixArt-Σ-XL-2-1024-MS` checkpoint.
 //!
-//! Architecture (target end-state across phases 0-4):
+//! Pipeline composition:
 //!
-//! * **DiT-XL/2 backbone** (~600M params). PixArt-Σ adds KV-
-//!   compression on top of PixArt-α — sparse cross-attention to
-//!   the T5 sequence. Phase 1.
-//! * **T5-XXL text encoder** (~4.7B params). Same T5 we ship for
-//!   SD3 + Flux today (sourced from `candle_transformers::models::t5`).
-//!   Load pattern mirrors sd3.rs verbatim. **Phase 0.**
-//! * **SD-family KL-VAE** (~330 MB). Reused via the v0.34 phase 3
-//!   Arc-cache mechanism — mixed-kind scenarios with SDXL+PixArt
-//!   share one VAE handle. **Phase 0.**
-//! * **DPM++ sampler** (PixArt-Σ's published recommendation).
-//!   Phase 2.
-//!
-//! Acceptance criteria for v0.35 phase 0 (per RFC):
-//! - `--model pixart` resolves via the alias system. ✓ (`hf/mod.rs`).
-//! - The pipeline module compiles + exports a stub `Pipeline::load`.
-//!   ✓ (this file).
-//! - `t2i::Pipeline::load` rejects PixArt with a clear pointer at
-//!   `pipelines::pixart` (parallels the Flux + SD3 bail pattern).
-//! - `t2i::run` routes PixArt to `pixart::run` (which bails until
-//!   phase 1). Proves the dispatch wiring without inference.
+//! * **T5-XXL text encoder** (~4.7B params) — sourced from
+//!   `candle_transformers::models::t5`. Same `T5EncoderModel` SD3
+//!   uses.
+//! * **DiT-XL/2 backbone** (~600M params) — vendored in
+//!   `pipelines::pixart_dit` (v0.35 phase 1). adaLN-single + per-
+//!   block scale_shift_table; KV-compression deferred to v0.36+
+//!   (only used by the 2K-MS variant).
+//! * **SD-family KL-VAE** — Arc-shared via the v0.34 phase 3 cache.
+//! * **DPM++ sampler** via `pipelines::scheduler` (PixArt-Σ's
+//!   recommendation).
+//! * **Seed plumbing** through `pipelines::seeds::prepare_seed`
+//!   (v0.34 phase 1 chokepoint).
 
 use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Device};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{StableDiffusionConfig, vae::AutoEncoderKL};
 use candle_transformers::models::t5;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
+use crate::pipelines::pixart_dit::{Config as DitConfig, PixArtSigmaXL};
+use crate::pipelines::scheduler::{SchedulerKind, build as build_scheduler};
 use crate::ui::progress;
 
 /// Inputs to [`Pipeline::load`]. Mirrors the shape of
-/// `sd3::LoadRequest` / `flux::LoadRequest` so the scenario +
-/// scripting cache machinery can hand off uniformly.
+/// `sd3::LoadRequest` / `flux::LoadRequest`.
 pub struct LoadRequest {
-    /// Resolved HF repo id (callers run `crate::hf::resolve_alias`
-    /// first; this struct holds the canonical form).
     pub repo: String,
     pub device: Device,
     /// v0.34 phase 3 mechanism: pre-built VAE shared with t2i's
-    /// scenario-level cache. `Some` reuses; `None` builds fresh.
+    /// scenario-level cache.
     pub vae_cache: Option<Arc<AutoEncoderKL>>,
 }
 
 /// PixArt Sigma pipeline.
-///
-/// Phase 0 ships T5 + VAE only. The DiT backbone field will land
-/// in phase 1; this struct grows additively (no field rename).
 pub struct Pipeline {
     pub device: Device,
     pub dtype: DType,
-    /// T5-XXL text encoder — same `candle_transformers` type SD3
-    /// and Flux use. PixArt feeds the full T5 hidden states (not
-    /// the pooled output) into the DiT cross-attention; no CLIP
-    /// branch (unlike SD3's CLIP-L + CLIP-G + T5 trio).
+    /// T5-XXL text encoder. `&mut self` required for forward.
     pub t5_enc: t5::T5EncoderModel,
     pub t5_tok: Tokenizer,
+    /// DiT-XL/2 backbone.
+    pub dit: PixArtSigmaXL,
+    /// Architecture config. Held alongside `dit` so generate can
+    /// read `out_channels` / `max_caption_tokens` without unwrapping
+    /// the model.
+    pub dit_cfg: DitConfig,
     /// SD-family KL-VAE, Arc-shared via the v0.34 phase 3 cache.
-    /// Same VAE used by SDXL; PixArt-Σ inherits its 8× downsample +
-    /// 4 latent channels.
     pub vae: Arc<AutoEncoderKL>,
+    /// SD config used to build the VAE. Carries vae_scale_factor for
+    /// the decode step.
+    sd_cfg: StableDiffusionConfig,
 }
 
 impl Pipeline {
-    /// Phase 0 load: T5 + VAE.
-    ///
-    /// Repo layout assumes the canonical diffusers
-    /// `PixArt-alpha/PixArt-Sigma-XL-2-1024-MS` structure:
-    ///
-    /// ```text
-    /// text_encoder/
-    ///   config.json
-    ///   model-00001-of-00003.safetensors
-    ///   model-00002-of-00003.safetensors
-    ///   model-00003-of-00003.safetensors
-    /// tokenizer/
-    ///   tokenizer.json
-    /// vae/
-    ///   diffusion_pytorch_model.safetensors
-    /// transformer/
-    ///   diffusion_pytorch_model.safetensors    [phase 1 — not loaded yet]
-    /// ```
+    /// v0.35 phase 2: full load. Downloads T5 (3 shards) + DiT +
+    /// VAE from the canonical diffusers layout, builds each module,
+    /// returns the assembled pipeline.
     pub async fn load(req: LoadRequest) -> Result<Self> {
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
@@ -98,7 +74,6 @@ impl Pipeline {
         };
 
         let dl = progress::spinner("Resolving PixArt Sigma weights");
-        // T5 ships as 3 shards in the canonical Sigma checkpoint.
         let t5_shard1 = crate::hf::download::get_file(
             &req.repo,
             "text_encoder/model-00001-of-00003.safetensors",
@@ -129,6 +104,12 @@ impl Pipeline {
         )
         .await
         .context("downloading VAE weights for PixArt")?;
+        let dit_path = crate::hf::download::get_file(
+            &req.repo,
+            "transformer/diffusion_pytorch_model.safetensors",
+        )
+        .await
+        .context("downloading DiT transformer weights for PixArt")?;
         dl.finish_with_message("✓ PixArt weights resolved");
 
         let build = progress::spinner("Loading T5-XXL text encoder");
@@ -149,12 +130,21 @@ impl Pipeline {
             Tokenizer::from_file(&t5_tok_path).map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
         build.finish_with_message("✓ T5-XXL ready");
 
-        // v0.34 phase 3 cache passthrough. SDXL VAE config is the
-        // closest match — PixArt inherits the same 8× downsample +
-        // 4-channel latent shape, and the diffusers checkpoint
-        // weights load through the SDXL VAE accessor.
+        let dit_build = progress::spinner("Loading DiT-XL/2 backbone");
+        let dit_cfg = DitConfig::sigma_xl_1024();
+        let dit_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[dit_path.as_path()],
+                dtype,
+                &req.device,
+            )?
+        };
+        let dit = PixArtSigmaXL::new(dit_cfg.clone(), dit_vb)
+            .context("building DiT-XL/2 from PixArt checkpoint")?;
+        dit_build.finish_with_message("✓ DiT-XL/2 ready");
+
         let vae_build = progress::spinner("Loading PixArt VAE");
-        let cfg = StableDiffusionConfig::sdxl(None, None, None);
+        let sd_cfg = StableDiffusionConfig::sdxl(None, None, None);
         let vae = match req.vae_cache {
             Some(arc) => {
                 tracing::info!(
@@ -164,7 +154,7 @@ impl Pipeline {
                 );
                 arc
             }
-            None => Arc::new(cfg.build_vae(&vae_path, &req.device, dtype)?),
+            None => Arc::new(sd_cfg.build_vae(&vae_path, &req.device, dtype)?),
         };
         vae_build.finish_with_message("✓ VAE ready");
 
@@ -173,15 +163,159 @@ impl Pipeline {
             dtype,
             t5_enc,
             t5_tok,
+            dit,
+            dit_cfg,
             vae,
+            sd_cfg,
         })
+    }
+
+    /// Tokenize a prompt + forward through T5. Returns `(1,
+    /// max_caption_tokens, 4096)` left-padded with zeros to match
+    /// the model's training-time sequence length.
+    fn encode_prompt(&mut self, prompt: &str) -> Result<Tensor> {
+        let max_tokens = self.dit_cfg.max_caption_tokens;
+        let mut ids = self
+            .t5_tok
+            .encode(prompt, true)
+            .map_err(|e| anyhow!("T5 encode: {e}"))?
+            .get_ids()
+            .to_vec();
+        ids.truncate(max_tokens);
+        ids.resize(max_tokens, 0);
+        let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(self.dtype)?;
+        Ok(hidden)
+    }
+
+    /// End-to-end CFG denoise loop + VAE decode.
+    pub fn generate(
+        &mut self,
+        prompt: &str,
+        negative: &str,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+    ) -> Result<image::DynamicImage> {
+        anyhow::ensure!(
+            width % 8 == 0 && height % 8 == 0,
+            "PixArt requires width + height divisible by 8 (got {width}×{height})"
+        );
+
+        // v0.34 phase 1: device-aware seed prep.
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
+            tracing::debug!(
+                target: "plakat",
+                "set_seed not supported ({e}); using global RNG"
+            );
+        }
+
+        // ---- T5 encoding for CFG (positive + negative). ----
+        let s = progress::spinner("Encoding T5 caption embeddings");
+        let pos_caption = self.encode_prompt(prompt)?;
+        let neg_caption = self.encode_prompt(negative)?;
+        s.finish_with_message("✓ captions ready");
+
+        // ---- Scheduler. ----
+        let mut scheduler = build_scheduler(scheduler_kind, &self.sd_cfg, steps)?;
+        let timesteps = scheduler.timesteps().to_vec();
+
+        // ---- Initial noise. ----
+        let lh = (height / 8) as usize;
+        let lw = (width / 8) as usize;
+        let init_sigma = scheduler.init_noise_sigma();
+        let noise = Tensor::randn(0f32, 1f32, (1, 4, lh, lw), &self.device)?
+            .to_dtype(self.dtype)?;
+        let mut latents = (noise * init_sigma)?;
+
+        // ---- Resolution + aspect conditioning (Σ-specific). ----
+        // diffusers passes raw pixel dims for `resolution`; aspect is
+        // `(1.0, height/width)` to match upstream.
+        let res = Tensor::new(&[height as f32, width as f32], &self.device)?
+            .reshape((1, 2))?
+            .to_dtype(self.dtype)?;
+        let asp = Tensor::new(&[1.0_f32, (height as f32) / (width as f32)], &self.device)?
+            .reshape((1, 2))?
+            .to_dtype(self.dtype)?;
+        // CFG batch: replicate [neg, pos] along batch.
+        let res_cfg = Tensor::cat(&[&res, &res], 0)?;
+        let asp_cfg = Tensor::cat(&[&asp, &asp], 0)?;
+        let caption_cfg = Tensor::cat(&[&neg_caption, &pos_caption], 0)?;
+
+        // ---- Denoise loop. ----
+        let bar = crate::ui::progress::step_bar(timesteps.len() as u64, "pixart");
+        for &t in &timesteps {
+            let scaled = scheduler.scale_model_input(latents.clone(), t)?;
+            // Replicate along batch for CFG: (2, 4, lh, lw).
+            let scaled_cfg = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let t_tensor = Tensor::new(&[t as f32], &self.device)?
+                .to_dtype(self.dtype)?
+                .expand((2,))?;
+            let pred = self.dit.forward(
+                &scaled_cfg,
+                &t_tensor,
+                &caption_cfg,
+                &res_cfg,
+                &asp_cfg,
+            )?;
+            // learn_sigma=True → first 4 channels are noise; the
+            // log-variance half is discarded (standard inference path).
+            let noise_pred = pred.narrow(1, 0, 4)?;
+            let chunks = noise_pred.chunk(2, 0)?;
+            let neg = &chunks[0];
+            let pos = &chunks[1];
+            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            latents = scheduler.step(&guided, t, &latents)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t}"));
+        }
+        bar.finish_and_clear();
+
+        // ---- VAE decode. ----
+        // PixArt-Σ shares the SDXL VAE; latent-space scale is 0.18215
+        // (same constant SD 1.5 / 2.1 / SDXL / SD3 use).
+        let _ = &self.sd_cfg; // kept on the struct for phase 3+ uses
+        let vae_scale: f64 = 0.18215;
+        let s = progress::spinner("Decoding latents → image");
+        let decoded = self.vae.decode(&(&latents / vae_scale)?)?;
+        let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = (image * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = image.dims3()?;
+        let buf = image.flatten_all()?.to_vec1::<u8>()?;
+        s.finish_with_message("✓ image decoded");
+
+        // Convert (H, W, 3) u8 → image::DynamicImage.
+        let img = image::RgbImage::from_raw(ow as u32, oh as u32, buf)
+            .ok_or_else(|| anyhow!("VAE decode produced unexpected byte length"))?;
+        Ok(image::DynamicImage::ImageRgb8(img))
     }
 }
 
-/// PixArt entrypoint called by `t2i::run` when `Variant::detect`
-/// classifies the model as PixArt. Phase 0: bails after a
-/// successful pipeline load, proving the dispatch wiring + the T5
-/// + VAE foundation.
+/// CLI entrypoint: parameters needed for one PixArt generation.
+#[derive(Clone)]
+pub struct RunRequest {
+    pub model: String,
+    pub device: Device,
+    pub prompt: String,
+    pub negative: String,
+    pub width: u32,
+    pub height: u32,
+    pub steps: usize,
+    pub guidance: f64,
+    pub seed: Option<u64>,
+    pub scheduler: SchedulerKind,
+    pub out_dir: std::path::PathBuf,
+    /// Count of images (per-image seed = base + idx).
+    pub count: u32,
+}
+
 pub async fn run(req: RunRequest) -> Result<()> {
     let repo = if req.model.contains('/') {
         req.model.clone()
@@ -189,55 +323,54 @@ pub async fn run(req: RunRequest) -> Result<()> {
         crate::hf::resolve_alias(&req.model).to_string()
     };
 
-    let pipeline = Pipeline::load(LoadRequest {
+    let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
-        vae_cache: None, // v0.35 phase 0: no cross-kind cache wiring yet
+        vae_cache: None, // v0.35 phase 2: scenario VAE-cache wiring lands in phase 3
     })
     .await?;
 
-    // Sanity touch on the loaded pieces so the compiler can't
-    // optimise the load away (and so the user sees PixArt actually
-    // landed before the phase 1 bail).
-    tracing::info!(
-        target: "plakat",
-        "PixArt phase 0: T5 + VAE loaded (dtype={:?}). DiT inference lands in v0.35 phase 1.",
-        pipeline.dtype
-    );
+    let base_seed = req
+        .seed
+        .unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
 
-    anyhow::bail!(
-        "PixArt Sigma DiT inference is not yet implemented — phase 0 ships \
-         the T5 + VAE foundation (this load succeeded). The DiT-XL/2 backbone \
-         + denoising loop land in v0.35 phase 1. Track progress against \
-         `Documentation/RFC_v0.35_PIXART_SIGMA.md`."
-    )
-}
+    std::fs::create_dir_all(&req.out_dir)
+        .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
-/// Minimal request shape PixArt's phase 0 stub consumes. Will
-/// grow additively in later phases (prompt, negative, steps,
-/// guidance, seed, scheduler — same fields t2i / sd3 / flux
-/// requests carry).
-#[derive(Clone)]
-pub struct RunRequest {
-    pub model: String,
-    pub device: Device,
+    for idx in 0..req.count {
+        let seed = base_seed.wrapping_add(idx as u64);
+        crate::ui::progress::println(&format!(
+            "  {} pixart {} of {} (seed={seed})",
+            console::style("◆").cyan().bold(),
+            idx + 1,
+            req.count,
+        ));
+        let img = pipeline.generate(
+            &req.prompt,
+            &req.negative,
+            req.width,
+            req.height,
+            req.steps,
+            req.guidance,
+            seed,
+            req.scheduler,
+        )?;
+        let out_path = req.out_dir.join(format!("plakat-pixart-{seed}.png"));
+        img.save(&out_path)
+            .with_context(|| format!("saving {}", out_path.display()))?;
+        crate::ui::progress::println(&format!(
+            "  {} {}",
+            console::style("✓").green().bold(),
+            out_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Stub `RunRequest` has the minimum fields required to dispatch.
-    /// Phase 1 will add prompt/seed/etc; this guards the shape.
-    #[test]
-    fn run_request_carries_model_and_device() {
-        let r = RunRequest {
-            model: "pixart".into(),
-            device: Device::Cpu,
-        };
-        assert_eq!(r.model, "pixart");
-        matches!(r.device, Device::Cpu);
-    }
 
     #[test]
     fn alias_pixart_resolves_to_sigma_repo() {
@@ -261,5 +394,28 @@ mod tests {
         assert!(known.contains(&"pixart"), "got {known:?}");
         assert!(known.contains(&"pixart-sigma"), "got {known:?}");
         assert!(known.contains(&"pixart-1024"), "got {known:?}");
+    }
+
+    #[test]
+    fn run_request_carries_all_inference_fields() {
+        let r = RunRequest {
+            model: "pixart".into(),
+            device: Device::Cpu,
+            prompt: "a fox".into(),
+            negative: "".into(),
+            width: 1024,
+            height: 1024,
+            steps: 20,
+            guidance: 4.5,
+            seed: Some(42),
+            scheduler: SchedulerKind::DpmppKarras,
+            out_dir: std::path::PathBuf::from("/tmp/pixart-test"),
+            count: 1,
+        };
+        assert_eq!(r.prompt, "a fox");
+        assert_eq!(r.width, 1024);
+        assert_eq!(r.seed, Some(42));
+        assert_eq!(r.count, 1);
+        matches!(r.scheduler, SchedulerKind::DpmppKarras);
     }
 }
