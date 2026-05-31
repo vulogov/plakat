@@ -229,6 +229,51 @@ pub fn is_lcm_lora_resolved(resolved: &ResolvedLora) -> bool {
 }
 
 impl LoraSpec {
+    /// v0.34 phase 0: build a structured `LoraEntry` from this spec
+    /// for the PNG sidecar's `lora_stack` field. Best-effort display
+    /// — for Hub specs we don't have the resolved filename yet (that
+    /// requires the HF tree walk), so we use `repo` (and `file` when
+    /// the user named it explicitly). Source kind is always known
+    /// from the enum discriminator.
+    pub fn to_entry(&self) -> crate::imaging::metadata::LoraEntry {
+        match &self.source {
+            LoraSource::Local(p) => crate::imaging::metadata::LoraEntry {
+                display: p.display().to_string(),
+                scale: self.scale,
+                source: Some("local".into()),
+                revision: None,
+            },
+            LoraSource::Hub { repo, file, revision } => {
+                let display = match file {
+                    Some(f) => format!("{repo}/{f}"),
+                    None => repo.clone(),
+                };
+                crate::imaging::metadata::LoraEntry {
+                    display,
+                    scale: self.scale,
+                    source: Some("hub".into()),
+                    revision: revision.clone(),
+                }
+            }
+            LoraSource::Civitai { id_kind, file } => {
+                let id_str = match id_kind {
+                    CivitaiIdKind::Model(m) => format!("civitai:{m}"),
+                    CivitaiIdKind::Version(v) => format!("civitai-version:{v}"),
+                };
+                let display = match file {
+                    Some(f) => format!("{id_str}#{f}"),
+                    None => id_str,
+                };
+                crate::imaging::metadata::LoraEntry {
+                    display,
+                    scale: self.scale,
+                    source: Some("civitai".into()),
+                    revision: None,
+                }
+            }
+        }
+    }
+
     /// Construct a hub-sourced LoRA spec with a pinned revision. Used by
     /// the style runtime when forwarding catalog-resolved LoRAs whose
     /// revision SHAs came from `catalog.json`.
@@ -1396,5 +1441,85 @@ mod tests {
             display: "user/anime-v3".to_string(),
         };
         assert!(!is_lcm_lora_resolved(&r));
+    }
+
+    // v0.34 phase 0: LoraSpec::to_entry tests. Cover every LoraSource
+    // variant so the spec→entry transform handles all three.
+
+    #[test]
+    fn to_entry_local() {
+        let spec = LoraSpec {
+            source: LoraSource::Local(PathBuf::from("/cache/my-lora.safetensors")),
+            scale: 0.7,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.display, "/cache/my-lora.safetensors");
+        assert_eq!(entry.scale, 0.7);
+        assert_eq!(entry.source.as_deref(), Some("local"));
+        assert_eq!(entry.revision, None);
+    }
+
+    #[test]
+    fn to_entry_hub_bare_repo() {
+        let spec = LoraSpec {
+            source: LoraSource::Hub {
+                repo: "user/cool-lora".to_string(),
+                file: None,
+                revision: None,
+            },
+            scale: 1.0,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.display, "user/cool-lora");
+        assert_eq!(entry.scale, 1.0);
+        assert_eq!(entry.source.as_deref(), Some("hub"));
+        assert_eq!(entry.revision, None);
+    }
+
+    #[test]
+    fn to_entry_hub_with_file_and_revision() {
+        let spec = LoraSpec {
+            source: LoraSource::Hub {
+                repo: "org/repo".to_string(),
+                file: Some("sub/weights.safetensors".to_string()),
+                revision: Some("abc1234".to_string()),
+            },
+            scale: 0.5,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.display, "org/repo/sub/weights.safetensors");
+        assert_eq!(entry.scale, 0.5);
+        assert_eq!(entry.source.as_deref(), Some("hub"));
+        assert_eq!(entry.revision.as_deref(), Some("abc1234"));
+    }
+
+    #[test]
+    fn to_entry_civitai_model_id() {
+        let spec = LoraSpec {
+            source: LoraSource::Civitai {
+                id_kind: CivitaiIdKind::Model(12345),
+                file: None,
+            },
+            scale: 0.8,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.display, "civitai:12345");
+        assert_eq!(entry.scale, 0.8);
+        assert_eq!(entry.source.as_deref(), Some("civitai"));
+        assert_eq!(entry.revision, None);
+    }
+
+    #[test]
+    fn to_entry_civitai_version_with_explicit_file() {
+        let spec = LoraSpec {
+            source: LoraSource::Civitai {
+                id_kind: CivitaiIdKind::Version(789),
+                file: Some("model.safetensors".to_string()),
+            },
+            scale: 1.0,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.display, "civitai-version:789#model.safetensors");
+        assert_eq!(entry.source.as_deref(), Some("civitai"));
     }
 }
