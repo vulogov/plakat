@@ -2061,13 +2061,29 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // v0.37 phase 0: Stable Cascade routing. Detection precedes
     // PixArt / SD3 / Flux / SD because Stable Cascade is its own
     // model family (3-stage architecture, CLIP-G text encoder).
-    // Phase 0 calls into cascade::run which loads CLIP-G then bails
-    // with a "phase 1 not yet implemented" message — proves dispatch.
+    // v0.37 phase 4: full 3-stage inference dispatch with
+    // prompt / negative / steps / guidance / seed / scheduler /
+    // out / count all carrying through.
     if variant.is_cascade() {
         use crate::pipelines::cascade;
+        // Stable Cascade has TWO step budgets (Stage C + Stage B).
+        // CLI exposes a single --steps for now — split it: Stage C
+        // takes 2/3 (the heavy semantic stage), Stage B takes 1/3.
+        // The split can be tuned via dedicated flags in v0.38.
+        let stage_c_steps = (req.steps * 2).div_ceil(3).max(1);
+        let stage_b_steps = req.steps.saturating_sub(stage_c_steps).max(1);
         cascade::run(cascade::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            stage_c_steps,
+            stage_b_steps,
+            guidance: req.guidance as f64,
+            seed: req.seed,
+            scheduler: req.scheduler,
+            out_dir: req.out_dir.clone(),
+            count: req.count,
         })
         .await?;
         return Ok(None);
