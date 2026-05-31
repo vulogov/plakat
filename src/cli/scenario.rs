@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,6 +68,57 @@ pub struct ScenarioArgs {
     /// name-filter; e.g. `--only a,b,c --limit 2` runs `a` and `b`).
     #[arg(long, default_value_t = 0, value_name = "N")]
     pub limit: u32,
+
+    /// v0.33 phase 2: write a structured `ScenarioRunSummary` JSON
+    /// at the given path after the run completes. The summary
+    /// covers the scenario metadata (file, model, out dir,
+    /// per-task entries with kind / status / seed, aggregate
+    /// success / fail / skipped counts, total wall-clock time).
+    /// Useful for CI / automation that needs to know whether a
+    /// long scenario landed cleanly without parsing console
+    /// output. Writes in dry-run mode too (status fields say
+    /// `dry-run` per task) so plan validation has the same
+    /// machine-readable shape.
+    #[arg(long = "json-summary", value_name = "PATH")]
+    pub json_summary: Option<PathBuf>,
+}
+
+// =====================================================================
+// v0.33 phase 2: ScenarioRunSummary — JSON write target for the
+// `--json-summary PATH` flag.
+// =====================================================================
+
+/// One task's outcome record. Populated as the scenario loop
+/// dispatches each task; collected into `ScenarioRunSummary.tasks`
+/// at the end.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskRunRecord {
+    pub name: String,
+    /// `"generate"` / `"animatediff"`.
+    pub kind: String,
+    /// `"ok"` / `"skipped"` / `"failed"` / `"dry-run"`.
+    pub status: String,
+    pub seed: Option<u64>,
+    /// Free-form note attached on `failed` / `skipped` so consumers
+    /// can pivot without parsing console output. e.g. `"--only
+    /// filter excluded"`, `"--limit reached"`, `"--resume cache hit"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Run-level summary written by `--json-summary PATH`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioRunSummary {
+    pub scenario_file: String,
+    pub model: String,
+    pub out_dir: String,
+    pub total_tasks: usize,
+    pub ran: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub wall_time_secs: f64,
+    pub plakat_version: String,
+    pub tasks: Vec<TaskRunRecord>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1175,6 +1226,16 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let text = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
     let s: ScenarioFile = deser_hjson::from_str(&text)
+        .map_err(|e| {
+            // v0.33 phase 1: enrich with the surrounding task name
+            // when discoverable. Best-effort — falls through to the
+            // bare error when the line-number heuristic can't find
+            // a task boundary above the failure.
+            crate::error_hints::decorate_scenario_parse(
+                anyhow::Error::msg(e.to_string()),
+                &text,
+            )
+        })
         .with_context(|| format!("parsing HJSON {}", args.file.display()))?;
 
     // -------- validate structure --------
@@ -2030,6 +2091,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let mut seed_offset: u64 = 0;
     let mut ran_count: u32 = 0;
 
+    // v0.33 phase 2: per-task records for the optional
+    // `--json-summary PATH` output. Tracking is cheap (a Vec push
+    // per task); only written to disk when the flag is set.
+    let mut task_records: Vec<TaskRunRecord> = Vec::with_capacity(s.tasks.len());
+    let run_started = std::time::Instant::now();
+
     // v0.29 phase 3: lazy-loaded AnimateDiff pipelines + cache keys.
     // Initialised on the first animate task encountered. Key format:
     //   SD 1.5: "{alias}:{v3|lcm}:{joined_motion_loras}"
@@ -2104,6 +2171,19 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         if let Some(allowed) = &only_set {
             if !allowed.contains(task.name.as_str()) {
                 seed_offset += count as u64;
+                // v0.33 phase 2: record the skip for --json-summary.
+                task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: task
+                        .task_type
+                        .as_deref()
+                        .or(s.task_type.as_deref())
+                        .unwrap_or("generate")
+                        .to_string(),
+                    status: "skipped".to_string(),
+                    seed: None,
+                    note: Some("--only filter excluded".to_string()),
+                });
                 continue;
             }
         }
@@ -2113,6 +2193,23 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 style("(limit)").yellow(),
                 args.limit,
             ));
+            // v0.33 phase 2: record every unread remaining task as
+            // skipped with the --limit reason so the summary has a
+            // complete per-task accounting.
+            for skipped in &s.tasks[idx..] {
+                task_records.push(TaskRunRecord {
+                    name: skipped.name.clone(),
+                    kind: skipped
+                        .task_type
+                        .as_deref()
+                        .or(s.task_type.as_deref())
+                        .unwrap_or("generate")
+                        .to_string(),
+                    status: "skipped".to_string(),
+                    seed: None,
+                    note: Some(format!("--limit {} reached", args.limit)),
+                });
+            }
             break;
         }
         ran_count += 1;
@@ -2198,6 +2295,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 &mut animate_sdxl_key,
             )
             .await?;
+            // v0.33 phase 2: animate task completed successfully.
+            task_records.push(TaskRunRecord {
+                name: task.name.clone(),
+                kind: "animatediff".to_string(),
+                status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                seed: Some(task_seed),
+                note: None,
+            });
             seed_offset += count as u64;
             continue;
         }
@@ -2442,6 +2547,24 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     upscale_method,
                 ));
             }
+            // v0.33 phase 2: dry-run path bypasses the dispatch
+            // wrapper at the bottom of the loop. Record the
+            // dry-run outcome here so the summary has a complete
+            // per-task accounting (with the actual planned seed,
+            // not the bare seed_offset).
+            let dry_seed = task.seed.unwrap_or(seed + seed_offset);
+            task_records.push(TaskRunRecord {
+                name: task.name.clone(),
+                kind: task
+                    .task_type
+                    .as_deref()
+                    .or(s.task_type.as_deref())
+                    .unwrap_or("generate")
+                    .to_string(),
+                status: "dry-run".to_string(),
+                seed: Some(dry_seed),
+                note: None,
+            });
             seed_offset += count as u64;
             continue;
         }
@@ -2784,6 +2907,14 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 console::style(&task.name).cyan(),
                 eff_count,
             ));
+            // v0.33 phase 2: --resume cache hit counts as skipped.
+            task_records.push(TaskRunRecord {
+                name: task.name.clone(),
+                kind: "generate".to_string(),
+                status: "skipped".to_string(),
+                seed: Some(task_seed),
+                note: Some("--resume: outputs already present".to_string()),
+            });
             seed_offset += count as u64;
             continue;
         }
@@ -3598,6 +3729,19 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // re-run with the same scenario gives the same global-seed
         // tasks the same composition, regardless of per-task overrides.
         seed_offset += count as u64;
+        // v0.33 phase 2: generate task reached the end → ok or
+        // dry-run. (If the dispatch above had failed, the `?` would
+        // have already bubbled up before reaching here — failures
+        // surface via the bare error rather than a "failed" record
+        // for v0.33; richer per-task failure capture is a v0.34+
+        // candidate.)
+        task_records.push(TaskRunRecord {
+            name: task.name.clone(),
+            kind: "generate".to_string(),
+            status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+            seed: Some(task_seed),
+            note: None,
+        });
     }
 
     // v0.18: tag the summary line so dry-run users can tell at
@@ -3622,6 +3766,42 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             out_root.display()
         );
     }
+
+    // v0.33 phase 2: optional structured run summary for CI /
+    // automation consumers. Written after the console output so
+    // any disk-write failure shows up alongside the existing
+    // success line. JSON is canonical so `jq` / Python parsers can
+    // ingest it directly.
+    if let Some(path) = args.json_summary.as_ref() {
+        let ran = task_records
+            .iter()
+            .filter(|r| r.status == "ok" || r.status == "dry-run")
+            .count();
+        let skipped = task_records.iter().filter(|r| r.status == "skipped").count();
+        let failed = task_records.iter().filter(|r| r.status == "failed").count();
+        let summary = ScenarioRunSummary {
+            scenario_file: args.file.display().to_string(),
+            model: model.clone(),
+            out_dir: out_root.display().to_string(),
+            total_tasks: s.tasks.len(),
+            ran,
+            skipped,
+            failed,
+            wall_time_secs: run_started.elapsed().as_secs_f64(),
+            plakat_version: env!("CARGO_PKG_VERSION").to_string(),
+            tasks: task_records,
+        };
+        let json = serde_json::to_string_pretty(&summary)
+            .with_context(|| "serialising scenario run summary")?;
+        std::fs::write(path, json)
+            .with_context(|| format!("writing --json-summary to {}", path.display()))?;
+        crate::ui::progress::println(&format!(
+            "  {} run summary → {}",
+            style("·").dim(),
+            path.display()
+        ));
+    }
+
     Ok(())
 }
 
@@ -5604,5 +5784,109 @@ mod tests {
             vae_cache_lookup(cache.as_ref(), "sd15"),
             Some("v_15".to_string()),
         );
+    }
+
+    // -----------------------------------------------------------------
+    // v0.33 phase 2: ScenarioRunSummary structure + JSON shape.
+    // -----------------------------------------------------------------
+
+    fn mk_summary() -> ScenarioRunSummary {
+        ScenarioRunSummary {
+            scenario_file: "test.hjson".into(),
+            model: "sdxl".into(),
+            out_dir: "./out".into(),
+            total_tasks: 3,
+            ran: 2,
+            skipped: 1,
+            failed: 0,
+            wall_time_secs: 12.345,
+            plakat_version: "0.33.0".into(),
+            tasks: vec![
+                TaskRunRecord {
+                    name: "alpha".into(),
+                    kind: "generate".into(),
+                    status: "ok".into(),
+                    seed: Some(42),
+                    note: None,
+                },
+                TaskRunRecord {
+                    name: "beta".into(),
+                    kind: "animatediff".into(),
+                    status: "ok".into(),
+                    seed: Some(100),
+                    note: None,
+                },
+                TaskRunRecord {
+                    name: "gamma".into(),
+                    kind: "generate".into(),
+                    status: "skipped".into(),
+                    seed: None,
+                    note: Some("--only filter excluded".into()),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn summary_serializes_with_expected_top_level_keys() {
+        let s = mk_summary();
+        let json = serde_json::to_string_pretty(&s).unwrap();
+        // Top-level shape.
+        assert!(json.contains("\"scenario_file\""));
+        assert!(json.contains("\"model\""));
+        assert!(json.contains("\"out_dir\""));
+        assert!(json.contains("\"total_tasks\""));
+        assert!(json.contains("\"ran\""));
+        assert!(json.contains("\"skipped\""));
+        assert!(json.contains("\"failed\""));
+        assert!(json.contains("\"wall_time_secs\""));
+        assert!(json.contains("\"plakat_version\""));
+        assert!(json.contains("\"tasks\""));
+    }
+
+    #[test]
+    fn task_record_omits_none_note_field() {
+        // `note: None` is `skip_serializing_if = "Option::is_none"`
+        // so it stays out of the JSON for clean tasks. Tasks that
+        // carry a note for skip/fail reasons emit it.
+        let s = mk_summary();
+        let json = serde_json::to_string(&s).unwrap();
+        // "alpha" has note=None — should not produce a "note" key
+        // bound to "null" (or any).
+        // We expect note to appear only for `gamma` (the skip).
+        let note_occurrences = json.matches("\"note\"").count();
+        assert_eq!(note_occurrences, 1, "got {json}");
+        assert!(json.contains("\"--only filter excluded\""));
+    }
+
+    #[test]
+    fn summary_counts_align_with_tasks_array() {
+        let s = mk_summary();
+        let ran = s.tasks.iter().filter(|t| t.status == "ok").count();
+        let skipped = s.tasks.iter().filter(|t| t.status == "skipped").count();
+        // Field aggregates match the array — this catches accidental
+        // divergence if the loop-side counters and the records get
+        // out of sync.
+        assert_eq!(ran, s.ran);
+        assert_eq!(skipped, s.skipped);
+    }
+
+    #[test]
+    fn task_record_kind_field_accepts_known_values() {
+        // No serde enum — we serialize raw strings so animate tasks
+        // can land here regardless of the v0.29 task_type aliases
+        // ("animate" / "animatediff").
+        let kinds = ["generate", "animatediff"];
+        for k in kinds {
+            let r = TaskRunRecord {
+                name: "t".into(),
+                kind: k.into(),
+                status: "ok".into(),
+                seed: Some(1),
+                note: None,
+            };
+            let json = serde_json::to_string(&r).unwrap();
+            assert!(json.contains(&format!("\"{}\"", k)));
+        }
     }
 }

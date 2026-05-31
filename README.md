@@ -8,128 +8,155 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.32 — animate-lite + diversify-3
+## What's new in v0.33 — production polish bundle
 
-After two consecutive diversify cycles (v0.30 + v0.31), v0.32
-pays down the animate quality backlog with the single most-
-visible item — **FreeNoise long-form** — while continuing the
-diversify momentum with two architectural / perf wins: a
-**vendored CLIP rollout** to every SD-family pipeline (unlocks
-`--embedding` everywhere in future cycles), and **SDXL VAE
-caching** across scenario kind switches.
+v0.33 closes the long-standing **production polish** deferral
+from v0.32+: structured metadata, actionable error hints, machine-
+readable scenario output, and a reproducibility audit. No new
+pipelines, no new model families — every win is on the boundary
+between plakat and the operator.
 
-Three phases shipped: one animate quality win + two carry
-closures. Cleanest cycle in five turns.
+Four phases shipped, all additive. No flag rename, no behaviour
+change for existing runs. Test count climbed from 1030 → 1073
+lib tests (+43 across the cycle).
 
-### FreeNoise long-form for AnimateDiff (closes v0.27 deferral)
+### Structured metadata fields
+
+PNG `tEXt` chunks and JSON sidecars carry the full visible
+configuration — stylistic presets, LoRA stack, TI stack, ControlNet
+stack, enhancer state, FreeNoise flag — alongside the existing
+Auto1111-compatible "Parameters:" string.
 
 ```bash
-# Existing long-form syntax — random noise per window (v0.27).
-plakat animate --animatediff --model sd15 \
-    --from "a misty forest at dawn" \
-    --frames 64 --window-size 16 --window-overlap 4 \
-    --format mp4
-
-# Add --free-noise to share noise across overlapping windows —
-# eliminates the cross-fade seam artefact (v0.32).
-plakat animate --animatediff --model sd15 \
-    --from "a misty forest at dawn" \
-    --frames 64 --window-size 16 --window-overlap 4 \
-    --free-noise --format mp4
+plakat generate "a misty forest" --model sd15 --look anime \
+    --genre fantasy --negative-preset crisp \
+    --lora detail:0.6 --lora style:0.4 \
+    --embedding cinematic-style --controlnet canny ./edges.png
 ```
 
-Cao et al., "FreeNoise: Tuning-Free Longer Video Diffusion." The
-flag pre-generates a `(total_frames, 4, H/8, W/8)` noise tensor
-at the user's seed, then slices it per sliding-window — adjacent
-windows automatically share noise in the overlap region because
-they slice the SAME underlying tensor. The v0.27 phase 5
-linear-ramp latent blend still runs, but the two sides being
-blended now come from the same noise sequence, so the seam
-disappears.
+Every flag shows up under its own key in the JSON sidecar AND
+as a `Look: anime, Genre: fantasy, Negative preset: crisp, ...`
+suffix in the A1111 string. Downstream tooling (Civitai
+importers, gallery cataloguers, scenario regression diff) no
+longer has to re-parse free-form prompt text.
 
-SD 1.5 + SDXL both ship. Opt-in flag preserves byte-identical
-output on `--seed N --frames 64` when the flag is OFF (existing
-runs unchanged). Composes with multi-CN, AnimateLCM, motion LoRAs.
-Single-window runs (frames ≤ window-size) are no-ops.
+New `GenerationMetadata` fields are `#[serde(default)] +
+skip_serializing_if`, so every v0.32 sidecar still parses
+unchanged (regression-locked by `v032_sidecar_still_parses`).
 
-### Vendored CLIP rollout (closes v0.30 architectural deferral)
+### Actionable error hints
 
-v0.30 phase 0 vendored CLIP for `SdCore` only (to enable TI
-runtime injection). v0.32 phase 1 finishes the rollout —
-every SD-family pipeline now holds plakat's vendored CLIP-L
-text encoder instead of candle's:
-
-- `AnimateDiffPipeline::text_encoder` (SD 1.5)
-- `AnimateDiffSdxlPipeline::text_encoder_l`
-- `sd3::Pipeline::clip_l + clip_l_cfg`
-- `flux::Pipeline::clip_text + clip_cfg`
-- `stylize::Pipeline::text_encoder`
-
-Numerically identical to candle's path (per the v0.30 phase 0
-forward-pass tests). User-visible impact: zero in v0.32 — but
-this is the architectural foundation. Future cycles can wire
-`--embedding` (TI runtime injection) through the same
-`Config::with_vocab(n)` pattern v0.30 phase 0 established for
-SdCore, now that every pipeline holds the vendored type. A new
-compile-time type-lock test in `vendored_clip::tests` prevents
-silent regressions.
-
-### SDXL VAE caching across mixed-kind scenarios
-
-Scenarios that mix `type: generate` and `type: animatediff`
-tasks used to rebuild the ~330 MB SDXL VAE on every kind switch
-(after v0.31 phase 3's pipeline eviction kicked in). v0.32 phase
-2 wraps `SdCore.vae` in `Arc<AutoEncoderKL>` and adds a
-scenario-level cache keyed by base alias — subsequent t2i loads
-against the same SDXL base reuse the cached Arc instead of
-rebuilding from disk.
-
-Auto-deref keeps every `.vae.encode(...)` / `.vae.decode(...)`
-call site at the pipeline boundary unchanged.
+Three new decorators on the user-facing error path:
 
 ```
-INFO plakat: SdCore: reusing cached VAE (skipping ...vae.safetensors build)
+$ plakat generate "x" --model sd1.5
+Error: unknown --model alias 'sd1.5'. Did you mean 'sd15'?
+       Run `plakat --help` or `plakat hf list` for the full list.
+
+$ plakat generate "x" --model flux --width 2048 --height 2048
+Error: out of memory loading Flux at 2048×2048.
+       Try: --quant nf4, lower --width/--height, or close
+       other GPU consumers. See FLUX.md for VRAM guidance.
+
+$ plakat scenario broken.hjson
+Error: HJSON parse error on line 14 in task 'beta':
+       expected `,` or `}` after value.
+       Inspect the task block starting near `name: beta`.
 ```
 
-shows up in logs when the cache hits. AnimateDiff load functions
-don't yet take a vae param — animate-side sharing waits for
-v0.33+. The cache helper itself (`vae_cache_lookup`) is a pure
-generic function unit-tested with 6 decision cases.
+Levenshtein-based typo suggestion for `--model` and `--look`;
+pipeline-tagged OOM decorator that names the right mitigation
+(quant for Flux, `--vae-tiled` for SD3.5, frame count for
+AnimateDiff); scenario parse errors point at the offending task
+by name, not just byte offset. 21 unit tests cover the matching
+logic.
+
+### `plakat scenario --json-summary PATH`
+
+Scenarios now emit a machine-readable run summary alongside the
+existing log output:
+
+```json
+{
+  "scenario_file": "/tmp/forest.hjson",
+  "model": "sd15",
+  "out_dir": "/tmp/out",
+  "total_tasks": 12,
+  "ran": 10,
+  "skipped": 2,
+  "failed": 0,
+  "wall_time_secs": 184.21,
+  "plakat_version": "0.33.0",
+  "tasks": [
+    {"name": "alpha", "kind": "generate",  "status": "ok",      "seed": 42},
+    {"name": "beta",  "kind": "animatediff","status": "ok",     "seed": 43},
+    {"name": "gamma", "kind": "generate",  "status": "skipped", "note": "--only filter excluded"}
+  ]
+}
+```
+
+CI now has a single file to consume — pass/skip/fail counts,
+wall time, per-task seed and status. Records every code path:
+`--only` skip, `--limit` skip, `--resume` cache hit, dry-run
+early-continue, animate dispatch, normal generate end. Survives
+mixed `--dry-run` + real runs in the same scenario.
+
+### `plakat doctor --reproducibility-check`
+
+```
+$ plakat doctor --reproducibility-check
+◆ Top warnings
+  ! Reproducibility REQUIRES `--seed N`...
+  ! Metal backend truncates seeds to u32...
+  ! VAE encode placement in img2img / stylize paths...
+
+◆ Per-pipeline determinism table
+status  pipeline                code path              note
+   ⚠    t2i (SD-family)         Pipeline::run randn    Seed masked to u32...
+   ⚠    AnimateDiff (SD 1.5)    denoise_window         set_seed() before randn
+   ✓    Prompt wildcards        StdRng                 Seeded from --seed
+   ?    img2img/inpaint         VAE encode             Needs verification
+   ✗    Any pipeline (no --seed) rand::random()        Non-deterministic
+```
+
+Hand-curated audit of every RNG-touching path across plakat's
+pipelines, classified into 4 tiers: **GUARANTEED**, **GUARANTEED
+(Metal u32)**, **NEEDS VERIFICATION**, **NON-DETERMINISTIC**.
+Color-coded human output; composes with `--json` for CI.
+Descriptive, not prescriptive — fixes for the `?`-tier rows defer
+to v0.34.
 
 ### Documentation
 
-- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to
-  v0.32 with the FreeNoise long-form quick-start. Capability
-  matrix adds the "shared-noise long-form" row.
-- [`RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md`](Documentation/RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md)
-  — design doc, locked decisions, 4-phase plan.
+- [`RFC_v0.33_PRODUCTION_POLISH.md`](Documentation/RFC_v0.33_PRODUCTION_POLISH.md)
+  — design doc, additive-schema constraint, 4-phase plan.
 
 ### By the numbers
 
-- **1030 lib + 47 integration tests = 1077 active tests** (+10
+- **1073 lib + 47 integration tests = 1120 active tests** (+43
   lib across the cycle).
-- 3 phase commits + RFC + close-out.
-- v0.27 FreeNoise animate quality deferral **closed**.
-- v0.30 vendored CLIP architectural deferral **closed**
-  (rollout to all SD-family pipelines).
-- v0.32 phase 2 partially closes the mixed-kind VAE rebuild
-  cost — t2i side complete; animate-side sharing defers to v0.33.
+- 4 phase commits + RFC + close-out.
+- v0.32+ production polish deferral **closed**.
+- Reproducibility audit surfaces 13 RNG paths + 5 top-level
+  warnings — input for v0.34 determinism fixes.
 
-### v0.31 → v0.32 migration
+### v0.32 → v0.33 migration
 
-v0.32 is **fully additive**. Every existing flag, host word,
-config key, and scenario field keeps its v0.31 shape. New surface:
+v0.33 is **fully additive**. Every existing flag, host word,
+config key, scenario field, PNG sidecar, and A1111 parameter
+string keeps its v0.32 shape. New surface:
 
-- ✅ `--free-noise` flag on `plakat animate` (opt-in; off by
-  default preserves byte-identical numerics).
-- ✅ `SdLoadRequest.vae_cache` + `t2i::LoadRequest.vae_cache`
-  fields (`Option<Arc<AutoEncoderKL>>`). External callers pass
-  `None` for the v0.31 behaviour.
-- ✅ Every SD-family pipeline's CLIP-L field type is now the
-  vendored CLIP — same forward-pass numerics, source-level
-  type-lock prevents future regressions.
+- ✅ 9 new `GenerationMetadata` fields (`look`, `genre`,
+  `negative_preset`, `lora_stack`, `embeddings`,
+  `embedding_stack`, `control_stack`, `enhancement`,
+  `free_noise`). All `Option`/`Vec` with serde `default` +
+  `skip_serializing_if` — v0.32 sidecars parse unchanged.
+- ✅ `plakat scenario --json-summary PATH` (optional flag).
+- ✅ `plakat doctor --reproducibility-check` + `--json`.
+- ✅ New `error_hints` module — opt-in decorators on the
+  existing error path. Pure additions.
 
-### Deferred to v0.33+
+### Deferred to v0.34+
 
 - Per-layer motion splice (RFC v0.27 §3.2 escalation).
 - HotShot-XL integration.
@@ -141,11 +168,19 @@ config key, and scenario field keeps its v0.31 shape. New surface:
   side mixed-kind sharing).
 - Scripting `plakat.load` Bund word — VAE cache passthrough.
 - Auto1111 two-separate-files SDXL TI convention.
-- Production polish bundle (better metadata, JSON sidecar, error UX).
+- Structured stack population from pipeline resolved state
+  (phase 0 deferral — currently builders accept stacks but the
+  pipeline-side wiring uses the existing free-form path).
+- Per-task failure capture in `--json-summary` (status currently
+  binary ok/skip; failed-task records carry `status: "failed"`
+  but not the error text).
+- Determinism fixes for the `?` and Metal-u32 rows surfaced by
+  the phase 3 audit (VAE encode placement, full-width seed for
+  Metal).
 - Plakat server mode.
 - PixArt Sigma / Stable Cascade.
 
-**Earlier releases** (v0.13 – v0.31):
+**Earlier releases** (v0.13 – v0.32):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 

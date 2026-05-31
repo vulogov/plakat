@@ -258,6 +258,20 @@ pub fn resolve_alias(name: &str) -> &str {
     name
 }
 
+/// v0.33 phase 1: enumerate every known alias (first canonical
+/// + every accepted synonym) as a flat list. Used by
+/// `error_hints::hint_unknown_alias` to suggest the closest
+/// match for typos like `sd1.5` → `sd15`.
+pub fn all_known_aliases() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for entry in ALIAS_TABLE {
+        for alias in entry.aliases {
+            out.push(*alias);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
