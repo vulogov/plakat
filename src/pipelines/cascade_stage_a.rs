@@ -172,7 +172,10 @@ impl ResBlock {
 /// Pick a GroupNorm group count that divides `channels`. Default 32
 /// like SD VAE; fall back to a smaller divisor when needed for tiny
 /// test configs (e.g. 64 ch → 32 groups; 8 ch → 4 groups).
-fn group_size(default: usize, channels: usize) -> usize {
+///
+/// `pub(crate)` so `pipelines::cascade_unet` reuses the same
+/// divisor-aware math at its own GroupNorm sites.
+pub(crate) fn group_size(default: usize, channels: usize) -> usize {
     if channels % default == 0 {
         default
     } else {

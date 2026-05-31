@@ -71,6 +71,7 @@ use candle_nn::VarBuilder;
 use tokenizers::Tokenizer;
 
 use crate::pipelines::cascade_stage_a::{Config as StageAConfig, StageAVae};
+use crate::pipelines::cascade_unet::{Config as UnetConfig, StableCascadeUnet};
 use crate::pipelines::sdxl_clip::SdxlClipGTextTransformer;
 use crate::pipelines::vendored_clip;
 use crate::ui::progress;
@@ -105,6 +106,11 @@ pub struct Pipeline {
     /// future ControlNet) and decode generated latents at the end
     /// of the 3-stage pipeline.
     pub stage_a: StageAVae,
+    /// v0.37 phase 2: Stage B latent prior. ~1.5B-param UNet that
+    /// takes Stage C's output + text conditioning and produces
+    /// Stage A's latent. Variant-aware (Full vs Lite) — selected
+    /// from the alias at load time.
+    pub stage_b: StableCascadeUnet,
 }
 
 impl Pipeline {
@@ -165,7 +171,20 @@ impl Pipeline {
         .with_context(|| {
             format!("downloading Stage A VAE weights for Stable Cascade ({})", req.repo)
         })?;
-        dl.finish_with_message("✓ Stable Cascade text-encoder + Stage A weights resolved");
+        // v0.37 phase 2: Stage B UNet weights. Diffusers calls
+        // Stage B `decoder`. Single safetensors file in the
+        // canonical Full layout; community Lite forks may shard.
+        let stage_b_w = crate::hf::download::get_first_of(&[
+            (&req.repo, "decoder/diffusion_pytorch_model.safetensors"),
+            (&req.repo, "decoder/diffusion_pytorch_model.fp16.safetensors"),
+        ])
+        .await
+        .with_context(|| {
+            format!("downloading Stage B UNet weights for Stable Cascade ({})", req.repo)
+        })?;
+        dl.finish_with_message(
+            "✓ Stable Cascade text-encoder + Stage A + Stage B weights resolved",
+        );
 
         let build = progress::spinner("Loading CLIP-G text encoder");
         // v0.30 phase 0 vendored CLIP Config for the bigG variant.
@@ -188,12 +207,24 @@ impl Pipeline {
             .context("building Stage A VAE for Stable Cascade")?;
         stage_a_build.finish_with_message("✓ Stage A VAE ready");
 
+        // v0.37 phase 2: Stage B. `stage_b_for_alias` picks Full or
+        // Lite based on the resolved repo path (substring "lite").
+        let stage_b_build = progress::spinner("Loading Stage B UNet");
+        let stage_b_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_b_w.as_path()], dtype, &req.device)?
+        };
+        let stage_b_cfg = UnetConfig::stage_b_for_alias(&req.repo);
+        let stage_b = StableCascadeUnet::new(stage_b_cfg, stage_b_vb)
+            .context("building Stage B UNet for Stable Cascade")?;
+        stage_b_build.finish_with_message("✓ Stage B UNet ready");
+
         Ok(Self {
             device: req.device,
             dtype,
             clip_g_enc,
             clip_g_tok,
             stage_a,
+            stage_b,
         })
     }
 }
@@ -217,18 +248,17 @@ pub async fn run(req: RunRequest) -> Result<()> {
 
     tracing::info!(
         target: "plakat",
-        "Stable Cascade phase 1: CLIP-G + Stage A loaded (dtype={:?}). \
-         Stage B lands in v0.37 phase 2; Stage C in phase 3; 3-stage orchestration in phase 4.",
+        "Stable Cascade phase 2: CLIP-G + Stage A + Stage B loaded (dtype={:?}). \
+         Stage C lands in v0.37 phase 3; 3-stage orchestration in phase 4.",
         pipeline.dtype
     );
 
     anyhow::bail!(
-        "Stable Cascade inference is not yet implemented — phase 1 ships the \
-         CLIP-G text encoder + Stage A VAE foundation (this load succeeded). \
-         Stage B latent prior lands in v0.37 phase 2; Stage C high-res prior \
-         in phase 3; 3-stage orchestration (text → Stage C → Stage B → Stage A \
-         → image) in phase 4. Track progress against \
-         `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
+        "Stable Cascade inference is not yet implemented — phase 2 ships the \
+         CLIP-G text encoder + Stage A VAE + Stage B UNet (this load succeeded). \
+         Stage C high-res prior lands in v0.37 phase 3; 3-stage orchestration \
+         (text → Stage C → Stage B → Stage A → image) in phase 4. Track progress \
+         against `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
     )
 }
 
