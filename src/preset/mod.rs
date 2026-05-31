@@ -579,6 +579,34 @@ mod tests {
         }
     }
 
+    /// v0.35 phase 3: PixArt Sigma is a new model family; the v0.25
+    /// look catalog routes via `base_compat: null` for every entry
+    /// EXCEPT `pony` (SDXL-locked). Verify the universal looks all
+    /// apply cleanly to `--model pixart` so the v0.25 acceptance
+    /// criterion (≥3 looks render on PixArt) is locked.
+    #[test]
+    fn most_looks_apply_to_pixart_family() {
+        let cat = Catalog::load_with_user_dir(Kind::Look, None)
+            .expect("load bundled looks");
+        let pixart_compat: Vec<&str> = cat
+            .entries
+            .iter()
+            .filter(|e| e.is_compatible_with("pixart"))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            pixart_compat.len() >= 3,
+            "v0.35 phase 3 requires ≥3 looks compatible with PixArt — \
+             got {} ({pixart_compat:?})",
+            pixart_compat.len(),
+        );
+        // Pony is intentionally NOT compatible (SDXL-only finetune).
+        assert!(
+            !pixart_compat.contains(&"pony"),
+            "pony look must remain SDXL-only (score tags don't apply to PixArt)"
+        );
+    }
+
     /// v0.31 phase 1 swap: Pony Diffusion preset shape pins.
     /// `--look pony` MUST carry the score-based prompt prefix (the
     /// Pony v6 convention is `score_9, score_8_up, ...` as the

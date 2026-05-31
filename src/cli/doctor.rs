@@ -1121,6 +1121,13 @@ pub fn audit_rows() -> Vec<ReproRow> {
             note: "v0.34 phase 1: `seeds::prepare_seed` before candle's `flux::sampling::get_noise`.",
         },
         ReproRow {
+            pipeline: "PixArt Sigma (DiT-XL/2)",
+            code_path: "Pipeline::generate noise init",
+            file_line: "pipelines/pixart.rs:~200",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.35 phase 2: `seeds::prepare_seed` runs before `device.set_seed()` + `Tensor::randn`. CFG denoise loop is fully deterministic with --seed N.",
+        },
+        ReproRow {
             pipeline: "Stylize (SD 1.5)",
             code_path: "init noise + VAE encode",
             file_line: "pipelines/stylize.rs:~250",
