@@ -57,7 +57,7 @@ use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip, vae::AutoEncoderKL,
+    StableDiffusionConfig, vae::AutoEncoderKL,
 };
 use image::DynamicImage;
 use tokenizers::Tokenizer;
@@ -88,7 +88,7 @@ pub struct AnimateDiffPipeline {
     /// `pad_with`).
     pub cfg: StableDiffusionConfig,
     pub tokenizer: Tokenizer,
-    pub text_encoder: sdclip::ClipTextTransformer,
+    pub text_encoder: crate::pipelines::vendored_clip::ClipTextTransformer,
     pub vae: AutoEncoderKL,
     pub motion_unet: Sd15MotionUNet,
     pub adapter: MotionAdapter,
@@ -197,8 +197,14 @@ impl AnimateDiffPipeline {
         let cfg = StableDiffusionConfig::v1_5(None, None, None);
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
-        let text_encoder = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
+        // v0.32 phase 1: vendored CLIP rollout. Same numerics as
+        // `cfg.clip` (candle's `stable_diffusion::clip::Config::v1_5`),
+        // but built via the vendored module — unlocks `--embedding` on
+        // animate in future cycles via the same `Config::with_vocab()`
+        // pattern v0.30 phase 0 established for SdCore.
+        let clip_l_cfg = crate::pipelines::vendored_clip::Config::v1_5();
+        let text_encoder = crate::pipelines::vendored_clip::build_clip_transformer(
+            &clip_l_cfg,
             &text_enc_path,
             device,
             dtype,
@@ -809,7 +815,7 @@ pub struct AnimateDiffSdxlPipeline {
     pub cfg: StableDiffusionConfig,
     pub tokenizer_l: Tokenizer,
     pub tokenizer_g: Tokenizer,
-    pub text_encoder_l: sdclip::ClipTextTransformer,
+    pub text_encoder_l: crate::pipelines::vendored_clip::ClipTextTransformer,
     pub text_encoder_g: SdxlClipGTextTransformer,
     pub vae: AutoEncoderKL,
     pub motion_unet: SdxlUNet2DConditionModel,
@@ -898,8 +904,12 @@ impl AnimateDiffSdxlPipeline {
             .map_err(|e| anyhow!("tokenizer (CLIP-L): {e}"))?;
         let tokenizer_g = Tokenizer::from_file(&tokenizer_g_path)
             .map_err(|e| anyhow!("tokenizer (CLIP-G): {e}"))?;
-        let text_encoder_l = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
+        // v0.32 phase 1: vendored CLIP-L. Same numerics as
+        // `cfg.clip` (SDXL CLIP-L config); built via the vendored
+        // module to match the v0.30-phase-0 SdCore pattern.
+        let cfg_l = crate::pipelines::vendored_clip::Config::sdxl();
+        let text_encoder_l = crate::pipelines::vendored_clip::build_clip_transformer(
+            &cfg_l,
             &text_enc_l_path,
             device,
             dtype,
@@ -1332,7 +1342,7 @@ impl AnimateDiffSdxlPipeline {
     /// Mirrors `cli::animate::encode_branch_xl` but local to the
     /// SDXL animate pipeline.
     fn encode_branch(&self, text: &str) -> Result<(Tensor, Tensor)> {
-        use candle_transformers::models::stable_diffusion::clip::ClipTextTransformer;
+        use crate::pipelines::vendored_clip::ClipTextTransformer;
 
         let cfg_g = self
             .cfg

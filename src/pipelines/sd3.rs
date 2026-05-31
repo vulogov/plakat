@@ -63,9 +63,7 @@ use candle_nn::VarBuilder;
 // Pre-phase-6 callers see identical behaviour — the vendor's
 // `forward(...)` delegates to `forward_with_residuals(... None)`.
 use crate::pipelines::mmdit_inner as mmdit;
-use candle_transformers::models::{
-    stable_diffusion::clip as sdclip, stable_diffusion::vae as sdvae, t5,
-};
+use candle_transformers::models::{stable_diffusion::vae as sdvae, t5};
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
@@ -281,9 +279,9 @@ pub struct Pipeline {
     pub repo: String,
     device: Device,
     dtype: DType,
-    clip_l: sdclip::ClipTextTransformer,
+    clip_l: crate::pipelines::vendored_clip::ClipTextTransformer,
     clip_l_tok: Tokenizer,
-    clip_l_cfg: sdclip::Config,
+    clip_l_cfg: crate::pipelines::vendored_clip::Config,
     clip_g: SdxlClipGTextTransformer,
     clip_g_tok: Tokenizer,
     t5_enc: t5::T5EncoderModel,
@@ -378,8 +376,11 @@ impl Pipeline {
 
         let build = progress::spinner("Loading text encoders");
         // ---------- CLIP-L (no projection — just the hidden + EOT pool) ---
-        let clip_l_cfg = sdclip::Config::sdxl(); // SDXL CLIP-L = SD3 CLIP-L (77 tokens, 768d, 12 layers)
-        let clip_l = candle_transformers::models::stable_diffusion::build_clip_transformer(
+        // v0.32 phase 1: vendored CLIP-L. SDXL CLIP-L = SD3 CLIP-L
+        // (77 tokens, 768d, 12 layers). Numerically identical to
+        // candle's `sdclip::Config::sdxl()`.
+        let clip_l_cfg = crate::pipelines::vendored_clip::Config::sdxl();
+        let clip_l = crate::pipelines::vendored_clip::build_clip_transformer(
             &clip_l_cfg,
             &clip_l_w,
             &req.device,
@@ -1435,8 +1436,13 @@ impl Pipeline {
         // CLIP-G's penultimate. We grab CLIP-L penultimate by running
         // until layer -2 (matching SDXL's convention).
         let (_clip_l_final, clip_l_penult) = {
-            let (final_h, pen_h) = candle_transformers::models::stable_diffusion::clip::ClipTextTransformer
-                ::forward_until_encoder_layer(&self.clip_l, &clip_l_ids_t, usize::MAX, -2)?;
+            let (final_h, pen_h) =
+                crate::pipelines::vendored_clip::ClipTextTransformer::forward_until_encoder_layer(
+                    &self.clip_l,
+                    &clip_l_ids_t,
+                    usize::MAX,
+                    -2,
+                )?;
             (final_h, pen_h)
         };
         let mut clip_l_penult = clip_l_penult.to_dtype(self.dtype)?;
