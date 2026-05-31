@@ -40,6 +40,13 @@ pub struct LoadRequest {
     /// v0.34 phase 3 mechanism: pre-built VAE shared with t2i's
     /// scenario-level cache.
     pub vae_cache: Option<Arc<AutoEncoderKL>>,
+    /// v0.35 phase 4: PixArt LoRA stack. Resolved by the caller via
+    /// `LoraSpec::resolve`. Merged into the DiT safetensors at load
+    /// time via `pixart_lora::merge_pixart_loras_into_weights`.
+    pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
+    /// Global scale multiplier on each LoRA's per-spec scale (the
+    /// `--lora-scale` flag semantics).
+    pub lora_scale: f32,
 }
 
 /// PixArt Sigma pipeline.
@@ -112,6 +119,40 @@ impl Pipeline {
         .context("downloading DiT transformer weights for PixArt")?;
         dl.finish_with_message("✓ PixArt weights resolved");
 
+        // v0.35 phase 4: merge LoRAs into a tempfile that replaces
+        // `dit_path` for the VarBuilder. Mirrors the SD3 / Flux /
+        // SD-family pattern (`std::env::temp_dir()` + PID + nanos
+        // for uniqueness; OS sweep handles cleanup — same trade-off
+        // those pipelines make to keep the tempfile alive for the
+        // lifetime of the mmap).
+        let dit_load_path: std::path::PathBuf = if req.loras.is_empty() {
+            dit_path.clone()
+        } else {
+            let merge_spinner = progress::spinner(&format!(
+                "Merging {} PixArt LoRA(s) into DiT", req.loras.len()
+            ));
+            let out_path = std::env::temp_dir().join(format!(
+                "plakat-pixart-lora-merged-{}-{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let (n_mod, n_total) =
+                crate::pipelines::pixart_lora::merge_pixart_loras_into_weights(
+                    &dit_path,
+                    &out_path,
+                    &req.loras,
+                    req.lora_scale,
+                    &req.device,
+                )?;
+            merge_spinner.finish_with_message(format!(
+                "✓ PixArt LoRA merge: {n_mod}/{n_total} target groups applied"
+            ));
+            out_path
+        };
+
         let build = progress::spinner("Loading T5-XXL text encoder");
         let t5_cfg_str = std::fs::read_to_string(&t5_cfg_path)
             .with_context(|| format!("read T5 config {}", t5_cfg_path.display()))?;
@@ -134,7 +175,7 @@ impl Pipeline {
         let dit_cfg = DitConfig::sigma_xl_1024();
         let dit_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
-                &[dit_path.as_path()],
+                &[dit_load_path.as_path()],
                 dtype,
                 &req.device,
             )?
@@ -188,7 +229,9 @@ impl Pipeline {
         Ok(hidden)
     }
 
-    /// End-to-end CFG denoise loop + VAE decode.
+    /// End-to-end CFG denoise loop + VAE decode. Returns the raw
+    /// RGB u8 buffer + (width, height) so the caller can compose
+    /// metadata and write through `save_rgb_u8_with_metadata`.
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -199,7 +242,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
-    ) -> Result<image::DynamicImage> {
+    ) -> Result<(Vec<u8>, u32, u32)> {
         anyhow::ensure!(
             width % 8 == 0 && height % 8 == 0,
             "PixArt requires width + height divisible by 8 (got {width}×{height})"
@@ -291,10 +334,7 @@ impl Pipeline {
         let buf = image.flatten_all()?.to_vec1::<u8>()?;
         s.finish_with_message("✓ image decoded");
 
-        // Convert (H, W, 3) u8 → image::DynamicImage.
-        let img = image::RgbImage::from_raw(ow as u32, oh as u32, buf)
-            .ok_or_else(|| anyhow!("VAE decode produced unexpected byte length"))?;
-        Ok(image::DynamicImage::ImageRgb8(img))
+        Ok((buf, ow as u32, oh as u32))
     }
 }
 
@@ -314,6 +354,11 @@ pub struct RunRequest {
     pub out_dir: std::path::PathBuf,
     /// Count of images (per-image seed = base + idx).
     pub count: u32,
+    /// v0.35 phase 4: LoRA stack (resolved or unresolved). `run()`
+    /// resolves any unresolved specs before passing to
+    /// `Pipeline::load`.
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    pub lora_scale: f32,
 }
 
 pub async fn run(req: RunRequest) -> Result<()> {
@@ -323,10 +368,26 @@ pub async fn run(req: RunRequest) -> Result<()> {
         crate::hf::resolve_alias(&req.model).to_string()
     };
 
+    // v0.35 phase 4: resolve LoRA specs (local / hub / civitai) before
+    // load. Mirrors the SD3 / Flux resolve-then-load pattern.
+    let resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> = if req.loras.is_empty() {
+        Vec::new()
+    } else {
+        let s = progress::spinner(&format!("Resolving {} PixArt LoRA(s)", req.loras.len()));
+        let mut v = Vec::with_capacity(req.loras.len());
+        for spec in &req.loras {
+            v.push(spec.resolve().await?);
+        }
+        s.finish_with_message(format!("✓ resolved {} PixArt LoRA file(s)", v.len()));
+        v
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
-        vae_cache: None, // v0.35 phase 2: scenario VAE-cache wiring lands in phase 3
+        vae_cache: None, // v0.35 phase 2: scenario VAE-cache wiring lands in v0.36
+        loras: resolved_loras,
+        lora_scale: req.lora_scale,
     })
     .await?;
 
@@ -337,6 +398,15 @@ pub async fn run(req: RunRequest) -> Result<()> {
     std::fs::create_dir_all(&req.out_dir)
         .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
 
+    // v0.35 phase 4: re-resolve loras once for metadata population.
+    // Cheap on the second call — Civitai / HF cache short-circuits;
+    // local LoraSpec::resolve is a path-exists check.
+    let metadata_lora_stack: Vec<crate::imaging::metadata::LoraEntry> = req
+        .loras
+        .iter()
+        .map(|s| s.to_entry())
+        .collect();
+
     for idx in 0..req.count {
         let seed = base_seed.wrapping_add(idx as u64);
         crate::ui::progress::println(&format!(
@@ -345,7 +415,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             idx + 1,
             req.count,
         ));
-        let img = pipeline.generate(
+        let (buf, ow, oh) = pipeline.generate(
             &req.prompt,
             &req.negative,
             req.width,
@@ -355,9 +425,31 @@ pub async fn run(req: RunRequest) -> Result<()> {
             seed,
             req.scheduler,
         )?;
+
+        // Build sidecar metadata. PixArt now emits the full v0.34
+        // phase 0 schema (model + size + steps + scheduler + LoRA
+        // stack with source kind per entry). Other PixArt-specific
+        // fields (Σ resolution/aspect conditioning, T5 sequence
+        // length used) land in v0.36+ alongside non-t2i metadata
+        // build-out.
+        let mut m = crate::imaging::metadata::GenerationMetadata::new(
+            req.prompt.clone(),
+            req.model.clone(),
+            seed,
+            req.steps,
+            req.guidance,
+            format!("{:?}", req.scheduler).to_lowercase(),
+            req.width,
+            req.height,
+        );
+        m.negative = req.negative.clone();
+        if !metadata_lora_stack.is_empty() {
+            m.with_lora_stack(metadata_lora_stack.clone());
+            m.lora_scale = Some(req.lora_scale);
+        }
+
         let out_path = req.out_dir.join(format!("plakat-pixart-{seed}.png"));
-        img.save(&out_path)
-            .with_context(|| format!("saving {}", out_path.display()))?;
+        crate::imaging::io::save_rgb_u8_with_metadata(&buf, ow, oh, &out_path, &m)?;
         crate::ui::progress::println(&format!(
             "  {} {}",
             console::style("✓").green().bold(),
@@ -411,11 +503,15 @@ mod tests {
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/pixart-test"),
             count: 1,
+            loras: Vec::new(),
+            lora_scale: 1.0,
         };
         assert_eq!(r.prompt, "a fox");
         assert_eq!(r.width, 1024);
         assert_eq!(r.seed, Some(42));
         assert_eq!(r.count, 1);
         matches!(r.scheduler, SchedulerKind::DpmppKarras);
+        assert!(r.loras.is_empty());
+        assert_eq!(r.lora_scale, 1.0);
     }
 }
