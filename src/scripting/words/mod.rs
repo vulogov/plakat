@@ -27,6 +27,7 @@ pub mod look;
 pub mod lora;
 pub mod metadata;
 pub mod outpaint;
+pub mod pixart;
 pub mod portrait;
 pub mod portrait_photo;
 pub mod refiner;
@@ -239,6 +240,15 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         animate::plakat_animate,
     )
     .map_err(|e| anyhow!("registering plakat.animate: {e}"))?;
+    // v0.36 phase 1: plakat.pixart ( prompt -- handle )
+    // — single-image PixArt-Σ generation. Cached on
+    // ScriptCtx.loaded_pixart; shares VAE with `plakat.load
+    // <pixart-alias>` via the v0.34 phase 3 cache.
+    vm.register_inline(
+        "plakat.pixart".to_string(),
+        pixart::plakat_pixart,
+    )
+    .map_err(|e| anyhow!("registering plakat.pixart: {e}"))?;
     Ok(())
 }
 
