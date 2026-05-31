@@ -266,6 +266,19 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "PixArt-Σ XL 2 2K-MS — 2x KV-compression in self-attn (Σ paper §3.2) for 2048² output viability",
     },
+    // v0.37 phase 0: Stable Cascade — fifth model family (3-stage
+    // architecture: Stage A VAE + Stage B latent prior + Stage C
+    // high-res prior). Phase 0 wires the Full repo only; Lite
+    // variant routing lands alongside the v0.37 phase 2/3 stage
+    // implementations.
+    AliasEntry {
+        aliases: &["stable-cascade", "cascade"],
+        repo: "stabilityai/stable-cascade",
+        family: "StableCascade",
+        kind: "base",
+        gated: false,
+        note: "Stable Cascade — 3-stage architecture with CLIP-G text encoder (~3.6B Stage C + 1.5B Stage B + 3.6M Stage A VAE)",
+    },
 ];
 
 /// Map short aliases to canonical HuggingFace repo ids.

@@ -39,6 +39,7 @@ pub mod nf4_codec;
 pub mod nf4_loader;
 pub mod portrait;
 pub mod real_esrgan;
+pub mod cascade;
 pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;

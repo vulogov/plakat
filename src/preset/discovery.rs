@@ -54,6 +54,11 @@ pub enum BaseFamily {
     /// `pipelines::pixart`. Preset discovery (look / genre /
     /// LoRA per-family) gets PixArt coverage in v0.35 phase 3.
     PixArt,
+    /// v0.37 phase 0: Stable Cascade family. Routes through
+    /// `pipelines::cascade`. LoRA discovery + preset coverage
+    /// land in v0.38+ (LoRA is the v0.37 cycle's explicit
+    /// deferral).
+    StableCascade,
 }
 
 impl BaseFamily {
@@ -75,6 +80,7 @@ impl BaseFamily {
             | Variant::Sd35LargeTurbo
             | Variant::Sd3Medium => Self::Sd3,
             Variant::PixArt => Self::PixArt,
+            Variant::StableCascade => Self::StableCascade,
         }
     }
 
@@ -88,6 +94,7 @@ impl BaseFamily {
             Self::Flux => "flux",
             Self::Sd3 => "sd3",
             Self::PixArt => "pixart",
+            Self::StableCascade => "cascade",
         }
     }
 
@@ -118,6 +125,10 @@ impl BaseFamily {
             // tags PixArt LoRAs as "PixArt", "PixArt Sigma", or
             // similar; capture all of those.
             Self::PixArt => b.contains("pixart"),
+            // v0.37 phase 0: Civitai Stable Cascade LoRA discovery
+            // lands in v0.38+ (LoRA support is the v0.37 cycle's
+            // explicit deferral). Conservative substring match.
+            Self::StableCascade => b.contains("cascade"),
         }
     }
 }
@@ -397,6 +408,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::Flux => id_l.contains("flux"),
         BaseFamily::Sd3 => id_l.contains("sd3") || id_l.contains("sd-3"),
         BaseFamily::PixArt => id_l.contains("pixart"),
+        BaseFamily::StableCascade => id_l.contains("cascade"),
     };
     if id_check {
         return true;
@@ -408,6 +420,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::Flux => &["flux", "flux-dev", "flux-schnell", "flux.1"],
         BaseFamily::Sd3 => &["sd3", "stable-diffusion-3"],
         BaseFamily::PixArt => &["pixart", "pixart-sigma", "pixart-alpha"],
+        BaseFamily::StableCascade => &["stable-cascade", "cascade"],
     };
     tags.iter().any(|t| {
         let tl = t.to_lowercase();
