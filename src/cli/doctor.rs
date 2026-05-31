@@ -749,11 +749,13 @@ mod tests {
     fn repro_report_warnings_cover_top_gaps() {
         let r = ReproReport::collect();
         let joined = r.warnings.join(" || ");
-        // Top three documented gaps from the v0.33 phase 3 survey.
+        // The --seed N requirement survives every fix — it's
+        // architectural (rand::random fallback when omitted).
         assert!(joined.contains("--seed N"));
-        assert!(joined.contains("Metal"));
-        // VAE encode placement gap from the survey.
-        assert!(joined.contains("VAE encode"));
+        // Enhancer + remote-LLM gaps also persist (out of plakat's
+        // control by design).
+        assert!(joined.contains("enhance"));
+        assert!(joined.contains("Gemini") || joined.contains("DeepSeek"));
     }
 
     #[test]
@@ -770,12 +772,28 @@ mod tests {
     }
 
     #[test]
-    fn repro_audit_classifies_at_least_one_metal_u32_path() {
+    fn repro_audit_v034_no_metal_u32_or_needs_verification() {
+        // v0.34 phase 1 closed both gaps via `seeds::prepare_seed`
+        // and the VAE-encode set_seed reorder. Asserting absence is
+        // the regression lock: any future change that re-introduces
+        // either tier will fail this test.
         let rows = audit_rows();
-        let any_metal = rows
-            .iter()
-            .any(|r| r.guarantee == ReproGuarantee::GuaranteedMetalU32);
-        assert!(any_metal, "every major SD pipeline truncates seeds on Metal");
+        for r in &rows {
+            assert_ne!(
+                r.guarantee,
+                ReproGuarantee::GuaranteedMetalU32,
+                "row {} should be Guaranteed after v0.34 phase 1: {}",
+                r.pipeline,
+                r.note
+            );
+            assert_ne!(
+                r.guarantee,
+                ReproGuarantee::NeedsVerification,
+                "row {} should be Guaranteed after v0.34 phase 1: {}",
+                r.pipeline,
+                r.note
+            );
+        }
     }
 }
 
@@ -1042,14 +1060,6 @@ pub enum ReproGuarantee {
 }
 
 impl ReproGuarantee {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Guaranteed => "GUARANTEED",
-            Self::GuaranteedMetalU32 => "GUARANTEED-but-Metal-only-u32",
-            Self::NeedsVerification => "NEEDS-VERIFICATION",
-            Self::NonDeterministic => "NON-DETERMINISTIC",
-        }
-    }
     fn symbol(self) -> &'static str {
         match self {
             Self::Guaranteed => "✓",
@@ -1073,6 +1083,9 @@ pub struct ReproRow {
 
 /// The static survey table. Derived from the v0.33 phase 3 audit
 /// (recorded in `Documentation/RFC_v0.33_PRODUCTION_POLISH.md`).
+/// v0.34 phase 1: Metal-u32 rows flipped to Guaranteed via
+/// `pipelines::seeds::prepare_seed`; img2img + stylize VAE-encode
+/// placement bugs fixed (set_seed now runs before the encode).
 /// Each row is hand-curated; future cycles update it when seed
 /// plumbing changes.
 pub fn audit_rows() -> Vec<ReproRow> {
@@ -1081,64 +1094,64 @@ pub fn audit_rows() -> Vec<ReproRow> {
             pipeline: "t2i (SD-family)",
             code_path: "Pipeline::run pre-loop latent randn",
             file_line: "pipelines/t2i.rs:~1225",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Seed masked to u32 + `device.set_seed()` before randn.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: `seeds::prepare_seed` mixes full u64 entropy into the Metal backend's u32 RNG init via SplitMix64. Seeds <2^32 unchanged; seeds >=2^32 no longer collide.",
         },
         ReproRow {
             pipeline: "AnimateDiff (SD 1.5)",
             code_path: "denoise_window noise init + FreeNoise pre-gen",
             file_line: "pipelines/animatediff.rs:~340",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "set_seed() before randn; per-window seed for v0.27 path, full-length pre-gen for v0.32 FreeNoise.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: `seeds::prepare_seed` applied at per-window + FreeNoise sites. Per-window seed for v0.27 path, full-length pre-gen for v0.32 FreeNoise.",
         },
         ReproRow {
             pipeline: "AnimateDiff (SDXL beta)",
             code_path: "denoise_window noise init",
             file_line: "pipelines/animatediff.rs:~1075",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Same seed plumbing as SD 1.5; FreeNoise path identical.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: same fix as SD 1.5; FreeNoise path identical.",
         },
         ReproRow {
             pipeline: "SD3 / SD3.5",
             code_path: "Pipeline::run init latents",
             file_line: "pipelines/sd3.rs:~813",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Seed masked + set_seed() before randn. Falls back to rand::random() when --seed absent.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: `seeds::prepare_seed` before randn. Falls back to rand::random() when --seed absent.",
         },
         ReproRow {
             pipeline: "Flux (BF16 / GGUF / NF4)",
             code_path: "sampling::get_noise",
             file_line: "pipelines/flux.rs:~1565",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Routes through candle's `flux::sampling` after `device.set_seed()`.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: `seeds::prepare_seed` before candle's `flux::sampling::get_noise`.",
         },
         ReproRow {
             pipeline: "Stylize (SD 1.5)",
             code_path: "init noise + VAE encode",
-            file_line: "pipelines/stylize.rs:~260",
-            guarantee: ReproGuarantee::NeedsVerification,
-            note: "set_seed before init noise OK; VAE encode samples DiagonalGaussianDistribution — placement of set_seed relative to encode not audited end-to-end.",
+            file_line: "pipelines/stylize.rs:~250",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: set_seed moved BEFORE VAE encode (init_dist.sample is RNG-touching). `seeds::prepare_seed` replaces the old u32 mask.",
         },
         ReproRow {
             pipeline: "Portrait (FaceID / Plus-Face)",
             code_path: "Pipeline::generate t2i + inpaint blend",
             file_line: "pipelines/portrait.rs:~420 + ~751",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Multiple randn sites; each guarded by a set_seed. Verified for the t2i path.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: all 4 set_seed sites now route through `seeds::prepare_seed`.",
         },
         ReproRow {
             pipeline: "img2img / inpaint",
             code_path: "init latents from VAE-encoded init image",
-            file_line: "pipelines/img2img.rs:~173",
-            guarantee: ReproGuarantee::NeedsVerification,
-            note: "VAE encode runs before init-noise set_seed in some paths. v0.34 verification candidate.",
+            file_line: "pipelines/img2img.rs:~185",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.34 phase 1: per-iter set_seed inserted BEFORE vae_encode_image_file (the inner dist.sample is RNG-touching).",
         },
         ReproRow {
             pipeline: "LCM scheduler",
             code_path: "per-step re-noise",
             file_line: "pipelines/lcm_scheduler.rs:~222",
-            guarantee: ReproGuarantee::GuaranteedMetalU32,
-            note: "Reuses parent pipeline's set_seed RNG stream — deterministic only if parent seeded.",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "Reuses parent pipeline's set_seed RNG stream — deterministic when parent seeded (which v0.34 phase 1 guarantees on Metal).",
         },
         ReproRow {
             pipeline: "Prompt wildcards",
@@ -1191,8 +1204,6 @@ impl ReproReport {
             generated_at: format!("{:?}", std::time::SystemTime::now()),
             warnings: vec![
                 "Reproducibility REQUIRES `--seed N`. Without it, pipelines fall back to `rand::random()` and produce different output each run.",
-                "Metal backend truncates seeds to u32. User seeds > 2^32 lose entropy silently across SD t2i / AnimateDiff / SD3 / Flux / portrait / stylize / LCM scheduler.",
-                "VAE encode in img2img / stylize paths: `set_seed()` placement relative to encode not audited end-to-end. May affect determinism on hostile reseeding patterns. v0.34 verification candidate.",
                 "Prompt enhancer with `--enhance-temp > 0.0` honours `--seed N` but local LLM sampling is inherently stochastic. Use `--enhance-temp 0.0` (default) for deterministic enhancement.",
                 "DeepSeek / Gemini providers are remote — server-side sampling is outside plakat's control. No reproducibility guarantee for those.",
             ],
@@ -1211,7 +1222,7 @@ fn run_reproducibility_check(as_json: bool) -> Result<()> {
     }
 
     println!(
-        "\n{}  reproducibility audit (v0.33 phase 3)\n",
+        "\n{}  reproducibility audit (v0.33 phase 3 baseline + v0.34 phase 1 fixes)\n",
         style("doctor --reproducibility-check").yellow().bold()
     );
 

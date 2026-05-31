@@ -243,6 +243,18 @@ impl Pipeline {
         // (1, 77, 768) ⊕ (1, 4, 768) → (1, 81, 768)
         let encoder_hidden_states = Tensor::cat(&[&self.empty_text_embeds, &image_tokens], 1)?;
 
+        // v0.34 phase 1 fix: seed the device RNG BEFORE VAE encode.
+        // `init_dist.sample()` below is RNG-touching — pre-v0.34
+        // it used leftover state from prior ops, ignoring --seed.
+        // Also: device-aware seed prep replaces the old `& u32::MAX`
+        // mask. CPU/CUDA now get full u64 entropy; Metal high seeds
+        // hash through SplitMix64 instead of colliding to low bits.
+        let seed = req.seed.unwrap_or_else(rand::random);
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
+
         // -------- encode IN → latents --------
         let s = progress::spinner("Encoding input image");
         let in_pixels = crate::imaging::preprocess::sd_image_tensor(
@@ -257,10 +269,6 @@ impl Pipeline {
         s.finish_with_message("✓ input encoded");
 
         // -------- img2img denoise --------
-        let seed = req.seed.unwrap_or_else(rand::random) & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed) {
-            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
-        }
 
         let mut scheduler = self.cfg.build_scheduler(req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();

@@ -1222,9 +1222,12 @@ impl Pipeline {
             let seed = req
                 .seed
                 .map(|s| s + idx as u64)
-                .unwrap_or_else(rand::random)
-                & (u32::MAX as u64);
-            if let Err(e) = self.core.device.set_seed(seed) {
+                .unwrap_or_else(rand::random);
+            // v0.34 phase 1: device-aware seed prep replaces
+            // unconditional u32 mask. CPU/CUDA get full u64; Metal
+            // high seeds hash via SplitMix64 (low seeds unchanged).
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.core.device);
+            if let Err(e) = self.core.device.set_seed(prepared) {
                 tracing::debug!(
                     target: "plakat",
                     "set_seed not supported ({e}); using global RNG"
@@ -1495,9 +1498,12 @@ impl Pipeline {
             let seed = req
                 .seed
                 .map(|s| s + idx as u64)
-                .unwrap_or_else(rand::random)
-                & (u32::MAX as u64);
-            if let Err(e) = self.core.device.set_seed(seed) {
+                .unwrap_or_else(rand::random);
+            // v0.34 phase 1: device-aware seed prep replaces
+            // unconditional u32 mask. CPU/CUDA get full u64; Metal
+            // high seeds hash via SplitMix64 (low seeds unchanged).
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.core.device);
+            if let Err(e) = self.core.device.set_seed(prepared) {
                 tracing::debug!(
                     target: "plakat",
                     "set_seed not supported ({e}); using global RNG"
