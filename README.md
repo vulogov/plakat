@@ -8,155 +8,164 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.33 — production polish bundle
+## What's new in v0.34 — audit follow-through
 
-v0.33 closes the long-standing **production polish** deferral
-from v0.32+: structured metadata, actionable error hints, machine-
-readable scenario output, and a reproducibility audit. No new
-pipelines, no new model families — every win is on the boundary
-between plakat and the operator.
+v0.34 closes the gaps v0.33 left behind, while the audit table
+and metadata-builder context were still fresh. Three of the four
+feature phases turned v0.33's "half-shipped" outputs into
+"actually useful"; the fourth cleared every remaining v0.32
+carry. No new model families, no new pipelines — fewer headline-
+worthy items than v0.33, but every win acts on something the
+previous cycle deferred or surfaced.
 
-Four phases shipped, all additive. No flag rename, no behaviour
-change for existing runs. Test count climbed from 1030 → 1073
-lib tests (+43 across the cycle).
+Four phases shipped, all additive. Test count grew 1073 → 1099
+lib tests (+26 across the cycle).
 
-### Structured metadata fields
+### Pipeline-side structured stack population
 
-PNG `tEXt` chunks and JSON sidecars carry the full visible
-configuration — stylistic presets, LoRA stack, TI stack, ControlNet
-stack, enhancer state, FreeNoise flag — alongside the existing
-Auto1111-compatible "Parameters:" string.
-
-```bash
-plakat generate "a misty forest" --model sd15 --look anime \
-    --genre fantasy --negative-preset crisp \
-    --lora detail:0.6 --lora style:0.4 \
-    --embedding cinematic-style --controlnet canny ./edges.png
-```
-
-Every flag shows up under its own key in the JSON sidecar AND
-as a `Look: anime, Genre: fantasy, Negative preset: crisp, ...`
-suffix in the A1111 string. Downstream tooling (Civitai
-importers, gallery cataloguers, scenario regression diff) no
-longer has to re-parse free-form prompt text.
-
-New `GenerationMetadata` fields are `#[serde(default)] +
-skip_serializing_if`, so every v0.32 sidecar still parses
-unchanged (regression-locked by `v032_sidecar_still_parses`).
-
-### Actionable error hints
-
-Three new decorators on the user-facing error path:
-
-```
-$ plakat generate "x" --model sd1.5
-Error: unknown --model alias 'sd1.5'. Did you mean 'sd15'?
-       Run `plakat --help` or `plakat hf list` for the full list.
-
-$ plakat generate "x" --model flux --width 2048 --height 2048
-Error: out of memory loading Flux at 2048×2048.
-       Try: --quant nf4, lower --width/--height, or close
-       other GPU consumers. See FLUX.md for VRAM guidance.
-
-$ plakat scenario broken.hjson
-Error: HJSON parse error on line 14 in task 'beta':
-       expected `,` or `}` after value.
-       Inspect the task block starting near `name: beta`.
-```
-
-Levenshtein-based typo suggestion for `--model` and `--look`;
-pipeline-tagged OOM decorator that names the right mitigation
-(quant for Flux, `--vae-tiled` for SD3.5, frame count for
-AnimateDiff); scenario parse errors point at the offending task
-by name, not just byte offset. 21 unit tests cover the matching
-logic.
-
-### `plakat scenario --json-summary PATH`
-
-Scenarios now emit a machine-readable run summary alongside the
-existing log output:
+v0.33 added `lora_stack`, `embedding_stack`, and `control_stack`
+to `GenerationMetadata`, but the CLI passed `None` everywhere —
+the new fields stayed empty in practice. v0.34 phase 0 wires the
+t2i pipeline to populate the LoRA + ControlNet stacks from the
+specs at the metadata-build site:
 
 ```json
 {
-  "scenario_file": "/tmp/forest.hjson",
-  "model": "sd15",
-  "out_dir": "/tmp/out",
-  "total_tasks": 12,
-  "ran": 10,
-  "skipped": 2,
-  "failed": 0,
-  "wall_time_secs": 184.21,
-  "plakat_version": "0.33.0",
-  "tasks": [
-    {"name": "alpha", "kind": "generate",  "status": "ok",      "seed": 42},
-    {"name": "beta",  "kind": "animatediff","status": "ok",     "seed": 43},
-    {"name": "gamma", "kind": "generate",  "status": "skipped", "note": "--only filter excluded"}
+  "lora_stack": [
+    {"display": "civitai:12345", "scale": 0.7, "source": "civitai"},
+    {"display": "user/style-lora", "scale": 0.5, "source": "hub"}
+  ],
+  "control_stack": [
+    {"kind": "canny", "image": "./edges.png", "strength": 0.85, "start": 0.0, "end": 1.0}
   ]
 }
 ```
 
-CI now has a single file to consume — pass/skip/fail counts,
-wall time, per-task seed and status. Records every code path:
-`--only` skip, `--limit` skip, `--resume` cache hit, dry-run
-early-continue, animate dispatch, normal generate end. Survives
-mixed `--dry-run` + real runs in the same scenario.
+PNG sidecars from `plakat generate` now carry the resolved
+metadata Civitai importers, gallery cataloguers, and scenario
+regression diff tools already wanted. Source kind
+(`local` / `hub` / `civitai`) per entry; HF pinned revision
+captured when present.
 
-### `plakat doctor --reproducibility-check`
+Scope is t2i (SD 1.5 + SDXL) — the only pipeline that builds
+`GenerationMetadata` in-pipeline today. SD3, Flux, AnimateDiff,
+stylize, and portrait don't emit `GenerationMetadata` at all and
+would need separate metadata-emitting paths added; deferred.
+Embedding-stack population also deferred — `EmbeddingEntry`
+needs `embed_dim` / `num_tokens` / `dual_encoder` which require
+loading the safetensors, making it more than "data plumbing."
+
+### Determinism fixes from the v0.33 audit
+
+The phase 3 audit shipped with 8 ⚠ Metal-u32 rows and 2 ?
+NEEDS-VERIFICATION rows. v0.34 phase 1 fixes both:
+
+- **VAE encode `set_seed()` placement.** In `stylize.rs` and
+  `img2img.rs`, the VAE's `init_dist.sample()` is RNG-touching —
+  but the existing code ran `set_seed(seed)` AFTER the sample.
+  Init latents used leftover RNG state and ignored `--seed`.
+  Fix: hoist `set_seed` to run before the VAE encode.
+- **Metal u32 seed truncation.** New
+  `pipelines::seeds::prepare_seed(seed, device)` applies
+  SplitMix64 + reduces to u32 when device is Metal AND
+  seed > u32::MAX. Identity passthrough below 2^32 preserves
+  byte-identical output for existing users. Plumbed through 13
+  `set_seed` call sites across t2i, sd3, flux, animatediff
+  (both variants + FreeNoise), portrait, stylize, img2img, and
+  the animate CLI.
 
 ```
 $ plakat doctor --reproducibility-check
-◆ Top warnings
-  ! Reproducibility REQUIRES `--seed N`...
-  ! Metal backend truncates seeds to u32...
-  ! VAE encode placement in img2img / stylize paths...
-
-◆ Per-pipeline determinism table
-status  pipeline                code path              note
-   ⚠    t2i (SD-family)         Pipeline::run randn    Seed masked to u32...
-   ⚠    AnimateDiff (SD 1.5)    denoise_window         set_seed() before randn
-   ✓    Prompt wildcards        StdRng                 Seeded from --seed
-   ?    img2img/inpaint         VAE encode             Needs verification
-   ✗    Any pipeline (no --seed) rand::random()        Non-deterministic
+   ✓    t2i (SD-family)            v0.34 phase 1: seeds::prepare_seed mixes full u64 entropy...
+   ✓    AnimateDiff (SD 1.5)       v0.34 phase 1: seeds::prepare_seed at per-window + FreeNoise
+   ✓    Stylize (SD 1.5)           v0.34 phase 1: set_seed moved BEFORE VAE encode
+   ✓    img2img / inpaint          v0.34 phase 1: per-iter set_seed inserted BEFORE vae_encode_image_file
 ```
 
-Hand-curated audit of every RNG-touching path across plakat's
-pipelines, classified into 4 tiers: **GUARANTEED**, **GUARANTEED
-(Metal u32)**, **NEEDS VERIFICATION**, **NON-DETERMINISTIC**.
-Color-coded human output; composes with `--json` for CI.
-Descriptive, not prescriptive — fixes for the `?`-tier rows defer
-to v0.34.
+Audit went from 3 ✓ rows + 8 ⚠ + 2 ? to **11 ✓ + 0 ⚠ + 0 ?**.
+Remaining 2 ✗ rows are intentional (`rand::random()` fallback
+when `--seed` omitted, and remote DeepSeek / Gemini enhancers).
+A regression-lock test asserts neither tier ever reappears.
+
+### Per-task failure capture in `--json-summary`
+
+`TaskRunRecord.error: Option<String>` populates on
+`status: "failed"` with the full anyhow error chain:
+
+```json
+{
+  "tasks": [
+    {"name": "alpha", "status": "ok", "seed": 42},
+    {"name": "beta",  "status": "failed", "seed": 43,
+     "error": "loading LoRA civitai:404404: HTTP 404 from civitai.com"},
+    {"name": "gamma", "status": "ok", "seed": 44}
+  ]
+}
+```
+
+The dispatch loop now wraps every task in a catch-and-record
+guard; failures push a record + continue rather than aborting
+the scenario. Summary file is written first, then the scenario
+exits non-zero if any task failed. CI consumers see every
+failure in one shot.
+
+### v0.32 carry closures
+
+Three deferrals from two cycles back, all closed:
+
+- **Animate-side VAE cache.** AnimateDiff{,Sdxl}Pipeline's VAE
+  field rewrapped as `Arc<AutoEncoderKL>` (mirrors `SdCore` from
+  v0.32 phase 2). Mixed-kind scenarios stop paying the ~330 MB
+  SDXL VAE rebuild cost on every `t2i ↔ animate` kind switch.
+- **Scripting `plakat.load` VAE cache.** Same Arc cache surfaces
+  in `ScriptCtx`; scripts running
+  `plakat.load sdxl; plakat.animate sdxl` share one VAE handle.
+- **Auto1111 two-files SDXL TI convention.**
+  `plakat generate --embedding mystyle_clip_l.safetensors`
+  auto-discovers the `mystyle_clip_g.safetensors` companion and
+  stitches both halves into a dual-encoder TI. Bare `_clip_g`
+  input rejected with a hint at the `_clip_l` primary.
 
 ### Documentation
 
-- [`RFC_v0.33_PRODUCTION_POLISH.md`](Documentation/RFC_v0.33_PRODUCTION_POLISH.md)
-  — design doc, additive-schema constraint, 4-phase plan.
+- [`RFC_v0.34_AUDIT_FOLLOWTHROUGH.md`](Documentation/RFC_v0.34_AUDIT_FOLLOWTHROUGH.md)
+  — design doc, scope contraction after pre-phase-0 survey,
+  4-phase plan.
 
 ### By the numbers
 
-- **1073 lib + 47 integration tests = 1120 active tests** (+43
+- **1099 lib + 47 integration tests = 1146 active tests** (+26
   lib across the cycle).
 - 4 phase commits + RFC + close-out.
-- v0.32+ production polish deferral **closed**.
-- Reproducibility audit surfaces 13 RNG paths + 5 top-level
-  warnings — input for v0.34 determinism fixes.
+- v0.33 phase 0 metadata-half-shipped gap **closed** (t2i side).
+- v0.33 phase 3 audit gaps (Metal-u32 + VAE encode placement)
+  **closed**; audit table is now all-green for pipelines plakat
+  controls.
+- All three v0.32 carries (animate VAE cache, scripting cache,
+  Auto1111 two-files TI) **closed**.
 
-### v0.32 → v0.33 migration
+### v0.33 → v0.34 migration
 
-v0.33 is **fully additive**. Every existing flag, host word,
-config key, scenario field, PNG sidecar, and A1111 parameter
-string keeps its v0.32 shape. New surface:
+v0.34 is mostly additive. Every existing flag, host word, config
+key, scenario field, and PNG sidecar from v0.33 still works
+unchanged. Two intentional behavioural shifts on previously-
+broken paths:
 
-- ✅ 9 new `GenerationMetadata` fields (`look`, `genre`,
-  `negative_preset`, `lora_stack`, `embeddings`,
-  `embedding_stack`, `control_stack`, `enhancement`,
-  `free_noise`). All `Option`/`Vec` with serde `default` +
-  `skip_serializing_if` — v0.32 sidecars parse unchanged.
-- ✅ `plakat scenario --json-summary PATH` (optional flag).
-- ✅ `plakat doctor --reproducibility-check` + `--json`.
-- ✅ New `error_hints` module — opt-in decorators on the
-  existing error path. Pure additions.
+- ✅ `--seed N` with `N < 2^32` on any backend: **byte-identical**
+  output.
+- ⚠ `--seed N` with `N >= 2^32` on Metal: previously collided to
+  `N mod 2^32`; now distinct via SplitMix64. (Fix, not regression.)
+- ⚠ `stylize` / `img2img` with `--seed N --strength X`:
+  numerically changed because `set_seed` now runs before VAE
+  encode. (Fix, not regression — output was non-deterministic
+  before.)
+- ⚠ Scenarios with one failing task: previously aborted at first
+  failure with bare error; now records each failure + writes
+  summary + exits non-zero.
+- ✅ Animate / scripting Load APIs gained a `vae_cache: Option<...>`
+  parameter — callers pass `None` for the v0.33 behaviour.
 
-### Deferred to v0.34+
+### Deferred to v0.35+
 
 - Per-layer motion splice (RFC v0.27 §3.2 escalation).
 - HotShot-XL integration.
@@ -164,23 +173,15 @@ string keeps its v0.32 shape. New surface:
   publicly available).
 - INT8 SDXL UNet quantization (blocked on candle adding
   quantized Conv2d support).
-- AnimateDiff load functions accept the v0.32 VAE cache (animate-
-  side mixed-kind sharing).
-- Scripting `plakat.load` Bund word — VAE cache passthrough.
-- Auto1111 two-separate-files SDXL TI convention.
-- Structured stack population from pipeline resolved state
-  (phase 0 deferral — currently builders accept stacks but the
-  pipeline-side wiring uses the existing free-form path).
-- Per-task failure capture in `--json-summary` (status currently
-  binary ok/skip; failed-task records carry `status: "failed"`
-  but not the error text).
-- Determinism fixes for the `?` and Metal-u32 rows surfaced by
-  the phase 3 audit (VAE encode placement, full-width seed for
-  Metal).
+- `GenerationMetadata` for SD3 / Flux / AnimateDiff / stylize /
+  portrait (none emit it today; adding it is a behaviour change,
+  not data plumbing).
+- Embedding-stack population in `GenerationMetadata` (requires
+  resolution-layer extension or double-load).
 - Plakat server mode.
 - PixArt Sigma / Stable Cascade.
 
-**Earlier releases** (v0.13 – v0.32):
+**Earlier releases** (v0.13 – v0.33):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 

@@ -808,9 +808,10 @@ impl Pipeline {
             let seed = req
                 .seed
                 .map(|s| s + idx as u64)
-                .unwrap_or_else(rand::random)
-                & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed) {
+                .unwrap_or_else(rand::random);
+            // v0.34 phase 1: device-aware seed prep.
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+            if let Err(e) = self.device.set_seed(prepared) {
                 tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
             }
 
@@ -1233,9 +1234,10 @@ impl Pipeline {
         let cfg_y = Tensor::cat(&[neg_y, pos_y], 0)?;
         let cfg_ctx = Tensor::cat(&[neg_ctx, pos_ctx], 0)?;
 
-        // Init noise at the shared seed.
-        let seed_u32 = seed & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed_u32) {
+        // Init noise at the shared seed. v0.34 phase 1: device-aware
+        // prep (Metal-only hash for high seeds; identity below 2^32).
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
             tracing::debug!(
                 target: "plakat",
                 "set_seed not supported ({e}); using global RNG"
