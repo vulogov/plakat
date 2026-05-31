@@ -2034,6 +2034,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
 
     // v0.35 phase 2: PixArt routing — full inference dispatch.
     // PixArt is DiT-XL/2 + T5-XXL; detection precedes SD3/Flux/SD.
+    // v0.35 phase 4: --lora / --lora-scale carry through.
     if variant.is_pixart() {
         use crate::pipelines::pixart;
         pixart::run(pixart::RunRequest {
@@ -2049,6 +2050,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             scheduler: req.scheduler,
             out_dir: req.out_dir.clone(),
             count: req.count,
+            loras: req.loras.clone(),
+            lora_scale: req.lora_scale,
         })
         .await?;
         return Ok(None);
