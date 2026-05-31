@@ -111,6 +111,11 @@ pub struct Pipeline {
     /// Stage A's latent. Variant-aware (Full vs Lite) — selected
     /// from the alias at load time.
     pub stage_b: StableCascadeUnet,
+    /// v0.37 phase 3: Stage C high-res prior. ~3.6B-param UNet —
+    /// the headline model. Text → 24×24×16 super-compressed prior
+    /// latent. Variant-aware (Full vs Lite) — selected from the
+    /// alias alongside Stage B.
+    pub stage_c: StableCascadeUnet,
 }
 
 impl Pipeline {
@@ -182,8 +187,19 @@ impl Pipeline {
         .with_context(|| {
             format!("downloading Stage B UNet weights for Stable Cascade ({})", req.repo)
         })?;
+        // v0.37 phase 3: Stage C UNet weights. Diffusers calls
+        // Stage C `prior`. This is the heaviest single file in the
+        // pipeline (~3.6B params for the Full variant).
+        let stage_c_w = crate::hf::download::get_first_of(&[
+            (&req.repo, "prior/diffusion_pytorch_model.safetensors"),
+            (&req.repo, "prior/diffusion_pytorch_model.fp16.safetensors"),
+        ])
+        .await
+        .with_context(|| {
+            format!("downloading Stage C UNet weights for Stable Cascade ({})", req.repo)
+        })?;
         dl.finish_with_message(
-            "✓ Stable Cascade text-encoder + Stage A + Stage B weights resolved",
+            "✓ Stable Cascade text-encoder + Stage A + Stage B + Stage C weights resolved",
         );
 
         let build = progress::spinner("Loading CLIP-G text encoder");
@@ -218,6 +234,17 @@ impl Pipeline {
             .context("building Stage B UNet for Stable Cascade")?;
         stage_b_build.finish_with_message("✓ Stage B UNet ready");
 
+        // v0.37 phase 3: Stage C. Same `stage_c_for_alias` Lite-vs-
+        // Full routing rule as Stage B (substring "lite" → Lite).
+        let stage_c_build = progress::spinner("Loading Stage C UNet (heaviest stage)");
+        let stage_c_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_c_w.as_path()], dtype, &req.device)?
+        };
+        let stage_c_cfg = UnetConfig::stage_c_for_alias(&req.repo);
+        let stage_c = StableCascadeUnet::new(stage_c_cfg, stage_c_vb)
+            .context("building Stage C UNet for Stable Cascade")?;
+        stage_c_build.finish_with_message("✓ Stage C UNet ready");
+
         Ok(Self {
             device: req.device,
             dtype,
@@ -225,6 +252,7 @@ impl Pipeline {
             clip_g_tok,
             stage_a,
             stage_b,
+            stage_c,
         })
     }
 }
@@ -248,17 +276,18 @@ pub async fn run(req: RunRequest) -> Result<()> {
 
     tracing::info!(
         target: "plakat",
-        "Stable Cascade phase 2: CLIP-G + Stage A + Stage B loaded (dtype={:?}). \
-         Stage C lands in v0.37 phase 3; 3-stage orchestration in phase 4.",
+        "Stable Cascade phase 3: CLIP-G + Stage A + Stage B + Stage C loaded (dtype={:?}). \
+         3-stage orchestration lands in v0.37 phase 4.",
         pipeline.dtype
     );
 
     anyhow::bail!(
-        "Stable Cascade inference is not yet implemented — phase 2 ships the \
-         CLIP-G text encoder + Stage A VAE + Stage B UNet (this load succeeded). \
-         Stage C high-res prior lands in v0.37 phase 3; 3-stage orchestration \
-         (text → Stage C → Stage B → Stage A → image) in phase 4. Track progress \
-         against `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
+        "Stable Cascade inference is not yet implemented — phase 3 ships every \
+         stage's weights (CLIP-G + Stage A VAE + Stage B + Stage C; this load \
+         succeeded). 3-stage orchestration (text → Stage C → Stage B → Stage A \
+         → image) lands in v0.37 phase 4 alongside the FiLM timestep injection + \
+         effnet conditioning. Track progress against \
+         `Documentation/RFC_v0.37_STABLE_CASCADE.md`."
     )
 }
 
