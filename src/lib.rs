@@ -12,6 +12,7 @@ pub mod civitai;
 pub mod cli;
 pub mod config;
 pub mod device;
+pub mod error_hints;
 pub mod hf;
 pub mod imaging;
 pub mod llm;
