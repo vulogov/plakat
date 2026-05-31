@@ -1289,6 +1289,21 @@ pub struct ControlSpec {
 }
 
 impl ControlSpec {
+    /// v0.34 phase 0: build a structured `ControlEntry` from this
+    /// spec for the PNG sidecar's `control_stack` field. Spec carries
+    /// everything `ControlEntry` needs — no resolution required.
+    pub fn to_entry(&self) -> crate::imaging::metadata::ControlEntry {
+        crate::imaging::metadata::ControlEntry {
+            kind: format!("{:?}", self.kind).to_lowercase(),
+            image: self.image.as_ref().map(|p| p.display().to_string()),
+            from: self.from.as_ref().map(|p| p.display().to_string()),
+            video: self.video.as_ref().map(|p| p.display().to_string()),
+            strength: self.strength,
+            start: self.start,
+            end: self.end,
+        }
+    }
+
     /// Build from the legacy split flags (`--control` + `--control-image`
     /// / `--control-from` + `--control-strength` + `--control-start` /
     /// `--control-end`). Returns `None` when `kind` is `None` —
@@ -1797,5 +1812,67 @@ mod tests {
             12,
             "expected 12 zero-conv heads for the default UNet config",
         );
+    }
+
+    // v0.34 phase 0: ControlSpec::to_entry tests. Verify every spec
+    // field round-trips into the metadata ControlEntry shape.
+
+    #[test]
+    fn to_entry_with_image() {
+        let spec = ControlSpec {
+            kind: ControlKind::Canny,
+            image: Some(std::path::PathBuf::from("./edges.png")),
+            from: None,
+            video: None,
+            strength: 0.85,
+            start: 0.0,
+            end: 1.0,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.kind, "canny");
+        assert_eq!(entry.image.as_deref(), Some("./edges.png"));
+        assert_eq!(entry.from, None);
+        assert_eq!(entry.video, None);
+        assert_eq!(entry.strength, 0.85);
+        assert_eq!(entry.start, 0.0);
+        assert_eq!(entry.end, 1.0);
+    }
+
+    #[test]
+    fn to_entry_with_from_auto_annotation() {
+        let spec = ControlSpec {
+            kind: ControlKind::Depth,
+            image: None,
+            from: Some(std::path::PathBuf::from("./input.jpg")),
+            video: None,
+            strength: 1.0,
+            start: 0.2,
+            end: 0.7,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.kind, "depth");
+        assert_eq!(entry.from.as_deref(), Some("./input.jpg"));
+        assert_eq!(entry.image, None);
+        assert_eq!(entry.strength, 1.0);
+        assert_eq!(entry.start, 0.2);
+        assert_eq!(entry.end, 0.7);
+    }
+
+    #[test]
+    fn to_entry_with_video() {
+        let spec = ControlSpec {
+            kind: ControlKind::OpenPose,
+            image: None,
+            from: None,
+            video: Some(std::path::PathBuf::from("./dance.mp4")),
+            strength: 0.9,
+            start: 0.0,
+            end: 1.0,
+        };
+        let entry = spec.to_entry();
+        assert_eq!(entry.kind, "openpose");
+        assert_eq!(entry.video.as_deref(), Some("./dance.mp4"));
+        assert_eq!(entry.image, None);
+        assert_eq!(entry.from, None);
     }
 }

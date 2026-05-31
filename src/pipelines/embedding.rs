@@ -176,6 +176,35 @@ pub fn parse_safetensors(
     spec: &EmbeddingSpec,
     device: &Device,
 ) -> Result<ResolvedEmbedding> {
+    // v0.34 phase 3: Auto1111 two-files SDXL TI convention. Some
+    // exports ship the CLIP-L and CLIP-G halves as SEPARATE files,
+    // typically with `_clip_l.safetensors` + `_clip_g.safetensors`
+    // suffixes. v0.31 phase 0's parser handled only the single-file
+    // dual-key format (Civitai standard). Detection:
+    //   - Path ends `_clip_l.safetensors` → try `_clip_g` companion.
+    //     If found, stitch both halves into a dual ResolvedEmbedding.
+    //   - Path ends `_clip_g.safetensors` → bail with helpful hint
+    //     (we want the user to pass the `_clip_l` file as primary).
+    //   - Otherwise → existing single-file logic.
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.ends_with("_clip_g.safetensors") {
+        bail!(
+            "embedding {} looks like the CLIP-G half of an Auto1111 \
+             two-files SDXL TI. Pass the CLIP-L half (the `_clip_l.\
+             safetensors` companion in the same directory) — the \
+             parser will auto-discover the CLIP-G half from there.",
+            path.display()
+        );
+    }
+    if let Some(stem) = name.strip_suffix("_clip_l.safetensors") {
+        let companion = path.with_file_name(format!("{stem}_clip_g.safetensors"));
+        if companion.exists() {
+            return parse_two_files_dual(path, &companion, stem, spec, device);
+        }
+        // Fall through — `_clip_l.safetensors` without a companion
+        // is just a single-encoder TI with an unusual filename.
+    }
+
     let tensors: HashMap<String, Tensor> = candle_core::safetensors::load(path, device)
         .with_context(|| format!("loading embedding safetensors {}", path.display()))?;
 
@@ -296,6 +325,136 @@ pub fn parse_safetensors(
         vectors_g: None,
         scale: spec.scale,
     })
+}
+
+/// v0.34 phase 3: Auto1111 two-files SDXL TI loader. Reads the
+/// CLIP-L half from `clip_l_path` and the CLIP-G half from
+/// `clip_g_path`, stitches them into a dual ResolvedEmbedding
+/// matching the v0.31 phase 0 single-file dual format. `name_stem`
+/// is the shared filename stem (without the `_clip_l` suffix);
+/// used to derive the trigger when the spec didn't override it.
+fn parse_two_files_dual(
+    clip_l_path: &Path,
+    clip_g_path: &Path,
+    name_stem: &str,
+    spec: &EmbeddingSpec,
+    device: &Device,
+) -> Result<ResolvedEmbedding> {
+    // Each file should carry a single 2D tensor at the conventional
+    // key (`clip_l` / `clip_g`), `emb_params`, or any 2D tensor.
+    let l_tensors: HashMap<String, Tensor> =
+        candle_core::safetensors::load(clip_l_path, device).with_context(|| {
+            format!(
+                "loading CLIP-L half of two-files SDXL TI: {}",
+                clip_l_path.display()
+            )
+        })?;
+    let g_tensors: HashMap<String, Tensor> =
+        candle_core::safetensors::load(clip_g_path, device).with_context(|| {
+            format!(
+                "loading CLIP-G half of two-files SDXL TI: {}",
+                clip_g_path.display()
+            )
+        })?;
+
+    let l_vec = pick_single_2d_tensor(&l_tensors, "CLIP-L", clip_l_path)?;
+    let g_vec = pick_single_2d_tensor(&g_tensors, "CLIP-G", clip_g_path)?;
+
+    let n_l = l_vec.dim(0)?;
+    let n_g = g_vec.dim(0)?;
+    if n_l != n_g {
+        bail!(
+            "two-files SDXL TI mismatch: {} has {} vectors but {} has {}. \
+             Both halves must agree on token count.",
+            clip_l_path.display(),
+            n_l,
+            clip_g_path.display(),
+            n_g,
+        );
+    }
+    let l_dim = l_vec.dim(1)?;
+    let g_dim = g_vec.dim(1)?;
+    if l_dim != SD15_EMBED_DIM {
+        bail!(
+            "two-files SDXL TI: CLIP-L file {} has embed_dim {} — expected {} \
+             (SDXL CLIP-L is the same 768d as SD 1.5).",
+            clip_l_path.display(),
+            l_dim,
+            SD15_EMBED_DIM,
+        );
+    }
+    if g_dim != SDXL_G_EMBED_DIM {
+        bail!(
+            "two-files SDXL TI: CLIP-G file {} has embed_dim {} — expected {} \
+             (SDXL CLIP-G).",
+            clip_g_path.display(),
+            g_dim,
+            SDXL_G_EMBED_DIM,
+        );
+    }
+
+    let trigger = spec
+        .trigger
+        .clone()
+        .unwrap_or_else(|| derive_trigger_stem(name_stem));
+
+    Ok(ResolvedEmbedding {
+        trigger,
+        vectors: l_vec,
+        vectors_g: Some(g_vec),
+        scale: spec.scale,
+    })
+}
+
+/// v0.34 phase 3: helper for the two-files loader. Each half's
+/// safetensors should carry one 2D tensor — try the conventional
+/// keys first, then fall back to the single 2D tensor in the file.
+fn pick_single_2d_tensor(
+    tensors: &HashMap<String, Tensor>,
+    half_label: &str,
+    path: &Path,
+) -> Result<Tensor> {
+    if tensors.is_empty() {
+        bail!(
+            "two-files SDXL TI: {} half {} has no tensors",
+            half_label,
+            path.display(),
+        );
+    }
+    let preferred = ["clip_l", "clip_g", "emb_params", "string_to_param", "*"];
+    if let Some(k) = preferred.iter().find(|k| tensors.contains_key(**k)) {
+        let v = tensors[*k].clone();
+        if v.rank() == 2 {
+            return Ok(v);
+        }
+    }
+    let two_d: Vec<&Tensor> = tensors.values().filter(|t| t.rank() == 2).collect();
+    match two_d.as_slice() {
+        [v] => Ok((*v).clone()),
+        [] => bail!(
+            "two-files SDXL TI: {} half {} has no 2D tensor",
+            half_label,
+            path.display(),
+        ),
+        many => bail!(
+            "two-files SDXL TI: {} half {} has {} candidate 2D tensors. \
+             Rename the file so its single 2D tensor lives under `emb_params`, \
+             `clip_l`, or `clip_g`.",
+            half_label,
+            path.display(),
+            many.len(),
+        ),
+    }
+}
+
+/// v0.34 phase 3: derive a trigger token from a filename stem
+/// (without the `_clip_l` suffix). Same character-normalisation as
+/// `derive_trigger_from_path` so the rendered token tokenises
+/// consistently.
+fn derive_trigger_stem(stem: &str) -> String {
+    stem.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect()
 }
 
 /// Default trigger word from the file path. Strips the extension
@@ -885,5 +1044,130 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("dim 1024"), "got {msg}");
         assert!(msg.contains("768"), "got {msg}");
+    }
+
+    // ---------------------------------------------------------------
+    // v0.34 phase 3: Auto1111 two-files SDXL TI loader.
+    // ---------------------------------------------------------------
+
+    /// Helper: write a safetensors file with a single 2D tensor at
+    /// the given key. Returns the (path, tempdir) so the tempdir
+    /// stays alive while tests use the file.
+    fn write_ti_half(
+        dir: &std::path::Path,
+        filename: &str,
+        key: &str,
+        n: usize,
+        dim: usize,
+    ) -> std::path::PathBuf {
+        use candle_core::DType;
+        let path = dir.join(filename);
+        let mut map: HashMap<String, Tensor> = HashMap::new();
+        let v = Tensor::ones((n, dim), DType::F32, &Device::Cpu).unwrap();
+        map.insert(key.to_string(), v);
+        candle_core::safetensors::save(&map, &path).unwrap();
+        path
+    }
+
+    #[test]
+    fn two_files_dual_assembles_into_dual_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "mystyle_clip_l.safetensors", "clip_l", 2, 768);
+        let _g_path = write_ti_half(dir.path(), "mystyle_clip_g.safetensors", "clip_g", 2, 1280);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let r = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap();
+        assert_eq!(r.trigger, "mystyle");
+        assert!(r.has_clip_g(), "dual half must populate vectors_g");
+        assert_eq!(r.embed_dim().unwrap(), 768);
+        assert_eq!(r.embed_dim_g().unwrap(), 1280);
+        assert_eq!(r.num_tokens().unwrap(), 2);
+    }
+
+    #[test]
+    fn two_files_dual_falls_back_when_no_companion() {
+        // `_clip_l.safetensors` without a `_clip_g.safetensors`
+        // companion is treated as a single-encoder TI with an
+        // unusual filename — no error, no dual half.
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "lonely_clip_l.safetensors", "clip_l", 1, 768);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let r = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap();
+        assert!(!r.has_clip_g(), "no companion → single-encoder TI");
+        assert_eq!(r.embed_dim().unwrap(), 768);
+    }
+
+    #[test]
+    fn two_files_dual_rejects_bare_clip_g_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let g_path = write_ti_half(dir.path(), "concept_clip_g.safetensors", "clip_g", 1, 1280);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(&g_path, &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("two-files SDXL TI"), "got {msg}");
+        assert!(msg.contains("CLIP-L"), "got {msg}");
+        assert!(msg.contains("_clip_l"), "got {msg}");
+    }
+
+    #[test]
+    fn two_files_dual_rejects_token_count_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "x_clip_l.safetensors", "clip_l", 2, 768);
+        let _g_path = write_ti_half(dir.path(), "x_clip_g.safetensors", "clip_g", 3, 1280);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("mismatch"), "got {msg}");
+        assert!(msg.contains("2"), "got {msg}");
+        assert!(msg.contains("3"), "got {msg}");
+    }
+
+    #[test]
+    fn two_files_dual_rejects_wrong_clip_l_dim() {
+        let dir = tempfile::tempdir().unwrap();
+        // CLIP-L stuffed with wrong dim (1024 instead of 768).
+        let l_path = write_ti_half(dir.path(), "y_clip_l.safetensors", "clip_l", 1, 1024);
+        let _g_path = write_ti_half(dir.path(), "y_clip_g.safetensors", "clip_g", 1, 1280);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("CLIP-L"), "got {msg}");
+        assert!(msg.contains("768"), "got {msg}");
+        assert!(msg.contains("1024"), "got {msg}");
+    }
+
+    #[test]
+    fn two_files_dual_rejects_wrong_clip_g_dim() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "z_clip_l.safetensors", "clip_l", 1, 768);
+        // CLIP-G stuffed with wrong dim (768 instead of 1280).
+        let _g_path = write_ti_half(dir.path(), "z_clip_g.safetensors", "clip_g", 1, 768);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let err = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("CLIP-G"), "got {msg}");
+        assert!(msg.contains("1280"), "got {msg}");
+        assert!(msg.contains("768"), "got {msg}");
+    }
+
+    #[test]
+    fn two_files_dual_derives_trigger_from_stem() {
+        // Trigger derives from the shared filename stem, NOT from
+        // the full filename (which would include `_clip_l`).
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "anime girl_clip_l.safetensors", "clip_l", 1, 768);
+        let _g_path = write_ti_half(dir.path(), "anime girl_clip_g.safetensors", "clip_g", 1, 1280);
+        let spec: EmbeddingSpec = "ignored".parse().unwrap();
+        let r = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap();
+        assert_eq!(r.trigger, "anime-girl");
+    }
+
+    #[test]
+    fn two_files_dual_spec_trigger_overrides_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_path = write_ti_half(dir.path(), "stem_clip_l.safetensors", "clip_l", 1, 768);
+        let _g_path = write_ti_half(dir.path(), "stem_clip_g.safetensors", "clip_g", 1, 1280);
+        let spec: EmbeddingSpec = "ignored:my-override".parse().unwrap();
+        let r = parse_safetensors(&l_path, &spec, &Device::Cpu).unwrap();
+        assert_eq!(r.trigger, "my-override");
     }
 }

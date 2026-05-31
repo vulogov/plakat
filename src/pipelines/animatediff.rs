@@ -89,7 +89,11 @@ pub struct AnimateDiffPipeline {
     pub cfg: StableDiffusionConfig,
     pub tokenizer: Tokenizer,
     pub text_encoder: crate::pipelines::vendored_clip::ClipTextTransformer,
-    pub vae: AutoEncoderKL,
+    /// v0.34 phase 3: Arc-wrapped to enable VAE sharing with t2i's
+    /// scenario-level VAE cache (v0.32 phase 2 — SD-family side
+    /// already used Arc). Auto-deref keeps all `.vae.encode(...)` /
+    /// `.vae.decode(...)` call sites unchanged.
+    pub vae: std::sync::Arc<AutoEncoderKL>,
     pub motion_unet: Sd15MotionUNet,
     pub adapter: MotionAdapter,
     pub modules: MotionAdapterModules,
@@ -110,6 +114,10 @@ impl AnimateDiffPipeline {
         dtype: DType,
         motion_loras: &[LoraSpec],
         motion_lora_scale: f32,
+        // v0.34 phase 3: optional pre-built VAE shared with the t2i
+        // scenario-level cache. `None` builds fresh from disk (legacy
+        // single-task behaviour); `Some` reuses the cached Arc.
+        vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
     ) -> Result<Self> {
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_v3().await?
@@ -121,7 +129,7 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
-        Self::load_with_adapter(device, dtype, adapter).await
+        Self::load_with_adapter(device, dtype, adapter, vae_cache).await
     }
 
     /// v0.28 phase 1: load the AnimateLCM stack on top of SD 1.5
@@ -135,6 +143,8 @@ impl AnimateDiffPipeline {
         dtype: DType,
         motion_loras: &[LoraSpec],
         motion_lora_scale: f32,
+        // v0.34 phase 3: see [`Self::load_v3`] for cache semantics.
+        vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
     ) -> Result<Self> {
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_animatelcm().await?
@@ -146,7 +156,7 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
-        Self::load_with_adapter(device, dtype, adapter).await
+        Self::load_with_adapter(device, dtype, adapter, vae_cache).await
     }
 
     /// Shared SD 1.5 backbone loader. Takes an already-loaded motion
@@ -156,6 +166,8 @@ impl AnimateDiffPipeline {
         device: &Device,
         dtype: DType,
         adapter: MotionAdapter,
+        // v0.34 phase 3: shared with t2i's scenario-level VAE cache.
+        vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
     ) -> Result<Self> {
         let modules = adapter.build_modules(device, dtype)?;
         let max_frames = adapter.config.motion_max_seq_length;
@@ -209,7 +221,20 @@ impl AnimateDiffPipeline {
             device,
             dtype,
         )?;
-        let vae = cfg.build_vae(&vae_path, device, dtype)?;
+        // v0.34 phase 3: mixed-kind VAE cache reuse. Mirrors the
+        // SdCore pattern from v0.32 phase 2 — Some(arc) consumes the
+        // cached VAE; None falls back to a fresh disk build.
+        let vae = match vae_cache {
+            Some(arc) => {
+                tracing::info!(
+                    target: "plakat",
+                    "AnimateDiff (SD 1.5): reusing cached VAE (skipping {} build)",
+                    vae_path.display()
+                );
+                arc
+            }
+            None => std::sync::Arc::new(cfg.build_vae(&vae_path, device, dtype)?),
+        };
         let vs_unet = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[unet_path.as_path()],
@@ -331,9 +356,11 @@ impl AnimateDiffPipeline {
         let latent_h = h / 8;
         let latent_w = w / 8;
 
-        // Same seeding path as t2i / animate. Metal accepts only u32.
-        let seed = seed & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed) {
+        // Same seeding path as t2i / animate. v0.34 phase 1: device-
+        // aware seed prep replaces u32 mask (Metal high seeds hashed
+        // through SplitMix64; CPU/CUDA get full u64).
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
             tracing::debug!(target: "plakat", "set_seed ignored: {e}");
         }
 
@@ -598,8 +625,9 @@ impl AnimateDiffPipeline {
             let latent_w = w / 8;
             // Seed the device's RNG once with the user's top-level
             // seed so the full-length noise is reproducible.
-            let seed_u32 = seed & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed_u32) {
+            // v0.34 phase 1: device-aware seed prep.
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+            if let Err(e) = self.device.set_seed(prepared) {
                 tracing::debug!(target: "plakat", "set_seed for FreeNoise ignored: {e}");
             }
             let n = Tensor::randn(
@@ -817,7 +845,11 @@ pub struct AnimateDiffSdxlPipeline {
     pub tokenizer_g: Tokenizer,
     pub text_encoder_l: crate::pipelines::vendored_clip::ClipTextTransformer,
     pub text_encoder_g: SdxlClipGTextTransformer,
-    pub vae: AutoEncoderKL,
+    /// v0.34 phase 3: Arc-wrapped to enable SDXL VAE sharing with
+    /// t2i's scenario-level cache (the same cache that v0.32 phase 2
+    /// wired for the SD-family t2i side). Auto-deref keeps every
+    /// `.vae.encode(...)` / `.vae.decode(...)` site unchanged.
+    pub vae: std::sync::Arc<AutoEncoderKL>,
     pub motion_unet: SdxlUNet2DConditionModel,
     pub adapter: MotionAdapter,
     pub modules: MotionAdapterModules,
@@ -835,6 +867,10 @@ impl AnimateDiffSdxlPipeline {
         model: &str,
         motion_loras: &[LoraSpec],
         motion_lora_scale: f32,
+        // v0.34 phase 3: pre-built VAE shared with the scenario VAE
+        // cache. `None` builds fresh; `Some` reuses (skips the ~330 MB
+        // SDXL VAE rebuild cost on mixed-kind scenario reloads).
+        vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
     ) -> Result<Self> {
         // -------- motion adapter (SDXL beta).
         let adapter = if motion_loras.is_empty() {
@@ -926,7 +962,18 @@ impl AnimateDiffSdxlPipeline {
             )?
         };
         let text_encoder_g = SdxlClipGTextTransformer::new(vs_g, &cfg_g, 1280)?;
-        let vae = cfg.build_vae(&vae_path, device, dtype)?;
+        // v0.34 phase 3: mixed-kind VAE cache reuse (mirrors SdCore).
+        let vae = match vae_cache {
+            Some(arc) => {
+                tracing::info!(
+                    target: "plakat",
+                    "AnimateDiff (SDXL): reusing cached VAE (skipping {} build)",
+                    vae_path.display()
+                );
+                arc
+            }
+            None => std::sync::Arc::new(cfg.build_vae(&vae_path, device, dtype)?),
+        };
         let vs_unet = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[unet_path.as_path()],
@@ -1041,8 +1088,9 @@ impl AnimateDiffSdxlPipeline {
         let latent_h = h / 8;
         let latent_w = w / 8;
 
-        let seed = seed & (u32::MAX as u64);
-        if let Err(e) = self.device.set_seed(seed) {
+        // v0.34 phase 1: device-aware seed prep.
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
             tracing::debug!(target: "plakat", "set_seed ignored: {e}");
         }
 
@@ -1287,8 +1335,9 @@ impl AnimateDiffSdxlPipeline {
             let h = height as usize;
             let latent_h = h / 8;
             let latent_w = w / 8;
-            let seed_u32 = seed & (u32::MAX as u64);
-            if let Err(e) = self.device.set_seed(seed_u32) {
+            // v0.34 phase 1: device-aware seed prep.
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+            if let Err(e) = self.device.set_seed(prepared) {
                 tracing::debug!(target: "plakat", "set_seed for FreeNoise (SDXL) ignored: {e}");
             }
             let n = Tensor::randn(
@@ -1424,6 +1473,7 @@ mod tests {
             DType::F32,
             &[],
             1.0,
+            None,
         )
         .await
         .expect("load V3 stack");
@@ -1749,6 +1799,7 @@ mod tests {
             "sdxl",
             &[],
             1.0,
+            None,
         )
         .await
         .expect("load SDXL beta stack");

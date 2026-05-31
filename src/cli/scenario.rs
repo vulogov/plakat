@@ -104,6 +104,12 @@ pub struct TaskRunRecord {
     /// filter excluded"`, `"--limit reached"`, `"--resume cache hit"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// v0.34 phase 2: populated only on `status: "failed"`. Carries
+    /// the propagated `anyhow::Error::to_string()` from the
+    /// task-dispatch site, so CI consumers don't have to scrape
+    /// console output to know WHY a task failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Run-level summary written by `--json-summary PATH`.
@@ -2096,6 +2102,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // per task); only written to disk when the flag is set.
     let mut task_records: Vec<TaskRunRecord> = Vec::with_capacity(s.tasks.len());
     let run_started = std::time::Instant::now();
+    // v0.34 phase 2: catch-and-record failures per task. Set when
+    // any task records `status: "failed"`. Used at end-of-loop to
+    // exit non-zero so CI consumers see a failure exit code AND
+    // get a full --json-summary listing every failure.
+    let mut any_task_failed = false;
+
+    // v0.34 phase 2: the generate body's async-block wrap returns
+    // this enum so the outer match knows whether the body already
+    // pushed a record (e.g. dry-run early-exit, --resume cache hit)
+    // or whether the OK arm still owes a success record.
+    enum GenerateOutcome {
+        AlreadyRecorded,
+        NeedSuccessRecord,
+    }
 
     // v0.29 phase 3: lazy-loaded AnimateDiff pipelines + cache keys.
     // Initialised on the first animate task encountered. Key format:
@@ -2183,6 +2203,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     status: "skipped".to_string(),
                     seed: None,
                     note: Some("--only filter excluded".to_string()),
+                    error: None,
                 });
                 continue;
             }
@@ -2208,6 +2229,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     status: "skipped".to_string(),
                     seed: None,
                     note: Some(format!("--limit {} reached", args.limit)),
+                    error: None,
                 });
             }
             break;
@@ -2275,37 +2297,77 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             let task_seed = task.seed.unwrap_or(seed + seed_offset)
                 & (u32::MAX as u64);
             let task_out = out_root.join(safe_name(&task.name));
-            let eff = effective_animate_config(&s, task)?;
-            run_animate_task_inline(
-                &s,
-                task,
-                &eff,
-                &pre_refine,
-                idx + 1,
-                task_seed,
-                width,
-                height,
-                &task_out,
-                &args,
-                &device,
-                &model,
-                &mut animate_sd15,
-                &mut animate_sd15_key,
-                &mut animate_sdxl,
-                &mut animate_sdxl_key,
-            )
-            .await?;
-            // v0.33 phase 2: animate task completed successfully.
-            task_records.push(TaskRunRecord {
-                name: task.name.clone(),
-                kind: "animatediff".to_string(),
-                status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
-                seed: Some(task_seed),
-                note: None,
-            });
+            // v0.34 phase 2: wrap dispatch with catch-and-record.
+            // Pre-v0.34 a failure here `?`-aborted the whole scenario.
+            // Now we capture + continue + return non-zero at the end.
+            let animate_result: Result<()> = async {
+                let eff = effective_animate_config(&s, task)?;
+                run_animate_task_inline(
+                    &s,
+                    task,
+                    &eff,
+                    &pre_refine,
+                    idx + 1,
+                    task_seed,
+                    width,
+                    height,
+                    &task_out,
+                    &args,
+                    &device,
+                    &model,
+                    &mut animate_sd15,
+                    &mut animate_sd15_key,
+                    &mut animate_sdxl,
+                    &mut animate_sdxl_key,
+                    &mut vae_cache, // v0.34 phase 3: cross-kind VAE share
+                )
+                .await?;
+                Ok(())
+            }.await;
+            match animate_result {
+                Ok(()) => {
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: "animatediff".to_string(),
+                        status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} task {:?}: {}",
+                        style("✗ failed").red().bold(),
+                        task.name,
+                        e
+                    ));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: "animatediff".to_string(),
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
             seed_offset += count as u64;
             continue;
         }
+
+        // v0.34 phase 2: lift task_seed before the generate body so
+        // both arms of the result match below can reference it.
+        let task_seed_for_record = task.seed.unwrap_or(seed + seed_offset);
+
+        // v0.34 phase 2: wrap the entire generate body so per-task
+        // failures are captured rather than aborting the scenario.
+        // Body runs inside an `async {}` that returns
+        // Result<GenerateOutcome>; failures push a failed record +
+        // continue past the task. Early-exit paths (dry-run, resume
+        // cache hit) push their own record and return AlreadyRecorded.
+        let generate_result: anyhow::Result<GenerateOutcome> = async {
 
         // v0.31 phase 3: lazy reload of the SD-family t2i pipeline.
         // Fires when (a) the scenario is mixed-kind and we just
@@ -2564,9 +2626,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 status: "dry-run".to_string(),
                 seed: Some(dry_seed),
                 note: None,
+                error: None,
             });
-            seed_offset += count as u64;
-            continue;
+            // v0.34 phase 2: was `continue;` outside an async-block.
+            // Inside the wrap, return AlreadyRecorded so the outer
+            // match skips the success-push. Outer seed_offset advance
+            // runs unconditionally after the match.
+            return Ok(GenerateOutcome::AlreadyRecorded);
         }
 
         // -------- effective per-task values (override-or-global) --------
@@ -2914,9 +2980,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 status: "skipped".to_string(),
                 seed: Some(task_seed),
                 note: Some("--resume: outputs already present".to_string()),
+                error: None,
             });
-            seed_offset += count as u64;
-            continue;
+            // v0.34 phase 2: see note above for the dry-run path.
+            return Ok(GenerateOutcome::AlreadyRecorded);
         }
 
         // Classify the persona configuration for this task.
@@ -3725,23 +3792,50 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .await;
         }
 
+        Ok(GenerateOutcome::NeedSuccessRecord)
+        }.await; // end of v0.34 phase 2 generate body wrap
+
+        match generate_result {
+            Ok(GenerateOutcome::AlreadyRecorded) => {
+                // Body's early-exit path pushed its own record
+                // (dry-run skip / --resume cache hit). Nothing to do.
+            }
+            Ok(GenerateOutcome::NeedSuccessRecord) => {
+                // v0.34 phase 2: generate task reached the end → ok or
+                // dry-run. Previously the success push was inline;
+                // it's been hoisted into the Ok-arm so the Err-arm can
+                // emit a `failed` record carrying e.to_string().
+                task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: "generate".to_string(),
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed_for_record),
+                    note: None,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                crate::ui::progress::println(&format!(
+                    "  {} task {:?}: {}",
+                    style("✗ failed").red().bold(),
+                    task.name,
+                    e
+                ));
+                task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: "generate".to_string(),
+                    status: "failed".to_string(),
+                    seed: Some(task_seed_for_record),
+                    note: None,
+                    error: Some(format!("{e:#}")),
+                });
+                any_task_failed = true;
+            }
+        }
         // Global seed_offset always advances by the GLOBAL count so a
         // re-run with the same scenario gives the same global-seed
         // tasks the same composition, regardless of per-task overrides.
         seed_offset += count as u64;
-        // v0.33 phase 2: generate task reached the end → ok or
-        // dry-run. (If the dispatch above had failed, the `?` would
-        // have already bubbled up before reaching here — failures
-        // surface via the bare error rather than a "failed" record
-        // for v0.33; richer per-task failure capture is a v0.34+
-        // candidate.)
-        task_records.push(TaskRunRecord {
-            name: task.name.clone(),
-            kind: "generate".to_string(),
-            status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
-            seed: Some(task_seed),
-            note: None,
-        });
     }
 
     // v0.18: tag the summary line so dry-run users can tell at
@@ -3767,6 +3861,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         );
     }
 
+    // v0.34 phase 2: count failures up-front so the post-summary
+    // bail message can include it. task_records gets moved into the
+    // summary struct below.
+    let failed_count = task_records.iter().filter(|r| r.status == "failed").count();
+
     // v0.33 phase 2: optional structured run summary for CI /
     // automation consumers. Written after the console output so
     // any disk-write failure shows up alongside the existing
@@ -3778,7 +3877,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .filter(|r| r.status == "ok" || r.status == "dry-run")
             .count();
         let skipped = task_records.iter().filter(|r| r.status == "skipped").count();
-        let failed = task_records.iter().filter(|r| r.status == "failed").count();
+        let failed = failed_count;
         let summary = ScenarioRunSummary {
             scenario_file: args.file.display().to_string(),
             model: model.clone(),
@@ -3800,6 +3899,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             style("·").dim(),
             path.display()
         ));
+    }
+
+    // v0.34 phase 2: if any task failed, exit non-zero. Summary
+    // file was already written above (so CI consumers get the full
+    // failure breakdown even when the process exits with an error).
+    if any_task_failed {
+        anyhow::bail!(
+            "{failed_count} task(s) failed — see preceding errors or --json-summary for details"
+        );
     }
 
     Ok(())
@@ -4585,6 +4693,15 @@ async fn run_animate_task_inline(
     animate_sd15_key: &mut Option<String>,
     animate_sdxl: &mut Option<crate::pipelines::animatediff::AnimateDiffSdxlPipeline>,
     animate_sdxl_key: &mut Option<String>,
+    // v0.34 phase 3: scenario-level VAE cache (shared with t2i path
+    // via the v0.32 phase 2 mechanism). Pre-load: lookup by alias
+    // to skip the ~330 MB SDXL VAE rebuild. Post-load: populate so
+    // subsequent t2i loads of the same alias reuse this pipeline's
+    // VAE.
+    vae_cache: &mut Option<(
+        String,
+        std::sync::Arc<candle_transformers::models::stable_diffusion::vae::AutoEncoderKL>,
+    )>,
 ) -> Result<()> {
     use crate::pipelines::animatediff::{AnimateDiffPipeline, AnimateDiffSdxlPipeline};
     use crate::pipelines::controlnet::load_control_stack;
@@ -4779,12 +4896,24 @@ async fn run_animate_task_inline(
             let hit = animate_sd15_key.as_deref() == Some(&key);
             if !hit {
                 *animate_sd15 = None;
+                // v0.34 phase 3: SD 1.5 animate hard-codes the
+                // canonical sd15 base; cache key is "sd15" so it
+                // pairs with t2i loads of the same alias.
+                let vae_cache_key = "sd15";
+                let cached_vae = vae_cache_lookup(vae_cache.as_ref(), vae_cache_key);
+                if cached_vae.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "v0.34 phase 3: VAE cache HIT on AnimateDiff SD 1.5 load (key={vae_cache_key})"
+                    );
+                }
                 let p = if eff.lcm {
                     AnimateDiffPipeline::load_animatelcm(
                         device,
                         dtype,
                         &motion_lora_specs,
                         eff.motion_lora_scale,
+                        cached_vae,
                     )
                     .await
                 } else {
@@ -4793,6 +4922,7 @@ async fn run_animate_task_inline(
                         dtype,
                         &motion_lora_specs,
                         eff.motion_lora_scale,
+                        cached_vae,
                     )
                     .await
                 }
@@ -4802,6 +4932,10 @@ async fn run_animate_task_inline(
                         task.name
                     )
                 })?;
+                // v0.34 phase 3: populate cache from freshly loaded
+                // animate pipeline so subsequent t2i tasks for sd15
+                // reuse this VAE (closing the mixed-kind rebuild gap).
+                *vae_cache = Some((vae_cache_key.to_string(), std::sync::Arc::clone(&p.vae)));
                 *animate_sd15 = Some(p);
                 *animate_sd15_key = Some(key);
             }
@@ -4838,12 +4972,24 @@ async fn run_animate_task_inline(
             let hit = animate_sdxl_key.as_deref() == Some(&key);
             if !hit {
                 *animate_sdxl = None;
+                // v0.34 phase 3: SDXL animate uses the user's
+                // base_alias; cache key is `base_alias` so it pairs
+                // with SDXL t2i loads of the same alias (closing the
+                // mixed-kind rebuild gap from v0.32 phase 2).
+                let cached_vae = vae_cache_lookup(vae_cache.as_ref(), base_alias);
+                if cached_vae.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "v0.34 phase 3: VAE cache HIT on AnimateDiff SDXL load (key={base_alias})"
+                    );
+                }
                 let p = AnimateDiffSdxlPipeline::load_sdxl_beta(
                     device,
                     dtype,
                     base_alias,
                     &motion_lora_specs,
                     eff.motion_lora_scale,
+                    cached_vae,
                 )
                 .await
                 .with_context(|| {
@@ -4852,6 +4998,7 @@ async fn run_animate_task_inline(
                         task.name
                     )
                 })?;
+                *vae_cache = Some((base_alias.to_string(), std::sync::Arc::clone(&p.vae)));
                 *animate_sdxl = Some(p);
                 *animate_sdxl_key = Some(key);
             }
@@ -5808,6 +5955,7 @@ mod tests {
                     status: "ok".into(),
                     seed: Some(42),
                     note: None,
+                    error: None,
                 },
                 TaskRunRecord {
                     name: "beta".into(),
@@ -5815,6 +5963,7 @@ mod tests {
                     status: "ok".into(),
                     seed: Some(100),
                     note: None,
+                    error: None,
                 },
                 TaskRunRecord {
                     name: "gamma".into(),
@@ -5822,6 +5971,7 @@ mod tests {
                     status: "skipped".into(),
                     seed: None,
                     note: Some("--only filter excluded".into()),
+                    error: None,
                 },
             ],
         }
@@ -5884,9 +6034,85 @@ mod tests {
                 status: "ok".into(),
                 seed: Some(1),
                 note: None,
+                error: None,
             };
             let json = serde_json::to_string(&r).unwrap();
             assert!(json.contains(&format!("\"{}\"", k)));
         }
+    }
+
+    // v0.34 phase 2: error field behavior.
+
+    #[test]
+    fn task_record_omits_none_error_field() {
+        // `error: None` is `skip_serializing_if = "Option::is_none"`
+        // so it stays out of JSON for clean tasks. Mirrors the v0.33
+        // phase 2 contract for the `note` field.
+        let r = TaskRunRecord {
+            name: "alpha".into(),
+            kind: "generate".into(),
+            status: "ok".into(),
+            seed: Some(42),
+            note: None,
+            error: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("\"error\""), "got {json}");
+    }
+
+    #[test]
+    fn task_record_serializes_error_field_on_failed_task() {
+        let r = TaskRunRecord {
+            name: "broken".into(),
+            kind: "generate".into(),
+            status: "failed".into(),
+            seed: Some(7),
+            note: None,
+            error: Some("VAE encode failed: shape mismatch".into()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"status\":\"failed\""));
+        assert!(json.contains("\"error\":\"VAE encode failed: shape mismatch\""));
+    }
+
+    #[test]
+    fn summary_with_failed_record_serializes_cleanly() {
+        // Full scenario summary carrying one failed record. Verifies
+        // the failed-count + error text round-trip together.
+        let s = ScenarioRunSummary {
+            scenario_file: "broken.hjson".into(),
+            model: "sd15".into(),
+            out_dir: "./out".into(),
+            total_tasks: 2,
+            ran: 1,
+            skipped: 0,
+            failed: 1,
+            wall_time_secs: 5.5,
+            plakat_version: "0.34.0".into(),
+            tasks: vec![
+                TaskRunRecord {
+                    name: "alpha".into(),
+                    kind: "generate".into(),
+                    status: "ok".into(),
+                    seed: Some(42),
+                    note: None,
+                    error: None,
+                },
+                TaskRunRecord {
+                    name: "beta".into(),
+                    kind: "generate".into(),
+                    status: "failed".into(),
+                    seed: Some(43),
+                    note: None,
+                    error: Some("model file not found: ./missing.safetensors".into()),
+                },
+            ],
+        };
+        let json = serde_json::to_string_pretty(&s).unwrap();
+        assert!(json.contains("\"failed\": 1"));
+        assert!(json.contains("\"status\": \"failed\""));
+        assert!(json.contains("model file not found"));
+        // alpha has no error → field omitted; only one "error" key.
+        assert_eq!(json.matches("\"error\":").count(), 1);
     }
 }

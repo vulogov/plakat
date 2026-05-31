@@ -184,6 +184,16 @@ pub async fn run_with_pipeline(
     for i in 0..req.count {
         let seed = start.wrapping_add(i as u64);
 
+        // v0.34 phase 1 fix: seed BEFORE VAE encode. The inner
+        // `dist.sample()` in `vae_encode_image_file` is RNG-touching;
+        // pre-v0.34 it ran ahead of `blend_latents_one`'s set_seed
+        // and consumed leftover state, so init latents varied across
+        // runs even with the same --seed.
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, pipeline.device());
+        if let Err(e) = pipeline.device().set_seed(prepared) {
+            tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
+        }
+
         let base_latents = pipeline
             .vae_encode_image_file(&req.input, req.width, req.height)
             .with_context(|| format!("VAE-encoding {}", req.input.display()))?;

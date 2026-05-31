@@ -40,6 +40,7 @@ pub mod nf4_loader;
 pub mod portrait;
 pub mod real_esrgan;
 pub mod scheduler;
+pub mod seeds;
 pub mod scrfd;
 pub mod mmdit_inner;
 pub mod sd3;
