@@ -1,12 +1,80 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.30. The current
+"What's new" sections for v0.13 through v0.31. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.31 — diversify-2 (INT8 bail, four wins)
+
+The cycle started as **diversify-2 + INT8 SDXL headline** — close
+the v0.30 SDXL dual-encoder TI stretch goal, ship INT8 SDXL UNet
+quantization for 12 GB GPUs, add weighted wildcards, close the
+v0.29 mixed-kind pipeline cache carry. Phase 1's INT8 validation
+spike rejected the codec direction (candle 0.10.2 has no
+quantized Conv2d, and SDXL UNet is conv-heavy). The RFC's bail
+plan triggered: swap phase 1 for **Pony preset + `plakat civitai
+sync`** — two visible polish wins from the same deferral list.
+
+Four phases shipped: two carry closures (SDXL dual TI from v0.30,
+mixed-kind cache from v0.29) + two new feature surfaces (Pony +
+civitai sync) + one prompt-power addition (weighted wildcards).
+
+### SDXL dual-encoder TI parser
+
+```bash
+plakat generate "a portrait in <my-sdxl-style> art" --model sdxl \
+    --embedding ./my-sdxl-style.safetensors
+```
+
+v0.30's vendored CLIP + tokenizer-mutation infrastructure was
+CLIP-L-only. v0.31 phase 0 drops the parser bail for the
+`clip_l` + `clip_g` dual format and mirrors the v0.30 extension
+pattern through SDXL CLIP-G. A stack can mix single-encoder and
+dual-encoder TIs.
+
+### Pony Diffusion preset
+
+`--model pony` (also `pony-v6`, `pony-diffusion-v6`) resolves to
+`AstraliteHeart/pony-diffusion-v6-xl`. `--look pony` prepends
+the Pony quality tags (`score_9, score_8_up, ...`) and applies a
+Pony-tuned negative.
+
+### `plakat civitai sync USERNAME --out DIR`
+
+Bulk-download a Civitai creator's library. Walks API cursor
+pagination, picks each model's primary version + primary file,
+copies into `--out DIR`. Idempotent on rerun; honours
+`CIVITAI_API_KEY`.
+
+### Weighted wildcards
+
+`{WEIGHT::CHOICE|...}` syntax adds explicit weights to inline
+alternation (relative; normalized; omitted defaults to 1.0).
+Composes with the v0.16 nested syntax.
+
+### Mixed-kind scenarios pipeline cache
+
+Closes the v0.29 carry. Scenarios that mix `type: generate` and
+`type: animatediff` tasks now drop the opposite-kind cached
+pipeline at kind boundaries — peak memory drops by ~5-10 GB.
+
+### Release workflow finally green
+
+After four iterations across v0.29/v0.30/v0.31, the arm64
+cross-build's apt-source dance landed clean: wholesale wipe of
+`/etc/apt/sources.list`, `/etc/apt/sources.list.d/*`, and
+`/etc/apt/apt-mirrors.txt`, then writes only two explicit
+sources.
+
+### By the numbers
+
+- 1020 lib + 47 integration tests = **1067 active tests** (+23
+  lib across the cycle).
+- 4 phase commits + RFC + close-out + CI workflow fix.
 
 ## What's new in v0.30 — diversify + one animate theme
 

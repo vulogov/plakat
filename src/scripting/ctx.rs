@@ -539,6 +539,7 @@ impl ScriptCtx {
                     lora_scale,
                     use_refiner,
                     embeddings,
+                    vae_cache: None, // v0.32 phase 2: scripting ctx has no VAE share path yet
                 }))
             })?;
             self.loaded_t2i = Some((alias.to_string(), pipeline));

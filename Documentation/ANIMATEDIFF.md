@@ -1,4 +1,4 @@
-# AnimateDiff (v0.30)
+# AnimateDiff (v0.32)
 
 `plakat animate --animatediff` renders **motion-coherent N-frame
 sequences** from a single prompt using AnimateDiff motion adapters
@@ -10,8 +10,10 @@ temporal-attention coherence.
 both with ControlNet + sliding-window long-form). **v0.28 made
 it pleasant to use** (multi-CN stacking, AnimateLCM 4-step,
 `plakat.animate` Bund word). **v0.29 brought it to scenarios**.
-**v0.30 phase 2 closes the headline carry**: per-frame video
-ControlNet via `--control-spec ...:video=PATH`.
+**v0.30 closed the headline carry**: per-frame video ControlNet
+via `--control-spec ...:video=PATH`. **v0.32 phase 0 adds
+FreeNoise** — shared-noise long-form that eliminates the
+cross-fade seam artefact on >32-frame animations.
 
 | Capability | SD 1.5 | SDXL | Added in |
 |---|---|---|---|
@@ -21,7 +23,8 @@ ControlNet via `--control-spec ...:video=PATH`.
 | ControlNet (single) | ✓ | ✓ | v0.27 |
 | **ControlNet stacking** (multi-CN) | ✓ | ✓ | **v0.28** |
 | **Per-frame video ControlNet** | ✓ | ✓ | **v0.30** |
-| Long-form sliding window | ✓ | ✓ | v0.27 |
+| Long-form sliding window (latent blend) | ✓ | ✓ | v0.27 |
+| **Long-form shared-noise (FreeNoise)** | ✓ | ✓ | **v0.32** |
 | **4-step LCM generation** | ✓ (AnimateLCM) | — (no public SDXL repo) | **v0.28** |
 | **Bund scripting (`plakat.animate`)** | ✓ | — (v0.29) | **v0.28** |
 | Per-block motion modules | 16 (V3) / 17 (LCM) | 12 | — |
@@ -72,6 +75,29 @@ plakat animate --animatediff --model sd15 \
     --frames 64 --window-size 16 --window-overlap 4 \
     --format mp4
 ```
+
+### v0.32: long-form with FreeNoise (no seam artefacts)
+
+```bash
+# Add --free-noise to suppress the cross-fade seam that v0.27's
+# random-per-window approach exhibits on >32-frame runs.
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --free-noise --format mp4
+```
+
+`--free-noise` pre-generates a full-length `(total_frames, 4, H/8,
+W/8)` noise tensor at `--seed`, then slices it per sliding-window
+so adjacent windows share noise in the overlap region. The
+v0.27 phase 5 linear-ramp latent blend still runs, but the two
+sides being blended are now drawn from the SAME underlying noise
+sequence — the seam disappears. Composes with multi-CN,
+AnimateLCM, motion LoRAs. Opt-in; output is byte-identical to
+v0.31 when the flag is off (existing `--seed N --frames 64` runs
+unchanged).
+
+SDXL: same flag, same semantics.
 
 ### v0.28: 4-step animate via AnimateLCM
 

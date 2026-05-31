@@ -146,6 +146,12 @@ pub struct SdLoadRequest {
     /// trigger token IDs. SD 1.5 / SD 2.1 only — SDXL dual-encoder
     /// TIs bail loud in the parser.
     pub embeddings: Vec<crate::pipelines::embedding::ResolvedEmbedding>,
+    /// v0.32 phase 2: optional pre-built VAE. When `Some`, the load
+    /// path uses it directly instead of materializing a fresh
+    /// `AutoEncoderKL` from the safetensors. Used by the scenario
+    /// runner's VAE cache to skip the ~330 MB SDXL VAE rebuild on
+    /// mixed-kind pipeline reloads.
+    pub vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
 }
 
 /// The shared SD backbone. Held behind `Arc` by every task-specific
@@ -167,7 +173,11 @@ pub struct SdCore {
     /// `text_projection` pooling head needed by the UNet's
     /// `add_embedding`. `None` for SD 1.5 / SD 2.1.
     pub text_encoder_g: Option<SdxlClipGTextTransformer>,
-    pub vae: AutoEncoderKL,
+    /// v0.32 phase 2: wrapped in `Arc` so the scenario runner can
+    /// share one VAE across mixed-kind pipeline reloads (t2i ↔
+    /// animate). Auto-deref keeps every `.vae.encode(...)` /
+    /// `.vae.decode(...)` call site unchanged.
+    pub vae: std::sync::Arc<AutoEncoderKL>,
     /// Backbone UNet. `SdUNet::Sd` for SD 1.5 / SD 2.1 (candle's
     /// upstream type); `SdUNet::Sdxl` for SDXL (v0.11 phase 8 — adds
     /// `text_time` micro-conditioning that diffusers' SDXL relies on
@@ -210,7 +220,7 @@ impl SdCore {
     /// Flux models are rejected here (SdCore is SD-architecture only).
     /// Task-specific load (identity encoder, refiner, etc.) happens
     /// on the wrapping pipeline that owns the `Arc<SdCore>`.
-    pub async fn load(req: SdLoadRequest) -> Result<Self> {
+    pub async fn load(mut req: SdLoadRequest) -> Result<Self> {
         let base_repo = if req.model.contains('/') {
             req.model.clone()
         } else {
@@ -314,7 +324,20 @@ impl SdCore {
             ),
             None => None,
         };
-        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
+        // v0.32 phase 2: VAE cache. When the scenario passes a pre-
+        // built VAE in `req.vae_cache`, skip the ~330 MB load and
+        // reuse the cached Arc. Otherwise build fresh and wrap.
+        let vae = match req.vae_cache.take() {
+            Some(arc) => {
+                tracing::info!(
+                    target: "plakat",
+                    "SdCore: reusing cached VAE (skipping {} build)",
+                    vae_path.display()
+                );
+                arc
+            }
+            None => std::sync::Arc::new(cfg.build_vae(&vae_path, &req.device, dtype)?),
+        };
 
         // UNet (with optional LoRA merge).
         let effective_unet_path = if resolved_loras.is_empty() {

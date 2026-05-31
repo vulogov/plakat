@@ -264,6 +264,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
                     eff_guidance,
                     eff_scheduler,
                     &controls,
+                    false, // v0.32 phase 0: FreeNoise opt-in not yet on Bund
                 )
             })??
         }
@@ -291,6 +292,7 @@ fn do_plakat_animate(vm: &mut VM) -> anyhow::Result<&mut VM> {
                     eff_guidance,
                     eff_scheduler,
                     &controls,
+                    false, // v0.32 phase 0: FreeNoise opt-in not yet on Bund
                 )
             })??
         }

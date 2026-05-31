@@ -23,8 +23,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_transformers::models::stable_diffusion::{
-    self, StableDiffusionConfig, clip as sdclip, unet_2d::UNet2DConditionModel,
-    vae::AutoEncoderKL,
+    StableDiffusionConfig, unet_2d::UNet2DConditionModel, vae::AutoEncoderKL,
 };
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -80,7 +79,7 @@ pub struct Pipeline {
     #[allow(dead_code)]
     tokenizer: Tokenizer,
     #[allow(dead_code)]
-    text_encoder: sdclip::ClipTextTransformer,
+    text_encoder: crate::pipelines::vendored_clip::ClipTextTransformer,
     vae: AutoEncoderKL,
     unet: UNet2DConditionModel,
     /// Phase 7f: `Arc` so the same CLIP-H weights can back both this
@@ -164,8 +163,12 @@ impl Pipeline {
         let build = progress::spinner("Loading stylize models");
         let tokenizer =
             Tokenizer::from_file(&tokenizer_path).map_err(|e| anyhow!("tokenizer: {e}"))?;
-        let text_encoder = stable_diffusion::build_clip_transformer(
-            &cfg.clip,
+        // v0.32 phase 1: vendored CLIP-L. Same numerics as
+        // `cfg.clip` for SD 1.5; built via plakat's vendored module
+        // to match SdCore / AnimateDiff / SD3 / Flux.
+        let clip_l_cfg = crate::pipelines::vendored_clip::Config::v1_5();
+        let text_encoder = crate::pipelines::vendored_clip::build_clip_transformer(
+            &clip_l_cfg,
             &text_enc_path,
             &req.device,
             dtype,

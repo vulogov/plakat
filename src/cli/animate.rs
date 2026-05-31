@@ -243,6 +243,21 @@ pub struct AnimateArgs {
     /// sweet spot.
     #[arg(long = "window-overlap", default_value_t = 4)]
     pub window_overlap: u32,
+
+    /// **v0.32 phase 0**: FreeNoise — pre-generate a full-length
+    /// noise tensor at the user's seed, then slice per sliding-
+    /// window so adjacent windows share noise in the overlap region.
+    /// Eliminates the cross-fade seam artefact v0.27 phase 5's
+    /// random-per-window approach exhibits on >32-frame animations.
+    /// Cao et al., "FreeNoise: Tuning-Free Longer Video Diffusion".
+    ///
+    /// No-op when `--frames ≤ --window-size` (single-window path —
+    /// no adjacent windows to share noise across). Opt-in to keep
+    /// existing `--seed` reproducibility unchanged when the flag is
+    /// off — output is byte-identical to v0.31 in that case. SD 1.5
+    /// + SDXL.
+    #[arg(long = "free-noise", default_value_t = false)]
+    pub free_noise: bool,
 }
 
 pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
@@ -334,6 +349,7 @@ pub async fn run(args: AnimateArgs, device: Device) -> Result<()> {
         loras: Vec::new(),
         lora_scale: 1.0,
         embeddings: Vec::new(),
+        vae_cache: None, // animate-CLIP-lerp doesn't reload, no cache to plumb
     })
     .await?;
     load_spin.finish_with_message("✓ SD backbone ready");
@@ -1434,6 +1450,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 eff_guidance,
                 eff_scheduler,
                 &controls,
+                args.free_noise,
             )?
         }
         SdVariant::Sdxl => {
@@ -1474,6 +1491,7 @@ async fn run_animatediff(args: AnimateArgs, device: Device) -> Result<()> {
                 args.guidance,
                 args.scheduler,
                 &controls,
+                args.free_noise,
             )?
         }
         // SdVariant::Sd21 already rejected above.

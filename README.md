@@ -8,197 +8,144 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.31 — diversify-2 (INT8 bail, four wins)
+## What's new in v0.32 — animate-lite + diversify-3
 
-The cycle started as **diversify-2 + INT8 SDXL headline** — close
-the v0.30 SDXL dual-encoder TI stretch goal, ship INT8 SDXL UNet
-quantization for 12 GB GPUs, add weighted wildcards, close the
-v0.29 mixed-kind pipeline cache carry. Phase 1's INT8 validation
-spike rejected the codec direction (candle 0.10.2 has no
-quantized Conv2d, and SDXL UNet is conv-heavy). The RFC's bail
-plan triggered: swap phase 1 for **Pony preset + `plakat civitai
-sync`** — two visible polish wins from the same deferral list.
+After two consecutive diversify cycles (v0.30 + v0.31), v0.32
+pays down the animate quality backlog with the single most-
+visible item — **FreeNoise long-form** — while continuing the
+diversify momentum with two architectural / perf wins: a
+**vendored CLIP rollout** to every SD-family pipeline (unlocks
+`--embedding` everywhere in future cycles), and **SDXL VAE
+caching** across scenario kind switches.
 
-Four phases shipped: two carry closures (SDXL dual TI from v0.30,
-mixed-kind cache from v0.29) + two new feature surfaces (Pony +
-civitai sync) + two prompt-power additions (weighted wildcards).
+Three phases shipped: one animate quality win + two carry
+closures. Cleanest cycle in five turns.
 
-### SDXL dual-encoder TI parser (closes v0.30 stretch)
+### FreeNoise long-form for AnimateDiff (closes v0.27 deferral)
 
 ```bash
-# Pony / SDXL Civitai TIs that ship both clip_l (768d) and clip_g
-# (1280d) tensors in the same file now apply end-to-end.
-plakat generate "a portrait in <my-sdxl-style> art" --model sdxl \
-    --embedding ./my-sdxl-style.safetensors
+# Existing long-form syntax — random noise per window (v0.27).
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --format mp4
+
+# Add --free-noise to share noise across overlapping windows —
+# eliminates the cross-fade seam artefact (v0.32).
+plakat animate --animatediff --model sd15 \
+    --from "a misty forest at dawn" \
+    --frames 64 --window-size 16 --window-overlap 4 \
+    --free-noise --format mp4
 ```
 
-The v0.30 phase 0 vendored CLIP + tokenizer-mutation infrastructure
-was CLIP-L-only. v0.31 phase 0 drops the parser bail for the
-`clip_l` + `clip_g` dual format and mirrors the v0.30 extension
-pattern through SDXL CLIP-G: load-time tempfile-merge into the
-CLIP-G `token_embedding.weight`, vendored CLIP-G with
-`Config::with_vocab(new)`, `tokenizer_g.add_tokens` for the same
-trigger. Both halves must agree on the per-trigger token count (the
-parser bails on mismatched N). A stack can mix single-encoder and
-dual-encoder TIs on SDXL — single-encoder TIs only extend CLIP-L,
-dual extend both.
+Cao et al., "FreeNoise: Tuning-Free Longer Video Diffusion." The
+flag pre-generates a `(total_frames, 4, H/8, W/8)` noise tensor
+at the user's seed, then slices it per sliding-window — adjacent
+windows automatically share noise in the overlap region because
+they slice the SAME underlying tensor. The v0.27 phase 5
+linear-ramp latent blend still runs, but the two sides being
+blended now come from the same noise sequence, so the seam
+disappears.
 
-SD 1.5 / SD 2.1 + dual TI bails loud with a pointer to use SDXL
-or a CLIP-L-only variant.
+SD 1.5 + SDXL both ship. Opt-in flag preserves byte-identical
+output on `--seed N --frames 64` when the flag is OFF (existing
+runs unchanged). Composes with multi-CN, AnimateLCM, motion LoRAs.
+Single-window runs (frames ≤ window-size) are no-ops.
 
-### Pony Diffusion preset
+### Vendored CLIP rollout (closes v0.30 architectural deferral)
 
-```bash
-# `--model pony` resolves to AstraliteHeart/pony-diffusion-v6-xl;
-# `--look pony` injects the score-based prompt convention.
-plakat generate "a portrait of a knight in a forest" \
-    --model pony --look pony
+v0.30 phase 0 vendored CLIP for `SdCore` only (to enable TI
+runtime injection). v0.32 phase 1 finishes the rollout —
+every SD-family pipeline now holds plakat's vendored CLIP-L
+text encoder instead of candle's:
+
+- `AnimateDiffPipeline::text_encoder` (SD 1.5)
+- `AnimateDiffSdxlPipeline::text_encoder_l`
+- `sd3::Pipeline::clip_l + clip_l_cfg`
+- `flux::Pipeline::clip_text + clip_cfg`
+- `stylize::Pipeline::text_encoder`
+
+Numerically identical to candle's path (per the v0.30 phase 0
+forward-pass tests). User-visible impact: zero in v0.32 — but
+this is the architectural foundation. Future cycles can wire
+`--embedding` (TI runtime injection) through the same
+`Config::with_vocab(n)` pattern v0.30 phase 0 established for
+SdCore, now that every pipeline holds the vendored type. A new
+compile-time type-lock test in `vendored_clip::tests` prevents
+silent regressions.
+
+### SDXL VAE caching across mixed-kind scenarios
+
+Scenarios that mix `type: generate` and `type: animatediff`
+tasks used to rebuild the ~330 MB SDXL VAE on every kind switch
+(after v0.31 phase 3's pipeline eviction kicked in). v0.32 phase
+2 wraps `SdCore.vae` in `Arc<AutoEncoderKL>` and adds a
+scenario-level cache keyed by base alias — subsequent t2i loads
+against the same SDXL base reuse the cached Arc instead of
+rebuilding from disk.
+
+Auto-deref keeps every `.vae.encode(...)` / `.vae.decode(...)`
+call site at the pipeline boundary unchanged.
+
+```
+INFO plakat: SdCore: reusing cached VAE (skipping ...vae.safetensors build)
 ```
 
-`--model pony` (also `pony-v6`, `pony-diffusion-v6`) is a new
-SDXL alias for the popular Civitai fine-tune. `--look pony` is a
-catalog entry that prepends the Pony quality tags
-(`score_9, score_8_up, score_7_up, ...`) and applies a Pony-tuned
-negative (filters `score_4`, `source_furry`, `source_cartoon`,
-etc.). The look is `base_compat: ["sdxl"]` so LoRA discovery
-filters non-SDXL candidates correctly. Composes with `--lora` /
-`--genre` / other catalog entries.
-
-### `plakat civitai sync USERNAME --out DIR`
-
-```bash
-# Mirror a Civitai creator's full library into ./my-loras.
-plakat civitai sync RedheadGorl --out ./my-loras --type lora
-
-# Preview the plan first.
-plakat civitai sync RedheadGorl --out ./my-loras --type lora --dry-run
-
-# Cap to 3 for testing.
-plakat civitai sync RedheadGorl --out ./my-loras --limit 3
-```
-
-New `civitai` subcommand. Walks the Civitai API's cursor
-pagination for `?username=USERNAME`, picks each model's primary
-version + primary file, downloads via the existing
-`download::download_version` (cache-aware), then copies into
-`--out DIR` with the original filename. Idempotent on rerun (files
-already in DIR are skipped). Per-model status line —
-`[N/M] name (size)` on download / `[N/M] name → path (already
-present)` on skip — so the run is grep-friendly. Honours
-`CIVITAI_API_KEY` for gated assets + rate limits via the
-existing client builder.
-
-### Weighted wildcards
-
-```bash
-# "common" twice as likely as "rare"
-plakat generate "a {2::common|rare} blossom" --seed 42 -n 4
-
-# Explicit probabilities
-plakat generate "a {0.7::landscape|0.3::portrait} composition" \
-    --seed 42 -n 10
-
-# `0::` excludes a branch entirely
-plakat generate "{0::skip|always}" --seed 42
-
-# Composes with nested alternation (already-supported in v0.16)
-plakat generate "{9::{a|b}|1::c}" --seed 42
-```
-
-`{WEIGHT::CHOICE|WEIGHT::CHOICE|...}` syntax adds explicit
-weights to the existing `{a|b|c}` inline alternation. Weights are
-relative (normalized across the group via cumulative-distribution
-sampling); omitted weight defaults to `1.0` so existing prompts
-behave identically. Malformed weight prefixes (negative, NaN,
-non-numeric) fall back to treating the option as literal text —
-`{foo::bar|baz}` parses as two literal options without crashing.
-Degenerate all-zero weights fall back to uniform.
-
-The v0.16 inline-alternation parser **already supported nested**
-groups (`{a|{b|c}}`) via `find_group_end` brace-depth tracking +
-`expand_inline` recursion. v0.31 phase 2 confirmed this via the
-existing test and added the weighted layer on top.
-
-### Mixed-kind scenarios pipeline cache (closes v0.29 carry)
-
-Scenarios that mix `type: generate` and `type: animatediff` tasks
-used to hold BOTH the t2i `pipeline` and the
-`animate_sd15`/`animate_sdxl` carriers for the entire run —
-~10 GB peak on SD 1.5, much worse on SDXL. v0.31 phase 3 drops
-the opposite-kind cached pipeline whenever the loop crosses a
-kind boundary. Same-kind continuations stay no-ops (no reload
-penalty); mixed-kind runs pay one reload per boundary in exchange
-for the memory win.
-
-State machine extracted into a pure
-`evict_decision(last, current) -> CacheEviction` helper. Three
-outcomes: `None` (first task or same-kind continuation), `DropT2i`
-(Generate→Animate), `DropAnimate` (Animate→Generate). SD-family
-pipeline init is now lazy for mixed-kind scenarios — eager for
-all-generate scenarios so the v0.29 "Loading SD core" spinner UX
-is preserved.
-
-### Release workflow finally green
-
-After four iterations across v0.29/v0.30/v0.31, the arm64
-cross-build's apt-source dance landed clean: `.github/workflows/
-release.yml` now wholesale-wipes `/etc/apt/sources.list`,
-`/etc/apt/sources.list.d/*`, and `/etc/apt/apt-mirrors.txt`, then
-writes only two explicit sources — `[arch=amd64]` against
-azure.archive.ubuntu.com + `[arch=arm64]` against ports.ubuntu.com.
-Surgical edits to runner-image sources kept regressing as the
-runner image's source layout evolved; the wholesale wipe is
-deterministic.
+shows up in logs when the cache hits. AnimateDiff load functions
+don't yet take a vae param — animate-side sharing waits for
+v0.33+. The cache helper itself (`vae_cache_lookup`) is a pure
+generic function unit-tested with 6 decision cases.
 
 ### Documentation
 
-- [`GENERATE.md`](Documentation/GENERATE.md) — Textual Inversion
-  section rewritten (no more "SDXL dual still bails" caveat); new
-  weighted-wildcards subsection.
-- [`RFC_v0.31_DIVERSIFY_2.md`](Documentation/RFC_v0.31_DIVERSIFY_2.md)
-  — design doc, two locked decisions, 5-phase plan + INT8
-  validation spike summary that triggered the bail.
+- [`ANIMATEDIFF.md`](Documentation/ANIMATEDIFF.md) — bumped to
+  v0.32 with the FreeNoise long-form quick-start. Capability
+  matrix adds the "shared-noise long-form" row.
+- [`RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md`](Documentation/RFC_v0.32_ANIMATE_LITE_DIVERSIFY_3.md)
+  — design doc, locked decisions, 4-phase plan.
 
 ### By the numbers
 
-- **1020 lib + 47 integration tests = 1067 active tests** (+23
+- **1030 lib + 47 integration tests = 1077 active tests** (+10
   lib across the cycle).
-- 4 phase commits + RFC + close-out + CI workflow fix.
-- v0.30 SDXL dual-encoder TI stretch goal **closed**.
-- v0.29 mixed-kind scenarios pipeline cache carry **closed**.
-- Two deferred items shipped: Pony preset + `civitai sync`.
+- 3 phase commits + RFC + close-out.
+- v0.27 FreeNoise animate quality deferral **closed**.
+- v0.30 vendored CLIP architectural deferral **closed**
+  (rollout to all SD-family pipelines).
+- v0.32 phase 2 partially closes the mixed-kind VAE rebuild
+  cost — t2i side complete; animate-side sharing defers to v0.33.
 
-### v0.30 → v0.31 migration
+### v0.31 → v0.32 migration
 
-v0.31 is **fully additive**. Every existing flag, host word,
-config key, and scenario field keeps its v0.30 shape. New surface:
+v0.32 is **fully additive**. Every existing flag, host word,
+config key, and scenario field keeps its v0.31 shape. New surface:
 
-- ✅ `--embedding PATH` accepts SDXL dual-encoder format files
-  (`clip_l` + `clip_g` in the same safetensors).
-- ✅ `--model pony` + `--look pony` for Pony Diffusion v6 XL.
-- ✅ `plakat civitai sync USERNAME --out DIR [--type TYPE]
-  [--limit N] [--dry-run]`.
-- ✅ `{WEIGHT::CHOICE|...}` syntax in any prompt with inline
-  alternation.
-- ✅ Mixed-kind scenarios drop the opposite-kind pipeline on
-  kind boundaries (transparent to the scenario author beyond
-  reduced peak memory).
+- ✅ `--free-noise` flag on `plakat animate` (opt-in; off by
+  default preserves byte-identical numerics).
+- ✅ `SdLoadRequest.vae_cache` + `t2i::LoadRequest.vae_cache`
+  fields (`Option<Arc<AutoEncoderKL>>`). External callers pass
+  `None` for the v0.31 behaviour.
+- ✅ Every SD-family pipeline's CLIP-L field type is now the
+  vendored CLIP — same forward-pass numerics, source-level
+  type-lock prevents future regressions.
 
-### Deferred to v0.32+
+### Deferred to v0.33+
 
-- FreeNoise / FreeInit long-form (animate quality).
 - Per-layer motion splice (RFC v0.27 §3.2 escalation).
 - HotShot-XL integration.
-- AnimateLCM-SDXL (upstream repo still not publicly available).
-- INT8 SDXL UNet quantization — blocked on candle adding
-  quantized Conv2d support; revisit if candle's quant landscape
-  evolves.
-- Vendored CLIP rollout to AnimateDiff/SD3/Flux/stylize.
-- SDXL VAE warmup / smart caching.
-- Auto1111 two-separate-files SDXL TI convention (only the
-  diffusers single-file dual format ships).
+- AnimateLCM-SDXL (externally blocked — upstream repo not
+  publicly available).
+- INT8 SDXL UNet quantization (blocked on candle adding
+  quantized Conv2d support).
+- AnimateDiff load functions accept the v0.32 VAE cache (animate-
+  side mixed-kind sharing).
+- Scripting `plakat.load` Bund word — VAE cache passthrough.
+- Auto1111 two-separate-files SDXL TI convention.
+- Production polish bundle (better metadata, JSON sidecar, error UX).
+- Plakat server mode.
+- PixArt Sigma / Stable Cascade.
 
-**Earlier releases** (v0.13 – v0.30):
+**Earlier releases** (v0.13 – v0.31):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 
