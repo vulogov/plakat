@@ -237,6 +237,18 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "bitsandbytes NF4 Flux — weights stay 4-bit at inference (~6 GB transformer)",
     },
+    // v0.35 phase 0: PixArt Sigma — fourth model family (DiT
+    // backbone + T5-XXL text encoder). Canonical variant is
+    // PixArt-Σ-XL-2-1024-MS; 512-MS and 2K-MS variants deferred
+    // to v0.36.
+    AliasEntry {
+        aliases: &["pixart", "pixart-sigma", "pixart-1024"],
+        repo: "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+        family: "PixArt",
+        kind: "base",
+        gated: false,
+        note: "PixArt-Σ XL 2 1024-MS — DiT + T5-XXL (~0.6B DiT + 4.7B T5)",
+    },
 ];
 
 /// Map short aliases to canonical HuggingFace repo ids.

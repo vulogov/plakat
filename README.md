@@ -8,182 +8,141 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.34 — audit follow-through
+## What's new in v0.35 — PixArt Sigma (diversify-4)
 
-v0.34 closes the gaps v0.33 left behind, while the audit table
-and metadata-builder context were still fresh. Three of the four
-feature phases turned v0.33's "half-shipped" outputs into
-"actually useful"; the fourth cleared every remaining v0.32
-carry. No new model families, no new pipelines — fewer headline-
-worthy items than v0.33, but every win acts on something the
-previous cycle deferred or surfaced.
+plakat's **fourth model family** lands: PixArt-Σ-XL-2-1024-MS, a
+Diffusion Transformer (DiT) with a T5-XXL text encoder. Breaks
+the two-cycle polish chain (v0.33 + v0.34) and reuses the T5
+infrastructure SD3 and Flux already ship for partial
+implementation savings.
 
-Four phases shipped, all additive. Test count grew 1073 → 1099
-lib tests (+26 across the cycle).
+Five phases shipped. Test count grew 1099 → 1123 lib tests (+24
+across the cycle).
 
-### Pipeline-side structured stack population
+### `plakat generate "..." --model pixart`
 
-v0.33 added `lora_stack`, `embedding_stack`, and `control_stack`
-to `GenerationMetadata`, but the CLI passed `None` everywhere —
-the new fields stayed empty in practice. v0.34 phase 0 wires the
-t2i pipeline to populate the LoRA + ControlNet stacks from the
-specs at the metadata-build site:
+```bash
+# Canonical 1024² PixArt-Σ inference.
+plakat generate "a misty forest at dawn, painterly" \
+    --model pixart --size 1024x1024 --steps 20 \
+    --guidance 4.5 --seed 42 --scheduler dpmpp-karras
+```
+
+Aliases: `pixart`, `pixart-sigma`, `pixart-1024` — all resolve to
+`PixArt-alpha/PixArt-Sigma-XL-2-1024-MS`. CFG denoise loop with
+DPM++ as the recommended scheduler.
+
+### DiT-XL/2 architecture in candle (v0.35 phase 1)
+
+`src/pipelines/pixart_dit.rs` ships the full transformer with
+tensor names matching the diffusers `PixArtTransformer2DModel`
+safetensors layout verbatim:
+
+- **DiT-XL/2 backbone** — 28 layers, hidden 1152, 16 heads, ~600M
+  params.
+- **adaLN-single + scale_shift_table** — PixArt-α's parameter-
+  saving trick. Single global MLP turns timestep + Σ-conditioning
+  (resolution + aspect_ratio) into one `(6 × hidden)` vector;
+  each block adds its own `(6, hidden)` `scale_shift_table`.
+- **adaLN-zero modulation** — shift/scale/gate for MSA and MLP
+  (6-way split per block).
+- **Cross-attention to T5** — image tokens form Q; T5 hidden
+  states (after `caption_projection`) form K/V. No KV-compression
+  on cross-attn — `kv_compression: None` per the 1024-MS config;
+  2K-MS variant deferred.
+- **Σ-specific conditioning** — `resolution_embedder` +
+  `aspect_ratio_embedder` sit alongside the timestep embedder
+  inside `adaln_single.emb`.
+
+### T5-XXL + DiT + VAE assembly (v0.35 phase 2)
+
+`pixart::Pipeline` carries `t5_enc + t5_tok` (same
+`candle_transformers::models::t5::T5EncoderModel` SD3 uses),
+`dit` (the v0.35 phase 1 module), and `vae` (`Arc<AutoEncoderKL>`
+shared via the v0.34 phase 3 cache).
+
+Seed plumbing routes through `pipelines::seeds::prepare_seed`
+(v0.34 phase 1 chokepoint) — PixArt earns a ✓ row in
+`plakat doctor --reproducibility-check`.
+
+### PixArt LoRA + sidecar metadata (v0.35 phase 4)
+
+```bash
+plakat generate "a cat in a meadow" --model pixart \
+    --lora civitai:12345:0.7 --lora-scale 1.0
+```
+
+Diffusers-format PEFT LoRA parser (`pipelines/pixart_lora.rs`).
+Accepts every per-block target: `attn1/2.{to_q,to_k,to_v,
+to_out.0}`, `ff.net.{0.proj,2}`. Civitai PixArt LoRAs match via
+`BaseFamily::PixArt::civitai_matches`.
+
+PixArt is the **first non-t2i pipeline since v0.34 phase 0 to
+emit `GenerationMetadata`** — closes one corner of the v0.34
+"no metadata for non-t2i pipelines" deferral. PNG sidecars carry
+prompt / negative / model / seed / steps / guidance / scheduler /
+size / `lora_stack` / `lora_scale`:
 
 ```json
 {
   "lora_stack": [
-    {"display": "civitai:12345", "scale": 0.7, "source": "civitai"},
-    {"display": "user/style-lora", "scale": 0.5, "source": "hub"}
-  ],
-  "control_stack": [
-    {"kind": "canny", "image": "./edges.png", "strength": 0.85, "start": 0.0, "end": 1.0}
+    {"display": "civitai:12345", "scale": 0.7, "source": "civitai"}
   ]
 }
 ```
-
-PNG sidecars from `plakat generate` now carry the resolved
-metadata Civitai importers, gallery cataloguers, and scenario
-regression diff tools already wanted. Source kind
-(`local` / `hub` / `civitai`) per entry; HF pinned revision
-captured when present.
-
-Scope is t2i (SD 1.5 + SDXL) — the only pipeline that builds
-`GenerationMetadata` in-pipeline today. SD3, Flux, AnimateDiff,
-stylize, and portrait don't emit `GenerationMetadata` at all and
-would need separate metadata-emitting paths added; deferred.
-Embedding-stack population also deferred — `EmbeddingEntry`
-needs `embed_dim` / `num_tokens` / `dual_encoder` which require
-loading the safetensors, making it more than "data plumbing."
-
-### Determinism fixes from the v0.33 audit
-
-The phase 3 audit shipped with 8 ⚠ Metal-u32 rows and 2 ?
-NEEDS-VERIFICATION rows. v0.34 phase 1 fixes both:
-
-- **VAE encode `set_seed()` placement.** In `stylize.rs` and
-  `img2img.rs`, the VAE's `init_dist.sample()` is RNG-touching —
-  but the existing code ran `set_seed(seed)` AFTER the sample.
-  Init latents used leftover RNG state and ignored `--seed`.
-  Fix: hoist `set_seed` to run before the VAE encode.
-- **Metal u32 seed truncation.** New
-  `pipelines::seeds::prepare_seed(seed, device)` applies
-  SplitMix64 + reduces to u32 when device is Metal AND
-  seed > u32::MAX. Identity passthrough below 2^32 preserves
-  byte-identical output for existing users. Plumbed through 13
-  `set_seed` call sites across t2i, sd3, flux, animatediff
-  (both variants + FreeNoise), portrait, stylize, img2img, and
-  the animate CLI.
-
-```
-$ plakat doctor --reproducibility-check
-   ✓    t2i (SD-family)            v0.34 phase 1: seeds::prepare_seed mixes full u64 entropy...
-   ✓    AnimateDiff (SD 1.5)       v0.34 phase 1: seeds::prepare_seed at per-window + FreeNoise
-   ✓    Stylize (SD 1.5)           v0.34 phase 1: set_seed moved BEFORE VAE encode
-   ✓    img2img / inpaint          v0.34 phase 1: per-iter set_seed inserted BEFORE vae_encode_image_file
-```
-
-Audit went from 3 ✓ rows + 8 ⚠ + 2 ? to **11 ✓ + 0 ⚠ + 0 ?**.
-Remaining 2 ✗ rows are intentional (`rand::random()` fallback
-when `--seed` omitted, and remote DeepSeek / Gemini enhancers).
-A regression-lock test asserts neither tier ever reappears.
-
-### Per-task failure capture in `--json-summary`
-
-`TaskRunRecord.error: Option<String>` populates on
-`status: "failed"` with the full anyhow error chain:
-
-```json
-{
-  "tasks": [
-    {"name": "alpha", "status": "ok", "seed": 42},
-    {"name": "beta",  "status": "failed", "seed": 43,
-     "error": "loading LoRA civitai:404404: HTTP 404 from civitai.com"},
-    {"name": "gamma", "status": "ok", "seed": 44}
-  ]
-}
-```
-
-The dispatch loop now wraps every task in a catch-and-record
-guard; failures push a record + continue rather than aborting
-the scenario. Summary file is written first, then the scenario
-exits non-zero if any task failed. CI consumers see every
-failure in one shot.
-
-### v0.32 carry closures
-
-Three deferrals from two cycles back, all closed:
-
-- **Animate-side VAE cache.** AnimateDiff{,Sdxl}Pipeline's VAE
-  field rewrapped as `Arc<AutoEncoderKL>` (mirrors `SdCore` from
-  v0.32 phase 2). Mixed-kind scenarios stop paying the ~330 MB
-  SDXL VAE rebuild cost on every `t2i ↔ animate` kind switch.
-- **Scripting `plakat.load` VAE cache.** Same Arc cache surfaces
-  in `ScriptCtx`; scripts running
-  `plakat.load sdxl; plakat.animate sdxl` share one VAE handle.
-- **Auto1111 two-files SDXL TI convention.**
-  `plakat generate --embedding mystyle_clip_l.safetensors`
-  auto-discovers the `mystyle_clip_g.safetensors` companion and
-  stitches both halves into a dual-encoder TI. Bare `_clip_g`
-  input rejected with a hint at the `_clip_l` primary.
 
 ### Documentation
 
-- [`RFC_v0.34_AUDIT_FOLLOWTHROUGH.md`](Documentation/RFC_v0.34_AUDIT_FOLLOWTHROUGH.md)
-  — design doc, scope contraction after pre-phase-0 survey,
-  4-phase plan.
+- [`RFC_v0.35_PIXART_SIGMA.md`](Documentation/RFC_v0.35_PIXART_SIGMA.md)
+  — design doc, locked decisions (1024-MS first, LoRA locked
+  phase 4 not stretch), 5-phase plan.
 
 ### By the numbers
 
-- **1099 lib + 47 integration tests = 1146 active tests** (+26
+- **1123 lib + 47 integration tests = 1170 active tests** (+24
   lib across the cycle).
-- 4 phase commits + RFC + close-out.
-- v0.33 phase 0 metadata-half-shipped gap **closed** (t2i side).
-- v0.33 phase 3 audit gaps (Metal-u32 + VAE encode placement)
-  **closed**; audit table is now all-green for pipelines plakat
-  controls.
-- All three v0.32 carries (animate VAE cache, scripting cache,
-  Auto1111 two-files TI) **closed**.
+- 5 phase commits + RFC + close-out.
+- Fourth model family alongside SD-family, SD3, and Flux.
 
-### v0.33 → v0.34 migration
+### v0.34 → v0.35 migration
 
-v0.34 is mostly additive. Every existing flag, host word, config
-key, scenario field, and PNG sidecar from v0.33 still works
-unchanged. Two intentional behavioural shifts on previously-
-broken paths:
+v0.35 is fully additive. Every existing flag, host word, config
+key, scenario field, and PNG sidecar from v0.34 still works
+unchanged. New surface:
 
-- ✅ `--seed N` with `N < 2^32` on any backend: **byte-identical**
-  output.
-- ⚠ `--seed N` with `N >= 2^32` on Metal: previously collided to
-  `N mod 2^32`; now distinct via SplitMix64. (Fix, not regression.)
-- ⚠ `stylize` / `img2img` with `--seed N --strength X`:
-  numerically changed because `set_seed` now runs before VAE
-  encode. (Fix, not regression — output was non-deterministic
-  before.)
-- ⚠ Scenarios with one failing task: previously aborted at first
-  failure with bare error; now records each failure + writes
-  summary + exits non-zero.
-- ✅ Animate / scripting Load APIs gained a `vae_cache: Option<...>`
-  parameter — callers pass `None` for the v0.33 behaviour.
+- ✅ `--model pixart` / `pixart-sigma` / `pixart-1024`.
+- ✅ `pixart::Pipeline` + `pixart_dit::PixArtSigmaXL` +
+  `pixart_lora::merge_pixart_loras_into_weights` — public APIs
+  for scripting / scenario integration in v0.36+.
+- ✅ `Variant::PixArt` + `BaseFamily::PixArt` +
+  `BaseModel::PixArt` — exhaustive matches across the codebase
+  stay sound.
+- ✅ Doctor row, look preset routing, sidecar `lora_stack` — all
+  populated for PixArt.
 
-### Deferred to v0.35+
+### Deferred to v0.36+
 
-- Per-layer motion splice (RFC v0.27 §3.2 escalation).
-- HotShot-XL integration.
-- AnimateLCM-SDXL (externally blocked — upstream repo not
-  publicly available).
-- INT8 SDXL UNet quantization (blocked on candle adding
-  quantized Conv2d support).
-- `GenerationMetadata` for SD3 / Flux / AnimateDiff / stylize /
-  portrait (none emit it today; adding it is a behaviour change,
-  not data plumbing).
-- Embedding-stack population in `GenerationMetadata` (requires
-  resolution-layer extension or double-load).
-- Plakat server mode.
-- PixArt Sigma / Stable Cascade.
+- **Scenario PixArt dispatch** — `scenario.rs` needs a parallel
+  `pixart_pipeline` cache slot (mirrors `flux_pipeline` /
+  `sd3_pipeline`) before PixArt tasks can land in batches. The
+  VAE cache mechanism (v0.34 phase 3) is ready to receive PixArt
+  the moment dispatch lands.
+- **Scripting `plakat.pixart` Bund word** — same shape as
+  `plakat.load` / `plakat.animate`. `ScriptCtx.vae_cache` already
+  supports PixArt aliases.
+- **PixArt-Σ-XL-2-512-MS + 2K-MS variants.** 2K-MS needs KV-
+  compression (deferred from phase 1).
+- **PixArt LCM variants** (2-step generation).
+- **PixArt ControlNet / portrait** integration.
+- **T5 loader extraction** to a shared module across PixArt +
+  SD3 + Flux (each duplicates today).
+- v0.34 carries: per-layer motion splice, HotShot-XL, AnimateLCM-
+  SDXL, INT8 SDXL UNet, plakat server mode, Stable Cascade,
+  embedding-stack metadata, `GenerationMetadata` for the
+  remaining non-t2i pipelines.
 
-**Earlier releases** (v0.13 – v0.33):
+**Earlier releases** (v0.13 – v0.34):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
-
 
 ## Install
 
