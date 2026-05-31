@@ -285,11 +285,25 @@ pub enum Variant {
     /// model family; routes to `pipelines::pixart::run`. Phase 0
     /// ships T5 + VAE foundation; DiT inference in phase 1.
     PixArt,
+    /// v0.37 phase 0: Stable Cascade — fifth model family with a
+    /// 3-stage architecture (Stage A VAE + Stage B latent prior +
+    /// Stage C high-res prior) and CLIP-G text encoder. Routes to
+    /// `pipelines::cascade::run`. Phase 0 ships CLIP-G + dispatch
+    /// wiring; Stage A in phase 1, Stage B in phase 2, Stage C in
+    /// phase 3, 3-stage orchestration in phase 4.
+    StableCascade,
 }
 
 impl Variant {
     pub fn detect(model: &str) -> Self {
         let m = model.to_lowercase();
+        // v0.37 phase 0: Stable Cascade detection precedes
+        // everything else. The substring "cascade" is unambiguous
+        // across plakat's alias surface (no other family uses it).
+        // Routes to pipelines::cascade::run.
+        if m.contains("cascade") {
+            return Self::StableCascade;
+        }
         // v0.35 phase 0: PixArt detection precedes everything else.
         // PixArt-Σ repo ids contain "pixart" — distinct from any
         // SD-family / Flux / SD3 string, so a substring match is
@@ -403,6 +417,12 @@ impl Variant {
     /// pipeline module.
     pub fn is_pixart(self) -> bool {
         matches!(self, Self::PixArt)
+    }
+    /// v0.37 phase 0: Stable Cascade family. Routes to
+    /// `pipelines::cascade::run`. 3-stage architecture with CLIP-G
+    /// text encoder — distinct from every other family.
+    pub fn is_cascade(self) -> bool {
+        matches!(self, Self::StableCascade)
     }
 }
 
@@ -729,6 +749,12 @@ impl Pipeline {
             anyhow::bail!(
                 "Pipeline::load is SD-only; PixArt models use \
                  pipelines::pixart::Pipeline::load"
+            );
+        }
+        if variant.is_cascade() {
+            anyhow::bail!(
+                "Pipeline::load is SD-only; Stable Cascade models use \
+                 pipelines::cascade::Pipeline::load"
             );
         }
         let repo = resolve_repo(&req.model);
@@ -2032,6 +2058,21 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
+    // v0.37 phase 0: Stable Cascade routing. Detection precedes
+    // PixArt / SD3 / Flux / SD because Stable Cascade is its own
+    // model family (3-stage architecture, CLIP-G text encoder).
+    // Phase 0 calls into cascade::run which loads CLIP-G then bails
+    // with a "phase 1 not yet implemented" message — proves dispatch.
+    if variant.is_cascade() {
+        use crate::pipelines::cascade;
+        cascade::run(cascade::RunRequest {
+            model: req.model.clone(),
+            device: req.device.clone(),
+        })
+        .await?;
+        return Ok(None);
+    }
+
     // v0.35 phase 2: PixArt routing — full inference dispatch.
     // PixArt is DiT-XL/2 + T5-XXL; detection precedes SD3/Flux/SD.
     // v0.35 phase 4: --lora / --lora-scale carry through.
@@ -2776,6 +2817,43 @@ mod tests {
         assert!(!v.is_xl());
         assert!(!v.is_flux());
         assert!(!v.is_sd3());
+    }
+
+    // v0.37 phase 0: Stable Cascade variant detection + predicate.
+
+    #[test]
+    fn detect_stable_cascade_alias() {
+        assert_eq!(Variant::detect("stable-cascade"), Variant::StableCascade);
+        assert_eq!(Variant::detect("cascade"), Variant::StableCascade);
+    }
+
+    #[test]
+    fn detect_stable_cascade_canonical_repo() {
+        assert_eq!(
+            Variant::detect("stabilityai/stable-cascade"),
+            Variant::StableCascade
+        );
+    }
+
+    #[test]
+    fn is_cascade_predicate() {
+        assert!(Variant::StableCascade.is_cascade());
+        assert!(!Variant::Sd15.is_cascade());
+        assert!(!Variant::Sdxl.is_cascade());
+        assert!(!Variant::FluxDev.is_cascade());
+        assert!(!Variant::Sd35Medium.is_cascade());
+        assert!(!Variant::PixArt.is_cascade());
+    }
+
+    #[test]
+    fn cascade_not_misclassified_as_sd_or_pixart() {
+        // "cascade" doesn't contain "xl" / "flux" / "sd3" / "pixart"
+        // so other family heuristics shouldn't grab it.
+        let v = Variant::detect("stable-cascade");
+        assert!(!v.is_xl());
+        assert!(!v.is_flux());
+        assert!(!v.is_sd3());
+        assert!(!v.is_pixart());
     }
 
     // v0.16 phase 3e — SD3 ControlNet resolver.

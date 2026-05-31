@@ -105,6 +105,11 @@ pub enum BaseModel {
     /// v0.35 phase 4 (PixArt LoRA format parser); the slot reserves
     /// the name so the variant enum stays exhaustive.
     PixArt,
+    /// v0.37 phase 0: Stable Cascade family. Catalog-LoRA support
+    /// is the v0.37 cycle's explicit deferral (LoRA lands in v0.38+);
+    /// the slot reserves the name so the variant enum stays
+    /// exhaustive.
+    StableCascade,
 }
 
 impl BaseModel {
@@ -130,6 +135,7 @@ impl BaseModel {
             | Variant::Sd35Large
             | Variant::Sd35LargeTurbo => Self::Sd3,
             Variant::PixArt => Self::PixArt,
+            Variant::StableCascade => Self::StableCascade,
         }
     }
 
@@ -141,6 +147,7 @@ impl BaseModel {
             Self::Flux => "flux",
             Self::Sd3 => "sd3",
             Self::PixArt => "pixart",
+            Self::StableCascade => "cascade",
         }
     }
 }
