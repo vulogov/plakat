@@ -713,16 +713,11 @@ mod tests {
     }
 
     #[test]
-    fn repro_guarantee_label_and_symbol_round_trip() {
-        // Each guarantee tier has a stable label + symbol so the
-        // table renders consistently across runs.
-        use ReproGuarantee::*;
-        assert_eq!(Guaranteed.label(), "GUARANTEED");
-        assert_eq!(GuaranteedMetalU32.label(), "GUARANTEED-but-Metal-only-u32");
-        assert_eq!(NeedsVerification.label(), "NEEDS-VERIFICATION");
-        assert_eq!(NonDeterministic.label(), "NON-DETERMINISTIC");
+    fn repro_guarantee_symbols_non_empty() {
         // Every symbol is non-empty so the human table never
-        // falls back to whitespace.
+        // falls back to whitespace. The `label()` method was
+        // removed in v0.34 phase 1 (was dead code).
+        use ReproGuarantee::*;
         assert!(!Guaranteed.symbol().is_empty());
         assert!(!GuaranteedMetalU32.symbol().is_empty());
         assert!(!NeedsVerification.symbol().is_empty());
