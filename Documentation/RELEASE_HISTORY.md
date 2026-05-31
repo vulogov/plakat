@@ -1,12 +1,160 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.32. The current
+"What's new" sections for v0.13 through v0.33. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.33 — production polish bundle
+
+v0.33 closes the long-standing **production polish** deferral
+from v0.32+: structured metadata, actionable error hints, machine-
+readable scenario output, and a reproducibility audit. No new
+pipelines, no new model families — every win is on the boundary
+between plakat and the operator.
+
+Four phases shipped, all additive. No flag rename, no behaviour
+change for existing runs. Test count climbed from 1030 → 1073
+lib tests (+43 across the cycle).
+
+### Structured metadata fields
+
+PNG `tEXt` chunks and JSON sidecars carry the full visible
+configuration — stylistic presets, LoRA stack, TI stack, ControlNet
+stack, enhancer state, FreeNoise flag — alongside the existing
+Auto1111-compatible "Parameters:" string.
+
+```bash
+plakat generate "a misty forest" --model sd15 --look anime \
+    --genre fantasy --negative-preset crisp \
+    --lora detail:0.6 --lora style:0.4 \
+    --embedding cinematic-style --controlnet canny ./edges.png
+```
+
+Every flag shows up under its own key in the JSON sidecar AND
+as a `Look: anime, Genre: fantasy, Negative preset: crisp, ...`
+suffix in the A1111 string. Downstream tooling (Civitai
+importers, gallery cataloguers, scenario regression diff) no
+longer has to re-parse free-form prompt text.
+
+New `GenerationMetadata` fields are `#[serde(default)] +
+skip_serializing_if`, so every v0.32 sidecar still parses
+unchanged (regression-locked by `v032_sidecar_still_parses`).
+
+### Actionable error hints
+
+Three new decorators on the user-facing error path:
+
+```
+$ plakat generate "x" --model sd1.5
+Error: unknown --model alias 'sd1.5'. Did you mean 'sd15'?
+       Run `plakat --help` or `plakat hf list` for the full list.
+
+$ plakat generate "x" --model flux --width 2048 --height 2048
+Error: out of memory loading Flux at 2048×2048.
+       Try: --quant nf4, lower --width/--height, or close
+       other GPU consumers. See FLUX.md for VRAM guidance.
+
+$ plakat scenario broken.hjson
+Error: HJSON parse error on line 14 in task 'beta':
+       expected `,` or `}` after value.
+       Inspect the task block starting near `name: beta`.
+```
+
+Levenshtein-based typo suggestion for `--model` and `--look`;
+pipeline-tagged OOM decorator that names the right mitigation
+(quant for Flux, `--vae-tiled` for SD3.5, frame count for
+AnimateDiff); scenario parse errors point at the offending task
+by name, not just byte offset. 21 unit tests cover the matching
+logic.
+
+### `plakat scenario --json-summary PATH`
+
+Scenarios now emit a machine-readable run summary alongside the
+existing log output:
+
+```json
+{
+  "scenario_file": "/tmp/forest.hjson",
+  "model": "sd15",
+  "out_dir": "/tmp/out",
+  "total_tasks": 12,
+  "ran": 10,
+  "skipped": 2,
+  "failed": 0,
+  "wall_time_secs": 184.21,
+  "plakat_version": "0.33.0",
+  "tasks": [
+    {"name": "alpha", "kind": "generate",  "status": "ok",      "seed": 42},
+    {"name": "beta",  "kind": "animatediff","status": "ok",     "seed": 43},
+    {"name": "gamma", "kind": "generate",  "status": "skipped", "note": "--only filter excluded"}
+  ]
+}
+```
+
+CI now has a single file to consume — pass/skip/fail counts,
+wall time, per-task seed and status. Records every code path:
+`--only` skip, `--limit` skip, `--resume` cache hit, dry-run
+early-continue, animate dispatch, normal generate end. Survives
+mixed `--dry-run` + real runs in the same scenario.
+
+### `plakat doctor --reproducibility-check`
+
+```
+$ plakat doctor --reproducibility-check
+◆ Top warnings
+  ! Reproducibility REQUIRES `--seed N`...
+  ! Metal backend truncates seeds to u32...
+  ! VAE encode placement in img2img / stylize paths...
+
+◆ Per-pipeline determinism table
+status  pipeline                code path              note
+   ⚠    t2i (SD-family)         Pipeline::run randn    Seed masked to u32...
+   ⚠    AnimateDiff (SD 1.5)    denoise_window         set_seed() before randn
+   ✓    Prompt wildcards        StdRng                 Seeded from --seed
+   ?    img2img/inpaint         VAE encode             Needs verification
+   ✗    Any pipeline (no --seed) rand::random()        Non-deterministic
+```
+
+Hand-curated audit of every RNG-touching path across plakat's
+pipelines, classified into 4 tiers: **GUARANTEED**, **GUARANTEED
+(Metal u32)**, **NEEDS VERIFICATION**, **NON-DETERMINISTIC**.
+Color-coded human output; composes with `--json` for CI.
+Descriptive, not prescriptive — fixes for the `?`-tier rows defer
+to v0.34.
+
+### Documentation
+
+- [`RFC_v0.33_PRODUCTION_POLISH.md`](RFC_v0.33_PRODUCTION_POLISH.md)
+  — design doc, additive-schema constraint, 4-phase plan.
+
+### By the numbers
+
+- **1073 lib + 47 integration tests = 1120 active tests** (+43
+  lib across the cycle).
+- 4 phase commits + RFC + close-out.
+- v0.32+ production polish deferral **closed**.
+- Reproducibility audit surfaces 13 RNG paths + 5 top-level
+  warnings — input for v0.34 determinism fixes.
+
+### v0.32 → v0.33 migration
+
+v0.33 is **fully additive**. Every existing flag, host word,
+config key, scenario field, PNG sidecar, and A1111 parameter
+string keeps its v0.32 shape. New surface:
+
+- ✅ 9 new `GenerationMetadata` fields (`look`, `genre`,
+  `negative_preset`, `lora_stack`, `embeddings`,
+  `embedding_stack`, `control_stack`, `enhancement`,
+  `free_noise`). All `Option`/`Vec` with serde `default` +
+  `skip_serializing_if` — v0.32 sidecars parse unchanged.
+- ✅ `plakat scenario --json-summary PATH` (optional flag).
+- ✅ `plakat doctor --reproducibility-check` + `--json`.
+- ✅ New `error_hints` module — opt-in decorators on the
+  existing error path. Pure additions.
 
 ## What's new in v0.32 — animate-lite + diversify-3
 
