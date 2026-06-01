@@ -94,9 +94,17 @@ pub struct Config {
     /// Stage B.
     pub c_clip_img: Option<usize>,
     /// Number of "pooled conditioning tokens" — the pooled text /
-    /// image mappers project to `c_cond * num_pooled_tokens`. Stage
-    /// C upstream uses 128; Stage B upstream uses 80.
+    /// image mappers project to `num_pooled_tokens * c_pooled_token`.
+    /// Upstream Stable Cascade uses **4** in both stages (verified at
+    /// v0.40 phase 2: Stage C output 8192 = 4 × 2048; Stage B output
+    /// 5120 = 4 × 1280).
     pub num_pooled_tokens: usize,
+    /// Per-token dim of the pooled conditioning streams. Equals the
+    /// `c_hidden` value the corresponding AttnBlock `kv_mapper`
+    /// expects as input. Stage C: 2048 (uniform c_hidden). Stage B:
+    /// 1280 (the bottleneck c_hidden_per_level value, matching the
+    /// attention levels).
+    pub c_pooled_token: usize,
     /// Attention heads per `AttnBlock`. Used only at levels where
     /// `has_attention_per_level[i] = true`. Head dim is always
     /// 64 → num_heads = c_hidden_per_level[i] / 64.
@@ -150,7 +158,8 @@ impl Config {
             c_clip_text: Some(1280),
             c_clip_text_pooled: 1280,
             c_clip_img: Some(768),
-            num_pooled_tokens: 128,
+            num_pooled_tokens: 4,
+            c_pooled_token: 2048,
             head_dim: 64,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -172,7 +181,8 @@ impl Config {
             c_clip_text: None,
             c_clip_text_pooled: 1280,
             c_clip_img: None,
-            num_pooled_tokens: 80,
+            num_pooled_tokens: 4,
+            c_pooled_token: 1280,
             head_dim: 64,
             has_attention_per_level: vec![false, false, true, true],
             has_sca: true,
@@ -446,7 +456,10 @@ impl StableCascadePrior {
         } else {
             None
         };
-        let pooled_out_dim = cfg.c_cond * cfg.num_pooled_tokens;
+        // v0.40 phase 2: pooled mapper output = N tokens × c_hidden
+        // (NOT c_cond × N). Upstream Stage C has 8192 = 4 × 2048;
+        // Stage B has 5120 = 4 × 1280.
+        let pooled_out_dim = cfg.num_pooled_tokens * cfg.c_pooled_token;
         let clip_txt_pooled_mapper = nn::linear(
             cfg.c_clip_text_pooled,
             pooled_out_dim,
@@ -621,34 +634,67 @@ impl StableCascadePrior {
     /// `clip_text_pooled`: `(B, c_clip_text_pooled)`.
     /// `clip_img`: `(B, c_clip_img)` or `None` (Stage C accepts None;
     ///   the pooled-image stream is then zeros).
+    /// v0.40 phase 2: build the AttnBlock KV conditioning sequence.
+    ///
+    /// **Stage C** (has `clip_txt_mapper` + `clip_img_mapper`):
+    /// returns the concatenation `(B, T_text + N_pooled + N_pooled,
+    /// c_pooled_token)`:
+    /// - text seq: `(B, T_text, c_pooled_token)` from
+    ///   `clip_txt_mapper(clip_text)` — typically 77 tokens at 2048-dim.
+    /// - pooled text: `(B, N_pooled, c_pooled_token)` from
+    ///   `clip_txt_pooled_mapper(clip_pooled_text)` reshaped — typically
+    ///   4 tokens at 2048-dim.
+    /// - pooled image: `(B, N_pooled, c_pooled_token)` from
+    ///   `clip_img_mapper(clip_pooled_img)` or zeros — 4 tokens at 2048.
+    ///
+    /// Total for Stage C upstream: `(B, 77 + 4 + 4 = 85, 2048)`.
+    ///
+    /// **Stage B** (no `clip_txt_mapper`, no `clip_img_mapper`):
+    /// returns `(B, N_pooled, c_pooled_token)` — pooled-text only, at
+    /// the bottleneck c_hidden=1280 that the attention-level
+    /// `kv_mapper` consumes. Total upstream: `(B, 4, 1280)`.
+    ///
+    /// `clip_text`: `(B, T_text, c_clip_text)` — required for Stage C;
+    ///   ignored for Stage B (any shape works since it's unused).
+    /// `clip_text_pooled`: `(B, c_clip_text_pooled)`.
+    /// `clip_img`: `(B, c_clip_img)` for Stage C (None → image stream
+    ///   defaults to zeros); ignored for Stage B.
     pub fn build_clip_conditioning(
         &self,
         clip_text: &Tensor,
         clip_text_pooled: &Tensor,
         clip_img: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let (b, _t, _) = clip_text.dims3()?;
-        // Stage C projects text seq → c_hidden_first via clip_txt_mapper.
-        let text = if let Some(mapper) = &self.clip_txt_mapper {
-            mapper.forward(clip_text)?
-        } else {
-            return Err(anyhow!(
-                "build_clip_conditioning called on a Prior without \
-                 clip_txt_mapper (Stage B). Use zero_kv_stream + supply \
-                 conditioning at the AttnBlock kv_mapper input shape."
-            ));
-        };
-        // Pooled streams computed but held for phase 0g.
-        let _pooled_text = self
+        let (b, _) = clip_text_pooled.dims2()?;
+        // Pooled text is mandatory for both stages.
+        let pooled_text = self
             .clip_txt_pooled_mapper
             .forward(clip_text_pooled)?
-            .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_cond))?;
-        if let (Some(img), Some(mapper)) = (clip_img, &self.clip_img_mapper) {
-            let _pooled_img = mapper
+            .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token))?;
+
+        // Stage B path: pooled-only KV stream at c_hidden=c_pooled_token.
+        let Some(text_mapper) = &self.clip_txt_mapper else {
+            return Ok(pooled_text);
+        };
+
+        // Stage C path: cat(text, pooled_text, pooled_img).
+        let text = text_mapper.forward(clip_text)?;
+        let pooled_img = if let (Some(img), Some(img_mapper)) =
+            (clip_img, &self.clip_img_mapper)
+        {
+            img_mapper
                 .forward(img)?
-                .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_cond))?;
-        }
-        Ok(text)
+                .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token))?
+        } else {
+            // No image conditioning provided; zero-pad the slot so the
+            // sequence length matches upstream's expected 85 tokens.
+            Tensor::zeros(
+                (b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token),
+                self.dtype,
+                &self.device,
+            )?
+        };
+        Tensor::cat(&[&text, &pooled_text, &pooled_img], 1).map_err(|e| e.into())
     }
 
     /// Build a zero KV stream of the right shape for an AttnBlock at
@@ -983,6 +1029,7 @@ mod tests {
             c_clip_text_pooled: 24,
             c_clip_img: Some(12),
             num_pooled_tokens: 4,
+            c_pooled_token: 16,
             head_dim: 4,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -1007,6 +1054,7 @@ mod tests {
             c_clip_text_pooled: 24,
             c_clip_img: None,
             num_pooled_tokens: 4,
+            c_pooled_token: 16,
             head_dim: 4,
             has_attention_per_level: vec![false, true],
             has_sca: true,
@@ -1045,7 +1093,11 @@ mod tests {
         assert_eq!(cfg.c_cond, 64);
         assert_eq!(cfg.c_clip_text, Some(1280));
         assert_eq!(cfg.c_clip_img, Some(768));
-        assert_eq!(cfg.num_pooled_tokens, 128);
+        assert_eq!(
+            cfg.num_pooled_tokens, 4,
+            "Stage C upstream: 8192 = 4 × 2048 (corrected at v0.40 phase 2)"
+        );
+        assert_eq!(cfg.c_pooled_token, 2048);
         assert_eq!(cfg.head_dim, 64);
         assert_eq!(cfg.has_attention_per_level, vec![true, true]);
         assert!(cfg.has_sca && cfg.has_crp);
@@ -1063,7 +1115,11 @@ mod tests {
         assert_eq!(cfg.c_cond, 64);
         assert!(cfg.c_clip_text.is_none(), "Stage B has no clip_txt_mapper");
         assert!(cfg.c_clip_img.is_none(), "Stage B has no clip_img_mapper");
-        assert_eq!(cfg.num_pooled_tokens, 80);
+        assert_eq!(
+            cfg.num_pooled_tokens, 4,
+            "Stage B upstream: 5120 = 4 × 1280 (corrected at v0.40 phase 2)"
+        );
+        assert_eq!(cfg.c_pooled_token, 1280);
         assert_eq!(cfg.head_dim, 64);
         assert_eq!(
             cfg.has_attention_per_level,
@@ -1193,7 +1249,11 @@ mod tests {
     }
 
     #[test]
-    fn build_clip_conditioning_for_stage_c_returns_projected_text() {
+    fn build_clip_conditioning_for_stage_c_returns_concat_85_at_c_pooled_token() {
+        // v0.40 phase 2: Stage C returns concat(text, pooled_text,
+        // pooled_img) at (B, T_text + 4 + 4, c_pooled_token).
+        // small_stage_c_cfg uses 5 text tokens at c_pooled_token=16,
+        // num_pooled_tokens=4 → expected shape (1, 5+4+4=13, 16).
         let (prior, _) = random_prior_c(small_stage_c_cfg());
         let device = &prior.device;
         let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
@@ -1202,7 +1262,37 @@ mod tests {
         let clip = prior
             .build_clip_conditioning(&text, &pooled, Some(&img))
             .unwrap();
-        assert_eq!(clip.dims(), &[1, 5, 16]);
+        assert_eq!(clip.dims(), &[1, 13, 16]);
+    }
+
+    #[test]
+    fn build_clip_conditioning_for_stage_c_zero_pads_missing_image() {
+        // When clip_img is None, the image pooled stream is zeros.
+        // Output shape should still be (B, T_text + 4 + 4, c_pooled_token).
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let pooled = Tensor::randn(0f32, 1f32, (1, 24), device).unwrap();
+        let clip = prior
+            .build_clip_conditioning(&text, &pooled, None)
+            .unwrap();
+        assert_eq!(clip.dims(), &[1, 13, 16]);
+    }
+
+    #[test]
+    fn build_clip_conditioning_for_stage_b_returns_pooled_only() {
+        // v0.40 phase 2: Stage B has no clip_txt_mapper, no
+        // clip_img_mapper. Returns just pooled-text: (B, 4, c_pooled_token).
+        let (prior, _) = random_prior_b(small_stage_b_cfg());
+        let device = &prior.device;
+        // clip_text arg is ignored for Stage B; pass a dummy.
+        let dummy_text = Tensor::randn(0f32, 1f32, (1, 1, 1), device).unwrap();
+        let pooled = Tensor::randn(0f32, 1f32, (1, 24), device).unwrap();
+        let clip = prior
+            .build_clip_conditioning(&dummy_text, &pooled, None)
+            .unwrap();
+        // small_stage_b_cfg: num_pooled_tokens=4, c_pooled_token=16
+        assert_eq!(clip.dims(), &[1, 4, 16]);
     }
 
     // ---- Stage B tests (phase 0c) ----
@@ -1313,6 +1403,7 @@ mod tests {
             c_clip_text_pooled: 8,
             c_clip_img: Some(8),
             num_pooled_tokens: 4,
+            c_pooled_token: 8,
             head_dim: 2,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -1395,6 +1486,7 @@ mod tests {
             c_clip_text_pooled: 8,
             c_clip_img: Some(8),
             num_pooled_tokens: 4,
+            c_pooled_token: 8,
             head_dim: 2,
             has_attention_per_level: vec![true, true],
             has_sca: true,
