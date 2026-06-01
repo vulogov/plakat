@@ -889,11 +889,32 @@ impl StableCascadePrior {
         // ---- Input embedding ----
         let mut h = self.embedding_conv.forward(x)?;
         h = self.embedding_norm.forward(&h)?;
+        // v0.40 phase 4 iter 1: spatially align effnet (Stage C output
+        // is fixed at 24×24) to Stage B's embedding spatial via
+        // nearest upsample BEFORE feeding to the apply_effnet_mapper
+        // 1×1 conv stack. Upstream uses bilinear; nearest is
+        // numerically close for this conditioning stream (the mapper
+        // is point-wise so spatial position is independent at the
+        // conv level).
         if let Some(eff) = effnet {
-            h = h.add(&self.apply_effnet_mapper(eff)?)?;
+            let (_, _, hh, hw) = h.dims4()?;
+            let (_, _, eh, ew) = eff.dims4()?;
+            let eff_aligned = if (eh, ew) != (hh, hw) {
+                eff.upsample_nearest2d(hh, hw)?
+            } else {
+                eff.clone()
+            };
+            h = h.add(&self.apply_effnet_mapper(&eff_aligned)?)?;
         }
         if let Some(px) = pixels {
-            h = h.add(&self.apply_pixels_mapper(px)?)?;
+            let (_, _, hh, hw) = h.dims4()?;
+            let (_, _, ph, pw) = px.dims4()?;
+            let px_aligned = if (ph, pw) != (hh, hw) {
+                px.upsample_nearest2d(hh, hw)?
+            } else {
+                px.clone()
+            };
+            h = h.add(&self.apply_pixels_mapper(&px_aligned)?)?;
         }
 
         // ---- Compute CN injection positions ----
