@@ -41,6 +41,7 @@ pub mod portrait;
 pub mod real_esrgan;
 pub mod cascade;
 pub mod cascade_blocks;
+pub mod cascade_cn;
 pub mod cascade_controlnet;
 pub mod cascade_lora;
 pub mod cascade_prior;
