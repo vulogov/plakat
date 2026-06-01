@@ -94,9 +94,17 @@ pub struct Config {
     /// Stage B.
     pub c_clip_img: Option<usize>,
     /// Number of "pooled conditioning tokens" — the pooled text /
-    /// image mappers project to `c_cond * num_pooled_tokens`. Stage
-    /// C upstream uses 128; Stage B upstream uses 80.
+    /// image mappers project to `num_pooled_tokens * c_pooled_token`.
+    /// Upstream Stable Cascade uses **4** in both stages (verified at
+    /// v0.40 phase 2: Stage C output 8192 = 4 × 2048; Stage B output
+    /// 5120 = 4 × 1280).
     pub num_pooled_tokens: usize,
+    /// Per-token dim of the pooled conditioning streams. Equals the
+    /// `c_hidden` value the corresponding AttnBlock `kv_mapper`
+    /// expects as input. Stage C: 2048 (uniform c_hidden). Stage B:
+    /// 1280 (the bottleneck c_hidden_per_level value, matching the
+    /// attention levels).
+    pub c_pooled_token: usize,
     /// Attention heads per `AttnBlock`. Used only at levels where
     /// `has_attention_per_level[i] = true`. Head dim is always
     /// 64 → num_heads = c_hidden_per_level[i] / 64.
@@ -150,7 +158,8 @@ impl Config {
             c_clip_text: Some(1280),
             c_clip_text_pooled: 1280,
             c_clip_img: Some(768),
-            num_pooled_tokens: 128,
+            num_pooled_tokens: 4,
+            c_pooled_token: 2048,
             head_dim: 64,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -172,7 +181,8 @@ impl Config {
             c_clip_text: None,
             c_clip_text_pooled: 1280,
             c_clip_img: None,
-            num_pooled_tokens: 80,
+            num_pooled_tokens: 4,
+            c_pooled_token: 1280,
             head_dim: 64,
             has_attention_per_level: vec![false, false, true, true],
             has_sca: true,
@@ -334,6 +344,8 @@ pub enum Block {
 }
 
 impl Block {
+    /// Forward without skip. Errors if the block is a ResBlock that
+    /// was constructed with `c_skip > 0`.
     pub fn forward(
         &self,
         x: &Tensor,
@@ -347,6 +359,33 @@ impl Block {
             Block::Time(b) => b.forward(x, t_emb, sca_emb, crp_emb),
             Block::Attn(b) => b.forward(x, clip),
         }
+    }
+
+    /// v0.40 phase 3 iter 1: forward with an optional skip. Required
+    /// at the first ResBlock of each up-path level (after the
+    /// upscaler); the skip carries the channel-concatenated feature
+    /// from the matching down level. `Time` / `Attn` blocks ignore
+    /// the skip arg.
+    pub fn forward_maybe_skip(
+        &self,
+        x: &Tensor,
+        x_skip: Option<&Tensor>,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+    ) -> Result<Tensor> {
+        match (self, x_skip) {
+            (Block::Res(b), Some(skip)) if b.c_skip() > 0 => b.forward_with_skip(x, skip),
+            (Block::Res(b), _) => b.forward(x),
+            (Block::Time(b), _) => b.forward(x, t_emb, sca_emb, crp_emb),
+            (Block::Attn(b), _) => b.forward(x, clip),
+        }
+    }
+
+    /// Returns true if this is a ResBlock constructed with `c_skip > 0`.
+    pub fn requires_skip(&self) -> bool {
+        matches!(self, Block::Res(b) if b.c_skip() > 0)
     }
 }
 
@@ -446,7 +485,10 @@ impl StableCascadePrior {
         } else {
             None
         };
-        let pooled_out_dim = cfg.c_cond * cfg.num_pooled_tokens;
+        // v0.40 phase 2: pooled mapper output = N tokens × c_hidden
+        // (NOT c_cond × N). Upstream Stage C has 8192 = 4 × 2048;
+        // Stage B has 5120 = 4 × 1280.
+        let pooled_out_dim = cfg.num_pooled_tokens * cfg.c_pooled_token;
         let clip_txt_pooled_mapper = nn::linear(
             cfg.c_clip_text_pooled,
             pooled_out_dim,
@@ -507,7 +549,7 @@ impl StableCascadePrior {
             None
         };
 
-        // ---- Down blocks: per-level width + attn flag ----
+        // ---- Down blocks: per-level width + attn flag (no skip-concat) ----
         let down_blocks = build_block_levels(
             &cfg.blocks_per_level,
             &cfg.c_hidden_per_level,
@@ -516,6 +558,7 @@ impl StableCascadePrior {
             &cfg.has_attention_per_level,
             cfg.has_sca,
             cfg.has_crp,
+            None,
             vb.pp("down_blocks"),
         )?;
 
@@ -539,12 +582,22 @@ impl StableCascadePrior {
         }
 
         // ---- Up blocks (mirror of down: deepest first, shallowest last) ----
+        // v0.40 phase 3 iter 1: skip-concat at the FIRST ResBlock of each
+        // up level i > 0 (after the upscaler brings us to the matching
+        // down level's spatial). At up level 0 (deepest), we START from
+        // the down level (n-1) output, so no skip-concat there.
+        // At up level i, skip channels = down level (n-1-i)'s c_hidden
+        // = up_c_hidden[i] (since up width at level i == down width at
+        // level n-1-i, and the upscaler brings channels to match).
         let up_blocks_per_level: Vec<usize> =
             cfg.blocks_per_level.iter().rev().copied().collect();
         let up_c_hidden: Vec<usize> =
             cfg.c_hidden_per_level.iter().rev().copied().collect();
         let up_has_attn: Vec<bool> =
             cfg.has_attention_per_level.iter().rev().copied().collect();
+        let up_skip_dims: Vec<usize> = (0..num_levels)
+            .map(|i| if i == 0 { 0 } else { up_c_hidden[i] })
+            .collect();
         let up_blocks = build_block_levels(
             &up_blocks_per_level,
             &up_c_hidden,
@@ -553,6 +606,7 @@ impl StableCascadePrior {
             &up_has_attn,
             cfg.has_sca,
             cfg.has_crp,
+            Some(&up_skip_dims),
             vb.pp("up_blocks"),
         )?;
 
@@ -621,34 +675,67 @@ impl StableCascadePrior {
     /// `clip_text_pooled`: `(B, c_clip_text_pooled)`.
     /// `clip_img`: `(B, c_clip_img)` or `None` (Stage C accepts None;
     ///   the pooled-image stream is then zeros).
+    /// v0.40 phase 2: build the AttnBlock KV conditioning sequence.
+    ///
+    /// **Stage C** (has `clip_txt_mapper` + `clip_img_mapper`):
+    /// returns the concatenation `(B, T_text + N_pooled + N_pooled,
+    /// c_pooled_token)`:
+    /// - text seq: `(B, T_text, c_pooled_token)` from
+    ///   `clip_txt_mapper(clip_text)` — typically 77 tokens at 2048-dim.
+    /// - pooled text: `(B, N_pooled, c_pooled_token)` from
+    ///   `clip_txt_pooled_mapper(clip_pooled_text)` reshaped — typically
+    ///   4 tokens at 2048-dim.
+    /// - pooled image: `(B, N_pooled, c_pooled_token)` from
+    ///   `clip_img_mapper(clip_pooled_img)` or zeros — 4 tokens at 2048.
+    ///
+    /// Total for Stage C upstream: `(B, 77 + 4 + 4 = 85, 2048)`.
+    ///
+    /// **Stage B** (no `clip_txt_mapper`, no `clip_img_mapper`):
+    /// returns `(B, N_pooled, c_pooled_token)` — pooled-text only, at
+    /// the bottleneck c_hidden=1280 that the attention-level
+    /// `kv_mapper` consumes. Total upstream: `(B, 4, 1280)`.
+    ///
+    /// `clip_text`: `(B, T_text, c_clip_text)` — required for Stage C;
+    ///   ignored for Stage B (any shape works since it's unused).
+    /// `clip_text_pooled`: `(B, c_clip_text_pooled)`.
+    /// `clip_img`: `(B, c_clip_img)` for Stage C (None → image stream
+    ///   defaults to zeros); ignored for Stage B.
     pub fn build_clip_conditioning(
         &self,
         clip_text: &Tensor,
         clip_text_pooled: &Tensor,
         clip_img: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let (b, _t, _) = clip_text.dims3()?;
-        // Stage C projects text seq → c_hidden_first via clip_txt_mapper.
-        let text = if let Some(mapper) = &self.clip_txt_mapper {
-            mapper.forward(clip_text)?
-        } else {
-            return Err(anyhow!(
-                "build_clip_conditioning called on a Prior without \
-                 clip_txt_mapper (Stage B). Use zero_kv_stream + supply \
-                 conditioning at the AttnBlock kv_mapper input shape."
-            ));
-        };
-        // Pooled streams computed but held for phase 0g.
-        let _pooled_text = self
+        let (b, _) = clip_text_pooled.dims2()?;
+        // Pooled text is mandatory for both stages.
+        let pooled_text = self
             .clip_txt_pooled_mapper
             .forward(clip_text_pooled)?
-            .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_cond))?;
-        if let (Some(img), Some(mapper)) = (clip_img, &self.clip_img_mapper) {
-            let _pooled_img = mapper
+            .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token))?;
+
+        // Stage B path: pooled-only KV stream at c_hidden=c_pooled_token.
+        let Some(text_mapper) = &self.clip_txt_mapper else {
+            return Ok(pooled_text);
+        };
+
+        // Stage C path: cat(text, pooled_text, pooled_img).
+        let text = text_mapper.forward(clip_text)?;
+        let pooled_img = if let (Some(img), Some(img_mapper)) =
+            (clip_img, &self.clip_img_mapper)
+        {
+            img_mapper
                 .forward(img)?
-                .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_cond))?;
-        }
-        Ok(text)
+                .reshape((b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token))?
+        } else {
+            // No image conditioning provided; zero-pad the slot so the
+            // sequence length matches upstream's expected 85 tokens.
+            Tensor::zeros(
+                (b, self.cfg.num_pooled_tokens, self.cfg.c_pooled_token),
+                self.dtype,
+                &self.device,
+            )?
+        };
+        Tensor::cat(&[&text, &pooled_text, &pooled_img], 1).map_err(|e| e.into())
     }
 
     /// Build a zero KV stream of the right shape for an AttnBlock at
@@ -727,41 +814,179 @@ impl StableCascadePrior {
         effnet: Option<&Tensor>,
         pixels: Option<&Tensor>,
     ) -> Result<Tensor> {
+        self.forward_inner(
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0,
+        )
+    }
+
+    /// v0.40 phase 1: forward pass with ControlNet residual injection
+    /// into the down path.
+    ///
+    /// `cn_residuals` is a slice of N tensors, each of shape
+    /// `(B, c_hidden_at_position, H_at_position, W_at_position)`
+    /// matching the latent at its injection point. Injection happens
+    /// at evenly-spread positions across `down_blocks` (the encoder
+    /// side); the up path is unchanged. With `cn_residuals.len() == N`,
+    /// position `((i + 1) * total_down_positions / N - 1)` for
+    /// `i ∈ [0, N)` receives residual `i` added with `cn_scale`
+    /// multiplier.
+    ///
+    /// Phase 1 contract:
+    /// - Residual at each injection point MUST shape-match the latent.
+    ///   Shape mismatches error loudly (no implicit interpolation).
+    /// - Phase 3 smoke determines whether auto-alignment is needed.
+    /// - Caller is responsible for spatial sizing — typically by
+    ///   running the CN backbone at a resolution that produces
+    ///   residuals at the matching depth's spatial.
+    ///
+    /// Stage C is the target; the method bails if effnet/pixels paths
+    /// are wired (those are Stage B; Stage B + CN combo is a v0.41
+    /// follow-up).
+    pub fn forward_with_cn(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+        cn_residuals: &[Tensor],
+        cn_scale: f32,
+    ) -> Result<Tensor> {
+        anyhow::ensure!(
+            self.cfg.effnet_input_channels.is_none(),
+            "forward_with_cn is Stage C only; Stage B + CN combo is v0.41 work"
+        );
+        anyhow::ensure!(
+            !cn_residuals.is_empty(),
+            "cn_residuals must be non-empty; for plain forward use forward()"
+        );
+        self.forward_inner(
+            x,
+            t_emb,
+            sca_emb,
+            crp_emb,
+            clip,
+            None,
+            None,
+            Some(cn_residuals),
+            cn_scale,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_inner(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+        effnet: Option<&Tensor>,
+        pixels: Option<&Tensor>,
+        cn_residuals: Option<&[Tensor]>,
+        cn_scale: f32,
+    ) -> Result<Tensor> {
         // ---- Input embedding ----
         let mut h = self.embedding_conv.forward(x)?;
         h = self.embedding_norm.forward(&h)?;
+        // v0.40 phase 4 iter 1: spatially align effnet (Stage C output
+        // is fixed at 24×24) to Stage B's embedding spatial via
+        // nearest upsample BEFORE feeding to the apply_effnet_mapper
+        // 1×1 conv stack. Upstream uses bilinear; nearest is
+        // numerically close for this conditioning stream (the mapper
+        // is point-wise so spatial position is independent at the
+        // conv level).
         if let Some(eff) = effnet {
-            h = h.add(&self.apply_effnet_mapper(eff)?)?;
+            let (_, _, hh, hw) = h.dims4()?;
+            let (_, _, eh, ew) = eff.dims4()?;
+            let eff_aligned = if (eh, ew) != (hh, hw) {
+                eff.upsample_nearest2d(hh, hw)?
+            } else {
+                eff.clone()
+            };
+            h = h.add(&self.apply_effnet_mapper(&eff_aligned)?)?;
         }
         if let Some(px) = pixels {
-            h = h.add(&self.apply_pixels_mapper(px)?)?;
+            let (_, _, hh, hw) = h.dims4()?;
+            let (_, _, ph, pw) = px.dims4()?;
+            let px_aligned = if (ph, pw) != (hh, hw) {
+                px.upsample_nearest2d(hh, hw)?
+            } else {
+                px.clone()
+            };
+            h = h.add(&self.apply_pixels_mapper(&px_aligned)?)?;
         }
 
-        // ---- Down path ----
+        // ---- Compute CN injection positions ----
+        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
+        let injection_positions: Vec<usize> = match cn_residuals {
+            Some(residuals) => {
+                let n = residuals.len();
+                (0..n)
+                    .map(|i| ((i + 1) * n_down_positions) / n - 1)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+
+        // ---- Down path with CN injection ----
         let num_levels = self.cfg.blocks_per_level.len();
         let mut level_outputs: Vec<Tensor> = Vec::with_capacity(num_levels);
+        let mut global_pos: usize = 0;
+        let mut residual_idx: usize = 0;
         for (i, blocks) in self.down_blocks.iter().enumerate() {
             if i > 0 {
                 h = self.down_downscalers[i - 1].forward(&h)?;
             }
             for block in blocks {
                 h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
+                if let Some(residuals) = cn_residuals {
+                    if residual_idx < injection_positions.len()
+                        && global_pos == injection_positions[residual_idx]
+                    {
+                        let r = &residuals[residual_idx];
+                        anyhow::ensure!(
+                            r.shape() == h.shape(),
+                            "CN residual {} shape {:?} doesn't match latent shape {:?} \
+                             at down_blocks position {global_pos}",
+                            residual_idx,
+                            r.shape(),
+                            h.shape()
+                        );
+                        h = h.add(&r.affine(cn_scale as f64, 0.0)?)?;
+                        residual_idx += 1;
+                    }
+                }
+                global_pos += 1;
             }
             level_outputs.push(h.clone());
         }
 
         // ---- Up path: start from the deepest level output ----
+        // v0.40 phase 3 iter 1: skip is consumed by the FIRST
+        // ResBlock at each up level (channel-concat in the
+        // channelwise MLP), NOT by an additive add. The first
+        // ResBlock was constructed with c_skip == up_c_hidden[level]
+        // so it expects the skip via forward_maybe_skip.
         let mut h = level_outputs.pop().expect("non-empty levels");
         for (i, blocks) in self.up_blocks.iter().enumerate() {
-            if i > 0 {
+            let skip_for_level = if i > 0 {
                 h = self.up_upscalers[i - 1].forward(&h)?;
-                let skip = level_outputs
-                    .pop()
-                    .ok_or_else(|| anyhow!("missing skip at up level {i}"))?;
-                h = h.add(&skip)?;
-            }
-            for block in blocks {
-                h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
+                Some(
+                    level_outputs
+                        .pop()
+                        .ok_or_else(|| anyhow!("missing skip at up level {i}"))?,
+                )
+            } else {
+                None
+            };
+            for (b_idx, block) in blocks.iter().enumerate() {
+                // Only the first block in the level (b_idx==0) consumes
+                // the skip; later blocks don't.
+                let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
+                h = block.forward_maybe_skip(
+                    &h, block_skip, t_emb, sca_emb, crp_emb, clip,
+                )?;
             }
         }
 
@@ -769,12 +994,28 @@ impl StableCascadePrior {
         let h = self.clf_norm.forward(&h)?;
         Ok(self.clf_conv.forward(&h)?)
     }
+
+    /// v0.40 phase 1: compute the injection position list for a given
+    /// residual count, against this prior's down_blocks topology.
+    /// Useful for callers that want to verify ahead of time which
+    /// positions will receive residuals (e.g., to compute per-residual
+    /// target spatial shapes).
+    pub fn cn_injection_positions(&self, n_residuals: usize) -> Vec<usize> {
+        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
+        if n_residuals == 0 || n_down_positions == 0 {
+            return Vec::new();
+        }
+        (0..n_residuals)
+            .map(|i| ((i + 1) * n_down_positions) / n_residuals - 1)
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------
 // Helpers — block-sequence builder.
 // ---------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn build_block_levels(
     blocks_per_level: &[usize],
     c_hidden_per_level: &[usize],
@@ -783,6 +1024,11 @@ fn build_block_levels(
     has_attention_per_level: &[bool],
     has_sca: bool,
     has_crp: bool,
+    // v0.40 phase 3 iter 1: per-level skip channel count for the
+    // FIRST ResBlock at each level. `None` → no skip-concat (used by
+    // the down path). `Some(&skip_dims)` with `skip_dims[level] > 0`
+    // → the first ResBlock at that level has `c_skip == skip_dims[level]`.
+    skip_dims_per_level: Option<&[usize]>,
     vb: VarBuilder,
 ) -> Result<Vec<Vec<Block>>> {
     let mut out = Vec::with_capacity(blocks_per_level.len());
@@ -796,10 +1042,14 @@ fn build_block_levels(
         // Attention level uses the same c_hidden for the kv stream
         // (text projection target).
         let text_dim = c;
+        let skip_c = skip_dims_per_level.and_then(|s| s.get(level).copied()).unwrap_or(0);
         for triple in 0..*n_triples {
             let pos_base = triple * triple_size;
-            blocks.push(Block::Res(ResBlock::new(
+            // Skip-concat only on the very FIRST ResBlock of this level.
+            let c_skip = if triple == 0 { skip_c } else { 0 };
+            blocks.push(Block::Res(ResBlock::new_with_skip(
                 c,
+                c_skip,
                 level_vb.pp(&pos_base.to_string()),
             )?));
             blocks.push(Block::Time(TimestepBlock::new(
@@ -864,6 +1114,7 @@ mod tests {
             c_clip_text_pooled: 24,
             c_clip_img: Some(12),
             num_pooled_tokens: 4,
+            c_pooled_token: 16,
             head_dim: 4,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -888,6 +1139,7 @@ mod tests {
             c_clip_text_pooled: 24,
             c_clip_img: None,
             num_pooled_tokens: 4,
+            c_pooled_token: 16,
             head_dim: 4,
             has_attention_per_level: vec![false, true],
             has_sca: true,
@@ -926,7 +1178,11 @@ mod tests {
         assert_eq!(cfg.c_cond, 64);
         assert_eq!(cfg.c_clip_text, Some(1280));
         assert_eq!(cfg.c_clip_img, Some(768));
-        assert_eq!(cfg.num_pooled_tokens, 128);
+        assert_eq!(
+            cfg.num_pooled_tokens, 4,
+            "Stage C upstream: 8192 = 4 × 2048 (corrected at v0.40 phase 2)"
+        );
+        assert_eq!(cfg.c_pooled_token, 2048);
         assert_eq!(cfg.head_dim, 64);
         assert_eq!(cfg.has_attention_per_level, vec![true, true]);
         assert!(cfg.has_sca && cfg.has_crp);
@@ -944,7 +1200,11 @@ mod tests {
         assert_eq!(cfg.c_cond, 64);
         assert!(cfg.c_clip_text.is_none(), "Stage B has no clip_txt_mapper");
         assert!(cfg.c_clip_img.is_none(), "Stage B has no clip_img_mapper");
-        assert_eq!(cfg.num_pooled_tokens, 80);
+        assert_eq!(
+            cfg.num_pooled_tokens, 4,
+            "Stage B upstream: 5120 = 4 × 1280 (corrected at v0.40 phase 2)"
+        );
+        assert_eq!(cfg.c_pooled_token, 1280);
         assert_eq!(cfg.head_dim, 64);
         assert_eq!(
             cfg.has_attention_per_level,
@@ -1074,7 +1334,11 @@ mod tests {
     }
 
     #[test]
-    fn build_clip_conditioning_for_stage_c_returns_projected_text() {
+    fn build_clip_conditioning_for_stage_c_returns_concat_85_at_c_pooled_token() {
+        // v0.40 phase 2: Stage C returns concat(text, pooled_text,
+        // pooled_img) at (B, T_text + 4 + 4, c_pooled_token).
+        // small_stage_c_cfg uses 5 text tokens at c_pooled_token=16,
+        // num_pooled_tokens=4 → expected shape (1, 5+4+4=13, 16).
         let (prior, _) = random_prior_c(small_stage_c_cfg());
         let device = &prior.device;
         let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
@@ -1083,7 +1347,37 @@ mod tests {
         let clip = prior
             .build_clip_conditioning(&text, &pooled, Some(&img))
             .unwrap();
-        assert_eq!(clip.dims(), &[1, 5, 16]);
+        assert_eq!(clip.dims(), &[1, 13, 16]);
+    }
+
+    #[test]
+    fn build_clip_conditioning_for_stage_c_zero_pads_missing_image() {
+        // When clip_img is None, the image pooled stream is zeros.
+        // Output shape should still be (B, T_text + 4 + 4, c_pooled_token).
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let pooled = Tensor::randn(0f32, 1f32, (1, 24), device).unwrap();
+        let clip = prior
+            .build_clip_conditioning(&text, &pooled, None)
+            .unwrap();
+        assert_eq!(clip.dims(), &[1, 13, 16]);
+    }
+
+    #[test]
+    fn build_clip_conditioning_for_stage_b_returns_pooled_only() {
+        // v0.40 phase 2: Stage B has no clip_txt_mapper, no
+        // clip_img_mapper. Returns just pooled-text: (B, 4, c_pooled_token).
+        let (prior, _) = random_prior_b(small_stage_b_cfg());
+        let device = &prior.device;
+        // clip_text arg is ignored for Stage B; pass a dummy.
+        let dummy_text = Tensor::randn(0f32, 1f32, (1, 1, 1), device).unwrap();
+        let pooled = Tensor::randn(0f32, 1f32, (1, 24), device).unwrap();
+        let clip = prior
+            .build_clip_conditioning(&dummy_text, &pooled, None)
+            .unwrap();
+        // small_stage_b_cfg: num_pooled_tokens=4, c_pooled_token=16
+        assert_eq!(clip.dims(), &[1, 4, 16]);
     }
 
     // ---- Stage B tests (phase 0c) ----
@@ -1194,6 +1488,7 @@ mod tests {
             c_clip_text_pooled: 8,
             c_clip_img: Some(8),
             num_pooled_tokens: 4,
+            c_pooled_token: 8,
             head_dim: 2,
             has_attention_per_level: vec![true, true],
             has_sca: true,
@@ -1258,6 +1553,221 @@ mod tests {
                  mismatch between v0.39 cascade_prior and upstream:\n  {e}"
             ),
         }
+    }
+
+    /// v0.40 phase 3: real-weight smoke for Stage B. Stage B lives in
+    /// the standard `stabilityai/stable-cascade` repo under
+    /// `decoder/`. Largest stage at full widths (~3 GB), so this test
+    /// is heaviest of the four.
+    #[test]
+    fn stage_b_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("decoder/diffusion_pytorch_model.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping stage_b_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing decoder/diffusion_pytorch_model.safetensors \
+                 from stabilityai/stable-cascade).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap stage_b weights")
+        };
+        match StableCascadePrior::new_stage_b(Config::stage_b_full(), vb) {
+            Ok(_) => eprintln!("✓ Stage B real-weight load OK ({})", path.display()),
+            Err(e) => panic!(
+                "Stage B real-weight load FAILED — indicates tensor naming \
+                 mismatch between v0.40 cascade_prior and upstream:\n  {e}"
+            ),
+        }
+    }
+
+    // ---- v0.40 phase 1: ControlNet injection ----
+
+    #[test]
+    fn cn_injection_positions_spread_evenly_for_full_topology() {
+        // Stage C full: 8 + 24 = 32 triples × 3 sub-blocks = 96
+        // down_blocks positions. 8 residuals → positions 11, 23, 35,
+        // 47, 59, 71, 83, 95. Each at the END of a 12-block segment.
+        let cfg = Config {
+            c_in: 4,
+            c_out: 4,
+            c_hidden_per_level: vec![8, 8],
+            c_cond: 8,
+            c_clip_text: Some(8),
+            c_clip_text_pooled: 8,
+            c_clip_img: Some(8),
+            num_pooled_tokens: 4,
+            c_pooled_token: 8,
+            head_dim: 2,
+            has_attention_per_level: vec![true, true],
+            has_sca: true,
+            has_crp: true,
+            blocks_per_level: vec![8, 24],
+            effnet_input_channels: None,
+            pixels_input_channels: None,
+            sampler_style: SamplerStyle::OnePixel,
+        };
+        let (prior, _) = random_prior_c(cfg);
+        let positions = prior.cn_injection_positions(8);
+        assert_eq!(positions, vec![11, 23, 35, 47, 59, 71, 83, 95]);
+    }
+
+    #[test]
+    fn forward_with_cn_matches_forward_when_residuals_zeroed() {
+        // Sanity: CN injection with all-zero residuals + cn_scale=1.0
+        // should produce byte-identical output to the plain forward
+        // path. Verifies the injection mechanism is additive and
+        // doesn't otherwise modify the forward.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        // small_stage_c_cfg has 2 levels × 1 triple × 3 sub-blocks
+        // = 6 down positions. 2 residuals → positions 2, 5.
+        let positions = prior.cn_injection_positions(2);
+        assert_eq!(positions, vec![2, 5]);
+        // At position 2 (after first triple's Attn), latent is still
+        // at level 0 → c=16 (small cfg), spatial 8×8. At position 5
+        // (end of level 1's triple), latent is at level 1 → c=16,
+        // spatial 4×4 (after downscaler).
+        let r0 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
+        let r1 = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let plain = prior
+            .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
+            .unwrap();
+        let with_zero_cn = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .unwrap();
+        let diff = (&plain - &with_zero_cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff < 1e-5,
+            "CN injection with zero residuals should match plain forward (got max diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_changes_output_when_residuals_nonzero() {
+        // Load-bearing: residuals must actually influence the down
+        // path. If they were silently dropped, output would match
+        // plain forward.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        let r0 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let plain = prior
+            .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
+            .unwrap();
+        let with_cn = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .unwrap();
+        let diff = (&plain - &with_cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-5,
+            "CN injection should change output with non-zero residuals (got mean abs diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_shape_mismatched_residuals() {
+        // Phase 1 contract: residuals MUST shape-match the latent at
+        // injection point. Shape mismatch errors loudly.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        // Wrong shape at position 2: expected (1, 16, 8, 8), give (1, 16, 4, 4).
+        let r_wrong = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let r_ok = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let err = prior
+            .forward_with_cn(
+                &x,
+                &t,
+                Some(&sca),
+                Some(&crp),
+                &clip,
+                &[r_wrong, r_ok],
+                1.0,
+            )
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("doesn't match") && msg.contains("position 2"),
+            "expected shape-mismatch error pointing at position 2; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_empty_residuals() {
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        let err = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[], 1.0)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("non-empty"), "got: {msg}");
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_stage_b_config() {
+        let (prior, _) = random_prior_b(small_stage_b_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = prior.zero_kv_stream(1, 1, 5).unwrap();
+        let r = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let err = prior
+            .forward_with_cn(&x, &t, Some(&sca), None, &clip, &[r], 1.0)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Stage C only"),
+            "expected Stage-C-only error; got: {msg}"
+        );
     }
 
     #[test]

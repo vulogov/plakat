@@ -141,13 +141,17 @@ impl GlobalResponseNorm {
 ///
 /// Tensor keys (relative to the ResBlock's VB prefix):
 ///   `depthwise.{weight,bias}`
-///   `channelwise.0.{weight,bias}` (Linear C → 4C)
+///   `channelwise.0.{weight,bias}` (Linear `C+C_skip` → `4C`)
 ///   `channelwise.2.{beta,gamma}`  (GRN)
-///   `channelwise.4.{weight,bias}` (Linear 4C → C)
+///   `channelwise.4.{weight,bias}` (Linear `4C` → `C`)
 ///
-/// Upstream's ResBlock optionally accepts a `c_skip` concat input
-/// (for cross-stage skips in the decoder); that's handled at the
-/// level wrapper in v0.39 phase 0b/0c.
+/// **v0.40 phase 3 iter 1: skip-concat support.** When `c_skip > 0`
+/// (set by the UNet up-path's first block at each level boundary),
+/// the channelwise MLP's first Linear consumes `c + c_skip` input
+/// channels. The skip tensor is concat'd channel-last after the
+/// depthwise + LayerNorm2d, BEFORE the MLP. The residual add at the
+/// end is still against the input `x` (NOT against the concatenated
+/// stream).
 pub struct ResBlock {
     depthwise: nn::Conv2d,
     norm: LayerNorm2d,
@@ -155,10 +159,21 @@ pub struct ResBlock {
     grn: GlobalResponseNorm,
     channelwise_4: nn::Linear,
     channels: usize,
+    c_skip: usize,
 }
 
 impl ResBlock {
+    /// Construct a ResBlock without skip-concat. Equivalent to
+    /// `new_with_skip(channels, 0, vb)`.
     pub fn new(channels: usize, vb: VarBuilder) -> Result<Self> {
+        Self::new_with_skip(channels, 0, vb)
+    }
+
+    /// Construct a ResBlock with optional skip-concat. When
+    /// `c_skip > 0`, the channelwise MLP's first Linear is sized for
+    /// `channels + c_skip` input. Upstream Cascade uses `c_skip ==
+    /// channels` at the first block of each up-path level boundary.
+    pub fn new_with_skip(channels: usize, c_skip: usize, vb: VarBuilder) -> Result<Self> {
         let conv_cfg = nn::Conv2dConfig {
             padding: 1,
             groups: channels,
@@ -167,8 +182,12 @@ impl ResBlock {
         let depthwise = nn::conv2d(channels, channels, 3, conv_cfg, vb.pp("depthwise"))
             .map_err(|e| anyhow!("ResBlock depthwise: {e}"))?;
         let norm = LayerNorm2d::new(channels, 1e-6);
-        let channelwise_0 = nn::linear(channels, channels * 4, vb.pp("channelwise").pp("0"))
-            .map_err(|e| anyhow!("ResBlock channelwise.0: {e}"))?;
+        let channelwise_0 = nn::linear(
+            channels + c_skip,
+            channels * 4,
+            vb.pp("channelwise").pp("0"),
+        )
+        .map_err(|e| anyhow!("ResBlock channelwise.0: {e}"))?;
         let grn = GlobalResponseNorm::new(channels * 4, vb.pp("channelwise").pp("2"))?;
         let channelwise_4 = nn::linear(channels * 4, channels, vb.pp("channelwise").pp("4"))
             .map_err(|e| anyhow!("ResBlock channelwise.4: {e}"))?;
@@ -179,6 +198,7 @@ impl ResBlock {
             grn,
             channelwise_4,
             channels,
+            c_skip,
         })
     }
 
@@ -186,12 +206,46 @@ impl ResBlock {
         self.channels
     }
 
+    pub fn c_skip(&self) -> usize {
+        self.c_skip
+    }
+
+    /// Forward pass without skip. Errors if the block was constructed
+    /// with `c_skip > 0`.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        anyhow::ensure!(
+            self.c_skip == 0,
+            "ResBlock::forward called on a block constructed with c_skip={}; use forward_with_skip",
+            self.c_skip
+        );
+        self.forward_inner(x, None)
+    }
+
+    /// Forward pass with a `(B, c_skip, H, W)` skip tensor. The skip
+    /// is concatenated channel-last after the depthwise + LayerNorm2d,
+    /// before the channelwise MLP. Errors if `c_skip == 0`.
+    pub fn forward_with_skip(&self, x: &Tensor, x_skip: &Tensor) -> Result<Tensor> {
+        anyhow::ensure!(
+            self.c_skip > 0,
+            "ResBlock::forward_with_skip called on a block constructed without skip"
+        );
+        self.forward_inner(x, Some(x_skip))
+    }
+
+    fn forward_inner(&self, x: &Tensor, x_skip: Option<&Tensor>) -> Result<Tensor> {
         let x_res = x.clone();
         let h = self.depthwise.forward(x)?;
         let h = self.norm.forward(&h)?;
         // Permute (B, C, H, W) → (B, H, W, C) for MLP + GRN.
         let h = h.permute((0, 2, 3, 1))?.contiguous()?;
+        let h = if let Some(skip) = x_skip {
+            // Concat channel-last: (B, H, W, C) + (B, H, W, C_skip)
+            // → (B, H, W, C + C_skip).
+            let skip_clast = skip.permute((0, 2, 3, 1))?.contiguous()?;
+            Tensor::cat(&[&h, &skip_clast], D::Minus1)?
+        } else {
+            h
+        };
         let h = self.channelwise_0.forward(&h)?;
         let h = h.gelu()?;
         let h = self.grn.forward(&h)?;

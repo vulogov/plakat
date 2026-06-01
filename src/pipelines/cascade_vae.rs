@@ -320,7 +320,11 @@ impl StageAVae {
 
         let enc_res_1 = PaellaResBlock::new(cfg.c_hidden_deep, vb.pp("down_blocks").pp("2"))?;
 
-        let enc_out_conv = nn::conv2d(
+        // v0.40 phase 3 iter 1: enc_out_conv (down_blocks.3.0) is
+        // Conv2d → BN with NO Conv bias (the BN at .3.1 absorbs it).
+        // Verified by inspection: down_blocks.3.0.weight exists but
+        // not down_blocks.3.0.bias.
+        let enc_out_conv = nn::conv2d_no_bias(
             cfg.c_hidden_deep,
             cfg.c_latent,
             1,
@@ -341,14 +345,19 @@ impl StageAVae {
             VectorQuantizer::new(cfg.num_codes, cfg.c_latent, vb.pp("vquantizer"))?;
 
         // ---- Decoder ----
+        // v0.40 phase 3 iter 2: upstream up_blocks.0 is a Sequential
+        // containing the Conv2d at index .0 — so the tensor path is
+        // `up_blocks.0.0.{weight,bias}`, not `up_blocks.0.weight`.
+        // (Verified by inspection: up_blocks.0.0.weight = [384, 4, 1, 1]
+        // and up_blocks.0.0.bias = [384] exist.)
         let dec_in_conv = nn::conv2d(
             cfg.c_latent,
             cfg.c_hidden_deep,
             1,
             Default::default(),
-            vb.pp("up_blocks").pp("0"),
+            vb.pp("up_blocks").pp("0").pp("0"),
         )
-        .map_err(|e| anyhow!("up_blocks.0: {e}"))?;
+        .map_err(|e| anyhow!("up_blocks.0.0: {e}"))?;
 
         let mut dec_res_deep = Vec::with_capacity(cfg.n_decoder_deep_blocks);
         for i in 0..cfg.n_decoder_deep_blocks {
@@ -465,6 +474,71 @@ impl StageAVae {
         let (z_q, _idx) = self.quantize(&z)?;
         self.decode(&z_q)
     }
+
+    /// v0.40 phase 0: encode an image into **Stage B's input space**
+    /// — `(B, 3, H, W)` → `(B, 16, H/8, W/8)`.
+    ///
+    /// Continuous (no VQ snap). Pipeline:
+    /// 1. `encode()` produces the dense 4-channel latent at 4× spatial
+    ///    compression: `(B, 4, H/4, W/4)`.
+    /// 2. `pixel_unshuffle(2)` packs the 4-channel result into 16
+    ///    channels with another 2× spatial compression →
+    ///    `(B, 16, H/8, W/8)`, which matches Stage B's `c_in=16`
+    ///    embedding input.
+    ///
+    /// Used by `cascade::Pipeline::generate_img2img` to seed Stage B
+    /// from a real input image. For the VQ-snapped variant used as
+    /// the *training* target shape, see
+    /// [`encode_to_stage_b_space_quantized`](Self::encode_to_stage_b_space_quantized).
+    pub fn encode_to_stage_b_space(&self, image: &Tensor) -> Result<Tensor> {
+        let z = self.encode(image)?;
+        pixel_unshuffle(&z, 2)
+    }
+
+    /// VQ-quantized sibling of [`encode_to_stage_b_space`]. Returns
+    /// `(stage_b_target, code_indices)` where `stage_b_target` has
+    /// the same `(B, 16, H/8, W/8)` shape but each spatial location's
+    /// 4-dim value (pre-unshuffle) was snapped to its nearest
+    /// codebook entry.
+    pub fn encode_to_stage_b_space_quantized(
+        &self,
+        image: &Tensor,
+    ) -> Result<(Tensor, Tensor)> {
+        let z = self.encode(image)?;
+        let (z_q, indices) = self.quantize(&z)?;
+        let target = pixel_unshuffle(&z_q, 2)?;
+        Ok((target, indices))
+    }
+
+    /// v0.40 phase 0: decode a **Stage B output** back to an image —
+    /// `(B, 16, h, w)` → `(B, 3, h*8, w*8)`.
+    ///
+    /// Pipeline (reverse of [`encode_to_stage_b_space`]):
+    /// 1. `pixel_shuffle(2)` unpacks the 16-channel Stage B output
+    ///    into 4 channels at 2× spatial: `(B, 4, h*2, w*2)`.
+    /// 2. `decode()` runs Stage A's decoder (4× spatial expansion).
+    ///
+    /// Used by `cascade::Pipeline::generate` after Stage B's denoise
+    /// loop converges. The continuous values are fed straight to the
+    /// decoder without re-snapping to the codebook (matches the
+    /// upstream Cascade inference convention — Stage B is trained
+    /// to predict the quantized space, so its output is already
+    /// codebook-aligned in expectation).
+    pub fn decode_from_stage_b_space(&self, stage_b_out: &Tensor) -> Result<Tensor> {
+        let z = pixel_shuffle(stage_b_out, 2)?;
+        self.decode(&z)
+    }
+}
+
+/// v0.40 phase 0: spatial-dim helper for the Stage B latent that
+/// corresponds to a final image dim. The default Paella v3 config
+/// has Stage A at 4× spatial compression + a PixelUnshuffle(2) bridge
+/// for Stage B's 16-channel input, giving **8× total** from image to
+/// Stage B space.
+///
+/// 1024 → 128, 512 → 64, 256 → 32. Image dim must be divisible by 8.
+pub fn stage_b_spatial_for_image(image_dim: u32) -> u32 {
+    image_dim / 8
 }
 
 // ---------------------------------------------------------------------
@@ -733,6 +807,75 @@ mod tests {
                 "Stage A real-weight load FAILED — indicates tensor naming \
                  mismatch between v0.39 cascade_vae and upstream:\n  {e}"
             ),
+        }
+    }
+
+    // ---- v0.40 phase 0: Stage A ↔ Stage B bridge ----
+
+    #[test]
+    fn encode_to_stage_b_space_gives_16ch_at_8x_compression() {
+        let (vae, _) = random_vae(small_cfg());
+        // 32×32 image → encode (4× → 4ch×8×8) → unshuffle(2)
+        // → 16ch×4×4. Net 8× spatial.
+        let image = Tensor::randn(0f32, 1f32, (1, 3, 32, 32), &vae.device).unwrap();
+        let stage_b_target = vae.encode_to_stage_b_space(&image).unwrap();
+        assert_eq!(stage_b_target.dims(), &[1, 16, 4, 4]);
+    }
+
+    #[test]
+    fn decode_from_stage_b_space_gives_image_at_8x_expansion() {
+        let (vae, _) = random_vae(small_cfg());
+        // 16ch×4×4 → shuffle(2) → 4ch×8×8 → decode (4×)
+        // → 3ch×32×32. Net 8× spatial.
+        let stage_b_out = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), &vae.device).unwrap();
+        let image = vae.decode_from_stage_b_space(&stage_b_out).unwrap();
+        assert_eq!(image.dims(), &[1, 3, 32, 32]);
+    }
+
+    #[test]
+    fn stage_b_bridge_round_trip_preserves_shape() {
+        let (vae, _) = random_vae(small_cfg());
+        // image → encode_to_stage_b → decode_from_stage_b → image.
+        // Same shape contract end-to-end (numerical values not
+        // expected to match — VAE is lossy, random weights).
+        let image = Tensor::randn(0f32, 1f32, (1, 3, 32, 32), &vae.device).unwrap();
+        let stage_b_target = vae.encode_to_stage_b_space(&image).unwrap();
+        let restored = vae.decode_from_stage_b_space(&stage_b_target).unwrap();
+        assert_eq!(restored.dims(), image.dims());
+    }
+
+    #[test]
+    fn encode_to_stage_b_space_quantized_returns_indices() {
+        let (vae, _) = random_vae(small_cfg());
+        let image = Tensor::randn(0f32, 1f32, (1, 3, 32, 32), &vae.device).unwrap();
+        let (stage_b_target, indices) =
+            vae.encode_to_stage_b_space_quantized(&image).unwrap();
+        // Shape: (B, 16, H/8, W/8) for target; (B, H/4, W/4) for indices.
+        assert_eq!(stage_b_target.dims(), &[1, 16, 4, 4]);
+        // Indices are at the PRE-PixelUnshuffle resolution (4ch latent's
+        // spatial = H/4).
+        assert_eq!(indices.dims(), &[1, 8, 8]);
+    }
+
+    #[test]
+    fn stage_b_spatial_for_image_matches_paella_v3_contract() {
+        // 8× compression image → Stage B space.
+        assert_eq!(stage_b_spatial_for_image(1024), 128);
+        assert_eq!(stage_b_spatial_for_image(512), 64);
+        assert_eq!(stage_b_spatial_for_image(256), 32);
+        assert_eq!(stage_b_spatial_for_image(128), 16);
+    }
+
+    #[test]
+    fn encode_to_stage_b_space_rejects_non_divisible_image() {
+        // Image dim must be divisible by 8 (4 from Stage A encoder +
+        // 2 from PixelUnshuffle). 24×24 → encode wants 24/4 = 6, then
+        // PixelUnshuffle(2) wants 6/2 = 3. OK that works. Try 31×31.
+        let (vae, _) = random_vae(small_cfg());
+        let image = Tensor::randn(0f32, 1f32, (1, 3, 31, 31), &vae.device).unwrap();
+        match vae.encode_to_stage_b_space(&image) {
+            Ok(_) => panic!("expected non-divisible error"),
+            Err(_) => {} // accept any error — Stage A or PixelUnshuffle rejects
         }
     }
 
