@@ -49,15 +49,29 @@
 //! - `up_blocks.14.*` — ResBlock at shallower width
 //! - `out_block.0.{weight,bias}` — Conv2d 192→12
 //!
-//! ## PaellaResBlock — `gammas` parameter
+//! ## PaellaResBlock (= upstream `MixingResidualBlock`) — `gammas`
 //!
-//! Each ResBlock has a learnable `gammas` parameter of shape `(6,)`.
-//! Upstream applies these as scale/shift modulations interleaved
-//! with the depthwise + channelwise blocks. Phase 0d ships a
-//! best-effort interpretation (gammas applied as a residual scalar
-//! scale on the MLP output); the exact application can be refined
-//! against real-weight smoke at user time without changing the
-//! tensor naming.
+//! Each ResBlock has a learnable `gammas` parameter of shape `(6,)`
+//! applied as AdaLN-style scale/shift modulation across two
+//! pre-norm residual paths (upstream `MixingResidualBlock.forward`
+//! in diffusers' deprecated wuerstchen, which is what the
+//! `stabilityai/stable-cascade/vqgan` weights were trained against):
+//!
+//! ```text
+//!   mods = gammas
+//!   # Depthwise residual path
+//!   x' = norm(x) * (1 + mods[0]) + mods[1]
+//!   x  = x + depthwise(x') * mods[2]
+//!   # Channelwise residual path
+//!   x' = norm(x) * (1 + mods[3]) + mods[4]
+//!   x  = x + channelwise(x') * mods[5]
+//! ```
+//!
+//! v0.41 phase 2a replaced v0.39 phase 0d's single-scalar
+//! approximation (`x + h * gammas[4]`) with this 6-gamma form.
+//! Init is `zeros(6)`, so gammas=0 still yields identity — the
+//! `paella_resblock_skip_dominates_when_gammas_zeroed` invariant
+//! holds under the new forward.
 
 use anyhow::{Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Module, ModuleT, Tensor};
@@ -107,18 +121,18 @@ impl Config {
 // gammas modulation parameter.
 // ---------------------------------------------------------------------
 
-/// Stable Cascade Stage A ResBlock (Paella v3 design).
+/// Stable Cascade Stage A ResBlock (= upstream `MixingResidualBlock`).
 ///
 /// Tensor keys (relative to the block's VB prefix):
 ///   `depthwise.1.{weight,bias}`     — Conv2d(c, c, 3, groups=c)
 ///   `channelwise.0.{weight,bias}`   — Linear C → 4C
 ///   `channelwise.2.{weight,bias}`   — Linear 4C → C
-///   `gammas`                        — (6,) learnable modulation
+///   `gammas`                        — (6,) AdaLN-style modulation
 ///
-/// Note: upstream's `depthwise.0` is `ReflectionPad2d`; we
-/// approximate with zero-padding inside the Conv2d (numerically
-/// close for non-edge pixels; potential edge artifacts on real
-/// weights — phase 0g can swap if smoke shows divergence).
+/// Upstream `depthwise.0` is `ReflectionPad2d(1)` (no params) wrapping
+/// a `Conv2d(padding=0)`. v0.41 phase 2a replaces the v0.39 phase 0d
+/// zero-pad approximation with an explicit reflection pad before the
+/// conv. See `reflection_pad2d_1` below.
 pub struct PaellaResBlock {
     depthwise: nn::Conv2d,
     norm: LayerNorm2d,
@@ -130,12 +144,15 @@ pub struct PaellaResBlock {
 
 impl PaellaResBlock {
     pub fn new(channels: usize, vb: VarBuilder) -> Result<Self> {
+        // padding=0 — reflection pad is applied manually before the
+        // conv to match upstream `nn.ReflectionPad2d(1)` + `Conv2d(
+        // padding=0)`.
         let conv_cfg = nn::Conv2dConfig {
-            padding: 1,
+            padding: 0,
             groups: channels,
             ..Default::default()
         };
-        // Upstream's depthwise.0 is ReflectionPad2d (no params), .1
+        // Upstream depthwise.0 is ReflectionPad2d (no params), .1
         // is the Conv2d.
         let depthwise = nn::conv2d(channels, channels, 3, conv_cfg, vb.pp("depthwise").pp("1"))
             .map_err(|e| anyhow!("PaellaResBlock depthwise.1: {e}"))?;
@@ -162,22 +179,66 @@ impl PaellaResBlock {
         self.channels
     }
 
+    /// Two-residual-path forward matching upstream
+    /// `MixingResidualBlock`. The 6 gammas split as 2 + 1 + 2 + 1:
+    /// (scale, shift) AdaLN params then a residual-gate scalar per
+    /// path. Init is zeros(6) so the block starts as identity, then
+    /// learning shifts each gamma off zero.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x_res = x.clone();
-        let h = self.depthwise.forward(x)?;
-        let h = self.norm.forward(&h)?;
-        // Permute (B, C, H, W) → (B, H, W, C) for MLP.
-        let h = h.permute((0, 2, 3, 1))?.contiguous()?;
+        let m0 = self.gammas.i(0)?.to_scalar::<f32>()? as f64;
+        let m1 = self.gammas.i(1)?.to_scalar::<f32>()? as f64;
+        let m2 = self.gammas.i(2)?.to_scalar::<f32>()? as f64;
+        let m3 = self.gammas.i(3)?.to_scalar::<f32>()? as f64;
+        let m4 = self.gammas.i(4)?.to_scalar::<f32>()? as f64;
+        let m5 = self.gammas.i(5)?.to_scalar::<f32>()? as f64;
+
+        // ---- Depthwise residual path ----
+        let x_norm = self.norm.forward(x)?;
+        let x_temp = x_norm.affine(1.0 + m0, m1)?;
+        let x_pad = reflection_pad2d_1(&x_temp)?;
+        let dw = self.depthwise.forward(&x_pad)?;
+        let x = x.add(&dw.affine(m2, 0.0)?)?;
+
+        // ---- Channelwise (MLP) residual path ----
+        let x_norm = self.norm.forward(&x)?;
+        let x_temp = x_norm.affine(1.0 + m3, m4)?;
+        // Permute (B, C, H, W) → (B, H, W, C) for the MLP.
+        let h = x_temp.permute((0, 2, 3, 1))?.contiguous()?;
         let h = self.channelwise_0.forward(&h)?;
         let h = h.gelu()?;
         let h = self.channelwise_2.forward(&h)?;
-        let h = h.permute((0, 3, 1, 2))?.contiguous()?;
-        // Apply gammas[4] as residual scale (best-effort interpretation
-        // of the 6-gamma vector; refined in phase 0g if needed).
-        let scale = self.gammas.i(4)?.to_scalar::<f32>()? as f64;
-        let scaled = h.affine(scale, 0.0)?;
-        Ok(x_res.add(&scaled)?)
+        let mlp = h.permute((0, 3, 1, 2))?.contiguous()?;
+        let x = x.add(&mlp.affine(m5, 0.0)?)?;
+
+        Ok(x)
     }
+}
+
+/// Reflection padding by 1 on the spatial dims of a 4-D `(B, C, H, W)`
+/// tensor. Equivalent to PyTorch `nn.ReflectionPad2d(1)`.
+///
+/// Reflection pad with width 1 mirrors the second-from-edge row/col
+/// outward: input row `1` becomes output row `0`, input row `H-2`
+/// becomes output row `H+1`. The edge row itself (`0`, `H-1`) stays
+/// at position 1, H. Equivalently the output is the cat
+/// `[row 1, x[0..H], row H-2]` along H then the same trick on W.
+///
+/// Requires `H ≥ 2` and `W ≥ 2`. Stage A spatial dims are always at
+/// least the latent resolution H/4 ≥ 2 for any sensible image size.
+fn reflection_pad2d_1(x: &Tensor) -> Result<Tensor> {
+    let (_b, _c, h, w) = x.dims4()?;
+    anyhow::ensure!(
+        h >= 2 && w >= 2,
+        "reflection_pad2d_1: input must be ≥2×2 (got {h}×{w})"
+    );
+    // Pad H dim: prepend row 1, append row H-2.
+    let top = x.i((.., .., 1..2, ..))?;
+    let bottom = x.i((.., .., h - 2..h - 1, ..))?;
+    let h_padded = Tensor::cat(&[&top, x, &bottom], 2)?;
+    // Pad W dim of the H-padded tensor: prepend col 1, append col W-2.
+    let left = h_padded.i((.., .., .., 1..2))?;
+    let right = h_padded.i((.., .., .., w - 2..w - 1))?;
+    Tensor::cat(&[&left, &h_padded, &right], 3).map_err(|e| e.into())
 }
 
 // ---------------------------------------------------------------------
@@ -667,12 +728,14 @@ mod tests {
 
     #[test]
     fn paella_resblock_skip_dominates_when_gammas_zeroed() {
-        // gammas all zero → residual scale gammas[4]=0 → output = x.
+        // gammas all zero: both residual paths multiply their branch
+        // output by mods[2]=0 and mods[5]=0 respectively, so the
+        // block reduces to identity regardless of conv/MLP weights.
+        // This invariant must hold under the v0.41 phase 2a rewrite.
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
         let blk = PaellaResBlock::new(8, vb).unwrap();
-        // Zero out the gammas parameter.
         for (name, var) in varmap.data().lock().unwrap().iter() {
             if name == "gammas" {
                 let z = Tensor::zeros(6, DType::F32, &device).unwrap();
@@ -690,6 +753,130 @@ mod tests {
             .to_scalar::<f32>()
             .unwrap();
         assert!(diff < 1e-5, "with gammas=0 forward should be identity (got max diff {diff})");
+    }
+
+    #[test]
+    fn paella_resblock_each_of_six_gammas_changes_output() {
+        // v0.41 phase 2a: the v0.39 forward used only gammas[4].
+        // The corrected forward uses ALL SIX. mods[0,1,3,4] are
+        // AdaLN scale/shift parameters that are ONLY observable
+        // when the corresponding residual-gate (mods[2] for the
+        // depthwise path, mods[5] for the channelwise path) is
+        // non-zero. So we test:
+        //   - mods[2] alone → depthwise gate opens → output differs
+        //     from gammas=0
+        //   - mods[5] alone → channelwise gate opens → output
+        //     differs from gammas=0
+        //   - mods[0] flipped while mods[2] is open → output
+        //     differs from "mods[0]=0 but mods[2] open"
+        //   - mods[1] flipped while mods[2] is open → likewise
+        //   - mods[3] flipped while mods[5] is open → likewise
+        //   - mods[4] flipped while mods[5] is open → likewise
+        // Each assertion proves a distinct gamma slot is observable.
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let blk = PaellaResBlock::new(8, vb).unwrap();
+        let x = Tensor::randn(0f32, 1f32, (1, 8, 4, 4), &device).unwrap();
+
+        let set_gammas = |vals: &[f32]| {
+            for (name, var) in varmap.data().lock().unwrap().iter() {
+                if name == "gammas" {
+                    let t = Tensor::from_vec(vals.to_vec(), 6, &device).unwrap();
+                    var.set(&t).unwrap();
+                }
+            }
+        };
+        let forward_max_diff = |a: &Tensor, b: &Tensor| {
+            (a - b)
+                .unwrap()
+                .abs()
+                .unwrap()
+                .max_all()
+                .unwrap()
+                .to_scalar::<f32>()
+                .unwrap()
+        };
+
+        // Gate-only sets: each is observably non-identity.
+        set_gammas(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        let y_g2 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g2, &x) > 1e-6,
+            "mods[2]=1 (depthwise gate) should produce non-identity"
+        );
+        set_gammas(&[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let y_g5 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g5, &x) > 1e-6,
+            "mods[5]=1 (channelwise gate) should produce non-identity"
+        );
+
+        // mods[0] flipped while mods[2] is open.
+        set_gammas(&[0.5, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        let y_g0 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g0, &y_g2) > 1e-6,
+            "mods[0] should change depthwise-path output when gate is open"
+        );
+
+        // mods[1] (shift) flipped while mods[2] is open.
+        set_gammas(&[0.0, 0.5, 1.0, 0.0, 0.0, 0.0]);
+        let y_g1 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g1, &y_g2) > 1e-6,
+            "mods[1] should change depthwise-path output when gate is open"
+        );
+
+        // mods[3] flipped while mods[5] is open.
+        set_gammas(&[0.0, 0.0, 0.0, 0.5, 0.0, 1.0]);
+        let y_g3 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g3, &y_g5) > 1e-6,
+            "mods[3] should change channelwise-path output when gate is open"
+        );
+
+        // mods[4] (shift) flipped while mods[5] is open.
+        set_gammas(&[0.0, 0.0, 0.0, 0.0, 0.5, 1.0]);
+        let y_g4 = blk.forward(&x).unwrap();
+        assert!(
+            forward_max_diff(&y_g4, &y_g5) > 1e-6,
+            "mods[4] should change channelwise-path output when gate is open"
+        );
+    }
+
+    #[test]
+    fn reflection_pad2d_1_mirrors_second_from_edge() {
+        // Spec: input row 1 → output row 0, input row H-2 → output
+        // row H+1. Same for columns. Construct a 1×1×4×4 input with
+        // distinct values so we can read off the reflection.
+        let device = Device::Cpu;
+        // Values 0..16 reshaped (1, 1, 4, 4):
+        //   0  1  2  3
+        //   4  5  6  7
+        //   8  9 10 11
+        //  12 13 14 15
+        let flat: Vec<f32> = (0..16).map(|v| v as f32).collect();
+        let x = Tensor::from_vec(flat, (1, 1, 4, 4), &device).unwrap();
+        let y = reflection_pad2d_1(&x).unwrap();
+        assert_eq!(y.dims(), &[1, 1, 6, 6]);
+        // Extract the padded grid.
+        let g = y
+            .squeeze(0)
+            .unwrap()
+            .squeeze(0)
+            .unwrap()
+            .to_vec2::<f32>()
+            .unwrap();
+        // Row 0 of output = row 1 of input.
+        assert_eq!(g[0], vec![5.0, 4.0, 5.0, 6.0, 7.0, 6.0]);
+        // Row 5 of output = row 2 of input (H-2 = 4-2 = 2).
+        assert_eq!(g[5], vec![9.0, 8.0, 9.0, 10.0, 11.0, 10.0]);
+        // Middle rows: input rows 0..4 sit at output rows 1..5,
+        // with columns reflected: col 0 of output = col 1 of input,
+        // col 5 of output = col 2 of input.
+        assert_eq!(g[1], vec![1.0, 0.0, 1.0, 2.0, 3.0, 2.0]);
+        assert_eq!(g[4], vec![13.0, 12.0, 13.0, 14.0, 15.0, 14.0]);
     }
 
     // ---- VectorQuantizer ----
