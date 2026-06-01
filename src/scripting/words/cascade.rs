@@ -150,6 +150,18 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
             oh,
         );
         meta.negative = negative;
+        // v0.38 phase 3: emit Cascade LoRA stack metadata. The LoRAs
+        // themselves merged into Stage B + Stage C tempfiles at load
+        // time; this just records what was used per-image.
+        if !ctx.loras.is_empty() {
+            let stack: Vec<crate::imaging::metadata::LoraEntry> = ctx
+                .loras
+                .iter()
+                .map(|s| s.to_entry())
+                .collect();
+            meta.with_lora_stack(stack);
+            meta.lora_scale = Some(ctx.config.lora_scale);
+        }
         Ok(ctx.push_image_with_metadata(img, meta))
     })??;
 

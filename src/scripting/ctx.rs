@@ -373,6 +373,9 @@ impl ScriptCtx {
         // transformer tempfile at load time (v0.35 phase 4 pattern);
         // any stack mutation needs a fresh load to take effect.
         self.loaded_pixart = None;
+        // v0.38 phase 3: Cascade LoRAs merge into Stage B + Stage C
+        // safetensors tempfiles at load time; drop on mutation.
+        self.loaded_cascade = None;
     }
 
     /// v0.23 phase 6: invalidate pipeline slots whose ControlNet
@@ -902,6 +905,12 @@ impl ScriptCtx {
         if !hit {
             self.loaded_cascade = None;
             let device = self.device.clone();
+            // v0.38 phase 3: LoRA stack merges into Stage B + Stage C
+            // safetensors at load time (same pattern as PixArt). Any
+            // mutation between calls drops the slot via
+            // mark_loras_changed below.
+            let lora_scale = self.config.lora_scale;
+            let loras_snapshot = self.loras.clone();
             let handle = tokio::runtime::Handle::try_current().map_err(|e| {
                 anyhow!(
                     "ScriptCtx::get_or_load_cascade: no tokio runtime in scope. {e}"
@@ -909,13 +918,24 @@ impl ScriptCtx {
             })?;
             let pipeline = tokio::task::block_in_place(|| {
                 handle.block_on(async {
+                    let mut resolved: Vec<
+                        crate::pipelines::lora::ResolvedLora,
+                    > = Vec::with_capacity(loras_snapshot.len());
+                    for spec in &loras_snapshot {
+                        resolved.push(spec.resolve().await?);
+                    }
                     let repo = if alias_owned.contains('/') {
                         alias_owned.clone()
                     } else {
                         crate::hf::resolve_alias(&alias_owned).to_string()
                     };
                     crate::pipelines::cascade::Pipeline::load(
-                        crate::pipelines::cascade::LoadRequest { repo, device },
+                        crate::pipelines::cascade::LoadRequest {
+                            repo,
+                            device,
+                            loras: resolved,
+                            lora_scale,
+                        },
                     )
                     .await
                 })
