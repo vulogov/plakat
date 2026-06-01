@@ -1171,6 +1171,95 @@ mod tests {
         assert_eq!(projected.dims(), &[1, 8, 8, 8]);
     }
 
+    // ---- v0.39 phase 0h: parameter count + real-weight smoke ----
+
+    #[test]
+    fn stage_c_full_topology_produces_1550_param_tensors() {
+        // Locks the upstream inspection count (1550 tensors in
+        // stable-cascade-prior/prior/diffusion_pytorch_model.safetensors)
+        // against our Stage C topology. Tensor count is determined by
+        // structure (blocks_per_level, has_attention, has_sca, has_crp,
+        // mappers) — not widths — so we use tiny widths for speed.
+        //
+        // If this test breaks: either our topology drifted from
+        // upstream (bug) or we deliberately added/removed a module
+        // (update the constant). Either way, the test fails loudly
+        // so the divergence is conscious.
+        let cfg = Config {
+            c_in: 4,
+            c_out: 4,
+            c_hidden_per_level: vec![8, 8],
+            c_cond: 8,
+            c_clip_text: Some(8),
+            c_clip_text_pooled: 8,
+            c_clip_img: Some(8),
+            num_pooled_tokens: 4,
+            head_dim: 2,
+            has_attention_per_level: vec![true, true],
+            has_sca: true,
+            has_crp: true,
+            blocks_per_level: vec![8, 24], // Upstream Stage C counts.
+            effnet_input_channels: None,
+            pixels_input_channels: None,
+            sampler_style: SamplerStyle::OnePixel,
+        };
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let _prior = StableCascadePrior::new_stage_c(cfg, vb).expect("new_stage_c");
+        let n_params = varmap.data().lock().unwrap().len();
+        assert_eq!(
+            n_params, 1550,
+            "Stage C full topology should produce 1550 param tensors \
+             (matches upstream inspection at v0.39 phase 0)"
+        );
+    }
+
+    /// Real-weight smoke test for Stage C. Skipped unless
+    /// `STABLE_CASCADE_WEIGHTS_DIR` env var points at a directory
+    /// containing `prior/diffusion_pytorch_model.safetensors`.
+    ///
+    /// When run: attempts VarBuilder.from_mmaped_safetensors against
+    /// the real upstream Stage C checkpoint at FULL widths (c_hidden=
+    /// 2048; ~3.6 GB RAM). Success means every tensor key in
+    /// `cascade_prior::StableCascadePrior::new_stage_c` matches
+    /// upstream — the v0.37/v0.38 caveat is closed.
+    #[test]
+    fn stage_c_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("prior/diffusion_pytorch_model.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping stage_c_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing prior/diffusion_pytorch_model.safetensors \
+                 from stabilityai/stable-cascade-prior).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap stage_c weights")
+        };
+        match StableCascadePrior::new_stage_c(Config::stage_c_full(), vb) {
+            Ok(_) => eprintln!("✓ Stage C real-weight load OK ({})", path.display()),
+            Err(e) => panic!(
+                "Stage C real-weight load FAILED — indicates tensor naming \
+                 mismatch between v0.39 cascade_prior and upstream:\n  {e}"
+            ),
+        }
+    }
+
     #[test]
     fn stage_b_construction_rejects_one_pixel_style() {
         let device = Device::Cpu;

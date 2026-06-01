@@ -693,6 +693,49 @@ mod tests {
         assert_eq!(restored.dims(), image.dims());
     }
 
+    /// v0.39 phase 0h: real-weight smoke for Stage A. Skipped
+    /// unless `STABLE_CASCADE_WEIGHTS_DIR` env var points at a
+    /// directory containing `vqgan/diffusion_pytorch_model.safetensors`.
+    ///
+    /// Stage A is the smallest stage (~14 MB), the cheapest
+    /// real-weight verification. Success means cascade_vae's tensor
+    /// naming matches `stabilityai/stable-cascade/vqgan/`.
+    #[test]
+    fn stage_a_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("vqgan/diffusion_pytorch_model.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping stage_a_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing vqgan/diffusion_pytorch_model.safetensors \
+                 from stabilityai/stable-cascade).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap stage_a weights")
+        };
+        match StageAVae::new(Config::paella_v3(), vb) {
+            Ok(_) => eprintln!("✓ Stage A real-weight load OK ({})", path.display()),
+            Err(e) => panic!(
+                "Stage A real-weight load FAILED — indicates tensor naming \
+                 mismatch between v0.39 cascade_vae and upstream:\n  {e}"
+            ),
+        }
+    }
+
     #[test]
     fn vae_quantize_changes_output() {
         let (vae, _) = random_vae(small_cfg());
