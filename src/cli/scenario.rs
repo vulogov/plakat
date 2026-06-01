@@ -2025,6 +2025,38 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .as_ref()
         .map(|_| model.clone());
 
+    // v0.37 phase 5: Stable Cascade scenario pre-load. Mirrors the
+    // PixArt pattern above (load once at scenario start when
+    // variant.is_cascade(); scenarios with no Cascade tasks pay
+    // nothing). LoRAs deferred to v0.38 (not in the v0.37 cycle's
+    // explicit deferral list); Cascade has no scenario-level LoRA
+    // wiring yet. Stage A VAE is its own type (not the SD-family
+    // AutoEncoderKL), so the v0.34 phase 3 VAE-cache mechanism
+    // doesn't apply — Cascade scenarios don't share VAE with other
+    // pipelines.
+    let mut cascade_pipeline: Option<crate::pipelines::cascade::Pipeline> =
+        if args.dry_run || !variant.is_cascade() {
+            None
+        } else {
+            let resolved_repo = if model.contains('/') {
+                model.clone()
+            } else {
+                crate::hf::resolve_alias(&model).to_string()
+            };
+            Some(
+                crate::pipelines::cascade::Pipeline::load(
+                    crate::pipelines::cascade::LoadRequest {
+                        repo: resolved_repo,
+                        device: device.clone(),
+                    },
+                )
+                .await?,
+            )
+        };
+    let _cascade_pipeline_key: Option<String> = cascade_pipeline
+        .as_ref()
+        .map(|_| model.clone());
+
     // -------- enhance prompts up front, deduped + parallelized --------
     // Each task's `pre_refine` string is enhancer-input; under sequential
     // per-task calls this fires N times serially. Pre-loop we dedupe to the
@@ -2235,12 +2267,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     }
     // SD-family lazy reload predicate: same condition used at
     // pre-load time (line ~1635). When false (Flux / SD3 / PixArt /
-    // dry-run), `pipeline` stays None for the whole loop and never
-    // gets touched by the evictor.
+    // Stable Cascade / dry-run), `pipeline` stays None for the whole
+    // loop and never gets touched by the evictor.
     let sd_pipeline_applicable = !args.dry_run
         && !variant.is_flux()
         && !variant.is_sd3()
         && !variant.is_pixart()
+        && !variant.is_cascade()
         && has_generate_tasks;
 
     for (idx, task) in s.tasks.iter().enumerate() {
@@ -3432,6 +3465,50 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 false
             };
 
+            // v0.37 phase 5: Stable Cascade dispatch arm. Routes per-
+            // task Cascade tasks through the scenario-cached
+            // `cascade::Pipeline`. Single --steps splits 2/3 → Stage C
+            // and 1/3 → Stage B, matching t2i::run's CLI dispatch
+            // split. Cascade has no scenario-level LoRA wiring in
+            // v0.37 (deferred to v0.38). Falls through to PixArt →
+            // SD3 → SD/Flux for non-Cascade tasks.
+            if let Some(cp) = cascade_pipeline.as_mut() {
+                use crate::imaging::metadata::GenerationMetadata;
+                let stage_c_steps = (eff_steps * 2).div_ceil(3).max(1);
+                let stage_b_steps = eff_steps.saturating_sub(stage_c_steps).max(1);
+                for img_idx in 0..eff_count {
+                    let img_seed = task_seed.wrapping_add(img_idx as u64);
+                    let (buf, ow, oh) = cp.generate(
+                        &final_prompt,
+                        &eff_negative,
+                        stage_c_steps,
+                        stage_b_steps,
+                        eff_guidance,
+                        img_seed,
+                        eff_scheduler,
+                    )?;
+                    let mut m = GenerationMetadata::new(
+                        final_prompt.clone(),
+                        model.clone(),
+                        img_seed,
+                        eff_steps,
+                        eff_guidance,
+                        format!("{:?}", eff_scheduler).to_lowercase(),
+                        ow,
+                        oh,
+                    );
+                    m.negative = eff_negative.clone();
+                    let out_path = task_out
+                        .join(format!("plakat-cascade-{img_seed}.png"));
+                    crate::imaging::io::save_rgb_u8_with_metadata(
+                        &buf,
+                        ow,
+                        oh,
+                        &out_path,
+                        &m,
+                    )?;
+                }
+            } else
             // v0.36 phase 0: PixArt dispatch arm. Routes per-task PixArt
             // tasks through the scenario-cached `pixart::Pipeline`.
             // PixArt has no runtime per-task LoRA swap (merge happens
@@ -4053,7 +4130,14 @@ fn sd_per_task_lora_preflight(
     // the SD-family preflight tracks SD per-task LoRAs and will
     // surface here in a later phase. For now: skip the warning so
     // PixArt scenarios load cleanly.
-    if variant.is_flux() || variant.is_sd3() || variant.is_pixart() {
+    // v0.37 phase 5: Stable Cascade also skips. Scenario-level
+    // LoRAs land in v0.38 alongside the Cascade LoRA story (deferred
+    // from v0.37 per the cycle's locked decision).
+    if variant.is_flux()
+        || variant.is_sd3()
+        || variant.is_pixart()
+        || variant.is_cascade()
+    {
         return Ok(());
     }
     // Collect tasks that declare per-task loras.
@@ -5624,6 +5708,23 @@ mod tests {
             "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
         )
         .expect("canonical PixArt repo string must skip too");
+    }
+
+    /// v0.37 phase 5: Stable Cascade scenarios skip the SD-style
+    /// preflight too. Cascade LoRA support is deferred to v0.38;
+    /// scenarios with per-task LoRAs need to load cleanly today.
+    #[test]
+    fn preflight_stable_cascade_model_skips() {
+        let s = scenario_with_task_loras(&[
+            &["foo/lora-a:0.7"],
+            &["bar/lora-b:0.5"],
+        ]);
+        sd_per_task_lora_preflight(&s, "stable-cascade")
+            .expect("Stable Cascade scenarios must not bail in the SD-style preflight");
+        sd_per_task_lora_preflight(&s, "cascade")
+            .expect("cascade alias must also skip");
+        sd_per_task_lora_preflight(&s, "stabilityai/stable-cascade")
+            .expect("canonical Stable Cascade repo string must skip too");
     }
 
     // v0.17 phase 5 — task_outputs_all_present probe.
