@@ -23,37 +23,36 @@
 //!                                 └── self-attn ┘
 //! ```
 //!
-//! Each block at a given level:
-//! - **ResBlock** (timestep-conditioned, FiLM-style scale+shift on
-//!   the normalised hidden states).
-//! - **Self-attention** (at the deepest 2 levels).
-//! - **Cross-attention** to the CLIP-G text sequence (same depths).
+//! Each block-slot at a given level fires three sub-modules in
+//! order:
+//! - **ResBlock** (spatial conv stack, no time conditioning).
+//!   Reused from `cascade_stage_a` — Stage A's VAE blocks are
+//!   structurally identical, so the same `ResBlock` impl serves.
+//! - **TimestepBlock** (FiLM scale+shift derived from the time
+//!   embedding via a per-block `mapper` Linear). v0.38 phase 0
+//!   wires this in — v0.37 left it as a pass-through.
+//! - **AttentionBlock** (self-attention + cross-attention to the
+//!   CLIP-G text sequence), only at attention levels.
 //!
 //! Stage B is conditioned on Stage C's output ALSO (the so-called
-//! `effnet` conditioning). Phase 2 leaves that input slot in the
-//! forward signature but treats it as optional — wired through
-//! phase 4 when end-to-end inference runs.
+//! `effnet` conditioning). v0.38 phase 1 wires that path.
 //!
-//! ## v0.37 phase 2 scope
+//! ## v0.37 phase 2 scope (now closed by v0.38 phase 0)
 //!
-//! - Generic `StableCascadeUnet` + `Config`.
-//! - `Config::stage_b_full()` and `Config::stage_b_lite()`
-//!   constructors. Stage C configs land in phase 3.
-//! - Shape-correct forward pass: `(B, C_in, h, w)` latent +
-//!   `(B,)` time + `(B, seq, 1280)` text → `(B, C_in, h, w)`.
+//! - Generic `StableCascadeUnet` + `Config`. ✓ (v0.37 phase 2)
+//! - Shape-correct forward pass with the right hourglass topology. ✓
+//! - **FiLM timestep injection.** ✓ (v0.38 phase 0 — this commit)
+//! - Stage B + Stage C config constructors. ✓ (v0.37 phases 2-3)
 //! - Tensor names follow the diffusers
 //!   `stabilityai/stable-cascade` decoder module hierarchy
-//!   (best-effort; real-weight verification at v0.37 phase 4 smoke).
+//!   (best-effort; real-weight verification at user smoke time).
 //!
-//! ## What's NOT here (deferred)
+//! ## What's NOT here (deferred to v0.38 phase 1+)
 //!
 //! - **Effnet conditioning on Stage C's output** (Stage B's
-//!   specific feature) — phase 4 wires it.
-//! - **Stage C config / instantiation** — phase 3.
-//! - **Time embedding flat MLP details** that match upstream
-//!   exactly (we use a reasonable sinusoidal + 2-layer MLP).
+//!   specific feature) — v0.38 phase 1.
 //! - **All upstream-specific quirks** (the published Stage B/C
-//!   have flow-matching schedulers etc; phase 4 surfaces the
+//!   have flow-matching schedulers etc; phase 4 surfaced the
 //!   compatibility story).
 
 use anyhow::{Result, anyhow};
@@ -369,6 +368,56 @@ impl AttentionBlock {
 }
 
 // ---------------------------------------------------------------------
+// TimestepBlock — FiLM time injection.
+// ---------------------------------------------------------------------
+
+/// FiLM-style timestep injection block. Matches the upstream Stable
+/// Cascade `TimestepBlock`:
+///
+/// ```text
+///   (scale, shift) = chunk(mapper(t_emb), dim=-1)   // each (B, C)
+///   x'(c, h, w)    = (1 + scale(c)) * x(c, h, w) + shift(c)
+/// ```
+///
+/// `t_emb` is the UNet's shared time embedding `(B, time_dim)` —
+/// every block has its own `mapper` Linear that projects to
+/// `2 * channels` so it can produce per-channel (scale, shift).
+///
+/// Upstream tensor key: `mapper.{weight,bias}` (matches the
+/// published `stabilityai/stable-cascade` decoder/prior weights).
+pub struct TimestepBlock {
+    mapper: nn::Linear,
+    channels: usize,
+}
+
+impl TimestepBlock {
+    pub fn new(channels: usize, time_dim: usize, vb: VarBuilder) -> Result<Self> {
+        let mapper = nn::linear(time_dim, 2 * channels, vb.pp("mapper"))
+            .map_err(|e| anyhow!("TimestepBlock mapper: {e}"))?;
+        Ok(Self { mapper, channels })
+    }
+
+    /// `x`: spatial `(B, C, H, W)`. `t_emb`: `(B, time_dim)`.
+    /// Returns spatial `(B, C, H, W)`.
+    pub fn forward(&self, x: &Tensor, t_emb: &Tensor) -> Result<Tensor> {
+        let (b, c, _h, _w) = x.dims4()?;
+        anyhow::ensure!(
+            c == self.channels,
+            "TimestepBlock: channel mismatch (got {c}, expected {})",
+            self.channels
+        );
+        let proj = self.mapper.forward(t_emb)?; // (B, 2*c)
+        let scale = proj.narrow(D::Minus1, 0, c)?.reshape((b, c, 1, 1))?;
+        let shift = proj.narrow(D::Minus1, c, c)?.reshape((b, c, 1, 1))?;
+        // FiLM: x' = (1 + scale) * x + shift.
+        // `affine(1.0, 1.0)` computes `1.0 * scale + 1.0` = scale + 1.
+        let scale_plus_one = scale.affine(1.0, 1.0)?;
+        let x = x.broadcast_mul(&scale_plus_one)?;
+        Ok(x.broadcast_add(&shift)?)
+    }
+}
+
+// ---------------------------------------------------------------------
 // Down / Up samplers.
 // ---------------------------------------------------------------------
 
@@ -429,10 +478,13 @@ impl Upsample {
 // Top-level UNet.
 // ---------------------------------------------------------------------
 
-/// Encoder block at one level: stacked ResBlocks (+ optional
-/// AttentionBlock per ResBlock) and a Downsample.
+/// Encoder block at one level: stacked (ResBlock + TimestepBlock +
+/// optional AttentionBlock) sub-block triples, then a Downsample.
+/// Each sub-block triple fires in order: res → timestep (FiLM) →
+/// attn (if attention-bearing).
 pub struct EncoderLevel {
     res_blocks: Vec<ResBlock>,
+    timesteps: Vec<TimestepBlock>,
     attentions: Vec<Option<AttentionBlock>>,
     downsample: Option<Downsample>,
 }
@@ -441,6 +493,7 @@ impl EncoderLevel {
     pub fn new(
         in_c: usize,
         out_c: usize,
+        time_dim: usize,
         blocks: usize,
         has_attention: bool,
         text_dim: usize,
@@ -450,6 +503,7 @@ impl EncoderLevel {
         vb: VarBuilder,
     ) -> Result<Self> {
         let mut res_blocks = Vec::with_capacity(blocks);
+        let mut timesteps = Vec::with_capacity(blocks);
         let mut attentions = Vec::with_capacity(blocks);
         for i in 0..blocks {
             let in_ch = if i == 0 { in_c } else { out_c };
@@ -458,6 +512,11 @@ impl EncoderLevel {
                 out_c,
                 groups,
                 vb.pp("res_blocks").pp(&i.to_string()),
+            )?);
+            timesteps.push(TimestepBlock::new(
+                out_c,
+                time_dim,
+                vb.pp("timesteps").pp(&i.to_string()),
             )?);
             attentions.push(if has_attention {
                 Some(AttentionBlock::new(
@@ -477,18 +536,30 @@ impl EncoderLevel {
         };
         Ok(Self {
             res_blocks,
+            timesteps,
             attentions,
             downsample,
         })
     }
 
-    /// Returns the level output AND each ResBlock's output for skip
+    /// Returns the level output AND each sub-block's output for skip
     /// connections (consumed by the matching DecoderLevel).
-    pub fn forward(&self, x: &Tensor, text: &Tensor) -> Result<(Tensor, Vec<Tensor>)> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        text: &Tensor,
+    ) -> Result<(Tensor, Vec<Tensor>)> {
         let mut x = x.clone();
         let mut skips = Vec::with_capacity(self.res_blocks.len());
-        for (rb, attn) in self.res_blocks.iter().zip(self.attentions.iter()) {
+        for ((rb, ts), attn) in self
+            .res_blocks
+            .iter()
+            .zip(self.timesteps.iter())
+            .zip(self.attentions.iter())
+        {
             x = rb.forward(&x)?;
+            x = ts.forward(&x, t_emb)?;
             if let Some(a) = attn {
                 x = a.forward(&x, text)?;
             }
@@ -503,6 +574,7 @@ impl EncoderLevel {
 
 pub struct DecoderLevel {
     res_blocks: Vec<ResBlock>,
+    timesteps: Vec<TimestepBlock>,
     attentions: Vec<Option<AttentionBlock>>,
     upsample: Option<Upsample>,
 }
@@ -512,6 +584,7 @@ impl DecoderLevel {
         in_c: usize,
         out_c: usize,
         skip_c: usize,
+        time_dim: usize,
         blocks: usize,
         has_attention: bool,
         text_dim: usize,
@@ -525,6 +598,7 @@ impl DecoderLevel {
         vb: VarBuilder,
     ) -> Result<Self> {
         let mut res_blocks = Vec::with_capacity(blocks);
+        let mut timesteps = Vec::with_capacity(blocks);
         let mut attentions = Vec::with_capacity(blocks);
         for i in 0..blocks {
             let in_ch = if i == 0 { in_c + skip_c } else { out_c + skip_c };
@@ -533,6 +607,11 @@ impl DecoderLevel {
                 out_c,
                 groups,
                 vb.pp("res_blocks").pp(&i.to_string()),
+            )?);
+            timesteps.push(TimestepBlock::new(
+                out_c,
+                time_dim,
+                vb.pp("timesteps").pp(&i.to_string()),
             )?);
             attentions.push(if has_attention {
                 Some(AttentionBlock::new(
@@ -552,6 +631,7 @@ impl DecoderLevel {
         };
         Ok(Self {
             res_blocks,
+            timesteps,
             attentions,
             upsample,
         })
@@ -559,7 +639,13 @@ impl DecoderLevel {
 
     /// `skips` must contain one tensor per ResBlock in this level
     /// (matching the corresponding EncoderLevel's output).
-    pub fn forward(&self, x: &Tensor, skips: &[Tensor], text: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        skips: &[Tensor],
+        t_emb: &Tensor,
+        text: &Tensor,
+    ) -> Result<Tensor> {
         anyhow::ensure!(
             skips.len() == self.res_blocks.len(),
             "DecoderLevel: expected {} skip tensors, got {}",
@@ -567,13 +653,20 @@ impl DecoderLevel {
             skips.len()
         );
         let mut x = x.clone();
-        for (i, (rb, attn)) in self.res_blocks.iter().zip(self.attentions.iter()).enumerate() {
+        for (i, ((rb, ts), attn)) in self
+            .res_blocks
+            .iter()
+            .zip(self.timesteps.iter())
+            .zip(self.attentions.iter())
+            .enumerate()
+        {
             // Concatenate skip on channel axis. Skips are consumed
             // in reverse order so the deepest layer sees the
             // innermost encoder output.
             let skip = &skips[skips.len() - 1 - i];
             x = Tensor::cat(&[&x, skip], 1)?;
             x = rb.forward(&x)?;
+            x = ts.forward(&x, t_emb)?;
             if let Some(a) = attn {
                 x = a.forward(&x, text)?;
             }
@@ -615,7 +708,11 @@ impl StableCascadeUnet {
         )
         .map_err(|e| anyhow!("StableCascadeUnet in_conv: {e}"))?;
 
-        let time_embedding = TimeEmbedding::new(first_level, vb.pp("time_embedding"))?;
+        // Time embedding's output dim is the UNet's shared FiLM
+        // conditioning dim — every TimestepBlock's `mapper` Linear
+        // projects from here.
+        let time_dim = first_level;
+        let time_embedding = TimeEmbedding::new(time_dim, vb.pp("time_embedding"))?;
 
         // Encoder levels: in_channels = level_channels[0] for the
         // first, then output of the previous level for subsequent.
@@ -626,6 +723,7 @@ impl StableCascadeUnet {
             encoder_levels.push(EncoderLevel::new(
                 in_c,
                 out_c,
+                time_dim,
                 cfg.blocks_per_level,
                 cfg.attention_levels[i],
                 cfg.text_hidden_size,
@@ -657,6 +755,7 @@ impl StableCascadeUnet {
                 in_c,
                 out_c,
                 cfg.level_channels[i],
+                time_dim,
                 cfg.blocks_per_level,
                 cfg.attention_levels[i],
                 cfg.text_hidden_size,
@@ -709,28 +808,26 @@ impl StableCascadeUnet {
     ///
     /// Returns `(B, channels, h, w)` denoised latent prediction.
     ///
-    /// **Phase 2 scope:** time_embedding is computed but not yet
-    /// injected into the ResBlocks (the upstream injection point
-    /// is per-block FiLM scale+shift; wiring lands in phase 4
-    /// alongside Stage C). The forward path still produces
-    /// shape-correct output for the level structure.
+    /// **v0.38 phase 0:** time embedding is now FiLM-injected at
+    /// every block via per-block `TimestepBlock`s. Output is now
+    /// time-dependent (a prerequisite for numerical correctness on
+    /// real weights). Effnet conditioning from Stage C → Stage B
+    /// is the remaining v0.38 phase 1 follow-through.
     pub fn forward(&self, latent: &Tensor, timestep: &Tensor, text: &Tensor) -> Result<Tensor> {
         let mut x = self.in_conv.forward(latent)?;
-        // Time conditioning is computed but its block-wise injection
-        // wires in phase 4 (see method doc).
-        let _t_emb = self.time_embedding.forward(timestep)?;
+        let t_emb = self.time_embedding.forward(timestep)?;
 
         // Encoder: collect per-level skip tensors.
         let mut all_skips: Vec<Vec<Tensor>> = Vec::with_capacity(self.encoder_levels.len());
         for level in &self.encoder_levels {
-            let (out, skips) = level.forward(&x, text)?;
+            let (out, skips) = level.forward(&x, &t_emb, text)?;
             all_skips.push(skips);
             x = out;
         }
 
         // Decoder: consume skips in reverse level order.
         for (level, skips) in self.decoder_levels.iter().zip(all_skips.iter().rev()) {
-            x = level.forward(&x, skips, text)?;
+            x = level.forward(&x, skips, &t_emb, text)?;
         }
 
         let x = self.out_norm.forward(&x)?;
@@ -961,6 +1058,73 @@ mod tests {
         let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
         let out = unet.forward(&latent, &timestep, &text).unwrap();
         assert_eq!(out.dims(), &[1, 16, 8, 8]);
+    }
+
+    // v0.38 phase 0: FiLM timestep injection (TimestepBlock).
+
+    #[test]
+    fn timestep_block_preserves_spatial_dims() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let ts = TimestepBlock::new(16, 32, vb).unwrap();
+        let x = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), &device).unwrap();
+        let t_emb = Tensor::randn(0f32, 1f32, (1, 32), &device).unwrap();
+        let out = ts.forward(&x, &t_emb).unwrap();
+        assert_eq!(out.dims(), &[1, 16, 4, 4]);
+    }
+
+    #[test]
+    fn timestep_block_changes_output_when_time_changes() {
+        // Load-bearing test: confirms TimestepBlock actually applies
+        // FiLM scale+shift from t_emb. If the mapper or the
+        // broadcast_mul/add were missing, both timesteps would yield
+        // identical output and this test would fail.
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let ts = TimestepBlock::new(16, 32, vb).unwrap();
+        let x = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), &device).unwrap();
+        let t1 = Tensor::randn(0f32, 1f32, (1, 32), &device).unwrap();
+        let t2 = Tensor::randn(0f32, 1f32, (1, 32), &device).unwrap();
+        let o1 = ts.forward(&x, &t1).unwrap();
+        let o2 = ts.forward(&x, &t2).unwrap();
+        let diff = (&o1 - &o2).unwrap().abs().unwrap().mean_all().unwrap();
+        let diff = diff.to_scalar::<f32>().unwrap();
+        assert!(
+            diff > 1e-4,
+            "TimestepBlock outputs should differ across t_emb (got mean abs diff {diff})"
+        );
+    }
+
+    #[test]
+    fn unet_output_changes_when_timestep_changes() {
+        // End-to-end version of the FiLM injection check: vary the
+        // timestep at the UNet's outer signature, confirm output
+        // differs. This is the test that locks in "FiLM is actually
+        // wired into the forward path" — would have caught the
+        // v0.37 phase 2 deferral (where t_emb was computed and
+        // silently dropped on the floor).
+        let (unet, _) = random_unet(small_stage_b_cfg());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let t_early = Tensor::new(&[1.0f32], device).unwrap();
+        let t_late = Tensor::new(&[900.0f32], device).unwrap();
+        let o_early = unet.forward(&latent, &t_early, &text).unwrap();
+        let o_late = unet.forward(&latent, &t_late, &text).unwrap();
+        let diff = (&o_early - &o_late)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-4,
+            "UNet output should depend on timestep (got mean abs diff {diff})"
+        );
     }
 }
 
