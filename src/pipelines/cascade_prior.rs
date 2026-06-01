@@ -727,6 +727,78 @@ impl StableCascadePrior {
         effnet: Option<&Tensor>,
         pixels: Option<&Tensor>,
     ) -> Result<Tensor> {
+        self.forward_inner(
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0,
+        )
+    }
+
+    /// v0.40 phase 1: forward pass with ControlNet residual injection
+    /// into the down path.
+    ///
+    /// `cn_residuals` is a slice of N tensors, each of shape
+    /// `(B, c_hidden_at_position, H_at_position, W_at_position)`
+    /// matching the latent at its injection point. Injection happens
+    /// at evenly-spread positions across `down_blocks` (the encoder
+    /// side); the up path is unchanged. With `cn_residuals.len() == N`,
+    /// position `((i + 1) * total_down_positions / N - 1)` for
+    /// `i ∈ [0, N)` receives residual `i` added with `cn_scale`
+    /// multiplier.
+    ///
+    /// Phase 1 contract:
+    /// - Residual at each injection point MUST shape-match the latent.
+    ///   Shape mismatches error loudly (no implicit interpolation).
+    /// - Phase 3 smoke determines whether auto-alignment is needed.
+    /// - Caller is responsible for spatial sizing — typically by
+    ///   running the CN backbone at a resolution that produces
+    ///   residuals at the matching depth's spatial.
+    ///
+    /// Stage C is the target; the method bails if effnet/pixels paths
+    /// are wired (those are Stage B; Stage B + CN combo is a v0.41
+    /// follow-up).
+    pub fn forward_with_cn(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+        cn_residuals: &[Tensor],
+        cn_scale: f32,
+    ) -> Result<Tensor> {
+        anyhow::ensure!(
+            self.cfg.effnet_input_channels.is_none(),
+            "forward_with_cn is Stage C only; Stage B + CN combo is v0.41 work"
+        );
+        anyhow::ensure!(
+            !cn_residuals.is_empty(),
+            "cn_residuals must be non-empty; for plain forward use forward()"
+        );
+        self.forward_inner(
+            x,
+            t_emb,
+            sca_emb,
+            crp_emb,
+            clip,
+            None,
+            None,
+            Some(cn_residuals),
+            cn_scale,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_inner(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+        effnet: Option<&Tensor>,
+        pixels: Option<&Tensor>,
+        cn_residuals: Option<&[Tensor]>,
+        cn_scale: f32,
+    ) -> Result<Tensor> {
         // ---- Input embedding ----
         let mut h = self.embedding_conv.forward(x)?;
         h = self.embedding_norm.forward(&h)?;
@@ -737,15 +809,47 @@ impl StableCascadePrior {
             h = h.add(&self.apply_pixels_mapper(px)?)?;
         }
 
-        // ---- Down path ----
+        // ---- Compute CN injection positions ----
+        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
+        let injection_positions: Vec<usize> = match cn_residuals {
+            Some(residuals) => {
+                let n = residuals.len();
+                (0..n)
+                    .map(|i| ((i + 1) * n_down_positions) / n - 1)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+
+        // ---- Down path with CN injection ----
         let num_levels = self.cfg.blocks_per_level.len();
         let mut level_outputs: Vec<Tensor> = Vec::with_capacity(num_levels);
+        let mut global_pos: usize = 0;
+        let mut residual_idx: usize = 0;
         for (i, blocks) in self.down_blocks.iter().enumerate() {
             if i > 0 {
                 h = self.down_downscalers[i - 1].forward(&h)?;
             }
             for block in blocks {
                 h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
+                if let Some(residuals) = cn_residuals {
+                    if residual_idx < injection_positions.len()
+                        && global_pos == injection_positions[residual_idx]
+                    {
+                        let r = &residuals[residual_idx];
+                        anyhow::ensure!(
+                            r.shape() == h.shape(),
+                            "CN residual {} shape {:?} doesn't match latent shape {:?} \
+                             at down_blocks position {global_pos}",
+                            residual_idx,
+                            r.shape(),
+                            h.shape()
+                        );
+                        h = h.add(&r.affine(cn_scale as f64, 0.0)?)?;
+                        residual_idx += 1;
+                    }
+                }
+                global_pos += 1;
             }
             level_outputs.push(h.clone());
         }
@@ -768,6 +872,21 @@ impl StableCascadePrior {
         // ---- Output classifier ----
         let h = self.clf_norm.forward(&h)?;
         Ok(self.clf_conv.forward(&h)?)
+    }
+
+    /// v0.40 phase 1: compute the injection position list for a given
+    /// residual count, against this prior's down_blocks topology.
+    /// Useful for callers that want to verify ahead of time which
+    /// positions will receive residuals (e.g., to compute per-residual
+    /// target spatial shapes).
+    pub fn cn_injection_positions(&self, n_residuals: usize) -> Vec<usize> {
+        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
+        if n_residuals == 0 || n_down_positions == 0 {
+            return Vec::new();
+        }
+        (0..n_residuals)
+            .map(|i| ((i + 1) * n_down_positions) / n_residuals - 1)
+            .collect()
     }
 }
 
@@ -1258,6 +1377,180 @@ mod tests {
                  mismatch between v0.39 cascade_prior and upstream:\n  {e}"
             ),
         }
+    }
+
+    // ---- v0.40 phase 1: ControlNet injection ----
+
+    #[test]
+    fn cn_injection_positions_spread_evenly_for_full_topology() {
+        // Stage C full: 8 + 24 = 32 triples × 3 sub-blocks = 96
+        // down_blocks positions. 8 residuals → positions 11, 23, 35,
+        // 47, 59, 71, 83, 95. Each at the END of a 12-block segment.
+        let cfg = Config {
+            c_in: 4,
+            c_out: 4,
+            c_hidden_per_level: vec![8, 8],
+            c_cond: 8,
+            c_clip_text: Some(8),
+            c_clip_text_pooled: 8,
+            c_clip_img: Some(8),
+            num_pooled_tokens: 4,
+            head_dim: 2,
+            has_attention_per_level: vec![true, true],
+            has_sca: true,
+            has_crp: true,
+            blocks_per_level: vec![8, 24],
+            effnet_input_channels: None,
+            pixels_input_channels: None,
+            sampler_style: SamplerStyle::OnePixel,
+        };
+        let (prior, _) = random_prior_c(cfg);
+        let positions = prior.cn_injection_positions(8);
+        assert_eq!(positions, vec![11, 23, 35, 47, 59, 71, 83, 95]);
+    }
+
+    #[test]
+    fn forward_with_cn_matches_forward_when_residuals_zeroed() {
+        // Sanity: CN injection with all-zero residuals + cn_scale=1.0
+        // should produce byte-identical output to the plain forward
+        // path. Verifies the injection mechanism is additive and
+        // doesn't otherwise modify the forward.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        // small_stage_c_cfg has 2 levels × 1 triple × 3 sub-blocks
+        // = 6 down positions. 2 residuals → positions 2, 5.
+        let positions = prior.cn_injection_positions(2);
+        assert_eq!(positions, vec![2, 5]);
+        // At position 2 (after first triple's Attn), latent is still
+        // at level 0 → c=16 (small cfg), spatial 8×8. At position 5
+        // (end of level 1's triple), latent is at level 1 → c=16,
+        // spatial 4×4 (after downscaler).
+        let r0 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
+        let r1 = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let plain = prior
+            .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
+            .unwrap();
+        let with_zero_cn = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .unwrap();
+        let diff = (&plain - &with_zero_cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff < 1e-5,
+            "CN injection with zero residuals should match plain forward (got max diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_changes_output_when_residuals_nonzero() {
+        // Load-bearing: residuals must actually influence the down
+        // path. If they were silently dropped, output would match
+        // plain forward.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        let r0 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let plain = prior
+            .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
+            .unwrap();
+        let with_cn = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .unwrap();
+        let diff = (&plain - &with_cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-5,
+            "CN injection should change output with non-zero residuals (got mean abs diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_shape_mismatched_residuals() {
+        // Phase 1 contract: residuals MUST shape-match the latent at
+        // injection point. Shape mismatch errors loudly.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        // Wrong shape at position 2: expected (1, 16, 8, 8), give (1, 16, 4, 4).
+        let r_wrong = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let r_ok = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let err = prior
+            .forward_with_cn(
+                &x,
+                &t,
+                Some(&sca),
+                Some(&crp),
+                &clip,
+                &[r_wrong, r_ok],
+                1.0,
+            )
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("doesn't match") && msg.contains("position 2"),
+            "expected shape-mismatch error pointing at position 2; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_empty_residuals() {
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+        let err = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[], 1.0)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("non-empty"), "got: {msg}");
+    }
+
+    #[test]
+    fn forward_with_cn_rejects_stage_b_config() {
+        let (prior, _) = random_prior_b(small_stage_b_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let t = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
+        let clip = prior.zero_kv_stream(1, 1, 5).unwrap();
+        let r = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let err = prior
+            .forward_with_cn(&x, &t, Some(&sca), None, &clip, &[r], 1.0)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Stage C only"),
+            "expected Stage-C-only error; got: {msg}"
+        );
     }
 
     #[test]
