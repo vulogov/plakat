@@ -143,9 +143,29 @@ pub struct ControlConditioning {
 
 /// Stable Cascade pipeline.
 ///
-/// Phase 0 shipped CLIP-G + tokenizer. v0.37 phase 1 adds Stage A
-/// VAE (the small Paella-v3 design for image ↔ latent mapping).
-/// Stage B and Stage C land in phases 2 / 3.
+/// ## Spatial contract (v0.40 phase 0)
+///
+/// For a final image dimension `D` (default 1024), the working
+/// shapes through the 3-stage pipeline are:
+///
+/// ```text
+///   image                            (B, 3,   D,    D)
+///     ↓ Stage A.encode_to_stage_b_space
+///     ↓   = encode (4× compression) + PixelUnshuffle(2)
+///   Stage B input/output             (B, 16,  D/8,  D/8)    e.g. 1024 → 128
+///     ↓ Stage A.decode_from_stage_b_space
+///     ↓   = PixelShuffle(2) + decode (4× expansion)
+///   image                            (B, 3,   D,    D)
+/// ```
+///
+/// Stage C operates on a FIXED `(B, 16, 24, 24)` prior latent
+/// regardless of `D` (semantic conditioning, not image resolution).
+/// Stage B consumes Stage C's output as effnet conditioning via
+/// `apply_effnet_mapper` (with spatial alignment to Stage B's input).
+///
+/// `D` must be divisible by 8 (the total Stage A↔B compression).
+/// Use [`crate::pipelines::cascade_vae::stage_b_spatial_for_image`]
+/// to compute the Stage B working spatial.
 pub struct Pipeline {
     pub device: Device,
     pub dtype: DType,
