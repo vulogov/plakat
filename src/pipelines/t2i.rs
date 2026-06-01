@@ -186,6 +186,11 @@ pub struct Request {
     /// `None` → split `steps`. `Some(n)` → exact count. Ignored on
     /// non-Cascade pipelines.
     pub cascade_stage_b_steps: Option<usize>,
+    /// v0.38 phase 5: path to a Stable Cascade ControlNet
+    /// safetensors checkpoint. When `Some`, the Cascade pipeline
+    /// loads the CN and honours the first entry in `controls`
+    /// (multi-CN deferred). `None` → no CN attached.
+    pub cascade_controlnet_weights: Option<std::path::PathBuf>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -2075,6 +2080,19 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // out / count all carrying through.
     if variant.is_cascade() {
         use crate::pipelines::cascade;
+        // v0.38 phase 5: multi-CN bail. Single-CN is the supported
+        // shape for Cascade in this cycle; multi-CN summation needs
+        // a follow-up to match upstream's per-residual gating.
+        if req.controls.len() > 1 {
+            anyhow::bail!(
+                "Stable Cascade supports at most one --control-spec in v0.38 \
+                 (got {}). Multi-ControlNet for Cascade is a v0.39 follow-up.",
+                req.controls.len()
+            );
+        }
+        // CN spec without weights is a no-op + warning, not a bail —
+        // keeps `--control canny:from=...` working as a future-proof
+        // declaration even before users have weights checked out.
         // Stable Cascade has TWO step budgets (Stage C + Stage B).
         // Honour explicit `--stage-c-steps` / `--stage-b-steps`
         // overrides (v0.38 phase 2); fall back to splitting
@@ -2102,6 +2120,11 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // Cascade Stage B + Stage C tempfile merges at load time.
             loras: req.loras.clone(),
             lora_scale: req.lora_scale,
+            // v0.38 phase 5: Cascade ControlNet. Single-CN only —
+            // multi-CN bail is gated at the cli/generate layer.
+            // `controlnet_weights` flows from `--cascade-control-weights`.
+            control_spec: req.controls.first().cloned(),
+            controlnet_weights: req.cascade_controlnet_weights.clone(),
         })
         .await?;
         return Ok(None);

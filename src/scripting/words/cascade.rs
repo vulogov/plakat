@@ -122,6 +122,9 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 guidance,
                 seed,
                 scheduler,
+                // v0.38 phase 5: scripting-side Cascade ControlNet
+                // wiring is a v0.39 follow-up.
+                None,
             )?
         };
 

@@ -70,6 +70,9 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use tokenizers::Tokenizer;
 
+use crate::pipelines::cascade_controlnet::{
+    CascadeControlNet, Config as CnConfig,
+};
 use crate::pipelines::cascade_stage_a::{Config as StageAConfig, StageAVae};
 use crate::pipelines::cascade_unet::{Config as UnetConfig, StableCascadeUnet};
 use crate::pipelines::scheduler::{SchedulerKind, build as build_scheduler};
@@ -98,6 +101,37 @@ pub struct LoadRequest {
     /// Mirrors `--lora-scale`. Default `1.0` means honour each
     /// LoRA's own scale; `0.0` zeroes out every LoRA contribution.
     pub lora_scale: f32,
+    /// v0.38 phase 5: optional ControlNet weights path. When `Some`,
+    /// `Pipeline::load` constructs a `CascadeControlNet` from the
+    /// safetensors at this path and stores it on the pipeline.
+    /// When `None`, no CN is attached and `Pipeline::generate` runs
+    /// as plain t2i regardless of any `control_conditioning` arg.
+    ///
+    /// Users supply this via `--cascade-control-weights PATH` —
+    /// upstream Stable Cascade ControlNet checkpoints aren't yet
+    /// catalogued in plakat's `hf::ALIAS_TABLE`, so a local path
+    /// or full HF repo:filename is the v0.38 contract. Catalogued
+    /// CN-by-kind aliases land in v0.39.
+    pub controlnet_weights: Option<std::path::PathBuf>,
+}
+
+/// v0.38 phase 5: per-call ControlNet conditioning input. Bundles
+/// the conditioning image tensor with the spec's strength + start /
+/// end timestep window. Built once at the CLI/pipeline boundary
+/// from a `ControlSpec` + annotator hookup.
+#[derive(Debug)]
+pub struct ControlConditioning {
+    /// Conditioning image already at Stage C ControlNet's expected
+    /// input shape `(1, 3, 1024, 1024)` in `[-1, 1]`. Use
+    /// `crate::imaging::preprocess::sd_image_tensor` to build.
+    pub conditioning_image: Tensor,
+    /// Per-ControlSpec strength multiplier on the residual sum.
+    pub scale: f32,
+    /// Timestep window start in `[0, 1]`. The CN residual is active
+    /// during `progress in [start, end)` where `progress = step_idx
+    /// / (n_steps - 1)`.
+    pub start: f32,
+    pub end: f32,
 }
 
 /// Stable Cascade pipeline.
@@ -129,6 +163,13 @@ pub struct Pipeline {
     /// latent. Variant-aware (Full vs Lite) — selected from the
     /// alias alongside Stage B.
     pub stage_c: StableCascadeUnet,
+    /// v0.38 phase 5: optional Cascade ControlNet. `Some` when
+    /// `LoadRequest.controlnet_weights` was supplied; produces a
+    /// residual on the conditioning image that gets added to Stage
+    /// C's latent at the input. `None` for plain t2i. The Stage B
+    /// path doesn't carry a CN — Stage C is the semantic stage
+    /// where spatial conditioning lands.
+    pub controlnet: Option<CascadeControlNet>,
 }
 
 impl Pipeline {
@@ -276,6 +317,23 @@ impl Pipeline {
             .context("building Stage C UNet for Stable Cascade")?;
         stage_c_build.finish_with_message("✓ Stage C UNet ready");
 
+        // v0.38 phase 5: optional ControlNet load. When the user
+        // didn't pass `--cascade-control-weights`, this is None and
+        // generate() runs as plain t2i regardless of any control
+        // conditioning args.
+        let controlnet = if let Some(cn_path) = req.controlnet_weights.as_ref() {
+            let cn_build = progress::spinner("Loading Cascade ControlNet");
+            let cn_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[cn_path.as_path()], dtype, &req.device)?
+            };
+            let cn = CascadeControlNet::new(CnConfig::stable_cascade_default(), cn_vb)
+                .context("building Cascade ControlNet")?;
+            cn_build.finish_with_message("✓ Cascade ControlNet ready");
+            Some(cn)
+        } else {
+            None
+        };
+
         Ok(Self {
             device: req.device,
             dtype,
@@ -284,7 +342,16 @@ impl Pipeline {
             stage_a,
             stage_b,
             stage_c,
+            controlnet,
         })
+    }
+
+    /// v0.38 phase 5: per-call ControlNet conditioning input.
+    /// Bundled so `generate` / `generate_img2img` don't bloat their
+    /// signatures with four extra args. Construct from a resolved
+    /// `ControlSpec` at the CLI layer (annotator + image loader).
+    pub fn control_conditioning_active(&self) -> bool {
+        self.controlnet.is_some()
     }
 
     /// Tokenize a prompt + forward through CLIP-G. Returns the
@@ -341,6 +408,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         // v0.34 phase 1: device-aware seed prep.
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
@@ -372,14 +440,52 @@ impl Pipeline {
         let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
             .to_dtype(self.dtype)?;
         let mut latent_c = (noise_c * c_init_sigma)?;
-        let bar = crate::ui::progress::step_bar(c_timesteps.len() as u64, "cascade stage C");
-        for &t in &c_timesteps {
+
+        // v0.38 phase 5: ControlNet conditioning. The CN residual is
+        // image-only (no time/text conditioning in the minimal v0.38
+        // CN); compute it ONCE before the loop and inject during the
+        // [start, end] timestep window. CFG: residual is identical
+        // for positive and negative branches (no CFG on CN — matches
+        // upstream + how Stage B's effnet behaves).
+        let cn_residual_cfg = if let (Some(cn), Some(input)) = (
+            self.controlnet.as_ref(),
+            control.filter(|_| self.controlnet.is_some()),
+        ) {
+            let r = cn.forward(&input.conditioning_image)?;
+            Some((Tensor::cat(&[&r, &r], 0)?, input))
+        } else {
+            None
+        };
+        let n_c_steps = c_timesteps.len();
+
+        let bar = crate::ui::progress::step_bar(n_c_steps as u64, "cascade stage C");
+        for (step_idx, &t) in c_timesteps.iter().enumerate() {
             let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
             let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.stage_c.forward(&cfg_latent, &t_tensor, &cfg_text)?;
+            // Within-window CN inject. `progress` in [0, 1]; CN
+            // active iff input.start ≤ progress < input.end.
+            let progress = if n_c_steps > 1 {
+                step_idx as f32 / (n_c_steps - 1) as f32
+            } else {
+                0.0
+            };
+            let pred = match &cn_residual_cfg {
+                Some((residual, input))
+                    if progress >= input.start && progress < input.end =>
+                {
+                    self.stage_c.forward_with_control_residual(
+                        &cfg_latent,
+                        &t_tensor,
+                        &cfg_text,
+                        residual,
+                        input.scale as f64,
+                    )?
+                }
+                _ => self.stage_c.forward(&cfg_latent, &t_tensor, &cfg_text)?,
+            };
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
@@ -686,8 +792,59 @@ pub async fn run(req: RunRequest) -> Result<()> {
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
+        controlnet_weights: req.controlnet_weights.clone(),
     })
     .await?;
+
+    // v0.38 phase 5: build the per-call conditioning tensor when CN
+    // is wired AND a ControlSpec was supplied. The conditioning
+    // image is loaded from `spec.image`; auto-annotate via
+    // `spec.from` is deferred (annotator pickers + Cascade CN
+    // combos aren't yet validated). Without weights OR without
+    // spec, `control_conditioning` stays None and generate runs as
+    // plain t2i.
+    let control_conditioning: Option<ControlConditioning> = match (
+        pipeline.control_conditioning_active(),
+        req.control_spec.as_ref(),
+    ) {
+        (true, Some(spec)) => {
+            let image_path = spec.image.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Cascade ControlNet requires `--control-image PATH` (or \
+                     `image=` in `--control-spec`); auto-annotate via \
+                     `--control-from` is a v0.39 follow-up."
+                )
+            })?;
+            let cond = crate::imaging::preprocess::sd_image_tensor(
+                image_path,
+                1024,
+                1024,
+                &req.device,
+                pipeline.dtype,
+            )
+            .with_context(|| {
+                format!(
+                    "loading Cascade control conditioning image {}",
+                    image_path.display()
+                )
+            })?;
+            Some(ControlConditioning {
+                conditioning_image: cond,
+                scale: spec.strength,
+                start: spec.start,
+                end: spec.end,
+            })
+        }
+        (false, Some(_)) => {
+            tracing::warn!(
+                target: "plakat",
+                "Cascade run received a ControlSpec but no controlnet_weights — \
+                 spec is ignored. Pass `--cascade-control-weights PATH` to enable."
+            );
+            None
+        }
+        _ => None,
+    };
 
     let base_seed = req
         .seed
@@ -720,6 +877,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             req.guidance,
             seed,
             req.scheduler,
+            control_conditioning.as_ref(),
         )?;
 
         // Build sidecar metadata. Same field set PixArt emits
@@ -778,6 +936,10 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
+        // v0.38 phase 5: Cascade img2img + ControlNet is deferred
+        // (v0.39 follow-up). The img2img CLI doesn't expose
+        // `--cascade-control-weights` either; this stays None.
+        controlnet_weights: None,
     })
     .await?;
 
@@ -894,6 +1056,16 @@ pub struct RunRequest {
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     /// Global LoRA scale multiplier. Default 1.0.
     pub lora_scale: f32,
+    /// v0.38 phase 5: at most one ControlSpec (multi-CN deferred).
+    /// `image` (or `from` for auto-annotate) supplies the
+    /// conditioning image; `strength` / `start` / `end` shape the
+    /// residual window. Ignored unless `controlnet_weights` is
+    /// also set.
+    pub control_spec: Option<crate::pipelines::controlnet::ControlSpec>,
+    /// v0.38 phase 5: path to Stable Cascade ControlNet weights
+    /// (safetensors). When `None`, no CN is loaded and any
+    /// `control_spec` is logged + ignored.
+    pub controlnet_weights: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -918,6 +1090,8 @@ mod tests {
             count: 1,
             loras: Vec::new(),
             lora_scale: 1.0,
+            control_spec: None,
+            controlnet_weights: None,
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
