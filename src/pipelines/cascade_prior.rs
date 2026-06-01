@@ -1470,6 +1470,46 @@ mod tests {
         }
     }
 
+    /// v0.40 phase 3: real-weight smoke for Stage B. Stage B lives in
+    /// the standard `stabilityai/stable-cascade` repo under
+    /// `decoder/`. Largest stage at full widths (~3 GB), so this test
+    /// is heaviest of the four.
+    #[test]
+    fn stage_b_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("decoder/diffusion_pytorch_model.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping stage_b_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing decoder/diffusion_pytorch_model.safetensors \
+                 from stabilityai/stable-cascade).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap stage_b weights")
+        };
+        match StableCascadePrior::new_stage_b(Config::stage_b_full(), vb) {
+            Ok(_) => eprintln!("✓ Stage B real-weight load OK ({})", path.display()),
+            Err(e) => panic!(
+                "Stage B real-weight load FAILED — indicates tensor naming \
+                 mismatch between v0.40 cascade_prior and upstream:\n  {e}"
+            ),
+        }
+    }
+
     // ---- v0.40 phase 1: ControlNet injection ----
 
     #[test]
