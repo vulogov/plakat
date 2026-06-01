@@ -185,12 +185,18 @@ impl PaellaResBlock {
     /// path. Init is zeros(6) so the block starts as identity, then
     /// learning shifts each gamma off zero.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let m0 = self.gammas.i(0)?.to_scalar::<f32>()? as f64;
-        let m1 = self.gammas.i(1)?.to_scalar::<f32>()? as f64;
-        let m2 = self.gammas.i(2)?.to_scalar::<f32>()? as f64;
-        let m3 = self.gammas.i(3)?.to_scalar::<f32>()? as f64;
-        let m4 = self.gammas.i(4)?.to_scalar::<f32>()? as f64;
-        let m5 = self.gammas.i(5)?.to_scalar::<f32>()? as f64;
+        // gammas is loaded in the pipeline dtype — F32 on CPU, F16
+        // on GPU. `to_scalar::<f32>` would panic on F16, so convert
+        // the whole 6-element vector to F32 once and extract Rust
+        // floats from there. The downstream `affine(scale, 0.0)`
+        // calls accept any tensor dtype.
+        let g = self.gammas.to_dtype(DType::F32)?;
+        let m0 = g.i(0)?.to_scalar::<f32>()? as f64;
+        let m1 = g.i(1)?.to_scalar::<f32>()? as f64;
+        let m2 = g.i(2)?.to_scalar::<f32>()? as f64;
+        let m3 = g.i(3)?.to_scalar::<f32>()? as f64;
+        let m4 = g.i(4)?.to_scalar::<f32>()? as f64;
+        let m5 = g.i(5)?.to_scalar::<f32>()? as f64;
 
         // ---- Depthwise residual path ----
         let x_norm = self.norm.forward(x)?;
