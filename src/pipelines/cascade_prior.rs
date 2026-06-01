@@ -1334,6 +1334,87 @@ mod tests {
     }
 
     #[test]
+    fn stage_c_output_differs_between_zero_cond_and_t_emb_placeholder() {
+        // v0.41 phase 1: the v0.40 generate path piped `t_emb` itself
+        // as both `sca_emb` and `crp_emb` (placeholder). The correct
+        // upstream behaviour for the "no aesthetic / no crop override"
+        // default is sinusoidal embedding of a ZERO scalar — same
+        // encoder, different input. This test exists to assert the
+        // distinction is observable in network output: otherwise the
+        // phase 1 change would have been a no-op rename.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+
+        // Realistic timestep ratio in [0, 1] — embedded with
+        // c_cond=8 to match small_stage_c_cfg.
+        let t_scalar = Tensor::from_vec(vec![0.7f32], 1, device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t_scalar, 8, 10000.0).unwrap();
+
+        // Upstream's `sca=None / crp=None` default: embed a zero
+        // scalar through the SAME sinusoidal encoder. The result is
+        // NOT the zero tensor — sin(0)=0 but cos(0)=1, so half the
+        // dims sit at 1.
+        let zero_scalar = Tensor::zeros(1, candle_core::DType::F32, device).unwrap();
+        let zero_cond_emb = sinusoidal_time_embedding(&zero_scalar, 8, 10000.0).unwrap();
+
+        let y_placeholder = prior
+            .forward(&x, &t_emb, Some(&t_emb), Some(&t_emb), &clip, None, None)
+            .unwrap();
+        let y_real = prior
+            .forward(
+                &x,
+                &t_emb,
+                Some(&zero_cond_emb),
+                Some(&zero_cond_emb),
+                &clip,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let diff = (&y_placeholder - &y_real)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-5,
+            "zero-cond sca/crp should change Stage C output vs t_emb placeholder (got {diff})"
+        );
+    }
+
+    #[test]
+    fn zero_cond_sinusoidal_embedding_is_not_zero_tensor() {
+        // Sanity check on phase 1 reasoning: sinusoidal embedding of
+        // a zero scalar produces `[cos(0), cos(0), …, sin(0), sin(0), …]`
+        // → `[1, 1, …, 0, 0, …]`, NOT the zero tensor. If candle's
+        // sinusoidal encoder ever changed convention so that zero
+        // input gave zero output, this test would catch the
+        // regression and force us to revisit phase 1's claim.
+        let device = candle_core::Device::Cpu;
+        let zero_scalar = Tensor::zeros(2, candle_core::DType::F32, &device).unwrap();
+        let emb = sinusoidal_time_embedding(&zero_scalar, 64, 10000.0).unwrap();
+        let max_abs = emb
+            .abs()
+            .unwrap()
+            .max_keepdim(D::Minus1)
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            (max_abs - 1.0).abs() < 1e-4,
+            "expected cos(0)=1 to dominate; got max_abs={max_abs}"
+        );
+    }
+
+    #[test]
     fn build_clip_conditioning_for_stage_c_returns_concat_85_at_c_pooled_token() {
         // v0.40 phase 2: Stage C returns concat(text, pooled_text,
         // pooled_img) at (B, T_text + 4 + 4, c_pooled_token).
