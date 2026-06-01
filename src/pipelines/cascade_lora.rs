@@ -204,14 +204,15 @@ fn apply_one_lora(
 /// Upstream convention (community Cascade LoRAs):
 ///
 /// ```text
-///     up_blocks.{i}.{j}.attn.{to_q,to_k,to_v,to_out.0}
-///     down_blocks.{i}.{j}.attn.{to_q,to_k,to_v,to_out.0}
+///     up_blocks.{level}.{pos}.attention.{to_q,to_k,to_v,to_out.0}
+///     down_blocks.{level}.{pos}.attention.{to_q,to_k,to_v,to_out.0}
 /// ```
 ///
-/// Plakat internal convention (cascade_unet.rs):
+/// v0.39 phase 0g plakat internal convention (cascade_prior.rs) — now
+/// matches upstream exactly since the prior architecture was rewritten:
 ///
 /// ```text
-///     decoder_levels.{i}.attentions.{j}.{self_attn,cross_attn}.to_q.weight
+///     down_blocks.{level}.{pos}.attention.{to_q,to_k,to_v,to_out.0}.weight
 ///     encoder_levels.{i}.attentions.{j}.{self_attn,cross_attn}.to_q.weight
 /// ```
 ///
@@ -221,28 +222,37 @@ fn apply_one_lora(
 /// currently exposed as LoRA targets — community LoRAs rarely
 /// touch them on Cascade).
 fn resolve_target(stage_logical: &str) -> Option<LoraTarget> {
-    let (block_dir, rest) = stage_logical
+    // v0.39 phase 0g: tensor names now match upstream after the
+    // cascade_prior rewrite. Identity mapping for the level + position
+    // segments; we just append `.weight` to the resolved attention
+    // leaf and route via the upstream block kind.
+    let rest = stage_logical
         .strip_prefix("up_blocks.")
-        .map(|r| ("decoder_levels", r))
-        .or_else(|| {
-            stage_logical
-                .strip_prefix("down_blocks.")
-                .map(|r| ("encoder_levels", r))
-        })?;
+        .or_else(|| stage_logical.strip_prefix("down_blocks."))?;
+    // up_blocks vs down_blocks both share the same internal block path
+    // (`down_blocks.{level}.{pos}.attention.*` for down,
+    // `up_blocks.{level}.{pos}.attention.*` for up). Preserve the original
+    // prefix.
+    let prefix = if stage_logical.starts_with("up_blocks.") {
+        "up_blocks"
+    } else {
+        "down_blocks"
+    };
     let (level_idx_str, tail) = rest.split_once('.')?;
     let _level_idx: usize = level_idx_str.parse().ok()?;
-    let (block_idx_str, leaf) = tail.split_once('.')?;
-    let _block_idx: usize = block_idx_str.parse().ok()?;
-    let leaf_after_attn = leaf.strip_prefix("attn.")?;
+    let (pos_idx_str, leaf) = tail.split_once('.')?;
+    let _pos_idx: usize = pos_idx_str.parse().ok()?;
+    // Accept upstream's `attention.to_*` paths (the new cascade_prior
+    // AttnBlock uses `attention.{to_q,to_k,to_v,to_out.0}` exactly).
+    let leaf_after_attn = leaf
+        .strip_prefix("attention.")
+        .or_else(|| leaf.strip_prefix("attn."))?;
     let accepted = ["to_q", "to_k", "to_v", "to_out.0"];
     if !accepted.contains(&leaf_after_attn) {
         return None;
     }
-    // Map upstream level idx → plakat level idx (1-to-1 for now;
-    // tensor-naming realignment is the v0.38 phase 4+ work).
-    let base_key = format!(
-        "{block_dir}.{level_idx_str}.attentions.{block_idx_str}.self_attn.{leaf_after_attn}.weight"
-    );
+    let base_key =
+        format!("{prefix}.{level_idx_str}.{pos_idx_str}.attention.{leaf_after_attn}.weight");
     Some(LoraTarget {
         base_key,
         slice: RowSlice::Full,
@@ -260,38 +270,45 @@ mod tests {
     }
 
     #[test]
-    fn resolve_up_block_attn_to_q_routes_to_decoder_levels() {
-        let t = resolve_target("up_blocks.0.0.attn.to_q")
-            .expect("up_blocks attn.to_q must resolve");
-        assert_eq!(
-            t.base_key,
-            "decoder_levels.0.attentions.0.self_attn.to_q.weight"
-        );
+    fn resolve_up_block_attention_to_q_routes_to_upstream_layout() {
+        // v0.39 phase 0g: identity mapping for level/pos; appends `.weight`.
+        let t = resolve_target("up_blocks.0.2.attention.to_q")
+            .expect("up_blocks attention.to_q must resolve");
+        assert_eq!(t.base_key, "up_blocks.0.2.attention.to_q.weight");
         assert!(matches!(t.slice, RowSlice::Full));
     }
 
     #[test]
-    fn resolve_down_block_routes_to_encoder_levels() {
-        let t = resolve_target("down_blocks.1.2.attn.to_v")
-            .expect("down_blocks attn.to_v must resolve");
-        assert_eq!(
-            t.base_key,
-            "encoder_levels.1.attentions.2.self_attn.to_v.weight"
-        );
+    fn resolve_down_block_routes_to_upstream_layout() {
+        let t = resolve_target("down_blocks.1.11.attention.to_v")
+            .expect("down_blocks attention.to_v must resolve");
+        assert_eq!(t.base_key, "down_blocks.1.11.attention.to_v.weight");
     }
 
     #[test]
     fn resolve_to_out_with_index_zero_resolves() {
-        let t = resolve_target("up_blocks.0.0.attn.to_out.0")
-            .expect("attn.to_out.0 must resolve");
-        assert!(t.base_key.ends_with("self_attn.to_out.0.weight"));
+        let t = resolve_target("up_blocks.0.2.attention.to_out.0")
+            .expect("attention.to_out.0 must resolve");
+        assert_eq!(
+            t.base_key,
+            "up_blocks.0.2.attention.to_out.0.weight"
+        );
+    }
+
+    #[test]
+    fn resolve_accepts_legacy_attn_prefix() {
+        // Some community LoRAs use `attn.*` instead of `attention.*`;
+        // accept both for compatibility.
+        let t = resolve_target("up_blocks.0.0.attn.to_q")
+            .expect("attn.to_q must resolve");
+        assert_eq!(t.base_key, "up_blocks.0.0.attention.to_q.weight");
     }
 
     #[test]
     fn resolve_non_attention_leaf_returns_none() {
         assert!(resolve_target("up_blocks.0.0.ff.net.0.proj").is_none());
         assert!(resolve_target("up_blocks.0.0.norm.linear").is_none());
-        assert!(resolve_target("up_blocks.0.0.attn.to_out.1").is_none());
+        assert!(resolve_target("up_blocks.0.0.attention.to_out.1").is_none());
     }
 
     #[test]
