@@ -210,7 +210,11 @@ impl ConvBn {
         vb: VarBuilder,
     ) -> Result<Self> {
         let padding = kernel / 2;
-        let conv = nn::conv2d(
+        // v0.40 phase 3 iter 1: upstream Conv2d → BN pipelines have NO
+        // Conv bias (the BN bias absorbs it). Verified by inspection:
+        // backbone.{stage}.{block}.block.{0,1,3}.0.weight exists but
+        // .0.bias does NOT.
+        let conv = nn::conv2d_no_bias(
             in_c,
             out_c,
             kernel,
@@ -410,10 +414,13 @@ struct ProjectionHead {
 
 impl ProjectionHead {
     fn new(c_in: usize, c_mid: usize, c_out: usize, vb: VarBuilder) -> Result<Self> {
-        let conv_0 = nn::conv2d(c_in, c_mid, 1, Default::default(), vb.pp("0"))
+        // v0.40 phase 3 iter 1: projections have weight only (no bias)
+        // per inspection: projections.{0..7}.{0,2}.weight exists but
+        // not .bias.
+        let conv_0 = nn::conv2d_no_bias(c_in, c_mid, 1, Default::default(), vb.pp("0"))
             .map_err(|e| anyhow!("ProjectionHead.0: {e}"))?;
         // index 1 is the activation (GELU/SiLU) — no params.
-        let conv_2 = nn::conv2d(c_mid, c_out, 1, Default::default(), vb.pp("2"))
+        let conv_2 = nn::conv2d_no_bias(c_mid, c_out, 1, Default::default(), vb.pp("2"))
             .map_err(|e| anyhow!("ProjectionHead.2: {e}"))?;
         Ok(Self { conv_0, conv_2 })
     }
