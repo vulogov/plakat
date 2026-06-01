@@ -1,12 +1,60 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.37. The current
+"What's new" sections for v0.13 through v0.38. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.38 — Stable Cascade completeness
+
+v0.38 closed the two load-bearing correctness deferrals from v0.37
+(FiLM time injection + effnet conditioning Stage C → Stage B) and
+layered productivity on top. Five feature phases + close-out.
+Test count grew 1173 → 1199 lib tests (+26 across the cycle).
+
+### Architecture-level closures (phases 0–1)
+
+- **FiLM timestep injection.** New `TimestepBlock` module
+  interleaved between ResBlock and AttentionBlock at every
+  encoder + decoder slot. Wired the time embedding that v0.37
+  phase 2 left as a silent pass-through.
+- **Effnet conditioning.** Stage B's `in_conv` grew from 4 to 20
+  input channels (4 noise + 16 Stage C effnet, spatially
+  upsampled). `Config::effnet_input_channels` toggled the path;
+  `forward_with_effnet` API enforced it.
+
+### Productivity surface (phases 2–5)
+
+- **`plakat.cascade ( prompt -- handle )`** Bund word mirroring
+  `plakat.pixart`. `ScriptCtx.loaded_cascade` cache amortised
+  ~14 GB cold load.
+- **`--stage-c-steps` / `--stage-b-steps`** CLI flags + config
+  keys. Unset → split `--steps` 2/3 + 1/3.
+- **LoRA on both prior UNets.** Diffusers PEFT format with
+  load-time tempfile merge. Stage-specific resolvers.
+- **img2img.** Encode → Stage A → Stage C → Stage B with
+  truncated denoise schedule. Strength captured in PNG metadata.
+- **ControlNet on Stage C.** Compact image-to-residual encoder
+  producing (B, 16, 24, 24) residual injected before in_conv,
+  gated by `[start, end)` timestep window. Single-CN only.
+
+### Honest scope notes (closed by v0.39)
+
+v0.38 shipped architecture-complete and surface-complete, but
+**tensor-naming alignment with upstream `stabilityai/stable-
+cascade` checkpoints remained gating** for production-quality
+output. v0.39 closed this caveat with a full architectural
+rewrite.
+
+### By the numbers
+
+- **1199 lib + 47 integration = 1246 active tests** (+26 lib
+  across cycle).
+- Both v0.37 correctness deferrals closed.
+- Fully additive surface.
 
 ## What's new in v0.37 — Stable Cascade (diversify-5)
 
