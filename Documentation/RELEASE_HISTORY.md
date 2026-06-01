@@ -1,12 +1,124 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.36. The current
+"What's new" sections for v0.13 through v0.37. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.37 — Stable Cascade (diversify-5)
+
+plakat's **fifth model family** lands: Stable Cascade. A 3-stage
+architecture distinct from every existing family — not a single
+UNet (SD), not DiT (PixArt), not MMDiT (SD3), not Flux DiT. Three
+coupled models chain at inference: `text → Stage C → Stage B →
+Stage A → image`.
+
+Six phases shipped. Test count grew 1141 → 1173 lib tests
+(+32 across the cycle).
+
+### `plakat generate "..." --model stable-cascade`
+
+```bash
+plakat generate "a misty forest at dawn, painterly" \
+    --model stable-cascade --size 1024x1024 --steps 30 \
+    --guidance 4.0 --seed 42
+```
+
+Aliases: `stable-cascade`, `cascade` → `stabilityai/stable-cascade`.
+The single `--steps` budget splits **2/3 to Stage C** (the heavy
+semantic stage) + **1/3 to Stage B**; dedicated step flags landed
+in v0.38.
+
+### Stage A VAE — Paella v3 (phase 1)
+
+Small ~3.6M-param VAE for image ↔ latent mapping at 32× per-axis
+compression. Continuous latents (Würstchen v3 / Stable Cascade
+dropped the codebook the earlier designs used):
+
+```
+image (B, 3, 1024, 1024)
+  → Encoder (5 down blocks: 64 → 128 → 256 → 384 → 512 → 4 ch)
+  → latent (B, 4, 32, 32)
+  → Decoder (5 up blocks, mirror)
+  → image (B, 3, 1024, 1024)
+```
+
+Each `down/up_block` is a `ResBlock` + strided Conv2d (encoder)
+or nearest 2× upsample + Conv2d refinement (decoder). ResBlock
+is `GroupNorm → SiLU → Conv2d → GroupNorm → SiLU → Conv2d + skip`.
+
+### Stage B latent prior UNet (phase 2)
+
+~1.5B-param UNet that takes Stage C's output + text and produces
+Stage A's latent. The same `StableCascadeUnet` skeleton serves
+**both Stage B and Stage C** with different `Config` instances.
+
+Block structure:
+- `in_conv` (channels → first level)
+- `TimeEmbedding` — sinusoidal + 2-layer MLP
+- N **encoder levels**: ResBlocks (+ optional `AttentionBlock`
+  per RB) + Downsample
+- N **decoder levels** (mirror): skip-concat from matching encoder
+  level + ResBlocks + Upsample
+- `out_norm + silu + out_conv`
+
+`AttentionBlock` is `norm → self-attn → norm → cross-attn-to-text
+→ norm → 2-layer FF MLP`. Self-attention + cross-attention to the
+CLIP-G text sequence at deeper levels.
+
+**Full + Lite variant routing.** `Config::stage_b_for_alias`
+picks Lite from the substring `"lite"`; otherwise Full.
+
+### Stage C high-res prior UNet (phase 3)
+
+The headline ~3.6B-param model. Text → 24×24×16 super-compressed
+prior latent. **16 input/output channels** (vs Stage B's 4) at a
+tiny spatial grid. Attention at every level — the short sequence
+keeps it affordable.
+
+Reuses the `StableCascadeUnet` skeleton from phase 2; phase 3 was
+mostly configuration + wiring.
+
+### 3-stage orchestration (phase 4)
+
+```text
+prompt
+  ↓ CLIP-G encode (penult + pooled)
+  ↓ Stage C CFG denoise (DPM++ default)        → 24×24×16 latent
+  ↓ Stage B CFG denoise                        → 32×32×4 latent
+  ↓ Stage A decode                             → 1024×1024 image
+```
+
+Seed plumbing through `pipelines::seeds::prepare_seed`. PNG
+sidecar metadata. Stable Cascade earns a ✓ row in `plakat doctor
+--reproducibility-check`.
+
+### CLI integration + scenarios (phase 5)
+
+- Doctor row: **Stable Cascade (3-stage)** classified Guaranteed.
+- v0.25 look preset routing automatic via `BaseFamily::
+  StableCascade`.
+- Scenario integration: new `cascade_pipeline` cache slot
+  mirroring `pixart_pipeline` from v0.36 phase 0.
+
+### Honest scope notes
+
+v0.37 shipped **shape-correct end-to-end orchestration**. Two
+architectural pieces deferred to v0.38:
+
+- **FiLM timestep injection** into ResBlocks. ✓ closed v0.38 phase 0.
+- **Effnet conditioning** — Stage C output feeding Stage B's
+  denoise. ✓ closed v0.38 phase 1.
+
+### By the numbers
+
+- **1173 lib + 47 integration tests = 1220 active tests** (+32
+  lib across the cycle).
+- 6 phase commits + RFC + close-out.
+- Fifth model family alongside SD-family, SD3, Flux, and PixArt.
 
 ## What's new in v0.36 — PixArt completeness
 
