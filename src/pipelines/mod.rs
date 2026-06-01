@@ -46,6 +46,7 @@ pub mod cascade_lora;
 pub mod cascade_prior;
 pub mod cascade_stage_a;
 pub mod cascade_unet;
+pub mod cascade_vae;
 pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;
