@@ -464,13 +464,16 @@ impl Pipeline {
     /// conditioning → Stage B CFG denoise → PixelShuffle(2) →
     /// Stage A.decode → image bytes.
     ///
-    /// `sca_emb` and `crp_emb` in the `TimestepBlock`s are wired with
-    /// the same sinusoidal time embedding as `t_emb` for v0.40 phase
-    /// 4 (placeholder until smoke iteration refines the exact
-    /// conditioning semantics). The KV stream is built via
-    /// `StableCascadePrior::build_clip_conditioning` — Stage C gets
-    /// concat(77 text + 4 pooled text + 4 zero image) at c_hidden=2048;
-    /// Stage B gets pooled-only at c_hidden=1280.
+    /// `sca_emb` and `crp_emb` in the `TimestepBlock`s use the
+    /// sinusoidal embedding of a **zero** scalar — the upstream
+    /// diffusers default for `sca=None` / `crp=None` (aesthetic-score
+    /// and crop conditioning omitted). This is NOT the zero tensor:
+    /// `sin(0) = 0`, `cos(0) = 1`, so the embedding has constant
+    /// signal that lets the `mapper_sca` / `mapper_crp` linears emit
+    /// their learned baseline AdaLN-style scales/shifts. The KV
+    /// stream is built via `StableCascadePrior::build_clip_conditioning`
+    /// — Stage C gets concat(77 text + 4 pooled text + 4 zero image)
+    /// at c_hidden=2048; Stage B gets pooled-only at c_hidden=1280.
     ///
     /// Returns `(buf_rgb_u8, width, height)`.
     pub fn generate_at_size(
@@ -530,6 +533,17 @@ impl Pipeline {
             .stage_b
             .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
 
+        // ---- sca/crp zero-conditioning embedding ----
+        // v0.41 phase 1: upstream's `sca=None / crp=None` default
+        // path sets the conditioning value to zeros_like(timestep_ratio)
+        // and runs the same sinusoidal encoder over it. The result is
+        // constant across denoise steps, so precompute once and share
+        // between Stage C (uses both) and Stage B (uses sca only).
+        // Batch is fixed at 2 throughout the CFG denoise loops.
+        let zero_cond_input = Tensor::zeros(2, candle_core::DType::F32, &self.device)?;
+        let zero_cond_emb = sinusoidal_time_embedding(&zero_cond_input, 64, 10000.0)?
+            .to_dtype(self.dtype)?;
+
         // ---- Stage C denoise (fixed 24×24×16 prior latent) ----
         // v0.41 phase 0: Wuerstchen-style scheduler — ratio timesteps,
         // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
@@ -555,8 +569,8 @@ impl Pipeline {
             let pred = self.stage_c.forward(
                 &cfg_latent,
                 &t_emb,
-                Some(&t_emb), // sca_emb — placeholder (v0.41 phase 1 refines)
-                Some(&t_emb), // crp_emb — placeholder
+                Some(&zero_cond_emb),
+                Some(&zero_cond_emb),
                 &clip_c,
                 None,
                 None,
@@ -597,8 +611,8 @@ impl Pipeline {
             let pred = self.stage_b.forward(
                 &cfg_latent,
                 &t_emb,
-                Some(&t_emb), // sca_emb — placeholder
-                None,         // crp_emb — Stage B has no mapper_crp
+                Some(&zero_cond_emb),
+                None, // crp_emb — Stage B has no mapper_crp
                 &clip_b,
                 Some(&cfg_effnet),
                 None, // pixels — t2i has no pixel conditioning
