@@ -149,13 +149,17 @@ impl Config {
                     BlockConfig::SimpleMbConv { c_in: 64, c_mid: 256, c_out: 64, kernel: 3, stride: 1 },
                 ],
                 // Stage 4: 6 blocks (transition 64→128, SE)
+                // v0.40 phase 3 iter 2: block 0 has c_mid=256/se=16 (4× expand
+                // from c_in=64); blocks 1-5 have c_mid=512/se=32 (4× expand
+                // from c_in=128). Verified by inspection of every backbone
+                // .4.X.block.{0,2}.* tensor shape.
                 vec![
                     BlockConfig::FullMbConv { c_in: 64,  c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 2 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
                 ],
                 // Stage 5: 9 blocks (transition 128→160, SE wider)
                 vec![
@@ -210,7 +214,11 @@ impl ConvBn {
         vb: VarBuilder,
     ) -> Result<Self> {
         let padding = kernel / 2;
-        let conv = nn::conv2d(
+        // v0.40 phase 3 iter 1: upstream Conv2d → BN pipelines have NO
+        // Conv bias (the BN bias absorbs it). Verified by inspection:
+        // backbone.{stage}.{block}.block.{0,1,3}.0.weight exists but
+        // .0.bias does NOT.
+        let conv = nn::conv2d_no_bias(
             in_c,
             out_c,
             kernel,
@@ -410,10 +418,13 @@ struct ProjectionHead {
 
 impl ProjectionHead {
     fn new(c_in: usize, c_mid: usize, c_out: usize, vb: VarBuilder) -> Result<Self> {
-        let conv_0 = nn::conv2d(c_in, c_mid, 1, Default::default(), vb.pp("0"))
+        // v0.40 phase 3 iter 1: projections have weight only (no bias)
+        // per inspection: projections.{0..7}.{0,2}.weight exists but
+        // not .bias.
+        let conv_0 = nn::conv2d_no_bias(c_in, c_mid, 1, Default::default(), vb.pp("0"))
             .map_err(|e| anyhow!("ProjectionHead.0: {e}"))?;
         // index 1 is the activation (GELU/SiLU) — no params.
-        let conv_2 = nn::conv2d(c_mid, c_out, 1, Default::default(), vb.pp("2"))
+        let conv_2 = nn::conv2d_no_bias(c_mid, c_out, 1, Default::default(), vb.pp("2"))
             .map_err(|e| anyhow!("ProjectionHead.2: {e}"))?;
         Ok(Self { conv_0, conv_2 })
     }
@@ -682,5 +693,49 @@ mod tests {
         let x = Tensor::randn(0f32, 1f32, (1, 8, 8, 8), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 16, 4, 4]);
+    }
+
+    /// v0.40 phase 3: real-weight smoke for the Stable Cascade
+    /// canny ControlNet. Skipped unless `STABLE_CASCADE_WEIGHTS_DIR`
+    /// env var points at a directory containing
+    /// `controlnet/canny.safetensors`. ~16 MB checkpoint.
+    #[test]
+    fn cn_canny_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("controlnet/canny.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping cn_canny_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing controlnet/canny.safetensors from \
+                 stabilityai/stable-cascade).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap canny CN weights")
+        };
+        match CascadeControlNet::new(Config::canny_upstream(), vb) {
+            Ok(_) => eprintln!(
+                "✓ Cascade ControlNet (canny) real-weight load OK ({})",
+                path.display()
+            ),
+            Err(e) => panic!(
+                "Cascade ControlNet (canny) real-weight load FAILED — \
+                 indicates tensor naming mismatch between v0.39 cascade_cn \
+                 and upstream:\n  {e}"
+            ),
+        }
     }
 }

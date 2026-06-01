@@ -1,12 +1,61 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.38. The current
+"What's new" sections for v0.13 through v0.39. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.39 — Stable Cascade architectural rewrite
+
+v0.39 closed the "tensor-naming alignment" caveat that v0.37 and
+v0.38 both shipped: plakat's Cascade modules were rewritten to
+match the actual upstream Würstchen v3 / Stable Cascade
+architecture, verified position-by-position against the inspected
+`stabilityai/stable-cascade` + `stabilityai/stable-cascade-prior`
+safetensors headers.
+
+The cycle started with a planned ~300-LOC rename; inspection in
+phase 0 revealed the gap was structural. One headline phase, eight
+sub-phases (0a–0h), ~3600 LOC rewrite, +12 net lib tests.
+
+### Architectural changes (vs v0.37/v0.38)
+
+- **ResBlock**: SD-style `norm/conv/norm/conv` → ConvNeXt-v2
+  (`depthwise + LayerNorm2d + channelwise(Linear → GELU → GRN →
+  Linear)` + skip).
+- **TimestepBlock**: 1 mapper → 1/2/3 mappers (`mapper`,
+  `mapper_sca`, `mapper_crp`).
+- **AttnBlock**: separate self+cross modules → fused single
+  attention with `kv_mapper` (KV = `cat(flatten(image),
+  kv_mapper(text))`).
+- **Stage C UNet**: 3 levels → 2 levels at uniform c_hidden=2048
+  with strict `[Res, Time, Attn]` triples; `blocks_per_level =
+  [8, 24]`.
+- **Stage B UNet**: variable widths `[320, 640, 1280, 1280]`;
+  `effnet_mapper` + `pixels_mapper` Sequentials; attention only
+  at deepest 2 levels; Strided 2×2 stride-2 Conv/ConvTranspose.
+- **Stage A VAE**: Paella v3 VQ-GAN — ConvNeXt blocks + 8192-code
+  codebook + PixelUnshuffle/PixelShuffle at input/output.
+- **ControlNet**: 4 strided convs → MobileNetV3-Large backbone
+  (8 stages, `[2,4,4,6,9,15]` blocks) + 8 projection heads →
+  2048-ch residuals.
+
+### Honest scope notes (closed by v0.40)
+
+v0.39 shipped **load-correct, generate-pending**:
+`Pipeline::generate()` bailed with a v0.40 pointer rather than
+shipping subtly-incorrect output. v0.40 closed this caveat with
+real-weight end-to-end smoke iteration.
+
+### By the numbers
+
+- **1214 lib + 47 integration = 1261 active tests** (+12 net lib).
+- 8 sub-phases of phase 0 + close-out.
+- 2689 LOC of old SD-style modules deleted; ~3600 LOC of
+  upstream-aligned modules added.
 
 ## What's new in v0.38 — Stable Cascade completeness
 

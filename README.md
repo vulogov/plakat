@@ -8,151 +8,142 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.39 — Stable Cascade architectural rewrite
+## What's new in v0.40 — Stable Cascade end-to-end on real weights
 
-v0.39 closes the load-bearing "tensor-naming alignment" caveat
-that v0.37 and v0.38 both shipped: plakat's Cascade modules now
-match the actual upstream Würstchen v3 / Stable Cascade
-architecture, verified position-by-position against the
-inspected `stabilityai/stable-cascade` + `stabilityai/stable-
-cascade-prior` safetensors headers.
+v0.40 closes the v0.39 "load-correct, generate-pending" caveat:
+plakat now runs Stable Cascade end-to-end on the real upstream
+`stabilityai/stable-cascade` + `stabilityai/stable-cascade-prior`
+weights. CLIP-G text encoding → Stage C denoise → effnet
+conditioning → Stage B denoise → PixelShuffle bridge → Stage A
+decode → image bytes. Five phases shipped + close-out. Three
+real-weight smoke-iteration rounds resolved every architectural
+gap between plakat and upstream.
 
-The cycle started with a planned ~300-LOC rename — phase 0
-inspection showed the gap was structural (different ResBlock
-design, different TimestepBlock topology, missing conditioning
-embedders, MobileNetV3 ControlNet). One headline phase, eight
-sub-phases, ~3600 LOC rewrite, +12 net lib tests.
-
-### What changed
-
-```text
-v0.37/v0.38 (SD-style approximation)    v0.39 (upstream-aligned)
-─────────────────────────────────────   ────────────────────────
-ResBlock:  norm1/conv1/norm2/conv2  →   depthwise + LayerNorm2d +
-           GroupNorm                    channelwise MLP (Linear → GELU
-                                        → GRN → Linear) + skip
-
-TimestepBlock: 1 mapper            →    1 / 2 / 3 mappers
-                                        (mapper / mapper_sca / mapper_crp)
-
-AttnBlock: separate self_attn      →    single fused attention +
-           + cross_attn modules         kv_mapper (KV = cat(image, text))
-
-Stage C UNet:  3 levels, c_hidden  →    2 levels, c_hidden=2048
-               vec![1024,1536,2048]     uniform; blocks_per_level=[8,24]
-               approximated              with strict [Res,Time,Attn] triples
-
-Stage B UNet: 4 levels with        →    4 levels c=[320,640,1280,1280];
-              effnet channel-concat     effnet_mapper + pixels_mapper
-              at in_conv                Sequentials; attention at deepest 2;
-                                        Strided up/down samplers
-
-Stage A VAE:  SD-style 6-level     →    Paella v3 VQ-GAN:
-              ResBlocks                  ConvNeXt blocks + 8192-code
-                                        codebook + PixelUnshuffle/Shuffle
-
-ControlNet:   4 strided convs →    →    MobileNetV3-Large backbone (8
-              single residual            stages, [2,4,4,6,9,15] blocks) +
-                                        8 projection heads → 2048-ch residuals
+```
+✓ Generate end-to-end OK: 256×256, mean=85.7, non-uniform output
+✓ All 4 stages load real upstream weights without errors
 ```
 
-### Phase 0 sub-phases
+### Phases
 
-| # | What | LOC | Tests |
-|---|---|---|---|
-| 0a | `cascade_blocks.rs` — LayerNorm2d + GRN + ResBlock + TimestepBlock + AttnBlock | 692 | +14 |
-| 0b | `cascade_prior.rs` — Stage C UNet (2 levels, full conditioning embedders) | 692 | +8 |
-| 0c | `cascade_prior.rs` — Stage B variant (4 variable-width levels, effnet+pixels) | 711 | +9 |
-| 0d | `cascade_vae.rs` — Paella v3 VQ-GAN with codebook + PixelUnshuffle | 715 | +11 |
-| 0e | `cascade_cn.rs` — MobileNetV3-Large CN backbone + 8 projection heads | 687 | +7 |
-| 0f | `cascade_lora.rs` resolver — new tensor paths (folded into 0g) | – | – |
-| 0g | Pipeline integration — `cascade.rs` uses new types; deleted 2689 LOC of old | 156 | -37 |
-| 0h | Param-count regression + env-var-gated real-weight smoke tests | 132 | +3 |
-
-### Tensor naming matches upstream exactly
-
-Verified by safetensors-header inspection of all four upstream
-checkpoints (no full weight download needed — Range requests on
-the JSON header):
-
-| Stage | Upstream tensor count | plakat coverage |
+| # | Phase | What |
 |---|---|---|
-| Stage A (vqgan) | 122 | 122 (full) |
-| Stage B (decoder) | 1726 | 1714 (12 `up_repeat_mappers` deferred; identity at default block_repeat=1) |
-| Stage C (prior) | 1550 | **1550 (full, regression-locked)** |
-| ControlNet (canny) | 796 | 796 (skeleton; SE activation choices best-effort) |
+| 0 | Stage A ↔ Stage B spatial bridge | `encode_to_stage_b_space` / `decode_from_stage_b_space` — image ↔ (B, 16, H/8, W/8) via Stage A.encode + PixelUnshuffle(2) and the reverse. `stage_b_spatial_for_image` helper. |
+| 1 | Multi-residual CN injection into Stage C | `forward_with_cn` accepts `&[Tensor]` of N residuals; injects at evenly-spread positions `((i+1) * total_pos / N - 1)` across down_blocks. Shape-asserts each injection. |
+| 2 | AttnBlock conditioning topology | Fixed v0.39's pooled-token misreading (was 128/80 × 64; actually 4 × `c_pooled_token`). `build_clip_conditioning` returns Stage C concat(77 text + 4 pooled-text + 4 image) at `(B, 85, 2048)` and Stage B pooled-only at `(B, 4, 1280)`. |
+| 3 | Real-weight load smoke iteration | Three rounds against `stabilityai/stable-cascade` + `stabilityai/stable-cascade-prior` weights: fixed Conv2d-no-bias for BN-followed convs, ResBlock skip-concat at up-path level boundaries, CN stage 4 variable expansion ratios, Stage A `up_blocks.0.0` Sequential nesting. |
+| 4 | End-to-end inference wiring | `generate_at_size(prompt, neg, dim, steps_c, steps_b, …)` does the full 3-stage chain. Spatial alignment of effnet/pixels conditioning via nearest-upsample to embedding spatial. Real-weight end-to-end smoke test gated by `STABLE_CASCADE_WEIGHTS_DIR`. |
 
 ### Verification
 
 ```bash
-# Param-count regression — runs in CI, locks the upstream 1550 count
-cargo test --lib stage_c_full_topology_produces_1550_param_tensors
+# Architecture load smoke (all 4 stages):
+STABLE_CASCADE_WEIGHTS_DIR=~/weights/stable-cascade \
+    cargo test --lib loads_from_real_upstream_weights -- --nocapture
 
-# Real-weight smoke — opt-in for developers with the upstream weights
-STABLE_CASCADE_WEIGHTS_DIR=/path/to/weights \
-    cargo test --lib loads_from_real_upstream_weights
+# End-to-end inference smoke (heavy; ~20 min on CPU at 256² + 2+2 steps):
+STABLE_CASCADE_WEIGHTS_DIR=~/weights/stable-cascade \
+    cargo test --lib end_to_end_smoke -- --ignored --nocapture
 ```
 
-### Honest scope notes — generate path defers to v0.40
+Both pass on the upstream checkpoints. The end-to-end test saves
+the output to `/tmp/cascade_smoke.png`.
 
-v0.39 ships **load-correct, generate-pending**. The inference
-path (`Pipeline::generate()` / `generate_img2img()`) intentionally
-bails with a v0.40 pointer rather than ship subtly-incorrect
-output. The architecture is in place; what remains:
+### Honest scope notes — output quality is a v0.41 follow-through
 
-- Exact spatial contract between Stage B output (16-channel) →
-  Stage A input (4-channel via PixelShuffle).
-- Multi-residual CN injection at specific Stage C block positions
-  (the 8 residuals exist; the injection map is v0.40).
-- Real-weight conditioning topology — how pooled CLIP-G text +
-  CLIP-image map into AttnBlock KV streams at each level.
+v0.40 ships **architecture-verified, quality-pending**. The
+output of the end-to-end smoke is structurally valid (non-NaN,
+non-uniform RGB bytes) but not yet a recognizable image. Three
+known numerical-quality issues stay deferred:
 
-These need real-weight smoke runs to verify numerically; v0.39
-doesn't ship that infrastructure.
+1. **Scheduler mismatch.** candle's `DpmppKarras` uses SDXL
+   integer timesteps (0-1000); upstream Stable Cascade trains
+   against `DDPMWuerstchenScheduler` with ratio float timesteps
+   (1.0 → 0.0). The model is fed timestep distributions it
+   wasn't trained on. A proper Wuerstchen-style scheduler lands
+   in v0.41.
+2. **`sca_emb` / `crp_emb` placeholders.** Currently set to
+   `t_emb` itself in the `TimestepBlock` mappers. Upstream feeds
+   separate aesthetic-score and crop-coord sinusoidal encodings.
+3. **Low step count in CI.** The smoke runs at 2+2 steps for
+   tractable CPU time. Production use needs 20-30 Stage C +
+   10-15 Stage B steps; CPU users should expect ~3-6 hours, GPU
+   ~minutes.
+
+These don't affect the architectural milestone: every tensor
+loads, every forward pass completes without errors, output bytes
+are reasonable in distribution. v0.41 turns "shape-correct
+output" into "image-correct output."
+
+### Iteration log
+
+The three real-weight smoke rounds in phase 3 each surfaced
+specific tensor naming/shape gaps and were fixed surgically:
+
+- **Iter 1** (4 errors): Conv2d→BN pipelines need
+  `conv2d_no_bias` (BN absorbs the bias); ResBlock at first
+  position of each up-path level needs `c_skip` channel-concat
+  with the down-side skip tensor. Stage B + Stage C started
+  loading.
+- **Iter 2** (2 errors): CN stage 4 has variable expansion
+  ratios (block 0: c_mid=256/se=16; blocks 1-5: c_mid=512/se=32);
+  Stage A `dec_in_conv` lives at `up_blocks.0.0` (Sequential
+  wrap), not `up_blocks.0`. All 4 stages loaded cleanly.
+- **Iter 3 (phase 4)** (1 error): Stage B's embedding output
+  spatial varies with target image size (32² for 256² output)
+  but Stage C output is fixed at 24²; effnet needs nearest-
+  upsample to embedding spatial before the additive add.
 
 ### By the numbers
 
-- **1214 lib + 47 integration tests = 1261 active tests** (+12
-  net lib across the cycle: +49 new, -37 from deleting old SD-style
-  cascade modules).
-- 8 sub-phases of phase 0 + close-out.
-- 2689 LOC of old v0.37/v0.38 SD-style Cascade modules deleted;
-  ~3600 LOC of upstream-aligned modules added.
-- Three files removed: `cascade_unet.rs`, `cascade_stage_a.rs`,
-  `cascade_controlnet.rs`. Four new: `cascade_blocks.rs`,
-  `cascade_prior.rs`, `cascade_vae.rs`, `cascade_cn.rs`.
+- **1230 lib + 47 integration tests = 1277 active tests** (+16
+  net lib across the cycle).
+- 5 feature phases + close-out.
+- ~500 LOC of new generate() body + spatial bridge + CN
+  injection in `cascade.rs` and `cascade_prior.rs`.
+- Real upstream weights load + run through the full pipeline:
+  CLIP-G + Stage A + Stage B + Stage C all together (~7 GB RAM
+  peak).
 
-### v0.38 → v0.39 migration
+### v0.39 → v0.40 migration
 
-v0.39 is API-additive at the public CLI/scripting/scenario layer
-(every flag, host word, config key from v0.38 still works) but
-**`Pipeline::generate()` is intentionally pending** for the
-Cascade family. Users running `plakat generate --model
-stable-cascade` against v0.39 will get a load-success + bail
-pointing at v0.40 follow-through.
+v0.40 is API-additive. `Pipeline::generate()` now actually runs
+end-to-end (the v0.39 bail is replaced with the real body). New
+helpers:
 
-Non-Cascade families (SD, SDXL, SD3, Flux, PixArt, AnimateDiff)
-are unaffected and ship unchanged.
+- ✅ `StageAVae::encode_to_stage_b_space` / `decode_from_stage_b_space`
+- ✅ `stage_b_spatial_for_image(D)` → `D/8`
+- ✅ `StableCascadePrior::forward_with_cn(&[Tensor], scale)`
+- ✅ `StableCascadePrior::cn_injection_positions(n)`
+- ✅ `Pipeline::generate_at_size(prompt, neg, dim, …)` — explicit output dim
 
-### Deferred to v0.40
+`Pipeline::generate(prompt, neg, …)` now calls
+`generate_at_size(…, 1024, …)` internally — same signature, real
+output instead of bail.
 
-- **Pipeline::generate() wiring** — multi-residual CN injection,
-  Stage B → Stage A spatial PixelShuffle, real conditioning
-  topology for AttnBlock KV.
-- All five v0.38 Cascade carries (multi-CN, scenario CN,
-  scripting CN, img2img+CN combo, `hf::ALIAS_TABLE` CN aliases,
-  `--control-from` auto-annotate).
-- PixArt ControlNet (long-standing v0.36 carry).
-- `up_repeat_mappers` for Stage B at `block_repeat > 1`.
-- Stage A `ReflectionPad2d` (currently approximated with zero-pad).
-- `gammas` modulation vector exact application in PaellaResBlock
-  (currently best-effort single-scalar interpretation).
-- MobileNetV3 activation choice refinement (Hardswish vs SiLU).
+### Deferred to v0.41+
+
+- **Wuerstchen-style ratio-timestep scheduler.** The biggest
+  output-quality lever.
+- **`sca_emb` / `crp_emb` real conditioning** — aesthetic +
+  crop sinusoidals matching upstream's `add_time_ids` analogue.
+- **Quality-validated full generation** at 1024² with 30+10
+  steps. Visual confirmation against upstream reference images.
+- **All five v0.38 Cascade carries** (multi-CN production
+  wiring, scenario CN, scripting CN, img2img+CN combo,
+  `hf::ALIAS_TABLE` CN aliases, `--control-from` auto-annotate).
+- **PixArt ControlNet** (long-standing v0.36 carry).
+- **`up_repeat_mappers`** for Stage B at `block_repeat > 1`.
+- **Stage A `ReflectionPad2d`** (currently approximated with
+  zero-pad).
+- **`gammas` modulation vector** exact 6-element application.
+- **MobileNetV3 activation choice refinement** (Hardswish vs
+  SiLU; currently SiLU throughout).
 - All long-standing deferrals (per-layer motion splice,
   HotShot-XL, AnimateLCM-SDXL externally blocked, INT8 SDXL
   externally blocked).
 
-**Earlier releases** (v0.13 – v0.38):
+**Earlier releases** (v0.13 – v0.39):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
