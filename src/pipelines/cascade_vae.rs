@@ -320,7 +320,11 @@ impl StageAVae {
 
         let enc_res_1 = PaellaResBlock::new(cfg.c_hidden_deep, vb.pp("down_blocks").pp("2"))?;
 
-        let enc_out_conv = nn::conv2d(
+        // v0.40 phase 3 iter 1: enc_out_conv (down_blocks.3.0) is
+        // Conv2d → BN with NO Conv bias (the BN at .3.1 absorbs it).
+        // Verified by inspection: down_blocks.3.0.weight exists but
+        // not down_blocks.3.0.bias.
+        let enc_out_conv = nn::conv2d_no_bias(
             cfg.c_hidden_deep,
             cfg.c_latent,
             1,

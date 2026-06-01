@@ -344,6 +344,8 @@ pub enum Block {
 }
 
 impl Block {
+    /// Forward without skip. Errors if the block is a ResBlock that
+    /// was constructed with `c_skip > 0`.
     pub fn forward(
         &self,
         x: &Tensor,
@@ -357,6 +359,33 @@ impl Block {
             Block::Time(b) => b.forward(x, t_emb, sca_emb, crp_emb),
             Block::Attn(b) => b.forward(x, clip),
         }
+    }
+
+    /// v0.40 phase 3 iter 1: forward with an optional skip. Required
+    /// at the first ResBlock of each up-path level (after the
+    /// upscaler); the skip carries the channel-concatenated feature
+    /// from the matching down level. `Time` / `Attn` blocks ignore
+    /// the skip arg.
+    pub fn forward_maybe_skip(
+        &self,
+        x: &Tensor,
+        x_skip: Option<&Tensor>,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+    ) -> Result<Tensor> {
+        match (self, x_skip) {
+            (Block::Res(b), Some(skip)) if b.c_skip() > 0 => b.forward_with_skip(x, skip),
+            (Block::Res(b), _) => b.forward(x),
+            (Block::Time(b), _) => b.forward(x, t_emb, sca_emb, crp_emb),
+            (Block::Attn(b), _) => b.forward(x, clip),
+        }
+    }
+
+    /// Returns true if this is a ResBlock constructed with `c_skip > 0`.
+    pub fn requires_skip(&self) -> bool {
+        matches!(self, Block::Res(b) if b.c_skip() > 0)
     }
 }
 
@@ -520,7 +549,7 @@ impl StableCascadePrior {
             None
         };
 
-        // ---- Down blocks: per-level width + attn flag ----
+        // ---- Down blocks: per-level width + attn flag (no skip-concat) ----
         let down_blocks = build_block_levels(
             &cfg.blocks_per_level,
             &cfg.c_hidden_per_level,
@@ -529,6 +558,7 @@ impl StableCascadePrior {
             &cfg.has_attention_per_level,
             cfg.has_sca,
             cfg.has_crp,
+            None,
             vb.pp("down_blocks"),
         )?;
 
@@ -552,12 +582,22 @@ impl StableCascadePrior {
         }
 
         // ---- Up blocks (mirror of down: deepest first, shallowest last) ----
+        // v0.40 phase 3 iter 1: skip-concat at the FIRST ResBlock of each
+        // up level i > 0 (after the upscaler brings us to the matching
+        // down level's spatial). At up level 0 (deepest), we START from
+        // the down level (n-1) output, so no skip-concat there.
+        // At up level i, skip channels = down level (n-1-i)'s c_hidden
+        // = up_c_hidden[i] (since up width at level i == down width at
+        // level n-1-i, and the upscaler brings channels to match).
         let up_blocks_per_level: Vec<usize> =
             cfg.blocks_per_level.iter().rev().copied().collect();
         let up_c_hidden: Vec<usize> =
             cfg.c_hidden_per_level.iter().rev().copied().collect();
         let up_has_attn: Vec<bool> =
             cfg.has_attention_per_level.iter().rev().copied().collect();
+        let up_skip_dims: Vec<usize> = (0..num_levels)
+            .map(|i| if i == 0 { 0 } else { up_c_hidden[i] })
+            .collect();
         let up_blocks = build_block_levels(
             &up_blocks_per_level,
             &up_c_hidden,
@@ -566,6 +606,7 @@ impl StableCascadePrior {
             &up_has_attn,
             cfg.has_sca,
             cfg.has_crp,
+            Some(&up_skip_dims),
             vb.pp("up_blocks"),
         )?;
 
@@ -901,17 +942,30 @@ impl StableCascadePrior {
         }
 
         // ---- Up path: start from the deepest level output ----
+        // v0.40 phase 3 iter 1: skip is consumed by the FIRST
+        // ResBlock at each up level (channel-concat in the
+        // channelwise MLP), NOT by an additive add. The first
+        // ResBlock was constructed with c_skip == up_c_hidden[level]
+        // so it expects the skip via forward_maybe_skip.
         let mut h = level_outputs.pop().expect("non-empty levels");
         for (i, blocks) in self.up_blocks.iter().enumerate() {
-            if i > 0 {
+            let skip_for_level = if i > 0 {
                 h = self.up_upscalers[i - 1].forward(&h)?;
-                let skip = level_outputs
-                    .pop()
-                    .ok_or_else(|| anyhow!("missing skip at up level {i}"))?;
-                h = h.add(&skip)?;
-            }
-            for block in blocks {
-                h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
+                Some(
+                    level_outputs
+                        .pop()
+                        .ok_or_else(|| anyhow!("missing skip at up level {i}"))?,
+                )
+            } else {
+                None
+            };
+            for (b_idx, block) in blocks.iter().enumerate() {
+                // Only the first block in the level (b_idx==0) consumes
+                // the skip; later blocks don't.
+                let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
+                h = block.forward_maybe_skip(
+                    &h, block_skip, t_emb, sca_emb, crp_emb, clip,
+                )?;
             }
         }
 
@@ -940,6 +994,7 @@ impl StableCascadePrior {
 // Helpers — block-sequence builder.
 // ---------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn build_block_levels(
     blocks_per_level: &[usize],
     c_hidden_per_level: &[usize],
@@ -948,6 +1003,11 @@ fn build_block_levels(
     has_attention_per_level: &[bool],
     has_sca: bool,
     has_crp: bool,
+    // v0.40 phase 3 iter 1: per-level skip channel count for the
+    // FIRST ResBlock at each level. `None` → no skip-concat (used by
+    // the down path). `Some(&skip_dims)` with `skip_dims[level] > 0`
+    // → the first ResBlock at that level has `c_skip == skip_dims[level]`.
+    skip_dims_per_level: Option<&[usize]>,
     vb: VarBuilder,
 ) -> Result<Vec<Vec<Block>>> {
     let mut out = Vec::with_capacity(blocks_per_level.len());
@@ -961,10 +1021,14 @@ fn build_block_levels(
         // Attention level uses the same c_hidden for the kv stream
         // (text projection target).
         let text_dim = c;
+        let skip_c = skip_dims_per_level.and_then(|s| s.get(level).copied()).unwrap_or(0);
         for triple in 0..*n_triples {
             let pos_base = triple * triple_size;
-            blocks.push(Block::Res(ResBlock::new(
+            // Skip-concat only on the very FIRST ResBlock of this level.
+            let c_skip = if triple == 0 { skip_c } else { 0 };
+            blocks.push(Block::Res(ResBlock::new_with_skip(
                 c,
+                c_skip,
                 level_vb.pp(&pos_base.to_string()),
             )?));
             blocks.push(Block::Time(TimestepBlock::new(
