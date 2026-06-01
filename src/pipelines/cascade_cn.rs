@@ -683,4 +683,48 @@ mod tests {
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 16, 4, 4]);
     }
+
+    /// v0.40 phase 3: real-weight smoke for the Stable Cascade
+    /// canny ControlNet. Skipped unless `STABLE_CASCADE_WEIGHTS_DIR`
+    /// env var points at a directory containing
+    /// `controlnet/canny.safetensors`. ~16 MB checkpoint.
+    #[test]
+    fn cn_canny_loads_from_real_upstream_weights() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let path = std::path::PathBuf::from(&dir)
+            .join("controlnet/canny.safetensors");
+        if !path.exists() {
+            eprintln!(
+                "Skipping cn_canny_loads_from_real_upstream_weights: \
+                 {} doesn't exist (set STABLE_CASCADE_WEIGHTS_DIR to a \
+                 directory containing controlnet/canny.safetensors from \
+                 stabilityai/stable-cascade).",
+                path.display()
+            );
+            return;
+        }
+        let device = Device::Cpu;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.as_path()],
+                DType::F32,
+                &device,
+            )
+            .expect("mmap canny CN weights")
+        };
+        match CascadeControlNet::new(Config::canny_upstream(), vb) {
+            Ok(_) => eprintln!(
+                "✓ Cascade ControlNet (canny) real-weight load OK ({})",
+                path.display()
+            ),
+            Err(e) => panic!(
+                "Cascade ControlNet (canny) real-weight load FAILED — \
+                 indicates tensor naming mismatch between v0.39 cascade_cn \
+                 and upstream:\n  {e}"
+            ),
+        }
+    }
 }
