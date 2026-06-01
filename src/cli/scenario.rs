@@ -2028,10 +2028,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // v0.37 phase 5: Stable Cascade scenario pre-load. Mirrors the
     // PixArt pattern above (load once at scenario start when
     // variant.is_cascade(); scenarios with no Cascade tasks pay
-    // nothing). LoRAs deferred to v0.38 (not in the v0.37 cycle's
-    // explicit deferral list); Cascade has no scenario-level LoRA
-    // wiring yet. Stage A VAE is its own type (not the SD-family
-    // AutoEncoderKL), so the v0.34 phase 3 VAE-cache mechanism
+    // nothing). v0.38 phase 3 wires scenario-level LoRAs at load
+    // time (mirrors the PixArt v0.35 phase 4 pattern). Per-task LoRA
+    // overrides for Cascade are NOT yet supported — the preflight
+    // skips Cascade and the dispatch arm runs against the load-time
+    // merged tempfiles. Stage A VAE is its own type (not the SD-
+    // family AutoEncoderKL), so the v0.34 phase 3 VAE-cache mechanism
     // doesn't apply — Cascade scenarios don't share VAE with other
     // pipelines.
     let mut cascade_pipeline: Option<crate::pipelines::cascade::Pipeline> =
@@ -2043,11 +2045,19 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             } else {
                 crate::hf::resolve_alias(&model).to_string()
             };
+            let mut resolved_cascade_loras:
+                Vec<crate::pipelines::lora::ResolvedLora> =
+                Vec::with_capacity(loras.len());
+            for spec in &loras {
+                resolved_cascade_loras.push(spec.resolve().await?);
+            }
             Some(
                 crate::pipelines::cascade::Pipeline::load(
                     crate::pipelines::cascade::LoadRequest {
                         repo: resolved_repo,
                         device: device.clone(),
+                        loras: resolved_cascade_loras,
+                        lora_scale,
                     },
                 )
                 .await?,
@@ -3473,9 +3483,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             // v0.37 (deferred to v0.38). Falls through to PixArt →
             // SD3 → SD/Flux for non-Cascade tasks.
             if let Some(cp) = cascade_pipeline.as_mut() {
-                use crate::imaging::metadata::GenerationMetadata;
+                use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
                 let stage_c_steps = (eff_steps * 2).div_ceil(3).max(1);
                 let stage_b_steps = eff_steps.saturating_sub(stage_c_steps).max(1);
+                // v0.38 phase 3: scenario-level Cascade LoRA stack
+                // for metadata. Merged at load time; per-task
+                // overrides are not yet wired (Cascade has no
+                // per-task runtime LoRA swap).
+                let cascade_lora_entries: Vec<LoraEntry> =
+                    loras.iter().map(|s| s.to_entry()).collect();
                 for img_idx in 0..eff_count {
                     let img_seed = task_seed.wrapping_add(img_idx as u64);
                     let (buf, ow, oh) = cp.generate(
@@ -3498,6 +3514,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         oh,
                     );
                     m.negative = eff_negative.clone();
+                    if !cascade_lora_entries.is_empty() {
+                        m.with_lora_stack(cascade_lora_entries.clone());
+                        m.lora_scale = Some(lora_scale);
+                    }
                     let out_path = task_out
                         .join(format!("plakat-cascade-{img_seed}.png"));
                     crate::imaging::io::save_rgb_u8_with_metadata(

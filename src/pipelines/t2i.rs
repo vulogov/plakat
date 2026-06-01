@@ -2098,6 +2098,10 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             scheduler: req.scheduler,
             out_dir: req.out_dir.clone(),
             count: req.count,
+            // v0.38 phase 3: LoRA stack threads through to the
+            // Cascade Stage B + Stage C tempfile merges at load time.
+            loras: req.loras.clone(),
+            lora_scale: req.lora_scale,
         })
         .await?;
         return Ok(None);

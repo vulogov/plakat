@@ -88,6 +88,16 @@ pub struct LoadRequest {
     /// first; this struct holds the canonical form).
     pub repo: String,
     pub device: Device,
+    /// v0.38 phase 3: Cascade LoRA stack (resolved by the caller via
+    /// `LoraSpec::resolve`). Each entry is dispatched against BOTH
+    /// the Stage B (decoder) and Stage C (prior) prior UNets via
+    /// `cascade_lora::merge_cascade_{b,c}_loras_into_weights`. Empty
+    /// (default) → no merge, base safetensors mmap directly.
+    pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
+    /// Global scale multiplier on each LoRA's per-spec scale.
+    /// Mirrors `--lora-scale`. Default `1.0` means honour each
+    /// LoRA's own scale; `0.0` zeroes out every LoRA contribution.
+    pub lora_scale: f32,
 }
 
 /// Stable Cascade pipeline.
@@ -226,11 +236,29 @@ impl Pipeline {
             .context("building Stage A VAE for Stable Cascade")?;
         stage_a_build.finish_with_message("✓ Stage A VAE ready");
 
+        // v0.38 phase 3: optionally merge user LoRAs into Stage B
+        // and Stage C tempfiles (mirrors pixart::Pipeline::load
+        // pattern). Empty stack short-circuits to the base mmap.
+        let stage_b_load_path = maybe_merge_loras(
+            &stage_b_w,
+            &req.loras,
+            req.lora_scale,
+            &req.device,
+            crate::pipelines::cascade_lora::Stage::B,
+        )?;
+        let stage_c_load_path = maybe_merge_loras(
+            &stage_c_w,
+            &req.loras,
+            req.lora_scale,
+            &req.device,
+            crate::pipelines::cascade_lora::Stage::C,
+        )?;
+
         // v0.37 phase 2: Stage B. `stage_b_for_alias` picks Full or
         // Lite based on the resolved repo path (substring "lite").
         let stage_b_build = progress::spinner("Loading Stage B UNet");
         let stage_b_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[stage_b_w.as_path()], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&[stage_b_load_path.as_path()], dtype, &req.device)?
         };
         let stage_b_cfg = UnetConfig::stage_b_for_alias(&req.repo);
         let stage_b = StableCascadeUnet::new(stage_b_cfg, stage_b_vb)
@@ -241,7 +269,7 @@ impl Pipeline {
         // Full routing rule as Stage B (substring "lite" → Lite).
         let stage_c_build = progress::spinner("Loading Stage C UNet (heaviest stage)");
         let stage_c_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[stage_c_w.as_path()], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&[stage_c_load_path.as_path()], dtype, &req.device)?
         };
         let stage_c_cfg = UnetConfig::stage_c_for_alias(&req.repo);
         let stage_c = StableCascadeUnet::new(stage_c_cfg, stage_c_vb)
@@ -416,6 +444,65 @@ impl Pipeline {
     }
 }
 
+/// v0.38 phase 3: optional LoRA merge into a temporary safetensors
+/// file. Returns the original `base` path when the LoRA stack is
+/// empty (zero work, zero IO); otherwise writes a stage-specific
+/// merged tempfile (under `std::env::temp_dir()` with pid + nanos
+/// for uniqueness) and returns its path. The caller mmaps the
+/// returned path — the tempfile stays alive for the lifetime of
+/// that mmap (same pattern pixart::Pipeline::load uses, no explicit
+/// cleanup; OS sweep handles disposal).
+fn maybe_merge_loras(
+    base: &std::path::Path,
+    loras: &[crate::pipelines::lora::ResolvedLora],
+    lora_scale: f32,
+    device: &Device,
+    stage: crate::pipelines::cascade_lora::Stage,
+) -> Result<std::path::PathBuf> {
+    if loras.is_empty() {
+        return Ok(base.to_path_buf());
+    }
+    let merge_spinner = progress::spinner(&format!(
+        "Merging {} Cascade LoRA(s) into Stage {:?}",
+        loras.len(),
+        stage
+    ));
+    let out_path = std::env::temp_dir().join(format!(
+        "plakat-cascade-{:?}-lora-merged-{}-{}.safetensors",
+        stage,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let (n_mod, n_total) = match stage {
+        crate::pipelines::cascade_lora::Stage::B => {
+            crate::pipelines::cascade_lora::merge_cascade_b_loras_into_weights(
+                base,
+                &out_path,
+                loras,
+                lora_scale,
+                device,
+            )
+        }
+        crate::pipelines::cascade_lora::Stage::C => {
+            crate::pipelines::cascade_lora::merge_cascade_c_loras_into_weights(
+                base,
+                &out_path,
+                loras,
+                lora_scale,
+                device,
+            )
+        }
+    }?;
+    merge_spinner.finish_with_message(format!(
+        "✓ Cascade Stage {:?} LoRA merge: {n_mod}/{n_total} target groups applied",
+        stage
+    ));
+    Ok(out_path)
+}
+
 /// Stable Cascade entrypoint called by `t2i::run` when
 /// `Variant::detect` classifies the model as Stable Cascade.
 /// Phase 0: bails after a successful CLIP-G load, proving the
@@ -427,15 +514,33 @@ pub async fn run(req: RunRequest) -> Result<()> {
         crate::hf::resolve_alias(&req.model).to_string()
     };
 
+    // v0.38 phase 3: resolve LoRA specs to on-disk safetensors before
+    // load. Mirrors pixart::run's resolve-then-pass pattern.
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(req.loras.len());
+    for spec in &req.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
+        loras: resolved_loras,
+        lora_scale: req.lora_scale,
     })
     .await?;
 
     let base_seed = req
         .seed
         .unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
+
+    // v0.38 phase 3: pre-build LoRA metadata stack so each generated
+    // PNG carries the same record SD/Flux/SD3/PixArt do.
+    let metadata_lora_stack: Vec<crate::imaging::metadata::LoraEntry> = req
+        .loras
+        .iter()
+        .map(|s| s.to_entry())
+        .collect();
 
     std::fs::create_dir_all(&req.out_dir)
         .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
@@ -473,6 +578,10 @@ pub async fn run(req: RunRequest) -> Result<()> {
             oh,
         );
         m.negative = req.negative.clone();
+        if !metadata_lora_stack.is_empty() {
+            m.with_lora_stack(metadata_lora_stack.clone());
+            m.lora_scale = Some(req.lora_scale);
+        }
 
         let out_path = req
             .out_dir
@@ -508,6 +617,11 @@ pub struct RunRequest {
     pub out_dir: std::path::PathBuf,
     /// Count of images (per-image seed = base + idx).
     pub count: u32,
+    /// v0.38 phase 3: unresolved Cascade LoRA specs (resolved
+    /// inside `cascade::run` before `Pipeline::load`).
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// Global LoRA scale multiplier. Default 1.0.
+    pub lora_scale: f32,
 }
 
 #[cfg(test)]
@@ -530,12 +644,16 @@ mod tests {
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/cascade-test"),
             count: 1,
+            loras: Vec::new(),
+            lora_scale: 1.0,
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
         assert_eq!(r.stage_b_steps, 10);
         assert_eq!(r.seed, Some(42));
         assert_eq!(r.count, 1);
+        assert_eq!(r.lora_scale, 1.0);
+        assert!(r.loras.is_empty());
     }
 
     /// v0.37 phase 0: aliases resolve to the canonical Stable
