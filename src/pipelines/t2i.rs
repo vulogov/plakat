@@ -177,6 +177,15 @@ pub struct Request {
     /// v0.33 phase 0: metadata polish — v0.19 prompt enhancement
     /// details (provider, system prompt, original prompt).
     pub enhancement: Option<crate::imaging::metadata::EnhancementMetadata>,
+    /// v0.38 phase 2: Stable Cascade Stage C step count override.
+    /// `None` → the dispatch splits `steps` 2/3 to Stage C, 1/3 to
+    /// Stage B (the canonical CLI default). `Some(n)` → use exactly
+    /// `n` Stage C steps. Ignored on every non-Cascade pipeline.
+    pub cascade_stage_c_steps: Option<usize>,
+    /// v0.38 phase 2: Stable Cascade Stage B step count override.
+    /// `None` → split `steps`. `Some(n)` → exact count. Ignored on
+    /// non-Cascade pipelines.
+    pub cascade_stage_b_steps: Option<usize>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -2067,11 +2076,16 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     if variant.is_cascade() {
         use crate::pipelines::cascade;
         // Stable Cascade has TWO step budgets (Stage C + Stage B).
-        // CLI exposes a single --steps for now — split it: Stage C
-        // takes 2/3 (the heavy semantic stage), Stage B takes 1/3.
-        // The split can be tuned via dedicated flags in v0.38.
-        let stage_c_steps = (req.steps * 2).div_ceil(3).max(1);
-        let stage_b_steps = req.steps.saturating_sub(stage_c_steps).max(1);
+        // Honour explicit `--stage-c-steps` / `--stage-b-steps`
+        // overrides (v0.38 phase 2); fall back to splitting
+        // `--steps` 2/3 (heavy semantic Stage C) + 1/3 (Stage B
+        // refine), which preserves the v0.37 single-knob default.
+        let stage_c_steps = req
+            .cascade_stage_c_steps
+            .unwrap_or_else(|| (req.steps * 2).div_ceil(3).max(1));
+        let stage_b_steps = req.cascade_stage_b_steps.unwrap_or_else(|| {
+            req.steps.saturating_sub(stage_c_steps).max(1)
+        });
         cascade::run(cascade::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),

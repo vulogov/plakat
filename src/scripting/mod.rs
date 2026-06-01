@@ -2794,4 +2794,80 @@ mod tests {
         assert!(!Variant::detect("flux-dev").is_pixart());
         assert!(!Variant::detect("sd35-medium").is_pixart());
     }
+
+    /// v0.38 phase 2: `plakat.cascade` with no model loaded bails
+    /// before any network load. Mirrors `pixart_no_model_loaded`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cascade_no_model_loaded_bails_via_eval() {
+        with_singleton_ctx(|| {
+            with_ctx_mut(|ctx| {
+                ctx.loaded = None;
+                ctx.loaded_t2i = None;
+                ctx.config = config::GenerationConfig::default();
+            })
+            .unwrap();
+            let err = eval(r#""a misty forest" plakat.cascade"#)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("no model loaded"),
+                "expected no-model error, got: {err}",
+            );
+            assert!(
+                err.contains("stable-cascade") && err.contains("plakat.load"),
+                "expected `stable-cascade plakat.load` pointer, got: {err}",
+            );
+        });
+    }
+
+    /// v0.38 phase 2: pin that `is_cascade()` recognises every
+    /// alias `plakat.cascade`'s variant guard will match, and
+    /// rejects non-Cascade aliases.
+    #[test]
+    fn cascade_variant_detection_covers_every_alias() {
+        use crate::pipelines::t2i::Variant;
+        for alias in ["stable-cascade", "cascade"] {
+            let v = Variant::detect(crate::hf::resolve_alias(alias));
+            assert!(
+                v.is_cascade(),
+                "{alias}: expected is_cascade(), got {v:?}"
+            );
+        }
+        assert!(
+            Variant::detect("stabilityai/stable-cascade").is_cascade(),
+            "canonical Stable Cascade repo must also detect"
+        );
+        assert!(!Variant::detect("sd15").is_cascade());
+        assert!(!Variant::detect("sdxl").is_cascade());
+        assert!(!Variant::detect("flux-dev").is_cascade());
+        assert!(!Variant::detect("pixart-sigma").is_cascade());
+    }
+
+    /// v0.38 phase 2: `stage_c_steps` / `stage_b_steps` config keys
+    /// round-trip through `set_str` and feed into the cascade
+    /// step-split logic.
+    #[test]
+    fn cascade_stage_step_overrides_round_trip_through_config() {
+        let mut cfg = config::GenerationConfig::default();
+        assert!(cfg.stage_c_steps.is_none());
+        assert!(cfg.stage_b_steps.is_none());
+
+        cfg.set_str("stage_c_steps", "25").unwrap();
+        cfg.set_str("stage_b_steps", "8").unwrap();
+        assert_eq!(cfg.stage_c_steps, Some(25));
+        assert_eq!(cfg.stage_b_steps, Some(8));
+
+        // Empty string clears (reverts to derive-from-steps).
+        cfg.set_str("stage_c_steps", "").unwrap();
+        assert!(cfg.stage_c_steps.is_none());
+
+        // Non-numeric strings are rejected with a key-tagged error.
+        let err = cfg
+            .set_str("stage_c_steps", "twenty")
+            .unwrap_err();
+        assert!(format!("{err}").contains("stage_c_steps"));
+        // Negative is rejected too.
+        let err = cfg.set_str("stage_b_steps", "-1").unwrap_err();
+        assert!(format!("{err}").contains("stage_b_steps"));
+    }
 }

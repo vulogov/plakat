@@ -68,6 +68,20 @@ pub struct GenerateArgs {
     #[arg(long, default_value_t = 28)]
     pub steps: usize,
 
+    /// Stable Cascade Stage C denoising steps. Unset → split
+    /// `--steps` 2/3 to Stage C (heavy semantic stage) + 1/3 to
+    /// Stage B (refine). When set, takes precedence over `--steps`
+    /// for the Stage C count. Cascade-only; ignored on every
+    /// non-Cascade model.
+    #[arg(long = "stage-c-steps", value_name = "N")]
+    pub stage_c_steps: Option<usize>,
+
+    /// Stable Cascade Stage B denoising steps. Unset → derived
+    /// from `--steps` (1/3 of total, or `steps - stage_c_steps`
+    /// when only `--stage-c-steps` was given). Cascade-only.
+    #[arg(long = "stage-b-steps", value_name = "N")]
+    pub stage_b_steps: Option<usize>,
+
     /// Classifier-free guidance scale. Use 0.0 for SDXL-Turbo.
     #[arg(long, default_value_t = 7.5)]
     pub guidance: f64,
@@ -1133,6 +1147,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         embedding_stack: None,
         control_stack: None,
         enhancement: None,
+        // v0.38 phase 2: Stable Cascade Stage C / Stage B step
+        // overrides. Plain `--steps` still works; these refine it
+        // when set. Ignored on every non-Cascade pipeline.
+        cascade_stage_c_steps: args.stage_c_steps,
+        cascade_stage_b_steps: args.stage_b_steps,
     })
     .await
     .map_err(|e| {
@@ -1657,6 +1676,8 @@ mod tests {
             base: 768,
             count: 1,
             steps: 28,
+            stage_c_steps: None,
+            stage_b_steps: None,
             guidance: 7.5,
             negative: String::new(),
             negative_preset: None,

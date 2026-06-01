@@ -328,6 +328,19 @@ pub struct GenerationConfig {
     /// → 512²). Once the script sets either dim explicitly, this
     /// flips and the explicit values apply.
     pub size_explicit: bool,
+    /// v0.38 phase 2: Stable Cascade Stage C step count override.
+    /// `None` (default) → derive from [`Self::steps`] via the
+    /// upstream 2/3 split (Stage C is the heavy semantic stage).
+    /// `Some(n)` → use exactly `n` Stage C steps regardless of
+    /// `steps`. Honoured by `plakat.cascade` only — Stage C is a
+    /// Stable Cascade concept.
+    pub stage_c_steps: Option<usize>,
+    /// v0.38 phase 2: Stable Cascade Stage B step count override.
+    /// `None` (default) → derive from [`Self::steps`] via the
+    /// 1/3 split (Stage B refines C's output into the Stage A
+    /// latent). `Some(n)` → use exactly `n` Stage B steps.
+    /// Honoured by `plakat.cascade` only.
+    pub stage_b_steps: Option<usize>,
 }
 
 impl Default for GenerationConfig {
@@ -394,6 +407,8 @@ impl Default for GenerationConfig {
             face_landmarks: None,
             identity_kind: String::new(),
             size_explicit: false,
+            stage_c_steps: None,
+            stage_b_steps: None,
         }
     }
 }
@@ -815,6 +830,22 @@ impl GenerationConfig {
                 }
                 self.identity_kind = value.to_string();
             }
+            "stage_c_steps" => {
+                // v0.38 phase 2: empty clears (revert to 2/3 split
+                // of `steps`); non-empty positive int overrides.
+                if value.is_empty() {
+                    self.stage_c_steps = None;
+                } else {
+                    self.stage_c_steps = Some(parse_pos_int(value, key)? as usize);
+                }
+            }
+            "stage_b_steps" => {
+                if value.is_empty() {
+                    self.stage_b_steps = None;
+                } else {
+                    self.stage_b_steps = Some(parse_pos_int(value, key)? as usize);
+                }
+            }
             other => {
                 return Err(anyhow!(
                     "plakat.config.set: unknown key {other:?}. \
@@ -836,7 +867,8 @@ impl GenerationConfig {
                      wildcard_dir, negative_preset, style_catalog, \
                      face_bbox, face_landmarks, identity_kind, \
                      offline_discovery, animate_frames, animate_window_size, \
-                     animate_window_overlap, animate_lcm, animate_format."
+                     animate_window_overlap, animate_lcm, animate_format, \
+                     stage_c_steps, stage_b_steps."
                 ));
             }
         }
@@ -860,7 +892,8 @@ impl GenerationConfig {
             | "enhance_max_tokens" | "base" | "mask_feather"
             | "clip_skip"
             | "animate_frames" | "animate_window_size"
-            | "animate_window_overlap" => {
+            | "animate_window_overlap"
+            | "stage_c_steps" | "stage_b_steps" => {
                 self.set_str(key, &value.to_string())
             }
             "quantize_t5" | "kontext_bucket" | "tiled"
