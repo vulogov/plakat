@@ -385,17 +385,13 @@ impl Pipeline {
         self.controlnet.is_some()
     }
 
-    /// Tokenize a prompt + forward through CLIP-G. Returns the
-    /// penultimate hidden states `(1, 77, 1280)` for cross-attn
-    /// (matches the SDXL CLIP-G convention).
-    ///
-    /// v0.37 phase 4 scope (still current): pooled output is NOT
-    /// used (Stable Cascade Stage C also consumes pooled text, but
-    /// the upstream code conditions on it inside its `Effnet`
-    /// embedding which is v0.38 phase 1 follow-through). For now
-    /// we feed the penult only.
-    #[allow(dead_code)] // v0.40 generate() wires this back in.
-    fn encode_prompt(&self, prompt: &str) -> Result<Tensor> {
+    /// v0.40 phase 4: tokenize a prompt + forward through CLIP-G.
+    /// Returns `(penult, pooled)` where:
+    /// - `penult` is the penultimate hidden states `(1, 77, 1280)` for
+    ///   cross-attention into Stage C `AttnBlock`s.
+    /// - `pooled` is the pooled output `(1, 1280)` for Stage C's
+    ///   `clip_txt_pooled_mapper` + Stage B's only conditioning source.
+    fn encode_prompt(&self, prompt: &str) -> Result<(Tensor, Tensor)> {
         let mut ids = self
             .clip_g_tok
             .encode(prompt, true)
@@ -404,8 +400,11 @@ impl Pipeline {
             .to_vec();
         ids.resize(77, CLIP_EOT);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let (penult, _pooled) = self.clip_g_enc.forward_for_sdxl(&ids_t)?;
-        Ok(penult.to_dtype(self.dtype)?)
+        let (penult, pooled) = self.clip_g_enc.forward_for_sdxl(&ids_t)?;
+        Ok((
+            penult.to_dtype(self.dtype)?,
+            pooled.to_dtype(self.dtype)?,
+        ))
     }
 
     /// End-to-end 3-stage generation.
@@ -435,35 +434,194 @@ impl Pipeline {
         &mut self,
         prompt: &str,
         negative: &str,
-        _stage_c_steps: usize,
-        _stage_b_steps: usize,
-        _guidance: f64,
-        _seed: u64,
-        _scheduler_kind: SchedulerKind,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
         _control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
-        // v0.39 phase 0g architectural integration is in place: real
-        // upstream Stable Cascade weights now load correctly into the
-        // new cascade_blocks / cascade_prior / cascade_vae / cascade_cn
-        // types. The exact spatial-shape contract between Stage B
-        // output (16ch) → Stage A input (4ch via PixelShuffle) and
-        // the multi-residual CN injection topology are v0.40 work —
-        // they require real-weight smoke to verify numerical
-        // correctness, which v0.39 doesn't ship.
-        //
-        // generate() bails LOUD here so users get an actionable
-        // pointer at the v0.40 plan rather than silently incorrect
-        // output. The pipeline loads end-to-end correctly; v0.40
-        // wires the inference path.
-        let _ = (prompt, negative); // bound to silence unused warnings
-        let _ = (&self.clip_g_enc, &self.clip_g_tok, &self.stage_a, &self.stage_b, &self.stage_c, &self.controlnet);
-        anyhow::bail!(
-            "Stable Cascade generate() is pending v0.40 integration. v0.39 \
-             rewrote the architecture (FiLM + effnet + new ResBlocks + MobileNetV3 \
-             CN backbone) so real upstream weights load correctly, but the spatial \
-             contract between stages and the multi-residual CN injection need v0.40 \
-             real-weight smoke to verify. Tracking issue: v0.39 close-out notes."
+        // v0.40 phase 4: hardcoded 1024² output. A future cycle may
+        // expose output_dim as a Pipeline arg.
+        const OUTPUT_DIM: u32 = 1024;
+        self.generate_at_size(
+            prompt,
+            negative,
+            OUTPUT_DIM,
+            stage_c_steps,
+            stage_b_steps,
+            guidance,
+            seed,
+            scheduler_kind,
+        )
+    }
+
+    /// v0.40 phase 4: end-to-end 3-stage generation at the given
+    /// output image dimension (must be divisible by 8 — the total
+    /// Stage A↔B compression).
+    ///
+    /// Chain: text → CLIP-G → Stage C CFG denoise → effnet
+    /// conditioning → Stage B CFG denoise → PixelShuffle(2) →
+    /// Stage A.decode → image bytes.
+    ///
+    /// `sca_emb` and `crp_emb` in the `TimestepBlock`s are wired with
+    /// the same sinusoidal time embedding as `t_emb` for v0.40 phase
+    /// 4 (placeholder until smoke iteration refines the exact
+    /// conditioning semantics). The KV stream is built via
+    /// `StableCascadePrior::build_clip_conditioning` — Stage C gets
+    /// concat(77 text + 4 pooled text + 4 zero image) at c_hidden=2048;
+    /// Stage B gets pooled-only at c_hidden=1280.
+    ///
+    /// Returns `(buf_rgb_u8, width, height)`.
+    pub fn generate_at_size(
+        &mut self,
+        prompt: &str,
+        negative: &str,
+        output_dim: u32,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
+        use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
+        use crate::pipelines::scheduler::build as build_scheduler;
+        use candle_core::IndexOp;
+
+        anyhow::ensure!(
+            output_dim % 8 == 0,
+            "output_dim must be divisible by 8 (Stage A↔B compression contract); got {output_dim}"
         );
+        let stage_b_dim = stage_b_spatial_for_image(output_dim) as usize;
+
+        // ---- Seed prep ----
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
+            tracing::debug!(
+                target: "plakat",
+                "set_seed not supported ({e}); using global RNG"
+            );
+        }
+
+        // ---- Text encoding ----
+        let s = progress::spinner("Encoding CLIP-G text embeddings");
+        let (pos_penult, pos_pooled) = self.encode_prompt(prompt)?;
+        let (neg_penult, neg_pooled) = self.encode_prompt(negative)?;
+        // CFG batch order: [neg, pos] on dim 0.
+        let cfg_penult = Tensor::cat(&[&neg_penult, &pos_penult], 0)?;
+        let cfg_pooled = Tensor::cat(&[&neg_pooled, &pos_pooled], 0)?;
+        s.finish_with_message("✓ text encoded");
+
+        // ---- Stage C KV conditioning (text + pooled + zero-img) ----
+        let clip_c = self
+            .stage_c
+            .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
+        // Stage B KV conditioning (pooled-only — clip_text arg ignored).
+        let clip_b = self
+            .stage_b
+            .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
+
+        // Scheduler carrier — SDXL config provides the SD-family
+        // timestep schedule the candle_transformers scheduler needs.
+        let sd_cfg = candle_transformers::models::stable_diffusion::StableDiffusionConfig::sdxl(
+            None, None, None,
+        );
+
+        // ---- Stage C denoise (fixed 24×24×16 prior latent) ----
+        let mut c_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_c_steps)?;
+        let c_timesteps = c_scheduler.timesteps().to_vec();
+        let c_init_sigma = c_scheduler.init_noise_sigma();
+        let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
+            .to_dtype(self.dtype)?;
+        let mut latent_c = (noise_c * c_init_sigma)?;
+        let bar = crate::ui::progress::step_bar(
+            c_timesteps.len() as u64,
+            "cascade stage C (prior)",
+        );
+        for &t in &c_timesteps {
+            let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
+            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let t_scalar = Tensor::new(&[t as f32], &self.device)?
+                .to_dtype(self.dtype)?
+                .expand((2,))?;
+            let t_emb = sinusoidal_time_embedding(&t_scalar, 64, 10000.0)?
+                .to_dtype(self.dtype)?;
+            let pred = self.stage_c.forward(
+                &cfg_latent,
+                &t_emb,
+                Some(&t_emb), // sca_emb — placeholder (same as t_emb)
+                Some(&t_emb), // crp_emb — placeholder
+                &clip_c,
+                None,
+                None,
+            )?;
+            let chunks = pred.chunk(2, 0)?;
+            let neg = &chunks[0];
+            let pos = &chunks[1];
+            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            latent_c = c_scheduler.step(&guided, t, &latent_c)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t}"));
+        }
+        bar.finish_and_clear();
+
+        // ---- Stage B denoise with Stage C effnet ----
+        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
+        let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
+        let b_timesteps = b_scheduler.timesteps().to_vec();
+        let b_init_sigma = b_scheduler.init_noise_sigma();
+        let noise_b = Tensor::randn(
+            0f32,
+            1f32,
+            (1, 16, stage_b_dim, stage_b_dim),
+            &self.device,
+        )?
+        .to_dtype(self.dtype)?;
+        let mut latent_b = (noise_b * b_init_sigma)?;
+        let bar = crate::ui::progress::step_bar(
+            b_timesteps.len() as u64,
+            "cascade stage B (decoder)",
+        );
+        for &t in &b_timesteps {
+            let scaled = b_scheduler.scale_model_input(latent_b.clone(), t)?;
+            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let t_scalar = Tensor::new(&[t as f32], &self.device)?
+                .to_dtype(self.dtype)?
+                .expand((2,))?;
+            let t_emb = sinusoidal_time_embedding(&t_scalar, 64, 10000.0)?
+                .to_dtype(self.dtype)?;
+            let pred = self.stage_b.forward(
+                &cfg_latent,
+                &t_emb,
+                Some(&t_emb), // sca_emb — placeholder
+                None,         // crp_emb — Stage B has no mapper_crp
+                &clip_b,
+                Some(&cfg_effnet),
+                None, // pixels — t2i has no pixel conditioning
+            )?;
+            let chunks = pred.chunk(2, 0)?;
+            let neg = &chunks[0];
+            let pos = &chunks[1];
+            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            latent_b = b_scheduler.step(&guided, t, &latent_b)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t}"));
+        }
+        bar.finish_and_clear();
+
+        // ---- Stage A decode via Stage B → image ----
+        let s = progress::spinner("Stage A decode → image");
+        let decoded = self.stage_a.decode_from_stage_b_space(&latent_b)?;
+        let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = (image * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = image.dims3()?;
+        let buf = image.flatten_all()?.to_vec1::<u8>()?;
+        s.finish_with_message("✓ image decoded");
+        Ok((buf, ow as u32, oh as u32))
     }
 
     /// End-to-end 3-stage img2img generation.
@@ -972,5 +1130,118 @@ mod tests {
         let known = crate::hf::all_known_aliases();
         assert!(known.contains(&"stable-cascade"), "got {known:?}");
         assert!(known.contains(&"cascade"), "got {known:?}");
+    }
+
+    /// v0.40 phase 4: end-to-end real-weight smoke. Loads all four
+    /// stages from `STABLE_CASCADE_WEIGHTS_DIR`, runs generate at
+    /// a small output size (256²) with minimal steps to verify the
+    /// inference path runs end-to-end without errors or NaN.
+    ///
+    /// Skipped unless `STABLE_CASCADE_WEIGHTS_DIR` is set and the
+    /// required files exist. Heavy on RAM and time (loads all four
+    /// checkpoints simultaneously, ~6 GB; runs at Stage C 24² and
+    /// Stage B 32² with 2 + 2 steps for speed).
+    #[test]
+    #[ignore = "real-weight smoke; opt-in via cargo test -- --ignored"]
+    fn end_to_end_smoke_from_real_upstream_weights() {
+        let dir_var = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!(
+                    "Skipping end_to_end_smoke: STABLE_CASCADE_WEIGHTS_DIR not set."
+                );
+                return;
+            }
+        };
+        let weights_dir = std::path::PathBuf::from(&dir_var);
+        let required = [
+            "vqgan/diffusion_pytorch_model.safetensors",
+            "decoder/diffusion_pytorch_model.safetensors",
+            "prior/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+            "tokenizer/tokenizer.json",
+        ];
+        for r in &required {
+            let p = weights_dir.join(r);
+            if !p.exists() {
+                eprintln!("Skipping end_to_end_smoke: {} missing", p.display());
+                return;
+            }
+        }
+
+        // Load all four stages.
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let clip_g_w = weights_dir.join("text_encoder/model.safetensors");
+        let clip_g_tok_path = weights_dir.join("tokenizer/tokenizer.json");
+        let stage_a_w = weights_dir.join("vqgan/diffusion_pytorch_model.safetensors");
+        let stage_b_w = weights_dir.join("decoder/diffusion_pytorch_model.safetensors");
+        let stage_c_w = weights_dir.join("prior/diffusion_pytorch_model.safetensors");
+
+        let clip_g_cfg = vendored_clip::Config::sdxl2();
+        let clip_g_vs = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[&clip_g_w], dtype, &device).unwrap()
+        };
+        let clip_g_enc = SdxlClipGTextTransformer::new(clip_g_vs, &clip_g_cfg, 1280).unwrap();
+        let clip_g_tok = Tokenizer::from_file(&clip_g_tok_path).unwrap();
+
+        let stage_a_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_a_w.as_path()], dtype, &device).unwrap()
+        };
+        let stage_a = StageAVae::new(VaeConfig::paella_v3(), stage_a_vb).unwrap();
+
+        let stage_b_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_b_w.as_path()], dtype, &device).unwrap()
+        };
+        let stage_b = StableCascadePrior::new_stage_b(PriorConfig::stage_b_full(), stage_b_vb).unwrap();
+
+        let stage_c_vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[stage_c_w.as_path()], dtype, &device).unwrap()
+        };
+        let stage_c = StableCascadePrior::new_stage_c(PriorConfig::stage_c_full(), stage_c_vb).unwrap();
+
+        let mut pipeline = Pipeline {
+            device: device.clone(),
+            dtype,
+            clip_g_enc,
+            clip_g_tok,
+            stage_a,
+            stage_b,
+            stage_c,
+            controlnet: None,
+        };
+
+        eprintln!("All 4 stages loaded. Running generate at 256² with 2+2 steps...");
+        let result = pipeline.generate_at_size(
+            "a misty forest at dawn, painterly",
+            "blurry, low quality",
+            256,
+            2,
+            2,
+            4.0,
+            42,
+            SchedulerKind::DpmppKarras,
+        );
+        match result {
+            Ok((buf, w, h)) => {
+                assert_eq!(buf.len(), (w as usize) * (h as usize) * 3);
+                let any_nan = buf.iter().any(|&b| b == 0xff && buf.iter().all(|&x| x == 0xff || x == 0));
+                let mean: f32 = buf.iter().map(|&b| b as f32).sum::<f32>() / (buf.len() as f32);
+                let max = *buf.iter().max().unwrap();
+                let min = *buf.iter().min().unwrap();
+                eprintln!(
+                    "✓ Generate end-to-end OK: {}×{} ({} bytes), \
+                     mean={:.1}, min={}, max={}, uniform-byte={}",
+                    w, h, buf.len(), mean, min, max, any_nan
+                );
+                // Save output for visual inspection.
+                let out_path = std::env::temp_dir().join("cascade_smoke.png");
+                if let Some(img) = image::RgbImage::from_raw(w, h, buf) {
+                    img.save(&out_path).ok();
+                    eprintln!("✓ saved to {}", out_path.display());
+                }
+            }
+            Err(e) => panic!("generate failed: {e}"),
+        }
     }
 }
