@@ -70,6 +70,9 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use tokenizers::Tokenizer;
 
+use crate::pipelines::cascade_controlnet::{
+    CascadeControlNet, Config as CnConfig,
+};
 use crate::pipelines::cascade_stage_a::{Config as StageAConfig, StageAVae};
 use crate::pipelines::cascade_unet::{Config as UnetConfig, StableCascadeUnet};
 use crate::pipelines::scheduler::{SchedulerKind, build as build_scheduler};
@@ -88,6 +91,47 @@ pub struct LoadRequest {
     /// first; this struct holds the canonical form).
     pub repo: String,
     pub device: Device,
+    /// v0.38 phase 3: Cascade LoRA stack (resolved by the caller via
+    /// `LoraSpec::resolve`). Each entry is dispatched against BOTH
+    /// the Stage B (decoder) and Stage C (prior) prior UNets via
+    /// `cascade_lora::merge_cascade_{b,c}_loras_into_weights`. Empty
+    /// (default) → no merge, base safetensors mmap directly.
+    pub loras: Vec<crate::pipelines::lora::ResolvedLora>,
+    /// Global scale multiplier on each LoRA's per-spec scale.
+    /// Mirrors `--lora-scale`. Default `1.0` means honour each
+    /// LoRA's own scale; `0.0` zeroes out every LoRA contribution.
+    pub lora_scale: f32,
+    /// v0.38 phase 5: optional ControlNet weights path. When `Some`,
+    /// `Pipeline::load` constructs a `CascadeControlNet` from the
+    /// safetensors at this path and stores it on the pipeline.
+    /// When `None`, no CN is attached and `Pipeline::generate` runs
+    /// as plain t2i regardless of any `control_conditioning` arg.
+    ///
+    /// Users supply this via `--cascade-control-weights PATH` —
+    /// upstream Stable Cascade ControlNet checkpoints aren't yet
+    /// catalogued in plakat's `hf::ALIAS_TABLE`, so a local path
+    /// or full HF repo:filename is the v0.38 contract. Catalogued
+    /// CN-by-kind aliases land in v0.39.
+    pub controlnet_weights: Option<std::path::PathBuf>,
+}
+
+/// v0.38 phase 5: per-call ControlNet conditioning input. Bundles
+/// the conditioning image tensor with the spec's strength + start /
+/// end timestep window. Built once at the CLI/pipeline boundary
+/// from a `ControlSpec` + annotator hookup.
+#[derive(Debug)]
+pub struct ControlConditioning {
+    /// Conditioning image already at Stage C ControlNet's expected
+    /// input shape `(1, 3, 1024, 1024)` in `[-1, 1]`. Use
+    /// `crate::imaging::preprocess::sd_image_tensor` to build.
+    pub conditioning_image: Tensor,
+    /// Per-ControlSpec strength multiplier on the residual sum.
+    pub scale: f32,
+    /// Timestep window start in `[0, 1]`. The CN residual is active
+    /// during `progress in [start, end)` where `progress = step_idx
+    /// / (n_steps - 1)`.
+    pub start: f32,
+    pub end: f32,
 }
 
 /// Stable Cascade pipeline.
@@ -119,6 +163,13 @@ pub struct Pipeline {
     /// latent. Variant-aware (Full vs Lite) — selected from the
     /// alias alongside Stage B.
     pub stage_c: StableCascadeUnet,
+    /// v0.38 phase 5: optional Cascade ControlNet. `Some` when
+    /// `LoadRequest.controlnet_weights` was supplied; produces a
+    /// residual on the conditioning image that gets added to Stage
+    /// C's latent at the input. `None` for plain t2i. The Stage B
+    /// path doesn't carry a CN — Stage C is the semantic stage
+    /// where spatial conditioning lands.
+    pub controlnet: Option<CascadeControlNet>,
 }
 
 impl Pipeline {
@@ -226,11 +277,29 @@ impl Pipeline {
             .context("building Stage A VAE for Stable Cascade")?;
         stage_a_build.finish_with_message("✓ Stage A VAE ready");
 
+        // v0.38 phase 3: optionally merge user LoRAs into Stage B
+        // and Stage C tempfiles (mirrors pixart::Pipeline::load
+        // pattern). Empty stack short-circuits to the base mmap.
+        let stage_b_load_path = maybe_merge_loras(
+            &stage_b_w,
+            &req.loras,
+            req.lora_scale,
+            &req.device,
+            crate::pipelines::cascade_lora::Stage::B,
+        )?;
+        let stage_c_load_path = maybe_merge_loras(
+            &stage_c_w,
+            &req.loras,
+            req.lora_scale,
+            &req.device,
+            crate::pipelines::cascade_lora::Stage::C,
+        )?;
+
         // v0.37 phase 2: Stage B. `stage_b_for_alias` picks Full or
         // Lite based on the resolved repo path (substring "lite").
         let stage_b_build = progress::spinner("Loading Stage B UNet");
         let stage_b_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[stage_b_w.as_path()], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&[stage_b_load_path.as_path()], dtype, &req.device)?
         };
         let stage_b_cfg = UnetConfig::stage_b_for_alias(&req.repo);
         let stage_b = StableCascadeUnet::new(stage_b_cfg, stage_b_vb)
@@ -241,12 +310,29 @@ impl Pipeline {
         // Full routing rule as Stage B (substring "lite" → Lite).
         let stage_c_build = progress::spinner("Loading Stage C UNet (heaviest stage)");
         let stage_c_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[stage_c_w.as_path()], dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&[stage_c_load_path.as_path()], dtype, &req.device)?
         };
         let stage_c_cfg = UnetConfig::stage_c_for_alias(&req.repo);
         let stage_c = StableCascadeUnet::new(stage_c_cfg, stage_c_vb)
             .context("building Stage C UNet for Stable Cascade")?;
         stage_c_build.finish_with_message("✓ Stage C UNet ready");
+
+        // v0.38 phase 5: optional ControlNet load. When the user
+        // didn't pass `--cascade-control-weights`, this is None and
+        // generate() runs as plain t2i regardless of any control
+        // conditioning args.
+        let controlnet = if let Some(cn_path) = req.controlnet_weights.as_ref() {
+            let cn_build = progress::spinner("Loading Cascade ControlNet");
+            let cn_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[cn_path.as_path()], dtype, &req.device)?
+            };
+            let cn = CascadeControlNet::new(CnConfig::stable_cascade_default(), cn_vb)
+                .context("building Cascade ControlNet")?;
+            cn_build.finish_with_message("✓ Cascade ControlNet ready");
+            Some(cn)
+        } else {
+            None
+        };
 
         Ok(Self {
             device: req.device,
@@ -256,18 +342,27 @@ impl Pipeline {
             stage_a,
             stage_b,
             stage_c,
+            controlnet,
         })
+    }
+
+    /// v0.38 phase 5: per-call ControlNet conditioning input.
+    /// Bundled so `generate` / `generate_img2img` don't bloat their
+    /// signatures with four extra args. Construct from a resolved
+    /// `ControlSpec` at the CLI layer (annotator + image loader).
+    pub fn control_conditioning_active(&self) -> bool {
+        self.controlnet.is_some()
     }
 
     /// Tokenize a prompt + forward through CLIP-G. Returns the
     /// penultimate hidden states `(1, 77, 1280)` for cross-attn
     /// (matches the SDXL CLIP-G convention).
     ///
-    /// v0.37 phase 4 scope: pooled output is NOT used (Stable
-    /// Cascade Stage C also consumes pooled text, but the
-    /// upstream code conditions on it inside its `Effnet`
-    /// embedding which lands in v0.38 alongside the FiLM
-    /// timestep injection). For phase 4 we feed the penult only.
+    /// v0.37 phase 4 scope (still current): pooled output is NOT
+    /// used (Stable Cascade Stage C also consumes pooled text, but
+    /// the upstream code conditions on it inside its `Effnet`
+    /// embedding which is v0.38 phase 1 follow-through). For now
+    /// we feed the penult only.
     fn encode_prompt(&self, prompt: &str) -> Result<Tensor> {
         let mut ids = self
             .clip_g_tok
@@ -287,23 +382,23 @@ impl Pipeline {
     /// Stage A decode → image. Returns `(buf, width, height)` —
     /// the caller composes metadata + writes the PNG.
     ///
-    /// ## v0.37 phase 4 scope (honest)
+    /// ## Scope (after v0.38 phase 1 — effnet conditioning landed)
     ///
     /// - **Shape-correct end-to-end**: every stage runs at the right
     ///   shapes; output PNG has the correct (1024, 1024, 3) dims.
-    /// - **NOT numerically correct on real weights yet.** Two
-    ///   architectural pieces are deferred to v0.38:
-    ///   - **FiLM timestep injection** into ResBlocks (the
-    ///     time_emb is computed but not block-injected — see
-    ///     `cascade_unet::StableCascadeUnet::forward` doc).
-    ///   - **Effnet conditioning** — Stage C's output should
-    ///     condition Stage B's denoise. Phase 4 runs Stage B
-    ///     conditioned ONLY on text; v0.38 wires the effnet path.
+    /// - **FiLM timestep injection wired** (v0.38 phase 0). Output
+    ///   is timestep-dependent.
+    /// - **Effnet conditioning wired** (v0.38 phase 1). Stage C's
+    ///   16ch×24×24 prior latent is upsampled + channel-concatenated
+    ///   into Stage B's `in_conv`. Stage B is now conditioned on
+    ///   `(text, Stage C output)` not just text.
     ///
-    /// On real `stabilityai/stable-cascade` weights at this phase,
-    /// expect noisy / structurally-correct-but-low-quality output.
-    /// On random weights (the test path), shape correctness is
-    /// the acceptance.
+    /// On random weights (the test path), shape correctness is the
+    /// acceptance. On real `stabilityai/stable-cascade` weights,
+    /// the architecture is now complete — output quality is bounded
+    /// by tensor-naming alignment with the upstream checkpoint
+    /// (real-weight smoke at user time will surface any remaining
+    /// VarBuilder mismatches).
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -313,6 +408,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         // v0.34 phase 1: device-aware seed prep.
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
@@ -344,14 +440,52 @@ impl Pipeline {
         let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
             .to_dtype(self.dtype)?;
         let mut latent_c = (noise_c * c_init_sigma)?;
-        let bar = crate::ui::progress::step_bar(c_timesteps.len() as u64, "cascade stage C");
-        for &t in &c_timesteps {
+
+        // v0.38 phase 5: ControlNet conditioning. The CN residual is
+        // image-only (no time/text conditioning in the minimal v0.38
+        // CN); compute it ONCE before the loop and inject during the
+        // [start, end] timestep window. CFG: residual is identical
+        // for positive and negative branches (no CFG on CN — matches
+        // upstream + how Stage B's effnet behaves).
+        let cn_residual_cfg = if let (Some(cn), Some(input)) = (
+            self.controlnet.as_ref(),
+            control.filter(|_| self.controlnet.is_some()),
+        ) {
+            let r = cn.forward(&input.conditioning_image)?;
+            Some((Tensor::cat(&[&r, &r], 0)?, input))
+        } else {
+            None
+        };
+        let n_c_steps = c_timesteps.len();
+
+        let bar = crate::ui::progress::step_bar(n_c_steps as u64, "cascade stage C");
+        for (step_idx, &t) in c_timesteps.iter().enumerate() {
             let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
             let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.stage_c.forward(&cfg_latent, &t_tensor, &cfg_text)?;
+            // Within-window CN inject. `progress` in [0, 1]; CN
+            // active iff input.start ≤ progress < input.end.
+            let progress = if n_c_steps > 1 {
+                step_idx as f32 / (n_c_steps - 1) as f32
+            } else {
+                0.0
+            };
+            let pred = match &cn_residual_cfg {
+                Some((residual, input))
+                    if progress >= input.start && progress < input.end =>
+                {
+                    self.stage_c.forward_with_control_residual(
+                        &cfg_latent,
+                        &t_tensor,
+                        &cfg_text,
+                        residual,
+                        input.scale as f64,
+                    )?
+                }
+                _ => self.stage_c.forward(&cfg_latent, &t_tensor, &cfg_text)?,
+            };
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
@@ -362,15 +496,15 @@ impl Pipeline {
         }
         bar.finish_and_clear();
 
-        // ---- Stage B denoise: text → 32×32×4 Stage A latent. ----
+        // ---- Stage B denoise: (text + Stage C effnet) →
+        //      32×32×4 Stage A latent. ----
         //
-        // v0.37 phase 4 scope: this stage runs conditioned ONLY on
-        // text (no effnet conditioning on Stage C output yet).
-        // The latent_c tensor is unused inside the denoise loop;
-        // wired in v0.38 follow-through. Keep the binding so the
-        // dependency is documented in code and reachable when the
-        // wiring lands.
-        let _stage_c_conditioning = &latent_c; // unused in phase 4
+        // v0.38 phase 1: Stage B is now conditioned on Stage C's
+        // 16ch×24×24 prior latent ("effnet" conditioning) on top
+        // of text. The effnet tensor is duplicated across the CFG
+        // batch dim (upstream applies CFG to text only — effnet is
+        // identical for positive and negative branches).
+        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
         let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
         let b_timesteps = b_scheduler.timesteps().to_vec();
         let b_init_sigma = b_scheduler.init_noise_sigma();
@@ -384,7 +518,12 @@ impl Pipeline {
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.stage_b.forward(&cfg_latent, &t_tensor, &cfg_text)?;
+            let pred = self.stage_b.forward_with_effnet(
+                &cfg_latent,
+                &t_tensor,
+                &cfg_text,
+                &cfg_effnet,
+            )?;
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
@@ -409,6 +548,224 @@ impl Pipeline {
 
         Ok((buf, ow as u32, oh as u32))
     }
+
+    /// End-to-end 3-stage img2img generation.
+    ///
+    /// v0.38 phase 4: encode the init image with Stage A to seed the
+    /// Stage B latent; truncate Stage B's denoise schedule based on
+    /// `strength` (1.0 = pure noise / equivalent to `generate`,
+    /// lower values keep more of the input's structure). Stage C
+    /// always runs the full schedule (text → effnet) — the input
+    /// image conditions Stage B's output (the Stage A latent), not
+    /// Stage C's semantic prior.
+    ///
+    /// `strength` is clamped to `[0, 1]` by the caller.
+    pub fn generate_img2img(
+        &mut self,
+        init_image_path: &std::path::Path,
+        prompt: &str,
+        negative: &str,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        strength: f32,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
+        if let Err(e) = self.device.set_seed(prepared) {
+            tracing::debug!(
+                target: "plakat",
+                "set_seed not supported ({e}); using global RNG"
+            );
+        }
+
+        // ---- Text encoding (CFG positive + negative). ----
+        let s = progress::spinner("Encoding CLIP-G text embeddings");
+        let pos_text = self.encode_prompt(prompt)?;
+        let neg_text = self.encode_prompt(negative)?;
+        let cfg_text = Tensor::cat(&[&neg_text, &pos_text], 0)?;
+        s.finish_with_message("✓ text encoded");
+
+        // ---- Init image encode through Stage A → (1, 4, 32, 32). ----
+        // Stage A expects (1, 3, 1024, 1024) input in [-1, 1] — the
+        // canonical 32× compression target. `sd_image_tensor` does
+        // exactly that normalization.
+        let s = progress::spinner("Encoding init image through Stage A");
+        let init_pixels = crate::imaging::preprocess::sd_image_tensor(
+            init_image_path,
+            1024,
+            1024,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| {
+            format!(
+                "loading Cascade init image {}",
+                init_image_path.display()
+            )
+        })?;
+        let y_init = self.stage_a.encode(&init_pixels)?;
+        s.finish_with_message("✓ Stage A encoded init");
+
+        // Scheduler carrier (same SDXL config the Stage B/C denoise
+        // loops use — schedulers only need the timestep schedule).
+        let sd_cfg = candle_transformers::models::stable_diffusion::StableDiffusionConfig::sdxl(
+            None, None, None,
+        );
+
+        // ---- Stage C denoise: text → 24×24×16 prior latent. ----
+        // Full schedule regardless of strength — img2img conditions
+        // Stage B output (the Stage A latent), not Stage C.
+        let mut c_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_c_steps)?;
+        let c_timesteps = c_scheduler.timesteps().to_vec();
+        let c_init_sigma = c_scheduler.init_noise_sigma();
+        let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
+            .to_dtype(self.dtype)?;
+        let mut latent_c = (noise_c * c_init_sigma)?;
+        let bar = crate::ui::progress::step_bar(c_timesteps.len() as u64, "cascade stage C");
+        for &t in &c_timesteps {
+            let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
+            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let t_tensor = Tensor::new(&[t as f32], &self.device)?
+                .to_dtype(self.dtype)?
+                .expand((2,))?;
+            let pred = self.stage_c.forward(&cfg_latent, &t_tensor, &cfg_text)?;
+            let chunks = pred.chunk(2, 0)?;
+            let neg = &chunks[0];
+            let pos = &chunks[1];
+            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            latent_c = c_scheduler.step(&guided, t, &latent_c)?;
+            bar.inc(1);
+            bar.set_message(format!("t={t}"));
+        }
+        bar.finish_and_clear();
+
+        // ---- Stage B denoise: truncated schedule starting from
+        //      add_noise(y_init, noise, t_start). ----
+        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
+        let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
+        let b_timesteps = b_scheduler.timesteps().to_vec();
+        // Truncate: drop the first `(1 - strength) * len` schedule
+        // entries. At strength=1.0 we keep them all (matches the
+        // `generate` path); at strength=0.0 we drop everything and
+        // emit the input verbatim through Stage A decode.
+        let n_total = b_timesteps.len();
+        let skip = ((1.0 - strength as f64) * n_total as f64).round() as usize;
+        let skip = skip.min(n_total);
+        let kept = &b_timesteps[skip..];
+
+        let mut latent_b = if let Some(&t_start) = kept.first() {
+            let noise_b = Tensor::randn(0f32, 1f32, y_init.shape(), &self.device)?
+                .to_dtype(self.dtype)?;
+            b_scheduler.add_noise(&y_init, noise_b, t_start)?
+        } else {
+            // strength == 0: skip Stage B entirely, decode y_init
+            // straight through Stage A. Matches "no denoise" semantics
+            // SD3 / Flux img2img already document.
+            y_init.clone()
+        };
+
+        if !kept.is_empty() {
+            let bar = crate::ui::progress::step_bar(
+                kept.len() as u64,
+                "cascade stage B (img2img)",
+            );
+            for &t in kept {
+                let scaled = b_scheduler.scale_model_input(latent_b.clone(), t)?;
+                let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+                let t_tensor = Tensor::new(&[t as f32], &self.device)?
+                    .to_dtype(self.dtype)?
+                    .expand((2,))?;
+                let pred = self.stage_b.forward_with_effnet(
+                    &cfg_latent,
+                    &t_tensor,
+                    &cfg_text,
+                    &cfg_effnet,
+                )?;
+                let chunks = pred.chunk(2, 0)?;
+                let neg = &chunks[0];
+                let pos = &chunks[1];
+                let guided = (neg + ((pos - neg)? * guidance)?)?;
+                latent_b = b_scheduler.step(&guided, t, &latent_b)?;
+                bar.inc(1);
+                bar.set_message(format!("t={t}"));
+            }
+            bar.finish_and_clear();
+        }
+
+        // ---- Stage A decode: 32×32×4 → 1024×1024×3. ----
+        let s = progress::spinner("Decoding latent → image (Stage A)");
+        let decoded = self.stage_a.decode(&latent_b)?;
+        let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = (image * 255.0)?
+            .to_dtype(DType::U8)?
+            .i(0)?
+            .permute((1, 2, 0))?;
+        let (oh, ow, _) = image.dims3()?;
+        let buf = image.flatten_all()?.to_vec1::<u8>()?;
+        s.finish_with_message("✓ image decoded");
+        Ok((buf, ow as u32, oh as u32))
+    }
+}
+
+/// v0.38 phase 3: optional LoRA merge into a temporary safetensors
+/// file. Returns the original `base` path when the LoRA stack is
+/// empty (zero work, zero IO); otherwise writes a stage-specific
+/// merged tempfile (under `std::env::temp_dir()` with pid + nanos
+/// for uniqueness) and returns its path. The caller mmaps the
+/// returned path — the tempfile stays alive for the lifetime of
+/// that mmap (same pattern pixart::Pipeline::load uses, no explicit
+/// cleanup; OS sweep handles disposal).
+fn maybe_merge_loras(
+    base: &std::path::Path,
+    loras: &[crate::pipelines::lora::ResolvedLora],
+    lora_scale: f32,
+    device: &Device,
+    stage: crate::pipelines::cascade_lora::Stage,
+) -> Result<std::path::PathBuf> {
+    if loras.is_empty() {
+        return Ok(base.to_path_buf());
+    }
+    let merge_spinner = progress::spinner(&format!(
+        "Merging {} Cascade LoRA(s) into Stage {:?}",
+        loras.len(),
+        stage
+    ));
+    let out_path = std::env::temp_dir().join(format!(
+        "plakat-cascade-{:?}-lora-merged-{}-{}.safetensors",
+        stage,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let (n_mod, n_total) = match stage {
+        crate::pipelines::cascade_lora::Stage::B => {
+            crate::pipelines::cascade_lora::merge_cascade_b_loras_into_weights(
+                base,
+                &out_path,
+                loras,
+                lora_scale,
+                device,
+            )
+        }
+        crate::pipelines::cascade_lora::Stage::C => {
+            crate::pipelines::cascade_lora::merge_cascade_c_loras_into_weights(
+                base,
+                &out_path,
+                loras,
+                lora_scale,
+                device,
+            )
+        }
+    }?;
+    merge_spinner.finish_with_message(format!(
+        "✓ Cascade Stage {:?} LoRA merge: {n_mod}/{n_total} target groups applied",
+        stage
+    ));
+    Ok(out_path)
 }
 
 /// Stable Cascade entrypoint called by `t2i::run` when
@@ -422,15 +779,84 @@ pub async fn run(req: RunRequest) -> Result<()> {
         crate::hf::resolve_alias(&req.model).to_string()
     };
 
+    // v0.38 phase 3: resolve LoRA specs to on-disk safetensors before
+    // load. Mirrors pixart::run's resolve-then-pass pattern.
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(req.loras.len());
+    for spec in &req.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
+        loras: resolved_loras,
+        lora_scale: req.lora_scale,
+        controlnet_weights: req.controlnet_weights.clone(),
     })
     .await?;
+
+    // v0.38 phase 5: build the per-call conditioning tensor when CN
+    // is wired AND a ControlSpec was supplied. The conditioning
+    // image is loaded from `spec.image`; auto-annotate via
+    // `spec.from` is deferred (annotator pickers + Cascade CN
+    // combos aren't yet validated). Without weights OR without
+    // spec, `control_conditioning` stays None and generate runs as
+    // plain t2i.
+    let control_conditioning: Option<ControlConditioning> = match (
+        pipeline.control_conditioning_active(),
+        req.control_spec.as_ref(),
+    ) {
+        (true, Some(spec)) => {
+            let image_path = spec.image.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Cascade ControlNet requires `--control-image PATH` (or \
+                     `image=` in `--control-spec`); auto-annotate via \
+                     `--control-from` is a v0.39 follow-up."
+                )
+            })?;
+            let cond = crate::imaging::preprocess::sd_image_tensor(
+                image_path,
+                1024,
+                1024,
+                &req.device,
+                pipeline.dtype,
+            )
+            .with_context(|| {
+                format!(
+                    "loading Cascade control conditioning image {}",
+                    image_path.display()
+                )
+            })?;
+            Some(ControlConditioning {
+                conditioning_image: cond,
+                scale: spec.strength,
+                start: spec.start,
+                end: spec.end,
+            })
+        }
+        (false, Some(_)) => {
+            tracing::warn!(
+                target: "plakat",
+                "Cascade run received a ControlSpec but no controlnet_weights — \
+                 spec is ignored. Pass `--cascade-control-weights PATH` to enable."
+            );
+            None
+        }
+        _ => None,
+    };
 
     let base_seed = req
         .seed
         .unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
+
+    // v0.38 phase 3: pre-build LoRA metadata stack so each generated
+    // PNG carries the same record SD/Flux/SD3/PixArt do.
+    let metadata_lora_stack: Vec<crate::imaging::metadata::LoraEntry> = req
+        .loras
+        .iter()
+        .map(|s| s.to_entry())
+        .collect();
 
     std::fs::create_dir_all(&req.out_dir)
         .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
@@ -451,6 +877,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             req.guidance,
             seed,
             req.scheduler,
+            control_conditioning.as_ref(),
         )?;
 
         // Build sidecar metadata. Same field set PixArt emits
@@ -468,6 +895,10 @@ pub async fn run(req: RunRequest) -> Result<()> {
             oh,
         );
         m.negative = req.negative.clone();
+        if !metadata_lora_stack.is_empty() {
+            m.with_lora_stack(metadata_lora_stack.clone());
+            m.lora_scale = Some(req.lora_scale);
+        }
 
         let out_path = req
             .out_dir
@@ -481,6 +912,123 @@ pub async fn run(req: RunRequest) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// v0.38 phase 4: Stable Cascade img2img CLI entrypoint. Routed by
+/// `cli::img2img::run` when `Variant::detect` classifies the model
+/// as Stable Cascade. Loads the pipeline, runs `generate_img2img`,
+/// writes the output PNG with metadata.
+pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
+    let repo = if req.model.contains('/') {
+        req.model.clone()
+    } else {
+        crate::hf::resolve_alias(&req.model).to_string()
+    };
+
+    let mut resolved_loras: Vec<crate::pipelines::lora::ResolvedLora> =
+        Vec::with_capacity(req.loras.len());
+    for spec in &req.loras {
+        resolved_loras.push(spec.resolve().await?);
+    }
+
+    let mut pipeline = Pipeline::load(LoadRequest {
+        repo,
+        device: req.device.clone(),
+        loras: resolved_loras,
+        lora_scale: req.lora_scale,
+        // v0.38 phase 5: Cascade img2img + ControlNet is deferred
+        // (v0.39 follow-up). The img2img CLI doesn't expose
+        // `--cascade-control-weights` either; this stays None.
+        controlnet_weights: None,
+    })
+    .await?;
+
+    let base_seed = req
+        .seed
+        .unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
+    let metadata_lora_stack: Vec<crate::imaging::metadata::LoraEntry> = req
+        .loras
+        .iter()
+        .map(|s| s.to_entry())
+        .collect();
+
+    std::fs::create_dir_all(&req.out_dir)
+        .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
+
+    for idx in 0..req.count {
+        let seed = base_seed.wrapping_add(idx as u64);
+        crate::ui::progress::println(&format!(
+            "  {} stable-cascade img2img {} of {} (seed={seed}, strength={:.2})",
+            console::style("◆").cyan().bold(),
+            idx + 1,
+            req.count,
+            req.strength,
+        ));
+        let (buf, ow, oh) = pipeline.generate_img2img(
+            &req.init_image,
+            &req.prompt,
+            &req.negative,
+            req.stage_c_steps,
+            req.stage_b_steps,
+            req.strength,
+            req.guidance,
+            seed,
+            req.scheduler,
+        )?;
+
+        let mut m = crate::imaging::metadata::GenerationMetadata::new(
+            req.prompt.clone(),
+            req.model.clone(),
+            seed,
+            req.stage_c_steps + req.stage_b_steps,
+            req.guidance,
+            format!("{:?}", req.scheduler).to_lowercase(),
+            ow,
+            oh,
+        );
+        m.negative = req.negative.clone();
+        m.strength = Some(req.strength);
+        if !metadata_lora_stack.is_empty() {
+            m.with_lora_stack(metadata_lora_stack.clone());
+            m.lora_scale = Some(req.lora_scale);
+        }
+
+        let out_path = req
+            .out_dir
+            .join(format!("plakat-cascade-img2img-{seed}.png"));
+        crate::imaging::io::save_rgb_u8_with_metadata(&buf, ow, oh, &out_path, &m)?;
+        crate::ui::progress::println(&format!(
+            "  {} {}",
+            console::style("✓").green().bold(),
+            out_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// CLI entrypoint: parameters needed for one Stable Cascade
+/// img2img generation. v0.38 phase 4.
+#[derive(Clone)]
+pub struct RunImg2imgRequest {
+    pub model: String,
+    pub device: Device,
+    pub init_image: std::path::PathBuf,
+    pub prompt: String,
+    pub negative: String,
+    pub stage_c_steps: usize,
+    pub stage_b_steps: usize,
+    /// Img2img denoise strength in `[0, 1]`. 1.0 = pure t2i
+    /// (matches `generate`). 0.6 = upstream default. 0.0 = no
+    /// denoise (decoded init image only).
+    pub strength: f32,
+    pub guidance: f64,
+    pub seed: Option<u64>,
+    pub scheduler: SchedulerKind,
+    pub out_dir: std::path::PathBuf,
+    pub count: u32,
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    pub lora_scale: f32,
 }
 
 /// CLI entrypoint: parameters needed for one Stable Cascade
@@ -503,6 +1051,21 @@ pub struct RunRequest {
     pub out_dir: std::path::PathBuf,
     /// Count of images (per-image seed = base + idx).
     pub count: u32,
+    /// v0.38 phase 3: unresolved Cascade LoRA specs (resolved
+    /// inside `cascade::run` before `Pipeline::load`).
+    pub loras: Vec<crate::pipelines::lora::LoraSpec>,
+    /// Global LoRA scale multiplier. Default 1.0.
+    pub lora_scale: f32,
+    /// v0.38 phase 5: at most one ControlSpec (multi-CN deferred).
+    /// `image` (or `from` for auto-annotate) supplies the
+    /// conditioning image; `strength` / `start` / `end` shape the
+    /// residual window. Ignored unless `controlnet_weights` is
+    /// also set.
+    pub control_spec: Option<crate::pipelines::controlnet::ControlSpec>,
+    /// v0.38 phase 5: path to Stable Cascade ControlNet weights
+    /// (safetensors). When `None`, no CN is loaded and any
+    /// `control_spec` is logged + ignored.
+    pub controlnet_weights: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -525,12 +1088,64 @@ mod tests {
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/cascade-test"),
             count: 1,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            control_spec: None,
+            controlnet_weights: None,
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
         assert_eq!(r.stage_b_steps, 10);
         assert_eq!(r.seed, Some(42));
         assert_eq!(r.count, 1);
+        assert_eq!(r.lora_scale, 1.0);
+        assert!(r.loras.is_empty());
+    }
+
+    /// v0.38 phase 4: RunImg2imgRequest carries every field
+    /// `cli::img2img::run_cascade_img2img` needs.
+    #[test]
+    fn run_img2img_request_carries_all_fields() {
+        let r = RunImg2imgRequest {
+            model: "stable-cascade".into(),
+            device: Device::Cpu,
+            init_image: std::path::PathBuf::from("/tmp/init.png"),
+            prompt: "a fox".into(),
+            negative: "blurry".into(),
+            stage_c_steps: 20,
+            stage_b_steps: 10,
+            strength: 0.6,
+            guidance: 4.0,
+            seed: Some(7),
+            scheduler: SchedulerKind::DpmppKarras,
+            out_dir: std::path::PathBuf::from("/tmp/out"),
+            count: 1,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+        };
+        assert_eq!(r.prompt, "a fox");
+        assert_eq!(r.strength, 0.6);
+        assert_eq!(r.stage_c_steps, 20);
+        assert_eq!(r.stage_b_steps, 10);
+        assert_eq!(r.init_image.file_name().unwrap(), "init.png");
+    }
+
+    /// v0.38 phase 4: schedule truncation math. At strength=1.0
+    /// keep every timestep; at 0.0 keep none; intermediate values
+    /// proportionally drop the leading entries (the high-noise
+    /// segments).
+    #[test]
+    fn img2img_schedule_truncation_skip_count() {
+        // Mirrors the formula used inside generate_img2img:
+        //   skip = round((1 - strength) * n_total)
+        fn skip(n: usize, s: f32) -> usize {
+            (((1.0 - s as f64) * n as f64).round() as usize).min(n)
+        }
+        assert_eq!(skip(10, 1.0), 0); // pure t2i: keep everything
+        assert_eq!(skip(10, 0.0), 10); // no denoise: drop everything
+        assert_eq!(skip(10, 0.5), 5); // half-and-half
+        assert_eq!(skip(20, 0.6), 8); // upstream default (≈ 0.6)
+        assert_eq!(skip(0, 0.5), 0); // empty schedule: nothing to skip
     }
 
     /// v0.37 phase 0: aliases resolve to the canonical Stable

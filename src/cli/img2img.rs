@@ -414,6 +414,27 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         if variant.is_sd3() {
             return run_sd3_img2img(args, device).await;
         }
+        // v0.38 phase 4: Stable Cascade img2img. Routes to
+        // `cascade::run_img2img` — Stage A encodes the input image,
+        // Stage C runs full text→effnet, Stage B denoises a
+        // strength-truncated schedule. Mask / tiled are not yet
+        // supported on Cascade; bail loud when those flags combine.
+        if variant.is_cascade() {
+            if args.mask.is_some() {
+                anyhow::bail!(
+                    "Stable Cascade img2img doesn't yet support `--mask` \
+                     (inpaint). Drop the mask or use SD3 / Flux Fill for \
+                     mask-aware inpaint."
+                );
+            }
+            if args.tiled {
+                anyhow::bail!(
+                    "Stable Cascade img2img doesn't support `--tiled` \
+                     (the 3-stage architecture's working resolution is fixed)."
+                );
+            }
+            return run_cascade_img2img(args, device).await;
+        }
     }
 
     // Strength: 0.6 for img2img, 1.0 for inpaint when not explicit.
@@ -1092,6 +1113,43 @@ async fn run_flux_kontext(mut args: Img2ImgArgs, device: Device) -> Result<()> {
 /// LoRA — those land in later phases), so we explicitly bail when the
 /// user passes flags that don't apply on SD3 yet. That's friendlier
 /// than silently ignoring `--loras` on an SD3 model.
+/// v0.38 phase 4: Stable Cascade img2img CLI runner. Mirrors
+/// `run_sd3_img2img` in shape — pulls args into a
+/// `cascade::RunImg2imgRequest`, dispatches to `cascade::run_img2img`.
+/// Inherits the 2/3 + 1/3 step split from t2i (no dedicated
+/// `--stage-c-steps` / `--stage-b-steps` on img2img yet — that's a
+/// v0.39 follow-up). Strength default 0.6 matches every other
+/// img2img path.
+async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
+    args.seed = Some(args.seed.unwrap_or_else(rand::random));
+    let strength = args.strength.unwrap_or(0.6).clamp(0.0, 1.0);
+    if !strength.is_finite() {
+        anyhow::bail!("Cascade img2img strength must be finite in [0, 1], got {strength}");
+    }
+    let stage_c_steps = (args.steps * 2).div_ceil(3).max(1);
+    let stage_b_steps = args.steps.saturating_sub(stage_c_steps).max(1);
+    crate::pipelines::cascade::run_img2img(
+        crate::pipelines::cascade::RunImg2imgRequest {
+            model: args.model,
+            device,
+            init_image: args.input,
+            prompt: args.prompt,
+            negative: args.negative,
+            stage_c_steps,
+            stage_b_steps,
+            strength,
+            guidance: args.guidance,
+            seed: args.seed,
+            scheduler: args.scheduler,
+            out_dir: args.out,
+            count: args.count,
+            loras: args.loras,
+            lora_scale: args.lora_scale,
+        },
+    )
+    .await
+}
+
 async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     // v0.18 phase 2: pre-resolve the seed + capture grid-relevant
     // fields (including mask presence for the filename mode tag)
