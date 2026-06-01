@@ -8,177 +8,169 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.37 — Stable Cascade (diversify-5)
+## What's new in v0.38 — Stable Cascade completeness
 
-plakat's **fifth model family** lands: Stable Cascade. A 3-stage
-architecture distinct from every existing family — not a single
-UNet (SD), not DiT (PixArt), not MMDiT (SD3), not Flux DiT. Three
-coupled models chain at inference: `text → Stage C → Stage B →
-Stage A → image`.
+v0.38 closes the two load-bearing correctness deferrals from v0.37
+and layers productivity on top. Stable Cascade now ships fully
+wired: **FiLM time injection** + **effnet conditioning** at the
+architecture level; **scripting**, **dedicated step flags**,
+**LoRA on both prior UNets**, **img2img**, and **ControlNet** at
+the surface. Six phases shipped. Test count grew 1173 → 1199 lib
+tests (+26 across the cycle).
 
-Six phases shipped. Test count grew 1141 → 1173 lib tests
-(+32 across the cycle).
-
-### `plakat generate "..." --model stable-cascade`
-
-```bash
-plakat generate "a misty forest at dawn, painterly" \
-    --model stable-cascade --size 1024x1024 --steps 30 \
-    --guidance 4.0 --seed 42
-```
-
-Aliases: `stable-cascade`, `cascade` → `stabilityai/stable-cascade`.
-The single `--steps` budget splits **2/3 to Stage C** (the heavy
-semantic stage) + **1/3 to Stage B**; dedicated step flags are
-v0.38 polish.
-
-### Stage A VAE — Paella v3 (phase 1)
-
-Small ~3.6M-param VAE for image ↔ latent mapping at 32× per-axis
-compression. Continuous latents (Würstchen v3 / Stable Cascade
-dropped the codebook the earlier designs used):
-
-```
-image (B, 3, 1024, 1024)
-  → Encoder (5 down blocks: 64 → 128 → 256 → 384 → 512 → 4 ch)
-  → latent (B, 4, 32, 32)
-  → Decoder (5 up blocks, mirror)
-  → image (B, 3, 1024, 1024)
-```
-
-Each `down/up_block` is a `ResBlock` + strided Conv2d (encoder)
-or nearest 2× upsample + Conv2d refinement (decoder). ResBlock
-is `GroupNorm → SiLU → Conv2d → GroupNorm → SiLU → Conv2d + skip`.
-
-### Stage B latent prior UNet (phase 2)
-
-~1.5B-param UNet that takes Stage C's output + text and produces
-Stage A's latent. The same `StableCascadeUnet` skeleton serves
-**both Stage B and Stage C** with different `Config` instances.
-
-Block structure:
-- `in_conv` (channels → first level)
-- `TimeEmbedding` — sinusoidal + 2-layer MLP
-- N **encoder levels**: ResBlocks (+ optional `AttentionBlock`
-  per RB) + Downsample
-- N **decoder levels** (mirror): skip-concat from matching encoder
-  level + ResBlocks + Upsample
-- `out_norm + silu + out_conv`
-
-`AttentionBlock` is `norm → self-attn → norm → cross-attn-to-text
-→ norm → 2-layer FF MLP`. Self-attention + cross-attention to the
-CLIP-G text sequence at deeper levels.
-
-**Full + Lite variant routing.** `Config::stage_b_for_alias`
-picks Lite from the substring `"lite"`; otherwise Full.
-
-### Stage C high-res prior UNet (phase 3)
-
-The headline ~3.6B-param model. Text → 24×24×16 super-compressed
-prior latent. **16 input/output channels** (vs Stage B's 4) at a
-tiny spatial grid. Attention at every level — the short sequence
-keeps it affordable.
-
-Reuses the `StableCascadeUnet` skeleton from phase 2; phase 3 was
-mostly configuration + wiring. `Config::stage_c_for_alias` picks
-Lite or Full from the alias.
-
-### 3-stage orchestration (phase 4)
+### Correctness: FiLM + effnet wired (phases 0–1)
 
 ```text
-prompt
-  ↓ CLIP-G encode (penult + pooled)
-  ↓ Stage C CFG denoise (DPM++ default)        → 24×24×16 latent
-  ↓ Stage B CFG denoise                        → 32×32×4 latent
-  ↓ Stage A decode                             → 1024×1024 image
+                       ┌─────────────────────────────┐
+   text → CLIP-G ─────►│                             │
+                       │  Stage C UNet               │
+   t_emb ──FiLM────────►   (per-block scale+shift)   │── 24×24×16 ──┐
+                       └─────────────────────────────┘              │
+                                                                    │ effnet
+                       ┌─────────────────────────────┐              │
+   text → CLIP-G ─────►│                             │              │
+                       │  Stage B UNet               │              │
+   t_emb ──FiLM────────►   in_conv: 4+16 ch input    ◄──upsample────┘
+                       └─────────────────────────────┘
+                                    │
+                                    ▼  32×32×4 latent
+                                Stage A decode → image
 ```
 
-Seed plumbing through `pipelines::seeds::prepare_seed` (v0.34
-phase 1 chokepoint) — Stable Cascade earns a ✓ row in
-`plakat doctor --reproducibility-check`. PNG sidecar metadata
-written via `save_rgb_u8_with_metadata`.
+- **Phase 0 — FiLM timestep injection.** New `TimestepBlock`
+  module interleaved between ResBlock and AttentionBlock at every
+  encoder + decoder slot. Each block has its own `mapper` Linear
+  projecting `t_emb → 2*C` (scale + shift); applies
+  `x' = (1 + scale) * x + shift`. Tensor name matches the upstream
+  `decoder.up_blocks.{i}.{j}.mapper` convention.
+- **Phase 1 — effnet conditioning.** Stage B's `in_conv` now
+  takes **20 input channels** (4 noise latent + 16 Stage C effnet,
+  spatially upsampled to 32×32). `Config::effnet_input_channels`
+  toggles the path: `Some(16)` for Stage B, `None` for Stage C. New
+  `forward_with_effnet` API enforces the contract via hard errors
+  on misuse.
 
-### CLI integration + scenarios (phase 5)
+After v0.38 phase 1, the architecture is **complete end-to-end** —
+real-weight output quality is gated only by tensor-naming
+alignment with the upstream `stabilityai/stable-cascade`
+checkpoint (real-weight smoke at user time remains the gating
+step).
 
-- `plakat doctor --reproducibility-check` row: **Stable Cascade
-  (3-stage)** classified Guaranteed.
-- v0.25 look preset routing automatic via `BaseFamily::
-  StableCascade` (regression-locked by
-  `most_looks_apply_to_stable_cascade_family`).
-- Scenario integration: new `cascade_pipeline` cache slot in
-  `scenario.rs` mirroring `pixart_pipeline` from v0.36 phase 0.
-  Pre-loads at scenario start when `variant.is_cascade()`;
-  dispatch arm in the generate task body splits `--steps` 2/3 +
-  1/3 between Stage C + Stage B.
+### Scripting + step flags (phase 2)
 
-### Documentation
+```bund
+"stable-cascade" plakat.load
+"25" "stage_c_steps" plakat.config.set
+"8"  "stage_b_steps" plakat.config.set
+"4.0" "guidance"    plakat.config.set
+"a misty forest at dawn"  plakat.cascade
+plakat.save
+```
 
-- [`RFC_v0.37_STABLE_CASCADE.md`](Documentation/RFC_v0.37_STABLE_CASCADE.md)
-  — design doc, locked decisions (Full + Lite together, LoRA
-  deferred to v0.38), 6-phase plan.
+- **`plakat.cascade ( prompt -- handle )`** Bund word. Mirrors
+  `plakat.pixart` from v0.36 phase 1. Variant guard rejects
+  non-Cascade aliases with a pointer at the right word
+  (`plakat.generate` / `plakat.pixart`). ~14 GB cold load
+  amortises across calls via the cached pipeline.
+- **`--stage-c-steps` / `--stage-b-steps`** CLI flags + matching
+  `stage_c_steps` / `stage_b_steps` config keys. Unset → split
+  `--steps` 2/3 + 1/3 (the v0.37 default); set → exact counts.
+
+### LoRA on Stage B + Stage C (phase 3)
+
+Diffusers PEFT-format Cascade LoRAs work via the same load-time
+tempfile merge SD/Flux/SD3/PixArt use. A single LoRA file is
+dispatched against both prior UNets — the merger walks each file
+twice with stage-specific resolvers translating upstream
+`{decoder,prior}.up_blocks.{i}.{j}.attn.to_*` paths to plakat's
+internal Stage B/C tensor keys.
+
+```bash
+plakat generate "a fox in a meadow" --model stable-cascade \
+    --lora cascade-canny:weight=0.8 --lora-scale 1.0
+```
+
+Scripting + scenario + per-image PNG metadata all participate.
+
+### img2img (phase 4)
+
+```bash
+plakat img2img sketch.png --prompt "watercolor fox" \
+    --model stable-cascade --strength 0.6 --seed 42
+```
+
+Encode the input through Stage A; run Stage C as normal text →
+effnet; init Stage B with `add_noise(y_init, noise, t_start)` and
+denoise on a strength-truncated schedule. `strength=1.0` is
+equivalent to t2i; `strength=0.0` returns the decoded init
+verbatim. Strength is captured in PNG metadata.
+
+### ControlNet on Stage C (phase 5)
+
+```bash
+plakat generate "a tortoiseshell cat" --model stable-cascade \
+    --cascade-control-weights ./cascade-canny.safetensors \
+    --control canny:image=edges.png:strength=0.7:start=0.0:end=0.6
+```
+
+A compact image-to-residual encoder produces a 24×24×16 residual
+added to Stage C's noisy latent BEFORE `in_conv`, gated by the
+spec's `[start, end)` timestep window. Single-CN only (multi-CN
+deferred to v0.39). Stage A + Stage B run unchanged — Stage C is
+where spatial conditioning lands.
 
 ### Honest scope notes
 
-v0.37 ships **shape-correct end-to-end orchestration**. Two
-architectural pieces defer to v0.38 follow-through (same shape as
-v0.35 PixArt → v0.36 PixArt completeness):
-
-- **FiLM timestep injection** into ResBlocks (`TimeEmbedding` is
-  computed but block-injection is deferred).
-- **Effnet conditioning** — Stage C's output feeding Stage B's
-  denoise. The `_stage_c_conditioning` binding in `generate()`
-  documents the hook.
-
-Reproducibility (same seed → byte-identical output) holds today;
-numerical correctness on real weights gets closed in v0.38.
-
-Tensor naming is best-effort against diffusers
-`stabilityai/stable-cascade`. Real-weight smoke (~12 GB download
-+ ~24 GB VRAM) surfaces mismatches as precise VarBuilder errors.
+v0.38 ships the architecture and surface; **real-weight tensor-
+naming alignment with the upstream `stabilityai/stable-cascade`
+checkpoint remains the gating step** for production-quality
+output. Same caveat shipped with v0.37 phases 0–5 — real-weight
+smoke at user time will surface remaining VarBuilder mismatches
+as precise errors that the resolver tables (cascade_lora,
+cascade_controlnet) can be tuned against.
 
 ### By the numbers
 
-- **1173 lib + 47 integration tests = 1220 active tests** (+32
+- **1199 lib + 47 integration tests = 1246 active tests** (+26
   lib across the cycle).
-- 6 phase commits + RFC + close-out.
-- Fifth model family alongside SD-family, SD3, Flux, and PixArt.
+- 5 feature phases + close-out.
+- Both v0.37 correctness deferrals (FiLM + effnet) closed.
 
-### v0.36 → v0.37 migration
+### v0.37 → v0.38 migration
 
-v0.37 is fully additive. Every existing flag, host word, config
-key, scenario field, and PNG sidecar from v0.36 still works
-unchanged. New surface:
+v0.38 is fully additive. Every v0.37 flag, host word, config key,
+scenario field, and PNG sidecar still works unchanged. New
+surface:
 
-- ✅ `--model stable-cascade` / `cascade`.
-- ✅ Scenarios accept `model: stable-cascade` for batch runs.
-- ✅ `cascade::Pipeline` + `cascade_stage_a::StageAVae` +
-  `cascade_unet::StableCascadeUnet` — public APIs for scripting
-  / LoRA / img2img integration in v0.38+.
-- ✅ `Variant::StableCascade` + `BaseFamily::StableCascade` +
-  `BaseModel::StableCascade` — exhaustive matches across the
-  codebase stay sound.
+- ✅ `--stage-c-steps` / `--stage-b-steps` on `plakat generate`.
+- ✅ `--cascade-control-weights` on `plakat generate`.
+- ✅ `plakat img2img --model stable-cascade ...`.
+- ✅ `plakat.cascade` Bund word.
+- ✅ `stage_c_steps` / `stage_b_steps` `plakat.config.set` keys.
+- ✅ `--lora ...` flows through to Cascade Stage B + Stage C
+  merge at load time.
 
-### Deferred to v0.38+
+### Deferred to v0.39+
 
-- **FiLM timestep injection** into Cascade ResBlocks.
-- **Effnet conditioning** — Stage C output feeding Stage B.
-- **Stable Cascade LoRA support** (v0.37 cycle's explicit
-  deferral — less-established community LoRA ecosystem than
-  PixArt/SD-family).
-- **Scripting `plakat.cascade` Bund word** (mirrors
-  `plakat.pixart` from v0.36 phase 1).
-- **Stable Cascade img2img / ControlNet.**
-- **PixArt v0.36 carries** (α-LCM checkpoint, ControlNet,
-  portrait, img2img, per-task runtime LoRA swap in scenarios).
-- **T5 loader extraction** across SD3 + Flux + PixArt (Cascade
-  doesn't use T5 — uses CLIP-G).
-- v0.34 carries: metadata completion for non-t2i pipelines,
-  embedding-stack population, plakat server mode.
+- **Real-weight tensor-naming alignment** with upstream
+  `stabilityai/stable-cascade` (architecture complete; resolver
+  tables tune against checkpoint inspection).
+- **Multi-ControlNet for Cascade** (single-CN ships; residual
+  summation needs follow-up).
+- **Cascade img2img + ControlNet combo** (each works alone).
+- **Auto-annotate `--control-from`** for Cascade (canny / depth
+  annotators already exist; the routing into Cascade pipelines
+  is the missing wiring).
+- **Scenario- and scripting-side Cascade ControlNet** (CLI
+  `plakat generate` path ships).
+- **Catalogued Cascade ControlNet aliases** in `hf::ALIAS_TABLE`
+  (bring-your-own-weights for v0.38).
+- All PixArt v0.36 carries (α-LCM, CN, portrait, img2img).
 - All long-standing deferrals (per-layer motion splice,
   HotShot-XL, AnimateLCM-SDXL externally blocked, INT8 SDXL
   externally blocked).
 
-**Earlier releases** (v0.13 – v0.36):
+**Earlier releases** (v0.13 – v0.37):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

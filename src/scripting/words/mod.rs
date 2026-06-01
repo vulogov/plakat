@@ -12,6 +12,7 @@ use rust_multistackvm::multistackvm::VM;
 pub mod adetailer;
 pub mod animate;
 pub mod artefact;
+pub mod cascade;
 pub mod config;
 pub mod controlnet;
 pub mod echo;
@@ -249,6 +250,16 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         pixart::plakat_pixart,
     )
     .map_err(|e| anyhow!("registering plakat.pixart: {e}"))?;
+    // v0.38 phase 2: plakat.cascade ( prompt -- handle )
+    // — single-image Stable Cascade generation via the 3-stage
+    // pipeline. Cached on ScriptCtx.loaded_cascade. Honours
+    // stage_c_steps / stage_b_steps config keys (or falls back to
+    // splitting `steps` 2/3 + 1/3 the same way the CLI does).
+    vm.register_inline(
+        "plakat.cascade".to_string(),
+        cascade::plakat_cascade,
+    )
+    .map_err(|e| anyhow!("registering plakat.cascade: {e}"))?;
     Ok(())
 }
 

@@ -177,6 +177,20 @@ pub struct Request {
     /// v0.33 phase 0: metadata polish — v0.19 prompt enhancement
     /// details (provider, system prompt, original prompt).
     pub enhancement: Option<crate::imaging::metadata::EnhancementMetadata>,
+    /// v0.38 phase 2: Stable Cascade Stage C step count override.
+    /// `None` → the dispatch splits `steps` 2/3 to Stage C, 1/3 to
+    /// Stage B (the canonical CLI default). `Some(n)` → use exactly
+    /// `n` Stage C steps. Ignored on every non-Cascade pipeline.
+    pub cascade_stage_c_steps: Option<usize>,
+    /// v0.38 phase 2: Stable Cascade Stage B step count override.
+    /// `None` → split `steps`. `Some(n)` → exact count. Ignored on
+    /// non-Cascade pipelines.
+    pub cascade_stage_b_steps: Option<usize>,
+    /// v0.38 phase 5: path to a Stable Cascade ControlNet
+    /// safetensors checkpoint. When `Some`, the Cascade pipeline
+    /// loads the CN and honours the first entry in `controls`
+    /// (multi-CN deferred). `None` → no CN attached.
+    pub cascade_controlnet_weights: Option<std::path::PathBuf>,
 }
 
 /// Stuff that's fixed for the lifetime of a Pipeline.
@@ -2066,12 +2080,30 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // out / count all carrying through.
     if variant.is_cascade() {
         use crate::pipelines::cascade;
+        // v0.38 phase 5: multi-CN bail. Single-CN is the supported
+        // shape for Cascade in this cycle; multi-CN summation needs
+        // a follow-up to match upstream's per-residual gating.
+        if req.controls.len() > 1 {
+            anyhow::bail!(
+                "Stable Cascade supports at most one --control-spec in v0.38 \
+                 (got {}). Multi-ControlNet for Cascade is a v0.39 follow-up.",
+                req.controls.len()
+            );
+        }
+        // CN spec without weights is a no-op + warning, not a bail —
+        // keeps `--control canny:from=...` working as a future-proof
+        // declaration even before users have weights checked out.
         // Stable Cascade has TWO step budgets (Stage C + Stage B).
-        // CLI exposes a single --steps for now — split it: Stage C
-        // takes 2/3 (the heavy semantic stage), Stage B takes 1/3.
-        // The split can be tuned via dedicated flags in v0.38.
-        let stage_c_steps = (req.steps * 2).div_ceil(3).max(1);
-        let stage_b_steps = req.steps.saturating_sub(stage_c_steps).max(1);
+        // Honour explicit `--stage-c-steps` / `--stage-b-steps`
+        // overrides (v0.38 phase 2); fall back to splitting
+        // `--steps` 2/3 (heavy semantic Stage C) + 1/3 (Stage B
+        // refine), which preserves the v0.37 single-knob default.
+        let stage_c_steps = req
+            .cascade_stage_c_steps
+            .unwrap_or_else(|| (req.steps * 2).div_ceil(3).max(1));
+        let stage_b_steps = req.cascade_stage_b_steps.unwrap_or_else(|| {
+            req.steps.saturating_sub(stage_c_steps).max(1)
+        });
         cascade::run(cascade::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
@@ -2084,6 +2116,15 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             scheduler: req.scheduler,
             out_dir: req.out_dir.clone(),
             count: req.count,
+            // v0.38 phase 3: LoRA stack threads through to the
+            // Cascade Stage B + Stage C tempfile merges at load time.
+            loras: req.loras.clone(),
+            lora_scale: req.lora_scale,
+            // v0.38 phase 5: Cascade ControlNet. Single-CN only —
+            // multi-CN bail is gated at the cli/generate layer.
+            // `controlnet_weights` flows from `--cascade-control-weights`.
+            control_spec: req.controls.first().cloned(),
+            controlnet_weights: req.cascade_controlnet_weights.clone(),
         })
         .await?;
         return Ok(None);
