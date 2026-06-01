@@ -485,9 +485,17 @@ impl Pipeline {
         scheduler_kind: SchedulerKind,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
+        use crate::pipelines::cascade_scheduler::CascadeScheduler;
         use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
-        use crate::pipelines::scheduler::build as build_scheduler;
         use candle_core::IndexOp;
+
+        // v0.41 phase 0: scheduler_kind is ignored for Stable Cascade.
+        // The model is trained against `DDPMWuerstchenScheduler` (ratio
+        // timesteps + cosine α-cumprod) which doesn't fit candle's
+        // SD-family scheduler trait. A future cycle may surface a
+        // `SchedulerKind::CascadeWuerstchen{Linear,Shifted}` variant
+        // to expose the scaler knob.
+        let _ = scheduler_kind;
 
         anyhow::ensure!(
             output_dim % 8 == 0,
@@ -522,26 +530,23 @@ impl Pipeline {
             .stage_b
             .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
 
-        // Scheduler carrier — SDXL config provides the SD-family
-        // timestep schedule the candle_transformers scheduler needs.
-        let sd_cfg = candle_transformers::models::stable_diffusion::StableDiffusionConfig::sdxl(
-            None, None, None,
-        );
-
         // ---- Stage C denoise (fixed 24×24×16 prior latent) ----
-        let mut c_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_c_steps)?;
-        let c_timesteps = c_scheduler.timesteps().to_vec();
-        let c_init_sigma = c_scheduler.init_noise_sigma();
+        // v0.41 phase 0: Wuerstchen-style scheduler — ratio timesteps,
+        // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
+        let c_scheduler = CascadeScheduler::new(stage_c_steps);
+        let c_timesteps: Vec<f64> = c_scheduler.timesteps().to_vec();
         let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
             .to_dtype(self.dtype)?;
-        let mut latent_c = (noise_c * c_init_sigma)?;
+        let mut latent_c = noise_c;
         let bar = crate::ui::progress::step_bar(
             c_timesteps.len() as u64,
             "cascade stage C (prior)",
         );
         for &t in &c_timesteps {
-            let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
-            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let cfg_latent = Tensor::cat(&[&latent_c, &latent_c], 0)?;
+            // Wuerstchen feeds the model the ratio timestep directly
+            // (no integer rescaling). Sinusoidal encoding of a float
+            // in [0, 1] still produces a meaningful per-step embedding.
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
@@ -550,7 +555,7 @@ impl Pipeline {
             let pred = self.stage_c.forward(
                 &cfg_latent,
                 &t_emb,
-                Some(&t_emb), // sca_emb — placeholder (same as t_emb)
+                Some(&t_emb), // sca_emb — placeholder (v0.41 phase 1 refines)
                 Some(&t_emb), // crp_emb — placeholder
                 &clip_c,
                 None,
@@ -562,15 +567,14 @@ impl Pipeline {
             let guided = (neg + ((pos - neg)? * guidance)?)?;
             latent_c = c_scheduler.step(&guided, t, &latent_c)?;
             bar.inc(1);
-            bar.set_message(format!("t={t}"));
+            bar.set_message(format!("t={t:.3}"));
         }
         bar.finish_and_clear();
 
         // ---- Stage B denoise with Stage C effnet ----
         let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
-        let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
-        let b_timesteps = b_scheduler.timesteps().to_vec();
-        let b_init_sigma = b_scheduler.init_noise_sigma();
+        let b_scheduler = CascadeScheduler::new(stage_b_steps);
+        let b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
         let noise_b = Tensor::randn(
             0f32,
             1f32,
@@ -578,14 +582,13 @@ impl Pipeline {
             &self.device,
         )?
         .to_dtype(self.dtype)?;
-        let mut latent_b = (noise_b * b_init_sigma)?;
+        let mut latent_b = noise_b;
         let bar = crate::ui::progress::step_bar(
             b_timesteps.len() as u64,
             "cascade stage B (decoder)",
         );
         for &t in &b_timesteps {
-            let scaled = b_scheduler.scale_model_input(latent_b.clone(), t)?;
-            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let cfg_latent = Tensor::cat(&[&latent_b, &latent_b], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
@@ -606,7 +609,7 @@ impl Pipeline {
             let guided = (neg + ((pos - neg)? * guidance)?)?;
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
-            bar.set_message(format!("t={t}"));
+            bar.set_message(format!("t={t:.3}"));
         }
         bar.finish_and_clear();
 
