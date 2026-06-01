@@ -149,13 +149,17 @@ impl Config {
                     BlockConfig::SimpleMbConv { c_in: 64, c_mid: 256, c_out: 64, kernel: 3, stride: 1 },
                 ],
                 // Stage 4: 6 blocks (transition 64→128, SE)
+                // v0.40 phase 3 iter 2: block 0 has c_mid=256/se=16 (4× expand
+                // from c_in=64); blocks 1-5 have c_mid=512/se=32 (4× expand
+                // from c_in=128). Verified by inspection of every backbone
+                // .4.X.block.{0,2}.* tensor shape.
                 vec![
                     BlockConfig::FullMbConv { c_in: 64,  c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 2 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 256, c_out: 128, se_channels: 16, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
                 ],
                 // Stage 5: 9 blocks (transition 128→160, SE wider)
                 vec![

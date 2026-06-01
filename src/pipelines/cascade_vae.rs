@@ -345,14 +345,19 @@ impl StageAVae {
             VectorQuantizer::new(cfg.num_codes, cfg.c_latent, vb.pp("vquantizer"))?;
 
         // ---- Decoder ----
+        // v0.40 phase 3 iter 2: upstream up_blocks.0 is a Sequential
+        // containing the Conv2d at index .0 — so the tensor path is
+        // `up_blocks.0.0.{weight,bias}`, not `up_blocks.0.weight`.
+        // (Verified by inspection: up_blocks.0.0.weight = [384, 4, 1, 1]
+        // and up_blocks.0.0.bias = [384] exist.)
         let dec_in_conv = nn::conv2d(
             cfg.c_latent,
             cfg.c_hidden_deep,
             1,
             Default::default(),
-            vb.pp("up_blocks").pp("0"),
+            vb.pp("up_blocks").pp("0").pp("0"),
         )
-        .map_err(|e| anyhow!("up_blocks.0: {e}"))?;
+        .map_err(|e| anyhow!("up_blocks.0.0: {e}"))?;
 
         let mut dec_res_deep = Vec::with_capacity(cfg.n_decoder_deep_blocks);
         for i in 0..cfg.n_decoder_deep_blocks {
