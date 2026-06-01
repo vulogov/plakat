@@ -119,6 +119,16 @@ pub struct ScriptCtx {
     /// slot amortises that across calls.
     pub loaded_pixart:
         Option<(String, crate::pipelines::pixart::Pipeline)>,
+    /// v0.38 phase 2: cached Stable Cascade pipeline for
+    /// `plakat.cascade`. Key is the user's Cascade alias
+    /// (`stable-cascade` / `cascade` / a `*-lite` fork). Same-alias
+    /// hit reuses; alias change drops + reloads. Stable Cascade has
+    /// no scripting-side LoRA support yet (v0.38 phase 3 wires it
+    /// at load time mirroring the v0.35 phase 4 PixArt pattern),
+    /// so this slot doesn't drop on LoRA stack mutation. Cold load
+    /// downloads ~14 GB (CLIP-G + Stage A + Stage B + Stage C).
+    pub loaded_cascade:
+        Option<(String, crate::pipelines::cascade::Pipeline)>,
     /// v0.34 phase 3: scripting-side VAE cache. Mirrors the scenario
     /// runner's v0.32 phase 2 / v0.34 phase 3 cross-kind sharing.
     /// Each load (`plakat.load`, `plakat.animate`) looks this up by
@@ -330,6 +340,7 @@ impl ScriptCtx {
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
             loaded_pixart: None,
+            loaded_cascade: None,
             vae_cache: None,
         }))
         .map_err(|_| anyhow!("ScriptCtx already initialised"))
@@ -866,6 +877,55 @@ impl ScriptCtx {
         Ok(&mut self.loaded_pixart.as_mut().expect("just inserted").1)
     }
 
+    /// v0.38 phase 2: get-or-load the Stable Cascade pipeline for
+    /// the currently-loaded Cascade alias. Mirrors
+    /// [`Self::get_or_load_pixart`] but with no LoRA / VAE cache
+    /// plumbing — Cascade's Stage A VAE is a custom Paella v3 design
+    /// (not SD-family AutoEncoderKL) so the v0.34 phase 3 VAE cache
+    /// doesn't apply; scripting-side LoRA support is v0.38 phase 3.
+    pub fn get_or_load_cascade(
+        &mut self,
+    ) -> Result<&mut crate::pipelines::cascade::Pipeline> {
+        let alias = self.loaded_model().ok_or_else(|| {
+            anyhow!(
+                "ScriptCtx::get_or_load_cascade: no model loaded. \
+                 Call `\"stable-cascade\" plakat.load` before `plakat.cascade`."
+            )
+        })?;
+        let alias_owned = alias.to_string();
+        let hit = self
+            .loaded_cascade
+            .as_ref()
+            .map(|(a, _)| a == &alias_owned)
+            .unwrap_or(false);
+
+        if !hit {
+            self.loaded_cascade = None;
+            let device = self.device.clone();
+            let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_cascade: no tokio runtime in scope. {e}"
+                )
+            })?;
+            let pipeline = tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let repo = if alias_owned.contains('/') {
+                        alias_owned.clone()
+                    } else {
+                        crate::hf::resolve_alias(&alias_owned).to_string()
+                    };
+                    crate::pipelines::cascade::Pipeline::load(
+                        crate::pipelines::cascade::LoadRequest { repo, device },
+                    )
+                    .await
+                })
+            })?;
+            self.loaded_cascade = Some((alias_owned, pipeline));
+        }
+
+        Ok(&mut self.loaded_cascade.as_mut().expect("just inserted").1)
+    }
+
     /// v0.22 phase 2: get-or-load the Flux pipeline for `alias`.
     /// Mirrors [`Self::get_or_load_sd_family`] for the Flux
     /// family — same cache-invalidation rules, same internal
@@ -1332,6 +1392,7 @@ mod tests {
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
             loaded_pixart: None,
+            loaded_cascade: None,
             vae_cache: None,
         }
     }

@@ -1805,6 +1805,7 @@ mod tests {
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
             loaded_pixart: None,
+            loaded_cascade: None,
             vae_cache: None,
         };
         ctx.config.size_explicit = true;
