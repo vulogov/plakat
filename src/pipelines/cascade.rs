@@ -263,11 +263,11 @@ impl Pipeline {
     /// penultimate hidden states `(1, 77, 1280)` for cross-attn
     /// (matches the SDXL CLIP-G convention).
     ///
-    /// v0.37 phase 4 scope: pooled output is NOT used (Stable
-    /// Cascade Stage C also consumes pooled text, but the
-    /// upstream code conditions on it inside its `Effnet`
-    /// embedding which lands in v0.38 alongside the FiLM
-    /// timestep injection). For phase 4 we feed the penult only.
+    /// v0.37 phase 4 scope (still current): pooled output is NOT
+    /// used (Stable Cascade Stage C also consumes pooled text, but
+    /// the upstream code conditions on it inside its `Effnet`
+    /// embedding which is v0.38 phase 1 follow-through). For now
+    /// we feed the penult only.
     fn encode_prompt(&self, prompt: &str) -> Result<Tensor> {
         let mut ids = self
             .clip_g_tok
@@ -287,23 +287,24 @@ impl Pipeline {
     /// Stage A decode → image. Returns `(buf, width, height)` —
     /// the caller composes metadata + writes the PNG.
     ///
-    /// ## v0.37 phase 4 scope (honest)
+    /// ## Scope (after v0.38 phase 0 — FiLM wiring landed)
     ///
     /// - **Shape-correct end-to-end**: every stage runs at the right
     ///   shapes; output PNG has the correct (1024, 1024, 3) dims.
-    /// - **NOT numerically correct on real weights yet.** Two
-    ///   architectural pieces are deferred to v0.38:
-    ///   - **FiLM timestep injection** into ResBlocks (the
-    ///     time_emb is computed but not block-injected — see
-    ///     `cascade_unet::StableCascadeUnet::forward` doc).
-    ///   - **Effnet conditioning** — Stage C's output should
-    ///     condition Stage B's denoise. Phase 4 runs Stage B
-    ///     conditioned ONLY on text; v0.38 wires the effnet path.
+    /// - **FiLM timestep injection wired** (v0.38 phase 0). Output
+    ///   is now timestep-dependent — a prerequisite for numerical
+    ///   correctness on real weights.
+    /// - **Effnet conditioning still pending** (v0.38 phase 1).
+    ///   Stage C's output should condition Stage B's denoise; today
+    ///   Stage B runs conditioned ONLY on text. The `latent_c`
+    ///   tensor below is computed + bound but not yet consumed by
+    ///   Stage B.
     ///
-    /// On real `stabilityai/stable-cascade` weights at this phase,
-    /// expect noisy / structurally-correct-but-low-quality output.
-    /// On random weights (the test path), shape correctness is
-    /// the acceptance.
+    /// On real `stabilityai/stable-cascade` weights at this point,
+    /// expect noisy / structurally-correct-but-low-quality output
+    /// (the effnet conditioning is load-bearing for full quality).
+    /// On random weights (the test path), shape correctness is the
+    /// acceptance.
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -364,13 +365,13 @@ impl Pipeline {
 
         // ---- Stage B denoise: text → 32×32×4 Stage A latent. ----
         //
-        // v0.37 phase 4 scope: this stage runs conditioned ONLY on
-        // text (no effnet conditioning on Stage C output yet).
-        // The latent_c tensor is unused inside the denoise loop;
-        // wired in v0.38 follow-through. Keep the binding so the
-        // dependency is documented in code and reachable when the
-        // wiring lands.
-        let _stage_c_conditioning = &latent_c; // unused in phase 4
+        // Current scope (post v0.38 phase 0): this stage runs
+        // conditioned ONLY on text (no effnet conditioning on
+        // Stage C output yet). The latent_c tensor is unused
+        // inside the denoise loop; wired in v0.38 phase 1. Keep
+        // the binding so the dependency is documented in code and
+        // reachable when the wiring lands.
+        let _stage_c_conditioning = &latent_c; // wired in v0.38 phase 1
         let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
         let b_timesteps = b_scheduler.timesteps().to_vec();
         let b_init_sigma = b_scheduler.init_noise_sigma();
