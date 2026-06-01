@@ -86,6 +86,17 @@ pub struct Config {
     pub num_heads: usize,
     /// GroupNorm group count. SD-style default 32.
     pub norm_groups: usize,
+    /// Effnet conditioning input channel count. `Some(n)` means the
+    /// UNet expects an additional spatial tensor of shape
+    /// `(B, n, h', w')` at forward time (Stage C's output, fed as
+    /// channel-concatenated input to Stage B's denoise). `None`
+    /// means the UNet runs unconditioned by effnet — used by
+    /// Stage C (which produces the effnet, doesn't consume it).
+    ///
+    /// When `Some`, `in_conv` is built with `channels + n` input
+    /// channels and `forward_with_effnet` must be used; plain
+    /// `forward` errors.
+    pub effnet_input_channels: Option<usize>,
 }
 
 impl Config {
@@ -103,6 +114,9 @@ impl Config {
             text_hidden_size: 1280,
             num_heads: 20,
             norm_groups: 32,
+            // Stage B consumes Stage C's 16-channel prior latent as
+            // effnet conditioning (v0.38 phase 1).
+            effnet_input_channels: Some(16),
         }
     }
 
@@ -117,6 +131,7 @@ impl Config {
             text_hidden_size: 1280,
             num_heads: 12,
             norm_groups: 32,
+            effnet_input_channels: Some(16),
         }
     }
 
@@ -149,6 +164,8 @@ impl Config {
             text_hidden_size: 1280,
             num_heads: 32,
             norm_groups: 32,
+            // Stage C PRODUCES the effnet — it doesn't consume one.
+            effnet_input_channels: None,
         }
     }
 
@@ -164,6 +181,7 @@ impl Config {
             text_hidden_size: 1280,
             num_heads: 24,
             norm_groups: 32,
+            effnet_input_channels: None,
         }
     }
 
@@ -696,8 +714,13 @@ impl StableCascadeUnet {
         let dtype = vb.dtype();
         let device = vb.device().clone();
         let first_level = cfg.level_channels[0];
+        // When effnet conditioning is wired, in_conv consumes the
+        // noise latent + spatially-aligned effnet on a concatenated
+        // channel axis. Stage B with `effnet_input_channels: Some(16)`
+        // has in_conv weight shape (first_level, 4 + 16, 3, 3).
+        let in_conv_in_c = cfg.channels + cfg.effnet_input_channels.unwrap_or(0);
         let in_conv = nn::conv2d(
-            cfg.channels,
+            in_conv_in_c,
             first_level,
             3,
             nn::Conv2dConfig {
@@ -808,13 +831,77 @@ impl StableCascadeUnet {
     ///
     /// Returns `(B, channels, h, w)` denoised latent prediction.
     ///
-    /// **v0.38 phase 0:** time embedding is now FiLM-injected at
-    /// every block via per-block `TimestepBlock`s. Output is now
-    /// time-dependent (a prerequisite for numerical correctness on
-    /// real weights). Effnet conditioning from Stage C → Stage B
-    /// is the remaining v0.38 phase 1 follow-through.
+    /// This wrapper is for UNets without effnet conditioning
+    /// (Stage C). Errors if the config has `effnet_input_channels:
+    /// Some(_)` — those configs require `forward_with_effnet`.
     pub fn forward(&self, latent: &Tensor, timestep: &Tensor, text: &Tensor) -> Result<Tensor> {
-        let mut x = self.in_conv.forward(latent)?;
+        if self.cfg.effnet_input_channels.is_some() {
+            return Err(anyhow!(
+                "StableCascadeUnet::forward called on a UNet configured with \
+                 effnet_input_channels=Some({}); use forward_with_effnet instead",
+                self.cfg.effnet_input_channels.unwrap()
+            ));
+        }
+        self.forward_inner(latent, timestep, text, None)
+    }
+
+    /// Forward pass with effnet conditioning (Stage B).
+    ///
+    /// - `effnet`: Stage C output `(B, effnet_input_channels, h', w')`
+    ///   — typically `(B, 16, 24, 24)` upstream. It's nearest-upsampled
+    ///   to the noise latent's spatial dims and channel-concatenated
+    ///   with it before `in_conv`. Errors if the config has
+    ///   `effnet_input_channels: None`.
+    pub fn forward_with_effnet(
+        &self,
+        latent: &Tensor,
+        timestep: &Tensor,
+        text: &Tensor,
+        effnet: &Tensor,
+    ) -> Result<Tensor> {
+        if self.cfg.effnet_input_channels.is_none() {
+            return Err(anyhow!(
+                "StableCascadeUnet::forward_with_effnet called on a UNet \
+                 configured with effnet_input_channels=None; use forward instead"
+            ));
+        }
+        self.forward_inner(latent, timestep, text, Some(effnet))
+    }
+
+    fn forward_inner(
+        &self,
+        latent: &Tensor,
+        timestep: &Tensor,
+        text: &Tensor,
+        effnet: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        // Optionally fuse effnet conditioning on the channel axis
+        // BEFORE in_conv. Stage B's in_conv was built with
+        // `cfg.channels + cfg.effnet_input_channels` input channels
+        // exactly for this. Stage C skips this path entirely.
+        let conv_input = match (effnet, self.cfg.effnet_input_channels) {
+            (Some(eff), Some(expected_c)) => {
+                let (lb, _, lh, lw) = latent.dims4()?;
+                let (eb, ec, eh, ew) = eff.dims4()?;
+                anyhow::ensure!(
+                    eb == lb,
+                    "effnet batch ({eb}) must match latent batch ({lb})"
+                );
+                anyhow::ensure!(
+                    ec == expected_c,
+                    "effnet channels ({ec}) must match config \
+                     effnet_input_channels ({expected_c})"
+                );
+                let aligned = if eh == lh && ew == lw {
+                    eff.clone()
+                } else {
+                    eff.upsample_nearest2d(lh, lw)?
+                };
+                Tensor::cat(&[latent, &aligned], 1)?
+            }
+            _ => latent.clone(),
+        };
+        let mut x = self.in_conv.forward(&conv_input)?;
         let t_emb = self.time_embedding.forward(timestep)?;
 
         // Encoder: collect per-level skip tensors.
@@ -846,7 +933,9 @@ mod tests {
     use candle_nn::VarMap;
 
     /// Small Stage B config for fast tests. 3 levels (16×16 → 8×8 →
-    /// 4×4), attention at the deepest level only.
+    /// 4×4), attention at the deepest level only. Effnet OFF —
+    /// tests that exercise effnet use `small_stage_b_cfg_effnet()`
+    /// below.
     fn small_stage_b_cfg() -> Config {
         Config {
             channels: 4,
@@ -856,6 +945,7 @@ mod tests {
             text_hidden_size: 24,
             num_heads: 4,
             norm_groups: 8,
+            effnet_input_channels: None,
         }
     }
 
@@ -956,6 +1046,8 @@ mod tests {
         assert_eq!(cfg.level_channels.len(), 4);
         assert_eq!(cfg.attention_levels, vec![false, false, true, true]);
         assert_eq!(cfg.text_hidden_size, 1280);
+        // v0.38 phase 1: Stage B consumes Stage C's 16ch effnet.
+        assert_eq!(cfg.effnet_input_channels, Some(16));
     }
 
     #[test]
@@ -997,6 +1089,8 @@ mod tests {
             cfg.num_heads >= 16,
             "Stage C Full uses more heads than Stage B Full"
         );
+        // v0.38 phase 1: Stage C PRODUCES the effnet, doesn't consume one.
+        assert_eq!(cfg.effnet_input_channels, None);
     }
 
     #[test]
@@ -1043,6 +1137,7 @@ mod tests {
             text_hidden_size: 24,
             num_heads: 4,
             norm_groups: 8,
+            effnet_input_channels: None,
         }
     }
 
@@ -1095,6 +1190,126 @@ mod tests {
             diff > 1e-4,
             "TimestepBlock outputs should differ across t_emb (got mean abs diff {diff})"
         );
+    }
+
+    // v0.38 phase 1: effnet conditioning (Stage C → Stage B).
+
+    /// Small Stage B-style config WITH effnet conditioning wired
+    /// at 8 channels (vs upstream's 16). 16×16 latent, 12×12 effnet
+    /// — the spatial mismatch exercises the upsample alignment
+    /// path before in_conv.
+    fn small_stage_b_cfg_with_effnet() -> Config {
+        Config {
+            channels: 4,
+            level_channels: vec![16, 32, 64],
+            attention_levels: vec![false, true, true],
+            blocks_per_level: 1,
+            text_hidden_size: 24,
+            num_heads: 4,
+            norm_groups: 8,
+            effnet_input_channels: Some(8),
+        }
+    }
+
+    #[test]
+    fn stage_b_in_conv_grows_with_effnet_channels() {
+        // Stage B's in_conv must accept (cfg.channels + effnet_n)
+        // input channels — that's how the upstream weight is
+        // shaped, and what the upsample+concat path produces.
+        let (unet, _) = random_unet(small_stage_b_cfg_with_effnet());
+        // Conv2d weight shape is (out_c, in_c, kH, kW).
+        let w = unet.in_conv.weight();
+        let in_c = w.dims()[1];
+        assert_eq!(
+            in_c,
+            4 + 8,
+            "Stage B in_conv must take latent_channels + effnet_channels"
+        );
+        // Sanity: a no-effnet config has just `cfg.channels`.
+        let (unet_no_eff, _) = random_unet(small_stage_b_cfg());
+        assert_eq!(unet_no_eff.in_conv.weight().dims()[1], 4);
+    }
+
+    #[test]
+    fn forward_with_effnet_preserves_latent_shape() {
+        let (unet, _) = random_unet(small_stage_b_cfg_with_effnet());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        // Effnet at a DIFFERENT spatial size (12×12 vs latent 16×16)
+        // — forces the upsample alignment branch in forward_inner.
+        let effnet = Tensor::randn(0f32, 1f32, (1, 8, 12, 12), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let out = unet
+            .forward_with_effnet(&latent, &timestep, &text, &effnet)
+            .unwrap();
+        assert_eq!(out.dims(), &[1, 4, 16, 16]);
+    }
+
+    #[test]
+    fn stage_b_output_changes_when_effnet_changes() {
+        // Load-bearing test: confirms the Stage C → Stage B
+        // conditioning path is actually used. If the effnet
+        // tensor were silently dropped (the v0.37 bug pattern at
+        // the cascade.rs boundary), both forward_with_effnet
+        // calls below would yield the same output.
+        let (unet, _) = random_unet(small_stage_b_cfg_with_effnet());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let eff1 = Tensor::randn(0f32, 1f32, (1, 8, 12, 12), device).unwrap();
+        let eff2 = Tensor::randn(0f32, 1f32, (1, 8, 12, 12), device).unwrap();
+        let o1 = unet
+            .forward_with_effnet(&latent, &timestep, &text, &eff1)
+            .unwrap();
+        let o2 = unet
+            .forward_with_effnet(&latent, &timestep, &text, &eff2)
+            .unwrap();
+        let diff = (&o1 - &o2)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-4,
+            "Stage B output should depend on effnet conditioning (got mean abs diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_errors_when_config_requires_effnet() {
+        // Misuse: calling plain forward() on a Stage B config
+        // should produce a clear actionable error pointing at
+        // forward_with_effnet.
+        let (unet, _) = random_unet(small_stage_b_cfg_with_effnet());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let err = unet.forward(&latent, &timestep, &text).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("forward_with_effnet"), "got: {msg}");
+    }
+
+    #[test]
+    fn forward_with_effnet_errors_when_config_lacks_effnet() {
+        // Opposite misuse: forward_with_effnet on a Stage C config.
+        let (unet, _) = random_unet(small_stage_c_cfg());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let effnet = Tensor::randn(0f32, 1f32, (1, 8, 6, 6), device).unwrap();
+        let err = unet
+            .forward_with_effnet(&latent, &timestep, &text, &effnet)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("forward"), "got: {msg}");
+        assert!(msg.contains("None"), "got: {msg}");
     }
 
     #[test]

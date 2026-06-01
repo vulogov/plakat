@@ -287,24 +287,23 @@ impl Pipeline {
     /// Stage A decode → image. Returns `(buf, width, height)` —
     /// the caller composes metadata + writes the PNG.
     ///
-    /// ## Scope (after v0.38 phase 0 — FiLM wiring landed)
+    /// ## Scope (after v0.38 phase 1 — effnet conditioning landed)
     ///
     /// - **Shape-correct end-to-end**: every stage runs at the right
     ///   shapes; output PNG has the correct (1024, 1024, 3) dims.
     /// - **FiLM timestep injection wired** (v0.38 phase 0). Output
-    ///   is now timestep-dependent — a prerequisite for numerical
-    ///   correctness on real weights.
-    /// - **Effnet conditioning still pending** (v0.38 phase 1).
-    ///   Stage C's output should condition Stage B's denoise; today
-    ///   Stage B runs conditioned ONLY on text. The `latent_c`
-    ///   tensor below is computed + bound but not yet consumed by
-    ///   Stage B.
+    ///   is timestep-dependent.
+    /// - **Effnet conditioning wired** (v0.38 phase 1). Stage C's
+    ///   16ch×24×24 prior latent is upsampled + channel-concatenated
+    ///   into Stage B's `in_conv`. Stage B is now conditioned on
+    ///   `(text, Stage C output)` not just text.
     ///
-    /// On real `stabilityai/stable-cascade` weights at this point,
-    /// expect noisy / structurally-correct-but-low-quality output
-    /// (the effnet conditioning is load-bearing for full quality).
     /// On random weights (the test path), shape correctness is the
-    /// acceptance.
+    /// acceptance. On real `stabilityai/stable-cascade` weights,
+    /// the architecture is now complete — output quality is bounded
+    /// by tensor-naming alignment with the upstream checkpoint
+    /// (real-weight smoke at user time will surface any remaining
+    /// VarBuilder mismatches).
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -363,15 +362,15 @@ impl Pipeline {
         }
         bar.finish_and_clear();
 
-        // ---- Stage B denoise: text → 32×32×4 Stage A latent. ----
+        // ---- Stage B denoise: (text + Stage C effnet) →
+        //      32×32×4 Stage A latent. ----
         //
-        // Current scope (post v0.38 phase 0): this stage runs
-        // conditioned ONLY on text (no effnet conditioning on
-        // Stage C output yet). The latent_c tensor is unused
-        // inside the denoise loop; wired in v0.38 phase 1. Keep
-        // the binding so the dependency is documented in code and
-        // reachable when the wiring lands.
-        let _stage_c_conditioning = &latent_c; // wired in v0.38 phase 1
+        // v0.38 phase 1: Stage B is now conditioned on Stage C's
+        // 16ch×24×24 prior latent ("effnet" conditioning) on top
+        // of text. The effnet tensor is duplicated across the CFG
+        // batch dim (upstream applies CFG to text only — effnet is
+        // identical for positive and negative branches).
+        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
         let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
         let b_timesteps = b_scheduler.timesteps().to_vec();
         let b_init_sigma = b_scheduler.init_noise_sigma();
@@ -385,7 +384,12 @@ impl Pipeline {
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.stage_b.forward(&cfg_latent, &t_tensor, &cfg_text)?;
+            let pred = self.stage_b.forward_with_effnet(
+                &cfg_latent,
+                &t_tensor,
+                &cfg_text,
+                &cfg_effnet,
+            )?;
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
