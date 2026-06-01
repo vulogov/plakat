@@ -845,6 +845,42 @@ impl StableCascadeUnet {
         self.forward_inner(latent, timestep, text, None)
     }
 
+    /// Forward pass with a ControlNet residual added to the noisy
+    /// latent BEFORE `in_conv`. v0.38 phase 5 — used by Stage C
+    /// when a Cascade ControlNet is wired through `--control`.
+    ///
+    /// `residual` must match the latent's shape (B, channels, h, w).
+    /// `cn_scale` is the ControlSpec's per-conditioner strength
+    /// (1.0 by default; multi-CN deferred to v0.39, so just one
+    /// residual is supported per call). Errors when the config has
+    /// `effnet_input_channels: Some(_)` — that path is Stage B's
+    /// `forward_with_effnet`; Stage C is the CN-bearing stage.
+    pub fn forward_with_control_residual(
+        &self,
+        latent: &Tensor,
+        timestep: &Tensor,
+        text: &Tensor,
+        residual: &Tensor,
+        cn_scale: f64,
+    ) -> Result<Tensor> {
+        if self.cfg.effnet_input_channels.is_some() {
+            return Err(anyhow!(
+                "StableCascadeUnet::forward_with_control_residual called on a UNet \
+                 configured with effnet_input_channels=Some(_); ControlNet attaches \
+                 to Stage C, not Stage B."
+            ));
+        }
+        anyhow::ensure!(
+            residual.shape() == latent.shape(),
+            "control residual shape {:?} must match latent shape {:?}",
+            residual.shape(),
+            latent.shape()
+        );
+        let scaled = residual.affine(cn_scale, 0.0)?;
+        let injected = latent.add(&scaled)?;
+        self.forward_inner(&injected, timestep, text, None)
+    }
+
     /// Forward pass with effnet conditioning (Stage B).
     ///
     /// - `effnet`: Stage C output `(B, effnet_input_channels, h', w')`
@@ -1278,6 +1314,88 @@ mod tests {
             diff > 1e-4,
             "Stage B output should depend on effnet conditioning (got mean abs diff {diff})"
         );
+    }
+
+    // v0.38 phase 5: ControlNet residual injection at Stage C.
+
+    #[test]
+    fn forward_with_control_residual_changes_output_vs_plain_forward() {
+        // Load-bearing: the CN residual must actually influence the
+        // output. If forward_with_control_residual silently
+        // discarded the residual, both paths would produce
+        // identical predictions.
+        let (unet, _) = random_unet(small_stage_c_cfg());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let residual = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+
+        let plain = unet.forward(&latent, &timestep, &text).unwrap();
+        let cn = unet
+            .forward_with_control_residual(&latent, &timestep, &text, &residual, 1.0)
+            .unwrap();
+        let diff = (&plain - &cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-4,
+            "Stage C output should differ with CN residual injection (got {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_control_residual_zero_scale_matches_plain_forward() {
+        // Scale-0 sanity: cn_scale=0 should produce byte-equivalent
+        // output to the plain forward path (the residual is
+        // multiplied by 0 and added — no-op).
+        let (unet, _) = random_unet(small_stage_c_cfg());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let residual = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+
+        let plain = unet.forward(&latent, &timestep, &text).unwrap();
+        let cn = unet
+            .forward_with_control_residual(&latent, &timestep, &text, &residual, 0.0)
+            .unwrap();
+        let diff = (&plain - &cn)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff < 1e-5,
+            "cn_scale=0 should match plain forward (got mean abs diff {diff})"
+        );
+    }
+
+    #[test]
+    fn forward_with_control_residual_errors_on_stage_b_config() {
+        // ControlNet attaches to Stage C, not Stage B. Misuse
+        // surface: a Stage B-configured UNet should reject the CN
+        // call with an actionable error.
+        let (unet, _) = random_unet(small_stage_b_cfg_with_effnet());
+        let device = &unet.device;
+        let latent = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        let timestep = Tensor::new(&[100f32], device).unwrap();
+        let text = Tensor::randn(0f32, 1f32, (1, 5, 24), device).unwrap();
+        let residual = Tensor::randn(0f32, 1f32, (1, 4, 16, 16), device).unwrap();
+        let err = unet
+            .forward_with_control_residual(&latent, &timestep, &text, &residual, 1.0)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ControlNet"), "got: {msg}");
+        assert!(msg.contains("Stage C"), "got: {msg}");
     }
 
     #[test]

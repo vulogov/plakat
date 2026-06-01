@@ -2058,6 +2058,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         device: device.clone(),
                         loras: resolved_cascade_loras,
                         lora_scale,
+                        // v0.38 phase 5: scenario-level Cascade
+                        // ControlNet wiring is a v0.39 follow-up;
+                        // single-task --control-spec on Cascade in
+                        // scenarios isn't yet supported.
+                        controlnet_weights: None,
                     },
                 )
                 .await?,
@@ -3502,6 +3507,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         eff_guidance,
                         img_seed,
                         eff_scheduler,
+                        // v0.38 phase 5: scenario-level Cascade CN
+                        // wiring deferred to v0.39.
+                        None,
                     )?;
                     let mut m = GenerationMetadata::new(
                         final_prompt.clone(),

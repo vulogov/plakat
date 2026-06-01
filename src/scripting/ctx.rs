@@ -935,6 +935,9 @@ impl ScriptCtx {
                             device,
                             loras: resolved,
                             lora_scale,
+                            // v0.38 phase 5: scripting-side Cascade
+                            // ControlNet wiring is a v0.39 follow-up.
+                            controlnet_weights: None,
                         },
                     )
                     .await

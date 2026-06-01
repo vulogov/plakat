@@ -82,6 +82,14 @@ pub struct GenerateArgs {
     #[arg(long = "stage-b-steps", value_name = "N")]
     pub stage_b_steps: Option<usize>,
 
+    /// v0.38 phase 5: Stable Cascade ControlNet weights path
+    /// (safetensors). Pair with `--control KIND:image=PATH` to
+    /// activate the CN on Stage C. Upstream Cascade CN checkpoints
+    /// aren't yet catalogued in plakat's alias table; bring your
+    /// own. Cascade-only; ignored on every other model.
+    #[arg(long = "cascade-control-weights", value_name = "PATH")]
+    pub cascade_control_weights: Option<PathBuf>,
+
     /// Classifier-free guidance scale. Use 0.0 for SDXL-Turbo.
     #[arg(long, default_value_t = 7.5)]
     pub guidance: f64,
@@ -1152,6 +1160,8 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // when set. Ignored on every non-Cascade pipeline.
         cascade_stage_c_steps: args.stage_c_steps,
         cascade_stage_b_steps: args.stage_b_steps,
+        // v0.38 phase 5: Cascade ControlNet weights path.
+        cascade_controlnet_weights: args.cascade_control_weights,
     })
     .await
     .map_err(|e| {
@@ -1678,6 +1688,7 @@ mod tests {
             steps: 28,
             stage_c_steps: None,
             stage_b_steps: None,
+            cascade_control_weights: None,
             guidance: 7.5,
             negative: String::new(),
             negative_preset: None,
