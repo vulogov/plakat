@@ -43,6 +43,7 @@ pub mod cascade;
 pub mod cascade_blocks;
 pub mod cascade_controlnet;
 pub mod cascade_lora;
+pub mod cascade_prior;
 pub mod cascade_stage_a;
 pub mod cascade_unet;
 pub mod pixart;
