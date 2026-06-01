@@ -1128,6 +1128,13 @@ pub fn audit_rows() -> Vec<ReproRow> {
             note: "v0.35 phase 2: `seeds::prepare_seed` runs before `device.set_seed()` + `Tensor::randn`. CFG denoise loop is fully deterministic with --seed N.",
         },
         ReproRow {
+            pipeline: "Stable Cascade (3-stage)",
+            code_path: "Pipeline::generate Stage C + Stage B noise init",
+            file_line: "pipelines/cascade.rs:~290",
+            guarantee: ReproGuarantee::Guaranteed,
+            note: "v0.37 phase 4: `seeds::prepare_seed` runs once before BOTH Stage C and Stage B `Tensor::randn` calls (Stage A is one-shot decode). Same --seed N produces byte-identical output. Numerical correctness on real weights is v0.38 follow-through (FiLM time injection + effnet conditioning); reproducibility holds either way.",
+        },
+        ReproRow {
             pipeline: "Stylize (SD 1.5)",
             code_path: "init noise + VAE encode",
             file_line: "pipelines/stylize.rs:~250",
