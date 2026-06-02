@@ -592,7 +592,17 @@ impl Pipeline {
         bar.finish_and_clear();
 
         // ---- Stage B denoise with Stage C effnet ----
-        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
+        // v0.41 phase 2i: CFG over the effnet conditioning. Upstream
+        // decoder uses `cat([image_embeddings, zeros_like(...)])` — the
+        // UNCONDITIONAL half gets ZERO effnet so classifier-free
+        // guidance amplifies the Stage C semantic conditioning. Our
+        // CFG batch order is [neg, pos] (= [uncond, cond]), so the neg
+        // half is zeros and the pos half is the Stage C output. Feeding
+        // latent_c to BOTH halves (the v0.40 bug) left the effnet out
+        // of the guidance entirely → coherent-but-wrong decoder texture
+        // (the seed-43 "circuit board" artifact).
+        let zero_c = latent_c.zeros_like()?;
+        let cfg_effnet = Tensor::cat(&[&zero_c, &latent_c], 0)?;
         let b_scheduler = CascadeScheduler::new(stage_b_steps);
         let b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
         let noise_b = Tensor::randn(
