@@ -2104,11 +2104,31 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         let stage_b_steps = req.cascade_stage_b_steps.unwrap_or_else(|| {
             req.steps.saturating_sub(stage_c_steps).max(1)
         });
+        // Stable Cascade's prior is fixed at 24×24×16, so the
+        // pipeline can only produce square outputs (image dim =
+        // Stage B latent dim × 8). Bail loud if the user passed a
+        // non-square --size so the silent-misalignment failure
+        // mode (image gets generated at width², not width×height)
+        // can't bite.
+        anyhow::ensure!(
+            req.width == req.height,
+            "Stable Cascade output is square (prior latent is fixed at 24×24×16); \
+             got --size {}x{}. Pick a square size, e.g. 1024x1024.",
+            req.width,
+            req.height
+        );
+        anyhow::ensure!(
+            req.width % 8 == 0,
+            "Stable Cascade output dim must be divisible by 8 (Stage A↔B \
+             compression contract); got {}.",
+            req.width
+        );
         cascade::run(cascade::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
             prompt: req.prompt.clone(),
             negative: req.negative.clone(),
+            output_dim: req.width,
             stage_c_steps,
             stage_b_steps,
             guidance: req.guidance as f64,

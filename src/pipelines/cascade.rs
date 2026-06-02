@@ -445,6 +445,7 @@ impl Pipeline {
         &mut self,
         prompt: &str,
         negative: &str,
+        output_dim: u32,
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
@@ -452,13 +453,10 @@ impl Pipeline {
         scheduler_kind: SchedulerKind,
         _control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
-        // v0.40 phase 4: hardcoded 1024² output. A future cycle may
-        // expose output_dim as a Pipeline arg.
-        const OUTPUT_DIM: u32 = 1024;
         self.generate_at_size(
             prompt,
             negative,
-            OUTPUT_DIM,
+            output_dim,
             stage_c_steps,
             stage_b_steps,
             guidance,
@@ -859,6 +857,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
         let (buf, ow, oh) = pipeline.generate(
             &req.prompt,
             &req.negative,
+            req.output_dim,
             req.stage_c_steps,
             req.stage_b_steps,
             req.guidance,
@@ -1026,6 +1025,10 @@ pub struct RunRequest {
     pub device: Device,
     pub prompt: String,
     pub negative: String,
+    /// Output image side length (output is square because Stage C's
+    /// prior latent is fixed at 24×24×16). Must be divisible by 8 —
+    /// the total Stage A↔B compression contract.
+    pub output_dim: u32,
     /// Number of Stage C denoise steps (the heavy text-to-prior
     /// stage). Upstream recommendation: 20.
     pub stage_c_steps: usize,
@@ -1068,6 +1071,7 @@ mod tests {
             device: Device::Cpu,
             prompt: "a fox in a meadow".into(),
             negative: "blurry".into(),
+            output_dim: 1024,
             stage_c_steps: 20,
             stage_b_steps: 10,
             guidance: 4.0,
@@ -1082,6 +1086,7 @@ mod tests {
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
+        assert_eq!(r.output_dim, 1024);
         assert_eq!(r.stage_b_steps, 10);
         assert_eq!(r.seed, Some(42));
         assert_eq!(r.count, 1);
