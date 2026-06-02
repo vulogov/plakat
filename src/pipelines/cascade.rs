@@ -218,10 +218,21 @@ impl Pipeline {
     ///   diffusion_pytorch_model.safetensors
     /// ```
     pub async fn load(req: LoadRequest) -> Result<Self> {
+        // Stable Cascade was trained in BF16 (diffusers'
+        // `torch_dtype=torch.bfloat16` default). BF16 has the same
+        // exponent range as F32 (~1e38) but F16's mantissa, which is
+        // exactly the trade Cascade needs — Stage C's FiLM
+        // modulation amplifies the residual stream by `(1 + scale)`
+        // per TimestepBlock, and at scale ≈ 1 across 24+ stacked
+        // blocks the intermediate values fly past F16's 6.5e4
+        // ceiling and become Inf → NaN. v0.41 phase 2b caught this
+        // on the first Metal end-to-end run (CPU F32 was fine all
+        // along). BF16 keeps the GPU memory win F16 gave us while
+        // matching the upstream dtype.
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {
-            DType::F16
+            DType::BF16
         };
 
         let dl = progress::spinner("Resolving Stable Cascade weights");
@@ -558,9 +569,6 @@ impl Pipeline {
         );
         for &t in &c_timesteps {
             let cfg_latent = Tensor::cat(&[&latent_c, &latent_c], 0)?;
-            // Wuerstchen feeds the model the ratio timestep directly
-            // (no integer rescaling). Sinusoidal encoding of a float
-            // in [0, 1] still produces a meaningful per-step embedding.
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
