@@ -237,13 +237,16 @@ fn reflection_pad2d_1(x: &Tensor) -> Result<Tensor> {
         h >= 2 && w >= 2,
         "reflection_pad2d_1: input must be ≥2×2 (got {h}×{w})"
     );
-    // Pad H dim: prepend row 1, append row H-2.
-    let top = x.i((.., .., 1..2, ..))?;
-    let bottom = x.i((.., .., h - 2..h - 1, ..))?;
+    // The slice views are non-contiguous in memory; candle's Metal
+    // cat kernel needs contiguous inputs for the strided-source
+    // dim, so `.contiguous()` is required before cat. CPU cat is
+    // permissive and worked without it during v0.41 phase 2a CPU
+    // unit tests, masking the issue until the first Metal run.
+    let top = x.i((.., .., 1..2, ..))?.contiguous()?;
+    let bottom = x.i((.., .., h - 2..h - 1, ..))?.contiguous()?;
     let h_padded = Tensor::cat(&[&top, x, &bottom], 2)?;
-    // Pad W dim of the H-padded tensor: prepend col 1, append col W-2.
-    let left = h_padded.i((.., .., .., 1..2))?;
-    let right = h_padded.i((.., .., .., w - 2..w - 1))?;
+    let left = h_padded.i((.., .., .., 1..2))?.contiguous()?;
+    let right = h_padded.i((.., .., .., w - 2..w - 1))?.contiguous()?;
     Tensor::cat(&[&left, &h_padded, &right], 3).map_err(|e| e.into())
 }
 
