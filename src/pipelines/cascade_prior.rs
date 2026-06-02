@@ -139,6 +139,12 @@ pub struct Config {
     /// both 24×24). Ignored by the Strided style (Stage B), whose
     /// strided convs always resample.
     pub switch_level: Vec<bool>,
+    /// Upstream `up_blocks_repeat_mappers` — per up-level (deepest
+    /// first) count of how many times the level's block group runs.
+    /// `up_repeat_mappers[level]` has `value - 1` 1×1 convs applied
+    /// between repeats. Stage C is `[1, 1]` (runs once, no mappers);
+    /// Stage B is `[3, 3, 2, 2]`.
+    pub up_blocks_repeat_mappers: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +182,7 @@ impl Config {
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
             switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -201,6 +208,7 @@ impl Config {
             sampler_style: SamplerStyle::Strided,
             // 4 levels → 3 transitions. Strided ignores these.
             switch_level: vec![true, true, true],
+            up_blocks_repeat_mappers: vec![3, 3, 2, 2],
         }
     }
 
@@ -444,6 +452,10 @@ pub struct StableCascadePrior {
     down_downscalers: Vec<UpDownBlock>,
     up_blocks: Vec<Vec<Block>>,
     up_upscalers: Vec<UpDownBlock>,
+    /// Per up-level (deepest first) 1×1 convs applied between block-
+    /// group repeats. `up_repeat_mappers[level]` has
+    /// `up_blocks_repeat_mappers[level] - 1` entries.
+    up_repeat_mappers: Vec<Vec<nn::Conv2d>>,
     clf_norm: LayerNorm2d,
     clf_conv: nn::Conv2d,
     pub cfg: Config,
@@ -665,6 +677,28 @@ impl StableCascadePrior {
             up_upscalers.push(blk);
         }
 
+        // ---- Up repeat mappers (1×1 convs between block-group
+        // repeats). up_repeat_mappers.{level}.{j} for j in
+        // 0..(up_blocks_repeat_mappers[level] - 1). ----
+        let mut up_repeat_mappers: Vec<Vec<nn::Conv2d>> = Vec::with_capacity(num_levels);
+        for level in 0..num_levels {
+            let n_map = cfg.up_blocks_repeat_mappers[level].saturating_sub(1);
+            let c = up_c_hidden[level];
+            let mut maps = Vec::with_capacity(n_map);
+            for j in 0..n_map {
+                let conv = nn::conv2d(
+                    c,
+                    c,
+                    1,
+                    Default::default(),
+                    vb.pp("up_repeat_mappers").pp(&level.to_string()).pp(&j.to_string()),
+                )
+                .map_err(|e| anyhow!("up_repeat_mappers.{level}.{j}: {e}"))?;
+                maps.push(conv);
+            }
+            up_repeat_mappers.push(maps);
+        }
+
         // ---- Output classifier: Sequential(LayerNorm2d, Conv2d) ----
         let clf_norm = LayerNorm2d::new(c_first, 1e-6);
         let clf_conv = nn::conv2d(
@@ -688,6 +722,7 @@ impl StableCascadePrior {
             down_downscalers,
             up_blocks,
             up_upscalers,
+            up_repeat_mappers,
             clf_norm,
             clf_conv,
             cfg,
@@ -816,8 +851,14 @@ impl StableCascadePrior {
             .as_ref()
             .ok_or_else(|| anyhow!("apply_effnet_mapper called on a Stage C prior"))?;
         let h = mapper.0.forward(effnet)?;
-        let h = h.gelu()?;
-        Ok(mapper.1.forward(&h)?)
+        let h = h.gelu_erf()?;
+        let h = mapper.1.forward(&h)?;
+        // v0.41 phase 2g: upstream effnet_mapper ends with
+        // SDCascadeLayerNorm (no affine, eps 1e-6) over the channel
+        // dim. Missing it left the effnet conditioning unnormalised
+        // and corrupted the down path from down_lvl0 onward. The norm
+        // is parameterless, so construct it inline.
+        LayerNorm2d::new(self.cfg.c_hidden_first(), 1e-6).forward(&h)
     }
 
     /// Apply pixels conditioning (Stage B only). See
@@ -828,8 +869,9 @@ impl StableCascadePrior {
             .as_ref()
             .ok_or_else(|| anyhow!("apply_pixels_mapper called on a Stage C prior"))?;
         let h = mapper.0.forward(pixels)?;
-        let h = h.gelu()?;
-        Ok(mapper.1.forward(&h)?)
+        let h = h.gelu_erf()?;
+        let h = mapper.1.forward(&h)?;
+        LayerNorm2d::new(self.cfg.c_hidden_first(), 1e-6).forward(&h)
     }
 
     /// Forward pass.
@@ -869,6 +911,7 @@ impl StableCascadePrior {
     /// activations (emb, per-down-level, per-up-level, clf) for
     /// reference comparison against the diffusers dump. Test-only.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_collect(
         &self,
         x: &Tensor,
@@ -876,10 +919,12 @@ impl StableCascadePrior {
         sca_emb: Option<&Tensor>,
         crp_emb: Option<&Tensor>,
         clip: &Tensor,
+        effnet: Option<&Tensor>,
+        pixels: Option<&Tensor>,
     ) -> Result<(Tensor, Vec<(String, Tensor)>)> {
         let mut dump: Vec<(String, Tensor)> = Vec::new();
         let out = self.forward_inner(
-            x, t_emb, sca_emb, crp_emb, clip, None, None, None, 0.0, Some(&mut dump),
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0, Some(&mut dump),
         )?;
         Ok((out, dump))
     }
@@ -959,32 +1004,47 @@ impl StableCascadePrior {
         if let Some(d) = dump.as_deref_mut() {
             d.push(("emb".to_string(), h.clone()));
         }
-        // v0.40 phase 4 iter 1: spatially align effnet (Stage C output
-        // is fixed at 24×24) to Stage B's embedding spatial via
-        // nearest upsample BEFORE feeding to the apply_effnet_mapper
-        // 1×1 conv stack. Upstream uses bilinear; nearest is
-        // numerically close for this conditioning stream (the mapper
-        // is point-wise so spatial position is independent at the
-        // conv level).
+        // v0.41 phase 2g: upstream interpolates effnet to the
+        // embedding spatial with BILINEAR (align_corners=True) BEFORE
+        // the effnet_mapper, then adds. v0.40's nearest approximation
+        // was a measurable error (down_lvl0 diverged 12.4 on a ±34
+        // range in the phase-2g reference dump).
         if let Some(eff) = effnet {
             let (_, _, hh, hw) = h.dims4()?;
             let (_, _, eh, ew) = eff.dims4()?;
             let eff_aligned = if (eh, ew) != (hh, hw) {
-                eff.upsample_nearest2d(hh, hw)?
+                eff.upsample_bilinear2d(hh, hw, true)?
             } else {
                 eff.clone()
             };
             h = h.add(&self.apply_effnet_mapper(&eff_aligned)?)?;
         }
-        if let Some(px) = pixels {
-            let (_, _, hh, hw) = h.dims4()?;
-            let (_, _, ph, pw) = px.dims4()?;
-            let px_aligned = if (ph, pw) != (hh, hw) {
-                px.upsample_nearest2d(hh, hw)?
-            } else {
-                px.clone()
+        // Pixels path: upstream ALWAYS applies pixels_mapper when the
+        // module exists (Stage B), defaulting `pixels` to
+        // `zeros(B, 3, 8, 8)` when not supplied — and pixels_mapper's
+        // conv biases + final LayerNorm make that a non-zero learned
+        // constant, NOT a no-op. v0.41 phase 2g: skipping it when
+        // pixels=None left every Stage B forward missing this additive
+        // term (rb_in diverged 5.87 from emb in the reference dump).
+        // Interpolate AFTER the mapper (unlike effnet, before).
+        if self.pixels_mapper.is_some() {
+            let (b, _, hh, hw) = h.dims4()?;
+            let px_owned;
+            let px = match pixels {
+                Some(p) => p,
+                None => {
+                    px_owned = Tensor::zeros((b, 3, 8, 8), h.dtype(), h.device())?;
+                    &px_owned
+                }
             };
-            h = h.add(&self.apply_pixels_mapper(&px_aligned)?)?;
+            let mapped = self.apply_pixels_mapper(px)?;
+            let (_, _, ph, pw) = mapped.dims4()?;
+            let mapped_aligned = if (ph, pw) != (hh, hw) {
+                mapped.upsample_bilinear2d(hh, hw, true)?
+            } else {
+                mapped
+            };
+            h = h.add(&mapped_aligned)?;
         }
 
         // ---- Compute CN injection positions ----
@@ -1008,7 +1068,7 @@ impl StableCascadePrior {
             if i > 0 {
                 h = self.down_downscalers[i - 1].forward(&h)?;
             }
-            for block in blocks {
+            for block in blocks.iter() {
                 h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
                 if let Some(residuals) = cn_residuals {
                     if residual_idx < injection_positions.len()
@@ -1053,13 +1113,36 @@ impl StableCascadePrior {
             } else {
                 None
             };
-            for (b_idx, block) in blocks.iter().enumerate() {
-                // Only the first block in the level (b_idx==0) consumes
-                // the skip; later blocks don't.
-                let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
-                h = block.forward_maybe_skip(
-                    &h, block_skip, t_emb, sca_emb, crp_emb, clip,
-                )?;
+            // v0.41 phase 2g: run the level's block group
+            // (up_blocks_repeat_mappers[i]) times, applying the 1×1
+            // repeat mapper between iterations. Stage C has 0 mappers
+            // (runs once); Stage B has [3,3,2,2]. The skip is consumed
+            // by the FIRST ResBlock on EVERY repeat iteration.
+            let mappers = &self.up_repeat_mappers[i];
+            let n_repeats = mappers.len() + 1;
+            for rep in 0..n_repeats {
+                // Upstream `_up_decode` bilinearly resizes x to the
+                // skip's spatial when they mismatch
+                // (`F.interpolate(..., bilinear, align_corners=True)`).
+                // Stage B's strided down floors odd dims (6→3→1) while
+                // the strided up doubles exactly (1→2), so x (2×2) and
+                // the skip (3×3) disagree at the deep levels.
+                if let Some(skip) = skip_for_level.as_ref() {
+                    let (_, _, sh, sw) = skip.dims4()?;
+                    let (_, _, hh, hw) = h.dims4()?;
+                    if (hh, hw) != (sh, sw) {
+                        h = h.upsample_bilinear2d(sh, sw, true)?;
+                    }
+                }
+                for (b_idx, block) in blocks.iter().enumerate() {
+                    let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
+                    h = block.forward_maybe_skip(
+                        &h, block_skip, t_emb, sca_emb, crp_emb, clip,
+                    )?;
+                }
+                if rep < mappers.len() {
+                    h = mappers[rep].forward(&h)?;
+                }
             }
             if let Some(d) = dump.as_deref_mut() {
                 d.push((format!("up_lvl{i}"), h.clone()));
@@ -1241,6 +1324,7 @@ mod tests {
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
             switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -1267,6 +1351,7 @@ mod tests {
             pixels_input_channels: Some(3),
             sampler_style: SamplerStyle::Strided,
             switch_level: vec![true],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -1748,6 +1833,7 @@ mod tests {
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
             switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         };
         let device = Device::Cpu;
         let varmap = VarMap::new();
@@ -1874,7 +1960,7 @@ mod tests {
 
         // ---- 3. Forward with REFERENCE conditioning (isolates the body) ----
         let (out, dump) = prior
-            .forward_collect(&latents, &t_emb, Some(&zero_emb), Some(&zero_emb), ref_clip)
+            .forward_collect(&latents, &t_emb, Some(&zero_emb), Some(&zero_emb), ref_clip, None, None)
             .expect("forward_collect");
 
         for (name, tens) in &dump {
@@ -1897,6 +1983,91 @@ mod tests {
         }
         let final_diff = max_abs_diff(&out, get("out_final"));
         eprintln!("[ref] out_final max_abs_diff={final_diff:.5}");
+    }
+
+    /// v0.41 phase 2g: Stage B (decoder) reference comparison. Loads
+    /// `/tmp/cascade_ref_b.safetensors` (from tools/cascade_ref_dump_b.py)
+    /// and diffs our Stage B forward against diffusers. The decoder
+    /// `sample` is 4-channel and patchified internally; our bridge
+    /// pre-unshuffles, so we feed `pixel_unshuffle(2, in_latents)`.
+    #[test]
+    fn stage_b_matches_diffusers_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from(
+            std::env::var("CASCADE_REF_B").unwrap_or_else(|_| "/tmp/cascade_ref_b.safetensors".into())
+        );
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref_b.safetensors not found (run tools/cascade_ref_dump_b.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir)
+            .join("decoder/diffusion_pytorch_model.safetensors");
+        if !weights.exists() {
+            eprintln!("Skipping: {} not found", weights.display());
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device)
+            .expect("load reference dump");
+        let get = |k: &str| refs.get(k).unwrap_or_else(|| panic!("ref missing {k}"));
+
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap stage_b weights")
+        };
+        let prior = StableCascadePrior::new_stage_b(Config::stage_b_full(), vb)
+            .expect("new_stage_b");
+
+        // Decoder sample (4ch) -> our 16ch input via pixel_unshuffle(2).
+        let latents4 = get("in_latents").to_dtype(DType::F32).unwrap();
+        let latents = crate::pipelines::cascade_vae::pixel_unshuffle(&latents4, 2).unwrap();
+        let effnet = refs.get("in_effnet").map(|t| t.to_dtype(DType::F32).unwrap());
+        let clip_pooled = get("in_clip_text_pooled")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap();
+
+        let max_abs_diff = |a: &Tensor, b: &Tensor| -> f32 {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+
+        // Conditioning (pooled-only path).
+        let dummy_text = Tensor::zeros((1, 1, 1), DType::F32, &device).unwrap();
+        let our_clip = prior
+            .build_clip_conditioning(&dummy_text, &clip_pooled, None)
+            .expect("build_clip_conditioning");
+        eprintln!(
+            "[refB] clip_cond ours={:?} ref={:?}  max_abs_diff={:.5}",
+            our_clip.dims(), get("clip_cond").dims(),
+            max_abs_diff(&our_clip, get("clip_cond"))
+        );
+
+        let t = Tensor::new(&[0.5f32], &device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t, 64, 10000.0).unwrap();
+        let zero = Tensor::zeros(1, DType::F32, &device).unwrap();
+        let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0).unwrap();
+
+        // Feed reference conditioning to isolate the body.
+        let (_out, dump) = prior
+            .forward_collect(&latents, &t_emb, Some(&zero_emb), None, get("clip_cond"), effnet.as_ref(), None)
+            .expect("forward_collect");
+
+        for (name, tens) in &dump {
+            if let Some(r) = refs.get(name) {
+                if tens.dims() != r.dims() {
+                    eprintln!("[refB] {name:10} SHAPE MISMATCH ours={:?} ref={:?}", tens.dims(), r.dims());
+                    continue;
+                }
+                eprintln!(
+                    "[refB] {name:10} shape={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
+                    tens.dims(), max_abs_diff(tens, r),
+                    r.min_all().unwrap().to_scalar::<f32>().unwrap(),
+                    r.max_all().unwrap().to_scalar::<f32>().unwrap(),
+                );
+            }
+        }
     }
 
     /// v0.40 phase 3: real-weight smoke for Stage B. Stage B lives in
@@ -1965,6 +2136,7 @@ mod tests {
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
             switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         };
         let (prior, _) = random_prior_c(cfg);
         let positions = prior.cn_injection_positions(8);
