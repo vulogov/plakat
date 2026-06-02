@@ -3489,6 +3489,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             // SD3 → SD/Flux for non-Cascade tasks.
             if let Some(cp) = cascade_pipeline.as_mut() {
                 use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
+                // Same square / divisible-by-8 contract as t2i::run.
+                // Stage C's prior is fixed at 24×24×16; the pipeline
+                // can only produce square output, so non-square sizes
+                // are a hard error.
+                anyhow::ensure!(
+                    eff_w == eff_h,
+                    "Stable Cascade output is square; task size is {}x{}.",
+                    eff_w,
+                    eff_h
+                );
+                anyhow::ensure!(
+                    eff_w % 8 == 0,
+                    "Stable Cascade output dim must be divisible by 8; got {}.",
+                    eff_w
+                );
+                let cascade_output_dim = eff_w as u32;
                 let stage_c_steps = (eff_steps * 2).div_ceil(3).max(1);
                 let stage_b_steps = eff_steps.saturating_sub(stage_c_steps).max(1);
                 // v0.38 phase 3: scenario-level Cascade LoRA stack
@@ -3502,6 +3518,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     let (buf, ow, oh) = cp.generate(
                         &final_prompt,
                         &eff_negative,
+                        cascade_output_dim,
                         stage_c_steps,
                         stage_b_steps,
                         eff_guidance,
