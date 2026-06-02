@@ -208,7 +208,7 @@ impl PaellaResBlock {
         // ---- Depthwise residual path ----
         let x_norm = self.norm.forward(x)?;
         let x_temp = x_norm.affine(1.0 + m0, m1)?;
-        let x_pad = reflection_pad2d_1(&x_temp)?;
+        let x_pad = replication_pad2d_1(&x_temp)?;
         let dw = self.depthwise.forward(&x_pad)?;
         let x = x.add(&dw.affine(m2, 0.0)?)?;
 
@@ -218,7 +218,8 @@ impl PaellaResBlock {
         // Permute (B, C, H, W) → (B, H, W, C) for the MLP.
         let h = x_temp.permute((0, 2, 3, 1))?.contiguous()?;
         let h = self.channelwise_0.forward(&h)?;
-        let h = h.gelu()?;
+        // Upstream nn.GELU() is the exact erf form.
+        let h = h.gelu_erf()?;
         let h = self.channelwise_2.forward(&h)?;
         let mlp = h.permute((0, 3, 1, 2))?.contiguous()?;
         let x = x.add(&mlp.affine(m5, 0.0)?)?;
@@ -227,34 +228,26 @@ impl PaellaResBlock {
     }
 }
 
-/// Reflection padding by 1 on the spatial dims of a 4-D `(B, C, H, W)`
-/// tensor. Equivalent to PyTorch `nn.ReflectionPad2d(1)`.
+/// Replication (edge-clamp) padding by 1 on the spatial dims of a 4-D
+/// `(B, C, H, W)` tensor. Matches PyTorch `nn.ReplicationPad2d(1)`,
+/// which is what upstream Paella `MixingResidualBlock.depthwise`
+/// uses — NOT reflection. v0.41 phase 2h: the v0.39/2a reflection
+/// approximation (mirror the second-from-edge row) produced a visible
+/// grid/mesh artifact in flat regions of the decoded image; the
+/// reference dump pinned the Stage A decode divergence to this.
 ///
-/// Reflection pad with width 1 mirrors the second-from-edge row/col
-/// outward: input row `1` becomes output row `0`, input row `H-2`
-/// becomes output row `H+1`. The edge row itself (`0`, `H-1`) stays
-/// at position 1, H. Equivalently the output is the cat
-/// `[row 1, x[0..H], row H-2]` along H then the same trick on W.
-///
-/// Requires `H ≥ 2` and `W ≥ 2`. Stage A spatial dims are always at
-/// least the latent resolution H/4 ≥ 2 for any sensible image size.
-fn reflection_pad2d_1(x: &Tensor) -> Result<Tensor> {
+/// Replication repeats the EDGE row/col: input row `0` → output rows
+/// `0` and `1`; input row `H-1` → output rows `H` and `H+1`. candle's
+/// `pad_with_same` implements exactly this.
+fn replication_pad2d_1(x: &Tensor) -> Result<Tensor> {
     let (_b, _c, h, w) = x.dims4()?;
     anyhow::ensure!(
-        h >= 2 && w >= 2,
-        "reflection_pad2d_1: input must be ≥2×2 (got {h}×{w})"
+        h >= 1 && w >= 1,
+        "replication_pad2d_1: input must be ≥1×1 (got {h}×{w})"
     );
-    // The slice views are non-contiguous in memory; candle's Metal
-    // cat kernel needs contiguous inputs for the strided-source
-    // dim, so `.contiguous()` is required before cat. CPU cat is
-    // permissive and worked without it during v0.41 phase 2a CPU
-    // unit tests, masking the issue until the first Metal run.
-    let top = x.i((.., .., 1..2, ..))?.contiguous()?;
-    let bottom = x.i((.., .., h - 2..h - 1, ..))?.contiguous()?;
-    let h_padded = Tensor::cat(&[&top, x, &bottom], 2)?;
-    let left = h_padded.i((.., .., .., 1..2))?.contiguous()?;
-    let right = h_padded.i((.., .., .., w - 2..w - 1))?.contiguous()?;
-    Tensor::cat(&[&left, &h_padded, &right], 3).map_err(|e| e.into())
+    x.pad_with_same(2, 1, 1)?
+        .pad_with_same(3, 1, 1)
+        .map_err(|e| e.into())
 }
 
 // ---------------------------------------------------------------------
@@ -541,6 +534,22 @@ impl StageAVae {
         let x = self.out_conv.forward(&x)?;
         // PixelShuffle reverses PixelUnshuffle.
         pixel_shuffle(&x, self.cfg.pixel_unshuffle)
+    }
+
+    /// v0.41 phase 2h: decode that also returns the post-up_blocks
+    /// tensor (before out_block) for reference comparison. Test-only.
+    #[cfg(test)]
+    pub fn decode_collect(&self, z: &Tensor) -> Result<(Tensor, Tensor)> {
+        let x = self.dec_in_conv.forward(z)?;
+        let mut x = x;
+        for block in &self.dec_res_deep {
+            x = block.forward(&x)?;
+        }
+        let x = self.dec_up.forward(&x)?;
+        let up_blocks_out = self.dec_res_shallow.forward(&x)?;
+        let x = self.out_conv.forward(&up_blocks_out)?;
+        let img = pixel_shuffle(&x, self.cfg.pixel_unshuffle)?;
+        Ok((img, up_blocks_out))
     }
 
     /// Round-trip: image → encode → quantize → decode → image.
@@ -870,10 +879,10 @@ mod tests {
     }
 
     #[test]
-    fn reflection_pad2d_1_mirrors_second_from_edge() {
-        // Spec: input row 1 → output row 0, input row H-2 → output
-        // row H+1. Same for columns. Construct a 1×1×4×4 input with
-        // distinct values so we can read off the reflection.
+    fn replication_pad2d_1_replicates_edge() {
+        // Spec (ReplicationPad2d(1)): the EDGE row/col is repeated.
+        // Input row 0 → output rows 0 AND 1; input row H-1 → output
+        // rows H AND H+1. Same for columns.
         let device = Device::Cpu;
         // Values 0..16 reshaped (1, 1, 4, 4):
         //   0  1  2  3
@@ -882,9 +891,8 @@ mod tests {
         //  12 13 14 15
         let flat: Vec<f32> = (0..16).map(|v| v as f32).collect();
         let x = Tensor::from_vec(flat, (1, 1, 4, 4), &device).unwrap();
-        let y = reflection_pad2d_1(&x).unwrap();
+        let y = replication_pad2d_1(&x).unwrap();
         assert_eq!(y.dims(), &[1, 1, 6, 6]);
-        // Extract the padded grid.
         let g = y
             .squeeze(0)
             .unwrap()
@@ -892,15 +900,13 @@ mod tests {
             .unwrap()
             .to_vec2::<f32>()
             .unwrap();
-        // Row 0 of output = row 1 of input.
-        assert_eq!(g[0], vec![5.0, 4.0, 5.0, 6.0, 7.0, 6.0]);
-        // Row 5 of output = row 2 of input (H-2 = 4-2 = 2).
-        assert_eq!(g[5], vec![9.0, 8.0, 9.0, 10.0, 11.0, 10.0]);
-        // Middle rows: input rows 0..4 sit at output rows 1..5,
-        // with columns reflected: col 0 of output = col 1 of input,
-        // col 5 of output = col 2 of input.
-        assert_eq!(g[1], vec![1.0, 0.0, 1.0, 2.0, 3.0, 2.0]);
-        assert_eq!(g[4], vec![13.0, 12.0, 13.0, 14.0, 15.0, 14.0]);
+        // Row 0 of output = row 0 of input (edge replicated), with
+        // col 0 replicated too: [0,0,1,2,3,3].
+        assert_eq!(g[0], vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0]);
+        // Row 1 of output = row 0 of input (same): [0,0,1,2,3,3].
+        assert_eq!(g[1], vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0]);
+        // Row 5 (last) = row 3 of input: [12,12,13,14,15,15].
+        assert_eq!(g[5], vec![12.0, 12.0, 13.0, 14.0, 15.0, 15.0]);
     }
 
     // ---- VectorQuantizer ----
@@ -1019,6 +1025,53 @@ mod tests {
                  mismatch between v0.39 cascade_vae and upstream:\n  {e}"
             ),
         }
+    }
+
+    /// v0.41 phase 2h: Stage A DECODE reference comparison vs diffusers
+    /// PaellaVQModel. Loads `/tmp/cascade_ref_a.safetensors` (from
+    /// tools/cascade_ref_dump_a.py), feeds the same latent through our
+    /// decode, diffs out_image + up_blocks_out.
+    #[test]
+    fn stage_a_decode_matches_diffusers_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from("/tmp/cascade_ref_a.safetensors");
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref_a.safetensors not found (run tools/cascade_ref_dump_a.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir)
+            .join("vqgan/diffusion_pytorch_model.safetensors");
+        if !weights.exists() {
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device).expect("load ref");
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap")
+        };
+        let vae = StageAVae::new(Config::paella_v3(), vb).expect("new");
+        let latent = refs.get("in_latent").unwrap().to_dtype(DType::F32).unwrap();
+        // Upstream: vq.decode(scale_factor * latent). Our decode() does
+        // NOT apply scale_factor (that lives in decode_from_stage_b_space).
+        let scaled = (latent * 0.3764).unwrap();
+        let (img, up_out) = vae.decode_collect(&scaled).unwrap();
+        let mad = |a: &Tensor, b: &Tensor| {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+        eprintln!(
+            "[refA] up_blocks_out ours={:?} ref={:?}  max_abs_diff={:.5}",
+            up_out.dims(), refs.get("up_blocks_out").unwrap().dims(),
+            mad(&up_out, refs.get("up_blocks_out").unwrap())
+        );
+        eprintln!(
+            "[refA] out_image ours={:?} ref={:?}  max_abs_diff={:.5}",
+            img.dims(), refs.get("out_image").unwrap().dims(),
+            mad(&img, refs.get("out_image").unwrap())
+        );
     }
 
     // ---- v0.40 phase 0: Stage A ↔ Stage B bridge ----
