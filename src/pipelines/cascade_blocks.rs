@@ -69,12 +69,20 @@ impl LayerNorm2d {
             "LayerNorm2d: channel mismatch (got {c}, expected {})",
             self.channels
         );
-        // mean / var across the channel axis at each (B, H, W) site.
-        let mean = x.mean_keepdim(1)?;
-        let x_centered = x.broadcast_sub(&mean)?;
+        // F16 NaN avoidance: `x.sqr()` overflows F16 once any element
+        // exceeds 256 (256² > 65504, the F16 ceiling). The Stage C
+        // embedding_conv at c_hidden=2048 produces exactly that kind
+        // of magnitude after a 16→2048 projection. Compute the
+        // normalization in F32, then cast back to the input dtype.
+        // CPU F32 path is unaffected (the cast is a no-op).
+        let in_dtype = x.dtype();
+        let x32 = x.to_dtype(candle_core::DType::F32)?;
+        let mean = x32.mean_keepdim(1)?;
+        let x_centered = x32.broadcast_sub(&mean)?;
         let var = x_centered.sqr()?.mean_keepdim(1)?;
         let denom = var.affine(1.0, self.eps)?.sqrt()?;
-        Ok(x_centered.broadcast_div(&denom)?)
+        let normed = x_centered.broadcast_div(&denom)?;
+        normed.to_dtype(in_dtype).map_err(|e| e.into())
     }
 }
 
