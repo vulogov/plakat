@@ -1082,15 +1082,41 @@ pub fn sinusoidal_time_embedding(
     c_cond: usize,
     max_positions: f64,
 ) -> Result<Tensor> {
+    // v0.41 phase 2d: match diffusers' `gen_r_embedding` / Wuerstchen
+    // `get_timestep_ratio_embedding` exactly. Three corrections vs
+    // v0.39's first-draft form:
+    //
+    // 1. **Scale the input by max_positions**: upstream does
+    //    `r = timestep_ratio * max_positions` so r lives in [0, 10000]
+    //    not [0, 1]. The model learned to read time from the
+    //    high-frequency wraps of sin(10000*t) etc. — at [0, 1] the
+    //    embedding is just smooth low-magnitude noise that carries
+    //    no per-step signal.
+    // 2. **Divisor is `half_dim - 1`**, not `half_dim`. This makes
+    //    freq[0] = max_positions^0 = 1 (lowest frequency) and
+    //    freq[half-1] = max_positions^(-1) (highest frequency)
+    //    exactly cover the trained range.
+    // 3. **Sin THEN cos** — `cat([sin, cos], -1)`. The downstream
+    //    Linear mapper learned weights for this column order; even
+    //    a perfectly numerical embedding with the columns flipped
+    //    is permuted nonsense.
+    //
+    // Caught at v0.41 phase 2b when the Metal end-to-end run
+    // produced visual noise even after the BF16 fix made the
+    // numerics finite — the model couldn't denoise because the
+    // time signal was meaningless.
     let device = t.device();
     let half = c_cond / 2;
+    debug_assert!(half >= 2, "sinusoidal_time_embedding needs c_cond >= 4");
+    let denom = (half - 1) as f64;
+    let freq_log = max_positions.ln() / denom;
     let freqs: Vec<f32> = (0..half)
-        .map(|i| (-(max_positions.ln()) * (i as f64) / (half as f64)).exp() as f32)
+        .map(|i| (-freq_log * (i as f64)).exp() as f32)
         .collect();
     let freqs = Tensor::from_vec(freqs, half, device)?;
-    let t_f32 = t.to_dtype(DType::F32)?;
-    let args = t_f32.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
-    Tensor::cat(&[args.cos()?, args.sin()?], D::Minus1).map_err(|e| e.into())
+    let r = t.to_dtype(DType::F32)?.affine(max_positions, 0.0)?;
+    let args = r.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
+    Tensor::cat(&[args.sin()?, args.cos()?], D::Minus1).map_err(|e| e.into())
 }
 
 // =====================================================================
@@ -1243,6 +1269,56 @@ mod tests {
             .to_scalar::<f32>()
             .unwrap();
         assert!(diff > 1e-3, "embedding must depend on time (got {diff})");
+    }
+
+    #[test]
+    fn sinusoidal_time_embedding_matches_diffusers_gen_r_embedding() {
+        // v0.41 phase 2d regression guard: hand-compute the upstream
+        // formula in Rust and assert our embedding agrees element-
+        // wise. The form is:
+        //     r = t * max_positions
+        //     freq[i] = exp(-log(max_positions)/(half-1) * i)
+        //     args[i] = r * freq[i]
+        //     emb = cat([sin(args), cos(args)], -1)
+        // If a future refactor drops the max_positions scaling, the
+        // wrong divisor, or the wrong sin/cos column order, this
+        // test bites — those exact regressions are what produced
+        // pure noise output in v0.41 phase 2b.
+        let device = Device::Cpu;
+        let half = 32usize;
+        let c_cond = 2 * half;
+        let max_positions = 10000.0f64;
+        let t_val = 0.5f64;
+
+        let denom = (half - 1) as f64;
+        let freq_log = max_positions.ln() / denom;
+        let mut expected = Vec::with_capacity(c_cond);
+        let r = t_val * max_positions;
+        let args: Vec<f64> = (0..half)
+            .map(|i| r * (-freq_log * i as f64).exp())
+            .collect();
+        for &a in &args {
+            expected.push(a.sin() as f32);
+        }
+        for &a in &args {
+            expected.push(a.cos() as f32);
+        }
+
+        let t = Tensor::new(&[t_val as f32], &device).unwrap();
+        let emb = sinusoidal_time_embedding(&t, c_cond, max_positions).unwrap();
+        assert_eq!(emb.dims(), &[1, c_cond]);
+        let got: Vec<f32> = emb.squeeze(0).unwrap().to_vec1().unwrap();
+
+        // Tolerance is loose (1e-3) because our internal math is F32
+        // while the comparison expectation is F64 — at args ≈ 5000
+        // the trig functions amplify F32 rounding to mid-1e-4.
+        for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-3,
+                "col {i}: got {g}, expected {e}, |diff|={}",
+                (g - e).abs()
+            );
+        }
     }
 
     #[test]
