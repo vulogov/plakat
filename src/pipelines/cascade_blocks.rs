@@ -255,7 +255,12 @@ impl ResBlock {
             h
         };
         let h = self.channelwise_0.forward(&h)?;
-        let h = h.gelu()?;
+        // v0.41 phase 2g: PyTorch nn.GELU() defaults to the exact
+        // erf form; candle's .gelu() is the tanh approximation. The
+        // mismatch was small for Stage C (large activations sit where
+        // tanh≈erf) but corrupted Stage B's level-0 blocks (down_lvl0
+        // diverged 23 on a ±34 range in the reference dump).
+        let h = h.gelu_erf()?;
         let h = self.grn.forward(&h)?;
         let h = self.channelwise_4.forward(&h)?;
         // Back to channel-first.
