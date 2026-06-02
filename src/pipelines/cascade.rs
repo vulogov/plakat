@@ -635,8 +635,13 @@ impl Pipeline {
 
         // ---- Stage A decode via Stage B → image ----
         let s = progress::spinner("Stage A decode → image");
+        // v0.41 phase 2e: the Paella VQ decoder already outputs in
+        // [0, 1] (upstream does `vqgan.decode(...).sample.clamp(0,
+        // 1)`). v0.40's extra `(decoded / 2 + 0.5)` denorm — copied
+        // from the SD [-1,1] convention — double-shifted the image.
+        // Just clamp.
         let decoded = self.stage_a.decode_from_stage_b_space(&latent_b)?;
-        let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = decoded.clamp(0f32, 1f32)?;
         let image = (image * 255.0)?
             .to_dtype(DType::U8)?
             .i(0)?
