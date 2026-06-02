@@ -132,6 +132,13 @@ pub struct Config {
     /// 1×1 conv + parameterless interp; Stage B uses 2×2 stride 2
     /// (Conv2d for down, ConvTranspose2d for up).
     pub sampler_style: SamplerStyle,
+    /// Upstream `switch_level` — one bool per level transition
+    /// (length = num_levels - 1). When false, the OnePixel sampler's
+    /// interpolation slot is Identity (spatial preserved); when true,
+    /// it resamples 2×/0.5×. Stage C is `[false]` (its 2 levels are
+    /// both 24×24). Ignored by the Strided style (Stage B), whose
+    /// strided convs always resample.
+    pub switch_level: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +175,7 @@ impl Config {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
         }
     }
 
@@ -191,6 +199,8 @@ impl Config {
             effnet_input_channels: Some(16),
             pixels_input_channels: Some(3),
             sampler_style: SamplerStyle::Strided,
+            // 4 levels → 3 transitions. Strided ignores these.
+            switch_level: vec![true, true, true],
         }
     }
 
@@ -227,6 +237,12 @@ pub enum UpDownBlock {
         norm: LayerNorm2d,
         conv: nn::Conv2d,
         mode: SampleMode,
+        /// `switch_level` flag — when false (Stage C's only transition),
+        /// the interpolation slot is `nn.Identity` and spatial
+        /// resolution is preserved; the block is just norm + 1×1 conv.
+        /// When true, bilinear 2×/0.5× resampling (upstream uses
+        /// bilinear, align_corners=True).
+        enabled: bool,
     },
     StridedDown {
         norm: LayerNorm2d,
@@ -244,6 +260,7 @@ impl UpDownBlock {
     pub fn new_one_pixel(
         channels: usize,
         mode: SampleMode,
+        enabled: bool,
         vb: VarBuilder,
     ) -> Result<Self> {
         let norm = LayerNorm2d::new(channels, 1e-6);
@@ -259,7 +276,7 @@ impl UpDownBlock {
             vb.pp("1").pp("blocks").pp(block_idx),
         )
         .map_err(|e| anyhow!("UpDownBlock::OnePixel conv: {e}"))?;
-        Ok(Self::OnePixel { norm, conv, mode })
+        Ok(Self::OnePixel { norm, conv, mode, enabled })
     }
 
     /// Construct a Strided down-sampler (Stage B). 2×2 stride 2
@@ -310,14 +327,24 @@ impl UpDownBlock {
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
-            UpDownBlock::OnePixel { norm, conv, mode } => {
+            UpDownBlock::OnePixel { norm, conv, mode, enabled } => {
                 let x = norm.forward(x)?;
+                // Upstream UpDownBlock2d: down = [conv, interp],
+                // up = [interp, conv]. When `enabled` is false the
+                // interp slot is Identity (no spatial change).
                 match mode {
-                    SampleMode::Down => Ok(conv.forward(&x)?.avg_pool2d(2)?),
+                    SampleMode::Down => {
+                        let x = conv.forward(&x)?;
+                        if *enabled { Ok(x.avg_pool2d(2)?) } else { Ok(x) }
+                    }
                     SampleMode::Up => {
-                        let (_b, _c, h, w) = x.dims4()?;
-                        let up = x.upsample_nearest2d(h * 2, w * 2)?;
-                        Ok(conv.forward(&up)?)
+                        if *enabled {
+                            let (_b, _c, h, w) = x.dims4()?;
+                            let up = x.upsample_nearest2d(h * 2, w * 2)?;
+                            Ok(conv.forward(&up)?)
+                        } else {
+                            Ok(conv.forward(&x)?)
+                        }
                     }
                 }
             }
@@ -574,7 +601,12 @@ impl StableCascadePrior {
                         in_c == out_c,
                         "OnePixel downscaler requires in==out (got {in_c}/{out_c})"
                     );
-                    UpDownBlock::new_one_pixel(in_c, SampleMode::Down, sub_vb)?
+                    UpDownBlock::new_one_pixel(
+                        in_c,
+                        SampleMode::Down,
+                        cfg.switch_level[i - 1],
+                        sub_vb,
+                    )?
                 }
                 SamplerStyle::Strided => UpDownBlock::new_strided_down(in_c, out_c, sub_vb)?,
             };
@@ -622,7 +654,11 @@ impl StableCascadePrior {
                         in_c == out_c,
                         "OnePixel upscaler requires in==out (got {in_c}/{out_c})"
                     );
-                    UpDownBlock::new_one_pixel(in_c, SampleMode::Up, sub_vb)?
+                    // Up path mirrors the down transitions in reverse:
+                    // up-index i corresponds to down transition
+                    // (num_levels - 2 - i).
+                    let enabled = cfg.switch_level[num_levels - 2 - i];
+                    UpDownBlock::new_one_pixel(in_c, SampleMode::Up, enabled, sub_vb)?
                 }
                 SamplerStyle::Strided => UpDownBlock::new_strided_up(in_c, out_c, sub_vb)?,
             };
@@ -715,7 +751,9 @@ impl StableCascadePrior {
 
         // Stage B path: pooled-only KV stream at c_hidden=c_pooled_token.
         let Some(text_mapper) = &self.clip_txt_mapper else {
-            return Ok(pooled_text);
+            // v0.41 phase 2f: upstream applies clip_norm in BOTH the
+            // pooled-only (Stage B) and concat (Stage C) return paths.
+            return layer_norm_last_dim(&pooled_text, 1e-6);
         };
 
         // Stage C path: cat(text, pooled_text, pooled_img).
@@ -735,7 +773,15 @@ impl StableCascadePrior {
                 &self.device,
             )?
         };
-        Tensor::cat(&[&text, &pooled_text, &pooled_img], 1).map_err(|e| e.into())
+        let clip = Tensor::cat(&[&text, &pooled_text, &pooled_img], 1)?;
+        // v0.41 phase 2f: the missing final LayerNorm. Upstream
+        // `get_clip_embeddings` ends `return self.clip_norm(clip)` —
+        // `nn.LayerNorm(conditioning_dim, elementwise_affine=False,
+        // eps=1e-6)` over the conditioning dim. Without it the KV
+        // stream fed to every AttnBlock is unnormalised (off by ~80×
+        // in magnitude per the phase-2f reference dump), so attention
+        // produces garbage and the prior can't denoise.
+        layer_norm_last_dim(&clip, 1e-6)
     }
 
     /// Build a zero KV stream of the right shape for an AttnBlock at
@@ -815,8 +861,27 @@ impl StableCascadePrior {
         pixels: Option<&Tensor>,
     ) -> Result<Tensor> {
         self.forward_inner(
-            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0,
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0, None,
         )
+    }
+
+    /// v0.41 phase 2f: forward that also collects named intermediate
+    /// activations (emb, per-down-level, per-up-level, clf) for
+    /// reference comparison against the diffusers dump. Test-only.
+    #[cfg(test)]
+    pub fn forward_collect(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+    ) -> Result<(Tensor, Vec<(String, Tensor)>)> {
+        let mut dump: Vec<(String, Tensor)> = Vec::new();
+        let out = self.forward_inner(
+            x, t_emb, sca_emb, crp_emb, clip, None, None, None, 0.0, Some(&mut dump),
+        )?;
+        Ok((out, dump))
     }
 
     /// v0.40 phase 1: forward pass with ControlNet residual injection
@@ -870,6 +935,7 @@ impl StableCascadePrior {
             None,
             Some(cn_residuals),
             cn_scale,
+            None,
         )
     }
 
@@ -885,10 +951,14 @@ impl StableCascadePrior {
         pixels: Option<&Tensor>,
         cn_residuals: Option<&[Tensor]>,
         cn_scale: f32,
+        mut dump: Option<&mut Vec<(String, Tensor)>>,
     ) -> Result<Tensor> {
         // ---- Input embedding ----
         let mut h = self.embedding_conv.forward(x)?;
         h = self.embedding_norm.forward(&h)?;
+        if let Some(d) = dump.as_deref_mut() {
+            d.push(("emb".to_string(), h.clone()));
+        }
         // v0.40 phase 4 iter 1: spatially align effnet (Stage C output
         // is fixed at 24×24) to Stage B's embedding spatial via
         // nearest upsample BEFORE feeding to the apply_effnet_mapper
@@ -960,6 +1030,9 @@ impl StableCascadePrior {
                 global_pos += 1;
             }
             level_outputs.push(h.clone());
+            if let Some(d) = dump.as_deref_mut() {
+                d.push((format!("down_lvl{i}"), h.clone()));
+            }
         }
 
         // ---- Up path: start from the deepest level output ----
@@ -988,11 +1061,18 @@ impl StableCascadePrior {
                     &h, block_skip, t_emb, sca_emb, crp_emb, clip,
                 )?;
             }
+            if let Some(d) = dump.as_deref_mut() {
+                d.push((format!("up_lvl{i}"), h.clone()));
+            }
         }
 
         // ---- Output classifier ----
         let h = self.clf_norm.forward(&h)?;
-        Ok(self.clf_conv.forward(&h)?)
+        let out = self.clf_conv.forward(&h)?;
+        if let Some(d) = dump.as_deref_mut() {
+            d.push(("clf".to_string(), out.clone()));
+        }
+        Ok(out)
     }
 
     /// v0.40 phase 1: compute the injection position list for a given
@@ -1077,6 +1157,17 @@ fn build_block_levels(
 /// Sinusoidal positional encoding for a `(B,)` timestep tensor.
 /// Returns `(B, c_cond)` — matches the upstream `gen_r_embedding`
 /// using `c_cond=64`. Pure math, no learnable params.
+/// Functional LayerNorm over the last dim with no affine params,
+/// matching upstream `nn.LayerNorm(dim, elementwise_affine=False)`.
+/// Used by `build_clip_conditioning` for the final `clip_norm`.
+fn layer_norm_last_dim(x: &Tensor, eps: f64) -> Result<Tensor> {
+    let mean = x.mean_keepdim(D::Minus1)?;
+    let xc = x.broadcast_sub(&mean)?;
+    let var = xc.sqr()?.mean_keepdim(D::Minus1)?;
+    let denom = var.affine(1.0, eps)?.sqrt()?;
+    xc.broadcast_div(&denom).map_err(|e| e.into())
+}
+
 pub fn sinusoidal_time_embedding(
     t: &Tensor,
     c_cond: usize,
@@ -1149,6 +1240,7 @@ mod tests {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
         }
     }
 
@@ -1174,6 +1266,7 @@ mod tests {
             effnet_input_channels: Some(4),
             pixels_input_channels: Some(3),
             sampler_style: SamplerStyle::Strided,
+            switch_level: vec![true],
         }
     }
 
@@ -1326,7 +1419,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Down, vb).unwrap();
+        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Down, true, vb).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 8, 16, 16), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 8, 8, 8]);
@@ -1337,7 +1430,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Up, vb).unwrap();
+        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Up, true, vb).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 8, 4, 4), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 8, 8, 8]);
@@ -1654,6 +1747,7 @@ mod tests {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
         };
         let device = Device::Cpu;
         let varmap = VarMap::new();
@@ -1710,6 +1804,99 @@ mod tests {
                  mismatch between v0.39 cascade_prior and upstream:\n  {e}"
             ),
         }
+    }
+
+    /// v0.41 phase 2f: reference-comparison harness. Loads the
+    /// diffusers Stage C dump (`/tmp/cascade_ref.safetensors` produced
+    /// by `tools/cascade_ref_dump.py`), feeds the IDENTICAL fixed
+    /// inputs through our `forward_collect`, and prints the per-dump-
+    /// point max-abs-diff so the first divergence localizes the bug.
+    ///
+    /// Skipped unless both `STABLE_CASCADE_WEIGHTS_DIR` is set AND
+    /// `/tmp/cascade_ref.safetensors` exists.
+    #[test]
+    fn stage_c_matches_diffusers_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from("/tmp/cascade_ref.safetensors");
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref.safetensors not found (run tools/cascade_ref_dump.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir)
+            .join("prior/diffusion_pytorch_model.safetensors");
+        if !weights.exists() {
+            eprintln!("Skipping: {} not found", weights.display());
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device)
+            .expect("load reference dump");
+        let get = |k: &str| refs.get(k).unwrap_or_else(|| panic!("ref missing {k}"));
+
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap stage_c weights")
+        };
+        let prior = StableCascadePrior::new_stage_c(Config::stage_c_full(), vb)
+            .expect("new_stage_c");
+
+        let latents = get("in_latents").to_dtype(DType::F32).unwrap();
+        let clip_text = get("in_clip_text").to_dtype(DType::F32).unwrap();
+        let clip_pooled = get("in_clip_text_pooled")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap(); // (B,1,1280) -> (B,1280)
+        let clip_img = get("in_clip_img")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap(); // (B,1,768) -> (B,768)
+
+        let max_abs_diff = |a: &Tensor, b: &Tensor| -> f32 {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+
+        // ---- 1. Conditioning comparison ----
+        let our_clip = prior
+            .build_clip_conditioning(&clip_text, &clip_pooled, Some(&clip_img))
+            .expect("build_clip_conditioning");
+        let ref_clip = get("clip_cond");
+        eprintln!(
+            "[ref] clip_cond shape ours={:?} ref={:?}  max_abs_diff={:.5}",
+            our_clip.dims(), ref_clip.dims(), max_abs_diff(&our_clip, ref_clip)
+        );
+
+        // ---- 2. Time embedding (t=0.5, c_cond=64) + zero-cond sca/crp ----
+        let t = Tensor::new(&[0.5f32], &device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t, 64, 10000.0).unwrap();
+        let zero = Tensor::zeros(1, DType::F32, &device).unwrap();
+        let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0).unwrap();
+
+        // ---- 3. Forward with REFERENCE conditioning (isolates the body) ----
+        let (out, dump) = prior
+            .forward_collect(&latents, &t_emb, Some(&zero_emb), Some(&zero_emb), ref_clip)
+            .expect("forward_collect");
+
+        for (name, tens) in &dump {
+            if let Some(r) = refs.get(name) {
+                if tens.dims() != r.dims() {
+                    eprintln!(
+                        "[ref] {name:10} SHAPE MISMATCH ours={:?} ref={:?}",
+                        tens.dims(), r.dims()
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "[ref] {name:10} shape={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
+                    tens.dims(),
+                    max_abs_diff(tens, r),
+                    r.min_all().unwrap().to_scalar::<f32>().unwrap(),
+                    r.max_all().unwrap().to_scalar::<f32>().unwrap(),
+                );
+            }
+        }
+        let final_diff = max_abs_diff(&out, get("out_final"));
+        eprintln!("[ref] out_final max_abs_diff={final_diff:.5}");
     }
 
     /// v0.40 phase 3: real-weight smoke for Stage B. Stage B lives in
@@ -1777,6 +1964,7 @@ mod tests {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
         };
         let (prior, _) = random_prior_c(cfg);
         let positions = prior.cn_injection_positions(8);
@@ -1800,12 +1988,14 @@ mod tests {
         // = 6 down positions. 2 residuals → positions 2, 5.
         let positions = prior.cn_injection_positions(2);
         assert_eq!(positions, vec![2, 5]);
-        // At position 2 (after first triple's Attn), latent is still
-        // at level 0 → c=16 (small cfg), spatial 8×8. At position 5
+        // At position 2 (after first triple's Attn), latent is at
+        // level 0 → c=16 (small cfg), spatial 8×8. At position 5
         // (end of level 1's triple), latent is at level 1 → c=16,
-        // spatial 4×4 (after downscaler).
+        // STILL 8×8: Stage C's switch_level=[false] transition
+        // preserves spatial (v0.41 phase 2f fix), unlike the prior
+        // (incorrect) halving topology.
         let r0 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
-        let r1 = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let r1 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
         let plain = prior
             .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
             .unwrap();
@@ -1839,7 +2029,7 @@ mod tests {
         let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
         let r0 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
-        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
         let plain = prior
             .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
             .unwrap();
