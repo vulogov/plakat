@@ -98,6 +98,12 @@ pub struct Config {
     /// Number of decoder ResBlocks at the deep width (between the
     /// input-projection conv and the upsample). Upstream: 12.
     pub n_decoder_deep_blocks: usize,
+    /// VQ latent scale factor — upstream `PaellaVQModel.config
+    /// .scale_factor = 0.3764`. The diffusion latents are scaled by
+    /// this before the VQ decode (`vqgan.decode(scale_factor *
+    /// latents)`), so it's part of the decode contract, not a free
+    /// knob.
+    pub scale_factor: f64,
 }
 
 impl Config {
@@ -112,6 +118,7 @@ impl Config {
             c_latent: 4,
             num_codes: 8192,
             n_decoder_deep_blocks: 12,
+            scale_factor: 0.3764,
         }
     }
 }
@@ -596,6 +603,13 @@ impl StageAVae {
     /// codebook-aligned in expectation).
     pub fn decode_from_stage_b_space(&self, stage_b_out: &Tensor) -> Result<Tensor> {
         let z = pixel_shuffle(stage_b_out, 2)?;
+        // v0.41 phase 2e: upstream applies the VQ scale_factor to the
+        // latents before decode (`vqgan.decode(scale_factor *
+        // latents)`). Without it the decode input is 1/0.3764 ≈ 2.66×
+        // too large and the decoder maps it to out-of-distribution
+        // colour noise. The Stage A decoder was trained on
+        // `scale_factor * latents`.
+        let z = (z * self.cfg.scale_factor)?;
         self.decode(&z)
     }
 }
@@ -668,6 +682,7 @@ mod tests {
             c_latent: 4,
             num_codes: 64,
             n_decoder_deep_blocks: 2,
+            scale_factor: 0.3764,
         }
     }
 
