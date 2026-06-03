@@ -935,8 +935,13 @@ impl ScriptCtx {
                             device,
                             loras: resolved,
                             lora_scale,
-                            // v0.38 phase 5: scripting-side Cascade
-                            // ControlNet wiring is a v0.39 follow-up.
+                            // Scripting-side Cascade ControlNet needs
+                            // new Bund config keys (control image /
+                            // strength / window) + the word-level
+                            // conditioning build — a scoped follow-up.
+                            // The t2i CLI (`--cascade-control-weights`
+                            // + `--control-spec`) and scenario files
+                            // (task `control:`) both drive Cascade CN.
                             controlnet_weights: None,
                         },
                     )
