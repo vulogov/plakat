@@ -129,6 +129,31 @@ impl CascadeScheduler {
         Ok(sample)
     }
 
+    /// v0.41 phase 4c: forward diffusion — noise `original` to the
+    /// ratio timestep `t`. Used by img2img to seed the denoise from
+    /// a noised version of the encoded init latent:
+    ///   `x_t = √ᾱ(t) · x0 + √(1 − ᾱ(t)) · ε`
+    pub fn add_noise(&self, original: &Tensor, noise: &Tensor, t: f64) -> Result<Tensor> {
+        let ac = self.alpha_cumprod(t);
+        let a = original.affine(ac.sqrt(), 0.0)?;
+        let b = noise.affine((1.0 - ac).sqrt(), 0.0)?;
+        a.add(&b).map_err(|e| e.into())
+    }
+
+    /// v0.41 phase 4c: img2img start index for a `strength` in [0, 1].
+    /// `strength=1.0` → start at step 0 (full schedule, pure noise);
+    /// lower strength skips the early (high-noise) steps so more of
+    /// the init survives. Returns the index into `timesteps()`.
+    pub fn img2img_start_step(&self, strength: f32) -> usize {
+        let n = self.timesteps.len();
+        if n == 0 {
+            return 0;
+        }
+        let s = strength.clamp(0.0, 1.0) as f64;
+        let skip = ((1.0 - s) * n as f64).floor() as usize;
+        skip.min(n - 1)
+    }
+
     /// One DDPM reverse step. `model_output` is the noise prediction
     /// from the UNet; `sample` is the current noisy latent.
     ///
@@ -305,5 +330,38 @@ mod tests {
         assert_eq!(sample.dtype(), DType::F32);
         let next = s.step(&model_output, 0.5, &sample).unwrap();
         assert_eq!(next.dtype(), DType::F32);
+    }
+
+    #[test]
+    fn img2img_start_step_scales_with_strength() {
+        let s = CascadeScheduler::new(20);
+        // strength=1.0 → full schedule (start 0). strength=0.5 → skip
+        // half. strength=0.0 → last step.
+        assert_eq!(s.img2img_start_step(1.0), 0);
+        assert_eq!(s.img2img_start_step(0.5), 10);
+        assert_eq!(s.img2img_start_step(0.0), 19);
+        // Clamps out-of-range.
+        assert_eq!(s.img2img_start_step(2.0), 0);
+        assert_eq!(s.img2img_start_step(-1.0), 19);
+    }
+
+    #[test]
+    fn add_noise_blends_original_and_noise() {
+        let s = CascadeScheduler::new(10);
+        let device = Device::Cpu;
+        let orig = Tensor::ones((1, 4, 4, 4), DType::F32, &device).unwrap();
+        let noise = Tensor::zeros((1, 4, 4, 4), DType::F32, &device).unwrap();
+        // With zero noise, add_noise(orig) = sqrt(alpha_cumprod) * orig.
+        let t = 0.5;
+        let out = s.add_noise(&orig, &noise, t).unwrap();
+        let expected = s.alpha_cumprod(t).sqrt() as f32;
+        let v = out.flatten_all().unwrap().to_vec1::<f32>().unwrap()[0];
+        assert!((v - expected).abs() < 1e-5, "got {v}, expected {expected}");
+        // At t≈0 (low noise), the original dominates; at t=1 (high
+        // noise), less so. So add_noise(t=0) > add_noise(t=1) for the
+        // signal coefficient.
+        let lo = s.alpha_cumprod(0.05).sqrt();
+        let hi = s.alpha_cumprod(1.0).sqrt();
+        assert!(lo > hi, "more signal survives at low t ({lo} vs {hi})");
     }
 }

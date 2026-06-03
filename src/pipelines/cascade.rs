@@ -465,6 +465,7 @@ impl Pipeline {
             seed,
             scheduler_kind,
             control,
+            None,
         )
     }
 
@@ -499,6 +500,12 @@ impl Pipeline {
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
+        // v0.41 phase 4c: img2img — the init image encoded into Stage
+        // B latent space (16, dim/8, dim/8) + the strength. When set,
+        // Stage B is seeded from a noised version of the init at a
+        // strength-truncated schedule instead of pure noise. Stage C
+        // still runs the full text-driven schedule.
+        img2img_init: Option<(&Tensor, f32)>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
         use crate::pipelines::cascade_scheduler::CascadeScheduler;
@@ -659,7 +666,7 @@ impl Pipeline {
         let zero_c = latent_c.zeros_like()?;
         let cfg_effnet = Tensor::cat(&[&zero_c, &latent_c], 0)?;
         let b_scheduler = CascadeScheduler::new(stage_b_steps);
-        let b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
+        let all_b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
         let noise_b = Tensor::randn(
             0f32,
             1f32,
@@ -667,7 +674,23 @@ impl Pipeline {
             &self.device,
         )?
         .to_dtype(self.dtype)?;
-        let mut latent_b = noise_b;
+        // v0.41 phase 4c: img2img seeds Stage B from the noised init
+        // latent at a strength-truncated schedule; t2i starts from
+        // pure noise over the full schedule.
+        let (b_timesteps, mut latent_b) = match img2img_init {
+            Some((init, strength)) => {
+                anyhow::ensure!(
+                    init.dims() == [1, 16, stage_b_dim, stage_b_dim],
+                    "img2img init latent {:?} must match Stage B shape [1,16,{stage_b_dim},{stage_b_dim}]",
+                    init.dims()
+                );
+                let start = b_scheduler.img2img_start_step(strength);
+                let t_start = all_b_timesteps[start];
+                let seeded = b_scheduler.add_noise(init, &noise_b, t_start)?;
+                (all_b_timesteps[start..].to_vec(), seeded)
+            }
+            None => (all_b_timesteps, noise_b),
+        };
         let bar = crate::ui::progress::step_bar(
             b_timesteps.len() as u64,
             "cascade stage B (decoder)",
@@ -738,24 +761,52 @@ impl Pipeline {
     /// Stage C's semantic prior.
     ///
     /// `strength` is clamped to `[0, 1]` by the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_img2img(
         &mut self,
-        _init_image_path: &std::path::Path,
-        _prompt: &str,
-        _negative: &str,
-        _stage_c_steps: usize,
-        _stage_b_steps: usize,
-        _strength: f32,
-        _guidance: f64,
-        _seed: u64,
-        _scheduler_kind: SchedulerKind,
+        init_image_path: &std::path::Path,
+        prompt: &str,
+        negative: &str,
+        output_dim: u32,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        strength: f32,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
-        // v0.39 phase 0g — see `generate()` for the same bail message.
-        anyhow::bail!(
-            "Stable Cascade generate_img2img() is pending v0.40 integration. \
-             v0.39 rewrote the architecture to load real upstream weights; the \
-             inference path lands in v0.40."
+        use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
+        anyhow::ensure!(
+            output_dim % 8 == 0,
+            "output_dim must be divisible by 8; got {output_dim}"
         );
+        // Encode the init image into Stage B latent space (16ch at
+        // dim/8). Stage A.encode + PixelUnshuffle(2).
+        let init_img = crate::imaging::preprocess::sd_image_tensor(
+            init_image_path,
+            output_dim,
+            output_dim,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| {
+            format!("loading Cascade img2img init image {}", init_image_path.display())
+        })?;
+        let init_b = self.stage_a.encode_to_stage_b_space(&init_img)?;
+        let _ = stage_b_spatial_for_image; // shape enforced in generate_at_size
+        self.generate_at_size(
+            prompt,
+            negative,
+            output_dim,
+            stage_c_steps,
+            stage_b_steps,
+            guidance,
+            seed,
+            scheduler_kind,
+            control,
+            Some((&init_b, strength)),
+        )
     }
 }
 
@@ -1027,17 +1078,60 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
         resolved_loras.push(spec.resolve().await?);
     }
 
+    // v0.41 phase 4c: auto-resolve the canny CN when a control spec is
+    // present (mirrors the t2i path).
+    let cn_weights = match (req.controlnet_weights.clone(), req.control_spec.is_some()) {
+        (Some(p), _) => Some(p),
+        (None, true) => Some(
+            crate::hf::download::get_first_of(&[(&repo, "controlnet/canny.safetensors")])
+                .await
+                .context("auto-resolving Cascade canny ControlNet for img2img")?,
+        ),
+        (None, false) => None,
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
-        // v0.38 phase 5: Cascade img2img + ControlNet is deferred
-        // (v0.39 follow-up). The img2img CLI doesn't expose
-        // `--cascade-control-weights` either; this stays None.
-        controlnet_weights: None,
+        controlnet_weights: cn_weights,
     })
     .await?;
+
+    // v0.41 phase 4c: build the CN conditioning (image= or from=).
+    let control_conditioning: Option<ControlConditioning> = match (
+        pipeline.control_conditioning_active(),
+        req.control_spec.as_ref(),
+    ) {
+        (true, Some(spec)) => {
+            anyhow::ensure!(
+                matches!(spec.kind, crate::pipelines::controlnet::ControlKind::Canny),
+                "Stable Cascade ControlNet supports only `canny` (got {:?})",
+                spec.kind
+            );
+            let cond = if let Some(image_path) = spec.image.as_ref() {
+                crate::imaging::preprocess::sd_image_tensor(
+                    image_path, 1024, 1024, &req.device, pipeline.dtype,
+                )?
+            } else if let Some(from_path) = spec.from.as_ref() {
+                let edges = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, from_path, 1024, 1024, &req.device, pipeline.dtype,
+                )
+                .await?;
+                edges.affine(2.0, -1.0)?
+            } else {
+                anyhow::bail!("Cascade img2img control requires `image=` or `from=`");
+            };
+            Some(ControlConditioning {
+                conditioning_image: cond,
+                scale: spec.strength,
+                start: spec.start,
+                end: spec.end,
+            })
+        }
+        _ => None,
+    };
 
     let base_seed = req
         .seed
@@ -1064,12 +1158,14 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
             &req.init_image,
             &req.prompt,
             &req.negative,
+            req.output_dim,
             req.stage_c_steps,
             req.stage_b_steps,
             req.strength,
             req.guidance,
             seed,
             req.scheduler,
+            control_conditioning.as_ref(),
         )?;
 
         let mut m = crate::imaging::metadata::GenerationMetadata::new(
@@ -1112,6 +1208,9 @@ pub struct RunImg2imgRequest {
     pub init_image: std::path::PathBuf,
     pub prompt: String,
     pub negative: String,
+    /// Output side length (square; divisible by 8). The init image is
+    /// resized to this.
+    pub output_dim: u32,
     pub stage_c_steps: usize,
     pub stage_b_steps: usize,
     /// Img2img denoise strength in `[0, 1]`. 1.0 = pure t2i
@@ -1125,6 +1224,10 @@ pub struct RunImg2imgRequest {
     pub count: u32,
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     pub lora_scale: f32,
+    /// v0.41 phase 4c: optional Stage C ControlNet (canny). Same
+    /// auto-resolve + conditioning rules as the t2i path.
+    pub control_spec: Option<crate::pipelines::controlnet::ControlSpec>,
+    pub controlnet_weights: Option<std::path::PathBuf>,
 }
 
 /// CLI entrypoint: parameters needed for one Stable Cascade
@@ -1214,6 +1317,7 @@ mod tests {
             init_image: std::path::PathBuf::from("/tmp/init.png"),
             prompt: "a fox".into(),
             negative: "blurry".into(),
+            output_dim: 1024,
             stage_c_steps: 20,
             stage_b_steps: 10,
             strength: 0.6,
@@ -1224,8 +1328,11 @@ mod tests {
             count: 1,
             loras: Vec::new(),
             lora_scale: 1.0,
+            control_spec: None,
+            controlnet_weights: None,
         };
         assert_eq!(r.prompt, "a fox");
+        assert_eq!(r.output_dim, 1024);
         assert_eq!(r.strength, 0.6);
         assert_eq!(r.stage_c_steps, 20);
         assert_eq!(r.stage_b_steps, 10);
@@ -1361,6 +1468,7 @@ mod tests {
             4.0,
             42,
             SchedulerKind::DpmppKarras,
+            None,
             None,
         );
         match result {
