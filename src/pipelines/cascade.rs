@@ -636,7 +636,17 @@ impl Pipeline {
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
-            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            // v0.41 phase 2i: the DECODER uses a much lower guidance
+            // than the prior. Upstream StableCascadeDecoderPipeline
+            // defaults `guidance_scale=0.0` (no CFG — pure conditional);
+            // the prior uses ~4.0. Applying the prior's 4.0 to Stage B
+            // over-drove the decoder into harsh over-detailed texture.
+            // In our `neg + scale*(pos-neg)` form, scale=1.0 reproduces
+            // the pure conditional (= upstream no-CFG decoder). A future
+            // phase exposes `--decoder-guidance`; for now clamp Stage B
+            // to a mild fixed value.
+            const DECODER_GUIDANCE: f64 = 1.1;
+            let guided = (neg + ((pos - neg)? * DECODER_GUIDANCE)?)?;
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
