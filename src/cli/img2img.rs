@@ -1128,6 +1128,32 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
     }
     let stage_c_steps = (args.steps * 2).div_ceil(3).max(1);
     let stage_b_steps = args.steps.saturating_sub(stage_c_steps).max(1);
+    // Cascade output is square. Derive the dim from --size (width);
+    // bail on non-square; default 1024.
+    let output_dim = match args.size {
+        Some(sz) => {
+            anyhow::ensure!(
+                sz.w == sz.h,
+                "Stable Cascade output is square; got --size {}x{}",
+                sz.w, sz.h
+            );
+            sz.w
+        }
+        None => 1024,
+    };
+    // v0.41 phase 4c: a single canny control spec may be supplied
+    // (auto-resolves the CN from the repo).
+    let control_spec = crate::pipelines::controlnet::resolve_control_specs(
+        args.control_specs,
+        args.control,
+        args.control_image,
+        args.control_from,
+        args.control_strength,
+        args.control_start,
+        args.control_end,
+    )
+    .into_iter()
+    .next();
     crate::pipelines::cascade::run_img2img(
         crate::pipelines::cascade::RunImg2imgRequest {
             model: args.model,
@@ -1135,6 +1161,7 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
             init_image: args.input,
             prompt: args.prompt,
             negative: args.negative,
+            output_dim,
             stage_c_steps,
             stage_b_steps,
             strength,
@@ -1145,6 +1172,8 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
             count: args.count,
             loras: args.loras,
             lora_scale: args.lora_scale,
+            control_spec,
+            controlnet_weights: None,
         },
     )
     .await

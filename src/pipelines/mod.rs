@@ -44,6 +44,7 @@ pub mod cascade_blocks;
 pub mod cascade_cn;
 pub mod cascade_lora;
 pub mod cascade_prior;
+pub mod cascade_scheduler;
 pub mod cascade_vae;
 pub mod pixart;
 pub mod pixart_dit;

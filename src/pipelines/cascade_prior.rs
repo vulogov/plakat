@@ -132,6 +132,19 @@ pub struct Config {
     /// 1×1 conv + parameterless interp; Stage B uses 2×2 stride 2
     /// (Conv2d for down, ConvTranspose2d for up).
     pub sampler_style: SamplerStyle,
+    /// Upstream `switch_level` — one bool per level transition
+    /// (length = num_levels - 1). When false, the OnePixel sampler's
+    /// interpolation slot is Identity (spatial preserved); when true,
+    /// it resamples 2×/0.5×. Stage C is `[false]` (its 2 levels are
+    /// both 24×24). Ignored by the Strided style (Stage B), whose
+    /// strided convs always resample.
+    pub switch_level: Vec<bool>,
+    /// Upstream `up_blocks_repeat_mappers` — per up-level (deepest
+    /// first) count of how many times the level's block group runs.
+    /// `up_repeat_mappers[level]` has `value - 1` 1×1 convs applied
+    /// between repeats. Stage C is `[1, 1]` (runs once, no mappers);
+    /// Stage B is `[3, 3, 2, 2]`.
+    pub up_blocks_repeat_mappers: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +181,8 @@ impl Config {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -191,6 +206,9 @@ impl Config {
             effnet_input_channels: Some(16),
             pixels_input_channels: Some(3),
             sampler_style: SamplerStyle::Strided,
+            // 4 levels → 3 transitions. Strided ignores these.
+            switch_level: vec![true, true, true],
+            up_blocks_repeat_mappers: vec![3, 3, 2, 2],
         }
     }
 
@@ -227,6 +245,12 @@ pub enum UpDownBlock {
         norm: LayerNorm2d,
         conv: nn::Conv2d,
         mode: SampleMode,
+        /// `switch_level` flag — when false (Stage C's only transition),
+        /// the interpolation slot is `nn.Identity` and spatial
+        /// resolution is preserved; the block is just norm + 1×1 conv.
+        /// When true, bilinear 2×/0.5× resampling (upstream uses
+        /// bilinear, align_corners=True).
+        enabled: bool,
     },
     StridedDown {
         norm: LayerNorm2d,
@@ -244,6 +268,7 @@ impl UpDownBlock {
     pub fn new_one_pixel(
         channels: usize,
         mode: SampleMode,
+        enabled: bool,
         vb: VarBuilder,
     ) -> Result<Self> {
         let norm = LayerNorm2d::new(channels, 1e-6);
@@ -259,7 +284,7 @@ impl UpDownBlock {
             vb.pp("1").pp("blocks").pp(block_idx),
         )
         .map_err(|e| anyhow!("UpDownBlock::OnePixel conv: {e}"))?;
-        Ok(Self::OnePixel { norm, conv, mode })
+        Ok(Self::OnePixel { norm, conv, mode, enabled })
     }
 
     /// Construct a Strided down-sampler (Stage B). 2×2 stride 2
@@ -310,14 +335,24 @@ impl UpDownBlock {
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
-            UpDownBlock::OnePixel { norm, conv, mode } => {
+            UpDownBlock::OnePixel { norm, conv, mode, enabled } => {
                 let x = norm.forward(x)?;
+                // Upstream UpDownBlock2d: down = [conv, interp],
+                // up = [interp, conv]. When `enabled` is false the
+                // interp slot is Identity (no spatial change).
                 match mode {
-                    SampleMode::Down => Ok(conv.forward(&x)?.avg_pool2d(2)?),
+                    SampleMode::Down => {
+                        let x = conv.forward(&x)?;
+                        if *enabled { Ok(x.avg_pool2d(2)?) } else { Ok(x) }
+                    }
                     SampleMode::Up => {
-                        let (_b, _c, h, w) = x.dims4()?;
-                        let up = x.upsample_nearest2d(h * 2, w * 2)?;
-                        Ok(conv.forward(&up)?)
+                        if *enabled {
+                            let (_b, _c, h, w) = x.dims4()?;
+                            let up = x.upsample_nearest2d(h * 2, w * 2)?;
+                            Ok(conv.forward(&up)?)
+                        } else {
+                            Ok(conv.forward(&x)?)
+                        }
                     }
                 }
             }
@@ -344,6 +379,13 @@ pub enum Block {
 }
 
 impl Block {
+    /// True for `Block::Res`. Used by ControlNet injection, which
+    /// counts ResBlocks across the down+up path and injects before
+    /// each (the upstream cnet deliverer only fires before ResBlocks).
+    pub fn is_res(&self) -> bool {
+        matches!(self, Block::Res(_))
+    }
+
     /// Forward without skip. Errors if the block is a ResBlock that
     /// was constructed with `c_skip > 0`.
     pub fn forward(
@@ -417,6 +459,10 @@ pub struct StableCascadePrior {
     down_downscalers: Vec<UpDownBlock>,
     up_blocks: Vec<Vec<Block>>,
     up_upscalers: Vec<UpDownBlock>,
+    /// Per up-level (deepest first) 1×1 convs applied between block-
+    /// group repeats. `up_repeat_mappers[level]` has
+    /// `up_blocks_repeat_mappers[level] - 1` entries.
+    up_repeat_mappers: Vec<Vec<nn::Conv2d>>,
     clf_norm: LayerNorm2d,
     clf_conv: nn::Conv2d,
     pub cfg: Config,
@@ -574,7 +620,12 @@ impl StableCascadePrior {
                         in_c == out_c,
                         "OnePixel downscaler requires in==out (got {in_c}/{out_c})"
                     );
-                    UpDownBlock::new_one_pixel(in_c, SampleMode::Down, sub_vb)?
+                    UpDownBlock::new_one_pixel(
+                        in_c,
+                        SampleMode::Down,
+                        cfg.switch_level[i - 1],
+                        sub_vb,
+                    )?
                 }
                 SamplerStyle::Strided => UpDownBlock::new_strided_down(in_c, out_c, sub_vb)?,
             };
@@ -622,11 +673,37 @@ impl StableCascadePrior {
                         in_c == out_c,
                         "OnePixel upscaler requires in==out (got {in_c}/{out_c})"
                     );
-                    UpDownBlock::new_one_pixel(in_c, SampleMode::Up, sub_vb)?
+                    // Up path mirrors the down transitions in reverse:
+                    // up-index i corresponds to down transition
+                    // (num_levels - 2 - i).
+                    let enabled = cfg.switch_level[num_levels - 2 - i];
+                    UpDownBlock::new_one_pixel(in_c, SampleMode::Up, enabled, sub_vb)?
                 }
                 SamplerStyle::Strided => UpDownBlock::new_strided_up(in_c, out_c, sub_vb)?,
             };
             up_upscalers.push(blk);
+        }
+
+        // ---- Up repeat mappers (1×1 convs between block-group
+        // repeats). up_repeat_mappers.{level}.{j} for j in
+        // 0..(up_blocks_repeat_mappers[level] - 1). ----
+        let mut up_repeat_mappers: Vec<Vec<nn::Conv2d>> = Vec::with_capacity(num_levels);
+        for level in 0..num_levels {
+            let n_map = cfg.up_blocks_repeat_mappers[level].saturating_sub(1);
+            let c = up_c_hidden[level];
+            let mut maps = Vec::with_capacity(n_map);
+            for j in 0..n_map {
+                let conv = nn::conv2d(
+                    c,
+                    c,
+                    1,
+                    Default::default(),
+                    vb.pp("up_repeat_mappers").pp(&level.to_string()).pp(&j.to_string()),
+                )
+                .map_err(|e| anyhow!("up_repeat_mappers.{level}.{j}: {e}"))?;
+                maps.push(conv);
+            }
+            up_repeat_mappers.push(maps);
         }
 
         // ---- Output classifier: Sequential(LayerNorm2d, Conv2d) ----
@@ -652,6 +729,7 @@ impl StableCascadePrior {
             down_downscalers,
             up_blocks,
             up_upscalers,
+            up_repeat_mappers,
             clf_norm,
             clf_conv,
             cfg,
@@ -715,7 +793,9 @@ impl StableCascadePrior {
 
         // Stage B path: pooled-only KV stream at c_hidden=c_pooled_token.
         let Some(text_mapper) = &self.clip_txt_mapper else {
-            return Ok(pooled_text);
+            // v0.41 phase 2f: upstream applies clip_norm in BOTH the
+            // pooled-only (Stage B) and concat (Stage C) return paths.
+            return layer_norm_last_dim(&pooled_text, 1e-6);
         };
 
         // Stage C path: cat(text, pooled_text, pooled_img).
@@ -735,7 +815,15 @@ impl StableCascadePrior {
                 &self.device,
             )?
         };
-        Tensor::cat(&[&text, &pooled_text, &pooled_img], 1).map_err(|e| e.into())
+        let clip = Tensor::cat(&[&text, &pooled_text, &pooled_img], 1)?;
+        // v0.41 phase 2f: the missing final LayerNorm. Upstream
+        // `get_clip_embeddings` ends `return self.clip_norm(clip)` —
+        // `nn.LayerNorm(conditioning_dim, elementwise_affine=False,
+        // eps=1e-6)` over the conditioning dim. Without it the KV
+        // stream fed to every AttnBlock is unnormalised (off by ~80×
+        // in magnitude per the phase-2f reference dump), so attention
+        // produces garbage and the prior can't denoise.
+        layer_norm_last_dim(&clip, 1e-6)
     }
 
     /// Build a zero KV stream of the right shape for an AttnBlock at
@@ -770,8 +858,14 @@ impl StableCascadePrior {
             .as_ref()
             .ok_or_else(|| anyhow!("apply_effnet_mapper called on a Stage C prior"))?;
         let h = mapper.0.forward(effnet)?;
-        let h = h.gelu()?;
-        Ok(mapper.1.forward(&h)?)
+        let h = h.gelu_erf()?;
+        let h = mapper.1.forward(&h)?;
+        // v0.41 phase 2g: upstream effnet_mapper ends with
+        // SDCascadeLayerNorm (no affine, eps 1e-6) over the channel
+        // dim. Missing it left the effnet conditioning unnormalised
+        // and corrupted the down path from down_lvl0 onward. The norm
+        // is parameterless, so construct it inline.
+        LayerNorm2d::new(self.cfg.c_hidden_first(), 1e-6).forward(&h)
     }
 
     /// Apply pixels conditioning (Stage B only). See
@@ -782,8 +876,9 @@ impl StableCascadePrior {
             .as_ref()
             .ok_or_else(|| anyhow!("apply_pixels_mapper called on a Stage C prior"))?;
         let h = mapper.0.forward(pixels)?;
-        let h = h.gelu()?;
-        Ok(mapper.1.forward(&h)?)
+        let h = h.gelu_erf()?;
+        let h = mapper.1.forward(&h)?;
+        LayerNorm2d::new(self.cfg.c_hidden_first(), 1e-6).forward(&h)
     }
 
     /// Forward pass.
@@ -815,33 +910,44 @@ impl StableCascadePrior {
         pixels: Option<&Tensor>,
     ) -> Result<Tensor> {
         self.forward_inner(
-            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, 0.0,
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, None, 0.0, None,
         )
     }
 
-    /// v0.40 phase 1: forward pass with ControlNet residual injection
-    /// into the down path.
+    /// v0.41 phase 2f: forward that also collects named intermediate
+    /// activations (emb, per-down-level, per-up-level, clf) for
+    /// reference comparison against the diffusers dump. Test-only.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_collect(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+        effnet: Option<&Tensor>,
+        pixels: Option<&Tensor>,
+    ) -> Result<(Tensor, Vec<(String, Tensor)>)> {
+        let mut dump: Vec<(String, Tensor)> = Vec::new();
+        let out = self.forward_inner(
+            x, t_emb, sca_emb, crp_emb, clip, effnet, pixels, None, None, 0.0, Some(&mut dump),
+        )?;
+        Ok((out, dump))
+    }
+
+    /// v0.41 phase 3: forward pass with ControlNet residual injection.
     ///
-    /// `cn_residuals` is a slice of N tensors, each of shape
-    /// `(B, c_hidden_at_position, H_at_position, W_at_position)`
-    /// matching the latent at its injection point. Injection happens
-    /// at evenly-spread positions across `down_blocks` (the encoder
-    /// side); the up path is unchanged. With `cn_residuals.len() == N`,
-    /// position `((i + 1) * total_down_positions / N - 1)` for
-    /// `i ∈ [0, N)` receives residual `i` added with `cn_scale`
-    /// multiplier.
+    /// `cn_residuals[j]` is the j-th CN projection head's output; it is
+    /// injected BEFORE the ResBlock at global index `cn_blocks[j]` (in
+    /// the down→up ResBlock sequence), bilinearly upsampled to the
+    /// current feature spatial and added with the `cn_scale` strength.
+    /// For the canny CN: 8 residuals, `cn_blocks = [0,4,8,12,51,55,59,
+    /// 63]` — 4 in the down path, 4 in the up path. This matches the
+    /// upstream cnet deliverer (Stability-AI/StableCascade stage_c.py),
+    /// which fires only before ResBlocks.
     ///
-    /// Phase 1 contract:
-    /// - Residual at each injection point MUST shape-match the latent.
-    ///   Shape mismatches error loudly (no implicit interpolation).
-    /// - Phase 3 smoke determines whether auto-alignment is needed.
-    /// - Caller is responsible for spatial sizing — typically by
-    ///   running the CN backbone at a resolution that produces
-    ///   residuals at the matching depth's spatial.
-    ///
-    /// Stage C is the target; the method bails if effnet/pixels paths
-    /// are wired (those are Stage B; Stage B + CN combo is a v0.41
-    /// follow-up).
+    /// Stage C only — bails if effnet/pixels paths are wired (Stage B).
     pub fn forward_with_cn(
         &self,
         x: &Tensor,
@@ -850,15 +956,17 @@ impl StableCascadePrior {
         crp_emb: Option<&Tensor>,
         clip: &Tensor,
         cn_residuals: &[Tensor],
+        cn_blocks: &[usize],
         cn_scale: f32,
     ) -> Result<Tensor> {
         anyhow::ensure!(
             self.cfg.effnet_input_channels.is_none(),
-            "forward_with_cn is Stage C only; Stage B + CN combo is v0.41 work"
+            "forward_with_cn is Stage C only; Stage B + CN combo is a follow-up"
         );
         anyhow::ensure!(
-            !cn_residuals.is_empty(),
-            "cn_residuals must be non-empty; for plain forward use forward()"
+            !cn_residuals.is_empty() && cn_residuals.len() == cn_blocks.len(),
+            "cn_residuals ({}) must be non-empty and match cn_blocks ({})",
+            cn_residuals.len(), cn_blocks.len()
         );
         self.forward_inner(
             x,
@@ -869,7 +977,9 @@ impl StableCascadePrior {
             None,
             None,
             Some(cn_residuals),
+            Some(cn_blocks),
             cn_scale,
+            None,
         )
     }
 
@@ -884,82 +994,103 @@ impl StableCascadePrior {
         effnet: Option<&Tensor>,
         pixels: Option<&Tensor>,
         cn_residuals: Option<&[Tensor]>,
+        cn_blocks: Option<&[usize]>,
         cn_scale: f32,
+        mut dump: Option<&mut Vec<(String, Tensor)>>,
     ) -> Result<Tensor> {
         // ---- Input embedding ----
         let mut h = self.embedding_conv.forward(x)?;
         h = self.embedding_norm.forward(&h)?;
-        // v0.40 phase 4 iter 1: spatially align effnet (Stage C output
-        // is fixed at 24×24) to Stage B's embedding spatial via
-        // nearest upsample BEFORE feeding to the apply_effnet_mapper
-        // 1×1 conv stack. Upstream uses bilinear; nearest is
-        // numerically close for this conditioning stream (the mapper
-        // is point-wise so spatial position is independent at the
-        // conv level).
+        if let Some(d) = dump.as_deref_mut() {
+            d.push(("emb".to_string(), h.clone()));
+        }
+        // v0.41 phase 2g: upstream interpolates effnet to the
+        // embedding spatial with BILINEAR (align_corners=True) BEFORE
+        // the effnet_mapper, then adds. v0.40's nearest approximation
+        // was a measurable error (down_lvl0 diverged 12.4 on a ±34
+        // range in the phase-2g reference dump).
         if let Some(eff) = effnet {
             let (_, _, hh, hw) = h.dims4()?;
             let (_, _, eh, ew) = eff.dims4()?;
             let eff_aligned = if (eh, ew) != (hh, hw) {
-                eff.upsample_nearest2d(hh, hw)?
+                eff.upsample_bilinear2d(hh, hw, true)?
             } else {
                 eff.clone()
             };
             h = h.add(&self.apply_effnet_mapper(&eff_aligned)?)?;
         }
-        if let Some(px) = pixels {
-            let (_, _, hh, hw) = h.dims4()?;
-            let (_, _, ph, pw) = px.dims4()?;
-            let px_aligned = if (ph, pw) != (hh, hw) {
-                px.upsample_nearest2d(hh, hw)?
-            } else {
-                px.clone()
+        // Pixels path: upstream ALWAYS applies pixels_mapper when the
+        // module exists (Stage B), defaulting `pixels` to
+        // `zeros(B, 3, 8, 8)` when not supplied — and pixels_mapper's
+        // conv biases + final LayerNorm make that a non-zero learned
+        // constant, NOT a no-op. v0.41 phase 2g: skipping it when
+        // pixels=None left every Stage B forward missing this additive
+        // term (rb_in diverged 5.87 from emb in the reference dump).
+        // Interpolate AFTER the mapper (unlike effnet, before).
+        if self.pixels_mapper.is_some() {
+            let (b, _, hh, hw) = h.dims4()?;
+            let px_owned;
+            let px = match pixels {
+                Some(p) => p,
+                None => {
+                    px_owned = Tensor::zeros((b, 3, 8, 8), h.dtype(), h.device())?;
+                    &px_owned
+                }
             };
-            h = h.add(&self.apply_pixels_mapper(&px_aligned)?)?;
+            let mapped = self.apply_pixels_mapper(px)?;
+            let (_, _, ph, pw) = mapped.dims4()?;
+            let mapped_aligned = if (ph, pw) != (hh, hw) {
+                mapped.upsample_bilinear2d(hh, hw, true)?
+            } else {
+                mapped
+            };
+            h = h.add(&mapped_aligned)?;
         }
 
-        // ---- Compute CN injection positions ----
-        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
-        let injection_positions: Vec<usize> = match cn_residuals {
-            Some(residuals) => {
-                let n = residuals.len();
-                (0..n)
-                    .map(|i| ((i + 1) * n_down_positions) / n - 1)
-                    .collect()
+        // ---- CN injection helper ----
+        // v0.41 phase 3: upstream injects a ControlNet residual BEFORE
+        // each ResBlock whose global index (across the down+up ResBlock
+        // sequence, down=0.., up continues) is in `cn_blocks`. The
+        // residual (CN projection head output, at the backbone's small
+        // spatial) is bilinearly upsampled to the current feature
+        // spatial and added. `cn_scale` is the user strength.
+        // `rb_idx` is the running ResBlock counter shared down→up.
+        let inject_cn = |h: &Tensor, rb_idx: usize| -> Result<Tensor> {
+            if let (Some(res), Some(blocks)) = (cn_residuals, cn_blocks) {
+                if let Some(j) = blocks.iter().position(|&b| b == rb_idx) {
+                    let r = &res[j];
+                    let (_, _, hh, hw) = h.dims4()?;
+                    let (_, _, rh, rw) = r.dims4()?;
+                    let r_aligned = if (rh, rw) != (hh, hw) {
+                        r.upsample_bilinear2d(hh, hw, true)?
+                    } else {
+                        r.clone()
+                    };
+                    return h.add(&r_aligned.affine(cn_scale as f64, 0.0)?).map_err(|e| e.into());
+                }
             }
-            None => Vec::new(),
+            Ok(h.clone())
         };
 
         // ---- Down path with CN injection ----
         let num_levels = self.cfg.blocks_per_level.len();
         let mut level_outputs: Vec<Tensor> = Vec::with_capacity(num_levels);
-        let mut global_pos: usize = 0;
-        let mut residual_idx: usize = 0;
+        let mut rb_idx: usize = 0;
         for (i, blocks) in self.down_blocks.iter().enumerate() {
             if i > 0 {
                 h = self.down_downscalers[i - 1].forward(&h)?;
             }
-            for block in blocks {
-                h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
-                if let Some(residuals) = cn_residuals {
-                    if residual_idx < injection_positions.len()
-                        && global_pos == injection_positions[residual_idx]
-                    {
-                        let r = &residuals[residual_idx];
-                        anyhow::ensure!(
-                            r.shape() == h.shape(),
-                            "CN residual {} shape {:?} doesn't match latent shape {:?} \
-                             at down_blocks position {global_pos}",
-                            residual_idx,
-                            r.shape(),
-                            h.shape()
-                        );
-                        h = h.add(&r.affine(cn_scale as f64, 0.0)?)?;
-                        residual_idx += 1;
-                    }
+            for block in blocks.iter() {
+                if block.is_res() {
+                    h = inject_cn(&h, rb_idx)?;
+                    rb_idx += 1;
                 }
-                global_pos += 1;
+                h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
             }
             level_outputs.push(h.clone());
+            if let Some(d) = dump.as_deref_mut() {
+                d.push((format!("down_lvl{i}"), h.clone()));
+            }
         }
 
         // ---- Up path: start from the deepest level output ----
@@ -980,35 +1111,55 @@ impl StableCascadePrior {
             } else {
                 None
             };
-            for (b_idx, block) in blocks.iter().enumerate() {
-                // Only the first block in the level (b_idx==0) consumes
-                // the skip; later blocks don't.
-                let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
-                h = block.forward_maybe_skip(
-                    &h, block_skip, t_emb, sca_emb, crp_emb, clip,
-                )?;
+            // v0.41 phase 2g: run the level's block group
+            // (up_blocks_repeat_mappers[i]) times, applying the 1×1
+            // repeat mapper between iterations. Stage C has 0 mappers
+            // (runs once); Stage B has [3,3,2,2]. The skip is consumed
+            // by the FIRST ResBlock on EVERY repeat iteration.
+            let mappers = &self.up_repeat_mappers[i];
+            let n_repeats = mappers.len() + 1;
+            for rep in 0..n_repeats {
+                // Upstream `_up_decode` bilinearly resizes x to the
+                // skip's spatial when they mismatch
+                // (`F.interpolate(..., bilinear, align_corners=True)`).
+                // Stage B's strided down floors odd dims (6→3→1) while
+                // the strided up doubles exactly (1→2), so x (2×2) and
+                // the skip (3×3) disagree at the deep levels.
+                if let Some(skip) = skip_for_level.as_ref() {
+                    let (_, _, sh, sw) = skip.dims4()?;
+                    let (_, _, hh, hw) = h.dims4()?;
+                    if (hh, hw) != (sh, sw) {
+                        h = h.upsample_bilinear2d(sh, sw, true)?;
+                    }
+                }
+                for (b_idx, block) in blocks.iter().enumerate() {
+                    if block.is_res() {
+                        h = inject_cn(&h, rb_idx)?;
+                        rb_idx += 1;
+                    }
+                    let block_skip = if b_idx == 0 { skip_for_level.as_ref() } else { None };
+                    h = block.forward_maybe_skip(
+                        &h, block_skip, t_emb, sca_emb, crp_emb, clip,
+                    )?;
+                }
+                if rep < mappers.len() {
+                    h = mappers[rep].forward(&h)?;
+                }
+            }
+            if let Some(d) = dump.as_deref_mut() {
+                d.push((format!("up_lvl{i}"), h.clone()));
             }
         }
 
         // ---- Output classifier ----
         let h = self.clf_norm.forward(&h)?;
-        Ok(self.clf_conv.forward(&h)?)
+        let out = self.clf_conv.forward(&h)?;
+        if let Some(d) = dump.as_deref_mut() {
+            d.push(("clf".to_string(), out.clone()));
+        }
+        Ok(out)
     }
 
-    /// v0.40 phase 1: compute the injection position list for a given
-    /// residual count, against this prior's down_blocks topology.
-    /// Useful for callers that want to verify ahead of time which
-    /// positions will receive residuals (e.g., to compute per-residual
-    /// target spatial shapes).
-    pub fn cn_injection_positions(&self, n_residuals: usize) -> Vec<usize> {
-        let n_down_positions: usize = self.down_blocks.iter().map(|b| b.len()).sum();
-        if n_residuals == 0 || n_down_positions == 0 {
-            return Vec::new();
-        }
-        (0..n_residuals)
-            .map(|i| ((i + 1) * n_down_positions) / n_residuals - 1)
-            .collect()
-    }
 }
 
 // ---------------------------------------------------------------------
@@ -1077,20 +1228,57 @@ fn build_block_levels(
 /// Sinusoidal positional encoding for a `(B,)` timestep tensor.
 /// Returns `(B, c_cond)` — matches the upstream `gen_r_embedding`
 /// using `c_cond=64`. Pure math, no learnable params.
+/// Functional LayerNorm over the last dim with no affine params,
+/// matching upstream `nn.LayerNorm(dim, elementwise_affine=False)`.
+/// Used by `build_clip_conditioning` for the final `clip_norm`.
+fn layer_norm_last_dim(x: &Tensor, eps: f64) -> Result<Tensor> {
+    let mean = x.mean_keepdim(D::Minus1)?;
+    let xc = x.broadcast_sub(&mean)?;
+    let var = xc.sqr()?.mean_keepdim(D::Minus1)?;
+    let denom = var.affine(1.0, eps)?.sqrt()?;
+    xc.broadcast_div(&denom).map_err(|e| e.into())
+}
+
 pub fn sinusoidal_time_embedding(
     t: &Tensor,
     c_cond: usize,
     max_positions: f64,
 ) -> Result<Tensor> {
+    // v0.41 phase 2d: match diffusers' `gen_r_embedding` / Wuerstchen
+    // `get_timestep_ratio_embedding` exactly. Three corrections vs
+    // v0.39's first-draft form:
+    //
+    // 1. **Scale the input by max_positions**: upstream does
+    //    `r = timestep_ratio * max_positions` so r lives in [0, 10000]
+    //    not [0, 1]. The model learned to read time from the
+    //    high-frequency wraps of sin(10000*t) etc. — at [0, 1] the
+    //    embedding is just smooth low-magnitude noise that carries
+    //    no per-step signal.
+    // 2. **Divisor is `half_dim - 1`**, not `half_dim`. This makes
+    //    freq[0] = max_positions^0 = 1 (lowest frequency) and
+    //    freq[half-1] = max_positions^(-1) (highest frequency)
+    //    exactly cover the trained range.
+    // 3. **Sin THEN cos** — `cat([sin, cos], -1)`. The downstream
+    //    Linear mapper learned weights for this column order; even
+    //    a perfectly numerical embedding with the columns flipped
+    //    is permuted nonsense.
+    //
+    // Caught at v0.41 phase 2b when the Metal end-to-end run
+    // produced visual noise even after the BF16 fix made the
+    // numerics finite — the model couldn't denoise because the
+    // time signal was meaningless.
     let device = t.device();
     let half = c_cond / 2;
+    debug_assert!(half >= 2, "sinusoidal_time_embedding needs c_cond >= 4");
+    let denom = (half - 1) as f64;
+    let freq_log = max_positions.ln() / denom;
     let freqs: Vec<f32> = (0..half)
-        .map(|i| (-(max_positions.ln()) * (i as f64) / (half as f64)).exp() as f32)
+        .map(|i| (-freq_log * (i as f64)).exp() as f32)
         .collect();
     let freqs = Tensor::from_vec(freqs, half, device)?;
-    let t_f32 = t.to_dtype(DType::F32)?;
-    let args = t_f32.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
-    Tensor::cat(&[args.cos()?, args.sin()?], D::Minus1).map_err(|e| e.into())
+    let r = t.to_dtype(DType::F32)?.affine(max_positions, 0.0)?;
+    let args = r.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
+    Tensor::cat(&[args.sin()?, args.cos()?], D::Minus1).map_err(|e| e.into())
 }
 
 // =====================================================================
@@ -1123,6 +1311,8 @@ mod tests {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -1148,6 +1338,8 @@ mod tests {
             effnet_input_channels: Some(4),
             pixels_input_channels: Some(3),
             sampler_style: SamplerStyle::Strided,
+            switch_level: vec![true],
+            up_blocks_repeat_mappers: vec![1, 1],
         }
     }
 
@@ -1246,11 +1438,61 @@ mod tests {
     }
 
     #[test]
+    fn sinusoidal_time_embedding_matches_diffusers_gen_r_embedding() {
+        // v0.41 phase 2d regression guard: hand-compute the upstream
+        // formula in Rust and assert our embedding agrees element-
+        // wise. The form is:
+        //     r = t * max_positions
+        //     freq[i] = exp(-log(max_positions)/(half-1) * i)
+        //     args[i] = r * freq[i]
+        //     emb = cat([sin(args), cos(args)], -1)
+        // If a future refactor drops the max_positions scaling, the
+        // wrong divisor, or the wrong sin/cos column order, this
+        // test bites — those exact regressions are what produced
+        // pure noise output in v0.41 phase 2b.
+        let device = Device::Cpu;
+        let half = 32usize;
+        let c_cond = 2 * half;
+        let max_positions = 10000.0f64;
+        let t_val = 0.5f64;
+
+        let denom = (half - 1) as f64;
+        let freq_log = max_positions.ln() / denom;
+        let mut expected = Vec::with_capacity(c_cond);
+        let r = t_val * max_positions;
+        let args: Vec<f64> = (0..half)
+            .map(|i| r * (-freq_log * i as f64).exp())
+            .collect();
+        for &a in &args {
+            expected.push(a.sin() as f32);
+        }
+        for &a in &args {
+            expected.push(a.cos() as f32);
+        }
+
+        let t = Tensor::new(&[t_val as f32], &device).unwrap();
+        let emb = sinusoidal_time_embedding(&t, c_cond, max_positions).unwrap();
+        assert_eq!(emb.dims(), &[1, c_cond]);
+        let got: Vec<f32> = emb.squeeze(0).unwrap().to_vec1().unwrap();
+
+        // Tolerance is loose (1e-3) because our internal math is F32
+        // while the comparison expectation is F64 — at args ≈ 5000
+        // the trig functions amplify F32 rounding to mid-1e-4.
+        for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-3,
+                "col {i}: got {g}, expected {e}, |diff|={}",
+                (g - e).abs()
+            );
+        }
+    }
+
+    #[test]
     fn updownblock_one_pixel_down_halves_spatial() {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Down, vb).unwrap();
+        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Down, true, vb).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 8, 16, 16), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 8, 8, 8]);
@@ -1261,7 +1503,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Up, vb).unwrap();
+        let blk = UpDownBlock::new_one_pixel(8, SampleMode::Up, true, vb).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 8, 4, 4), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 8, 8, 8]);
@@ -1331,6 +1573,87 @@ mod tests {
             .to_scalar::<f32>()
             .unwrap();
         assert!(diff > 1e-5, "output should depend on timestep (got {diff})");
+    }
+
+    #[test]
+    fn stage_c_output_differs_between_zero_cond_and_t_emb_placeholder() {
+        // v0.41 phase 1: the v0.40 generate path piped `t_emb` itself
+        // as both `sca_emb` and `crp_emb` (placeholder). The correct
+        // upstream behaviour for the "no aesthetic / no crop override"
+        // default is sinusoidal embedding of a ZERO scalar — same
+        // encoder, different input. This test exists to assert the
+        // distinction is observable in network output: otherwise the
+        // phase 1 change would have been a no-op rename.
+        let (prior, _) = random_prior_c(small_stage_c_cfg());
+        let device = &prior.device;
+        let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
+        let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
+
+        // Realistic timestep ratio in [0, 1] — embedded with
+        // c_cond=8 to match small_stage_c_cfg.
+        let t_scalar = Tensor::from_vec(vec![0.7f32], 1, device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t_scalar, 8, 10000.0).unwrap();
+
+        // Upstream's `sca=None / crp=None` default: embed a zero
+        // scalar through the SAME sinusoidal encoder. The result is
+        // NOT the zero tensor — sin(0)=0 but cos(0)=1, so half the
+        // dims sit at 1.
+        let zero_scalar = Tensor::zeros(1, candle_core::DType::F32, device).unwrap();
+        let zero_cond_emb = sinusoidal_time_embedding(&zero_scalar, 8, 10000.0).unwrap();
+
+        let y_placeholder = prior
+            .forward(&x, &t_emb, Some(&t_emb), Some(&t_emb), &clip, None, None)
+            .unwrap();
+        let y_real = prior
+            .forward(
+                &x,
+                &t_emb,
+                Some(&zero_cond_emb),
+                Some(&zero_cond_emb),
+                &clip,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let diff = (&y_placeholder - &y_real)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            diff > 1e-5,
+            "zero-cond sca/crp should change Stage C output vs t_emb placeholder (got {diff})"
+        );
+    }
+
+    #[test]
+    fn zero_cond_sinusoidal_embedding_is_not_zero_tensor() {
+        // Sanity check on phase 1 reasoning: sinusoidal embedding of
+        // a zero scalar produces `[cos(0), cos(0), …, sin(0), sin(0), …]`
+        // → `[1, 1, …, 0, 0, …]`, NOT the zero tensor. If candle's
+        // sinusoidal encoder ever changed convention so that zero
+        // input gave zero output, this test would catch the
+        // regression and force us to revisit phase 1's claim.
+        let device = candle_core::Device::Cpu;
+        let zero_scalar = Tensor::zeros(2, candle_core::DType::F32, &device).unwrap();
+        let emb = sinusoidal_time_embedding(&zero_scalar, 64, 10000.0).unwrap();
+        let max_abs = emb
+            .abs()
+            .unwrap()
+            .max_keepdim(D::Minus1)
+            .unwrap()
+            .mean_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            (max_abs - 1.0).abs() < 1e-4,
+            "expected cos(0)=1 to dominate; got max_abs={max_abs}"
+        );
     }
 
     #[test]
@@ -1497,6 +1820,8 @@ mod tests {
             effnet_input_channels: None,
             pixels_input_channels: None,
             sampler_style: SamplerStyle::OnePixel,
+            switch_level: vec![false],
+            up_blocks_repeat_mappers: vec![1, 1],
         };
         let device = Device::Cpu;
         let varmap = VarMap::new();
@@ -1555,6 +1880,184 @@ mod tests {
         }
     }
 
+    /// v0.41 phase 2f: reference-comparison harness. Loads the
+    /// diffusers Stage C dump (`/tmp/cascade_ref.safetensors` produced
+    /// by `tools/cascade_ref_dump.py`), feeds the IDENTICAL fixed
+    /// inputs through our `forward_collect`, and prints the per-dump-
+    /// point max-abs-diff so the first divergence localizes the bug.
+    ///
+    /// Skipped unless both `STABLE_CASCADE_WEIGHTS_DIR` is set AND
+    /// `/tmp/cascade_ref.safetensors` exists.
+    #[test]
+    fn stage_c_matches_diffusers_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from("/tmp/cascade_ref.safetensors");
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref.safetensors not found (run tools/cascade_ref_dump.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir)
+            .join("prior/diffusion_pytorch_model.safetensors");
+        if !weights.exists() {
+            eprintln!("Skipping: {} not found", weights.display());
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device)
+            .expect("load reference dump");
+        let get = |k: &str| refs.get(k).unwrap_or_else(|| panic!("ref missing {k}"));
+
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap stage_c weights")
+        };
+        let prior = StableCascadePrior::new_stage_c(Config::stage_c_full(), vb)
+            .expect("new_stage_c");
+
+        let latents = get("in_latents").to_dtype(DType::F32).unwrap();
+        let clip_text = get("in_clip_text").to_dtype(DType::F32).unwrap();
+        let clip_pooled = get("in_clip_text_pooled")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap(); // (B,1,1280) -> (B,1280)
+        let clip_img = get("in_clip_img")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap(); // (B,1,768) -> (B,768)
+
+        let max_abs_diff = |a: &Tensor, b: &Tensor| -> f32 {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+
+        // ---- 1. Conditioning comparison ----
+        let our_clip = prior
+            .build_clip_conditioning(&clip_text, &clip_pooled, Some(&clip_img))
+            .expect("build_clip_conditioning");
+        let ref_clip = get("clip_cond");
+        eprintln!(
+            "[ref] clip_cond shape ours={:?} ref={:?}  max_abs_diff={:.5}",
+            our_clip.dims(), ref_clip.dims(), max_abs_diff(&our_clip, ref_clip)
+        );
+
+        // ---- 2. Time embedding (t=0.5, c_cond=64) + zero-cond sca/crp ----
+        let t = Tensor::new(&[0.5f32], &device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t, 64, 10000.0).unwrap();
+        let zero = Tensor::zeros(1, DType::F32, &device).unwrap();
+        let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0).unwrap();
+
+        // ---- 3. Forward with REFERENCE conditioning (isolates the body) ----
+        let (out, dump) = prior
+            .forward_collect(&latents, &t_emb, Some(&zero_emb), Some(&zero_emb), ref_clip, None, None)
+            .expect("forward_collect");
+
+        for (name, tens) in &dump {
+            if let Some(r) = refs.get(name) {
+                if tens.dims() != r.dims() {
+                    eprintln!(
+                        "[ref] {name:10} SHAPE MISMATCH ours={:?} ref={:?}",
+                        tens.dims(), r.dims()
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "[ref] {name:10} shape={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
+                    tens.dims(),
+                    max_abs_diff(tens, r),
+                    r.min_all().unwrap().to_scalar::<f32>().unwrap(),
+                    r.max_all().unwrap().to_scalar::<f32>().unwrap(),
+                );
+            }
+        }
+        let final_diff = max_abs_diff(&out, get("out_final"));
+        eprintln!("[ref] out_final max_abs_diff={final_diff:.5}");
+    }
+
+    /// v0.41 phase 2g: Stage B (decoder) reference comparison. Loads
+    /// `/tmp/cascade_ref_b.safetensors` (from tools/cascade_ref_dump_b.py)
+    /// and diffs our Stage B forward against diffusers. The decoder
+    /// `sample` is 4-channel and patchified internally; our bridge
+    /// pre-unshuffles, so we feed `pixel_unshuffle(2, in_latents)`.
+    #[test]
+    fn stage_b_matches_diffusers_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from(
+            std::env::var("CASCADE_REF_B").unwrap_or_else(|_| "/tmp/cascade_ref_b.safetensors".into())
+        );
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref_b.safetensors not found (run tools/cascade_ref_dump_b.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir)
+            .join("decoder/diffusion_pytorch_model.safetensors");
+        if !weights.exists() {
+            eprintln!("Skipping: {} not found", weights.display());
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device)
+            .expect("load reference dump");
+        let get = |k: &str| refs.get(k).unwrap_or_else(|| panic!("ref missing {k}"));
+
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap stage_b weights")
+        };
+        let prior = StableCascadePrior::new_stage_b(Config::stage_b_full(), vb)
+            .expect("new_stage_b");
+
+        // Decoder sample (4ch) -> our 16ch input via pixel_unshuffle(2).
+        let latents4 = get("in_latents").to_dtype(DType::F32).unwrap();
+        let latents = crate::pipelines::cascade_vae::pixel_unshuffle(&latents4, 2).unwrap();
+        let effnet = refs.get("in_effnet").map(|t| t.to_dtype(DType::F32).unwrap());
+        let clip_pooled = get("in_clip_text_pooled")
+            .to_dtype(DType::F32).unwrap()
+            .squeeze(1).unwrap();
+
+        let max_abs_diff = |a: &Tensor, b: &Tensor| -> f32 {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+
+        // Conditioning (pooled-only path).
+        let dummy_text = Tensor::zeros((1, 1, 1), DType::F32, &device).unwrap();
+        let our_clip = prior
+            .build_clip_conditioning(&dummy_text, &clip_pooled, None)
+            .expect("build_clip_conditioning");
+        eprintln!(
+            "[refB] clip_cond ours={:?} ref={:?}  max_abs_diff={:.5}",
+            our_clip.dims(), get("clip_cond").dims(),
+            max_abs_diff(&our_clip, get("clip_cond"))
+        );
+
+        let t = Tensor::new(&[0.5f32], &device).unwrap();
+        let t_emb = sinusoidal_time_embedding(&t, 64, 10000.0).unwrap();
+        let zero = Tensor::zeros(1, DType::F32, &device).unwrap();
+        let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0).unwrap();
+
+        // Feed reference conditioning to isolate the body.
+        let (_out, dump) = prior
+            .forward_collect(&latents, &t_emb, Some(&zero_emb), None, get("clip_cond"), effnet.as_ref(), None)
+            .expect("forward_collect");
+
+        for (name, tens) in &dump {
+            if let Some(r) = refs.get(name) {
+                if tens.dims() != r.dims() {
+                    eprintln!("[refB] {name:10} SHAPE MISMATCH ours={:?} ref={:?}", tens.dims(), r.dims());
+                    continue;
+                }
+                eprintln!(
+                    "[refB] {name:10} shape={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
+                    tens.dims(), max_abs_diff(tens, r),
+                    r.min_all().unwrap().to_scalar::<f32>().unwrap(),
+                    r.max_all().unwrap().to_scalar::<f32>().unwrap(),
+                );
+            }
+        }
+    }
+
     /// v0.40 phase 3: real-weight smoke for Stage B. Stage B lives in
     /// the standard `stabilityai/stable-cascade` repo under
     /// `decoder/`. Largest stage at full widths (~3 GB), so this test
@@ -1595,36 +2098,7 @@ mod tests {
         }
     }
 
-    // ---- v0.40 phase 1: ControlNet injection ----
-
-    #[test]
-    fn cn_injection_positions_spread_evenly_for_full_topology() {
-        // Stage C full: 8 + 24 = 32 triples × 3 sub-blocks = 96
-        // down_blocks positions. 8 residuals → positions 11, 23, 35,
-        // 47, 59, 71, 83, 95. Each at the END of a 12-block segment.
-        let cfg = Config {
-            c_in: 4,
-            c_out: 4,
-            c_hidden_per_level: vec![8, 8],
-            c_cond: 8,
-            c_clip_text: Some(8),
-            c_clip_text_pooled: 8,
-            c_clip_img: Some(8),
-            num_pooled_tokens: 4,
-            c_pooled_token: 8,
-            head_dim: 2,
-            has_attention_per_level: vec![true, true],
-            has_sca: true,
-            has_crp: true,
-            blocks_per_level: vec![8, 24],
-            effnet_input_channels: None,
-            pixels_input_channels: None,
-            sampler_style: SamplerStyle::OnePixel,
-        };
-        let (prior, _) = random_prior_c(cfg);
-        let positions = prior.cn_injection_positions(8);
-        assert_eq!(positions, vec![11, 23, 35, 47, 59, 71, 83, 95]);
-    }
+    // ---- v0.41 phase 3: ControlNet injection ----
 
     #[test]
     fn forward_with_cn_matches_forward_when_residuals_zeroed() {
@@ -1639,21 +2113,18 @@ mod tests {
         let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
-        // small_stage_c_cfg has 2 levels × 1 triple × 3 sub-blocks
-        // = 6 down positions. 2 residuals → positions 2, 5.
-        let positions = prior.cn_injection_positions(2);
-        assert_eq!(positions, vec![2, 5]);
-        // At position 2 (after first triple's Attn), latent is still
-        // at level 0 → c=16 (small cfg), spatial 8×8. At position 5
-        // (end of level 1's triple), latent is at level 1 → c=16,
-        // spatial 4×4 (after downscaler).
+        // small_stage_c_cfg has 2 levels × 1 triple = 1 ResBlock per
+        // down level (rb 0, 1) + 1 per up level (rb 2, 3). Inject at
+        // one down ResBlock (0) and one up ResBlock (2). Spatial is
+        // 8×8 throughout (switch_level=false), so the residuals match.
+        let cn_blocks = [0usize, 2];
         let r0 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
-        let r1 = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
+        let r1 = Tensor::zeros((1, 16, 8, 8), DType::F32, device).unwrap();
         let plain = prior
             .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
             .unwrap();
         let with_zero_cn = prior
-            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], &cn_blocks, 1.0)
             .unwrap();
         let diff = (&plain - &with_zero_cn)
             .unwrap()
@@ -1682,12 +2153,13 @@ mod tests {
         let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
         let r0 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
-        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 8, 8), device).unwrap();
+        let cn_blocks = [0usize, 2];
         let plain = prior
             .forward(&x, &t, Some(&sca), Some(&crp), &clip, None, None)
             .unwrap();
         let with_cn = prior
-            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], 1.0)
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], &cn_blocks, 1.0)
             .unwrap();
         let diff = (&plain - &with_cn)
             .unwrap()
@@ -1704,9 +2176,11 @@ mod tests {
     }
 
     #[test]
-    fn forward_with_cn_rejects_shape_mismatched_residuals() {
-        // Phase 1 contract: residuals MUST shape-match the latent at
-        // injection point. Shape mismatch errors loudly.
+    fn forward_with_cn_bilinear_resizes_mismatched_residuals() {
+        // v0.41 phase 3: residuals at the CN backbone's small spatial
+        // are bilinearly upsampled to the latent spatial (no more
+        // exact-shape requirement). A 4×4 residual injects fine into
+        // an 8×8 latent.
         let (prior, _) = random_prior_c(small_stage_c_cfg());
         let device = &prior.device;
         let x = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), device).unwrap();
@@ -1714,25 +2188,12 @@ mod tests {
         let sca = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
-        // Wrong shape at position 2: expected (1, 16, 8, 8), give (1, 16, 4, 4).
-        let r_wrong = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
-        let r_ok = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
-        let err = prior
-            .forward_with_cn(
-                &x,
-                &t,
-                Some(&sca),
-                Some(&crp),
-                &clip,
-                &[r_wrong, r_ok],
-                1.0,
-            )
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("doesn't match") && msg.contains("position 2"),
-            "expected shape-mismatch error pointing at position 2; got: {msg}"
-        );
+        let r0 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let r1 = Tensor::randn(0f32, 1f32, (1, 16, 4, 4), device).unwrap();
+        let out = prior
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[r0, r1], &[0, 2], 1.0)
+            .unwrap();
+        assert_eq!(out.dims(), &[1, 4, 8, 8]);
     }
 
     #[test]
@@ -1745,7 +2206,7 @@ mod tests {
         let crp = Tensor::randn(0f32, 1f32, (1, 8), device).unwrap();
         let clip = Tensor::randn(0f32, 1f32, (1, 5, 16), device).unwrap();
         let err = prior
-            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[], 1.0)
+            .forward_with_cn(&x, &t, Some(&sca), Some(&crp), &clip, &[], &[], 1.0)
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("non-empty"), "got: {msg}");
@@ -1761,7 +2222,7 @@ mod tests {
         let clip = prior.zero_kv_stream(1, 1, 5).unwrap();
         let r = Tensor::zeros((1, 16, 4, 4), DType::F32, device).unwrap();
         let err = prior
-            .forward_with_cn(&x, &t, Some(&sca), None, &clip, &[r], 1.0)
+            .forward_with_cn(&x, &t, Some(&sca), None, &clip, &[r], &[0], 1.0)
             .unwrap_err();
         let msg = format!("{err}");
         assert!(
