@@ -69,6 +69,12 @@ pub struct Config {
     pub c_projection_in: usize,
     /// Projection output channels — 2048 (Stage C `c_hidden`).
     pub c_projection_out: usize,
+    /// Upstream `controlnet_blocks` — the global ResBlock indices (in
+    /// the Stage C down+up ResBlock sequence, down=0..31, up=32..63)
+    /// where each projection head's residual is injected. Head `j`
+    /// injects before ResBlock `controlnet_blocks[j]`. Canny:
+    /// `[0, 4, 8, 12, 51, 55, 59, 63]`.
+    pub controlnet_blocks: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +205,7 @@ impl Config {
             n_projections: 8,
             c_projection_in: 1280,
             c_projection_out: 2048,
+            controlnet_blocks: vec![0, 4, 8, 12, 51, 55, 59, 63],
         }
     }
 }
@@ -598,6 +605,7 @@ mod tests {
             n_projections: 2,
             c_projection_in: 16,
             c_projection_out: 32,
+            controlnet_blocks: vec![0, 1],
         }
     }
 
