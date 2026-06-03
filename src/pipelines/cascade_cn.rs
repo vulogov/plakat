@@ -738,4 +738,55 @@ mod tests {
             ),
         }
     }
+
+    /// v0.41 phase 3: reference comparison vs torchvision EfficientNetV2-S
+    /// + canny projections. Loads `/tmp/cascade_ref_cn.safetensors`
+    /// (from tools/cascade_ref_dump_cn.py), feeds the same input through
+    /// our CascadeControlNet.forward, diffs the 8 residuals.
+    #[test]
+    fn cn_forward_matches_reference() {
+        let dir = match std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let ref_path = std::path::PathBuf::from("/tmp/cascade_ref_cn.safetensors");
+        if !ref_path.exists() {
+            eprintln!("Skipping: /tmp/cascade_ref_cn.safetensors not found (run tools/cascade_ref_dump_cn.py)");
+            return;
+        }
+        let weights = std::path::PathBuf::from(&dir).join("controlnet/canny.safetensors");
+        if !weights.exists() {
+            return;
+        }
+        let device = Device::Cpu;
+        let refs = candle_core::safetensors::load(&ref_path, &device).expect("load ref");
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights.as_path()], DType::F32, &device)
+                .expect("mmap")
+        };
+        let cn = CascadeControlNet::new(Config::canny_upstream(), vb).expect("new");
+        let cond = refs.get("in_cond").unwrap().to_dtype(DType::F32).unwrap();
+        let mad = |a: &Tensor, b: &Tensor| {
+            (a - b).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap()
+        };
+        // Backbone feature first.
+        let feat = cn.backbone_features(&cond).unwrap();
+        eprintln!(
+            "[refCN] backbone_feat ours={:?} ref={:?}  max_abs_diff={:.5}",
+            feat.dims(), refs.get("backbone_feat").unwrap().dims(),
+            mad(&feat, refs.get("backbone_feat").unwrap())
+        );
+        let residuals = cn.forward(&cond).unwrap();
+        for (i, r) in residuals.iter().enumerate() {
+            let key = format!("residual_{i}");
+            if let Some(rr) = refs.get(&key) {
+                eprintln!(
+                    "[refCN] {key} ours={:?} ref={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
+                    r.dims(), rr.dims(), mad(r, rr),
+                    rr.min_all().unwrap().to_scalar::<f32>().unwrap(),
+                    rr.max_all().unwrap().to_scalar::<f32>().unwrap(),
+                );
+            }
+        }
+    }
 }
