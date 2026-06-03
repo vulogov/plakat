@@ -231,32 +231,104 @@ fn apply_one_lora(
     Ok((n_modified, n_total))
 }
 
-/// v0.42 phase 1: DoRA (Weight-Decomposed LoRA) weight fuse, matching
-/// the PEFT convention. The base weight `W` (shape `[out, in]`) is
-/// decomposed into a per-output magnitude `m` and a direction; the
-/// LoRA updates the direction. The merged weight is:
+/// v0.42 phase 1: DoRA (Weight-Decomposed LoRA) weight fuse. The
+/// merged weight renorms `V = W + ΔW` so each vector along the
+/// magnitude axis is scaled to its stored `dora_scale` target:
 ///
 /// ```text
-///   V  = W + ΔW                       (ΔW = the already-scaled delta)
-///   W' = m · V / ‖V‖_in               (norm over the input dim, per output row)
+///   V  = W + ΔW                            (ΔW = the already-scaled delta)
+///   W' = dora_scale · V / ‖V‖_axis         (norm over the OTHER axis)
 /// ```
 ///
-/// `dora_scale` is stored `[1, out]` (per-output magnitude); we reshape
-/// it to `[out, 1]` to broadcast against `V`. Without this renorm the
-/// LoRA delta blows the weights out (DoRA's ΔW is large by design).
+/// IMPORTANT — the renorm axis differs by trainer convention, and the
+/// wrong axis is catastrophic. PEFT's reference DoRA
+/// (`peft/tuners/lora/dora.py`) normalises over `dim=1` (per output
+/// row); kohya / sd-scripts — the format real community Cascade LoRAs
+/// ship in — computes the magnitude over the transposed axis, so
+/// `dora_scale` is a per-**input-column** vector renormed over `dim=0`.
+/// Picking wrong multiplies a per-column magnitude across the rows (or
+/// vice-versa), scrambling every weight at full force regardless of
+/// LoRA strength — the v0.42-phase-1 magenta/cream corruption.
+///
+/// [`pick_dora_axis`] auto-detects the correct axis: for non-square
+/// weights the `dora_scale` length disambiguates; for square weights it
+/// picks the axis where `dora_scale / ‖W‖` is most uniform (the matching
+/// axis clusters tightly — CoV ~0.08 on the real `cascade_anime` DoRA —
+/// while the wrong axis is wildly variable — CoV ~0.39). So a kohya DoRA
+/// and a genuine PEFT-format DoRA both merge correctly.
 fn apply_dora(base: &Tensor, delta: &Tensor, dora_scale: &Tensor) -> Result<Tensor> {
     let dtype = base.dtype();
     let base_f = base.to_dtype(DType::F32)?;
     let delta_f = delta.to_dtype(DType::F32)?;
     let v = (&base_f + &delta_f)?; // [out, in]
-    let (out, _in) = v.dims2()?;
-    // ‖V‖ over the input dim → [out, 1].
-    let norm = v.sqr()?.sum_keepdim(1)?.sqrt()?;
-    // dora_scale [1, out] → [out, 1].
-    let m = dora_scale.to_dtype(DType::F32)?.reshape((out, 1))?;
-    let factor = m.broadcast_div(&norm)?; // [out, 1]
-    let updated = v.broadcast_mul(&factor)?;
+    let (out, in_dim) = v.dims2()?;
+    let m_flat = dora_scale.to_dtype(DType::F32)?.flatten_all()?; // [n]
+
+    let updated = if pick_dora_axis(&base_f, &m_flat, out, in_dim)? == DoraAxis::Column {
+        // per input column: ‖V‖ over the output dim → [1, in].
+        let v_norm = v.sqr()?.sum_keepdim(0)?.sqrt()?;
+        let m = m_flat.reshape((1, in_dim))?;
+        v.broadcast_mul(&m.broadcast_div(&v_norm)?)?
+    } else {
+        // per output row: ‖V‖ over the input dim → [out, 1].
+        let v_norm = v.sqr()?.sum_keepdim(1)?.sqrt()?;
+        let m = m_flat.reshape((out, 1))?;
+        v.broadcast_mul(&m.broadcast_div(&v_norm)?)?
+    };
     updated.to_dtype(dtype).map_err(|e| e.into())
+}
+
+/// Which axis a DoRA `dora_scale` vector indexes. `Column` = per
+/// input column (kohya / sd-scripts, renorm over `dim=0`); `Row` = per
+/// output row (PEFT, renorm over `dim=1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoraAxis {
+    Column,
+    Row,
+}
+
+/// Auto-detect the DoRA magnitude axis. Length disambiguates a
+/// non-square weight outright; for a square weight, the matching axis
+/// is the one where `dora_scale / ‖W‖_axis` has the lower coefficient
+/// of variation (the trainer initialised `dora_scale` to that axis's
+/// norm, so the ratio is near-constant; the transposed axis is noise).
+fn pick_dora_axis(
+    base_f: &Tensor,
+    m_flat: &Tensor,
+    out: usize,
+    in_dim: usize,
+) -> Result<DoraAxis> {
+    let n = m_flat.elem_count();
+    if n == in_dim && n != out {
+        return Ok(DoraAxis::Column);
+    }
+    if n == out && n != in_dim {
+        return Ok(DoraAxis::Row);
+    }
+    // Square (or ambiguous): compare dispersion of dora/‖W‖ per axis.
+    let col_norm = base_f.sqr()?.sum(0)?.sqrt()?; // [in]
+    let row_norm = base_f.sqr()?.sum(1)?.sqrt()?; // [out]
+    let col_cov = coeff_of_variation(&m_flat.broadcast_div(&col_norm)?)?;
+    let row_cov = coeff_of_variation(&m_flat.broadcast_div(&row_norm)?)?;
+    Ok(if col_cov <= row_cov {
+        DoraAxis::Column
+    } else {
+        DoraAxis::Row
+    })
+}
+
+/// Coefficient of variation (std / |mean|) of a 1-D tensor. Used to
+/// score how uniform a `dora_scale / ‖W‖` ratio is — the matching axis
+/// minimises it.
+fn coeff_of_variation(x: &Tensor) -> Result<f64> {
+    let mean = x.mean_all()?.to_scalar::<f32>()? as f64;
+    let mean_sq = x.sqr()?.mean_all()?.to_scalar::<f32>()? as f64;
+    let var = (mean_sq - mean * mean).max(0.0);
+    Ok(if mean.abs() < 1e-12 {
+        f64::INFINITY
+    } else {
+        var.sqrt() / mean.abs()
+    })
 }
 
 /// Translate an upstream logical leaf path (with the `decoder.` /
@@ -476,40 +548,73 @@ mod tests {
     }
 
     #[test]
-    fn apply_dora_renormalises_per_output_row() {
-        // v0.42 phase 1: W' = m·(W+ΔW)/‖W+ΔW‖_in, per output row.
-        // base rows [[3,4],[0,5]] have input-dim norms [5,5]. With
-        // zero delta and dora_scale=[10,10], factor = 10/5 = 2, so
-        // W' = 2·base = [[6,8],[0,10]].
+    fn apply_dora_column_axis_pins_column_magnitudes() {
+        // v0.42 phase 1: a kohya DoRA renorms per INPUT COLUMN. Use a
+        // NON-square weight (out=2, in=3) so the dora_scale length (3)
+        // forces the column axis unambiguously. col2=[1,0] (norm 1) is
+        // pinned to dora[2]=2; col0/col1 already at norm 5 → unchanged.
         use candle_core::{Device, Tensor};
         let device = Device::Cpu;
-        let base = Tensor::new(&[[3.0f32, 4.0], [0.0, 5.0]], &device).unwrap();
-        let delta = Tensor::zeros((2, 2), candle_core::DType::F32, &device).unwrap();
-        let dora = Tensor::new(&[[10.0f32, 10.0]], &device).unwrap(); // [1, out]
+        let base = Tensor::new(&[[3.0f32, 0.0, 1.0], [4.0, 5.0, 0.0]], &device).unwrap();
+        let delta = Tensor::zeros((2, 3), candle_core::DType::F32, &device).unwrap();
+        let dora = Tensor::new(&[[5.0f32, 5.0, 2.0]], &device).unwrap(); // len = in
         let out = apply_dora(&base, &delta, &dora).unwrap();
         let v = out.to_vec2::<f32>().unwrap();
-        assert!((v[0][0] - 6.0).abs() < 1e-4 && (v[0][1] - 8.0).abs() < 1e-4);
-        assert!((v[1][0] - 0.0).abs() < 1e-4 && (v[1][1] - 10.0).abs() < 1e-4);
+        let col = |j: usize| (v[0][j].powi(2) + v[1][j].powi(2)).sqrt();
+        assert!((col(0) - 5.0).abs() < 1e-3 && (col(1) - 5.0).abs() < 1e-3);
+        assert!((col(2) - 2.0).abs() < 1e-3, "col2 pinned to 2, got {}", col(2));
     }
 
     #[test]
-    fn apply_dora_with_matching_magnitude_is_near_identity() {
-        // When dora_scale equals the base's per-row norm and delta=0,
-        // the fuse returns the base unchanged.
+    fn apply_dora_row_axis_pins_row_magnitudes() {
+        // The PEFT convention: a dora_scale whose length matches the
+        // OUTPUT dim forces the row axis. Non-square (out=3, in=2);
+        // row2=[1,0] (norm 1) pinned to dora[2]=2.
         use candle_core::{Device, Tensor};
         let device = Device::Cpu;
-        let base = Tensor::new(&[[3.0f32, 4.0], [6.0, 8.0]], &device).unwrap();
-        let delta = Tensor::zeros((2, 2), candle_core::DType::F32, &device).unwrap();
-        // row norms: 5 and 10.
-        let dora = Tensor::new(&[[5.0f32, 10.0]], &device).unwrap();
+        let base = Tensor::new(&[[3.0f32, 4.0], [0.0, 5.0], [1.0, 0.0]], &device).unwrap();
+        let delta = Tensor::zeros((3, 2), candle_core::DType::F32, &device).unwrap();
+        let dora = Tensor::new(&[[5.0f32, 5.0, 2.0]], &device).unwrap(); // len = out
         let out = apply_dora(&base, &delta, &dora).unwrap();
         let v = out.to_vec2::<f32>().unwrap();
-        let b = base.to_vec2::<f32>().unwrap();
-        for i in 0..2 {
-            for j in 0..2 {
-                assert!((v[i][j] - b[i][j]).abs() < 1e-4);
-            }
-        }
+        let row = |i: usize| (v[i][0].powi(2) + v[i][1].powi(2)).sqrt();
+        assert!((row(0) - 5.0).abs() < 1e-3 && (row(1) - 5.0).abs() < 1e-3);
+        assert!((row(2) - 2.0).abs() < 1e-3, "row2 pinned to 2, got {}", row(2));
+    }
+
+    #[test]
+    fn pick_dora_axis_square_uses_lower_dispersion() {
+        // Square weights can't be disambiguated by length, so the axis
+        // is chosen by whichever dora/‖W‖ ratio is most uniform.
+        use candle_core::{Device, Tensor};
+        let device = Device::Cpu;
+        // base: col0=[3,4] norm 5, col1=[0,5] norm 5; row0=[3,0] norm 3,
+        // row1=[4,5] norm ~6.40.
+        let base = Tensor::new(&[[3.0f32, 0.0], [4.0, 5.0]], &device).unwrap();
+        // dora == column norms → column ratio is constant (CoV 0) → Column.
+        let col_aligned = Tensor::new(&[5.0f32, 5.0], &device).unwrap();
+        assert_eq!(
+            pick_dora_axis(&base, &col_aligned, 2, 2).unwrap(),
+            DoraAxis::Column
+        );
+        // dora == row norms → row ratio constant → Row.
+        let row_aligned = Tensor::new(&[3.0f32, (41.0f32).sqrt()], &device).unwrap();
+        assert_eq!(
+            pick_dora_axis(&base, &row_aligned, 2, 2).unwrap(),
+            DoraAxis::Row
+        );
+    }
+
+    #[test]
+    fn pick_dora_axis_nonsquare_uses_length() {
+        use candle_core::{Device, Tensor};
+        let device = Device::Cpu;
+        let base = Tensor::zeros((2, 3), candle_core::DType::F32, &device).unwrap();
+        let len3 = Tensor::zeros(3, candle_core::DType::F32, &device).unwrap();
+        let len2 = Tensor::zeros(2, candle_core::DType::F32, &device).unwrap();
+        // out=2, in=3: length-3 → Column, length-2 → Row.
+        assert_eq!(pick_dora_axis(&base, &len3, 2, 3).unwrap(), DoraAxis::Column);
+        assert_eq!(pick_dora_axis(&base, &len2, 2, 3).unwrap(), DoraAxis::Row);
     }
 
     #[test]
