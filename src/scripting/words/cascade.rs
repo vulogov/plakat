@@ -110,6 +110,22 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
         let negative = ctx.config.negative.clone();
         let seed = ctx.config.seed.unwrap_or_else(rand::random::<u64>);
 
+        // Stable Cascade output is square (prior latent is fixed
+        // 24×24×16); bail loud on non-square + non-/8 sizes so the
+        // failure mode is a clear error instead of a silently
+        // mismatched image dim.
+        let w = ctx.config.width;
+        let h = ctx.config.height;
+        anyhow::ensure!(
+            w == h,
+            "{TAG}: Stable Cascade output is square; config size is {w}x{h}."
+        );
+        anyhow::ensure!(
+            w % 8 == 0,
+            "{TAG}: Stable Cascade output dim must be divisible by 8; got {w}."
+        );
+        let output_dim = w;
+
         // get_or_load + generate. The borrow of `pipeline` is
         // released before push_image_with_metadata mutates ctx.
         let (buf, ow, oh) = {
@@ -117,6 +133,7 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
             pipeline.generate(
                 &prompt_owned,
                 &negative,
+                output_dim,
                 stage_c_steps,
                 stage_b_steps,
                 guidance,

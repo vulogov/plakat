@@ -2080,13 +2080,14 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // out / count all carrying through.
     if variant.is_cascade() {
         use crate::pipelines::cascade;
-        // v0.38 phase 5: multi-CN bail. Single-CN is the supported
-        // shape for Cascade in this cycle; multi-CN summation needs
-        // a follow-up to match upstream's per-residual gating.
+        // Stable Cascade applies a single ControlNet (the model uses
+        // one cnet deliverer over its Stage C ResBlocks); upstream
+        // ships only the canny CN. Multi-CN isn't a meaningful shape
+        // for Cascade, so reject >1 control-spec.
         if req.controls.len() > 1 {
             anyhow::bail!(
-                "Stable Cascade supports at most one --control-spec in v0.38 \
-                 (got {}). Multi-ControlNet for Cascade is a v0.39 follow-up.",
+                "Stable Cascade applies a single ControlNet (got {} --control-spec). \
+                 The model uses one cnet over Stage C; pass at most one.",
                 req.controls.len()
             );
         }
@@ -2104,11 +2105,31 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         let stage_b_steps = req.cascade_stage_b_steps.unwrap_or_else(|| {
             req.steps.saturating_sub(stage_c_steps).max(1)
         });
+        // Stable Cascade's prior is fixed at 24×24×16, so the
+        // pipeline can only produce square outputs (image dim =
+        // Stage B latent dim × 8). Bail loud if the user passed a
+        // non-square --size so the silent-misalignment failure
+        // mode (image gets generated at width², not width×height)
+        // can't bite.
+        anyhow::ensure!(
+            req.width == req.height,
+            "Stable Cascade output is square (prior latent is fixed at 24×24×16); \
+             got --size {}x{}. Pick a square size, e.g. 1024x1024.",
+            req.width,
+            req.height
+        );
+        anyhow::ensure!(
+            req.width % 8 == 0,
+            "Stable Cascade output dim must be divisible by 8 (Stage A↔B \
+             compression contract); got {}.",
+            req.width
+        );
         cascade::run(cascade::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
             prompt: req.prompt.clone(),
             negative: req.negative.clone(),
+            output_dim: req.width,
             stage_c_steps,
             stage_b_steps,
             guidance: req.guidance as f64,

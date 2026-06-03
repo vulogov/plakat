@@ -218,10 +218,21 @@ impl Pipeline {
     ///   diffusion_pytorch_model.safetensors
     /// ```
     pub async fn load(req: LoadRequest) -> Result<Self> {
+        // Stable Cascade was trained in BF16 (diffusers'
+        // `torch_dtype=torch.bfloat16` default). BF16 has the same
+        // exponent range as F32 (~1e38) but F16's mantissa, which is
+        // exactly the trade Cascade needs — Stage C's FiLM
+        // modulation amplifies the residual stream by `(1 + scale)`
+        // per TimestepBlock, and at scale ≈ 1 across 24+ stacked
+        // blocks the intermediate values fly past F16's 6.5e4
+        // ceiling and become Inf → NaN. v0.41 phase 2b caught this
+        // on the first Metal end-to-end run (CPU F32 was fine all
+        // along). BF16 keeps the GPU memory win F16 gave us while
+        // matching the upstream dtype.
         let dtype = if matches!(req.device, Device::Cpu) {
             DType::F32
         } else {
-            DType::F16
+            DType::BF16
         };
 
         let dl = progress::spinner("Resolving Stable Cascade weights");
@@ -400,9 +411,11 @@ impl Pipeline {
             .to_vec();
         ids.resize(77, CLIP_EOT);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let (penult, pooled) = self.clip_g_enc.forward_for_sdxl(&ids_t)?;
+        // v0.41 phase 2j: Cascade uses the LAST hidden state
+        // (hidden_states[-1]), not SDXL's penultimate.
+        let (last_hidden, pooled) = self.clip_g_enc.forward_for_cascade(&ids_t)?;
         Ok((
-            penult.to_dtype(self.dtype)?,
+            last_hidden.to_dtype(self.dtype)?,
             pooled.to_dtype(self.dtype)?,
         ))
     }
@@ -434,25 +447,25 @@ impl Pipeline {
         &mut self,
         prompt: &str,
         negative: &str,
+        output_dim: u32,
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
-        _control: Option<&ControlConditioning>,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
-        // v0.40 phase 4: hardcoded 1024² output. A future cycle may
-        // expose output_dim as a Pipeline arg.
-        const OUTPUT_DIM: u32 = 1024;
         self.generate_at_size(
             prompt,
             negative,
-            OUTPUT_DIM,
+            output_dim,
             stage_c_steps,
             stage_b_steps,
             guidance,
             seed,
             scheduler_kind,
+            control,
+            None,
         )
     }
 
@@ -464,13 +477,16 @@ impl Pipeline {
     /// conditioning → Stage B CFG denoise → PixelShuffle(2) →
     /// Stage A.decode → image bytes.
     ///
-    /// `sca_emb` and `crp_emb` in the `TimestepBlock`s are wired with
-    /// the same sinusoidal time embedding as `t_emb` for v0.40 phase
-    /// 4 (placeholder until smoke iteration refines the exact
-    /// conditioning semantics). The KV stream is built via
-    /// `StableCascadePrior::build_clip_conditioning` — Stage C gets
-    /// concat(77 text + 4 pooled text + 4 zero image) at c_hidden=2048;
-    /// Stage B gets pooled-only at c_hidden=1280.
+    /// `sca_emb` and `crp_emb` in the `TimestepBlock`s use the
+    /// sinusoidal embedding of a **zero** scalar — the upstream
+    /// diffusers default for `sca=None` / `crp=None` (aesthetic-score
+    /// and crop conditioning omitted). This is NOT the zero tensor:
+    /// `sin(0) = 0`, `cos(0) = 1`, so the embedding has constant
+    /// signal that lets the `mapper_sca` / `mapper_crp` linears emit
+    /// their learned baseline AdaLN-style scales/shifts. The KV
+    /// stream is built via `StableCascadePrior::build_clip_conditioning`
+    /// — Stage C gets concat(77 text + 4 pooled text + 4 zero image)
+    /// at c_hidden=2048; Stage B gets pooled-only at c_hidden=1280.
     ///
     /// Returns `(buf_rgb_u8, width, height)`.
     pub fn generate_at_size(
@@ -483,11 +499,26 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
+        // v0.41 phase 4c: img2img — the init image encoded into Stage
+        // B latent space (16, dim/8, dim/8) + the strength. When set,
+        // Stage B is seeded from a noised version of the init at a
+        // strength-truncated schedule instead of pure noise. Stage C
+        // still runs the full text-driven schedule.
+        img2img_init: Option<(&Tensor, f32)>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
+        use crate::pipelines::cascade_scheduler::CascadeScheduler;
         use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
-        use crate::pipelines::scheduler::build as build_scheduler;
         use candle_core::IndexOp;
+
+        // v0.41 phase 0: scheduler_kind is ignored for Stable Cascade.
+        // The model is trained against `DDPMWuerstchenScheduler` (ratio
+        // timesteps + cosine α-cumprod) which doesn't fit candle's
+        // SD-family scheduler trait. A future cycle may surface a
+        // `SchedulerKind::CascadeWuerstchen{Linear,Shifted}` variant
+        // to expose the scaler knob.
+        let _ = scheduler_kind;
 
         anyhow::ensure!(
             output_dim % 8 == 0,
@@ -522,55 +553,120 @@ impl Pipeline {
             .stage_b
             .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
 
-        // Scheduler carrier — SDXL config provides the SD-family
-        // timestep schedule the candle_transformers scheduler needs.
-        let sd_cfg = candle_transformers::models::stable_diffusion::StableDiffusionConfig::sdxl(
-            None, None, None,
-        );
+        // ---- sca/crp zero-conditioning embedding ----
+        // v0.41 phase 1: upstream's `sca=None / crp=None` default
+        // path sets the conditioning value to zeros_like(timestep_ratio)
+        // and runs the same sinusoidal encoder over it. The result is
+        // constant across denoise steps, so precompute once and share
+        // between Stage C (uses both) and Stage B (uses sca only).
+        // Batch is fixed at 2 throughout the CFG denoise loops.
+        let zero_cond_input = Tensor::zeros(2, candle_core::DType::F32, &self.device)?;
+        let zero_cond_emb = sinusoidal_time_embedding(&zero_cond_input, 64, 10000.0)?
+            .to_dtype(self.dtype)?;
+
+        // ---- ControlNet residual prep (Stage C) ----
+        // v0.41 phase 3: when a CN is loaded AND a conditioning image
+        // was supplied, run the CN backbone+projections once to get
+        // the per-head residuals, replicate them across the CFG batch
+        // (2), and inject during the Stage C denoise via
+        // forward_with_cn. The CN's `controlnet_blocks` map heads →
+        // ResBlock positions; residuals are bilinearly resized inside
+        // the prior. `control.scale` is the strength; start/end gate
+        // the active timestep window.
+        let cn_data: Option<(Vec<Tensor>, Vec<usize>, f32, f32, f32)> =
+            match (self.controlnet.as_ref(), control) {
+                (Some(cn), Some(cc)) => {
+                    // Canny CN takes a 1-channel input; reduce the
+                    // (B,3,H,W) conditioning to grayscale by channel mean.
+                    let cond = cc.conditioning_image.to_dtype(self.dtype)?;
+                    let cond1 = if cond.dim(1)? == 1 {
+                        cond
+                    } else {
+                        cond.mean_keepdim(1)?
+                    };
+                    let residuals = cn.forward(&cond1)?;
+                    // Replicate each residual across the CFG batch (2).
+                    let residuals: Vec<Tensor> = residuals
+                        .iter()
+                        .map(|r| Tensor::cat(&[r, r], 0))
+                        .collect::<candle_core::Result<_>>()?;
+                    let blocks = cn.cfg.controlnet_blocks.clone();
+                    Some((residuals, blocks, cc.scale, cc.start, cc.end))
+                }
+                _ => None,
+            };
 
         // ---- Stage C denoise (fixed 24×24×16 prior latent) ----
-        let mut c_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_c_steps)?;
-        let c_timesteps = c_scheduler.timesteps().to_vec();
-        let c_init_sigma = c_scheduler.init_noise_sigma();
+        // v0.41 phase 0: Wuerstchen-style scheduler — ratio timesteps,
+        // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
+        let c_scheduler = CascadeScheduler::new(stage_c_steps);
+        let c_timesteps: Vec<f64> = c_scheduler.timesteps().to_vec();
         let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
             .to_dtype(self.dtype)?;
-        let mut latent_c = (noise_c * c_init_sigma)?;
+        let mut latent_c = noise_c;
         let bar = crate::ui::progress::step_bar(
             c_timesteps.len() as u64,
             "cascade stage C (prior)",
         );
-        for &t in &c_timesteps {
-            let scaled = c_scheduler.scale_model_input(latent_c.clone(), t)?;
-            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+        let c_total = c_timesteps.len().max(1);
+        for (step_idx, &t) in c_timesteps.iter().enumerate() {
+            let cfg_latent = Tensor::cat(&[&latent_c, &latent_c], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
             let t_emb = sinusoidal_time_embedding(&t_scalar, 64, 10000.0)?
                 .to_dtype(self.dtype)?;
-            let pred = self.stage_c.forward(
-                &cfg_latent,
-                &t_emb,
-                Some(&t_emb), // sca_emb — placeholder (same as t_emb)
-                Some(&t_emb), // crp_emb — placeholder
-                &clip_c,
-                None,
-                None,
-            )?;
+            // CN active this step? progress = step_idx / total in [0,1);
+            // gate to [start, end).
+            let cn_active = cn_data.as_ref().filter(|(_, _, _, start, end)| {
+                let progress = step_idx as f32 / c_total as f32;
+                progress >= *start && progress < *end
+            });
+            let pred = match cn_active {
+                Some((residuals, blocks, scale, _, _)) => self.stage_c.forward_with_cn(
+                    &cfg_latent,
+                    &t_emb,
+                    Some(&zero_cond_emb),
+                    Some(&zero_cond_emb),
+                    &clip_c,
+                    residuals,
+                    blocks,
+                    *scale,
+                )?,
+                None => self.stage_c.forward(
+                    &cfg_latent,
+                    &t_emb,
+                    Some(&zero_cond_emb),
+                    Some(&zero_cond_emb),
+                    &clip_c,
+                    None,
+                    None,
+                )?,
+            };
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
             let guided = (neg + ((pos - neg)? * guidance)?)?;
             latent_c = c_scheduler.step(&guided, t, &latent_c)?;
             bar.inc(1);
-            bar.set_message(format!("t={t}"));
+            bar.set_message(format!("t={t:.3}"));
         }
         bar.finish_and_clear();
 
         // ---- Stage B denoise with Stage C effnet ----
-        let cfg_effnet = Tensor::cat(&[&latent_c, &latent_c], 0)?;
-        let mut b_scheduler = build_scheduler(scheduler_kind, &sd_cfg, stage_b_steps)?;
-        let b_timesteps = b_scheduler.timesteps().to_vec();
-        let b_init_sigma = b_scheduler.init_noise_sigma();
+        // v0.41 phase 2i: CFG over the effnet conditioning. Upstream
+        // decoder uses `cat([image_embeddings, zeros_like(...)])` — the
+        // UNCONDITIONAL half gets ZERO effnet so classifier-free
+        // guidance amplifies the Stage C semantic conditioning. Our
+        // CFG batch order is [neg, pos] (= [uncond, cond]), so the neg
+        // half is zeros and the pos half is the Stage C output. Feeding
+        // latent_c to BOTH halves (the v0.40 bug) left the effnet out
+        // of the guidance entirely → coherent-but-wrong decoder texture
+        // (the seed-43 "circuit board" artifact).
+        let zero_c = latent_c.zeros_like()?;
+        let cfg_effnet = Tensor::cat(&[&zero_c, &latent_c], 0)?;
+        let b_scheduler = CascadeScheduler::new(stage_b_steps);
+        let all_b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
         let noise_b = Tensor::randn(
             0f32,
             1f32,
@@ -578,14 +674,29 @@ impl Pipeline {
             &self.device,
         )?
         .to_dtype(self.dtype)?;
-        let mut latent_b = (noise_b * b_init_sigma)?;
+        // v0.41 phase 4c: img2img seeds Stage B from the noised init
+        // latent at a strength-truncated schedule; t2i starts from
+        // pure noise over the full schedule.
+        let (b_timesteps, mut latent_b) = match img2img_init {
+            Some((init, strength)) => {
+                anyhow::ensure!(
+                    init.dims() == [1, 16, stage_b_dim, stage_b_dim],
+                    "img2img init latent {:?} must match Stage B shape [1,16,{stage_b_dim},{stage_b_dim}]",
+                    init.dims()
+                );
+                let start = b_scheduler.img2img_start_step(strength);
+                let t_start = all_b_timesteps[start];
+                let seeded = b_scheduler.add_noise(init, &noise_b, t_start)?;
+                (all_b_timesteps[start..].to_vec(), seeded)
+            }
+            None => (all_b_timesteps, noise_b),
+        };
         let bar = crate::ui::progress::step_bar(
             b_timesteps.len() as u64,
             "cascade stage B (decoder)",
         );
         for &t in &b_timesteps {
-            let scaled = b_scheduler.scale_model_input(latent_b.clone(), t)?;
-            let cfg_latent = Tensor::cat(&[&scaled, &scaled], 0)?;
+            let cfg_latent = Tensor::cat(&[&latent_b, &latent_b], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
@@ -594,8 +705,8 @@ impl Pipeline {
             let pred = self.stage_b.forward(
                 &cfg_latent,
                 &t_emb,
-                Some(&t_emb), // sca_emb — placeholder
-                None,         // crp_emb — Stage B has no mapper_crp
+                Some(&zero_cond_emb),
+                None, // crp_emb — Stage B has no mapper_crp
                 &clip_b,
                 Some(&cfg_effnet),
                 None, // pixels — t2i has no pixel conditioning
@@ -603,17 +714,32 @@ impl Pipeline {
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
-            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            // v0.41 phase 2i: the DECODER uses a much lower guidance
+            // than the prior. Upstream StableCascadeDecoderPipeline
+            // defaults `guidance_scale=0.0` (no CFG — pure conditional);
+            // the prior uses ~4.0. Applying the prior's 4.0 to Stage B
+            // over-drove the decoder into harsh over-detailed texture.
+            // In our `neg + scale*(pos-neg)` form, scale=1.0 reproduces
+            // the pure conditional (= upstream no-CFG decoder). A future
+            // phase exposes `--decoder-guidance`; for now clamp Stage B
+            // to a mild fixed value.
+            const DECODER_GUIDANCE: f64 = 1.1;
+            let guided = (neg + ((pos - neg)? * DECODER_GUIDANCE)?)?;
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
-            bar.set_message(format!("t={t}"));
+            bar.set_message(format!("t={t:.3}"));
         }
         bar.finish_and_clear();
 
         // ---- Stage A decode via Stage B → image ----
         let s = progress::spinner("Stage A decode → image");
+        // v0.41 phase 2e: the Paella VQ decoder already outputs in
+        // [0, 1] (upstream does `vqgan.decode(...).sample.clamp(0,
+        // 1)`). v0.40's extra `(decoded / 2 + 0.5)` denorm — copied
+        // from the SD [-1,1] convention — double-shifted the image.
+        // Just clamp.
         let decoded = self.stage_a.decode_from_stage_b_space(&latent_b)?;
-        let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+        let image = decoded.clamp(0f32, 1f32)?;
         let image = (image * 255.0)?
             .to_dtype(DType::U8)?
             .i(0)?
@@ -635,24 +761,52 @@ impl Pipeline {
     /// Stage C's semantic prior.
     ///
     /// `strength` is clamped to `[0, 1]` by the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_img2img(
         &mut self,
-        _init_image_path: &std::path::Path,
-        _prompt: &str,
-        _negative: &str,
-        _stage_c_steps: usize,
-        _stage_b_steps: usize,
-        _strength: f32,
-        _guidance: f64,
-        _seed: u64,
-        _scheduler_kind: SchedulerKind,
+        init_image_path: &std::path::Path,
+        prompt: &str,
+        negative: &str,
+        output_dim: u32,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        strength: f32,
+        guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
-        // v0.39 phase 0g — see `generate()` for the same bail message.
-        anyhow::bail!(
-            "Stable Cascade generate_img2img() is pending v0.40 integration. \
-             v0.39 rewrote the architecture to load real upstream weights; the \
-             inference path lands in v0.40."
+        use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
+        anyhow::ensure!(
+            output_dim % 8 == 0,
+            "output_dim must be divisible by 8; got {output_dim}"
         );
+        // Encode the init image into Stage B latent space (16ch at
+        // dim/8). Stage A.encode + PixelUnshuffle(2).
+        let init_img = crate::imaging::preprocess::sd_image_tensor(
+            init_image_path,
+            output_dim,
+            output_dim,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| {
+            format!("loading Cascade img2img init image {}", init_image_path.display())
+        })?;
+        let init_b = self.stage_a.encode_to_stage_b_space(&init_img)?;
+        let _ = stage_b_spatial_for_image; // shape enforced in generate_at_size
+        self.generate_at_size(
+            prompt,
+            negative,
+            output_dim,
+            stage_c_steps,
+            stage_b_steps,
+            guidance,
+            seed,
+            scheduler_kind,
+            control,
+            Some((&init_b, strength)),
+        )
     }
 }
 
@@ -749,12 +903,28 @@ pub async fn run(req: RunRequest) -> Result<()> {
         resolved_loras.push(spec.resolve().await?);
     }
 
+    // v0.41 phase 4b: auto-resolve the canny ControlNet from the model
+    // repo when a control spec is present but no explicit
+    // `--cascade-control-weights` was given. Stable Cascade ships the
+    // CN at `controlnet/canny.safetensors` in the standard repo, so
+    // the path is derivable — making `--cascade-control-weights`
+    // optional.
+    let cn_weights = match (req.controlnet_weights.clone(), req.control_spec.is_some()) {
+        (Some(p), _) => Some(p),
+        (None, true) => Some(
+            crate::hf::download::get_first_of(&[(&repo, "controlnet/canny.safetensors")])
+                .await
+                .context("auto-resolving Cascade canny ControlNet from the model repo")?,
+        ),
+        (None, false) => None,
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
-        controlnet_weights: req.controlnet_weights.clone(),
+        controlnet_weights: cn_weights,
     })
     .await?;
 
@@ -770,26 +940,40 @@ pub async fn run(req: RunRequest) -> Result<()> {
         req.control_spec.as_ref(),
     ) {
         (true, Some(spec)) => {
-            let image_path = spec.image.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "Cascade ControlNet requires `--control-image PATH` (or \
-                     `image=` in `--control-spec`); auto-annotate via \
-                     `--control-from` is a v0.39 follow-up."
+            // Cascade ships only the canny CN.
+            anyhow::ensure!(
+                matches!(spec.kind, crate::pipelines::controlnet::ControlKind::Canny),
+                "Stable Cascade ControlNet supports only `canny` (got {:?})",
+                spec.kind
+            );
+            let cond = if let Some(image_path) = spec.image.as_ref() {
+                // Pre-rendered conditioning (e.g. an edge map). [-1,1].
+                crate::imaging::preprocess::sd_image_tensor(
+                    image_path, 1024, 1024, &req.device, pipeline.dtype,
                 )
-            })?;
-            let cond = crate::imaging::preprocess::sd_image_tensor(
-                image_path,
-                1024,
-                1024,
-                &req.device,
-                pipeline.dtype,
-            )
-            .with_context(|| {
-                format!(
-                    "loading Cascade control conditioning image {}",
-                    image_path.display()
+                .with_context(|| {
+                    format!("loading Cascade control image {}", image_path.display())
+                })?
+            } else if let Some(from_path) = spec.from.as_ref() {
+                // v0.41 phase 4a: auto-annotate — run Canny on the raw
+                // image. The annotator returns 3-channel edges in [0,1];
+                // map to [-1,1] so the CN sees the same distribution as
+                // the validated `image=` path (white-on-black edges).
+                let edges = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, from_path, 1024, 1024, &req.device, pipeline.dtype,
                 )
-            })?;
+                .await
+                .with_context(|| {
+                    format!("auto-annotating Cascade control from {}", from_path.display())
+                })?;
+                edges.affine(2.0, -1.0)?
+            } else {
+                anyhow::bail!(
+                    "Cascade ControlNet requires `image=` (pre-rendered) or \
+                     `from=` (auto-annotate) in `--control-spec`/`--control-image`/\
+                     `--control-from`"
+                );
+            };
             Some(ControlConditioning {
                 conditioning_image: cond,
                 scale: spec.strength,
@@ -834,6 +1018,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
         let (buf, ow, oh) = pipeline.generate(
             &req.prompt,
             &req.negative,
+            req.output_dim,
             req.stage_c_steps,
             req.stage_b_steps,
             req.guidance,
@@ -893,17 +1078,60 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
         resolved_loras.push(spec.resolve().await?);
     }
 
+    // v0.41 phase 4c: auto-resolve the canny CN when a control spec is
+    // present (mirrors the t2i path).
+    let cn_weights = match (req.controlnet_weights.clone(), req.control_spec.is_some()) {
+        (Some(p), _) => Some(p),
+        (None, true) => Some(
+            crate::hf::download::get_first_of(&[(&repo, "controlnet/canny.safetensors")])
+                .await
+                .context("auto-resolving Cascade canny ControlNet for img2img")?,
+        ),
+        (None, false) => None,
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
-        // v0.38 phase 5: Cascade img2img + ControlNet is deferred
-        // (v0.39 follow-up). The img2img CLI doesn't expose
-        // `--cascade-control-weights` either; this stays None.
-        controlnet_weights: None,
+        controlnet_weights: cn_weights,
     })
     .await?;
+
+    // v0.41 phase 4c: build the CN conditioning (image= or from=).
+    let control_conditioning: Option<ControlConditioning> = match (
+        pipeline.control_conditioning_active(),
+        req.control_spec.as_ref(),
+    ) {
+        (true, Some(spec)) => {
+            anyhow::ensure!(
+                matches!(spec.kind, crate::pipelines::controlnet::ControlKind::Canny),
+                "Stable Cascade ControlNet supports only `canny` (got {:?})",
+                spec.kind
+            );
+            let cond = if let Some(image_path) = spec.image.as_ref() {
+                crate::imaging::preprocess::sd_image_tensor(
+                    image_path, 1024, 1024, &req.device, pipeline.dtype,
+                )?
+            } else if let Some(from_path) = spec.from.as_ref() {
+                let edges = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, from_path, 1024, 1024, &req.device, pipeline.dtype,
+                )
+                .await?;
+                edges.affine(2.0, -1.0)?
+            } else {
+                anyhow::bail!("Cascade img2img control requires `image=` or `from=`");
+            };
+            Some(ControlConditioning {
+                conditioning_image: cond,
+                scale: spec.strength,
+                start: spec.start,
+                end: spec.end,
+            })
+        }
+        _ => None,
+    };
 
     let base_seed = req
         .seed
@@ -930,12 +1158,14 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
             &req.init_image,
             &req.prompt,
             &req.negative,
+            req.output_dim,
             req.stage_c_steps,
             req.stage_b_steps,
             req.strength,
             req.guidance,
             seed,
             req.scheduler,
+            control_conditioning.as_ref(),
         )?;
 
         let mut m = crate::imaging::metadata::GenerationMetadata::new(
@@ -978,6 +1208,9 @@ pub struct RunImg2imgRequest {
     pub init_image: std::path::PathBuf,
     pub prompt: String,
     pub negative: String,
+    /// Output side length (square; divisible by 8). The init image is
+    /// resized to this.
+    pub output_dim: u32,
     pub stage_c_steps: usize,
     pub stage_b_steps: usize,
     /// Img2img denoise strength in `[0, 1]`. 1.0 = pure t2i
@@ -991,6 +1224,10 @@ pub struct RunImg2imgRequest {
     pub count: u32,
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     pub lora_scale: f32,
+    /// v0.41 phase 4c: optional Stage C ControlNet (canny). Same
+    /// auto-resolve + conditioning rules as the t2i path.
+    pub control_spec: Option<crate::pipelines::controlnet::ControlSpec>,
+    pub controlnet_weights: Option<std::path::PathBuf>,
 }
 
 /// CLI entrypoint: parameters needed for one Stable Cascade
@@ -1001,6 +1238,10 @@ pub struct RunRequest {
     pub device: Device,
     pub prompt: String,
     pub negative: String,
+    /// Output image side length (output is square because Stage C's
+    /// prior latent is fixed at 24×24×16). Must be divisible by 8 —
+    /// the total Stage A↔B compression contract.
+    pub output_dim: u32,
     /// Number of Stage C denoise steps (the heavy text-to-prior
     /// stage). Upstream recommendation: 20.
     pub stage_c_steps: usize,
@@ -1043,6 +1284,7 @@ mod tests {
             device: Device::Cpu,
             prompt: "a fox in a meadow".into(),
             negative: "blurry".into(),
+            output_dim: 1024,
             stage_c_steps: 20,
             stage_b_steps: 10,
             guidance: 4.0,
@@ -1057,6 +1299,7 @@ mod tests {
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
+        assert_eq!(r.output_dim, 1024);
         assert_eq!(r.stage_b_steps, 10);
         assert_eq!(r.seed, Some(42));
         assert_eq!(r.count, 1);
@@ -1074,6 +1317,7 @@ mod tests {
             init_image: std::path::PathBuf::from("/tmp/init.png"),
             prompt: "a fox".into(),
             negative: "blurry".into(),
+            output_dim: 1024,
             stage_c_steps: 20,
             stage_b_steps: 10,
             strength: 0.6,
@@ -1084,8 +1328,11 @@ mod tests {
             count: 1,
             loras: Vec::new(),
             lora_scale: 1.0,
+            control_spec: None,
+            controlnet_weights: None,
         };
         assert_eq!(r.prompt, "a fox");
+        assert_eq!(r.output_dim, 1024);
         assert_eq!(r.strength, 0.6);
         assert_eq!(r.stage_c_steps, 20);
         assert_eq!(r.stage_b_steps, 10);
@@ -1221,6 +1468,8 @@ mod tests {
             4.0,
             42,
             SchedulerKind::DpmppKarras,
+            None,
+            None,
         );
         match result {
             Ok((buf, w, h)) => {

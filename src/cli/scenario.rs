@@ -2051,6 +2051,24 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             for spec in &loras {
                 resolved_cascade_loras.push(spec.resolve().await?);
             }
+            // v0.41 phase 3: if any task carries a control spec, resolve
+            // the canny ControlNet from the model repo so the dispatch
+            // arm can inject it. Stable Cascade ships the CN at
+            // `controlnet/canny.safetensors`.
+            let cascade_has_control = s.tasks.iter().any(|t| {
+                task_effective_controls(t).map(|v| !v.is_empty()).unwrap_or(false)
+            });
+            let cascade_cn_weights = if cascade_has_control {
+                Some(
+                    crate::hf::download::get_first_of(&[(
+                        &resolved_repo,
+                        "controlnet/canny.safetensors",
+                    )])
+                    .await?,
+                )
+            } else {
+                None
+            };
             Some(
                 crate::pipelines::cascade::Pipeline::load(
                     crate::pipelines::cascade::LoadRequest {
@@ -2058,11 +2076,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         device: device.clone(),
                         loras: resolved_cascade_loras,
                         lora_scale,
-                        // v0.38 phase 5: scenario-level Cascade
-                        // ControlNet wiring is a v0.39 follow-up;
-                        // single-task --control-spec on Cascade in
-                        // scenarios isn't yet supported.
-                        controlnet_weights: None,
+                        controlnet_weights: cascade_cn_weights,
                     },
                 )
                 .await?,
@@ -3489,6 +3503,22 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             // SD3 → SD/Flux for non-Cascade tasks.
             if let Some(cp) = cascade_pipeline.as_mut() {
                 use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
+                // Same square / divisible-by-8 contract as t2i::run.
+                // Stage C's prior is fixed at 24×24×16; the pipeline
+                // can only produce square output, so non-square sizes
+                // are a hard error.
+                anyhow::ensure!(
+                    eff_w == eff_h,
+                    "Stable Cascade output is square; task size is {}x{}.",
+                    eff_w,
+                    eff_h
+                );
+                anyhow::ensure!(
+                    eff_w % 8 == 0,
+                    "Stable Cascade output dim must be divisible by 8; got {}.",
+                    eff_w
+                );
+                let cascade_output_dim = eff_w as u32;
                 let stage_c_steps = (eff_steps * 2).div_ceil(3).max(1);
                 let stage_b_steps = eff_steps.saturating_sub(stage_c_steps).max(1);
                 // v0.38 phase 3: scenario-level Cascade LoRA stack
@@ -3497,19 +3527,50 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // per-task runtime LoRA swap).
                 let cascade_lora_entries: Vec<LoraEntry> =
                     loras.iter().map(|s| s.to_entry()).collect();
+                // v0.41 phase 3: build the per-task Cascade ControlNet
+                // conditioning. The CN is loaded only when some task
+                // carries a control spec; here we materialise this
+                // task's conditioning image (pre-rendered `image=`;
+                // `auto-from` annotation for Cascade is a follow-up).
+                let cascade_control: Option<crate::pipelines::cascade::ControlConditioning> =
+                    if cp.control_conditioning_active() {
+                        let controls = task_effective_controls(task)?;
+                        match controls.first() {
+                            Some(spec) => {
+                                let image_path = spec.image.as_ref().ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Cascade scenario control requires a pre-rendered \
+                                         `image:` (auto-from annotation for Cascade is a \
+                                         follow-up)"
+                                    )
+                                })?;
+                                let cond = crate::imaging::preprocess::sd_image_tensor(
+                                    image_path, 1024, 1024, &device, cp.dtype,
+                                )?;
+                                Some(crate::pipelines::cascade::ControlConditioning {
+                                    conditioning_image: cond,
+                                    scale: spec.strength.unwrap_or(1.0),
+                                    start: spec.start.unwrap_or(0.0),
+                                    end: spec.end.unwrap_or(1.0),
+                                })
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
                 for img_idx in 0..eff_count {
                     let img_seed = task_seed.wrapping_add(img_idx as u64);
                     let (buf, ow, oh) = cp.generate(
                         &final_prompt,
                         &eff_negative,
+                        cascade_output_dim,
                         stage_c_steps,
                         stage_b_steps,
                         eff_guidance,
                         img_seed,
                         eff_scheduler,
-                        // v0.38 phase 5: scenario-level Cascade CN
-                        // wiring deferred to v0.39.
-                        None,
+                        cascade_control.as_ref(),
                     )?;
                     let mut m = GenerationMetadata::new(
                         final_prompt.clone(),
