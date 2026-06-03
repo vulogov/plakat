@@ -852,12 +852,28 @@ pub async fn run(req: RunRequest) -> Result<()> {
         resolved_loras.push(spec.resolve().await?);
     }
 
+    // v0.41 phase 4b: auto-resolve the canny ControlNet from the model
+    // repo when a control spec is present but no explicit
+    // `--cascade-control-weights` was given. Stable Cascade ships the
+    // CN at `controlnet/canny.safetensors` in the standard repo, so
+    // the path is derivable — making `--cascade-control-weights`
+    // optional.
+    let cn_weights = match (req.controlnet_weights.clone(), req.control_spec.is_some()) {
+        (Some(p), _) => Some(p),
+        (None, true) => Some(
+            crate::hf::download::get_first_of(&[(&repo, "controlnet/canny.safetensors")])
+                .await
+                .context("auto-resolving Cascade canny ControlNet from the model repo")?,
+        ),
+        (None, false) => None,
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
-        controlnet_weights: req.controlnet_weights.clone(),
+        controlnet_weights: cn_weights,
     })
     .await?;
 
@@ -873,26 +889,40 @@ pub async fn run(req: RunRequest) -> Result<()> {
         req.control_spec.as_ref(),
     ) {
         (true, Some(spec)) => {
-            let image_path = spec.image.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "Cascade ControlNet requires `--control-image PATH` (or \
-                     `image=` in `--control-spec`); auto-annotate via \
-                     `--control-from` is a v0.39 follow-up."
+            // Cascade ships only the canny CN.
+            anyhow::ensure!(
+                matches!(spec.kind, crate::pipelines::controlnet::ControlKind::Canny),
+                "Stable Cascade ControlNet supports only `canny` (got {:?})",
+                spec.kind
+            );
+            let cond = if let Some(image_path) = spec.image.as_ref() {
+                // Pre-rendered conditioning (e.g. an edge map). [-1,1].
+                crate::imaging::preprocess::sd_image_tensor(
+                    image_path, 1024, 1024, &req.device, pipeline.dtype,
                 )
-            })?;
-            let cond = crate::imaging::preprocess::sd_image_tensor(
-                image_path,
-                1024,
-                1024,
-                &req.device,
-                pipeline.dtype,
-            )
-            .with_context(|| {
-                format!(
-                    "loading Cascade control conditioning image {}",
-                    image_path.display()
+                .with_context(|| {
+                    format!("loading Cascade control image {}", image_path.display())
+                })?
+            } else if let Some(from_path) = spec.from.as_ref() {
+                // v0.41 phase 4a: auto-annotate — run Canny on the raw
+                // image. The annotator returns 3-channel edges in [0,1];
+                // map to [-1,1] so the CN sees the same distribution as
+                // the validated `image=` path (white-on-black edges).
+                let edges = crate::pipelines::controlnet_annotator::annotate(
+                    spec.kind, from_path, 1024, 1024, &req.device, pipeline.dtype,
                 )
-            })?;
+                .await
+                .with_context(|| {
+                    format!("auto-annotating Cascade control from {}", from_path.display())
+                })?;
+                edges.affine(2.0, -1.0)?
+            } else {
+                anyhow::bail!(
+                    "Cascade ControlNet requires `image=` (pre-rendered) or \
+                     `from=` (auto-annotate) in `--control-spec`/`--control-image`/\
+                     `--control-from`"
+                );
+            };
             Some(ControlConditioning {
                 conditioning_image: cond,
                 scale: spec.strength,
