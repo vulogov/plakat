@@ -2080,13 +2080,14 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // out / count all carrying through.
     if variant.is_cascade() {
         use crate::pipelines::cascade;
-        // v0.38 phase 5: multi-CN bail. Single-CN is the supported
-        // shape for Cascade in this cycle; multi-CN summation needs
-        // a follow-up to match upstream's per-residual gating.
+        // Stable Cascade applies a single ControlNet (the model uses
+        // one cnet deliverer over its Stage C ResBlocks); upstream
+        // ships only the canny CN. Multi-CN isn't a meaningful shape
+        // for Cascade, so reject >1 control-spec.
         if req.controls.len() > 1 {
             anyhow::bail!(
-                "Stable Cascade supports at most one --control-spec in v0.38 \
-                 (got {}). Multi-ControlNet for Cascade is a v0.39 follow-up.",
+                "Stable Cascade applies a single ControlNet (got {} --control-spec). \
+                 The model uses one cnet over Stage C; pass at most one.",
                 req.controls.len()
             );
         }
