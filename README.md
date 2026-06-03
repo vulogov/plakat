@@ -8,6 +8,8 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
+📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
+
 ## What's new in v0.41 — Stable Cascade actually generates
 
 v0.40 shipped Stable Cascade "architecture-verified, quality-pending"
