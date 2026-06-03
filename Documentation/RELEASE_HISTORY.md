@@ -8,6 +8,24 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in v0.40 — Stable Cascade end-to-end on real weights
+
+v0.40 closed the v0.39 "load-correct, generate-pending" caveat:
+plakat ran Stable Cascade end-to-end on the real upstream
+`stabilityai/stable-cascade` + `stabilityai/stable-cascade-prior`
+weights — CLIP-G text → Stage C denoise → effnet conditioning →
+Stage B denoise → PixelShuffle bridge → Stage A decode → image.
+Five feature phases + close-out; three real-weight smoke-iteration
+rounds resolved every architectural gap (Conv2d-no-bias for
+BN-followed convs, ResBlock skip-concat at up-path boundaries, CN
+stage-4 variable expansion, Stage A `up_blocks.0.0` nesting,
+effnet/pixels spatial alignment). 1230 lib + 47 integration tests.
+
+The end-to-end smoke produced structurally valid but visually
+**noisy** output — architecture verified, numerical quality
+(scheduler, sca/crp conditioning, more steps) explicitly deferred
+to v0.41. That deferral became the bulk of v0.41.
+
 ## What's new in v0.39 — Stable Cascade architectural rewrite
 
 v0.39 closed the "tensor-naming alignment" caveat that v0.37 and
