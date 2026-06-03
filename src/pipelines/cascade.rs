@@ -453,7 +453,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
-        _control: Option<&ControlConditioning>,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         self.generate_at_size(
             prompt,
@@ -464,6 +464,7 @@ impl Pipeline {
             guidance,
             seed,
             scheduler_kind,
+            control,
         )
     }
 
@@ -497,6 +498,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
         use crate::pipelines::cascade_scheduler::CascadeScheduler;
@@ -555,6 +557,38 @@ impl Pipeline {
         let zero_cond_emb = sinusoidal_time_embedding(&zero_cond_input, 64, 10000.0)?
             .to_dtype(self.dtype)?;
 
+        // ---- ControlNet residual prep (Stage C) ----
+        // v0.41 phase 3: when a CN is loaded AND a conditioning image
+        // was supplied, run the CN backbone+projections once to get
+        // the per-head residuals, replicate them across the CFG batch
+        // (2), and inject during the Stage C denoise via
+        // forward_with_cn. The CN's `controlnet_blocks` map heads →
+        // ResBlock positions; residuals are bilinearly resized inside
+        // the prior. `control.scale` is the strength; start/end gate
+        // the active timestep window.
+        let cn_data: Option<(Vec<Tensor>, Vec<usize>, f32, f32, f32)> =
+            match (self.controlnet.as_ref(), control) {
+                (Some(cn), Some(cc)) => {
+                    // Canny CN takes a 1-channel input; reduce the
+                    // (B,3,H,W) conditioning to grayscale by channel mean.
+                    let cond = cc.conditioning_image.to_dtype(self.dtype)?;
+                    let cond1 = if cond.dim(1)? == 1 {
+                        cond
+                    } else {
+                        cond.mean_keepdim(1)?
+                    };
+                    let residuals = cn.forward(&cond1)?;
+                    // Replicate each residual across the CFG batch (2).
+                    let residuals: Vec<Tensor> = residuals
+                        .iter()
+                        .map(|r| Tensor::cat(&[r, r], 0))
+                        .collect::<candle_core::Result<_>>()?;
+                    let blocks = cn.cfg.controlnet_blocks.clone();
+                    Some((residuals, blocks, cc.scale, cc.start, cc.end))
+                }
+                _ => None,
+            };
+
         // ---- Stage C denoise (fixed 24×24×16 prior latent) ----
         // v0.41 phase 0: Wuerstchen-style scheduler — ratio timesteps,
         // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
@@ -567,22 +601,41 @@ impl Pipeline {
             c_timesteps.len() as u64,
             "cascade stage C (prior)",
         );
-        for &t in &c_timesteps {
+        let c_total = c_timesteps.len().max(1);
+        for (step_idx, &t) in c_timesteps.iter().enumerate() {
             let cfg_latent = Tensor::cat(&[&latent_c, &latent_c], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
             let t_emb = sinusoidal_time_embedding(&t_scalar, 64, 10000.0)?
                 .to_dtype(self.dtype)?;
-            let pred = self.stage_c.forward(
-                &cfg_latent,
-                &t_emb,
-                Some(&zero_cond_emb),
-                Some(&zero_cond_emb),
-                &clip_c,
-                None,
-                None,
-            )?;
+            // CN active this step? progress = step_idx / total in [0,1);
+            // gate to [start, end).
+            let cn_active = cn_data.as_ref().filter(|(_, _, _, start, end)| {
+                let progress = step_idx as f32 / c_total as f32;
+                progress >= *start && progress < *end
+            });
+            let pred = match cn_active {
+                Some((residuals, blocks, scale, _, _)) => self.stage_c.forward_with_cn(
+                    &cfg_latent,
+                    &t_emb,
+                    Some(&zero_cond_emb),
+                    Some(&zero_cond_emb),
+                    &clip_c,
+                    residuals,
+                    blocks,
+                    *scale,
+                )?,
+                None => self.stage_c.forward(
+                    &cfg_latent,
+                    &t_emb,
+                    Some(&zero_cond_emb),
+                    Some(&zero_cond_emb),
+                    &clip_c,
+                    None,
+                    None,
+                )?,
+            };
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
@@ -1278,6 +1331,7 @@ mod tests {
             4.0,
             42,
             SchedulerKind::DpmppKarras,
+            None,
         );
         match result {
             Ok((buf, w, h)) => {
