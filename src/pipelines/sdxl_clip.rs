@@ -105,6 +105,35 @@ impl SdxlClipGTextTransformer {
         let pooled = self.text_projection.forward(&pooled)?;
         Ok((penultimate, pooled))
     }
+
+    /// Stable Cascade's combined output. Differs from
+    /// [`forward_for_sdxl`](Self::forward_for_sdxl) in ONE place: the
+    /// per-token embeddings are the **LAST** hidden state
+    /// (`hidden_states[-1]`, after the final encoder layer, before
+    /// `final_layer_norm`), not the penultimate one. The Cascade prior
+    /// pipeline reads `text_encoder_output.hidden_states[-1]`; SDXL
+    /// reads `[-2]`. Using SDXL's penultimate layer here produced
+    /// passable output for simple prompts but melted complex ones
+    /// (v0.41 phase 2j — the steppe prompt) because the final layer
+    /// carries the semantic refinement the prior was trained on.
+    ///
+    /// Returns `(last_hidden, pooled)`; `pooled` is identical to the
+    /// SDXL path (projected EOT row of `final_layer_norm(...)`).
+    pub fn forward_for_cascade(&self, ids: &Tensor) -> Result<(Tensor, Tensor)> {
+        // until_layer = -1 → the output after the final encoder layer.
+        let (final_hidden, last_hidden) =
+            self.inner.forward_until_encoder_layer(ids, usize::MAX, -1)?;
+        let (b, _seq_len) = ids.dims2()?;
+        let argmax = ids.argmax(D::Minus1)?;
+        let argmax_v: Vec<u32> = argmax.to_dtype(candle_core::DType::U32)?.to_vec1()?;
+        let mut rows = Vec::with_capacity(b);
+        for (bi, &idx) in argmax_v.iter().enumerate() {
+            rows.push(final_hidden.i((bi, idx as usize))?);
+        }
+        let pooled = Tensor::stack(&rows, 0)?;
+        let pooled = self.text_projection.forward(&pooled)?;
+        Ok((last_hidden, pooled))
+    }
 }
 
 // Local import alias — keeps the `i(...)` indexing call above terse.

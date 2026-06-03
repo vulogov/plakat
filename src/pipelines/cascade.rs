@@ -411,9 +411,11 @@ impl Pipeline {
             .to_vec();
         ids.resize(77, CLIP_EOT);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let (penult, pooled) = self.clip_g_enc.forward_for_sdxl(&ids_t)?;
+        // v0.41 phase 2j: Cascade uses the LAST hidden state
+        // (hidden_states[-1]), not SDXL's penultimate.
+        let (last_hidden, pooled) = self.clip_g_enc.forward_for_cascade(&ids_t)?;
         Ok((
-            penult.to_dtype(self.dtype)?,
+            last_hidden.to_dtype(self.dtype)?,
             pooled.to_dtype(self.dtype)?,
         ))
     }
