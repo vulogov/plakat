@@ -62,10 +62,23 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Diffusers/PEFT dotted prefix (`prior.` / `decoder.`).
     pub fn upstream_prefix(self) -> &'static str {
         match self {
             Self::B => "decoder.",
             Self::C => "prior.",
+        }
+    }
+
+    /// v0.42 phase 1: kohya / sd-scripts underscored prefix. This is
+    /// the format real community Cascade LoRAs actually ship in (e.g.
+    /// `lora_prior_unet_down_blocks_0_11_attention_attn_to_q`), NOT the
+    /// dotted PEFT form — which is why pre-v0.42 LoRA merging silently
+    /// no-op'd on every kohya-trained Cascade LoRA.
+    pub fn kohya_prefix(self) -> &'static str {
+        match self {
+            Self::B => "lora_decoder_unet_",
+            Self::C => "lora_prior_unet_",
         }
     }
 }
@@ -156,17 +169,37 @@ fn apply_one_lora(
     stage: Stage,
 ) -> Result<(usize, usize)> {
     let groups = group_peft_keys(lora_tensors);
-    let prefix = stage.upstream_prefix();
+    let dotted = stage.upstream_prefix();
+    let kohya = stage.kohya_prefix();
+    // v0.42 phase 1: DoRA detection — community Cascade LoRAs are often
+    // DoRAs (carry `.dora_scale`). We apply the LoRA direction part but
+    // not the per-output magnitude renorm; warn once so the result
+    // isn't silently mistaken for an exact DoRA fuse.
+    if lora_tensors.keys().any(|k| k.contains(".dora_scale")) {
+        tracing::warn!(
+            target: "plakat",
+            "Cascade Stage {:?} LoRA is a DoRA — applying the LoRA direction \
+             update; the DoRA magnitude renormalisation is approximated.",
+            stage
+        );
+    }
     let mut n_modified = 0usize;
     let mut n_total = 0usize;
     for (logical, group) in &groups {
-        // Stage filter: only consider LoRA keys carrying this stage's
-        // upstream prefix. Counts toward `n_total` only when the
-        // prefix matches AND the resolver recognises the leaf path.
-        let Some(stage_logical) = logical.strip_prefix(prefix) else {
+        // Stage filter: accept either the diffusers dotted prefix
+        // (`prior.`/`decoder.`) or the kohya underscored prefix
+        // (`lora_prior_unet_`/`lora_decoder_unet_`). Keys for the other
+        // stage / neither format are skipped (the sibling call handles
+        // its own stage).
+        let target = if let Some(sl) = logical.strip_prefix(dotted) {
+            resolve_target(sl)
+        } else if let Some(sl) = logical.strip_prefix(kohya) {
+            resolve_kohya_target(sl)
+        } else {
             continue;
         };
-        let Some(target) = resolve_target(stage_logical) else {
+        n_total += 1;
+        let Some(target) = target else {
             tracing::debug!(
                 target: "plakat",
                 "Cascade Stage {:?} LoRA: unknown logical target `{logical}` — skipping",
@@ -174,7 +207,6 @@ fn apply_one_lora(
             );
             continue;
         };
-        n_total += 1;
         if !merged.contains_key(&target.base_key) {
             tracing::debug!(
                 target: "plakat",
@@ -259,6 +291,43 @@ fn resolve_target(stage_logical: &str) -> Option<LoraTarget> {
     })
 }
 
+/// v0.42 phase 1: resolve a kohya / sd-scripts underscored logical
+/// path (the stage prefix `lora_prior_unet_` / `lora_decoder_unet_`
+/// already stripped) to plakat's internal base key.
+///
+/// Real community Cascade LoRAs name targets like
+/// `down_blocks_0_11_attention_attn_to_q` (dots flattened to
+/// underscores, attention leaf prefixed `attn_`, output proj named
+/// `out_proj`). This maps to `down_blocks.0.11.attention.to_q.weight`:
+///
+/// - `attn_to_q` → `to_q`, `attn_to_k` → `to_k`, `attn_to_v` → `to_v`
+/// - `attn_out_proj` → `to_out.0`
+fn resolve_kohya_target(stage_logical: &str) -> Option<LoraTarget> {
+    let (block, rest) = if let Some(r) = stage_logical.strip_prefix("down_blocks_") {
+        ("down_blocks", r)
+    } else if let Some(r) = stage_logical.strip_prefix("up_blocks_") {
+        ("up_blocks", r)
+    } else {
+        return None;
+    };
+    // rest = "{level}_{pos}_attention_{leaf}"
+    let (level, rest) = rest.split_once('_')?;
+    level.parse::<usize>().ok()?;
+    let (pos, leaf) = rest.split_once("_attention_")?;
+    pos.parse::<usize>().ok()?;
+    let mapped = match leaf {
+        "attn_to_q" => "to_q",
+        "attn_to_k" => "to_k",
+        "attn_to_v" => "to_v",
+        "attn_out_proj" => "to_out.0",
+        _ => return None,
+    };
+    Some(LoraTarget {
+        base_key: format!("{block}.{level}.{pos}.attention.{mapped}.weight"),
+        slice: RowSlice::Full,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +371,78 @@ mod tests {
         let t = resolve_target("up_blocks.0.0.attn.to_q")
             .expect("attn.to_q must resolve");
         assert_eq!(t.base_key, "up_blocks.0.0.attention.to_q.weight");
+    }
+
+    #[test]
+    fn resolve_kohya_real_lora_keys_route_to_base() {
+        // v0.42 phase 1: the exact key shapes from the real-world
+        // `cascade_3.6B_anime_DoRa.safetensors` (after group_peft_keys
+        // strips `.lora_down.weight` and the stage merger strips the
+        // `lora_prior_unet_` prefix).
+        let q = resolve_kohya_target("down_blocks_0_11_attention_attn_to_q")
+            .expect("kohya attn_to_q must resolve");
+        assert_eq!(q.base_key, "down_blocks.0.11.attention.to_q.weight");
+
+        let out = resolve_kohya_target("up_blocks_0_2_attention_attn_out_proj")
+            .expect("kohya attn_out_proj must resolve");
+        assert_eq!(out.base_key, "up_blocks.0.2.attention.to_out.0.weight");
+
+        let k = resolve_kohya_target("down_blocks_1_23_attention_attn_to_k")
+            .expect("kohya attn_to_k must resolve");
+        assert_eq!(k.base_key, "down_blocks.1.23.attention.to_k.weight");
+    }
+
+    #[test]
+    fn resolve_kohya_rejects_non_attention_and_malformed() {
+        assert!(resolve_kohya_target("down_blocks_0_0_ff_net_0_proj").is_none());
+        assert!(resolve_kohya_target("conv_in").is_none());
+        assert!(resolve_kohya_target("down_blocks_0_11_attention_attn_to_out_1").is_none());
+    }
+
+    #[test]
+    fn kohya_prefixes_distinguish_stages() {
+        assert_eq!(Stage::C.kohya_prefix(), "lora_prior_unet_");
+        assert_eq!(Stage::B.kohya_prefix(), "lora_decoder_unet_");
+    }
+
+    #[test]
+    fn apply_one_lora_merges_kohya_format_end_to_end() {
+        // v0.42 phase 1 regression guard: a kohya-format Cascade LoRA
+        // (the real-world shape) must actually modify the base weight.
+        // Pre-v0.42 this silently no-op'd (n_modified == 0) because the
+        // merger only accepted the dotted `prior.` prefix.
+        use candle_core::{Device, Tensor};
+        use std::collections::HashMap;
+        let device = Device::Cpu;
+        let mut merged: HashMap<String, Tensor> = HashMap::new();
+        merged.insert(
+            "down_blocks.0.11.attention.to_q.weight".to_string(),
+            Tensor::zeros((8, 8), candle_core::DType::F32, &device).unwrap(),
+        );
+        let mut lora: HashMap<String, Tensor> = HashMap::new();
+        let base = "lora_prior_unet_down_blocks_0_11_attention_attn_to_q";
+        // rank-2 LoRA: down (r×in) = (2,8), up (out×r) = (8,2), alpha=2.
+        lora.insert(
+            format!("{base}.lora_down.weight"),
+            Tensor::ones((2, 8), candle_core::DType::F32, &device).unwrap(),
+        );
+        lora.insert(
+            format!("{base}.lora_up.weight"),
+            Tensor::ones((8, 2), candle_core::DType::F32, &device).unwrap(),
+        );
+        lora.insert(
+            format!("{base}.alpha"),
+            Tensor::new(2.0f32, &device).unwrap(),
+        );
+        let (n_mod, n_total) =
+            apply_one_lora(&mut merged, &lora, 1.0, &device, Stage::C).unwrap();
+        assert_eq!(n_mod, 1, "kohya target must merge (was 0 pre-v0.42)");
+        assert_eq!(n_total, 1);
+        // up@down = ones(8,2)@ones(2,8) = 2 everywhere; alpha/rank=1,
+        // scale=1 → delta = 2. Base was 0 → merged = 2.
+        let w = merged.get("down_blocks.0.11.attention.to_q.weight").unwrap();
+        let v = w.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(v.iter().all(|&x| (x - 2.0).abs() < 1e-5), "got {:?}", &v[..4]);
     }
 
     #[test]
