@@ -161,9 +161,12 @@ impl Config {
                     BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
                     BlockConfig::FullMbConv { c_in: 128, c_mid: 512, c_out: 128, se_channels: 32, kernel: 3, stride: 1 },
                 ],
-                // Stage 5: 9 blocks (transition 128→160, SE wider)
+                // Stage 5: 9 blocks (transition 128→160, SE wider).
+                // v0.41 phase 3: block 0 is stride 1 — EfficientNetV2-S
+                // stage 5 does NOT downsample (only stages 2,3,4,6 +
+                // stem do). The v0.40 stride=2 here was wrong.
                 vec![
-                    BlockConfig::FullMbConv { c_in: 128, c_mid: 768, c_out: 160, se_channels: 32, kernel: 3, stride: 2 },
+                    BlockConfig::FullMbConv { c_in: 128, c_mid: 768, c_out: 160, se_channels: 32, kernel: 3, stride: 1 },
                     BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 160, se_channels: 40, kernel: 3, stride: 1 },
                     BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 160, se_channels: 40, kernel: 3, stride: 1 },
                     BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 160, se_channels: 40, kernel: 3, stride: 1 },
@@ -173,10 +176,15 @@ impl Config {
                     BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 160, se_channels: 40, kernel: 3, stride: 1 },
                     BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 160, se_channels: 40, kernel: 3, stride: 1 },
                 ],
-                // Stage 6: 15 blocks (transition 160→256)
+                // Stage 6: 15 blocks (transition 160→256).
+                // v0.41 phase 3: block 0 is stride 2 (the downsample
+                // lives here, not in stage 5). The v0.40 config had
+                // stage5=s2 + stage6=s1 — two errors that canceled to
+                // the right 7×7 output shape but at wrong resolutions
+                // internally.
                 {
                     let mut v = vec![
-                        BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 256, se_channels: 40, kernel: 3, stride: 1 },
+                        BlockConfig::FullMbConv { c_in: 160, c_mid: 960, c_out: 256, se_channels: 40, kernel: 3, stride: 2 },
                     ];
                     for _ in 0..14 {
                         v.push(BlockConfig::FullMbConv { c_in: 256, c_mid: 1536, c_out: 256, se_channels: 64, kernel: 3, stride: 1 });
@@ -202,6 +210,11 @@ impl Config {
 struct ConvBn {
     conv: nn::Conv2d,
     bn: nn::BatchNorm,
+    /// v0.41 phase 3: torchvision `Conv2dNormActivation` applies SiLU
+    /// EXCEPT in the project conv of each Fused/MBConv block (built
+    /// with `activation_layer=None`). The stem, expand, depthwise and
+    /// head convs all activate; the project convs do not.
+    act: bool,
 }
 
 impl ConvBn {
@@ -211,6 +224,7 @@ impl ConvBn {
         kernel: usize,
         stride: usize,
         groups: usize,
+        act: bool,
         vb: VarBuilder,
     ) -> Result<Self> {
         let padding = kernel / 2;
@@ -231,15 +245,21 @@ impl ConvBn {
             vb.pp("0"),
         )
         .map_err(|e| anyhow!("ConvBn conv: {e}"))?;
-        let bn = nn::batch_norm(out_c, nn::BatchNormConfig::default(), vb.pp("1"))
-            .map_err(|e| anyhow!("ConvBn bn: {e}"))?;
-        Ok(Self { conv, bn })
+        // v0.41 phase 3: torchvision EfficientNet uses BatchNorm2d with
+        // eps=1e-3 (not the candle/torch default 1e-5).
+        let bn = nn::batch_norm(
+            out_c,
+            nn::BatchNormConfig { eps: 1e-3, ..Default::default() },
+            vb.pp("1"),
+        )
+        .map_err(|e| anyhow!("ConvBn bn: {e}"))?;
+        Ok(Self { conv, bn, act })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let x = self.conv.forward(x)?;
         let x = self.bn.forward_t(&x, false)?;
-        Ok(x.silu()?)
+        if self.act { Ok(x.silu()?) } else { Ok(x) }
     }
 }
 
@@ -323,6 +343,7 @@ impl InvertedResidual {
                     *kernel,
                     *stride,
                     1,
+                    true, // FusedMBConv expand=1: single conv WITH SiLU
                     block_vb.pp("0"),
                 )?;
                 let residual = *stride == 1 && c_in == c_out;
@@ -335,8 +356,9 @@ impl InvertedResidual {
                 kernel,
                 stride,
             } => {
-                let expand = ConvBn::new(*c_in, *c_mid, *kernel, *stride, 1, block_vb.pp("0"))?;
-                let project = ConvBn::new(*c_mid, *c_out, 1, 1, 1, block_vb.pp("1"))?;
+                let expand = ConvBn::new(*c_in, *c_mid, *kernel, *stride, 1, true, block_vb.pp("0"))?;
+                // Project conv: NO activation (torchvision FusedMBConv).
+                let project = ConvBn::new(*c_mid, *c_out, 1, 1, 1, false, block_vb.pp("1"))?;
                 let residual = *stride == 1 && c_in == c_out;
                 Ok(Self::SimpleMb {
                     expand,
@@ -352,17 +374,19 @@ impl InvertedResidual {
                 kernel,
                 stride,
             } => {
-                let expand = ConvBn::new(*c_in, *c_mid, 1, 1, 1, block_vb.pp("0"))?;
+                let expand = ConvBn::new(*c_in, *c_mid, 1, 1, 1, true, block_vb.pp("0"))?;
                 let depthwise = ConvBn::new(
                     *c_mid,
                     *c_mid,
                     *kernel,
                     *stride,
                     *c_mid, // groups = c_mid → depthwise
+                    true,
                     block_vb.pp("1"),
                 )?;
                 let se = SqueezeExcitation::new(*c_mid, *se_channels, block_vb.pp("2"))?;
-                let project = ConvBn::new(*c_mid, *c_out, 1, 1, 1, block_vb.pp("3"))?;
+                // Project conv: NO activation (torchvision MBConv).
+                let project = ConvBn::new(*c_mid, *c_out, 1, 1, 1, false, block_vb.pp("3"))?;
                 let residual = *stride == 1 && c_in == c_out;
                 Ok(Self::FullMb {
                     expand,
@@ -431,9 +455,18 @@ impl ProjectionHead {
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let h = self.conv_0.forward(x)?;
-        let h = h.gelu()?;
+        // v0.41 phase 3: upstream projection uses LeakyReLU(0.2), not
+        // GELU (Stability-AI/StableCascade modules/controlnet.py).
+        let h = leaky_relu(&h, 0.2)?;
         Ok(self.conv_2.forward(&h)?)
     }
+}
+
+/// LeakyReLU(x, slope) = max(x, 0) + slope * min(x, 0).
+fn leaky_relu(x: &Tensor, slope: f64) -> Result<Tensor> {
+    let pos = x.relu()?;
+    let neg = (x - &pos)?.affine(slope, 0.0)?;
+    pos.add(&neg).map_err(|e| e.into())
 }
 
 // ---------------------------------------------------------------------
@@ -461,6 +494,7 @@ impl CascadeControlNet {
             cfg.stem.kernel,
             cfg.stem.stride,
             1,
+            true,
             vb.pp("backbone").pp("0"),
         )?;
 
@@ -485,6 +519,7 @@ impl CascadeControlNet {
             1,
             1,
             1,
+            true,
             vb.pp("backbone").pp(&final_idx.to_string()),
         )?;
 
@@ -776,16 +811,23 @@ mod tests {
             feat.dims(), refs.get("backbone_feat").unwrap().dims(),
             mad(&feat, refs.get("backbone_feat").unwrap())
         );
+        let bb_diff = mad(&feat, refs.get("backbone_feat").unwrap());
+        assert!(
+            bb_diff < 0.01,
+            "CN backbone_feat must match torchvision EfficientNetV2-S (got {bb_diff})"
+        );
         let residuals = cn.forward(&cond).unwrap();
         for (i, r) in residuals.iter().enumerate() {
             let key = format!("residual_{i}");
             if let Some(rr) = refs.get(&key) {
+                let d = mad(r, rr);
                 eprintln!(
-                    "[refCN] {key} ours={:?} ref={:?}  max_abs_diff={:.5}  (ref range [{:.2},{:.2}])",
-                    r.dims(), rr.dims(), mad(r, rr),
+                    "[refCN] {key} ours={:?} ref={:?}  max_abs_diff={d:.5}  (ref range [{:.2},{:.2}])",
+                    r.dims(), rr.dims(),
                     rr.min_all().unwrap().to_scalar::<f32>().unwrap(),
                     rr.max_all().unwrap().to_scalar::<f32>().unwrap(),
                 );
+                assert!(d < 0.05, "CN {key} must match reference (got {d})");
             }
         }
     }
