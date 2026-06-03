@@ -41,7 +41,7 @@
 //! of v0.37/v0.38 phase 0/1 ship with.
 
 use anyhow::{Context, Result};
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -171,18 +171,17 @@ fn apply_one_lora(
     let groups = group_peft_keys(lora_tensors);
     let dotted = stage.upstream_prefix();
     let kohya = stage.kohya_prefix();
-    // v0.42 phase 1: DoRA detection — community Cascade LoRAs are often
-    // DoRAs (carry `.dora_scale`). We apply the LoRA direction part but
-    // not the per-output magnitude renorm; warn once so the result
-    // isn't silently mistaken for an exact DoRA fuse.
-    if lora_tensors.keys().any(|k| k.contains(".dora_scale")) {
-        tracing::warn!(
-            target: "plakat",
-            "Cascade Stage {:?} LoRA is a DoRA — applying the LoRA direction \
-             update; the DoRA magnitude renormalisation is approximated.",
-            stage
-        );
-    }
+    // v0.42 phase 1: DoRA magnitudes. Community Cascade LoRAs are
+    // frequently DoRAs (Weight-Decomposed LoRA) — they carry a
+    // per-output `.dora_scale` magnitude vector and the merged weight
+    // is `m·(W+ΔW)/‖W+ΔW‖`, NOT just `W+ΔW`. Applying the LoRA delta
+    // without the renorm corrupts the weights (the ΔW direction is
+    // large precisely because the magnitude normalises it away). Map
+    // each target's dora_scale here; `apply_dora` does the renorm.
+    let dora_scales: HashMap<&str, &Tensor> = lora_tensors
+        .iter()
+        .filter_map(|(k, v)| k.strip_suffix(".dora_scale").map(|l| (l, v)))
+        .collect();
     let mut n_modified = 0usize;
     let mut n_total = 0usize;
     for (logical, group) in &groups {
@@ -222,11 +221,42 @@ fn apply_one_lora(
             .get(&target.base_key)
             .expect("checked just above")
             .clone();
-        let updated = apply_delta(&base, &delta, target.slice)?;
+        let updated = match dora_scales.get(logical.as_str()) {
+            Some(dora) => apply_dora(&base, &delta, dora)?,
+            None => apply_delta(&base, &delta, target.slice)?,
+        };
         merged.insert(target.base_key.clone(), updated);
         n_modified += 1;
     }
     Ok((n_modified, n_total))
+}
+
+/// v0.42 phase 1: DoRA (Weight-Decomposed LoRA) weight fuse, matching
+/// the PEFT convention. The base weight `W` (shape `[out, in]`) is
+/// decomposed into a per-output magnitude `m` and a direction; the
+/// LoRA updates the direction. The merged weight is:
+///
+/// ```text
+///   V  = W + ΔW                       (ΔW = the already-scaled delta)
+///   W' = m · V / ‖V‖_in               (norm over the input dim, per output row)
+/// ```
+///
+/// `dora_scale` is stored `[1, out]` (per-output magnitude); we reshape
+/// it to `[out, 1]` to broadcast against `V`. Without this renorm the
+/// LoRA delta blows the weights out (DoRA's ΔW is large by design).
+fn apply_dora(base: &Tensor, delta: &Tensor, dora_scale: &Tensor) -> Result<Tensor> {
+    let dtype = base.dtype();
+    let base_f = base.to_dtype(DType::F32)?;
+    let delta_f = delta.to_dtype(DType::F32)?;
+    let v = (&base_f + &delta_f)?; // [out, in]
+    let (out, _in) = v.dims2()?;
+    // ‖V‖ over the input dim → [out, 1].
+    let norm = v.sqr()?.sum_keepdim(1)?.sqrt()?;
+    // dora_scale [1, out] → [out, 1].
+    let m = dora_scale.to_dtype(DType::F32)?.reshape((out, 1))?;
+    let factor = m.broadcast_div(&norm)?; // [out, 1]
+    let updated = v.broadcast_mul(&factor)?;
+    updated.to_dtype(dtype).map_err(|e| e.into())
 }
 
 /// Translate an upstream logical leaf path (with the `decoder.` /
@@ -443,6 +473,43 @@ mod tests {
         let w = merged.get("down_blocks.0.11.attention.to_q.weight").unwrap();
         let v = w.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         assert!(v.iter().all(|&x| (x - 2.0).abs() < 1e-5), "got {:?}", &v[..4]);
+    }
+
+    #[test]
+    fn apply_dora_renormalises_per_output_row() {
+        // v0.42 phase 1: W' = m·(W+ΔW)/‖W+ΔW‖_in, per output row.
+        // base rows [[3,4],[0,5]] have input-dim norms [5,5]. With
+        // zero delta and dora_scale=[10,10], factor = 10/5 = 2, so
+        // W' = 2·base = [[6,8],[0,10]].
+        use candle_core::{Device, Tensor};
+        let device = Device::Cpu;
+        let base = Tensor::new(&[[3.0f32, 4.0], [0.0, 5.0]], &device).unwrap();
+        let delta = Tensor::zeros((2, 2), candle_core::DType::F32, &device).unwrap();
+        let dora = Tensor::new(&[[10.0f32, 10.0]], &device).unwrap(); // [1, out]
+        let out = apply_dora(&base, &delta, &dora).unwrap();
+        let v = out.to_vec2::<f32>().unwrap();
+        assert!((v[0][0] - 6.0).abs() < 1e-4 && (v[0][1] - 8.0).abs() < 1e-4);
+        assert!((v[1][0] - 0.0).abs() < 1e-4 && (v[1][1] - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn apply_dora_with_matching_magnitude_is_near_identity() {
+        // When dora_scale equals the base's per-row norm and delta=0,
+        // the fuse returns the base unchanged.
+        use candle_core::{Device, Tensor};
+        let device = Device::Cpu;
+        let base = Tensor::new(&[[3.0f32, 4.0], [6.0, 8.0]], &device).unwrap();
+        let delta = Tensor::zeros((2, 2), candle_core::DType::F32, &device).unwrap();
+        // row norms: 5 and 10.
+        let dora = Tensor::new(&[[5.0f32, 10.0]], &device).unwrap();
+        let out = apply_dora(&base, &delta, &dora).unwrap();
+        let v = out.to_vec2::<f32>().unwrap();
+        let b = base.to_vec2::<f32>().unwrap();
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!((v[i][j] - b[i][j]).abs() < 1e-4);
+            }
+        }
     }
 
     #[test]
