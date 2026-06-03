@@ -443,6 +443,7 @@ impl Pipeline {
     /// by tensor-naming alignment with the upstream checkpoint
     /// (real-weight smoke at user time will surface any remaining
     /// VarBuilder mismatches).
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -451,6 +452,7 @@ impl Pipeline {
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -462,6 +464,7 @@ impl Pipeline {
             stage_c_steps,
             stage_b_steps,
             guidance,
+            decoder_guidance,
             seed,
             scheduler_kind,
             control,
@@ -497,6 +500,10 @@ impl Pipeline {
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
+        // v0.42 phase 0: Stage B (decoder) CFG scale, decoupled from
+        // the prior's `guidance`. Upstream defaults ~0; ~1.0 is the
+        // pure conditional. plakat's default is 1.1 (mild).
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -714,17 +721,12 @@ impl Pipeline {
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
-            // v0.41 phase 2i: the DECODER uses a much lower guidance
-            // than the prior. Upstream StableCascadeDecoderPipeline
-            // defaults `guidance_scale=0.0` (no CFG — pure conditional);
-            // the prior uses ~4.0. Applying the prior's 4.0 to Stage B
-            // over-drove the decoder into harsh over-detailed texture.
-            // In our `neg + scale*(pos-neg)` form, scale=1.0 reproduces
-            // the pure conditional (= upstream no-CFG decoder). A future
-            // phase exposes `--decoder-guidance`; for now clamp Stage B
-            // to a mild fixed value.
-            const DECODER_GUIDANCE: f64 = 1.1;
-            let guided = (neg + ((pos - neg)? * DECODER_GUIDANCE)?)?;
+            // v0.41 phase 2i / v0.42 phase 0: the DECODER uses a much
+            // lower CFG than the prior (upstream defaults ~0; ~1.0 is
+            // the pure conditional). `decoder_guidance` exposes it; the
+            // prior's `guidance` (~4.0) would over-drive Stage B into
+            // harsh over-detailed texture. `neg + scale*(pos-neg)`.
+            let guided = (neg + ((pos - neg)? * decoder_guidance)?)?;
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
@@ -772,6 +774,7 @@ impl Pipeline {
         stage_b_steps: usize,
         strength: f32,
         guidance: f64,
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -802,6 +805,7 @@ impl Pipeline {
             stage_c_steps,
             stage_b_steps,
             guidance,
+            decoder_guidance,
             seed,
             scheduler_kind,
             control,
@@ -1022,6 +1026,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             req.stage_c_steps,
             req.stage_b_steps,
             req.guidance,
+            req.decoder_guidance,
             seed,
             req.scheduler,
             control_conditioning.as_ref(),
@@ -1163,6 +1168,7 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
             req.stage_b_steps,
             req.strength,
             req.guidance,
+            req.decoder_guidance,
             seed,
             req.scheduler,
             control_conditioning.as_ref(),
@@ -1218,6 +1224,8 @@ pub struct RunImg2imgRequest {
     /// denoise (decoded init image only).
     pub strength: f32,
     pub guidance: f64,
+    /// v0.42 phase 0: Stage B (decoder) CFG scale. Default 1.1.
+    pub decoder_guidance: f64,
     pub seed: Option<u64>,
     pub scheduler: SchedulerKind,
     pub out_dir: std::path::PathBuf,
@@ -1249,6 +1257,8 @@ pub struct RunRequest {
     /// latent). Upstream recommendation: 10.
     pub stage_b_steps: usize,
     pub guidance: f64,
+    /// v0.42 phase 0: Stage B (decoder) CFG scale. Default 1.1.
+    pub decoder_guidance: f64,
     pub seed: Option<u64>,
     pub scheduler: SchedulerKind,
     pub out_dir: std::path::PathBuf,
@@ -1288,6 +1298,7 @@ mod tests {
             stage_c_steps: 20,
             stage_b_steps: 10,
             guidance: 4.0,
+            decoder_guidance: 1.1,
             seed: Some(42),
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/cascade-test"),
@@ -1322,6 +1333,7 @@ mod tests {
             stage_b_steps: 10,
             strength: 0.6,
             guidance: 4.0,
+            decoder_guidance: 1.1,
             seed: Some(7),
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/out"),
@@ -1466,6 +1478,7 @@ mod tests {
             2,
             2,
             4.0,
+            1.1,
             42,
             SchedulerKind::DpmppKarras,
             None,

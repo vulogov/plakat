@@ -120,6 +120,11 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value_t = 7.5)]
     pub guidance: f64,
 
+    /// Stable Cascade decoder (Stage B) CFG scale, decoupled from
+    /// `--guidance`. Default 1.1. Cascade-only.
+    #[arg(long = "decoder-guidance", default_value_t = 1.1)]
+    pub decoder_guidance: f64,
+
     /// Base seed. Subsequent --count outputs use seed+1, seed+2, ...
     /// If omitted, a random seed is picked.
     #[arg(long)]
@@ -1166,6 +1171,7 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
             stage_b_steps,
             strength,
             guidance: args.guidance,
+            decoder_guidance: args.decoder_guidance,
             seed: args.seed,
             scheduler: args.scheduler,
             out_dir: args.out,
@@ -1397,6 +1403,7 @@ mod tests {
             count: 1,
             steps: 28,
             guidance: 7.5,
+            decoder_guidance: 1.1,
             seed: None,
             scheduler: crate::pipelines::scheduler::SchedulerKind::Default,
             loras: Vec::new(),

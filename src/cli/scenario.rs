@@ -3568,6 +3568,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         stage_c_steps,
                         stage_b_steps,
                         eff_guidance,
+                        // v0.42 phase 0: decoder guidance default; a
+                        // scenario-level override is a follow-up.
+                        1.1,
                         img_seed,
                         eff_scheduler,
                         cascade_control.as_ref(),

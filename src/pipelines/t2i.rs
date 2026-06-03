@@ -182,6 +182,9 @@ pub struct Request {
     /// Stage B (the canonical CLI default). `Some(n)` → use exactly
     /// `n` Stage C steps. Ignored on every non-Cascade pipeline.
     pub cascade_stage_c_steps: Option<usize>,
+    /// v0.42 phase 0: Stable Cascade decoder (Stage B) CFG scale.
+    /// Ignored on non-Cascade pipelines.
+    pub cascade_decoder_guidance: f64,
     /// v0.38 phase 2: Stable Cascade Stage B step count override.
     /// `None` → split `steps`. `Some(n)` → exact count. Ignored on
     /// non-Cascade pipelines.
@@ -2133,6 +2136,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             stage_c_steps,
             stage_b_steps,
             guidance: req.guidance as f64,
+            decoder_guidance: req.cascade_decoder_guidance,
             seed: req.seed,
             scheduler: req.scheduler,
             out_dir: req.out_dir.clone(),

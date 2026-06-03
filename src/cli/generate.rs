@@ -95,6 +95,14 @@ pub struct GenerateArgs {
     #[arg(long, default_value_t = 7.5)]
     pub guidance: f64,
 
+    /// Stable Cascade Stage B (decoder) CFG scale, decoupled from
+    /// `--guidance` (which drives the Stage C prior). Upstream's
+    /// decoder defaults to ~0 (no CFG); ~1.0 is the pure conditional.
+    /// Default 1.1 (mild). Raise toward 2-4 for sharper decoder
+    /// detail at the risk of over-saturation. Cascade-only.
+    #[arg(long = "decoder-guidance", default_value_t = 1.1)]
+    pub decoder_guidance: f64,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -1160,6 +1168,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // overrides. Plain `--steps` still works; these refine it
         // when set. Ignored on every non-Cascade pipeline.
         cascade_stage_c_steps: args.stage_c_steps,
+        cascade_decoder_guidance: args.decoder_guidance,
         cascade_stage_b_steps: args.stage_b_steps,
         // v0.38 phase 5: Cascade ControlNet weights path.
         cascade_controlnet_weights: args.cascade_control_weights,
@@ -1691,6 +1700,7 @@ mod tests {
             stage_b_steps: None,
             cascade_control_weights: None,
             guidance: 7.5,
+            decoder_guidance: 1.1,
             negative: String::new(),
             negative_preset: None,
             seed: None,
