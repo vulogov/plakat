@@ -137,10 +137,12 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 stage_c_steps,
                 stage_b_steps,
                 guidance,
+                // v0.42 phase 0: decoder guidance default; a scripting
+                // config key lands with scripting CN (phase 4).
+                1.1,
                 seed,
                 scheduler,
-                // v0.38 phase 5: scripting-side Cascade ControlNet
-                // wiring is a v0.39 follow-up.
+                // Scripting-side Cascade ControlNet is a phase-4 item.
                 None,
             )?
         };
