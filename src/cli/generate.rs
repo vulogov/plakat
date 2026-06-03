@@ -82,11 +82,12 @@ pub struct GenerateArgs {
     #[arg(long = "stage-b-steps", value_name = "N")]
     pub stage_b_steps: Option<usize>,
 
-    /// v0.38 phase 5: Stable Cascade ControlNet weights path
-    /// (safetensors). Pair with `--control KIND:image=PATH` to
-    /// activate the CN on Stage C. Upstream Cascade CN checkpoints
-    /// aren't yet catalogued in plakat's alias table; bring your
-    /// own. Cascade-only; ignored on every other model.
+    /// Stable Cascade ControlNet weights path (safetensors).
+    /// OPTIONAL since v0.41 — when omitted and a `canny` control is
+    /// given (`--control-image` / `--control-from` / `--control-spec
+    /// canny:…`), the CN is auto-resolved from the model repo's
+    /// `controlnet/canny.safetensors`. Set this only to point at a
+    /// non-standard checkpoint. Cascade-only; ignored on other models.
     #[arg(long = "cascade-control-weights", value_name = "PATH")]
     pub cascade_control_weights: Option<PathBuf>,
 
