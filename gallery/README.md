@@ -24,7 +24,12 @@ three-stage pipeline that landed across the v0.37–v0.42 cycles
   </tr>
   <tr>
     <td width="33%"><img src="7.png" alt="Watercolour mountain lake in autumn"></td>
+    <td width="33%"><img src="9.png" alt="Plain portrait photograph (image-variation baseline)"></td>
+    <td width="33%"><img src="8.png" alt="Image variation conditioned on the old-man reference"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="10.png" alt="Autumn cottage rendered with a canny ControlNet"></td>
+    <td width="33%"></td>
     <td width="33%"></td>
   </tr>
 </table>
@@ -102,6 +107,28 @@ Negative: `blurry, low quality, watermark`
 > large snow-capped mountain, watercolor zubkovich paint style
 
 `stable-cascade` · 1024×1024 · 20 steps · CFG 4 · seed 50 · plakat 0.42.0
+
+### 8 & 9 — Image variation (v0.42)
+
+The **same prompt and seed**, the *only* difference being a reference
+image fed to `--image-variation`. The image embedding overrides the
+text and steers the output toward the reference's semantics.
+
+| 9 — baseline (no reference) | 8 — `--image-variation 2.png` |
+|---|---|
+| ![9.png](9.png) | ![8.png](8.png) |
+| a generic young-woman portrait | an elderly man with cap and pipe, echoing the [old-man reference](2.png) |
+
+```bash
+# 9: plain text-to-image
+plakat generate "portrait photograph" --model stable-cascade --seed 7
+
+# 8: same prompt + seed, conditioned on the reference image
+plakat generate "portrait photograph" --model stable-cascade --seed 7 \
+    --image-variation gallery/2.png
+```
+
+`stable-cascade` · 1024×1024 · 20 steps · CFG 4 · seed 7 · plakat 0.42.0
 
 ### 10 — Autumn cottage via ControlNet
 
