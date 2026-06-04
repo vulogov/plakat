@@ -10,7 +10,7 @@ committed under `images/`.
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | Stable Cascade | `cascade.hjson` | ✅ | ⬜ | ungated, ~16 GB Metal |
-| SD 1.5 | `sd15.hjson` | ⬜ | ⬜ | ungated, ~4 GB |
+| SD 1.5 | `sd15.hjson` | ✅ | ⬜ | ungated, ~4 GB, 512²; incl. canny CN |
 | SDXL | `sdxl.hjson` | ✅ | ⬜ | ungated, ~7 GB; incl. canny CN |
 | PixArt-Σ | `pixart.hjson` | ✅ | ⬜ | ungated |
 | Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
