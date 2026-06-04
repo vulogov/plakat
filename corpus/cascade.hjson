@@ -86,7 +86,7 @@
             control:
             {
                 kind: canny
-                from: gallery/3.png
+                auto-from: gallery/3.png
             }
         }
     ]
