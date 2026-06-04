@@ -561,6 +561,17 @@ impl LoadedFluxControlNet {
     }
 }
 
+/// v0.42: should a GGUF (quantized) Flux run be blocked? GGUF Flux
+/// produces corrupted output on Apple Metal because candle 0.10.2's
+/// Metal quantized matrix×matrix matmul kernel is buggy (the dtype
+/// crash is fixed in `flux_quantized_inner`, but the kernel bug below
+/// it isn't plakat-fixable). Block it on Metal unless the caller set
+/// `PLAKAT_ALLOW_GGUF_METAL` (for re-testing on a newer candle). CPU /
+/// CUDA and non-GGUF Flux are always allowed.
+fn gguf_metal_blocked(is_gguf: bool, is_metal: bool, allow_override: bool) -> bool {
+    is_gguf && is_metal && !allow_override
+}
+
 impl Pipeline {
     /// v0.13 phase 10: re-tune an already-loaded ControlNet's per-call
     /// parameters between `generate` calls. Scenarios load Union Pro v2
@@ -679,6 +690,32 @@ impl Pipeline {
         let is_nf4 = !is_gguf
             && (req.repo.to_lowercase().contains("nf4")
                 || req.repo.to_lowercase().contains("bnb"));
+        // v0.42: GGUF Flux is broken on Apple Metal. candle 0.10.2's
+        // Metal quantized matrix×matrix matmul kernel (the path Flux's
+        // multi-token forward hits — vs the well-tested matrix×vector
+        // LLM-decode path) produces corrupted images. The dtype crash is
+        // fixed in `flux_quantized_inner` (F32 body) so the path is ready
+        // the moment candle fixes the kernel, but until then we fail
+        // early with guidance rather than burn a long download + denoise
+        // on a guaranteed-garbage result. Override with
+        // `PLAKAT_ALLOW_GGUF_METAL=1` to re-test on a newer candle.
+        if gguf_metal_blocked(
+            is_gguf,
+            req.device.is_metal(),
+            std::env::var("PLAKAT_ALLOW_GGUF_METAL").is_ok(),
+        ) {
+            bail!(
+                "GGUF (quantized) Flux is not usable on Apple Metal: candle's Metal \
+                 quantized matrix×matrix matmul kernel produces corrupted output \
+                 (a candle bug below plakat — not the model or the weights). \
+                 Alternatives:\n  \
+                 • Stable Cascade (recommended on Metal):  --model stable-cascade\n  \
+                 • non-quantized Flux (BF16, more memory):  --model flux-dev\n  \
+                 • GGUF Flux on CPU (correct but slow):     --device cpu\n\
+                 If a newer candle has fixed the Metal quantized kernel, set \
+                 PLAKAT_ALLOW_GGUF_METAL=1 to re-enable this path."
+            );
+        }
         // Quantized T5 only makes sense when paired with a quantized
         // transformer — running BF16 transformer + Q4 T5 loses T5
         // quality without saving meaningful memory.
@@ -2922,6 +2959,18 @@ pub async fn run(req: Request) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gguf_metal_blocked_only_blocks_gguf_on_metal_without_override() {
+        // GGUF + Metal, no override → blocked (the corrupted-output case).
+        assert!(gguf_metal_blocked(true, true, false));
+        // Override set → allowed (re-test path on a fixed candle).
+        assert!(!gguf_metal_blocked(true, true, true));
+        // GGUF on CPU → allowed (candle's CPU quantized kernel is correct).
+        assert!(!gguf_metal_blocked(true, false, false));
+        // Non-GGUF (BF16) Flux on Metal → always allowed.
+        assert!(!gguf_metal_blocked(false, true, false));
+    }
 
     // v0.13 phase 5 — quant-level validation.
 

@@ -8,73 +8,62 @@ identity-preserving portraits, and batch scenarios — all built on
 Python, no PyTorch, no external T2I services. Models are pulled from
 HuggingFace and cached locally.
 
-## What's new in v0.41 — Stable Cascade actually generates
+📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 
-v0.40 shipped Stable Cascade "architecture-verified, quality-pending"
-— it ran end to end but produced noise. v0.41 makes it **generate
-real, photorealistic images** across text-to-image, ControlNet, and
-img2img. The path there was a reference-comparison campaign: per-stage
-Python harnesses dump diffusers' (and torchvision's) intermediate
-activations on fixed inputs, and Rust tests diff ours against them
-until every forward matches to <0.001. That harness caught **24
-distinct bugs** that inspection alone had missed.
+## What's new in v0.42 — Stable Cascade completeness + polish
+
+v0.41 made Stable Cascade *generate*. v0.42 makes it **complete**: real
+LoRA support, image-conditioning, and ControlNet on every surface —
+plus a graceful guard for a Flux-on-Metal candle bug. See the new
+[Stable Cascade tutorial](Documentation/Tutorials/CASCADE_TUTORIAL.md).
 
 ```
-text-to-image     → coherent landscapes, scenes, complex multi-subject prompts
-+ ControlNet      → a canny house outline → a photorealistic cottage on the lines
-+ img2img         → a cottage → the same cottage in winter snow
-+ img2img + CN    → init texture and edge structure composed together
+LoRA / DoRA       → community kohya & PEFT LoRAs actually merge (was a silent no-op)
+image variation   → condition on a reference image's semantics (unCLIP-style)
+faithful img2img  → hold the init's content, not just its structure
+scripting CN      → plakat.cascade honours plakat.controlnet.* — the last CN surface
 ```
 
 ### Phases
 
 | # | Phase | What |
 |---|---|---|
-| 0 | Wuerstchen scheduler | Ratio-timestep `CascadeScheduler` (cosine α-cumprod, shift 0.008) replacing the SDXL integer-timestep DDPM the model was never trained on. |
-| 1 | sca/crp conditioning | `sca_emb` / `crp_emb` use the sinusoidal embedding of a zero scalar (upstream's `sca=None` default), not the `t_emb` placeholder. |
-| 2 | Visual quality | The bulk of the cycle: **16 numerical bugs** fixed across all three stages, each pinned to a diffusers reference. Headliners: F16→**BF16** dtype (Cascade trains in bf16; F16 overflowed to NaN → all-black); the **sinusoidal time embedding** (missing the ×10000 scale, wrong divisor, wrong sin/cos order — the model got a meaningless time signal); the missing **clip_norm** (KV stream off 80×); **switch_level=false** Stage C topology; Stage B's **pixels_mapper(zeros)** always-applied term and **up_repeat_mappers** [3,3,2,2]; Stage A's **ReplicationPad2d** (not reflection — the grid artifact); the **decoder CFG** (zero-effnet uncond + low guidance); and CLIP-G **`hidden_states[-1]`** not `[-2]` (the complex-prompt melt). |
-| 3 | ControlNet rebuild | The canny CN was broken on every axis and never ran. Rebuilt the backbone as **EfficientNetV2-S** (it was mislabeled MobileNetV3; output was garbage — now matches torchvision to 0.00004), fixed the LeakyReLU projections, rewrote injection to the upstream `controlnet_blocks=[0,4,8,12,51,55,59,63]` across the down+up ResBlock sequence (bilinear-resized), and wired it into generation. Scenario `control:` support. |
-| 4 | CN UX + img2img | `--control-from` auto-annotates via Canny; `--cascade-control-weights` is now optional (the CN auto-resolves from the repo). Implemented Cascade img2img (was a bail stub) — Stage-A-encode the init, seed Stage B at a strength-truncated schedule — and made ControlNet compose with it. |
+| 0 | `--decoder-guidance` | Stage B (decoder) CFG scale, decoupled from the prior's `--guidance` (default 1.1). Threaded through CLI, img2img, scenarios, scripting. |
+| 1 | LoRA / DoRA, for real | Community Cascade LoRAs silently no-op'd. Fixed two load-bearing bugs, verified against a real DoRA: **kohya/sd-scripts prefix** recognition (`lora_prior_unet_…`, not just dotted PEFT), and the **DoRA magnitude axis** — kohya stores it per input-column (dim 0), PEFT per output-row (dim 1); renorming the wrong axis scrambles every weight regardless of strength. `apply_dora` now auto-detects the axis (CoV-based for square weights, length for non-square), so kohya **and** PEFT DoRAs both fuse. Full noise → coherent styled output. |
+| 2 | *(dropped)* | An "exact CannyFilter resize-to-224" normalization was investigated and **empirically falsified** — 224 makes the effnet emit a 7×7 feature map that the residual injection upsamples into a grid; the v0.41 full-resolution path was already correct. Reverted. |
+| 3 | Stage C image encoder | Wired the **CLIP ViT-L/14** image encoder (`openai/clip-vit-large-patch14`, the one the prior's `clip_img_mapper` expects) into Stage C's previously-zeroed image slot. Two entry points: **`--image-variation PATH`** (unCLIP-style; prompt optional) and **`img2img --faithful`** (adds Stage C semantic conditioning on top of the Stage B VAE seed). Encoder lazy-loads only when requested. |
+| 4 | Scripting Cascade CN | `plakat.cascade` honours a canny `ControlSpec` from the shared `plakat.controlnet.*` words — closing the **last ControlNet surface** (CLI + img2img + scenarios + scripting). Surfaced and fixed a pre-existing bug: `plakat.load` couldn't load Cascade **or PixArt** at all in scripting (mis-routed to the SD-only loader). |
+
+Bonus: GGUF Flux on Apple Metal now **fails fast with guidance**
+instead of crashing/emitting garbage — candle 0.10.2's Metal
+matrix×matrix quantized matmul kernel is buggy (a layer below plakat);
+the transformer body is now F32-correct so the path works the day
+candle fixes the kernel. Override with `PLAKAT_ALLOW_GGUF_METAL=1`.
 
 ### Try it
 
 ```bash
-# text-to-image
-plakat generate "a serene wild steppe at sunrise, white flowers, photorealistic" \
-    --model stable-cascade --size 1024x1024 --stage-c-steps 20 --stage-b-steps 10 \
-    --guidance 4.0
+# LoRA / DoRA — community Cascade LoRAs now actually apply
+plakat generate "a girl in a flower field, anime style" \
+    --model stable-cascade --lora ~/loras/cascade_anime.safetensors:1.0
 
-# ControlNet — auto-canny + auto-resolved CN, zero extra flags
-plakat generate "a cozy cottage at sunset, photorealistic" \
-    --model stable-cascade --size 1024x1024 --control-from photo.jpg
+# Image variation — vary on a reference image's semantics
+plakat generate "" --model stable-cascade --image-variation ref.png
 
-# img2img (+ optional --control-from)
-plakat img2img cottage.png --prompt "a cottage in deep winter snow" \
-    --model stable-cascade --size 1024x1024 --strength 0.6
+# Faithful img2img — hold the init's content
+plakat img2img cottage.png --prompt "a cottage in winter snow" \
+    --model stable-cascade --strength 0.6 --faithful
+
+# Decoupled decoder guidance
+plakat generate "a baroque cathedral interior" \
+    --model stable-cascade --guidance 4.0 --decoder-guidance 1.3
 ```
 
-The decoder uses a low guidance; the prior uses `--guidance` (~4.0).
-Cascade output is square (the prior latent is fixed 24×24×16).
+Cascade ControlNet now works in scripting too — push a spec with
+`plakat.controlnet.annotate`, then `plakat.cascade` (see
+[`tools/verify_phase4_cascade_cn.bund`](tools/verify_phase4_cascade_cn.bund)).
 
-### Verification
-
-The reference harnesses (`tools/cascade_ref_dump*.py`) + the
-`*_matches_diffusers_reference` / `cn_forward_matches_reference` tests
-are permanent regression guards — they pin every Cascade stage to the
-upstream reference to <0.001, even though diffusers has no Cascade
-ControlNet (that one's pinned to torchvision EfficientNetV2-S).
-
-### Honest scope notes — follow-ups
-
-- A proper `--decoder-guidance` flag (currently a fixed 1.1).
-- Scripting (Bund) Cascade ControlNet (needs new config keys; the
-  t2i CLI and scenario files both drive it today).
-- The exact upstream CannyFilter normalization (the `[0,1]→[-1,1]`
-  map works well but isn't the original's training preprocessing).
-- Multi-CN is N/A for Cascade — the model uses a single cnet and
-  ships only the canny checkpoint.
-
-**Earlier releases** (v0.13 – v0.40):
+**Earlier releases** (v0.13 – v0.41):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

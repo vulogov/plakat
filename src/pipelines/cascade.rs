@@ -120,6 +120,13 @@ pub struct LoadRequest {
     /// or full HF repo:filename is the v0.38 contract. Catalogued
     /// CN-by-kind aliases land in v0.39.
     pub controlnet_weights: Option<std::path::PathBuf>,
+    /// v0.42 phase 3: optional CLIP ViT-L/14 image-encoder weights
+    /// (`image_encoder/model.safetensors` from the Cascade repo). When
+    /// `Some`, `Pipeline::load` builds the image encoder so Stage C can
+    /// be conditioned on a reference image (image variation / faithful
+    /// img2img). Resolved by the CLI layer only when an image prompt is
+    /// requested, so plain t2i never pays the ~1.2 GB download.
+    pub image_encoder_weights: Option<std::path::PathBuf>,
 }
 
 /// v0.38 phase 5: per-call ControlNet conditioning input. Bundles
@@ -196,6 +203,12 @@ pub struct Pipeline {
     /// path doesn't carry a CN — Stage C is the semantic stage
     /// where spatial conditioning lands.
     pub controlnet: Option<CascadeControlNet>,
+    /// v0.42 phase 3: optional CLIP ViT-L/14 image encoder. `Some`
+    /// when `LoadRequest.image_encoder_weights` was supplied (image
+    /// variation or faithful img2img). Produces the 768-dim image
+    /// embedding the Stage C prior's `clip_img_mapper` consumes; when
+    /// `None`, the image-conditioning slot stays zeroed (plain t2i).
+    pub image_encoder: Option<crate::pipelines::ip_adapter::ImageEncoder>,
 }
 
 impl Pipeline {
@@ -376,6 +389,24 @@ impl Pipeline {
             None
         };
 
+        // v0.42 phase 3: optional CLIP ViT-L/14 image encoder. Loaded
+        // only when image conditioning was requested (the CLI layer
+        // resolves the weights path); plain t2i skips it entirely.
+        let image_encoder = if let Some(ie_path) = req.image_encoder_weights.as_ref() {
+            let ie_build = progress::spinner("Loading Cascade image encoder (CLIP ViT-L/14)");
+            let enc = crate::pipelines::ip_adapter::ImageEncoder::load_with_config(
+                ie_path,
+                &crate::pipelines::ip_adapter::clip_l_vision_config(),
+                &req.device,
+                dtype,
+            )
+            .context("building CLIP ViT-L/14 image encoder for Stable Cascade")?;
+            ie_build.finish_with_message("✓ Cascade image encoder ready");
+            Some(enc)
+        } else {
+            None
+        };
+
         Ok(Self {
             device: req.device,
             dtype,
@@ -385,7 +416,40 @@ impl Pipeline {
             stage_b,
             stage_c,
             controlnet,
+            image_encoder,
         })
+    }
+
+    /// v0.42 phase 3: encode a reference image into the 768-dim CLIP
+    /// ViT-L/14 embedding the Stage C prior consumes via
+    /// `clip_img_mapper`. Mirrors diffusers'
+    /// `StableCascadePriorPipeline.encode_image`: CLIPImageProcessor
+    /// (resize 224 + CLIP mean/std) → `image_encoder(...).image_embeds`.
+    /// Returns `(1, 768)`; the caller builds the CFG `[uncond=0, pos]`
+    /// pair. Errors if no image encoder was loaded.
+    pub fn encode_image_embed(&self, image_path: &std::path::Path) -> Result<Tensor> {
+        let enc = self.image_encoder.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "image conditioning requested but no image encoder loaded — \
+                 set LoadRequest.image_encoder_weights"
+            )
+        })?;
+        // (1, 3, 224, 224), CLIP-normalized — same preprocessing the
+        // IP-Adapter / stylize paths use.
+        let pixels = crate::imaging::preprocess::clip_image_tensor(
+            image_path,
+            224,
+            &self.device,
+            self.dtype,
+        )
+        .with_context(|| {
+            format!("preprocessing image-prompt {} for CLIP ViT-L", image_path.display())
+        })?;
+        let embed = enc
+            .encode(&pixels)
+            .context("CLIP ViT-L/14 image encode")?;
+        // (1, 768).
+        Ok(embed)
     }
 
     /// v0.38 phase 5: per-call ControlNet conditioning input.
@@ -443,6 +507,7 @@ impl Pipeline {
     /// by tensor-naming alignment with the upstream checkpoint
     /// (real-weight smoke at user time will surface any remaining
     /// VarBuilder mismatches).
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         prompt: &str,
@@ -451,6 +516,7 @@ impl Pipeline {
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -462,9 +528,11 @@ impl Pipeline {
             stage_c_steps,
             stage_b_steps,
             guidance,
+            decoder_guidance,
             seed,
             scheduler_kind,
             control,
+            None,
             None,
         )
     }
@@ -497,6 +565,10 @@ impl Pipeline {
         stage_c_steps: usize,
         stage_b_steps: usize,
         guidance: f64,
+        // v0.42 phase 0: Stage B (decoder) CFG scale, decoupled from
+        // the prior's `guidance`. Upstream defaults ~0; ~1.0 is the
+        // pure conditional. plakat's default is 1.1 (mild).
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -506,6 +578,12 @@ impl Pipeline {
         // strength-truncated schedule instead of pure noise. Stage C
         // still runs the full text-driven schedule.
         img2img_init: Option<(&Tensor, f32)>,
+        // v0.42 phase 3: optional CLIP ViT-L/14 image embedding `(1,768)`
+        // (a reference image for image-variation, or the init image for
+        // faithful img2img). Conditions Stage C's image slot; the
+        // uncond/CFG-negative row is zeroed, matching upstream's
+        // `negative_image_embeds = zeros_like`. `None` → zeroed slot.
+        image_embed: Option<&Tensor>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
         use crate::pipelines::cascade_scheduler::CascadeScheduler;
@@ -544,10 +622,25 @@ impl Pipeline {
         let cfg_pooled = Tensor::cat(&[&neg_pooled, &pos_pooled], 0)?;
         s.finish_with_message("✓ text encoded");
 
-        // ---- Stage C KV conditioning (text + pooled + zero-img) ----
-        let clip_c = self
-            .stage_c
-            .build_clip_conditioning(&cfg_penult, &cfg_pooled, None)?;
+        // ---- Stage C KV conditioning (text + pooled + image) ----
+        // v0.42 phase 3: when an image embedding is supplied, build the
+        // CFG pair `[uncond=0, pos=embed]` on dim 0 (matching the
+        // `[neg, pos]` text order above and upstream's
+        // `negative_image_embeds = zeros_like`). `None` → zeroed slot.
+        let clip_img_cfg = match image_embed {
+            Some(embed) => {
+                let (_n, d) = embed.dims2()?;
+                let embed = embed.to_dtype(self.dtype)?;
+                let zeros = Tensor::zeros((1, d), self.dtype, &self.device)?;
+                Some(Tensor::cat(&[&zeros, &embed], 0)?) // (2, 768)
+            }
+            None => None,
+        };
+        let clip_c = self.stage_c.build_clip_conditioning(
+            &cfg_penult,
+            &cfg_pooled,
+            clip_img_cfg.as_ref(),
+        )?;
         // Stage B KV conditioning (pooled-only — clip_text arg ignored).
         let clip_b = self
             .stage_b
@@ -714,17 +807,12 @@ impl Pipeline {
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
-            // v0.41 phase 2i: the DECODER uses a much lower guidance
-            // than the prior. Upstream StableCascadeDecoderPipeline
-            // defaults `guidance_scale=0.0` (no CFG — pure conditional);
-            // the prior uses ~4.0. Applying the prior's 4.0 to Stage B
-            // over-drove the decoder into harsh over-detailed texture.
-            // In our `neg + scale*(pos-neg)` form, scale=1.0 reproduces
-            // the pure conditional (= upstream no-CFG decoder). A future
-            // phase exposes `--decoder-guidance`; for now clamp Stage B
-            // to a mild fixed value.
-            const DECODER_GUIDANCE: f64 = 1.1;
-            let guided = (neg + ((pos - neg)? * DECODER_GUIDANCE)?)?;
+            // v0.41 phase 2i / v0.42 phase 0: the DECODER uses a much
+            // lower CFG than the prior (upstream defaults ~0; ~1.0 is
+            // the pure conditional). `decoder_guidance` exposes it; the
+            // prior's `guidance` (~4.0) would over-drive Stage B into
+            // harsh over-detailed texture. `neg + scale*(pos-neg)`.
+            let guided = (neg + ((pos - neg)? * decoder_guidance)?)?;
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
@@ -772,6 +860,7 @@ impl Pipeline {
         stage_b_steps: usize,
         strength: f32,
         guidance: f64,
+        decoder_guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
@@ -795,6 +884,16 @@ impl Pipeline {
         })?;
         let init_b = self.stage_a.encode_to_stage_b_space(&init_img)?;
         let _ = stage_b_spatial_for_image; // shape enforced in generate_at_size
+        // v0.42 phase 3: faithful img2img. When an image encoder is
+        // loaded, ALSO condition Stage C's semantic prior on the init
+        // image (CLIP ViT-L embedding) — not just Stage B's latent.
+        // This pulls the *content* of the init toward the output, where
+        // the VAE-seed alone only preserves low-level structure.
+        let image_embed = if self.image_encoder.is_some() {
+            Some(self.encode_image_embed(init_image_path)?)
+        } else {
+            None
+        };
         self.generate_at_size(
             prompt,
             negative,
@@ -802,10 +901,50 @@ impl Pipeline {
             stage_c_steps,
             stage_b_steps,
             guidance,
+            decoder_guidance,
             seed,
             scheduler_kind,
             control,
             Some((&init_b, strength)),
+            image_embed.as_ref(),
+        )
+    }
+
+    /// v0.42 phase 3: image variation — generate from noise (no Stage B
+    /// VAE seed) conditioned on a reference image's CLIP ViT-L embedding
+    /// plus optional text. This is the "unCLIP"-style path: the output
+    /// shares the *semantics* of the reference (subject, palette, mood)
+    /// while re-composing it. `prompt` may be empty to vary on the image
+    /// alone. Requires an image encoder (`image_encoder_weights`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_image_variation(
+        &mut self,
+        ref_image_path: &std::path::Path,
+        prompt: &str,
+        negative: &str,
+        output_dim: u32,
+        stage_c_steps: usize,
+        stage_b_steps: usize,
+        guidance: f64,
+        decoder_guidance: f64,
+        seed: u64,
+        scheduler_kind: SchedulerKind,
+        control: Option<&ControlConditioning>,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        let image_embed = self.encode_image_embed(ref_image_path)?;
+        self.generate_at_size(
+            prompt,
+            negative,
+            output_dim,
+            stage_c_steps,
+            stage_b_steps,
+            guidance,
+            decoder_guidance,
+            seed,
+            scheduler_kind,
+            control,
+            None,
+            Some(&image_embed),
         )
     }
 }
@@ -919,12 +1058,35 @@ pub async fn run(req: RunRequest) -> Result<()> {
         (None, false) => None,
     };
 
+    // v0.42 phase 3: resolve the CLIP ViT-L/14 image encoder. It lives
+    // in the PRIOR repo's `image_encoder/` subfolder (alongside Stage
+    // C), not the Stage A/B repo. Only fetched when an image prompt is
+    // requested; plain t2i skips the download.
+    let image_encoder_weights = if req.image_prompt.is_some() {
+        let prior_repo = stage_c_prior_repo(&repo)
+            .unwrap_or_else(|| "stabilityai/stable-cascade-prior".to_string());
+        Some(
+            crate::hf::download::get_first_of(&[
+                (&prior_repo, "image_encoder/model.safetensors"),
+                (&prior_repo, "image_encoder/model.bf16.safetensors"),
+            ])
+            .await
+            .context(
+                "resolving the CLIP ViT-L/14 image encoder \
+                 (image_encoder/model.safetensors) for image variation",
+            )?,
+        )
+    } else {
+        None
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
         controlnet_weights: cn_weights,
+        image_encoder_weights,
     })
     .await?;
 
@@ -1015,17 +1177,36 @@ pub async fn run(req: RunRequest) -> Result<()> {
             idx + 1,
             req.count,
         ));
-        let (buf, ow, oh) = pipeline.generate(
-            &req.prompt,
-            &req.negative,
-            req.output_dim,
-            req.stage_c_steps,
-            req.stage_b_steps,
-            req.guidance,
-            seed,
-            req.scheduler,
-            control_conditioning.as_ref(),
-        )?;
+        // v0.42 phase 3: dispatch to image-variation when a reference
+        // image was supplied; otherwise plain text-to-image.
+        let (buf, ow, oh) = if let Some(ref_img) = req.image_prompt.as_ref() {
+            pipeline.generate_image_variation(
+                ref_img,
+                &req.prompt,
+                &req.negative,
+                req.output_dim,
+                req.stage_c_steps,
+                req.stage_b_steps,
+                req.guidance,
+                req.decoder_guidance,
+                seed,
+                req.scheduler,
+                control_conditioning.as_ref(),
+            )?
+        } else {
+            pipeline.generate(
+                &req.prompt,
+                &req.negative,
+                req.output_dim,
+                req.stage_c_steps,
+                req.stage_b_steps,
+                req.guidance,
+                req.decoder_guidance,
+                seed,
+                req.scheduler,
+                control_conditioning.as_ref(),
+            )?
+        };
 
         // Build sidecar metadata. Same field set PixArt emits
         // (v0.35 phase 4). Stable Cascade specific extras (Stage C
@@ -1090,12 +1271,30 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
         (None, false) => None,
     };
 
+    // v0.42 phase 3: faithful img2img loads the CLIP ViT-L/14 encoder
+    // (from the prior repo) so the init image conditions Stage C too.
+    let image_encoder_weights = if req.faithful {
+        let prior_repo = stage_c_prior_repo(&repo)
+            .unwrap_or_else(|| "stabilityai/stable-cascade-prior".to_string());
+        Some(
+            crate::hf::download::get_first_of(&[
+                (&prior_repo, "image_encoder/model.safetensors"),
+                (&prior_repo, "image_encoder/model.bf16.safetensors"),
+            ])
+            .await
+            .context("resolving the CLIP ViT-L/14 image encoder for faithful img2img")?,
+        )
+    } else {
+        None
+    };
+
     let mut pipeline = Pipeline::load(LoadRequest {
         repo,
         device: req.device.clone(),
         loras: resolved_loras,
         lora_scale: req.lora_scale,
         controlnet_weights: cn_weights,
+        image_encoder_weights,
     })
     .await?;
 
@@ -1163,6 +1362,7 @@ pub async fn run_img2img(req: RunImg2imgRequest) -> Result<()> {
             req.stage_b_steps,
             req.strength,
             req.guidance,
+            req.decoder_guidance,
             seed,
             req.scheduler,
             control_conditioning.as_ref(),
@@ -1218,6 +1418,8 @@ pub struct RunImg2imgRequest {
     /// denoise (decoded init image only).
     pub strength: f32,
     pub guidance: f64,
+    /// v0.42 phase 0: Stage B (decoder) CFG scale. Default 1.1.
+    pub decoder_guidance: f64,
     pub seed: Option<u64>,
     pub scheduler: SchedulerKind,
     pub out_dir: std::path::PathBuf,
@@ -1228,6 +1430,12 @@ pub struct RunImg2imgRequest {
     /// auto-resolve + conditioning rules as the t2i path.
     pub control_spec: Option<crate::pipelines::controlnet::ControlSpec>,
     pub controlnet_weights: Option<std::path::PathBuf>,
+    /// v0.42 phase 3: faithful img2img. When `true`, the CLIP ViT-L/14
+    /// image encoder is loaded and the init image conditions Stage C's
+    /// semantic prior (not just Stage B's VAE seed), pulling the
+    /// output's *content* toward the init. Default `false` (structural
+    /// img2img only).
+    pub faithful: bool,
 }
 
 /// CLI entrypoint: parameters needed for one Stable Cascade
@@ -1249,6 +1457,8 @@ pub struct RunRequest {
     /// latent). Upstream recommendation: 10.
     pub stage_b_steps: usize,
     pub guidance: f64,
+    /// v0.42 phase 0: Stage B (decoder) CFG scale. Default 1.1.
+    pub decoder_guidance: f64,
     pub seed: Option<u64>,
     pub scheduler: SchedulerKind,
     pub out_dir: std::path::PathBuf,
@@ -1269,6 +1479,11 @@ pub struct RunRequest {
     /// (safetensors). When `None`, no CN is loaded and any
     /// `control_spec` is logged + ignored.
     pub controlnet_weights: Option<std::path::PathBuf>,
+    /// v0.42 phase 3: reference image for image-variation. When `Some`,
+    /// the CLIP ViT-L/14 image encoder is loaded and the output is
+    /// conditioned on this image's semantics (plus `prompt`, which may
+    /// be empty). When `None`, plain text-to-image.
+    pub image_prompt: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -1288,6 +1503,7 @@ mod tests {
             stage_c_steps: 20,
             stage_b_steps: 10,
             guidance: 4.0,
+            decoder_guidance: 1.1,
             seed: Some(42),
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/cascade-test"),
@@ -1296,6 +1512,7 @@ mod tests {
             lora_scale: 1.0,
             control_spec: None,
             controlnet_weights: None,
+            image_prompt: None,
         };
         assert_eq!(r.prompt, "a fox in a meadow");
         assert_eq!(r.stage_c_steps, 20);
@@ -1322,6 +1539,7 @@ mod tests {
             stage_b_steps: 10,
             strength: 0.6,
             guidance: 4.0,
+            decoder_guidance: 1.1,
             seed: Some(7),
             scheduler: SchedulerKind::DpmppKarras,
             out_dir: std::path::PathBuf::from("/tmp/out"),
@@ -1330,6 +1548,7 @@ mod tests {
             lora_scale: 1.0,
             control_spec: None,
             controlnet_weights: None,
+            faithful: false,
         };
         assert_eq!(r.prompt, "a fox");
         assert_eq!(r.output_dim, 1024);
@@ -1456,6 +1675,7 @@ mod tests {
             stage_b,
             stage_c,
             controlnet: None,
+            image_encoder: None,
         };
 
         eprintln!("All 4 stages loaded. Running generate at 256² with 2+2 steps...");
@@ -1466,8 +1686,10 @@ mod tests {
             2,
             2,
             4.0,
+            1.1,
             42,
             SchedulerKind::DpmppKarras,
+            None,
             None,
             None,
         );

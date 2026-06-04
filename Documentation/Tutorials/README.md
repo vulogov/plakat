@@ -94,6 +94,15 @@ If you're new to plakat, work through these in order:
    (including tiled img2img / inpaint), and SD3 ControlNet via
    the InstantX adapter family.
 
+9a. [`CASCADE_TUTORIAL.md`](CASCADE_TUTORIAL.md) — **Stable Cascade**
+    (Würstchen v3). The three-stage pipeline and its two step budgets
+    (`--stage-c-steps` / `--stage-b-steps`), prior vs decoder guidance
+    (`--decoder-guidance`, v0.42), LoRA / **DoRA** (kohya + PEFT),
+    **image variation** (`--image-variation`) and **faithful img2img**
+    (`--faithful`) via the CLIP ViT-L/14 encoder (v0.42), the canny
+    ControlNet, and driving Cascade from Bund scripts. The most
+    memory-efficient high-quality model — 1024² on ~16 GB.
+
 10. [`CIVITAI_TUTORIAL.md`](CIVITAI_TUTORIAL.md) — browsing,
     downloading, and using Civitai community assets from the
     command line. `plakat civitai search` / `info` / `download`,
@@ -202,6 +211,7 @@ feature:
 | `ARTEFACTS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. (No external assets required — uses the bundled placeholder set.) |
 | `FLUX_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (NF4) / ≥16 GB (GGUF) / ≥24 GB (BF16). HuggingFace token for gated `flux-dev` / `flux-fill-dev` repos. |
 | `SD3_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. GPU with ≥12 GB VRAM (Medium) / ≥24 GB (Large). HuggingFace token — all Stability SD3 repos are gated. |
+| `CASCADE_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~16 GB unified memory / VRAM, ~20 GB free disk for weights. No HuggingFace token (ungated). |
 | `ANIMATE_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~3 GB free for SD 1.5 weights, ~7 GB for SDXL. |
 | `ADVANCED_PROMPTING_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Comfortable with `--lora` and the relationship between seed + reproducibility. No new assets required. |
 | `PROMPT_ENHANCER_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. ~1 GB free for the default Qwen2.5-1.5B GGUF (or ~230 MB for the SmolLM2 fallback). API key optional (only needed for `--enhance deepseek` / `--enhance gemini`). |
