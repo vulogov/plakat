@@ -1757,10 +1757,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let mut pipeline: Option<Pipeline> = if args.dry_run
         || variant.is_flux()
         || variant.is_sd3()
+        || variant.is_pixart()
+        || variant.is_cascade()
         || !has_generate_tasks
         || any_animate_tasks
     {
-        // Mixed-kind (or all-animate, or non-SD-family) → defer.
+        // Mixed-kind (or all-animate, or non-SD-family) → defer. PixArt
+        // and Stable Cascade have their own pre-loaded pipelines
+        // (`pixart_pipeline` / `cascade_pipeline`) and must NOT hit the
+        // SD-only `load_sd_pipeline_for_scenario`, which bails on them.
         None
     } else {
         // All-generate SD-family scenario — pre-load as before so
