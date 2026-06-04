@@ -3617,6 +3617,30 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         m.with_lora_stack(cascade_lora_entries.clone());
                         m.lora_scale = Some(lora_scale);
                     }
+                    // v0.43: record the ControlNet so the proof image
+                    // self-documents its conditioning (mirrors the CLI /
+                    // scripting Cascade paths).
+                    if cp.control_conditioning_active() {
+                        if let Some(spec) = task_effective_controls(task)?.first() {
+                            m.with_control_stack(vec![
+                                crate::imaging::metadata::ControlEntry {
+                                    kind: spec.kind.clone(),
+                                    image: spec
+                                        .image
+                                        .as_ref()
+                                        .map(|p| p.display().to_string()),
+                                    from: spec
+                                        .auto_from
+                                        .as_ref()
+                                        .map(|p| p.display().to_string()),
+                                    video: None,
+                                    strength: spec.strength.unwrap_or(1.0),
+                                    start: spec.start.unwrap_or(0.0),
+                                    end: spec.end.unwrap_or(1.0),
+                                },
+                            ]);
+                        }
+                    }
                     let out_path = task_out
                         .join(format!("plakat-cascade-{img_seed}.png"));
                     crate::imaging::io::save_rgb_u8_with_metadata(
