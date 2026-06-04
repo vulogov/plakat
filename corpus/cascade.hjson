@@ -1,0 +1,93 @@
+{
+    # ===================================================================
+    # plakat proof corpus — Stable Cascade
+    # ===================================================================
+    # Renders a representative spread of Stable Cascade outputs as proof
+    # the pipeline works end to end. Ungated + runs on ~16 GB Metal.
+    #
+    #   plakat scenario corpus/cascade.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    #
+    # Dry-run (validate, no generation):
+    #   plakat scenario corpus/cascade.hjson --dry-run
+    # ===================================================================
+
+    model: stable-cascade
+    device: metal
+    size: 1024x1024
+    # Single steps → Stage C / Stage B split 2/3 + 1/3 (≈ 20 + 10).
+    steps: 30
+    guidance: 4.0
+    seed: 42
+    count: 1
+    # Verbatim prompts: a no-key enhancer satisfies the schema; every
+    # task opts out via `enhance: false` so no LLM rewrites the prompt.
+    enhancer: auto
+    out: ./corpus/images/cascade
+
+    negative: blurry, low quality, watermark, text, signature
+
+    # The scene × weather catalogs are required by the scenario schema;
+    # this corpus uses one neutral entry of each (empty prompt) so every
+    # task's own `prompt` stands alone (no cross-product).
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: cascade_landscape
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a serene mountain lake at golden sunrise, snow-capped peak behind, autumn forest on the shore, photorealistic
+        }
+        {
+            name: cascade_portrait_oil
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a portrait of a weathered fisherman in his sixties, kind eyes, knitted sweater, soft window light, oil paint style
+        }
+        {
+            name: cascade_watercolour
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor
+        }
+        {
+            name: cascade_city
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic
+        }
+        {
+            # ControlNet (canny): structure follows the winter-cottage
+            # edge map; the prompt restyles it to autumn.
+            name: cascade_controlnet_canny
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a cozy cottage in an autumn forest, golden leaves, photorealistic
+            control:
+            {
+                kind: canny
+                from: gallery/3.png
+            }
+        }
+    ]
+}
