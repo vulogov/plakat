@@ -64,6 +64,10 @@
             scene: plain
             weather: any
             enhance: false
+            # SDXL UNet + SDXL ControlNet + dual encoders + VAE at 1024²
+            # OOM-kills on memory-constrained Metal. Render this CN task
+            # at 768² to fit (roughly halves activation + residual memory).
+            size: 768x768
             prompt: a stone cottage in a blooming spring garden, photorealistic
             control:
             {
