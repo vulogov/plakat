@@ -1,0 +1,26 @@
+// v0.42 phase 4 verification — scripting/Bund Stable Cascade ControlNet.
+//
+// Proves that a ControlSpec pushed with the shared `plakat.controlnet.*`
+// words is now honoured by `plakat.cascade` (it was a no-op before this
+// phase). The CN auto-resolves `controlnet/canny.safetensors` from the
+// model repo and auto-annotates the source image to canny edges, so the
+// output should follow gallery/3.png's structure (the winter cottage
+// outline) while the prompt restyles it.
+//
+// Run from the repo root:   plakat run tools/verify_phase4_cascade_cn.bund
+
+// Push a canny ControlNet that auto-annotates the cottage photo FIRST,
+// so plakat.load warms the pipeline with its ControlNet in one pass.
+"canny" "gallery/3.png" plakat.controlnet.annotate
+
+"stable-cascade" plakat.load
+
+"20"  "stage_c_steps" plakat.config.set
+"10"  "stage_b_steps" plakat.config.set
+"4.0" "guidance"      plakat.config.set
+"42"  "seed"          plakat.config.set
+
+// Render — Stage C is now conditioned on the canny edges of 3.png.
+"a cozy cottage in an autumn forest, golden leaves, photorealistic" plakat.cascade
+
+"/tmp/cascade-script-cn.png" plakat.save
