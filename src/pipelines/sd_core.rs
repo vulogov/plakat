@@ -302,11 +302,35 @@ impl SdCore {
             (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
         ])
         .await?;
-        let vae_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
+        // v0.43: SDXL's stock VAE overflows F16's ~65k ceiling in its
+        // decoder → NaN → all-black on half-precision backends (Metal).
+        // On a non-CPU (F16) SDXL run, swap in madebyollin's
+        // `sdxl-vae-fp16-fix` — a retrained drop-in VAE (identical
+        // architecture, same config) that is numerically stable in F16.
+        // This keeps the VAE in F16 (no OOM, no extra memory, no tiling)
+        // while producing correct output. CPU runs F32, where the stock
+        // VAE is fine, so it's left untouched there. SD 1.5 / 2.1 VAEs
+        // tolerate F16, so only SDXL is redirected.
+        let use_fp16_vae_fix = variant.is_xl() && !matches!(req.device, Device::Cpu);
+        let vae_path = if use_fp16_vae_fix {
+            const VAE_FIX_REPO: &str = "madebyollin/sdxl-vae-fp16-fix";
+            crate::hf::download::get_first_of(&[
+                (VAE_FIX_REPO, "diffusion_pytorch_model.safetensors"),
+                (VAE_FIX_REPO, "sdxl_vae.safetensors"),
+                (VAE_FIX_REPO, "sdxl.vae.safetensors"),
+            ])
+            .await
+            .context(
+                "downloading the SDXL fp16-fix VAE (madebyollin/sdxl-vae-fp16-fix); \
+                 SDXL's stock VAE produces black images in F16",
+            )?
+        } else {
+            crate::hf::download::get_first_of(&[
+                (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
+                (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
+            ])
+            .await?
+        };
         dl.finish_with_message("✓ base weights ready");
 
         // LoRAs arrive pre-resolved. Temp-file handles for merged
