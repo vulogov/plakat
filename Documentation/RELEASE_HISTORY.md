@@ -1,12 +1,56 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.39. The current
+"What's new" sections for v0.13 through v0.41. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.41 — Stable Cascade actually generates
+
+v0.40 shipped Stable Cascade "architecture-verified, quality-pending"
+— it ran end to end but produced noise. v0.41 makes it **generate
+real, photorealistic images** across text-to-image, ControlNet, and
+img2img. The path there was a reference-comparison campaign: per-stage
+Python harnesses dump diffusers' (and torchvision's) intermediate
+activations on fixed inputs, and Rust tests diff ours against them
+until every forward matches to <0.001. That harness caught **24
+distinct bugs** that inspection alone had missed.
+
+```
+text-to-image     → coherent landscapes, scenes, complex multi-subject prompts
++ ControlNet      → a canny house outline → a photorealistic cottage on the lines
++ img2img         → a cottage → the same cottage in winter snow
++ img2img + CN    → init texture and edge structure composed together
+```
+
+### Phases
+
+| # | Phase | What |
+|---|---|---|
+| 0 | Wuerstchen scheduler | Ratio-timestep `CascadeScheduler` (cosine α-cumprod, shift 0.008) replacing the SDXL integer-timestep DDPM the model was never trained on. |
+| 1 | sca/crp conditioning | `sca_emb` / `crp_emb` use the sinusoidal embedding of a zero scalar (upstream's `sca=None` default), not the `t_emb` placeholder. |
+| 2 | Visual quality | The bulk of the cycle: **16 numerical bugs** fixed across all three stages, each pinned to a diffusers reference. Headliners: F16→**BF16** dtype (Cascade trains in bf16; F16 overflowed to NaN → all-black); the **sinusoidal time embedding** (missing the ×10000 scale, wrong divisor, wrong sin/cos order); the missing **clip_norm** (KV stream off 80×); **switch_level=false** Stage C topology; Stage B's **pixels_mapper(zeros)** always-applied term and **up_repeat_mappers** [3,3,2,2]; Stage A's **ReplicationPad2d** (not reflection); the **decoder CFG**; and CLIP-G **`hidden_states[-1]`** not `[-2]` (the complex-prompt melt). |
+| 3 | ControlNet rebuild | The canny CN was broken on every axis and never ran. Rebuilt the backbone as **EfficientNetV2-S** (it was mislabeled MobileNetV3 — now matches torchvision to 0.00004), fixed the LeakyReLU projections, rewrote injection to the upstream `controlnet_blocks=[0,4,8,12,51,55,59,63]` (bilinear-resized), and wired it into generation. Scenario `control:` support. |
+| 4 | CN UX + img2img | `--control-from` auto-annotates via Canny; `--cascade-control-weights` is now optional (the CN auto-resolves from the repo). Implemented Cascade img2img (was a bail stub) — Stage-A-encode the init, seed Stage B at a strength-truncated schedule — and made ControlNet compose with it. |
+
+### Verification
+
+The reference harnesses (`tools/cascade_ref_dump*.py`) + the
+`*_matches_diffusers_reference` / `cn_forward_matches_reference` tests
+are permanent regression guards — they pin every Cascade stage to the
+upstream reference to <0.001 (the CN one to torchvision EfficientNetV2-S).
+
+### Follow-ups (most closed by v0.42)
+
+- A proper `--decoder-guidance` flag (was a fixed 1.1) — **closed v0.42.**
+- Scripting (Bund) Cascade ControlNet — **closed v0.42.**
+- The exact upstream CannyFilter normalization — investigated in v0.42
+  and found the "resize to 224" premise wrong for plakat's residual
+  injection; the working full-resolution `[0,1]→[-1,1]` path was kept.
+- Multi-CN is N/A for Cascade — single cnet, canny-only checkpoint.
 
 ## What's new in v0.40 — Stable Cascade end-to-end on real weights
 
