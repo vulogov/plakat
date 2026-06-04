@@ -91,9 +91,27 @@ pub struct GenerateArgs {
     #[arg(long = "cascade-control-weights", value_name = "PATH")]
     pub cascade_control_weights: Option<PathBuf>,
 
+    /// Stable Cascade image variation: condition generation on a
+    /// reference image's CLIP ViT-L/14 embedding (unCLIP-style). The
+    /// output shares the reference's semantics (subject, palette, mood)
+    /// while re-composing it. Combine with a `--prompt` to steer, or
+    /// leave the prompt empty to vary on the image alone. Loads the
+    /// `image_encoder/` from the Cascade repo on first use.
+    /// Cascade-only; ignored on other models.
+    #[arg(long = "image-variation", value_name = "PATH")]
+    pub image_variation: Option<PathBuf>,
+
     /// Classifier-free guidance scale. Use 0.0 for SDXL-Turbo.
     #[arg(long, default_value_t = 7.5)]
     pub guidance: f64,
+
+    /// Stable Cascade Stage B (decoder) CFG scale, decoupled from
+    /// `--guidance` (which drives the Stage C prior). Upstream's
+    /// decoder defaults to ~0 (no CFG); ~1.0 is the pure conditional.
+    /// Default 1.1 (mild). Raise toward 2-4 for sharper decoder
+    /// detail at the risk of over-saturation. Cascade-only.
+    #[arg(long = "decoder-guidance", default_value_t = 1.1)]
+    pub decoder_guidance: f64,
 
     /// Negative prompt.
     #[arg(long, default_value = "")]
@@ -1160,7 +1178,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         // overrides. Plain `--steps` still works; these refine it
         // when set. Ignored on every non-Cascade pipeline.
         cascade_stage_c_steps: args.stage_c_steps,
+        cascade_decoder_guidance: args.decoder_guidance,
         cascade_stage_b_steps: args.stage_b_steps,
+        cascade_image_prompt: args.image_variation.clone(),
         // v0.38 phase 5: Cascade ControlNet weights path.
         cascade_controlnet_weights: args.cascade_control_weights,
     })
@@ -1690,7 +1710,9 @@ mod tests {
             stage_c_steps: None,
             stage_b_steps: None,
             cascade_control_weights: None,
+            image_variation: None,
             guidance: 7.5,
+            decoder_guidance: 1.1,
             negative: String::new(),
             negative_preset: None,
             seed: None,

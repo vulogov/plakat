@@ -250,6 +250,8 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         count: args.count,
         steps: args.steps,
         guidance: args.guidance,
+        decoder_guidance: 1.1,
+        faithful: false,
         seed: args.seed,
         scheduler: args.scheduler,
         loras: args.loras,

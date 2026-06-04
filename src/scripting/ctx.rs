@@ -419,6 +419,12 @@ impl ScriptCtx {
             .as_ref()
             .map(|(a, _)| a.as_str())
             .or_else(|| self.loaded.as_ref().map(|(a, _)| a.as_str()))
+            // v0.42 phase 4: PixArt / Cascade live in their own slots
+            // (no SdT2i / portrait slot), so report their alias too —
+            // otherwise `plakat.cascade` / `plakat.pixart` can't find
+            // the model `plakat.load` warmed.
+            .or_else(|| self.loaded_pixart.as_ref().map(|(a, _)| a.as_str()))
+            .or_else(|| self.loaded_cascade.as_ref().map(|(a, _)| a.as_str()))
     }
 
     /// v0.22 phase 1: get-or-load the SD-family pipeline for
@@ -806,13 +812,25 @@ impl ScriptCtx {
     pub fn get_or_load_pixart(
         &mut self,
     ) -> Result<&mut crate::pipelines::pixart::Pipeline> {
-        let alias = self.loaded_model().ok_or_else(|| {
-            anyhow!(
-                "ScriptCtx::get_or_load_pixart: no model loaded. \
-                 Call `\"pixart\" plakat.load` before `plakat.pixart`."
-            )
-        })?;
-        let alias_owned = alias.to_string();
+        let alias_owned = self
+            .loaded_model()
+            .ok_or_else(|| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_pixart: no model loaded. \
+                     Call `\"pixart\" plakat.load` before `plakat.pixart`."
+                )
+            })?
+            .to_string();
+        self.cache_or_load_pixart(alias_owned)
+    }
+
+    /// v0.42 phase 4: load-or-cache PixArt for an EXPLICIT alias (see
+    /// [`Self::cache_or_load_cascade`] for the chicken-and-egg rationale
+    /// — `ensure_loaded` / `plakat.load` calls this directly).
+    fn cache_or_load_pixart(
+        &mut self,
+        alias_owned: String,
+    ) -> Result<&mut crate::pipelines::pixart::Pipeline> {
         let hit = self
             .loaded_pixart
             .as_ref()
@@ -889,17 +907,37 @@ impl ScriptCtx {
     pub fn get_or_load_cascade(
         &mut self,
     ) -> Result<&mut crate::pipelines::cascade::Pipeline> {
-        let alias = self.loaded_model().ok_or_else(|| {
-            anyhow!(
-                "ScriptCtx::get_or_load_cascade: no model loaded. \
-                 Call `\"stable-cascade\" plakat.load` before `plakat.cascade`."
-            )
-        })?;
-        let alias_owned = alias.to_string();
+        let alias_owned = self
+            .loaded_model()
+            .ok_or_else(|| {
+                anyhow!(
+                    "ScriptCtx::get_or_load_cascade: no model loaded. \
+                     Call `\"stable-cascade\" plakat.load` before `plakat.cascade`."
+                )
+            })?
+            .to_string();
+        self.cache_or_load_cascade(alias_owned)
+    }
+
+    /// v0.42 phase 4: load-or-cache the Stable Cascade pipeline for an
+    /// EXPLICIT alias. `get_or_load_cascade` reads the alias from
+    /// `loaded_model()`; `ensure_loaded` (the `plakat.load` path) calls
+    /// this directly so the load isn't gated on `loaded_model()` already
+    /// knowing about the cascade slot (chicken-and-egg, since the alias
+    /// only lands in `loaded_cascade` *after* this returns).
+    fn cache_or_load_cascade(
+        &mut self,
+        alias_owned: String,
+    ) -> Result<&mut crate::pipelines::cascade::Pipeline> {
+        // v0.42 phase 4: a canny ControlSpec on the stack (pushed via
+        // `plakat.controlnet.add` / `.annotate`) means the cascade
+        // pipeline must be loaded WITH its ControlNet. Reload if the
+        // CN-request state flipped since the cached load.
+        let cn_requested = cascade_cn_requested(&self.controlnets);
         let hit = self
             .loaded_cascade
             .as_ref()
-            .map(|(a, _)| a == &alias_owned)
+            .map(|(a, p)| a == &alias_owned && p.control_conditioning_active() == cn_requested)
             .unwrap_or(false);
 
         if !hit {
@@ -929,20 +967,37 @@ impl ScriptCtx {
                     } else {
                         crate::hf::resolve_alias(&alias_owned).to_string()
                     };
+                    // v0.42 phase 4: auto-resolve the canny ControlNet
+                    // from the model repo when a spec is on the stack —
+                    // same `controlnet/canny.safetensors` path the t2i
+                    // CLI auto-resolves (cascade::run).
+                    let controlnet_weights = if cn_requested {
+                        Some(
+                            crate::hf::download::get_first_of(&[(
+                                &repo,
+                                "controlnet/canny.safetensors",
+                            )])
+                            .await
+                            .map_err(|e| {
+                                anyhow!(
+                                    "auto-resolving Cascade canny ControlNet \
+                                     for plakat.cascade: {e}"
+                                )
+                            })?,
+                        )
+                    } else {
+                        None
+                    };
                     crate::pipelines::cascade::Pipeline::load(
                         crate::pipelines::cascade::LoadRequest {
                             repo,
                             device,
                             loras: resolved,
                             lora_scale,
-                            // Scripting-side Cascade ControlNet needs
-                            // new Bund config keys (control image /
-                            // strength / window) + the word-level
-                            // conditioning build — a scoped follow-up.
-                            // The t2i CLI (`--cascade-control-weights`
-                            // + `--control-spec`) and scenario files
-                            // (task `control:`) both drive Cascade CN.
-                            controlnet_weights: None,
+                            controlnet_weights,
+                            // v0.42 phase 3: image variation is a
+                            // CLI-only path for now.
+                            image_encoder_weights: None,
                         },
                     )
                     .await
@@ -1212,6 +1267,38 @@ impl ScriptCtx {
     /// `ScriptCtx` fields. Splitting "load" from "borrow" sidesteps
     /// the issue.
     pub fn ensure_loaded(&mut self, alias: &str) -> Result<()> {
+        // v0.42 phase 4: PixArt and Stable Cascade have dedicated
+        // loaders + slots that `PipelineFamily::detect` (SD/Flux/SD3
+        // only) doesn't know about — without this, a cascade alias
+        // mis-routes to the SD-only loader and `plakat.load` errors.
+        // Detect them up front, clear any sibling slot so
+        // `loaded_model()` resolves to the right alias, and warm the
+        // dedicated slot.
+        let resolved = if alias.contains('/') {
+            alias.to_string()
+        } else {
+            crate::hf::resolve_alias(alias).to_string()
+        };
+        let variant = crate::pipelines::t2i::Variant::detect(&resolved);
+        if variant.is_cascade() {
+            self.loaded = None;
+            self.loaded_t2i = None;
+            self.loaded_pixart = None;
+            self.cache_or_load_cascade(alias.to_string())?;
+            return Ok(());
+        }
+        if variant.is_pixart() {
+            self.loaded = None;
+            self.loaded_t2i = None;
+            self.loaded_cascade = None;
+            self.cache_or_load_pixart(alias.to_string())?;
+            return Ok(());
+        }
+        // SD/Flux/SD3 also live in their own slots; clear the
+        // PixArt/Cascade ones on a switch so `loaded_model()` doesn't
+        // report a stale Cascade/PixArt alias.
+        self.loaded_pixart = None;
+        self.loaded_cascade = None;
         match PipelineFamily::detect(alias) {
             PipelineFamily::SdFamily => {
                 // v0.23 phase 1: `plakat.load` now warms the t2i
@@ -1377,6 +1464,19 @@ pub fn with_ctx<R>(f: impl FnOnce(&ScriptCtx) -> R) -> Result<R> {
     Ok(f(&guard))
 }
 
+/// v0.42 phase 4: does the ControlSpec stack request a Stable Cascade
+/// ControlNet? Cascade ships only a canny CN, so only a canny spec
+/// triggers the load-time CN attach in [`ScriptCtx::get_or_load_cascade`].
+/// Other kinds (depth, lineart, …) are SD/Flux-only and are ignored by
+/// the cascade path rather than erroring at load — the `plakat.cascade`
+/// word raises the loud "canny only" error when it actually tries to
+/// build the conditioning.
+fn cascade_cn_requested(specs: &[crate::pipelines::controlnet::ControlSpec]) -> bool {
+    specs
+        .iter()
+        .any(|s| matches!(s.kind, crate::pipelines::controlnet::ControlKind::Canny))
+}
+
 /// Borrow the script context for a write.
 pub fn with_ctx_mut<R>(f: impl FnOnce(&mut ScriptCtx) -> R) -> Result<R> {
     let lock = CTX
@@ -1392,6 +1492,31 @@ pub fn with_ctx_mut<R>(f: impl FnOnce(&mut ScriptCtx) -> R) -> Result<R> {
 mod tests {
     use super::*;
     use image::{DynamicImage, RgbImage};
+
+    #[test]
+    fn cascade_cn_requested_only_on_canny() {
+        use crate::pipelines::controlnet::{ControlKind, ControlSpec};
+        let spec = |kind| ControlSpec {
+            kind,
+            image: Some(std::path::PathBuf::from("/tmp/edges.png")),
+            from: None,
+            video: None,
+            strength: 1.0,
+            start: 0.0,
+            end: 1.0,
+        };
+        // No specs → no CN.
+        assert!(!cascade_cn_requested(&[]));
+        // A canny spec → CN requested.
+        assert!(cascade_cn_requested(&[spec(ControlKind::Canny)]));
+        // A non-canny spec → not requested (Cascade ships only canny).
+        assert!(!cascade_cn_requested(&[spec(ControlKind::Depth)]));
+        // Mixed: a canny anywhere in the stack triggers it.
+        assert!(cascade_cn_requested(&[
+            spec(ControlKind::Depth),
+            spec(ControlKind::Canny),
+        ]));
+    }
 
     fn mk_ctx() -> ScriptCtx {
         ScriptCtx {

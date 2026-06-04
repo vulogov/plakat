@@ -51,17 +51,51 @@ pub fn clip_h_vision_config() -> ClipVisionConfig {
     }
 }
 
+/// Config for the CLIP ViT-L/14 image encoder
+/// (`openai/clip-vit-large-patch14`, projection_dim 768). This is the
+/// image encoder Stable Cascade's Stage C prior consumes — its
+/// `clip_img_mapper` is `Linear(768 → 8192)`, NOT the CLIP-H (1024)
+/// IP-Adapter encoder. Mirrors `image_encoder/config.json` in
+/// `stabilityai/stable-cascade`.
+pub fn clip_l_vision_config() -> ClipVisionConfig {
+    ClipVisionConfig {
+        embed_dim: 1024,
+        intermediate_size: 4096,
+        num_hidden_layers: 24,
+        num_attention_heads: 16,
+        projection_dim: 768,
+        num_channels: 3,
+        image_size: 224,
+        patch_size: 14,
+        // clip-vit-large-patch14 uses `quick_gelu` exactly (not an
+        // approximation here, unlike the CLIP-H gelu case).
+        activation: Activation::QuickGelu,
+    }
+}
+
 pub struct ImageEncoder {
     vision: ClipVisionTransformer,
     visual_projection: candle_nn::Linear,
 }
 
 impl ImageEncoder {
-    /// Load `vision_model.*` + `visual_projection.*` from a single safetensors file.
+    /// Load `vision_model.*` + `visual_projection.*` from a single
+    /// safetensors file using the CLIP-H config (IP-Adapter default).
     pub fn load(weights: &Path, device: &Device, dtype: DType) -> Result<Self> {
+        Self::load_with_config(weights, &clip_h_vision_config(), device, dtype)
+    }
+
+    /// Load `vision_model.*` + `visual_projection.*` with an explicit
+    /// CLIP-vision config — lets callers pick ViT-H (IP-Adapter) vs
+    /// ViT-L (Stable Cascade) without duplicating the load logic.
+    pub fn load_with_config(
+        weights: &Path,
+        cfg: &ClipVisionConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], dtype, device)? };
-        let cfg = clip_h_vision_config();
-        let vision = ClipVisionTransformer::new(vb.pp("vision_model"), &cfg)?;
+        let vision = ClipVisionTransformer::new(vb.pp("vision_model"), cfg)?;
         // CLIPVisionModelWithProjection has bias-less visual_projection.
         let visual_projection = candle_nn::linear_no_bias(
             cfg.embed_dim,

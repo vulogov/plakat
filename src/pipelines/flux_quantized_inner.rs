@@ -845,15 +845,33 @@ impl Flux {
         if img.rank() != 3 {
             candle_core::bail!("unexpected shape for img {:?}", img.shape())
         }
-        let dtype = img.dtype();
+        // v0.42: run the quantized transformer body in F32. GGUF tensors
+        // stored full-precision dequantize to F32 *dense* weights
+        // (candle `QMatMul::from_arc`), and candle's Metal quantized
+        // matmul asserts F32 input — so on Metal (BF16 model) both the
+        // dense-weight matmul and the quantized op mismatch the BF16
+        // activations. F32 activations are the canonical candle
+        // quantized-model dtype and make every path consistent. No-op on
+        // CPU/CUDA (already F32). NOTE: this fixes the dtype CRASH; a
+        // separate candle bug in the Metal mat×mat quantized kernel still
+        // corrupts the output, which is why GGUF Flux is gated off on
+        // Metal at the pipeline boundary (see `flux::run`). Keeping this
+        // means the path is correct the moment candle fixes that kernel.
+        let out_dtype = img.dtype();
+        let dtype = DType::F32;
+        let img = img.to_dtype(dtype)?;
+        let txt = txt.to_dtype(dtype)?;
+        let y = y.to_dtype(dtype)?;
+        let timesteps = timesteps.to_dtype(dtype)?;
+        let guidance = guidance.map(|g| g.to_dtype(dtype)).transpose()?;
         let pe = {
             let ids = Tensor::cat(&[txt_ids, img_ids], 1)?;
-            ids.apply(&self.pe_embedder)?
+            ids.apply(&self.pe_embedder)?.to_dtype(dtype)?
         };
         let mut txt = txt.apply(&self.txt_in)?;
         let mut img = img.apply(&self.img_in)?;
-        let vec_ = timestep_embedding(timesteps, 256, dtype)?.apply(&self.time_in)?;
-        let vec_ = match (self.guidance_in.as_ref(), guidance) {
+        let vec_ = timestep_embedding(&timesteps, 256, dtype)?.apply(&self.time_in)?;
+        let vec_ = match (self.guidance_in.as_ref(), guidance.as_ref()) {
             (Some(g_in), Some(g)) => {
                 (vec_ + timestep_embedding(g, 256, dtype)?.apply(g_in))?
             }
@@ -875,7 +893,7 @@ impl Flux {
             if let Some(residuals) = double_residuals {
                 let idx = i / double_interval;
                 if idx < residuals.len() {
-                    img = (&img + &residuals[idx])?;
+                    img = (&img + &residuals[idx].to_dtype(dtype)?)?;
                 }
             }
         }
@@ -894,7 +912,7 @@ impl Flux {
                 let idx = i / single_interval;
                 if idx < residuals.len() {
                     let img_tail = img.narrow(1, txt_len, img.dim(1)? - txt_len)?;
-                    let img_tail_updated = (img_tail + &residuals[idx])?;
+                    let img_tail_updated = (img_tail + &residuals[idx].to_dtype(dtype)?)?;
                     img = Tensor::cat(
                         &[&img.narrow(1, 0, txt_len)?, &img_tail_updated],
                         1,
@@ -903,7 +921,9 @@ impl Flux {
             }
         }
         let img = img.i((.., txt.dim(1)?..))?;
-        self.final_layer.forward(&img, &vec_)
+        // Cast back to the pipeline's working dtype (BF16 on Metal); the
+        // F32 body above stays internal to the quantized transformer.
+        self.final_layer.forward(&img, &vec_)?.to_dtype(out_dtype)
     }
 }
 

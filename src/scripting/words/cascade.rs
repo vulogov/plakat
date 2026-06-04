@@ -113,9 +113,12 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
         // Stable Cascade output is square (prior latent is fixed
         // 24×24×16); bail loud on non-square + non-/8 sizes so the
         // failure mode is a clear error instead of a silently
-        // mismatched image dim.
-        let w = ctx.config.width;
-        let h = ctx.config.height;
+        // mismatched image dim. v0.42 phase 4: width/height default to
+        // 0 (unset) in the scripting config — treat that as the Cascade
+        // design size 1024 (a 0 here would otherwise pass the square +
+        // /8 checks and produce a zero-element latent → randn panic).
+        let w = if ctx.config.width == 0 { 1024 } else { ctx.config.width };
+        let h = if ctx.config.height == 0 { 1024 } else { ctx.config.height };
         anyhow::ensure!(
             w == h,
             "{TAG}: Stable Cascade output is square; config size is {w}x{h}."
@@ -126,10 +129,70 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
         );
         let output_dim = w;
 
+        // v0.42 phase 4: Stable Cascade ControlNet. A canny spec pushed
+        // via `plakat.controlnet.add` / `.annotate` conditions Stage C.
+        // Snapshot the spec + device BEFORE borrowing the pipeline;
+        // `get_or_load_cascade` loads the CN weights when a spec is on
+        // the stack (see ctx.rs). Cascade supports a single canny CN.
+        let device = ctx.device.clone();
+        let cn_spec = ctx.controlnets.first().cloned();
+        if let Some(s) = &cn_spec {
+            anyhow::ensure!(
+                matches!(
+                    s.kind,
+                    crate::pipelines::controlnet::ControlKind::Canny
+                ),
+                "{TAG}: Stable Cascade ControlNet supports only `canny` (got {:?})",
+                s.kind
+            );
+        }
+
         // get_or_load + generate. The borrow of `pipeline` is
         // released before push_image_with_metadata mutates ctx.
         let (buf, ow, oh) = {
             let pipeline = ctx.get_or_load_cascade()?;
+            let dtype = pipeline.dtype;
+            // Build the conditioning per-call (image= pre-rendered edges,
+            // or from= auto-annotate). Mirrors cascade::run's branches.
+            let control: Option<crate::pipelines::cascade::ControlConditioning> =
+                match (&cn_spec, pipeline.control_conditioning_active()) {
+                    (Some(spec), true) => {
+                        let cond = if let Some(image_path) = spec.image.as_ref() {
+                            crate::imaging::preprocess::sd_image_tensor(
+                                image_path, 1024, 1024, &device, dtype,
+                            )?
+                        } else if let Some(from_path) = spec.from.as_ref() {
+                            // Auto-annotate is async; block on it the same
+                            // way get_or_load_cascade blocks on load.
+                            let handle =
+                                tokio::runtime::Handle::try_current().map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "{TAG}: no tokio runtime for control annotate: {e}"
+                                    )
+                                })?;
+                            let edges = tokio::task::block_in_place(|| {
+                                handle.block_on(
+                                    crate::pipelines::controlnet_annotator::annotate(
+                                        spec.kind, from_path, 1024, 1024, &device, dtype,
+                                    ),
+                                )
+                            })?;
+                            edges.affine(2.0, -1.0)?
+                        } else {
+                            anyhow::bail!(
+                                "{TAG}: ControlNet spec needs `image=` (pre-rendered \
+                                 edges) or `from=` (auto-annotate)"
+                            );
+                        };
+                        Some(crate::pipelines::cascade::ControlConditioning {
+                            conditioning_image: cond,
+                            scale: spec.strength,
+                            start: spec.start,
+                            end: spec.end,
+                        })
+                    }
+                    _ => None,
+                };
             pipeline.generate(
                 &prompt_owned,
                 &negative,
@@ -137,11 +200,11 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 stage_c_steps,
                 stage_b_steps,
                 guidance,
+                // v0.42 phase 0: decoder guidance default.
+                1.1,
                 seed,
                 scheduler,
-                // v0.38 phase 5: scripting-side Cascade ControlNet
-                // wiring is a v0.39 follow-up.
-                None,
+                control.as_ref(),
             )?
         };
 
@@ -181,6 +244,11 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 .collect();
             meta.with_lora_stack(stack);
             meta.lora_scale = Some(ctx.config.lora_scale);
+        }
+        // v0.42 phase 4: record the ControlNet in the PNG sidecar
+        // (same `control_stack` field the CLI/scenario paths emit).
+        if let Some(spec) = &cn_spec {
+            meta.with_control_stack(vec![spec.to_entry()]);
         }
         Ok(ctx.push_image_with_metadata(img, meta))
     })??;

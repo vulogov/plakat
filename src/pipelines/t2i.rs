@@ -182,10 +182,18 @@ pub struct Request {
     /// Stage B (the canonical CLI default). `Some(n)` → use exactly
     /// `n` Stage C steps. Ignored on every non-Cascade pipeline.
     pub cascade_stage_c_steps: Option<usize>,
+    /// v0.42 phase 0: Stable Cascade decoder (Stage B) CFG scale.
+    /// Ignored on non-Cascade pipelines.
+    pub cascade_decoder_guidance: f64,
     /// v0.38 phase 2: Stable Cascade Stage B step count override.
     /// `None` → split `steps`. `Some(n)` → exact count. Ignored on
     /// non-Cascade pipelines.
     pub cascade_stage_b_steps: Option<usize>,
+    /// v0.42 phase 3: reference image for Stable Cascade image
+    /// variation (`--image-variation`). When `Some`, the CLIP ViT-L/14
+    /// image encoder conditions Stage C on this image. Ignored on
+    /// non-Cascade pipelines.
+    pub cascade_image_prompt: Option<std::path::PathBuf>,
     /// v0.38 phase 5: path to a Stable Cascade ControlNet
     /// safetensors checkpoint. When `Some`, the Cascade pipeline
     /// loads the CN and honours the first entry in `controls`
@@ -2130,9 +2138,11 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             prompt: req.prompt.clone(),
             negative: req.negative.clone(),
             output_dim: req.width,
+            image_prompt: req.cascade_image_prompt.clone(),
             stage_c_steps,
             stage_b_steps,
             guidance: req.guidance as f64,
+            decoder_guidance: req.cascade_decoder_guidance,
             seed: req.seed,
             scheduler: req.scheduler,
             out_dir: req.out_dir.clone(),

@@ -2077,6 +2077,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         loras: resolved_cascade_loras,
                         lora_scale,
                         controlnet_weights: cascade_cn_weights,
+                        // v0.42 phase 3: image variation isn't a
+                        // scenario knob yet (scoped follow-up).
+                        image_encoder_weights: None,
                     },
                 )
                 .await?,
@@ -3568,6 +3571,9 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         stage_c_steps,
                         stage_b_steps,
                         eff_guidance,
+                        // v0.42 phase 0: decoder guidance default; a
+                        // scenario-level override is a follow-up.
+                        1.1,
                         img_seed,
                         eff_scheduler,
                         cascade_control.as_ref(),
