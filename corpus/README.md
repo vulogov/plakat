@@ -37,6 +37,7 @@ Validate a scenario without generating: `plakat scenario FILE --dry-run`.
 | `cascade.hjson` | t2i variety + canny ControlNet | Stable Cascade | ✅ ungated, ~16 GB |
 | `sdxl.hjson` | t2i variety + canny ControlNet | SDXL | ✅ ungated, ~7 GB |
 | `pixart.hjson` | t2i variety | PixArt-Σ | ✅ ungated |
+| `sd15.hjson` | t2i variety + canny ControlNet | SD 1.5 | ✅ ungated, ~4 GB |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.

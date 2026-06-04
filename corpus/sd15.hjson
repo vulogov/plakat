@@ -1,0 +1,77 @@
+{
+    # ===================================================================
+    # plakat proof corpus — Stable Diffusion 1.5
+    # ===================================================================
+    #   plakat scenario corpus/sd15.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    # Ungated, ~4 GB, 512² native. Validate:
+    #   plakat scenario corpus/sd15.hjson --dry-run
+    # ===================================================================
+
+    model: sd15
+    device: metal
+    size: 512x512
+    steps: 28
+    guidance: 7.5
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/sd15
+
+    negative: blurry, low quality, watermark, text, signature, deformed, extra limbs
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: sd15_landscape
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a quiet japanese garden in autumn, a small wooden bridge over a koi pond, maple leaves, soft morning light, photorealistic
+        }
+        {
+            name: sd15_portrait
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a close-up portrait of an elderly fisherman with a weathered face and a wool cap, golden hour, sharp focus, photorealistic
+        }
+        {
+            name: sd15_still_life
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a still life of sunflowers in a ceramic vase on a windowsill, impressionist oil painting style
+        }
+        {
+            # ControlNet (canny, auto-annotated): SD 1.5 ships canny +
+            # depth ControlNets. Structure follows the winter-cottage
+            # edge map; the prompt restyles it.
+            name: sd15_controlnet_canny
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a quaint stone cottage in a summer meadow with wildflowers, photorealistic
+            control:
+            {
+                kind: canny
+                auto-from: gallery/3.png
+            }
+        }
+    ]
+}
