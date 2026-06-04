@@ -943,6 +943,9 @@ impl ScriptCtx {
                             // + `--control-spec`) and scenario files
                             // (task `control:`) both drive Cascade CN.
                             controlnet_weights: None,
+                            // v0.42 phase 3: image variation is a
+                            // CLI-only path for now.
+                            image_encoder_weights: None,
                         },
                     )
                     .await
