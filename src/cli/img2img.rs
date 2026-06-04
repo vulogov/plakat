@@ -125,6 +125,14 @@ pub struct Img2ImgArgs {
     #[arg(long = "decoder-guidance", default_value_t = 1.1)]
     pub decoder_guidance: f64,
 
+    /// Stable Cascade faithful img2img: also condition Stage C's
+    /// semantic prior on the init image (CLIP ViT-L/14), not just Stage
+    /// B's VAE seed. Pulls the output's *content* toward the init — use
+    /// when plain img2img drifts off-subject at higher strengths. Loads
+    /// the `image_encoder/` from the Cascade repo. Cascade-only.
+    #[arg(long = "faithful", default_value_t = false)]
+    pub faithful: bool,
+
     /// Base seed. Subsequent --count outputs use seed+1, seed+2, ...
     /// If omitted, a random seed is picked.
     #[arg(long)]
@@ -1180,6 +1188,7 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
             lora_scale: args.lora_scale,
             control_spec,
             controlnet_weights: None,
+            faithful: args.faithful,
         },
     )
     .await
@@ -1404,6 +1413,7 @@ mod tests {
             steps: 28,
             guidance: 7.5,
             decoder_guidance: 1.1,
+            faithful: false,
             seed: None,
             scheduler: crate::pipelines::scheduler::SchedulerKind::Default,
             loras: Vec::new(),
