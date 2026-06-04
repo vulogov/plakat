@@ -3545,16 +3545,35 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         let controls = task_effective_controls(task)?;
                         match controls.first() {
                             Some(spec) => {
-                                let image_path = spec.image.as_ref().ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Cascade scenario control requires a pre-rendered \
-                                         `image:` (auto-from annotation for Cascade is a \
-                                         follow-up)"
-                                    )
-                                })?;
-                                let cond = crate::imaging::preprocess::sd_image_tensor(
-                                    image_path, 1024, 1024, &device, cp.dtype,
-                                )?;
+                                // v0.43: support BOTH `image:` (pre-rendered
+                                // edge map) and `auto-from:` (auto-annotate),
+                                // mirroring `cascade::run`. Both feed Stage C
+                                // the [-1,1] conditioning the CN expects.
+                                let cond = if let Some(image_path) = spec.image.as_ref() {
+                                    crate::imaging::preprocess::sd_image_tensor(
+                                        image_path, 1024, 1024, &device, cp.dtype,
+                                    )?
+                                } else if let Some(from_path) = spec.auto_from.as_ref() {
+                                    let kind: crate::pipelines::controlnet::ControlKind =
+                                        spec.kind.parse().with_context(|| {
+                                            format!(
+                                                "task {:?}: control kind {:?}",
+                                                task.name, spec.kind
+                                            )
+                                        })?;
+                                    let edges =
+                                        crate::pipelines::controlnet_annotator::annotate(
+                                            kind, from_path, 1024, 1024, &device, cp.dtype,
+                                        )
+                                        .await?;
+                                    edges.affine(2.0, -1.0)?
+                                } else {
+                                    anyhow::bail!(
+                                        "task {:?}: Cascade control requires `image:` or \
+                                         `auto-from:`",
+                                        task.name
+                                    );
+                                };
                                 Some(crate::pipelines::cascade::ControlConditioning {
                                     conditioning_image: cond,
                                     scale: spec.strength.unwrap_or(1.0),
