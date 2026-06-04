@@ -10,9 +10,9 @@ committed under `images/`.
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | Stable Cascade | `cascade.hjson` | ✅ | ⬜ | ungated, ~16 GB Metal |
-| SD 1.5 | `sd.hjson` | ⬜ | ⬜ | ungated, ~4 GB |
-| SDXL | `sd.hjson` | ⬜ | ⬜ | ungated, ~7 GB |
-| PixArt-Σ | `pixart.hjson` | ⬜ | ⬜ | ungated |
+| SD 1.5 | `sd15.hjson` | ⬜ | ⬜ | ungated, ~4 GB |
+| SDXL | `sdxl.hjson` | ✅ | ⬜ | ungated, ~7 GB; incl. canny CN |
+| PixArt-Σ | `pixart.hjson` | ✅ | ⬜ | ungated |
 | Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
 | SD3 / 3.5 | `sd3.hjson` | ⬜ | ⬜ | ⚠️ gated |
 
@@ -21,7 +21,7 @@ committed under `images/`.
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | ControlNet (canny, Cascade) | `cascade.hjson` | ✅ | ⬜ | per-task `control:` |
-| ControlNet (canny/depth, SD/SDXL) | `controlnet.hjson` | ⬜ | ⬜ | |
+| ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ⬜ | auto-from |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
 | Styles / Looks / Genres | `presets.hjson` | ⬜ | ⬜ | `style:` / `--look` / `--genre` |

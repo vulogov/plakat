@@ -1,0 +1,61 @@
+{
+    # ===================================================================
+    # plakat proof corpus — PixArt-Σ
+    # ===================================================================
+    #   plakat scenario corpus/pixart.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    # Ungated. Validate: plakat scenario corpus/pixart.hjson --dry-run
+    # ===================================================================
+
+    model: pixart
+    device: metal
+    size: 1024x1024
+    steps: 20
+    guidance: 4.5
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/pixart
+
+    negative: blurry, low quality, watermark, text, signature
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: pixart_landscape
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic
+        }
+        {
+            name: pixart_still_life
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting
+        }
+        {
+            name: pixart_scifi
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration
+        }
+    ]
+}
