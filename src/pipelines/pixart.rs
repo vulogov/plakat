@@ -67,7 +67,7 @@ use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 use crate::pipelines::pixart_dit::{Config as DitConfig, PixArtSigmaXL};
-use crate::pipelines::scheduler::{SchedulerKind, build as build_scheduler};
+use crate::pipelines::scheduler::{SchedulerKind, build_pixart as build_scheduler};
 use crate::ui::progress;
 
 /// Inputs to [`Pipeline::load`]. Mirrors the shape of
@@ -289,8 +289,17 @@ impl Pipeline {
             .with_context(|| format!("read T5 config {}", t5_cfg_path.display()))?;
         let t5_cfg: t5::Config =
             serde_json::from_str(&t5_cfg_str).context("parse T5 config (PixArt)")?;
+        // T5-XXL overflows F16 — its FFN activations exceed F16's ~65k
+        // ceiling → inf caption embeddings (HF's T5 clamps for f16; candle's
+        // does not). Run T5 in BF16 (same 9.4 GB footprint as F16, but
+        // F32-range so no overflow) on non-CPU; CPU keeps F32.
+        let t5_dtype = if matches!(req.device, Device::Cpu) {
+            dtype
+        } else {
+            DType::BF16
+        };
         let t5_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&t5_shards, dtype, &req.device)?
+            VarBuilder::from_mmaped_safetensors(&t5_shards, t5_dtype, &req.device)?
         };
         let t5_enc = t5::T5EncoderModel::load(t5_vb, &t5_cfg)
             .context("building T5-XXL encoder for PixArt")?;
@@ -304,10 +313,14 @@ impl Pipeline {
         // sample_size differs (informational, see `pixart_dit::
         // Config::sigma_xl_512` doc).
         let dit_cfg = DitConfig::for_pixart_repo(&req.repo);
+        // The DiT overflows F16 (activations exceed F16's ~65k ceiling →
+        // inf → NaN → all-black on Metal). Run it in F32 for numerical
+        // stability; T5 stays F16 to fit memory. ~2.4 GB extra, fits 24 GB.
+        let dit_dtype = DType::F32;
         let dit_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[dit_load_path.as_path()],
-                dtype,
+                dit_dtype,
                 &req.device,
             )?
         };
@@ -356,7 +369,9 @@ impl Pipeline {
         ids.truncate(max_tokens);
         ids.resize(max_tokens, 0);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(self.dtype)?;
+        // Keep the T5 output in F32 (the DiT runs F32 and the BF16→F16
+        // round-trip would re-overflow the large embedding values).
+        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(DType::F32)?;
         Ok(hidden)
     }
 
@@ -429,13 +444,18 @@ impl Pipeline {
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.dit.forward(
-                &scaled_cfg,
-                &t_tensor,
-                &caption_cfg,
-                &res_cfg,
-                &asp_cfg,
-            )?;
+            // The DiT runs in F32 (see load); cast inputs up and the
+            // prediction back down to the pipeline dtype for the scheduler.
+            let pred = self
+                .dit
+                .forward(
+                    &scaled_cfg.to_dtype(DType::F32)?,
+                    &t_tensor.to_dtype(DType::F32)?,
+                    &caption_cfg.to_dtype(DType::F32)?,
+                    &res_cfg.to_dtype(DType::F32)?,
+                    &asp_cfg.to_dtype(DType::F32)?,
+                )?
+                .to_dtype(self.dtype)?;
             // learn_sigma=True → first 4 channels are noise; the
             // log-variance half is discarded (standard inference path).
             let noise_pred = pred.narrow(1, 0, 4)?;
