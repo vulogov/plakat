@@ -1,6 +1,6 @@
 # plakat gallery
 
-16 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+19 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -30,6 +30,11 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/cascade/cascade_controlnet_canny/plakat-cascade-46.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
+    <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
+    <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
   </tr>
 </table>
 
@@ -162,6 +167,36 @@ Negative: `blurry, low quality, watermark, text, signature`
 Negative: `blurry, low quality, watermark, text, signature`
 
 `stable-cascade` · ControlNet: canny · 1024×1024 · 30 steps · CFG 4 · seed 46
+
+### plakat-pixart-42.png
+
+![plakat-pixart-42.png](images/pixart/pixart_landscape/plakat-pixart-42.png)
+
+> terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic
+
+Negative: `blurry, low quality, watermark, text, signature`
+
+`pixart` · 1024×1024 · 20 steps · CFG 4.5 · seed 42
+
+### plakat-pixart-43.png
+
+![plakat-pixart-43.png](images/pixart/pixart_still_life/plakat-pixart-43.png)
+
+> a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting
+
+Negative: `blurry, low quality, watermark, text, signature`
+
+`pixart` · 1024×1024 · 20 steps · CFG 4.5 · seed 43
+
+### plakat-pixart-44.png
+
+![plakat-pixart-44.png](images/pixart/pixart_scifi/plakat-pixart-44.png)
+
+> a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration
+
+Negative: `blurry, low quality, watermark, text, signature`
+
+`pixart` · 1024×1024 · 20 steps · CFG 4.5 · seed 44
 
 ---
 
