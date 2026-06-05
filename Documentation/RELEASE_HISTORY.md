@@ -1,12 +1,65 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.41. The current
+"What's new" sections for v0.13 through v0.42. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.42 — Stable Cascade completeness + polish
+
+v0.41 made Stable Cascade *generate*. v0.42 makes it **complete**: real
+LoRA support, image-conditioning, and ControlNet on every surface —
+plus a graceful guard for a Flux-on-Metal candle bug. See the new
+[Stable Cascade tutorial](Documentation/Tutorials/CASCADE_TUTORIAL.md).
+
+```
+LoRA / DoRA       → community kohya & PEFT LoRAs actually merge (was a silent no-op)
+image variation   → condition on a reference image's semantics (unCLIP-style)
+faithful img2img  → hold the init's content, not just its structure
+scripting CN      → plakat.cascade honours plakat.controlnet.* — the last CN surface
+```
+
+### Phases
+
+| # | Phase | What |
+|---|---|---|
+| 0 | `--decoder-guidance` | Stage B (decoder) CFG scale, decoupled from the prior's `--guidance` (default 1.1). Threaded through CLI, img2img, scenarios, scripting. |
+| 1 | LoRA / DoRA, for real | Community Cascade LoRAs silently no-op'd. Fixed two load-bearing bugs, verified against a real DoRA: **kohya/sd-scripts prefix** recognition (`lora_prior_unet_…`, not just dotted PEFT), and the **DoRA magnitude axis** — kohya stores it per input-column (dim 0), PEFT per output-row (dim 1); renorming the wrong axis scrambles every weight regardless of strength. `apply_dora` now auto-detects the axis (CoV-based for square weights, length for non-square), so kohya **and** PEFT DoRAs both fuse. Full noise → coherent styled output. |
+| 2 | *(dropped)* | An "exact CannyFilter resize-to-224" normalization was investigated and **empirically falsified** — 224 makes the effnet emit a 7×7 feature map that the residual injection upsamples into a grid; the v0.41 full-resolution path was already correct. Reverted. |
+| 3 | Stage C image encoder | Wired the **CLIP ViT-L/14** image encoder (`openai/clip-vit-large-patch14`, the one the prior's `clip_img_mapper` expects) into Stage C's previously-zeroed image slot. Two entry points: **`--image-variation PATH`** (unCLIP-style; prompt optional) and **`img2img --faithful`** (adds Stage C semantic conditioning on top of the Stage B VAE seed). Encoder lazy-loads only when requested. |
+| 4 | Scripting Cascade CN | `plakat.cascade` honours a canny `ControlSpec` from the shared `plakat.controlnet.*` words — closing the **last ControlNet surface** (CLI + img2img + scenarios + scripting). Surfaced and fixed a pre-existing bug: `plakat.load` couldn't load Cascade **or PixArt** at all in scripting (mis-routed to the SD-only loader). |
+
+Bonus: GGUF Flux on Apple Metal now **fails fast with guidance**
+instead of crashing/emitting garbage — candle 0.10.2's Metal
+matrix×matrix quantized matmul kernel is buggy (a layer below plakat);
+the transformer body is now F32-correct so the path works the day
+candle fixes the kernel. Override with `PLAKAT_ALLOW_GGUF_METAL=1`.
+
+### Try it
+
+```bash
+# LoRA / DoRA — community Cascade LoRAs now actually apply
+plakat generate "a girl in a flower field, anime style" \
+    --model stable-cascade --lora ~/loras/cascade_anime.safetensors:1.0
+
+# Image variation — vary on a reference image's semantics
+plakat generate "" --model stable-cascade --image-variation ref.png
+
+# Faithful img2img — hold the init's content
+plakat img2img cottage.png --prompt "a cottage in winter snow" \
+    --model stable-cascade --strength 0.6 --faithful
+
+# Decoupled decoder guidance
+plakat generate "a baroque cathedral interior" \
+    --model stable-cascade --guidance 4.0 --decoder-guidance 1.3
+```
+
+Cascade ControlNet now works in scripting too — push a spec with
+`plakat.controlnet.annotate`, then `plakat.cascade` (see
+[`tools/verify_phase4_cascade_cn.bund`](tools/verify_phase4_cascade_cn.bund)).
 
 ## What's new in v0.41 — Stable Cascade actually generates
 
