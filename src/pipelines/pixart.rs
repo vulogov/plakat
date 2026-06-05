@@ -165,36 +165,83 @@ impl Pipeline {
         };
 
         let dl = progress::spinner("Resolving PixArt Sigma weights");
-        let t5_shard1 = crate::hf::download::get_file(
+        // T5-XXL ships sharded, but the repo has re-sharded over time
+        // (3 → 2 shards), so discover the shard set from the index rather
+        // than hardcoding the count. Falls back to a single-file encoder
+        // if the repo has no index.
+        let t5_shards: Vec<std::path::PathBuf> = match crate::hf::download::get_file(
             &req.repo,
-            "text_encoder/model-00001-of-00003.safetensors",
+            "text_encoder/model.safetensors.index.json",
         )
         .await
-        .context("downloading T5-XXL shard 1 for PixArt")?;
-        let t5_shard2 = crate::hf::download::get_file(
-            &req.repo,
-            "text_encoder/model-00002-of-00003.safetensors",
-        )
-        .await
-        .context("downloading T5-XXL shard 2 for PixArt")?;
-        let t5_shard3 = crate::hf::download::get_file(
-            &req.repo,
-            "text_encoder/model-00003-of-00003.safetensors",
-        )
-        .await
-        .context("downloading T5-XXL shard 3 for PixArt")?;
+        {
+            Ok(index_path) => {
+                let idx_str = std::fs::read_to_string(&index_path)
+                    .context("read T5 shard index for PixArt")?;
+                let idx: serde_json::Value = serde_json::from_str(&idx_str)
+                    .context("parse T5 shard index for PixArt")?;
+                let mut names: Vec<String> = idx
+                    .get("weight_map")
+                    .and_then(|m| m.as_object())
+                    .map(|m| m.values().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                names.sort();
+                names.dedup();
+                if names.is_empty() {
+                    anyhow::bail!("T5 shard index for PixArt has no weight_map entries");
+                }
+                let mut paths = Vec::with_capacity(names.len());
+                for (i, name) in names.iter().enumerate() {
+                    paths.push(
+                        crate::hf::download::get_file(&req.repo, &format!("text_encoder/{name}"))
+                            .await
+                            .with_context(|| {
+                                format!("downloading T5-XXL shard {} ({name}) for PixArt", i + 1)
+                            })?,
+                    );
+                }
+                paths
+            }
+            Err(_) => vec![crate::hf::download::get_file(
+                &req.repo,
+                "text_encoder/model.safetensors",
+            )
+            .await
+            .context("downloading T5-XXL encoder for PixArt")?],
+        };
         let t5_cfg_path = crate::hf::download::get_file(&req.repo, "text_encoder/config.json")
             .await
             .context("downloading T5 config for PixArt")?;
-        let t5_tok_path = crate::hf::download::get_file(&req.repo, "tokenizer/tokenizer.json")
-            .await
-            .context("downloading T5 tokenizer for PixArt")?;
-        let vae_path = crate::hf::download::get_file(
-            &req.repo,
-            "vae/diffusion_pytorch_model.safetensors",
-        )
+        // The Sigma repo dropped tokenizer.json (sentencepiece-only now).
+        // The T5-v1.1 vocab is identical across every T5 model, so any
+        // flan-t5 tokenizer.json is a drop-in for the fast tokenizer.
+        let t5_tok_path = crate::hf::download::get_first_of(&[
+            (req.repo.as_str(), "tokenizer/tokenizer.json"),
+            ("google/flan-t5-base", "tokenizer.json"),
+        ])
         .await
-        .context("downloading VAE weights for PixArt")?;
+        .context("downloading T5 tokenizer for PixArt")?;
+        // PixArt-Σ uses the SDXL VAE, whose decoder overflows F16 →
+        // all-black on Metal/CUDA. Swap in madebyollin's F16-stable
+        // retrained drop-in for non-CPU (exactly as SdCore does for SDXL);
+        // CPU keeps the repo VAE at F32, where the stock VAE is fine.
+        let vae_path = if matches!(req.device, Device::Cpu) {
+            crate::hf::download::get_file(&req.repo, "vae/diffusion_pytorch_model.safetensors")
+                .await
+                .context("downloading VAE weights for PixArt")?
+        } else {
+            const VAE_FIX_REPO: &str = "madebyollin/sdxl-vae-fp16-fix";
+            crate::hf::download::get_first_of(&[
+                (VAE_FIX_REPO, "diffusion_pytorch_model.safetensors"),
+                (VAE_FIX_REPO, "sdxl_vae.safetensors"),
+                (VAE_FIX_REPO, "sdxl.vae.safetensors"),
+            ])
+            .await
+            .context(
+                "downloading the SDXL fp16-fix VAE for PixArt-Σ \
+                 (its stock VAE produces black images in F16)",
+            )?
+        };
         let dit_path = crate::hf::download::get_file(
             &req.repo,
             "transformer/diffusion_pytorch_model.safetensors",
@@ -243,11 +290,7 @@ impl Pipeline {
         let t5_cfg: t5::Config =
             serde_json::from_str(&t5_cfg_str).context("parse T5 config (PixArt)")?;
         let t5_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[&t5_shard1, &t5_shard2, &t5_shard3],
-                dtype,
-                &req.device,
-            )?
+            VarBuilder::from_mmaped_safetensors(&t5_shards, dtype, &req.device)?
         };
         let t5_enc = t5::T5EncoderModel::load(t5_vb, &t5_cfg)
             .context("building T5-XXL encoder for PixArt")?;
@@ -407,10 +450,11 @@ impl Pipeline {
         bar.finish_and_clear();
 
         // ---- VAE decode. ----
-        // PixArt-Σ shares the SDXL VAE; latent-space scale is 0.18215
-        // (same constant SD 1.5 / 2.1 / SDXL / SD3 use).
+        // PixArt-Σ uses the SDXL VAE, whose latent-space scaling factor
+        // is 0.13025 (per the repo's vae/config.json) — NOT the 0.18215
+        // SD 1.5/2.1 constant.
         let _ = &self.sd_cfg; // kept on the struct for phase 3+ uses
-        let vae_scale: f64 = 0.18215;
+        let vae_scale: f64 = 0.13025;
         let s = progress::spinner("Decoding latents → image");
         let decoded = self.vae.decode(&(&latents / vae_scale)?)?;
         let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;

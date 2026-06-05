@@ -308,16 +308,31 @@ impl SizeEmbedder {
 /// The Σ-additional embedding head: timestep + resolution + aspect.
 pub struct AdaLnSingleEmb {
     timestep_embedder: TimestepEmbedder,
-    resolution_embedder: SizeEmbedder,
-    aspect_ratio_embedder: SizeEmbedder,
+    // PixArt-Σ checkpoints carry NO resolution/aspect-ratio micro-
+    // conditioning (`use_additional_conditions=False`); only PixArt-α
+    // 1024-MS ships these embedders. Auto-detect from the checkpoint so a
+    // single code path loads both families.
+    resolution_embedder: Option<SizeEmbedder>,
+    aspect_ratio_embedder: Option<SizeEmbedder>,
 }
 
 impl AdaLnSingleEmb {
     pub fn new(hidden_size: usize, vb: VarBuilder) -> Result<Self> {
+        let has_size_cond = vb.contains_tensor("resolution_embedder.linear_1.weight");
+        let resolution_embedder = if has_size_cond {
+            Some(SizeEmbedder::new(hidden_size, vb.pp("resolution_embedder"))?)
+        } else {
+            None
+        };
+        let aspect_ratio_embedder = if has_size_cond {
+            Some(SizeEmbedder::new(hidden_size, vb.pp("aspect_ratio_embedder"))?)
+        } else {
+            None
+        };
         Ok(Self {
             timestep_embedder: TimestepEmbedder::new(hidden_size, vb.pp("timestep_embedder"))?,
-            resolution_embedder: SizeEmbedder::new(hidden_size, vb.pp("resolution_embedder"))?,
-            aspect_ratio_embedder: SizeEmbedder::new(hidden_size, vb.pp("aspect_ratio_embedder"))?,
+            resolution_embedder,
+            aspect_ratio_embedder,
         })
     }
 
@@ -328,10 +343,16 @@ impl AdaLnSingleEmb {
         aspect_ratio: &Tensor,
     ) -> Result<Tensor> {
         let t_emb = self.timestep_embedder.forward(timestep)?;
+        // Σ: timestep only.
+        let (Some(res_e), Some(asp_e)) =
+            (&self.resolution_embedder, &self.aspect_ratio_embedder)
+        else {
+            return Ok(t_emb);
+        };
         let res_flat = resolution.reshape(((),))?;
         let asp_flat = aspect_ratio.reshape(((),))?;
-        let res_emb = self.resolution_embedder.forward(&res_flat)?;
-        let asp_emb = self.aspect_ratio_embedder.forward(&asp_flat)?;
+        let res_emb = res_e.forward(&res_flat)?;
+        let asp_emb = asp_e.forward(&asp_flat)?;
         let b = timestep.dim(0)?;
         let hidden = t_emb.dim(1)?;
         // (B*2, hidden) → (B, 2, hidden) → sum over the pair → (B, hidden).
