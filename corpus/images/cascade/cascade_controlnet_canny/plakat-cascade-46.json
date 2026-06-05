@@ -1,0 +1,24 @@
+{
+  "prompt": "a cozy cottage in an autumn forest, golden leaves, photorealistic",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "stable-cascade",
+  "seed": 46,
+  "steps": 30,
+  "guidance": 4.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "controls": [
+    "canny"
+  ],
+  "generator": "plakat 0.43.0",
+  "control_stack": [
+    {
+      "kind": "canny",
+      "from": "gallery/3.png",
+      "strength": 1.0,
+      "start": 0.0,
+      "end": 1.0
+    }
+  ]
+}
