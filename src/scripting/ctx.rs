@@ -719,12 +719,12 @@ impl ScriptCtx {
                 handle.block_on(async {
                     if lcm {
                         crate::pipelines::animatediff::AnimateDiffPipeline::load_animatelcm(
-                            &device, dtype, &[], 1.0, cached_vae,
+                            &device, dtype, &[], 1.0, cached_vae, "sd15",
                         )
                         .await
                     } else {
                         crate::pipelines::animatediff::AnimateDiffPipeline::load_v3(
-                            &device, dtype, &[], 1.0, cached_vae,
+                            &device, dtype, &[], 1.0, cached_vae, "sd15",
                         )
                         .await
                     }

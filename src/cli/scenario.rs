@@ -1757,10 +1757,15 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     let mut pipeline: Option<Pipeline> = if args.dry_run
         || variant.is_flux()
         || variant.is_sd3()
+        || variant.is_pixart()
+        || variant.is_cascade()
         || !has_generate_tasks
         || any_animate_tasks
     {
-        // Mixed-kind (or all-animate, or non-SD-family) → defer.
+        // Mixed-kind (or all-animate, or non-SD-family) → defer. PixArt
+        // and Stable Cascade have their own pre-loaded pipelines
+        // (`pixart_pipeline` / `cascade_pipeline`) and must NOT hit the
+        // SD-only `load_sd_pipeline_for_scenario`, which bails on them.
         None
     } else {
         // All-generate SD-family scenario — pre-load as before so
@@ -3540,16 +3545,35 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         let controls = task_effective_controls(task)?;
                         match controls.first() {
                             Some(spec) => {
-                                let image_path = spec.image.as_ref().ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Cascade scenario control requires a pre-rendered \
-                                         `image:` (auto-from annotation for Cascade is a \
-                                         follow-up)"
-                                    )
-                                })?;
-                                let cond = crate::imaging::preprocess::sd_image_tensor(
-                                    image_path, 1024, 1024, &device, cp.dtype,
-                                )?;
+                                // v0.43: support BOTH `image:` (pre-rendered
+                                // edge map) and `auto-from:` (auto-annotate),
+                                // mirroring `cascade::run`. Both feed Stage C
+                                // the [-1,1] conditioning the CN expects.
+                                let cond = if let Some(image_path) = spec.image.as_ref() {
+                                    crate::imaging::preprocess::sd_image_tensor(
+                                        image_path, 1024, 1024, &device, cp.dtype,
+                                    )?
+                                } else if let Some(from_path) = spec.auto_from.as_ref() {
+                                    let kind: crate::pipelines::controlnet::ControlKind =
+                                        spec.kind.parse().with_context(|| {
+                                            format!(
+                                                "task {:?}: control kind {:?}",
+                                                task.name, spec.kind
+                                            )
+                                        })?;
+                                    let edges =
+                                        crate::pipelines::controlnet_annotator::annotate(
+                                            kind, from_path, 1024, 1024, &device, cp.dtype,
+                                        )
+                                        .await?;
+                                    edges.affine(2.0, -1.0)?
+                                } else {
+                                    anyhow::bail!(
+                                        "task {:?}: Cascade control requires `image:` or \
+                                         `auto-from:`",
+                                        task.name
+                                    );
+                                };
                                 Some(crate::pipelines::cascade::ControlConditioning {
                                     conditioning_image: cond,
                                     scale: spec.strength.unwrap_or(1.0),
@@ -3592,6 +3616,30 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     if !cascade_lora_entries.is_empty() {
                         m.with_lora_stack(cascade_lora_entries.clone());
                         m.lora_scale = Some(lora_scale);
+                    }
+                    // v0.43: record the ControlNet so the proof image
+                    // self-documents its conditioning (mirrors the CLI /
+                    // scripting Cascade paths).
+                    if cp.control_conditioning_active() {
+                        if let Some(spec) = task_effective_controls(task)?.first() {
+                            m.with_control_stack(vec![
+                                crate::imaging::metadata::ControlEntry {
+                                    kind: spec.kind.clone(),
+                                    image: spec
+                                        .image
+                                        .as_ref()
+                                        .map(|p| p.display().to_string()),
+                                    from: spec
+                                        .auto_from
+                                        .as_ref()
+                                        .map(|p| p.display().to_string()),
+                                    video: None,
+                                    strength: spec.strength.unwrap_or(1.0),
+                                    start: spec.start.unwrap_or(0.0),
+                                    end: spec.end.unwrap_or(1.0),
+                                },
+                            ]);
+                        }
                     }
                     let out_path = task_out
                         .join(format!("plakat-cascade-{img_seed}.png"));
@@ -5216,6 +5264,7 @@ async fn run_animate_task_inline(
                         &motion_lora_specs,
                         eff.motion_lora_scale,
                         cached_vae,
+                        "sd15",
                     )
                     .await
                 } else {
@@ -5225,6 +5274,7 @@ async fn run_animate_task_inline(
                         &motion_lora_specs,
                         eff.motion_lora_scale,
                         cached_vae,
+                        "sd15",
                     )
                     .await
                 }

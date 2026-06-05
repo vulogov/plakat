@@ -232,10 +232,13 @@ impl TemporalFeedForward {
         let proj = self.proj_in.forward(x)?;
         let last_dim = proj.dims().last().copied().unwrap_or(0);
         let half = last_dim / 2;
-        // GEGLU split — chunk in two halves on the last dim.
-        let left = proj.narrow(D::Minus1, 0, half)?;
-        let right = proj.narrow(D::Minus1, half, half)?;
-        let gated = Activation::Gelu.forward(&left)?.mul(&right)?;
+        // GEGLU split — chunk in two halves on the last dim. diffusers
+        // (and candle's GeGlu) gate the FIRST half by GELU of the SECOND:
+        // `hidden * gelu(gate)`. The motion FFN was trained that way, so
+        // the gate must be on `right`, not `left`.
+        let hidden = proj.narrow(D::Minus1, 0, half)?;
+        let gate = proj.narrow(D::Minus1, half, half)?;
+        let gated = hidden.mul(&Activation::Gelu.forward(&gate)?)?;
         let out = self.proj_out.forward(&gated)?;
         Ok(out)
     }
@@ -257,6 +260,11 @@ impl TemporalFeedForward {
 /// * `norms.{0,1,2}` — LayerNorms before each sub-residual
 #[derive(Debug)]
 pub struct TemporalTransformerBlock {
+    // diffusers' BasicTransformerBlock applies the positional embedding to
+    // the POST-NORM attention input (before attn1 AND before attn2), NOT
+    // to the residual stream. The `pe` lives at
+    // `transformer_blocks.0.pos_embed.pe`, so it belongs to the block.
+    pos_embed: PositionalEncoding,
     norm1: LayerNorm,
     attn1: TemporalAttention,
     norm2: LayerNorm,
@@ -266,7 +274,7 @@ pub struct TemporalTransformerBlock {
 }
 
 impl TemporalTransformerBlock {
-    fn new(vb: VarBuilder<'_>, dim: usize, num_heads: usize) -> Result<Self> {
+    fn new(vb: VarBuilder<'_>, dim: usize, num_heads: usize, max_len: usize) -> Result<Self> {
         // v0.27 phase 2: tensor naming matches the actual upstream
         // safetensors for both V3 SD 1.5 + SDXL beta. (The v0.26
         // phase 2 docstring referencing `attention_blocks.{0,1}` +
@@ -274,6 +282,7 @@ impl TemporalTransformerBlock {
         // attribute names, but the on-disk safetensors use
         // `attn1`/`attn2` + `norm1`/`norm2`/`norm3` — verified by
         // safetensors header dump 2026-05-28.)
+        let pos_embed = PositionalEncoding::new(vb.pp("pos_embed"), max_len, dim)?;
         let norm1 = layer_norm(dim, 1e-5, vb.pp("norm1"))?;
         let attn1 = TemporalAttention::new(vb.pp("attn1"), dim, num_heads)?;
         let norm2 = layer_norm(dim, 1e-5, vb.pp("norm2"))?;
@@ -281,6 +290,7 @@ impl TemporalTransformerBlock {
         let norm3 = layer_norm(dim, 1e-5, vb.pp("norm3"))?;
         let ff = TemporalFeedForward::new(vb.pp("ff"), dim, 4)?;
         Ok(Self {
+            pos_embed,
             norm1,
             attn1,
             norm2,
@@ -291,18 +301,18 @@ impl TemporalTransformerBlock {
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
-        // attn1: self-attention across frames.
-        let norm = self.norm1.forward(hidden_states)?;
+        // attn1: self-attention across frames. The positional embedding is
+        // added to the NORMED input (not the residual) — diffusers applies
+        // it inside the block before each attention, so it never persists
+        // in the residual stream.
+        let norm = self.pos_embed.forward(&self.norm1.forward(hidden_states)?)?;
         let attn = self.attn1.forward(&norm, None)?;
         let h = (attn + hidden_states)?;
 
         // attn2: cross-attention slot (identity in V3 — no
-        // encoder_hidden_states wired). Still runs through the
-        // loaded weights so the diffusers' V3 behaviour is bit-
-        // exact (this matters for LoRA composition in phase 4
-        // where motion LoRAs sometimes wire encoder hidden
-        // states).
-        let norm = self.norm2.forward(&h)?;
+        // encoder_hidden_states wired). pos_embed is re-applied to the
+        // normed input here too, exactly as diffusers does.
+        let norm = self.pos_embed.forward(&self.norm2.forward(&h)?)?;
         let attn = self.attn2.forward(&norm, None)?;
         let h = (attn + h)?;
 
@@ -343,7 +353,6 @@ pub struct TemporalTransformer {
     /// one transformer_blocks slot per motion_modules slot.
     block: TemporalTransformerBlock,
     proj_out: Linear,
-    pos_embed: PositionalEncoding,
     /// Channels of the UNet block this motion module attaches to —
     /// used by the splice code to verify shapes match.
     pub channels: usize,
@@ -371,23 +380,15 @@ impl TemporalTransformer {
             vb.pp("transformer_blocks.0"),
             channels,
             config.motion_num_attention_heads,
+            config.motion_max_seq_length,
         )
         .context("loading transformer_blocks.0")?;
         let proj_out = linear(channels, channels, vb.pp("proj_out"))?;
-        // Positional encoding lives at
-        // `transformer_blocks.0.pos_embed.pe`. One pe per motion
-        // module slot.
-        let pos_embed = PositionalEncoding::new(
-            vb.pp("transformer_blocks.0.pos_embed"),
-            config.motion_max_seq_length,
-            channels,
-        )?;
         Ok(Self {
             norm,
             proj_in,
             block,
             proj_out,
-            pos_embed,
             channels,
         })
     }
@@ -417,22 +418,34 @@ impl TemporalTransformer {
         // Save residual.
         let residual = hidden_states.clone();
 
-        // GroupNorm on (B*F, C, H, W).
-        let x = self.norm.forward(hidden_states)?;
+        // GroupNorm must pool statistics ACROSS frames. diffusers applies
+        // it to (B, C, F, H, W), so the per-channel-group mean/var span the
+        // whole F×H×W extent. Applying it per-frame on (B*F, C, H, W) —
+        // each frame normalized independently — gives different statistics
+        // than the affine weights were trained on, structurally distorting
+        // the temporal transformer's input (a directional error no scaling
+        // fixes). Reshape so frames join the spatial extent, norm, restore.
+        let x = hidden_states
+            .reshape((batch, num_frames, c, h, w))?
+            .permute((0, 2, 1, 3, 4))? // (B, C, F, H, W)
+            .contiguous()?
+            .reshape((batch, c, num_frames * h * w))?;
+        let x = self.norm.forward(&x)?;
+        let x = x
+            .reshape((batch, c, num_frames, h, w))?
+            .permute((0, 2, 1, 3, 4))? // (B, F, C, H, W)
+            .contiguous()?;
 
-        // Reshape (B*F, C, H, W) → (B, F, C, H, W) → (B, H, W, F, C) → (B*H*W, F, C).
-        let x = x.reshape((batch, num_frames, c, h, w))?;
-        // (B, F, C, H, W) → (B, H*W, F, C) via permute then reshape.
+        // (B, F, C, H, W) → (B, H, W, F, C) → (B*H*W, F, C).
         let x = x.permute((0, 3, 4, 1, 2))?.contiguous()?;
         let x = x.reshape((batch * h * w, num_frames, c))?;
 
         // Project in (Linear on the last dim).
         let x = self.proj_in.forward(&x)?;
 
-        // Add positional embedding.
-        let x = self.pos_embed.forward(&x)?;
-
-        // Single inner transformer block (attn1 + attn2 + ff).
+        // Single inner transformer block (attn1 + attn2 + ff). The
+        // positional embedding is applied INSIDE the block (post-norm,
+        // before each attention) — not here on the residual stream.
         let x = self.block.forward(&x)?;
 
         // Project out.
@@ -538,13 +551,23 @@ impl MotionAdapter {
         let mut modules: Vec<(ModuleAddr, TemporalTransformer)> =
             Vec::with_capacity(cfg.total_motion_modules());
 
+        // The module count per block is NOT uniform: SD 1.5 down
+        // blocks have 2 (one per resnet) but up blocks have 3
+        // (`layers_per_block + 1` resnets), so the adapter ships 8 + 12
+        // = 20 modules. Probe the checkpoint for each `motion_modules.{j}`
+        // rather than assuming a fixed count — this also covers V1/V2 and
+        // the SDXL-beta adapter without a per-variant table.
+        let probe = |prefix: &str| vb.contains_tensor(&format!("{prefix}.proj_in.weight"));
+
         // Down blocks: channels[i] for block i, in order.
         for block_idx in 0..nb {
             let channels = cfg.block_out_channels[block_idx];
-            for layer_idx in 0..cfg.motion_layers_per_block {
-                let prefix = format!(
-                    "down_blocks.{block_idx}.motion_modules.{layer_idx}"
-                );
+            let mut layer_idx = 0;
+            loop {
+                let prefix = format!("down_blocks.{block_idx}.motion_modules.{layer_idx}");
+                if !probe(&prefix) {
+                    break;
+                }
                 let m = TemporalTransformer::new(vb.pp(&prefix), cfg, channels)
                     .with_context(|| format!("building {prefix}"))?;
                 modules.push((
@@ -555,6 +578,7 @@ impl MotionAdapter {
                     },
                     m,
                 ));
+                layer_idx += 1;
             }
         }
 
@@ -562,10 +586,12 @@ impl MotionAdapter {
         // U-shape: 1280, 1280, 640, 320 for up_blocks 0..=3).
         for block_idx in 0..nb {
             let channels = cfg.block_out_channels[nb - 1 - block_idx];
-            for layer_idx in 0..cfg.motion_layers_per_block {
-                let prefix = format!(
-                    "up_blocks.{block_idx}.motion_modules.{layer_idx}"
-                );
+            let mut layer_idx = 0;
+            loop {
+                let prefix = format!("up_blocks.{block_idx}.motion_modules.{layer_idx}");
+                if !probe(&prefix) {
+                    break;
+                }
                 let m = TemporalTransformer::new(vb.pp(&prefix), cfg, channels)
                     .with_context(|| format!("building {prefix}"))?;
                 modules.push((
@@ -576,6 +602,7 @@ impl MotionAdapter {
                     },
                     m,
                 ));
+                layer_idx += 1;
             }
         }
 
@@ -656,6 +683,73 @@ mod tests {
             motion_num_attention_heads: 8,
             use_motion_mid_block: false,
         }
+    }
+
+    /// REFERENCE-COMPARISON DUMP (diagnostic; `#[ignore]`d by default).
+    /// Loads the real V3 adapter from the HF cache, runs
+    /// `down_blocks.0.motion_modules.0` on a deterministic input, and
+    /// writes input + output as raw little-endian f32 to /tmp for an
+    /// element-wise diff against the diffusers ground truth.
+    /// Run: `cargo test --release dump_motion_ref -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_motion_ref() {
+        use std::io::Write;
+        let home = std::env::var("HOME").unwrap();
+        let base = format!(
+            "{home}/.cache/huggingface/hub/models--guoyww--animatediff-motion-adapter-v1-5-3/snapshots"
+        );
+        let snap = std::fs::read_dir(&base)
+            .expect("adapter cached")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.join("diffusion_pytorch_model.safetensors").exists())
+            .expect("snapshot with weights");
+        let weights = snap.join("diffusion_pytorch_model.safetensors");
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let cfg = v3_config();
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], dtype, &device).unwrap() };
+
+        let write = |path: String, v: &[f32]| {
+            let mut fh = std::fs::File::create(path).unwrap();
+            for x in v {
+                fh.write_all(&x.to_le_bytes()).unwrap();
+            }
+        };
+
+        // Every motion module: down 0..3 ×{0,1} (channels 320,640,1280,1280),
+        // up 0..3 ×{0,1,2} (channels 1280,1280,640,320). Pipeline shape
+        // CFG batch=2, 8 frames → bf=16.
+        let down_ch = [320usize, 640, 1280, 1280];
+        let num_frames = 8usize;
+        let (bf, h, w) = (16usize, 8usize, 8usize);
+        let mut addrs: Vec<(String, usize, usize)> = vec![];
+        for (b, &ch) in down_ch.iter().enumerate() {
+            for l in 0..2 {
+                addrs.push((format!("down_blocks.{b}.motion_modules.{l}"), ch, l));
+            }
+        }
+        for (b, &ch) in down_ch.iter().rev().enumerate() {
+            for l in 0..3 {
+                addrs.push((format!("up_blocks.{b}.motion_modules.{l}"), ch, l));
+            }
+        }
+        for (prefix, c, _l) in &addrs {
+            let tt = TemporalTransformer::new(vb.pp(prefix), &cfg, *c)
+                .unwrap_or_else(|e| panic!("build {prefix}: {e}"));
+            let n = bf * c * h * w;
+            let data: Vec<f32> =
+                (0..n).map(|i| ((i as f32 * 37.0) % 1000.0) / 1000.0 - 0.5).collect();
+            let input = Tensor::from_vec(data.clone(), (bf, *c, h, w), &device).unwrap();
+            let out = tt.forward(&input, num_frames).unwrap();
+            let out_v = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            let safe = prefix.replace('.', "_");
+            write(format!("/tmp/mm_in_{safe}.f32"), &data);
+            write(format!("/tmp/mm_out_{safe}.f32"), &out_v);
+        }
+        eprintln!("DUMP {} modules written", addrs.len());
     }
 
     /// Build a synthetic weight map matching the actual upstream

@@ -1,0 +1,19 @@
+{
+  "prompt": "a time-lapse of a red rose blooming, macro photography, soft light",
+  "negative": "bad quality, worse quality, blurry, low resolution",
+  "model": "Lykon/dreamshaper-8",
+  "seed": 42,
+  "steps": 25,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 512,
+  "height": 512,
+  "mode": "animatediff",
+  "extras": [
+    [
+      "AnimateDiff frame",
+      "3/8"
+    ]
+  ],
+  "generator": "plakat 0.43.0"
+}

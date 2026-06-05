@@ -195,11 +195,21 @@ pub fn build_2d_sincos_pos_embed(
     hidden_size: usize,
     grid_h: usize,
     grid_w: usize,
+    // PixArt scales the grid coordinates by `base_size / (grid * interp)`
+    // (diffusers `get_2d_sincos_pos_embed`): at native resolution
+    // grid==base_size so the factor is `1/interpolation_scale` (= 1/2 for
+    // 1024-MS). Omitting it makes every frequency `interp`× too high →
+    // wrong positional embedding → the DiT can't denoise. For off-native
+    // (multi-scale) grids the base/grid ratio interpolates.
+    base_size: usize,
+    interpolation_scale: f32,
     device: &Device,
     dtype: DType,
 ) -> Result<Tensor> {
-    let grid_h_idx: Vec<f32> = (0..grid_h).map(|i| i as f32).collect();
-    let grid_w_idx: Vec<f32> = (0..grid_w).map(|i| i as f32).collect();
+    let scale_h = base_size as f32 / (grid_h as f32 * interpolation_scale);
+    let scale_w = base_size as f32 / (grid_w as f32 * interpolation_scale);
+    let grid_h_idx: Vec<f32> = (0..grid_h).map(|i| i as f32 * scale_h).collect();
+    let grid_w_idx: Vec<f32> = (0..grid_w).map(|i| i as f32 * scale_w).collect();
     let half = hidden_size / 2;
     let quarter = half / 2;
     let omega: Vec<f32> = (0..quarter)
@@ -221,7 +231,10 @@ pub fn build_2d_sincos_pos_embed(
     let emb_w = make_axis(&grid_w_idx)?;
     let h_repeat = emb_h.unsqueeze(1)?.expand((grid_h, grid_w, half))?;
     let w_repeat = emb_w.unsqueeze(0)?.expand((grid_h, grid_w, half))?;
-    let pe = Tensor::cat(&[h_repeat, w_repeat], 2)?
+    // diffusers concatenates [emb(W), emb(H)] per position (from
+    // meshgrid(w, h)), NOT [emb(H), emb(W)] — getting this backwards
+    // transposes the positional grid.
+    let pe = Tensor::cat(&[w_repeat, h_repeat], 2)?
         .reshape((grid_h * grid_w, hidden_size))?
         .to_dtype(dtype)?
         .unsqueeze(0)?;
@@ -308,16 +321,31 @@ impl SizeEmbedder {
 /// The Σ-additional embedding head: timestep + resolution + aspect.
 pub struct AdaLnSingleEmb {
     timestep_embedder: TimestepEmbedder,
-    resolution_embedder: SizeEmbedder,
-    aspect_ratio_embedder: SizeEmbedder,
+    // PixArt-Σ checkpoints carry NO resolution/aspect-ratio micro-
+    // conditioning (`use_additional_conditions=False`); only PixArt-α
+    // 1024-MS ships these embedders. Auto-detect from the checkpoint so a
+    // single code path loads both families.
+    resolution_embedder: Option<SizeEmbedder>,
+    aspect_ratio_embedder: Option<SizeEmbedder>,
 }
 
 impl AdaLnSingleEmb {
     pub fn new(hidden_size: usize, vb: VarBuilder) -> Result<Self> {
+        let has_size_cond = vb.contains_tensor("resolution_embedder.linear_1.weight");
+        let resolution_embedder = if has_size_cond {
+            Some(SizeEmbedder::new(hidden_size, vb.pp("resolution_embedder"))?)
+        } else {
+            None
+        };
+        let aspect_ratio_embedder = if has_size_cond {
+            Some(SizeEmbedder::new(hidden_size, vb.pp("aspect_ratio_embedder"))?)
+        } else {
+            None
+        };
         Ok(Self {
             timestep_embedder: TimestepEmbedder::new(hidden_size, vb.pp("timestep_embedder"))?,
-            resolution_embedder: SizeEmbedder::new(hidden_size, vb.pp("resolution_embedder"))?,
-            aspect_ratio_embedder: SizeEmbedder::new(hidden_size, vb.pp("aspect_ratio_embedder"))?,
+            resolution_embedder,
+            aspect_ratio_embedder,
         })
     }
 
@@ -328,10 +356,16 @@ impl AdaLnSingleEmb {
         aspect_ratio: &Tensor,
     ) -> Result<Tensor> {
         let t_emb = self.timestep_embedder.forward(timestep)?;
+        // Σ: timestep only.
+        let (Some(res_e), Some(asp_e)) =
+            (&self.resolution_embedder, &self.aspect_ratio_embedder)
+        else {
+            return Ok(t_emb);
+        };
         let res_flat = resolution.reshape(((),))?;
         let asp_flat = aspect_ratio.reshape(((),))?;
-        let res_emb = self.resolution_embedder.forward(&res_flat)?;
-        let asp_emb = self.aspect_ratio_embedder.forward(&asp_flat)?;
+        let res_emb = res_e.forward(&res_flat)?;
+        let asp_emb = asp_e.forward(&asp_flat)?;
         let b = timestep.dim(0)?;
         let hidden = t_emb.dim(1)?;
         // (B*2, hidden) → (B, 2, hidden) → sum over the pair → (B, hidden).
@@ -778,16 +812,22 @@ impl PixArtSigmaXL {
         let (b, _c, lh, lw) = latent.dims4()?;
         let x = self.patch_embed.forward(latent)?;
         let (grid_h, grid_w) = self.patch_embed.grid_dims(lh, lw);
+        // interpolation_scale = max(latent_sample // 64, 1), where the
+        // latent sample size is grid·patch (diffusers default). base_size
+        // is the model's native token grid (`sample_size`).
+        let interp = (((self.cfg.sample_size * self.cfg.patch_size) as f32) / 64.0).floor().max(1.0);
         let pe = build_2d_sincos_pos_embed(
             self.cfg.hidden_size,
             grid_h,
             grid_w,
+            self.cfg.sample_size,
+            interp,
             x.device(),
             x.dtype(),
         )?;
         let x = x.broadcast_add(&pe)?;
 
-        let (t_block, _embedded) =
+        let (t_block, embedded) =
             self.adaln_single.forward(timestep, resolution, aspect_ratio)?;
         let kv = self.caption_projection.forward(caption)?;
 
@@ -799,9 +839,11 @@ impl PixArtSigmaXL {
             x = block.forward(&x, &t_block, &kv, Some((grid_h, grid_w)))?;
         }
 
-        // Final adaLN + proj_out.
-        let t_block_2 = t_block.reshape((b, 6, self.cfg.hidden_size))?.narrow(1, 0, 2)?;
-        let mod_final = self.final_scale_shift.unsqueeze(0)?.broadcast_add(&t_block_2)?;
+        // Final adaLN + proj_out. diffusers uses the raw `embedded_timestep`
+        // (B, hidden) here — NOT the first two chunks of the 6-way block
+        // `t_block` (which is linear(silu(embedded)), a different tensor).
+        let emb_unsq = embedded.unsqueeze(1)?; // (B, 1, hidden)
+        let mod_final = self.final_scale_shift.unsqueeze(0)?.broadcast_add(&emb_unsq)?;
         let shift = mod_final.i((.., 0, ..))?.unsqueeze(1)?;
         let scale = mod_final.i((.., 1, ..))?.unsqueeze(1)?;
         let norm_x = layernorm_no_affine(&x, 1e-6)?;
@@ -838,6 +880,90 @@ impl PixArtSigmaXL {
 mod tests {
     use super::*;
     use candle_nn::VarMap;
+
+    /// REFERENCE-COMPARISON DUMP (diagnostic; `#[ignore]`d). Builds the
+    /// real PixArt-Σ DiT from the HF cache, runs it on a deterministic
+    /// input, and writes input + output as raw f32 to /tmp for an
+    /// element-wise diff against diffusers' PixArtTransformer2DModel.
+    /// Run: `cargo test --release dump_pixart_dit_ref -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_pixart_dit_ref() {
+        use std::io::Write;
+        let home = std::env::var("HOME").unwrap();
+        let base = format!(
+            "{home}/.cache/huggingface/hub/models--PixArt-alpha--PixArt-Sigma-XL-2-1024-MS/snapshots"
+        );
+        let snap = std::fs::read_dir(&base)
+            .expect("checkpoint cached")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.join("transformer/diffusion_pytorch_model.safetensors").exists())
+            .expect("snapshot with transformer weights");
+        let weights = snap.join("transformer/diffusion_pytorch_model.safetensors");
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let cfg = Config::for_pixart_repo("PixArt-alpha/PixArt-Sigma-XL-2-1024-MS");
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], dtype, &device).unwrap() };
+        let dit = PixArtSigmaXL::new(cfg.clone(), vb).expect("build DiT from real weights");
+
+        let det = |n: usize, off: usize| -> Vec<f32> {
+            (0..n).map(|i| (((i + off) as f32 * 37.0) % 1000.0) / 1000.0 - 0.5).collect()
+        };
+        let (lh, lw, seq) = (16usize, 16usize, 16usize);
+        let latent_v = det(4 * lh * lw, 0);
+        let caption_v = det(seq * cfg.caption_channels, 100);
+        let latent = Tensor::from_vec(latent_v.clone(), (1, 4, lh, lw), &device).unwrap();
+        let caption =
+            Tensor::from_vec(caption_v.clone(), (1, seq, cfg.caption_channels), &device).unwrap();
+        let t = Tensor::from_vec(vec![500.0f32], (1,), &device).unwrap();
+        let res = Tensor::from_vec(vec![1024.0f32, 1024.0], (1, 2), &device).unwrap();
+        let asp = Tensor::from_vec(vec![1.0f32, 1.0], (1, 2), &device).unwrap();
+
+        let write = |p: &str, t: &Tensor| {
+            let v = t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            let mut f = std::fs::File::create(p).unwrap();
+            for x in &v {
+                f.write_all(&x.to_le_bytes()).unwrap();
+            }
+        };
+        let write_raw = |p: &str, v: &[f32]| {
+            let mut f = std::fs::File::create(p).unwrap();
+            for x in v {
+                f.write_all(&x.to_le_bytes()).unwrap();
+            }
+        };
+        write_raw("/tmp/dit_latent.f32", &latent_v);
+        write_raw("/tmp/dit_caption.f32", &caption_v);
+
+        // --- Intermediate stages, to localize the divergence ---
+        let x_patch = dit.patch_embed.forward(&latent).unwrap();
+        let (gh, gw) = dit.patch_embed.grid_dims(lh, lw);
+        let interp = (((cfg.sample_size * cfg.patch_size) as f32) / 64.0).floor().max(1.0);
+        let pe =
+            build_2d_sincos_pos_embed(cfg.hidden_size, gh, gw, cfg.sample_size, interp, &device, dtype)
+                .unwrap();
+        let x_input = x_patch.broadcast_add(&pe).unwrap();
+        write("/tmp/dit_xinput.f32", &x_input); // patch_embed + pos_embed
+        write("/tmp/dit_pe.f32", &pe); // positional embedding alone
+        let cap_proj = dit.caption_projection.forward(&caption).unwrap();
+        write("/tmp/dit_capproj.f32", &cap_proj);
+        let (t_block, _) = dit.adaln_single.forward(&t, &res, &asp).unwrap();
+        write("/tmp/dit_tblock.f32", &t_block);
+        let blk0 = dit.blocks[0]
+            .forward(&x_input, &t_block, &cap_proj, Some((gh, gw)))
+            .unwrap();
+        write("/tmp/dit_blk0.f32", &blk0);
+
+        let out = dit.forward(&latent, &t, &caption, &res, &asp).expect("DiT forward");
+        let out_v = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        write("/tmp/dit_out.f32", &out);
+        let (mn, mx) = out_v
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        eprintln!("DIT DUMP out_dims={:?} n={} min={mn:.4} max={mx:.4}", out.dims(), out_v.len());
+    }
 
     fn small_cfg() -> Config {
         Config {
@@ -963,7 +1089,7 @@ mod tests {
     #[test]
     fn sincos_pos_embed_has_correct_token_count() {
         let device = Device::Cpu;
-        let pe = build_2d_sincos_pos_embed(64, 4, 4, &device, DType::F32).unwrap();
+        let pe = build_2d_sincos_pos_embed(64, 4, 4, 4, 1.0, &device, DType::F32).unwrap();
         assert_eq!(pe.dims(), &[1, 16, 64]);
     }
 

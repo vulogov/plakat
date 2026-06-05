@@ -67,7 +67,7 @@ use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 use crate::pipelines::pixart_dit::{Config as DitConfig, PixArtSigmaXL};
-use crate::pipelines::scheduler::{SchedulerKind, build as build_scheduler};
+use crate::pipelines::scheduler::{SchedulerKind, build_pixart as build_scheduler};
 use crate::ui::progress;
 
 /// Inputs to [`Pipeline::load`]. Mirrors the shape of
@@ -165,36 +165,83 @@ impl Pipeline {
         };
 
         let dl = progress::spinner("Resolving PixArt Sigma weights");
-        let t5_shard1 = crate::hf::download::get_file(
+        // T5-XXL ships sharded, but the repo has re-sharded over time
+        // (3 → 2 shards), so discover the shard set from the index rather
+        // than hardcoding the count. Falls back to a single-file encoder
+        // if the repo has no index.
+        let t5_shards: Vec<std::path::PathBuf> = match crate::hf::download::get_file(
             &req.repo,
-            "text_encoder/model-00001-of-00003.safetensors",
+            "text_encoder/model.safetensors.index.json",
         )
         .await
-        .context("downloading T5-XXL shard 1 for PixArt")?;
-        let t5_shard2 = crate::hf::download::get_file(
-            &req.repo,
-            "text_encoder/model-00002-of-00003.safetensors",
-        )
-        .await
-        .context("downloading T5-XXL shard 2 for PixArt")?;
-        let t5_shard3 = crate::hf::download::get_file(
-            &req.repo,
-            "text_encoder/model-00003-of-00003.safetensors",
-        )
-        .await
-        .context("downloading T5-XXL shard 3 for PixArt")?;
+        {
+            Ok(index_path) => {
+                let idx_str = std::fs::read_to_string(&index_path)
+                    .context("read T5 shard index for PixArt")?;
+                let idx: serde_json::Value = serde_json::from_str(&idx_str)
+                    .context("parse T5 shard index for PixArt")?;
+                let mut names: Vec<String> = idx
+                    .get("weight_map")
+                    .and_then(|m| m.as_object())
+                    .map(|m| m.values().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                names.sort();
+                names.dedup();
+                if names.is_empty() {
+                    anyhow::bail!("T5 shard index for PixArt has no weight_map entries");
+                }
+                let mut paths = Vec::with_capacity(names.len());
+                for (i, name) in names.iter().enumerate() {
+                    paths.push(
+                        crate::hf::download::get_file(&req.repo, &format!("text_encoder/{name}"))
+                            .await
+                            .with_context(|| {
+                                format!("downloading T5-XXL shard {} ({name}) for PixArt", i + 1)
+                            })?,
+                    );
+                }
+                paths
+            }
+            Err(_) => vec![crate::hf::download::get_file(
+                &req.repo,
+                "text_encoder/model.safetensors",
+            )
+            .await
+            .context("downloading T5-XXL encoder for PixArt")?],
+        };
         let t5_cfg_path = crate::hf::download::get_file(&req.repo, "text_encoder/config.json")
             .await
             .context("downloading T5 config for PixArt")?;
-        let t5_tok_path = crate::hf::download::get_file(&req.repo, "tokenizer/tokenizer.json")
-            .await
-            .context("downloading T5 tokenizer for PixArt")?;
-        let vae_path = crate::hf::download::get_file(
-            &req.repo,
-            "vae/diffusion_pytorch_model.safetensors",
-        )
+        // The Sigma repo dropped tokenizer.json (sentencepiece-only now).
+        // The T5-v1.1 vocab is identical across every T5 model, so any
+        // flan-t5 tokenizer.json is a drop-in for the fast tokenizer.
+        let t5_tok_path = crate::hf::download::get_first_of(&[
+            (req.repo.as_str(), "tokenizer/tokenizer.json"),
+            ("google/flan-t5-base", "tokenizer.json"),
+        ])
         .await
-        .context("downloading VAE weights for PixArt")?;
+        .context("downloading T5 tokenizer for PixArt")?;
+        // PixArt-Σ uses the SDXL VAE, whose decoder overflows F16 →
+        // all-black on Metal/CUDA. Swap in madebyollin's F16-stable
+        // retrained drop-in for non-CPU (exactly as SdCore does for SDXL);
+        // CPU keeps the repo VAE at F32, where the stock VAE is fine.
+        let vae_path = if matches!(req.device, Device::Cpu) {
+            crate::hf::download::get_file(&req.repo, "vae/diffusion_pytorch_model.safetensors")
+                .await
+                .context("downloading VAE weights for PixArt")?
+        } else {
+            const VAE_FIX_REPO: &str = "madebyollin/sdxl-vae-fp16-fix";
+            crate::hf::download::get_first_of(&[
+                (VAE_FIX_REPO, "diffusion_pytorch_model.safetensors"),
+                (VAE_FIX_REPO, "sdxl_vae.safetensors"),
+                (VAE_FIX_REPO, "sdxl.vae.safetensors"),
+            ])
+            .await
+            .context(
+                "downloading the SDXL fp16-fix VAE for PixArt-Σ \
+                 (its stock VAE produces black images in F16)",
+            )?
+        };
         let dit_path = crate::hf::download::get_file(
             &req.repo,
             "transformer/diffusion_pytorch_model.safetensors",
@@ -242,12 +289,17 @@ impl Pipeline {
             .with_context(|| format!("read T5 config {}", t5_cfg_path.display()))?;
         let t5_cfg: t5::Config =
             serde_json::from_str(&t5_cfg_str).context("parse T5 config (PixArt)")?;
+        // T5-XXL overflows F16 — its FFN activations exceed F16's ~65k
+        // ceiling → inf caption embeddings (HF's T5 clamps for f16; candle's
+        // does not). Run T5 in BF16 (same 9.4 GB footprint as F16, but
+        // F32-range so no overflow) on non-CPU; CPU keeps F32.
+        let t5_dtype = if matches!(req.device, Device::Cpu) {
+            dtype
+        } else {
+            DType::BF16
+        };
         let t5_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[&t5_shard1, &t5_shard2, &t5_shard3],
-                dtype,
-                &req.device,
-            )?
+            VarBuilder::from_mmaped_safetensors(&t5_shards, t5_dtype, &req.device)?
         };
         let t5_enc = t5::T5EncoderModel::load(t5_vb, &t5_cfg)
             .context("building T5-XXL encoder for PixArt")?;
@@ -261,10 +313,14 @@ impl Pipeline {
         // sample_size differs (informational, see `pixart_dit::
         // Config::sigma_xl_512` doc).
         let dit_cfg = DitConfig::for_pixart_repo(&req.repo);
+        // The DiT overflows F16 (activations exceed F16's ~65k ceiling →
+        // inf → NaN → all-black on Metal). Run it in F32 for numerical
+        // stability; T5 stays F16 to fit memory. ~2.4 GB extra, fits 24 GB.
+        let dit_dtype = DType::F32;
         let dit_vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[dit_load_path.as_path()],
-                dtype,
+                dit_dtype,
                 &req.device,
             )?
         };
@@ -313,7 +369,9 @@ impl Pipeline {
         ids.truncate(max_tokens);
         ids.resize(max_tokens, 0);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(self.dtype)?;
+        // Keep the T5 output in F32 (the DiT runs F32 and the BF16→F16
+        // round-trip would re-overflow the large embedding values).
+        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(DType::F32)?;
         Ok(hidden)
     }
 
@@ -386,13 +444,18 @@ impl Pipeline {
             let t_tensor = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
                 .expand((2,))?;
-            let pred = self.dit.forward(
-                &scaled_cfg,
-                &t_tensor,
-                &caption_cfg,
-                &res_cfg,
-                &asp_cfg,
-            )?;
+            // The DiT runs in F32 (see load); cast inputs up and the
+            // prediction back down to the pipeline dtype for the scheduler.
+            let pred = self
+                .dit
+                .forward(
+                    &scaled_cfg.to_dtype(DType::F32)?,
+                    &t_tensor.to_dtype(DType::F32)?,
+                    &caption_cfg.to_dtype(DType::F32)?,
+                    &res_cfg.to_dtype(DType::F32)?,
+                    &asp_cfg.to_dtype(DType::F32)?,
+                )?
+                .to_dtype(self.dtype)?;
             // learn_sigma=True → first 4 channels are noise; the
             // log-variance half is discarded (standard inference path).
             let noise_pred = pred.narrow(1, 0, 4)?;
@@ -407,10 +470,11 @@ impl Pipeline {
         bar.finish_and_clear();
 
         // ---- VAE decode. ----
-        // PixArt-Σ shares the SDXL VAE; latent-space scale is 0.18215
-        // (same constant SD 1.5 / 2.1 / SDXL / SD3 use).
+        // PixArt-Σ uses the SDXL VAE, whose latent-space scaling factor
+        // is 0.13025 (per the repo's vae/config.json) — NOT the 0.18215
+        // SD 1.5/2.1 constant.
         let _ = &self.sd_cfg; // kept on the struct for phase 3+ uses
-        let vae_scale: f64 = 0.18215;
+        let vae_scale: f64 = 0.13025;
         let s = progress::spinner("Decoding latents → image");
         let decoded = self.vae.decode(&(&latents / vae_scale)?)?;
         let image = ((decoded / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;

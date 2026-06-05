@@ -2,68 +2,66 @@
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
-Local text-to-image generation, style transfer, LoRA stacking, ML upscaling,
-identity-preserving portraits, and batch scenarios — all built on
-[candle](https://github.com/huggingface/candle). Pure Rust inference. No
-Python, no PyTorch, no external T2I services. Models are pulled from
-HuggingFace and cached locally.
+Local text-to-image **and animation** across the major open model families —
+SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, and Stable Cascade — with
+img2img, inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking,
+identity-preserving portraits, AnimateDiff video, ML upscaling, and batch
+scenarios. All built on [candle](https://github.com/huggingface/candle).
+Pure Rust inference. No Python, no PyTorch, no external T2I services. Models
+are pulled from HuggingFace and cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
+🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.42 — Stable Cascade completeness + polish
+## What's new in v0.43.0 — Proof corpus + the bugs it caught
 
-v0.41 made Stable Cascade *generate*. v0.42 makes it **complete**: real
-LoRA support, image-conditioning, and ControlNet on every surface —
-plus a graceful guard for a Flux-on-Metal candle bug. See the new
-[Stable Cascade tutorial](Documentation/Tutorials/CASCADE_TUTORIAL.md).
+v0.43 is a **verification** cycle: a reproducible, self-documenting body
+of images — and the tooling to regenerate and index it — that proves
+plakat's pipelines actually work end to end. Rendering it surfaced (and
+fixed) a stack of correctness bugs that shape-tests had hidden for dozens
+of versions. Browse the [proof corpus](corpus/) and the [gallery](gallery/).
 
 ```
-LoRA / DoRA       → community kohya & PEFT LoRAs actually merge (was a silent no-op)
-image variation   → condition on a reference image's semantics (unCLIP-style)
-faithful img2img  → hold the init's content, not just its structure
-scripting CN      → plakat.cascade honours plakat.controlnet.* — the last CN surface
+plakat gallery    → build a browsable Markdown index from generated images
+                    (AnimateDiff clips fold in as single animated-GIF entries)
+proof corpus      → scenario-driven stills (Cascade / SDXL / SD 1.5 / PixArt-Σ)
+                    + AnimateDiff clips, each embedding its full recipe
 ```
 
-### Phases
+### What the corpus caught
 
-| # | Phase | What |
+| Area | Was | Now |
 |---|---|---|
-| 0 | `--decoder-guidance` | Stage B (decoder) CFG scale, decoupled from the prior's `--guidance` (default 1.1). Threaded through CLI, img2img, scenarios, scripting. |
-| 1 | LoRA / DoRA, for real | Community Cascade LoRAs silently no-op'd. Fixed two load-bearing bugs, verified against a real DoRA: **kohya/sd-scripts prefix** recognition (`lora_prior_unet_…`, not just dotted PEFT), and the **DoRA magnitude axis** — kohya stores it per input-column (dim 0), PEFT per output-row (dim 1); renorming the wrong axis scrambles every weight regardless of strength. `apply_dora` now auto-detects the axis (CoV-based for square weights, length for non-square), so kohya **and** PEFT DoRAs both fuse. Full noise → coherent styled output. |
-| 2 | *(dropped)* | An "exact CannyFilter resize-to-224" normalization was investigated and **empirically falsified** — 224 makes the effnet emit a 7×7 feature map that the residual injection upsamples into a grid; the v0.41 full-resolution path was already correct. Reverted. |
-| 3 | Stage C image encoder | Wired the **CLIP ViT-L/14** image encoder (`openai/clip-vit-large-patch14`, the one the prior's `clip_img_mapper` expects) into Stage C's previously-zeroed image slot. Two entry points: **`--image-variation PATH`** (unCLIP-style; prompt optional) and **`img2img --faithful`** (adds Stage C semantic conditioning on top of the Stage B VAE seed). Encoder lazy-loads only when requested. |
-| 4 | Scripting Cascade CN | `plakat.cascade` honours a canny `ControlSpec` from the shared `plakat.controlnet.*` words — closing the **last ControlNet surface** (CLI + img2img + scenarios + scripting). Surfaced and fixed a pre-existing bug: `plakat.load` couldn't load Cascade **or PixArt** at all in scripting (mis-routed to the SD-only loader). |
+| **SD 1.5 / 2.1** | pure **noise** on every backend since v0.16 | `clip_skip=1` now applies the CLIP final layer norm — the regression had been feeding the UNet pre-LN (un-normalized) embeddings |
+| **SDXL** | **black** image on Metal | the stock VAE overflows F16 → madebyollin `sdxl-vae-fp16-fix` drop-in for non-CPU |
+| **AnimateDiff** | pure **noise** since v0.26 (never verified) | every motion module matches diffusers at **corr 1.0** after **7 fixes**; coherent video on an aesthetic base (`--model Lykon/dreamshaper-8`) |
+| **PixArt-Σ** | errored on load → **black** → **noise** | generates; the DiT matches diffusers (pos-embed H/W + scaling, final-adaLN, BF16 T5, IDDPM linear betas) |
+| **Flux GGUF / Metal** | crash / garbage | fails fast with guidance (a candle 0.10.2 kernel bug, a layer below plakat) |
 
-Bonus: GGUF Flux on Apple Metal now **fails fast with guidance**
-instead of crashing/emitting garbage — candle 0.10.2's Metal
-matrix×matrix quantized matmul kernel is buggy (a layer below plakat);
-the transformer body is now F32-correct so the path works the day
-candle fixes the kernel. Override with `PLAKAT_ALLOW_GGUF_METAL=1`.
+The method, reused from the Cascade campaign: dump diffusers' intermediate
+activations on a fixed input and diff plakat's against them stage by stage
+until every forward matches. It pinpointed the AnimateDiff positional-
+embedding bug and the PixArt DiT pos-embed / final-adaLN bugs — each in a
+single shot — where weeks of inspection had not.
 
 ### Try it
 
 ```bash
-# LoRA / DoRA — community Cascade LoRAs now actually apply
-plakat generate "a girl in a flower field, anime style" \
-    --model stable-cascade --lora ~/loras/cascade_anime.safetensors:1.0
+# Render a proof-corpus category (downloads its model on first run)
+plakat scenario corpus/sdxl.hjson
 
-# Image variation — vary on a reference image's semantics
-plakat generate "" --model stable-cascade --image-variation ref.png
+# AnimateDiff on an aesthetic SD 1.5 base → a coherent fox-in-snow clip
+plakat animate --animatediff --model Lykon/dreamshaper-8 \
+    --from "a red fox walking through a snowy forest" --gif
 
-# Faithful img2img — hold the init's content
-plakat img2img cottage.png --prompt "a cottage in winter snow" \
-    --model stable-cascade --strength 0.6 --faithful
+# PixArt-Σ — now generates
+plakat generate "a still life with fruit, oil painting" --model pixart
 
-# Decoupled decoder guidance
-plakat generate "a baroque cathedral interior" \
-    --model stable-cascade --guidance 4.0 --decoder-guidance 1.3
+# Build a browsable index from a directory of generated images
+plakat gallery corpus/images --recursive --out corpus/GALLERY.md
 ```
 
-Cascade ControlNet now works in scripting too — push a spec with
-`plakat.controlnet.annotate`, then `plakat.cascade` (see
-[`tools/verify_phase4_cascade_cn.bund`](tools/verify_phase4_cascade_cn.bund)).
-
-**Earlier releases** (v0.13 – v0.41):
+**Earlier releases** (v0.13 – v0.42):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

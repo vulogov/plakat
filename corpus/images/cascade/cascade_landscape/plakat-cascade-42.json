@@ -1,0 +1,12 @@
+{
+  "prompt": "a serene mountain lake at golden sunrise, snow-capped peak behind, autumn forest on the shore, photorealistic",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "stable-cascade",
+  "seed": 42,
+  "steps": 30,
+  "guidance": 4.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.43.0"
+}
