@@ -118,6 +118,7 @@ impl AnimateDiffPipeline {
         // scenario-level cache. `None` builds fresh from disk (legacy
         // single-task behaviour); `Some` reuses the cached Arc.
         vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
+        base_repo: &str,
     ) -> Result<Self> {
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_v3().await?
@@ -129,7 +130,7 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
-        Self::load_with_adapter(device, dtype, adapter, vae_cache).await
+        Self::load_with_adapter(device, dtype, adapter, vae_cache, base_repo).await
     }
 
     /// v0.28 phase 1: load the AnimateLCM stack on top of SD 1.5
@@ -145,6 +146,7 @@ impl AnimateDiffPipeline {
         motion_lora_scale: f32,
         // v0.34 phase 3: see [`Self::load_v3`] for cache semantics.
         vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
+        base_repo: &str,
     ) -> Result<Self> {
         let adapter = if motion_loras.is_empty() {
             MotionAdapter::load_animatelcm().await?
@@ -156,7 +158,7 @@ impl AnimateDiffPipeline {
             )
             .await?
         };
-        Self::load_with_adapter(device, dtype, adapter, vae_cache).await
+        Self::load_with_adapter(device, dtype, adapter, vae_cache, base_repo).await
     }
 
     /// Shared SD 1.5 backbone loader. Takes an already-loaded motion
@@ -168,15 +170,18 @@ impl AnimateDiffPipeline {
         adapter: MotionAdapter,
         // v0.34 phase 3: shared with t2i's scenario-level VAE cache.
         vae_cache: Option<std::sync::Arc<AutoEncoderKL>>,
+        // The SD 1.5 base the motion adapter rides on. AnimateDiff is
+        // trained to add motion on top of SD 1.5; on the *vanilla* base it
+        // produces degraded/mosaic frames (reproduced 1:1 by diffusers),
+        // while an aesthetic SD 1.5 fine-tune (DreamShaper, Realistic
+        // Vision, …) yields coherent video. Caller picks via `--model`.
+        base_repo: &str,
     ) -> Result<Self> {
         let modules = adapter.build_modules(device, dtype)?;
         let max_frames = adapter.config.motion_max_seq_length;
 
         // -------- SD 1.5 backbone.
-        // Resolve repo: prefer the canonical mirror so AnimateDiff
-        // V3 (which was trained against this base) gets the matching
-        // UNet weights.
-        let base_repo = crate::hf::resolve_alias("sd15").to_string();
+        let base_repo = crate::hf::resolve_alias(base_repo).to_string();
 
         let dl = progress::spinner("Resolving SD 1.5 weights for AnimateDiff");
         let tokenizer_path = crate::hf::download::get_first_of(&[
@@ -368,21 +373,23 @@ impl AnimateDiffPipeline {
         let cond = self.encode_branch(prompt)?;
         let text_embeds = if do_cfg {
             let uncond = self.encode_branch(negative)?;
-            // (2, 77, 768): row 0 = uncond, row 1 = cond. Match t2i.
-            let stacked = Tensor::cat(&[&uncond, &cond], 0)?;
-            // Replicate per frame along batch: (2F, 77, 768).
-            // Order: [uncond_f0, uncond_f1, ..., cond_f0, cond_f1, ...]
-            // i.e. uncond batch first, cond batch second. Matches the
-            // way we'll concat latents below: [latents, latents] →
-            // (2F, ...) where rows 0..F are uncond, F..2F are cond.
-            stacked.repeat((frames, 1, 1))?
+            // The latent batch below is BLOCKED: `cat([latents, latents])`
+            // → rows 0..F are uncond, F..2F are cond. The text embeds must
+            // match that block layout. candle's `repeat` TILES the whole
+            // tensor (`cat([self; n])`), so `cat([uncond,cond]).repeat(F)`
+            // would interleave [u,c,u,c,…] and misalign every frame's
+            // conditioning. Replicate each branch across all frames first,
+            // THEN stack: [uncond×F, cond×F].
+            let uncond_rep = uncond.repeat((frames, 1, 1))?;
+            let cond_rep = cond.repeat((frames, 1, 1))?;
+            Tensor::cat(&[&uncond_rep, &cond_rep], 0)?
         } else {
             cond.repeat((frames, 1, 1))?
         };
 
         // ---- scheduler ----
         let mut scheduler =
-            super::scheduler::build(scheduler_kind, &self.cfg, steps)?;
+            super::scheduler::build_animate(scheduler_kind, &self.cfg, steps)?;
         let timesteps = scheduler.timesteps().to_vec();
 
         // ---- latents ----
@@ -925,11 +932,29 @@ impl AnimateDiffSdxlPipeline {
             (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
         ])
         .await?;
-        let vae_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
+        // SDXL's stock VAE overflows F16 → all-black frames on Metal/CUDA
+        // (the classic --no-half-vae issue). Swap in madebyollin's
+        // `sdxl-vae-fp16-fix` retrained drop-in for non-CPU, exactly as
+        // SdCore (t2i) does; CPU keeps the stock VAE at F32.
+        let vae_path = if matches!(device, Device::Cpu) {
+            crate::hf::download::get_first_of(&[
+                (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
+                (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
+            ])
+            .await?
+        } else {
+            const VAE_FIX_REPO: &str = "madebyollin/sdxl-vae-fp16-fix";
+            crate::hf::download::get_first_of(&[
+                (VAE_FIX_REPO, "diffusion_pytorch_model.safetensors"),
+                (VAE_FIX_REPO, "sdxl_vae.safetensors"),
+                (VAE_FIX_REPO, "sdxl.vae.safetensors"),
+            ])
+            .await
+            .context(
+                "downloading the SDXL fp16-fix VAE (madebyollin/sdxl-vae-fp16-fix); \
+                 SDXL's stock VAE produces black frames in F16",
+            )?
+        };
         dl.finish_with_message("✓ SDXL base weights ready");
 
         let build = progress::spinner("Building AnimateDiff SDXL backbone");
@@ -1125,7 +1150,7 @@ impl AnimateDiffSdxlPipeline {
 
         // ---- scheduler ----
         let mut scheduler =
-            super::scheduler::build(scheduler_kind, &self.cfg, steps)?;
+            super::scheduler::build_animate(scheduler_kind, &self.cfg, steps)?;
         let timesteps = scheduler.timesteps().to_vec();
 
         // ---- latents ----
@@ -1474,10 +1499,11 @@ mod tests {
             &[],
             1.0,
             None,
+            "sd15",
         )
         .await
         .expect("load V3 stack");
-        assert_eq!(pipeline.modules.modules.len(), 16);
+        assert_eq!(pipeline.modules.modules.len(), 20);
         assert_eq!(pipeline.max_frames, 32);
         // Tiny inference: 2 frames × 64x64 × 2 steps so it completes
         // in a reasonable wall-clock even on CPU. Just verifies the

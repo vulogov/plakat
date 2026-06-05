@@ -37,19 +37,17 @@
 //! from the stock SD 1.5 UNet.
 
 use anyhow::Result;
-use candle_core::Tensor;
+use candle_core::{D, Tensor};
 use candle_nn::{self as nn, Conv2d, Module, conv2d};
 use candle_transformers::models::stable_diffusion::{
+    attention::{SpatialTransformer, SpatialTransformerConfig},
     embeddings::{TimestepEmbedding, Timesteps},
+    resnet::{ResnetBlock2D, ResnetBlock2DConfig},
     unet_2d::{BlockConfig, UNet2DConditionModelConfig},
-    unet_2d_blocks::{
-        CrossAttnDownBlock2D, CrossAttnDownBlock2DConfig, CrossAttnUpBlock2D,
-        CrossAttnUpBlock2DConfig, DownBlock2D, DownBlock2DConfig, UNetMidBlock2DCrossAttn,
-        UNetMidBlock2DCrossAttnConfig, UpBlock2D, UpBlock2DConfig,
-    },
+    unet_2d_blocks::{UNetMidBlock2DCrossAttn, UNetMidBlock2DCrossAttnConfig},
 };
 
-use super::motion_module::{BlockKind, MotionAdapterModules, apply_block_motion};
+use super::motion_module::{BlockKind, ModuleAddr, MotionAdapterModules};
 
 /// Hard-coded SD 1.5 UNet config. Mirrors candle's
 /// `StableDiffusionConfig::v1_5(...).unet` (which is private — same
@@ -92,18 +90,236 @@ pub fn sd15_unet_config() -> UNet2DConditionModelConfig {
     }
 }
 
-// Same enum trick as sdxl_unet.rs — upstream's UNetDownBlock /
-// UNetUpBlock are pub(crate). Same dispatch.
+// ---------------------------------------------------------------------------
+// Vendored up/down samplers.
+//
+// candle's `Downsample2D` / `Upsample2D` are private to
+// `unet_2d_blocks`, and its composite down/up blocks keep their
+// resnets/attentions private — so to splice a motion module AFTER
+// EACH resnet (the way diffusers AnimateDiff does, not at block
+// boundaries) we must rebuild the blocks ourselves from candle's
+// public `ResnetBlock2D` + `SpatialTransformer` plus these samplers.
+// Both are byte-for-byte copies of candle's private impls (same
+// weight names: `…downsamplers.0.conv` / `…upsamplers.0.conv`).
+// ---------------------------------------------------------------------------
+
 #[derive(Debug)]
-enum UNetDownBlock {
-    Basic(DownBlock2D),
-    CrossAttn(CrossAttnDownBlock2D),
+struct Downsample2D {
+    conv: Conv2d,
+    padding: usize,
+}
+
+impl Downsample2D {
+    fn new(vs: nn::VarBuilder, in_channels: usize, out_channels: usize, padding: usize) -> Result<Self> {
+        let config = nn::Conv2dConfig {
+            stride: 2,
+            padding,
+            ..Default::default()
+        };
+        let conv = conv2d(in_channels, out_channels, 3, config, vs.pp("conv"))?;
+        Ok(Self { conv, padding })
+    }
+
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        if self.padding == 0 {
+            let xs = xs
+                .pad_with_zeros(D::Minus1, 0, 1)?
+                .pad_with_zeros(D::Minus2, 0, 1)?;
+            Ok(self.conv.forward(&xs)?)
+        } else {
+            Ok(self.conv.forward(xs)?)
+        }
+    }
 }
 
 #[derive(Debug)]
-enum UNetUpBlock {
-    Basic(UpBlock2D),
-    CrossAttn(CrossAttnUpBlock2D),
+struct Upsample2D {
+    conv: Conv2d,
+}
+
+impl Upsample2D {
+    fn new(vs: nn::VarBuilder, in_channels: usize, out_channels: usize) -> Result<Self> {
+        let config = nn::Conv2dConfig {
+            padding: 1,
+            ..Default::default()
+        };
+        let conv = conv2d(in_channels, out_channels, 3, config, vs.pp("conv"))?;
+        Ok(Self { conv })
+    }
+
+    fn forward(&self, xs: &Tensor, size: Option<(usize, usize)>) -> Result<Tensor> {
+        let xs = match size {
+            None => {
+                let (_b, _c, h, w) = xs.dims4()?;
+                xs.upsample_nearest2d(2 * h, 2 * w)?
+            }
+            Some((h, w)) => xs.upsample_nearest2d(h, w)?,
+        };
+        Ok(self.conv.forward(&xs)?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Motion-aware down / up blocks.
+//
+// A motion module is looked up by `ModuleAddr { kind, block_idx,
+// layer_idx = resnet index }` and applied immediately after that
+// resnet (+ its spatial attention, for cross-attn blocks). Down
+// blocks save each skip POST-motion (matching diffusers
+// `…DownBlockMotion`); up blocks consume the skips. `num_frames` is
+// threaded into the temporal attention.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct MotionDownBlock {
+    resnets: Vec<ResnetBlock2D>,
+    /// `Some` for cross-attn blocks (one per resnet); `None` for the
+    /// plain down block.
+    attentions: Option<Vec<SpatialTransformer>>,
+    downsampler: Option<Downsample2D>,
+    block_idx: usize,
+}
+
+impl MotionDownBlock {
+    #[allow(clippy::too_many_arguments)]
+    fn forward(
+        &self,
+        xs: &Tensor,
+        temb: Option<&Tensor>,
+        encoder_hidden_states: Option<&Tensor>,
+        motion: Option<&MotionAdapterModules>,
+        num_frames: usize,
+    ) -> Result<(Tensor, Vec<Tensor>)> {
+        let mut xs = xs.clone();
+        let mut output_states = Vec::with_capacity(self.resnets.len() + 1);
+        for (j, resnet) in self.resnets.iter().enumerate() {
+            xs = resnet.forward(&xs, temb)?;
+            if let Some(attns) = &self.attentions {
+                xs = attns[j].forward(&xs, encoder_hidden_states)?;
+            }
+            if let Some(mm) = motion {
+                if let Some(m) = mm.get(ModuleAddr {
+                    kind: BlockKind::DownBlock,
+                    block_idx: self.block_idx,
+                    layer_idx: j,
+                }) {
+                    xs = m.forward(&xs, num_frames)?;
+                }
+            }
+            // Skip connection saved POST-motion.
+            output_states.push(xs.clone());
+        }
+        if let Some(ds) = &self.downsampler {
+            xs = ds.forward(&xs)?;
+            output_states.push(xs.clone());
+        }
+        Ok((xs, output_states))
+    }
+}
+
+#[derive(Debug)]
+struct MotionUpBlock {
+    resnets: Vec<ResnetBlock2D>,
+    attentions: Option<Vec<SpatialTransformer>>,
+    upsampler: Option<Upsample2D>,
+    block_idx: usize,
+}
+
+impl MotionUpBlock {
+    #[allow(clippy::too_many_arguments)]
+    fn forward(
+        &self,
+        xs: &Tensor,
+        res_xs: &[Tensor],
+        temb: Option<&Tensor>,
+        encoder_hidden_states: Option<&Tensor>,
+        upsample_size: Option<(usize, usize)>,
+        motion: Option<&MotionAdapterModules>,
+        num_frames: usize,
+    ) -> Result<Tensor> {
+        let mut xs = xs.clone();
+        for (j, resnet) in self.resnets.iter().enumerate() {
+            xs = Tensor::cat(&[&xs, &res_xs[res_xs.len() - j - 1]], 1)?.contiguous()?;
+            xs = resnet.forward(&xs, temb)?;
+            if let Some(attns) = &self.attentions {
+                xs = attns[j].forward(&xs, encoder_hidden_states)?;
+            }
+            if let Some(mm) = motion {
+                if let Some(m) = mm.get(ModuleAddr {
+                    kind: BlockKind::UpBlock,
+                    block_idx: self.block_idx,
+                    layer_idx: j,
+                }) {
+                    xs = m.forward(&xs, num_frames)?;
+                }
+            }
+        }
+        match &self.upsampler {
+            Some(us) => us.forward(&xs, upsample_size),
+            None => Ok(xs),
+        }
+    }
+}
+
+/// Build the `num_layers` resnets for a down block, mirroring
+/// candle's `DownBlock2D::new` channel math.
+fn build_down_resnets(
+    vs: &nn::VarBuilder,
+    in_channels: usize,
+    out_channels: usize,
+    num_layers: usize,
+    eps: f64,
+    temb_channels: usize,
+) -> Result<Vec<ResnetBlock2D>> {
+    let vs_resnets = vs.pp("resnets");
+    let resnet_cfg = ResnetBlock2DConfig {
+        out_channels: Some(out_channels),
+        temb_channels: Some(temb_channels),
+        eps,
+        output_scale_factor: 1.0,
+        ..Default::default()
+    };
+    (0..num_layers)
+        .map(|i| {
+            let rin = if i == 0 { in_channels } else { out_channels };
+            ResnetBlock2D::new(vs_resnets.pp(i.to_string()), rin, resnet_cfg)
+        })
+        .collect::<candle_core::Result<Vec<_>>>()
+        .map_err(anyhow::Error::from)
+}
+
+/// Build the spatial transformers for a cross-attn block.
+fn build_attentions(
+    vs: &nn::VarBuilder,
+    out_channels: usize,
+    n_heads: usize,
+    transformer_layers_per_block: usize,
+    cross_attention_dim: usize,
+    num_groups: usize,
+    use_flash_attn: bool,
+    num_layers: usize,
+) -> Result<Vec<SpatialTransformer>> {
+    let cfg = SpatialTransformerConfig {
+        depth: transformer_layers_per_block,
+        context_dim: Some(cross_attention_dim),
+        num_groups,
+        sliced_attention_size: None,
+        use_linear_projection: false,
+    };
+    let vs_attn = vs.pp("attentions");
+    (0..num_layers)
+        .map(|i| {
+            SpatialTransformer::new(
+                vs_attn.pp(i.to_string()),
+                out_channels,
+                n_heads,
+                out_channels / n_heads,
+                use_flash_attn,
+                cfg,
+            )
+        })
+        .collect::<candle_core::Result<Vec<_>>>()
+        .map_err(anyhow::Error::from)
 }
 
 /// Vendored SD 1.5 UNet with motion-module splice at block
@@ -114,9 +330,9 @@ pub struct Sd15MotionUNet {
     conv_in: Conv2d,
     time_proj: Timesteps,
     time_embedding: TimestepEmbedding,
-    down_blocks: Vec<UNetDownBlock>,
+    down_blocks: Vec<MotionDownBlock>,
     mid_block: UNetMidBlock2DCrossAttn,
-    up_blocks: Vec<UNetUpBlock>,
+    up_blocks: Vec<MotionUpBlock>,
     conv_norm_out: nn::GroupNorm,
     conv_out: Conv2d,
     config: UNet2DConditionModelConfig,
@@ -157,51 +373,49 @@ impl Sd15MotionUNet {
                     use_cross_attn,
                     attention_head_dim,
                 } = config.blocks[i];
-                let sliced_attention_size = match config.sliced_attention_size {
-                    Some(0) => Some(attention_head_dim / 2),
-                    _ => config.sliced_attention_size,
-                };
                 let in_channels = if i > 0 {
                     config.blocks[i - 1].out_channels
                 } else {
                     b_channels
                 };
-                let db_cfg = DownBlock2DConfig {
-                    num_layers: config.layers_per_block,
-                    resnet_eps: config.norm_eps,
-                    resnet_groups: config.norm_num_groups,
-                    add_downsample: i < n_blocks - 1,
-                    downsample_padding: config.downsample_padding,
-                    ..Default::default()
-                };
-                if let Some(transformer_layers_per_block) = use_cross_attn {
-                    let xa_cfg = CrossAttnDownBlock2DConfig {
-                        downblock: db_cfg,
-                        attn_num_head_channels: attention_head_dim,
-                        cross_attention_dim: config.cross_attention_dim,
-                        sliced_attention_size,
-                        use_linear_projection: config.use_linear_projection,
+                let vs_block = vs_db.pp(i.to_string());
+                let resnets = build_down_resnets(
+                    &vs_block,
+                    in_channels,
+                    out_channels,
+                    config.layers_per_block,
+                    config.norm_eps,
+                    time_embed_dim,
+                )?;
+                let attentions = match use_cross_attn {
+                    Some(transformer_layers_per_block) => Some(build_attentions(
+                        &vs_block,
+                        out_channels,
+                        attention_head_dim,
                         transformer_layers_per_block,
-                    };
-                    let block = CrossAttnDownBlock2D::new(
-                        vs_db.pp(i.to_string()),
-                        in_channels,
-                        out_channels,
-                        Some(time_embed_dim),
+                        config.cross_attention_dim,
+                        config.norm_num_groups,
                         use_flash_attn,
-                        xa_cfg,
-                    )?;
-                    Ok(UNetDownBlock::CrossAttn(block))
-                } else {
-                    let block = DownBlock2D::new(
-                        vs_db.pp(i.to_string()),
-                        in_channels,
+                        config.layers_per_block,
+                    )?),
+                    None => None,
+                };
+                let downsampler = if i < n_blocks - 1 {
+                    Some(Downsample2D::new(
+                        vs_block.pp("downsamplers").pp("0"),
                         out_channels,
-                        Some(time_embed_dim),
-                        db_cfg,
-                    )?;
-                    Ok(UNetDownBlock::Basic(block))
-                }
+                        out_channels,
+                        config.downsample_padding,
+                    )?)
+                } else {
+                    None
+                };
+                Ok(MotionDownBlock {
+                    resnets,
+                    attentions,
+                    downsampler,
+                    block_idx: i,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -235,16 +449,12 @@ impl Sd15MotionUNet {
                     use_cross_attn,
                     attention_head_dim,
                 } = config.blocks[n_blocks - 1 - i];
-                let sliced_attention_size = match config.sliced_attention_size {
-                    Some(0) => Some(attention_head_dim / 2),
-                    _ => config.sliced_attention_size,
-                };
                 let prev_out_channels = if i > 0 {
                     config.blocks[n_blocks - i].out_channels
                 } else {
                     bl_channels
                 };
-                let in_channels = {
+                let up_in_channels = {
                     let index = if i == n_blocks - 1 {
                         0
                     } else {
@@ -252,43 +462,67 @@ impl Sd15MotionUNet {
                     };
                     config.blocks[index].out_channels
                 };
-                let ub_cfg = UpBlock2DConfig {
-                    num_layers: config.layers_per_block + 1,
-                    resnet_eps: config.norm_eps,
-                    resnet_groups: config.norm_num_groups,
-                    add_upsample: i < n_blocks - 1,
+                // Up blocks have `layers_per_block + 1` resnets (3 for
+                // SD 1.5) — and thus 3 motion modules each.
+                let num_layers = config.layers_per_block + 1;
+                let vs_block = vs_ub.pp(i.to_string());
+                let vs_resnets = vs_block.pp("resnets");
+                let resnet_cfg = ResnetBlock2DConfig {
+                    out_channels: Some(out_channels),
+                    temb_channels: Some(time_embed_dim),
+                    eps: config.norm_eps,
+                    output_scale_factor: 1.0,
                     ..Default::default()
                 };
-                if let Some(transformer_layers_per_block) = use_cross_attn {
-                    let xa_cfg = CrossAttnUpBlock2DConfig {
-                        upblock: ub_cfg,
-                        attn_num_head_channels: attention_head_dim,
-                        cross_attention_dim: config.cross_attention_dim,
-                        sliced_attention_size,
-                        use_linear_projection: config.use_linear_projection,
+                // Resnet in-channels mirror candle's `UpBlock2D::new`:
+                // each resnet concatenates a skip connection.
+                let resnets = (0..num_layers)
+                    .map(|j| {
+                        let res_skip_channels = if j == num_layers - 1 {
+                            up_in_channels
+                        } else {
+                            out_channels
+                        };
+                        let resnet_in_channels = if j == 0 {
+                            prev_out_channels
+                        } else {
+                            out_channels
+                        };
+                        ResnetBlock2D::new(
+                            vs_resnets.pp(j.to_string()),
+                            resnet_in_channels + res_skip_channels,
+                            resnet_cfg,
+                        )
+                    })
+                    .collect::<candle_core::Result<Vec<_>>>()?;
+                let attentions = match use_cross_attn {
+                    Some(transformer_layers_per_block) => Some(build_attentions(
+                        &vs_block,
+                        out_channels,
+                        attention_head_dim,
                         transformer_layers_per_block,
-                    };
-                    let block = CrossAttnUpBlock2D::new(
-                        vs_ub.pp(i.to_string()),
-                        in_channels,
-                        prev_out_channels,
-                        out_channels,
-                        Some(time_embed_dim),
+                        config.cross_attention_dim,
+                        config.norm_num_groups,
                         use_flash_attn,
-                        xa_cfg,
-                    )?;
-                    Ok(UNetUpBlock::CrossAttn(block))
-                } else {
-                    let block = UpBlock2D::new(
-                        vs_ub.pp(i.to_string()),
-                        in_channels,
-                        prev_out_channels,
+                        num_layers,
+                    )?),
+                    None => None,
+                };
+                let upsampler = if i < n_blocks - 1 {
+                    Some(Upsample2D::new(
+                        vs_block.pp("upsamplers").pp("0"),
                         out_channels,
-                        Some(time_embed_dim),
-                        ub_cfg,
-                    )?;
-                    Ok(UNetUpBlock::Basic(block))
-                }
+                        out_channels,
+                    )?)
+                } else {
+                    None
+                };
+                Ok(MotionUpBlock {
+                    resnets,
+                    attentions,
+                    upsampler,
+                    block_idx: i,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -409,26 +643,19 @@ impl Sd15MotionUNet {
         // 3. down
         let mut down_block_res_xs = vec![xs.clone()];
         let mut xs = xs;
-        for (block_idx, down_block) in self.down_blocks.iter().enumerate() {
-            let (next_xs, res_xs) = match down_block {
-                UNetDownBlock::Basic(b) => b.forward(&xs, Some(&emb))?,
-                UNetDownBlock::CrossAttn(b) => {
-                    b.forward(&xs, Some(&emb), Some(encoder_hidden_states))?
-                }
-            };
+        for down_block in self.down_blocks.iter() {
+            // Motion is spliced AFTER EACH resnet (+ spatial attn) inside
+            // the block, and each skip is saved post-motion — matching
+            // diffusers' `CrossAttnDownBlockMotion` / `DownBlockMotion`.
+            let (next_xs, res_xs) = down_block.forward(
+                &xs,
+                Some(&emb),
+                Some(encoder_hidden_states),
+                motion_modules,
+                num_frames,
+            )?;
             down_block_res_xs.extend(res_xs);
             xs = next_xs;
-
-            // Motion splice at down-block output.
-            if let Some(mm) = motion_modules {
-                xs = apply_block_motion(
-                    xs,
-                    BlockKind::DownBlock,
-                    block_idx,
-                    mm,
-                    num_frames,
-                )?;
-            }
         }
 
         // v0.27 phase 3: ControlNet down-block residuals are added
@@ -467,52 +694,42 @@ impl Sd15MotionUNet {
         }
 
         // Optional mid-block motion (V1/V2 only; V3 sets
-        // use_motion_mid_block = false).
+        // use_motion_mid_block = false, and the adapter has no mid
+        // modules, so this is skipped for V3).
         if let Some(mm) = motion_modules {
             if mm.config.use_motion_mid_block {
-                xs = apply_block_motion(
-                    xs,
-                    BlockKind::MidBlock,
-                    0,
-                    mm,
-                    num_frames,
-                )?;
+                for j in 0..mm.config.motion_mid_block_layers_per_block {
+                    if let Some(m) = mm.get(ModuleAddr {
+                        kind: BlockKind::MidBlock,
+                        block_idx: 0,
+                        layer_idx: j,
+                    }) {
+                        xs = m.forward(&xs, num_frames)?;
+                    }
+                }
             }
         }
 
         // 5. up
         let mut upsample_size = None;
         for (i, up_block) in self.up_blocks.iter().enumerate() {
-            let n_resnets = match up_block {
-                UNetUpBlock::Basic(b) => b.resnets.len(),
-                UNetUpBlock::CrossAttn(b) => b.upblock.resnets.len(),
-            };
+            let n_resnets = up_block.resnets.len();
             let res_xs = down_block_res_xs.split_off(down_block_res_xs.len() - n_resnets);
             if i < n_blocks - 1 && forward_upsample_size {
                 let (_, _, h, w) = down_block_res_xs.last().unwrap().dims4()?;
                 upsample_size = Some((h, w));
             }
-            xs = match up_block {
-                UNetUpBlock::Basic(b) => b.forward(&xs, &res_xs, Some(&emb), upsample_size)?,
-                UNetUpBlock::CrossAttn(b) => b.forward(
-                    &xs,
-                    &res_xs,
-                    Some(&emb),
-                    upsample_size,
-                    Some(encoder_hidden_states),
-                )?,
-            };
-
-            // Motion splice at up-block output.
-            if let Some(mm) = motion_modules {
-                xs = apply_block_motion(
-                    xs,
-                    BlockKind::UpBlock,
-                    i,
-                    mm,
-                    num_frames,
-                )?;
-            }
+            // Motion is spliced after each resnet(+attn) inside the block
+            // (3 per up block) — matching diffusers `…UpBlockMotion`.
+            xs = up_block.forward(
+                &xs,
+                &res_xs,
+                Some(&emb),
+                Some(encoder_hidden_states),
+                upsample_size,
+                motion_modules,
+                num_frames,
+            )?;
         }
 
         // 6. post-process

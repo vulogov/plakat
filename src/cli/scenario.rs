@@ -5264,6 +5264,7 @@ async fn run_animate_task_inline(
                         &motion_lora_specs,
                         eff.motion_lora_scale,
                         cached_vae,
+                        "sd15",
                     )
                     .await
                 } else {
@@ -5273,6 +5274,7 @@ async fn run_animate_task_inline(
                         &motion_lora_specs,
                         eff.motion_lora_scale,
                         cached_vae,
+                        "sd15",
                     )
                     .await
                 }
