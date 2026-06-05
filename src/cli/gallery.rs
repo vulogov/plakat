@@ -51,14 +51,25 @@ pub async fn run(args: GalleryArgs) -> Result<()> {
     );
     let cols = args.cols.max(1);
 
-    let mut pngs = collect_pngs(&args.dir, args.recursive)
+    let mut media = collect_media(&args.dir, args.recursive)
         .with_context(|| format!("scanning {}", args.dir.display()))?;
+
+    // Animate clips are a directory of `frame-NNNN.png` + `animation.gif`.
+    // Represent each clip by its (animated) GIF and drop the individual
+    // frame PNGs, so the gallery shows one entry per clip, not 8+.
+    let gif_dirs: std::collections::HashSet<PathBuf> = media
+        .iter()
+        .filter(|p| has_ext(p, "gif"))
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect();
+    media.retain(|p| !is_animate_frame(p, &gif_dirs));
+
     anyhow::ensure!(
-        !pngs.is_empty(),
-        "gallery: no .png files found in {}",
+        !media.is_empty(),
+        "gallery: no .png/.gif files found in {}",
         args.dir.display()
     );
-    pngs.sort_by(|a, b| natural_cmp(&file_name(a), &file_name(b)));
+    media.sort_by(|a, b| natural_cmp(&sort_name(a), &sort_name(b)));
 
     let out = args
         .out
@@ -67,7 +78,7 @@ pub async fn run(args: GalleryArgs) -> Result<()> {
     let title = args.title.clone().unwrap_or_else(|| "plakat gallery".to_string());
 
     let entries: Vec<(PathBuf, Option<GenerationMetadata>)> =
-        pngs.iter().map(|p| (p.clone(), read_meta(p))).collect();
+        media.iter().map(|p| (p.clone(), read_meta(p))).collect();
 
     let md = render_markdown(&title, &out, &entries, cols);
     std::fs::write(&out, md).with_context(|| format!("writing {}", out.display()))?;
@@ -85,36 +96,93 @@ pub async fn run(args: GalleryArgs) -> Result<()> {
 /// Read a PNG's generation metadata: JSON sidecar first (full,
 /// structured), then the embedded A1111 `parameters` chunk (best-effort
 /// — works on Civitai / A1111 outputs too). `None` if neither is present.
-fn read_meta(png: &Path) -> Option<GenerationMetadata> {
-    let sidecar = png.with_extension("json");
-    if let Ok(s) = std::fs::read_to_string(&sidecar) {
-        if let Ok(m) = serde_json::from_str::<GenerationMetadata>(&s) {
+fn read_meta(media: &Path) -> Option<GenerationMetadata> {
+    // A GIF (animate clip) carries no embedded metadata — read the first
+    // frame's JSON sidecar from the same directory.
+    if has_ext(media, "gif") {
+        let dir = media.parent()?;
+        if let Some(m) = parse_json_meta(&dir.join("frame-0000.json")) {
             return Some(m);
         }
+        // Fall back to the lexicographically-first frame-*.json.
+        let mut frames: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("frame-") && n.ends_with(".json"))
+            })
+            .collect();
+        frames.sort_by(|a, b| natural_cmp(&file_name(a), &file_name(b)));
+        return frames.first().and_then(|p| parse_json_meta(p));
     }
-    match crate::imaging::io::read_parameters_chunk(png) {
+    let sidecar = media.with_extension("json");
+    if let Some(m) = parse_json_meta(&sidecar) {
+        return Some(m);
+    }
+    match crate::imaging::io::read_parameters_chunk(media) {
         Ok(Some(text)) => crate::cli::clone::parse_a1111(&text),
         _ => None,
     }
 }
 
-fn collect_pngs(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
+fn parse_json_meta(path: &Path) -> Option<GenerationMetadata> {
+    let s = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<GenerationMetadata>(&s).ok()
+}
+
+fn collect_media(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
             if recursive {
-                out.extend(collect_pngs(&path, true)?);
+                out.extend(collect_media(&path, true)?);
             }
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
-        {
+        } else if has_ext(&path, "png") || has_ext(&path, "gif") {
             out.push(path);
         }
     }
     Ok(out)
+}
+
+fn has_ext(p: &Path, ext: &str) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// A `frame-NNNN.png` whose directory also holds an animate GIF — i.e. a
+/// single frame of a clip the GIF already represents. Dropped from the
+/// index so each clip shows once.
+fn is_animate_frame(p: &Path, gif_dirs: &std::collections::HashSet<PathBuf>) -> bool {
+    has_ext(p, "png")
+        && p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("frame-"))
+        && p.parent().is_some_and(|d| gif_dirs.contains(d))
+}
+
+/// Display name for an entry: the clip (directory) name for an
+/// `animation.gif`, else the file name.
+fn clip_name(p: &Path) -> String {
+    if has_ext(p, "gif") && file_name(p) == "animation.gif" {
+        if let Some(dir) = p.parent().and_then(|d| d.file_name()) {
+            return dir.to_string_lossy().into_owned();
+        }
+    }
+    file_name(p)
+}
+
+/// Sort key: GIF clips sort by their directory name (all share the file
+/// name `animation.gif`); PNGs by file name (unchanged).
+fn sort_name(p: &Path) -> String {
+    if has_ext(p, "gif") {
+        clip_name(p)
+    } else {
+        file_name(p)
+    }
 }
 
 fn render_markdown(
@@ -156,7 +224,7 @@ fn render_markdown(
     s.push_str("## Images\n\n");
     for (p, m) in entries {
         let rel = rel_path(p, base);
-        let name = file_name(p);
+        let name = clip_name(p);
         s.push_str(&format!("### {name}\n\n"));
         s.push_str(&format!("![{name}]({rel})\n\n"));
         match m {
@@ -185,6 +253,9 @@ fn settings_line(m: &GenerationMetadata) -> String {
             parts.push(mode.to_string());
         }
     }
+    if let Some(frames) = animate_frames(m) {
+        parts.push(format!("{frames} frames"));
+    }
     if let Some(st) = m.strength {
         parts.push(format!("strength {}", fmt_f(st as f64)));
     }
@@ -205,6 +276,16 @@ fn settings_line(m: &GenerationMetadata) -> String {
     parts.push(format!("CFG {}", fmt_f(m.guidance)));
     parts.push(format!("seed {}", m.seed));
     parts.join(" · ")
+}
+
+/// Total frame count of an AnimateDiff clip, parsed from the per-frame
+/// `extras` marker `("AnimateDiff frame", "i/N")`.
+fn animate_frames(m: &GenerationMetadata) -> Option<usize> {
+    m.extras
+        .iter()
+        .find(|(k, _)| k == "AnimateDiff frame")
+        .and_then(|(_, v)| v.split('/').nth(1))
+        .and_then(|s| s.trim().parse::<usize>().ok())
 }
 
 fn control_summary(m: &GenerationMetadata) -> Option<String> {
@@ -387,5 +468,54 @@ mod tests {
     #[test]
     fn escape_attr_handles_quotes_and_angles() {
         assert_eq!(escape_attr(r#"a "b" <c>"#), "a &quot;b&quot; &lt;c&gt;");
+    }
+
+    #[test]
+    fn animate_frames_parses_extras_marker() {
+        let mut m = meta();
+        m.extras = vec![("AnimateDiff frame".into(), "0/8".into())];
+        assert_eq!(animate_frames(&m), Some(8));
+        // settings_line surfaces it.
+        m.mode = Some("animatediff".into());
+        let line = settings_line(&m);
+        assert!(line.contains("animatediff"));
+        assert!(line.contains("8 frames"));
+    }
+
+    #[test]
+    fn animate_frames_none_on_plain_t2i() {
+        assert_eq!(animate_frames(&meta()), None);
+    }
+
+    #[test]
+    fn is_animate_frame_drops_clip_frames_only() {
+        use std::collections::HashSet;
+        let gif_dirs: HashSet<PathBuf> =
+            [PathBuf::from("/c/animate/fox")].into_iter().collect();
+        // A frame PNG inside a clip dir is dropped...
+        assert!(is_animate_frame(
+            Path::new("/c/animate/fox/frame-0003.png"),
+            &gif_dirs
+        ));
+        // ...but the GIF itself and a normal PNG are kept.
+        assert!(!is_animate_frame(
+            Path::new("/c/animate/fox/animation.gif"),
+            &gif_dirs
+        ));
+        assert!(!is_animate_frame(
+            Path::new("/c/sdxl/landscape.png"),
+            &gif_dirs
+        ));
+        // A frame-named PNG with NO gif sibling stays.
+        assert!(!is_animate_frame(
+            Path::new("/c/other/frame-0000.png"),
+            &gif_dirs
+        ));
+    }
+
+    #[test]
+    fn clip_name_uses_dir_for_animation_gif() {
+        assert_eq!(clip_name(Path::new("/c/animate/fox_snow/animation.gif")), "fox_snow");
+        assert_eq!(clip_name(Path::new("/c/sdxl/landscape.png")), "landscape.png");
     }
 }
