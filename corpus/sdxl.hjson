@@ -1,0 +1,79 @@
+{
+    # ===================================================================
+    # plakat proof corpus — SDXL
+    # ===================================================================
+    #   plakat scenario corpus/sdxl.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    # Ungated, ~7 GB. Validate: plakat scenario corpus/sdxl.hjson --dry-run
+    # ===================================================================
+
+    model: sdxl
+    device: metal
+    size: 1024x1024
+    steps: 28
+    guidance: 7.0
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/sdxl
+
+    negative: blurry, low quality, watermark, text, signature, deformed
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: sdxl_landscape
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a dramatic coastal cliff at sunset, crashing waves, seabirds, cinematic photorealistic
+        }
+        {
+            name: sdxl_portrait
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a studio portrait of a young woman with freckles and curly red hair, soft rim light, 85mm, photorealistic
+        }
+        {
+            name: sdxl_fantasy
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a glowing mushroom forest at night, bioluminescent spores, a small stone bridge, fantasy concept art
+        }
+        {
+            # ControlNet (canny, auto-annotated): structure follows the
+            # winter-cottage edge map; SDXL restyles it.
+            name: sdxl_controlnet_canny
+            scene: plain
+            weather: any
+            enhance: false
+            # SDXL UNet + SDXL ControlNet + dual encoders + VAE at 1024²
+            # OOM-kills on memory-constrained Metal. Render this CN task
+            # at 768² to fit (roughly halves activation + residual memory).
+            size: 768x768
+            prompt: a stone cottage in a blooming spring garden, photorealistic
+            control:
+            {
+                kind: canny
+                auto-from: gallery/3.png
+            }
+        }
+    ]
+}

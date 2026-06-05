@@ -1,0 +1,12 @@
+{
+  "prompt": "a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "stable-cascade",
+  "seed": 45,
+  "steps": 30,
+  "guidance": 4.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.43.0"
+}

@@ -1,0 +1,12 @@
+{
+  "prompt": "a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "pixart",
+  "seed": 44,
+  "steps": 20,
+  "guidance": 4.5,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.43.0"
+}

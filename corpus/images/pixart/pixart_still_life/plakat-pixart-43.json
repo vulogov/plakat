@@ -1,0 +1,12 @@
+{
+  "prompt": "a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "pixart",
+  "seed": 43,
+  "steps": 20,
+  "guidance": 4.5,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.43.0"
+}

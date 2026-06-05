@@ -1,0 +1,12 @@
+{
+  "prompt": "an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor",
+  "negative": "blurry, low quality, watermark, text, signature",
+  "model": "stable-cascade",
+  "seed": 44,
+  "steps": 30,
+  "guidance": 4.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.43.0"
+}

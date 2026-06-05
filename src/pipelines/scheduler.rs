@@ -10,7 +10,7 @@ use candle_transformers::models::stable_diffusion::{
     StableDiffusionConfig,
     ddim::DDIMSchedulerConfig,
     euler_ancestral_discrete::EulerAncestralDiscreteSchedulerConfig,
-    schedulers::{PredictionType, Scheduler, SchedulerConfig},
+    schedulers::{BetaSchedule, PredictionType, Scheduler, SchedulerConfig},
     uni_pc::{
         CorrectorConfiguration, ExponentialSigmaSchedule, KarrasSigmaSchedule, SigmaSchedule,
         UniPCSchedulerConfig,
@@ -166,4 +166,51 @@ pub fn build(
         )
         .build(steps)?,
     })
+}
+
+/// AnimateDiff scheduler. The motion adapters were fine-tuned on the
+/// **linear** beta schedule, NOT SD's default `scaled_linear`. Sampling
+/// a motion model with scaled_linear mismatches the noise schedule the
+/// motion modules were trained on and corrupts the frames (the spatial
+/// path alone is fine — it's the motion modules that are schedule-
+/// sensitive). So the Default kind maps to a linear-beta DDIM here;
+/// explicit scheduler choices pass through unchanged.
+pub fn build_animate(
+    kind: SchedulerKind,
+    cfg: &StableDiffusionConfig,
+    steps: usize,
+) -> Result<Box<dyn Scheduler>> {
+    match kind {
+        SchedulerKind::Default => Ok(DDIMSchedulerConfig {
+            beta_schedule: BetaSchedule::Linear,
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+        .build(steps)?),
+        other => build(other, cfg, steps),
+    }
+}
+
+/// PixArt scheduler. PixArt-α/Σ train with the IDDPM **linear** beta
+/// schedule `beta_start=0.0001, beta_end=0.02` — NOT SD's `scaled_linear`
+/// (0.00085..0.012). Sampling the DiT on the SD schedule mismatches its
+/// training noise levels and the sampler fails to denoise (pure noise
+/// out, even with finite latents). Default maps to a DDIM with PixArt's
+/// betas; explicit scheduler choices pass through unchanged.
+pub fn build_pixart(
+    kind: SchedulerKind,
+    cfg: &StableDiffusionConfig,
+    steps: usize,
+) -> Result<Box<dyn Scheduler>> {
+    match kind {
+        SchedulerKind::Default => Ok(DDIMSchedulerConfig {
+            beta_start: 0.0001,
+            beta_end: 0.02,
+            beta_schedule: BetaSchedule::Linear,
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+        .build(steps)?),
+        other => build(other, cfg, steps),
+    }
 }

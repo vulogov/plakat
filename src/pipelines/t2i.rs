@@ -1834,9 +1834,22 @@ fn clip_skip_forward(
     clip_skip: usize,
 ) -> Result<Tensor> {
     let until_layer = clip_skip_to_until_layer(clip_skip);
-    let (_final, target) =
+    let (final_ln, intermediate) =
         encoder.forward_until_encoder_layer(ids, usize::MAX, until_layer)?;
-    Ok(target)
+    // v0.43 regression fix: `clip_skip == 1` (the default) must return
+    // the last hidden state WITH the final layer norm — byte-identical
+    // to the plain `forward()`. Since v0.16 (`a6d52dc`) this returned
+    // the PRE-final-layer-norm `intermediate`, so the default fed the
+    // UNet un-normalized text embeddings (wrong scale) → cross-attention
+    // blew up → pure noise on every SD-family generation, on every
+    // backend. (Cascade uses a separate CLIP-G path, so it was
+    // unaffected.) `clip_skip > 1` takes the earlier layer's hidden
+    // state (pre-LN), the diffusers / A1111 penultimate convention.
+    if clip_skip <= 1 {
+        Ok(final_ln)
+    } else {
+        Ok(intermediate)
+    }
 }
 
 /// Map user-facing `--clip-skip N` to candle's

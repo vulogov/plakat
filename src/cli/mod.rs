@@ -8,6 +8,7 @@ pub mod civitai;
 pub mod clone;
 pub mod doctor;
 pub mod embedding;
+pub mod gallery;
 pub mod generate;
 pub mod img2img;
 pub mod init;
@@ -127,6 +128,12 @@ pub enum Command {
     /// `img2img` / `portrait` / `upscale` use. See
     /// `Documentation/RFC_v0.21_BUND_SCRIPTING.md` for the design.
     Run(run::RunArgs),
+    /// v0.43: build a Markdown gallery index from a directory of
+    /// plakat-generated PNGs. Reads each image's embedded generation
+    /// metadata (JSON sidecar, else the A1111 `parameters` chunk) and
+    /// emits a thumbnail grid + per-image prompt/settings. The
+    /// reproducible companion to the `gallery/` proof corpus.
+    Gallery(gallery::GalleryArgs),
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -182,5 +189,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             run::run(args, device).await
         }
+        Command::Gallery(args) => gallery::run(args).await,
     }
 }
