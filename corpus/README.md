@@ -4,6 +4,9 @@ A reproducible, self-documenting body of images demonstrating that
 plakat's feature surface actually works end to end — and the tools to
 regenerate and index it.
 
+🖼️ **[Browse the rendered gallery → `GALLERY.md`](GALLERY.md)** — every
+image with its embedded recipe (AnimateDiff clips as animated GIFs).
+
 Two kinds of files live here:
 
 - **Driver definitions** (committed): `*.hjson` scenarios + `*.sh` /
