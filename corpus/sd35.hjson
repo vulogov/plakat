@@ -1,0 +1,70 @@
+{
+    # ===================================================================
+    # plakat proof corpus — Stable Diffusion 3.5 Medium (MMDiT)
+    # ===================================================================
+    #   plakat scenario corpus/sd35.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    #
+    # GATED MODEL: stabilityai/stable-diffusion-3.5-medium requires
+    # accepting the license on Hugging Face and a logged-in token
+    # (HF_TOKEN / `huggingface-cli login`) before the first run.
+    #
+    # 2.5B-param MMDiT with dual-attention blocks (0-12) + QK-norm, a
+    # 16-channel VAE, and a rectified-flow sampler. BF16-native: ~16 GB,
+    # fits a 24 GB Apple-Silicon Mac on Metal — the strongest open model
+    # plakat can GPU-accelerate there.
+    # Validate without rendering: plakat scenario corpus/sd35.hjson --dry-run
+    # ===================================================================
+
+    model: sd35-medium
+    device: metal
+    size: 1024x1024
+    steps: 28
+    guidance: 4.5
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/sd35
+
+    negative: blurry, low quality, watermark, deformed
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: sd35_still_life
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a still life with fruit and a ceramic jug, oil painting, warm light, detailed brushwork
+        }
+        {
+            name: sd35_portrait
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a close-up portrait of an elderly fisherman with a weathered face, soft window light, photorealistic, fine detail
+        }
+        {
+            name: sd35_text
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a cozy corner bakery storefront at golden hour, a hanging wooden sign that reads "FRESH BREAD", warm photographic style
+        }
+    ]
+}

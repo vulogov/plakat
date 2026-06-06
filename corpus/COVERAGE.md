@@ -14,7 +14,7 @@ committed under `images/`.
 | SDXL | `sdxl.hjson` | ✅ | ⬜ | ungated, ~7 GB; incl. canny CN |
 | PixArt-Σ | `pixart.hjson` | ✅ | ⬜ | ungated |
 | Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
-| SD3 / 3.5 | `sd3.hjson` | ⬜ | ⬜ | ⚠️ gated |
+| SD3.5 Medium | `sd35.hjson` | ✅ | ✅ | ⚠️ gated; BF16-native ~16 GB Metal; strong text |
 
 ## Conditioning & adapters
 
