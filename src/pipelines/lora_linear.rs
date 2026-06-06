@@ -42,7 +42,7 @@
 //! 7b-5 (MMDiT), 7b-6 (SD UNet), and 7b-7 (scenario dispatch).
 
 use anyhow::Result;
-use candle_core::{DType, Device, Module, Tensor};
+use candle_core::{DType, Device, Module, Tensor, Var};
 use candle_nn as nn;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -105,10 +105,11 @@ pub struct LoraLinear {
     /// future 7b-2+ subphases).
     slots: Arc<RwLock<Vec<LoraSlot>>>,
     /// Optional **trainable** LoRA adapter for `plakat style train`.
-    /// `(A, B, scale)` where A/B are the `Tensor`s of trainable `Var`s
-    /// (so backprop reaches the originals). `None` for every inference
-    /// path → forward is byte-identical to the frozen-slot behaviour.
-    train: Arc<RwLock<Option<(Tensor, Tensor, f64)>>>,
+    /// `(A, B, scale)` where A/B are trainable `Var`s — `as_tensor()` is
+    /// read fresh each forward so optimizer updates are seen, and the
+    /// grad routes to the `Var` the optimizer holds (same `Arc`). `None`
+    /// for every inference path → byte-identical to frozen-slot forward.
+    train: Arc<RwLock<Option<(Var, Var, f64)>>>,
 }
 
 impl LoraLinear {
@@ -127,10 +128,10 @@ impl LoraLinear {
     }
 
     /// Install a **trainable** LoRA adapter (`plakat style train`). `a`/`b`
-    /// must be the `Tensor`s of trainable `Var`s — `a: (rank, in_dim)`,
-    /// `b: (out_dim, rank)` — so gradients flow back to the `Var`s the
-    /// caller holds for the optimizer. Replaces any prior train adapter.
-    pub fn set_train_adapter(&self, a: Tensor, b: Tensor, scale: f64) {
+    /// are trainable `Var`s — `a: (rank, in_dim)`, `b: (out_dim, rank)` —
+    /// `Clone`d in (cheap `Arc`), so the optimizer holding the same `Var`s
+    /// drives this forward. Replaces any prior train adapter.
+    pub fn set_train_adapter(&self, a: Var, b: Var, scale: f64) {
         *self.train.write().expect("LoraLinear train poisoned") = Some((a, b, scale));
     }
 
@@ -234,8 +235,8 @@ impl Module for LoraLinear {
             .map_err(|_| candle_core::Error::Msg("LoraLinear train poisoned".into()))?
             .as_ref()
         {
-            let lo = x.broadcast_matmul(&a.t()?)?;
-            let delta = lo.broadcast_matmul(&b.t()?)?;
+            let lo = x.broadcast_matmul(&a.as_tensor().t()?)?;
+            let delta = lo.broadcast_matmul(&b.as_tensor().t()?)?;
             y = y.broadcast_add(&(delta * *scale)?)?;
         }
         Ok(y)
