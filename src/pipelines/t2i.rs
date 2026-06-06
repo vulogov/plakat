@@ -353,9 +353,10 @@ impl Variant {
                 return Self::Sd35Large;
             }
             // Pick the SD3.x sub-version: 3.5 ships everything except
-            // the original 3-medium. Match "3.5" or "3-5" (HF repos
-            // use the dash form: `stable-diffusion-3.5-medium`).
-            if m.contains("3.5") || m.contains("3-5") {
+            // the original 3-medium. Match the dotted/dashed repo form
+            // (`stable-diffusion-3.5-medium`) AND the compact alias form
+            // (`sd35-medium`, which contains neither "3.5" nor "3-5").
+            if m.contains("3.5") || m.contains("3-5") || m.contains("sd35") {
                 return Self::Sd35Medium;
             }
             // Original SD3-medium (no `.5` in the name).

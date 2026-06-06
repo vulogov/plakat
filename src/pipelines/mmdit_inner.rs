@@ -188,6 +188,11 @@ pub struct TimestepEmbedder {
     mlp_0: LoraLinear,
     mlp_2: LoraLinear,
     frequency_embedding_size: usize,
+    // The model dtype (BF16 on Metal/CUDA for SD3, F32 on CPU). The
+    // sinusoidal embedding must match the MLP weight dtype — hardcoding
+    // F16 mismatches BF16 weights (this only surfaced once SD3 actually
+    // loaded and ran).
+    dtype: DType,
 }
 
 impl TimestepEmbedder {
@@ -197,6 +202,7 @@ impl TimestepEmbedder {
         vb: nn::VarBuilder,
         registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
+        let dtype = vb.dtype();
         let mlp_0 = wrap_linear(
             frequency_embedding_size,
             hidden_size,
@@ -208,10 +214,11 @@ impl TimestepEmbedder {
             mlp_0,
             mlp_2,
             frequency_embedding_size,
+            dtype,
         })
     }
 
-    fn timestep_embedding(t: &Tensor, dim: usize, max_period: f64) -> Result<Tensor> {
+    fn timestep_embedding(t: &Tensor, dim: usize, max_period: f64, dtype: DType) -> Result<Tensor> {
         if dim % 2 != 0 {
             bail!("Embedding dimension must be even")
         }
@@ -232,13 +239,14 @@ impl TimestepEmbedder {
             .to_dtype(DType::F32)?
             .matmul(&freqs.unsqueeze(0)?)?;
         let embedding = Tensor::cat(&[args.cos()?, args.sin()?], 1)?;
-        embedding.to_dtype(DType::F16)
+        embedding.to_dtype(dtype)
     }
 }
 
 impl Module for TimestepEmbedder {
     fn forward(&self, t: &Tensor) -> Result<Tensor> {
-        let t_freq = Self::timestep_embedding(t, self.frequency_embedding_size, 10000.0)?;
+        let t_freq =
+            Self::timestep_embedding(t, self.frequency_embedding_size, 10000.0, self.dtype)?;
         // Manual mlp.0 → SiLU → mlp.2 chain (replaces nn::Sequential).
         t_freq.apply(&self.mlp_0)?.silu()?.apply(&self.mlp_2)
     }
