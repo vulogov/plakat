@@ -31,7 +31,7 @@ committed under `images/`.
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
-| img2img (Cascade `--faithful`) | `img2img.sh` | ⬜ | ⬜ | CLI subcommand |
+| img2img (style transfer, SDXL) | `img2img.sh` | ✅ | ✅ | prompt-steered medium restyle; no LoRA/download |
 | Inpaint (masked) | `img2img.sh` | ⬜ | ⬜ | `--mask` |
 | Outpaint | `outpaint.sh` | ⬜ | ⬜ | `plakat outpaint` |
 | Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |

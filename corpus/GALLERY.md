@@ -1,6 +1,6 @@
 # plakat gallery
 
-25 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+28 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -31,6 +31,11 @@
   <tr>
     <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
     <td width="33%"><img src="images/cascade/cascade_controlnet_canny/plakat-cascade-46.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
+    <td width="33%"><img src="images/img2img/forest_inkwash/plakat-img2img-42.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
+    <td width="33%"><img src="images/img2img/coast_oil/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
   </tr>
   <tr>
@@ -183,6 +188,24 @@ Negative: `blurry, low quality, watermark, text, signature`
 Negative: `blurry, low quality, watermark, text, signature`
 
 `stable-cascade` · ControlNet: canny · 1024×1024 · 30 steps · CFG 4 · seed 46
+
+### plakat-img2img-42.png
+
+![plakat-img2img-42.png](images/img2img/forest_inkwash/plakat-img2img-42.png)
+
+_(no embedded metadata)_
+
+### plakat-img2img-42.png
+
+![plakat-img2img-42.png](images/img2img/portrait_watercolor/plakat-img2img-42.png)
+
+_(no embedded metadata)_
+
+### plakat-img2img-42.png
+
+![plakat-img2img-42.png](images/img2img/coast_oil/plakat-img2img-42.png)
+
+_(no embedded metadata)_
 
 ### plakat-pixart-42.png
 
