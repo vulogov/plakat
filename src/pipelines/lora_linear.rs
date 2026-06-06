@@ -104,6 +104,11 @@ pub struct LoraLinear {
     /// gives external code a handle for keyed registries (see
     /// future 7b-2+ subphases).
     slots: Arc<RwLock<Vec<LoraSlot>>>,
+    /// Optional **trainable** LoRA adapter for `plakat style train`.
+    /// `(A, B, scale)` where A/B are the `Tensor`s of trainable `Var`s
+    /// (so backprop reaches the originals). `None` for every inference
+    /// path → forward is byte-identical to the frozen-slot behaviour.
+    train: Arc<RwLock<Option<(Tensor, Tensor, f64)>>>,
 }
 
 impl LoraLinear {
@@ -117,7 +122,26 @@ impl LoraLinear {
             out_dim,
             in_dim,
             slots: Arc::new(RwLock::new(Vec::new())),
+            train: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Install a **trainable** LoRA adapter (`plakat style train`). `a`/`b`
+    /// must be the `Tensor`s of trainable `Var`s — `a: (rank, in_dim)`,
+    /// `b: (out_dim, rank)` — so gradients flow back to the `Var`s the
+    /// caller holds for the optimizer. Replaces any prior train adapter.
+    pub fn set_train_adapter(&self, a: Tensor, b: Tensor, scale: f64) {
+        *self.train.write().expect("LoraLinear train poisoned") = Some((a, b, scale));
+    }
+
+    /// Drop the trainable adapter (forward reverts to base + frozen slots).
+    pub fn clear_train_adapter(&self) {
+        *self.train.write().expect("LoraLinear train poisoned") = None;
+    }
+
+    /// Whether a trainable adapter is installed.
+    pub fn has_train_adapter(&self) -> bool {
+        self.train.read().expect("LoraLinear train poisoned").is_some()
     }
 
     /// Hand out an `Arc` handle to the shared LoRA stack. Used by the
@@ -200,6 +224,19 @@ impl Module for LoraLinear {
             let delta = lo.broadcast_matmul(&slot.b.t()?)?;
             let delta = (delta * slot.scale as f64)?;
             y = y.broadcast_add(&delta)?;
+        }
+        // Trainable adapter (`plakat style train`). Same low-rank math, but
+        // A/B are Var-backed so this delta carries gradients. Absent on
+        // every inference path → no effect.
+        if let Some((a, b, scale)) = self
+            .train
+            .read()
+            .map_err(|_| candle_core::Error::Msg("LoraLinear train poisoned".into()))?
+            .as_ref()
+        {
+            let lo = x.broadcast_matmul(&a.t()?)?;
+            let delta = lo.broadcast_matmul(&b.t()?)?;
+            y = y.broadcast_add(&(delta * *scale)?)?;
         }
         Ok(y)
     }
