@@ -1,6 +1,6 @@
 # plakat gallery
 
-28 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+33 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -41,14 +41,21 @@
   <tr>
     <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
     <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
-    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
+    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
-  </tr>
-  <tr>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
   </tr>
 </table>
@@ -236,6 +243,36 @@ Negative: `blurry, low quality, watermark, text, signature`
 Negative: `blurry, low quality, watermark, text, signature`
 
 `pixart` · 1024×1024 · 20 steps · CFG 4.5 · seed 44
+
+### plakat-portrait-42.png
+
+![plakat-portrait-42.png](images/portrait/astronaut/plakat-portrait-42.png)
+
+_(no embedded metadata)_
+
+### plakat-portrait-42.png
+
+![plakat-portrait-42.png](images/portrait/cartographer/plakat-portrait-42.png)
+
+_(no embedded metadata)_
+
+### plakat-portrait-42.png
+
+![plakat-portrait-42.png](images/portrait/blacksmith/plakat-portrait-42.png)
+
+_(no embedded metadata)_
+
+### plakat-portrait-42.png
+
+![plakat-portrait-42.png](images/portrait/sage_scholar/plakat-portrait-42.png)
+
+_(no embedded metadata)_
+
+### plakat-portrait-43.png
+
+![plakat-portrait-43.png](images/portrait/sage_captain/plakat-portrait-43.png)
+
+_(no embedded metadata)_
 
 ### plakat-sd3-denoise-42.png
 
