@@ -84,5 +84,38 @@ fn main() -> Result<()> {
         x.matmul(w.as_tensor())?.silu()?.sqr()?.mean_all()?.backward()?;
         Ok(())
     })());
+
+    // T5: the real thing — a LoraLinear's trainable adapter learns through
+    // set_train_adapter + the optimizer (grad must route to the Vars).
+    {
+        use candle_core::Module;
+        use plakat::pipelines::lora_linear::LoraLinear;
+        let (in_d, out_d, rank) = (32usize, 32usize, 4usize);
+        let base = candle_nn::Linear::new(Tensor::randn(0f32, 0.1f32, (out_d, in_d), &dev)?, None);
+        let ll = LoraLinear::from_linear(base)?;
+        let a = vr((rank, in_d), &dev)?;
+        let b = vr((out_d, rank), &dev)?;
+        ll.set_train_adapter(a.clone(), b.clone(), 1.0);
+        let mut opt = AdamW::new(
+            vec![a.clone(), b.clone()],
+            ParamsAdamW { lr: 5e-2, ..Default::default() },
+        )?;
+        let x = Tensor::randn(0f32, 1f32, (16, in_d), &dev)?;
+        let target = Tensor::randn(0f32, 1f32, (16, out_d), &dev)?;
+        let (mut f, mut l) = (0f32, 0f32);
+        for i in 0..80 {
+            let y = ll.forward(&x)?;
+            let loss = (&y - &target)?.sqr()?.mean_all()?;
+            l = loss.to_scalar::<f32>()?;
+            if i == 0 {
+                f = l;
+            }
+            opt.step(&loss.backward()?)?;
+        }
+        println!(
+            "\nT5 LoraLinear adapter train: loss {f:.4} → {l:.4}  [{}]",
+            if l < f && l.is_finite() { "LEARNS ✓" } else { "✗" }
+        );
+    }
     Ok(())
 }
