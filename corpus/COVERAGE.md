@@ -41,6 +41,7 @@ committed under `images/`.
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | Scenarios (HJSON batch) | every `*.hjson` | ✅ | ⬜ | the corpus is itself the proof |
+| Scene × weather axes | `weather-scene.hjson` | ✅ | ✅ | one area (prompt-header) re-lit + re-weathered across both axes |
 | Bund scripting | `script.bund` | ⬜ | ⬜ | `plakat run` |
 | Gallery generator | `plakat gallery` | ✅ | n/a | builds this corpus's index |
 
