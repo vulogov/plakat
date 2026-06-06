@@ -1,6 +1,6 @@
 # plakat gallery
 
-33 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+38 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -10,51 +10,60 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/animate/ocean_waves/animation.gif" alt="ocean waves crashing on a rocky shore at sunset, cinematic, golden light"></td>
+    <td width="33%"><img src="images/weather-scene/day_clear/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_landscape/plakat-42.png" alt=""></td>
-    <td width="33%"><img src="images/sdxl/sdxl_landscape/plakat-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sdxl/sdxl_landscape/plakat-42.png" alt=""></td>
+    <td width="33%"><img src="images/weather-scene/day_storm/plakat-43.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_portrait/plakat-43.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/sdxl/sdxl_portrait/plakat-43.png" alt=""></td>
+    <td width="33%"><img src="images/weather-scene/day_fog/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_still_life/plakat-44.png" alt=""></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/sdxl/sdxl_fantasy/plakat-44.png" alt=""></td>
+    <td width="33%"><img src="images/weather-scene/dusk_clear/plakat-45.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_controlnet_canny/plakat-45.png" alt=""></td>
-    <td width="33%"><img src="images/sdxl/sdxl_controlnet_canny/plakat-45.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sdxl/sdxl_controlnet_canny/plakat-45.png" alt=""></td>
+    <td width="33%"><img src="images/weather-scene/night_clear/plakat-46.png" alt=""></td>
     <td width="33%"><img src="images/cascade/cascade_landscape/plakat-cascade-42.png" alt="a serene mountain lake at golden sunrise, snow-capped peak behind, autumn forest on the shore, photorealistic"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/cascade/cascade_portrait_oil/plakat-cascade-43.png" alt="a portrait of a weathered fisherman in his sixties, kind eyes, knitted sweater, soft window light, oil paint style"></td>
     <td width="33%"><img src="images/cascade/cascade_watercolour/plakat-cascade-44.png" alt="an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor"></td>
+    <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
     <td width="33%"><img src="images/cascade/cascade_controlnet_canny/plakat-cascade-46.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
     <td width="33%"><img src="images/img2img/forest_inkwash/plakat-img2img-42.png" alt=""></td>
+    <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/img2img/coast_oil/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
+    <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
     <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
     <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
+    <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
   </tr>
@@ -100,6 +109,12 @@ Negative: `bad quality, worse quality, blurry, low resolution`
 
 ### plakat-42.png
 
+![plakat-42.png](images/weather-scene/day_clear/plakat-42.png)
+
+_(no embedded metadata)_
+
+### plakat-42.png
+
 ![plakat-42.png](images/sd15/sd15_landscape/plakat-42.png)
 
 _(no embedded metadata)_
@@ -107,6 +122,12 @@ _(no embedded metadata)_
 ### plakat-42.png
 
 ![plakat-42.png](images/sdxl/sdxl_landscape/plakat-42.png)
+
+_(no embedded metadata)_
+
+### plakat-43.png
+
+![plakat-43.png](images/weather-scene/day_storm/plakat-43.png)
 
 _(no embedded metadata)_
 
@@ -124,6 +145,12 @@ _(no embedded metadata)_
 
 ### plakat-44.png
 
+![plakat-44.png](images/weather-scene/day_fog/plakat-44.png)
+
+_(no embedded metadata)_
+
+### plakat-44.png
+
 ![plakat-44.png](images/sd15/sd15_still_life/plakat-44.png)
 
 _(no embedded metadata)_
@@ -136,6 +163,12 @@ _(no embedded metadata)_
 
 ### plakat-45.png
 
+![plakat-45.png](images/weather-scene/dusk_clear/plakat-45.png)
+
+_(no embedded metadata)_
+
+### plakat-45.png
+
 ![plakat-45.png](images/sd15/sd15_controlnet_canny/plakat-45.png)
 
 _(no embedded metadata)_
@@ -143,6 +176,12 @@ _(no embedded metadata)_
 ### plakat-45.png
 
 ![plakat-45.png](images/sdxl/sdxl_controlnet_canny/plakat-45.png)
+
+_(no embedded metadata)_
+
+### plakat-46.png
+
+![plakat-46.png](images/weather-scene/night_clear/plakat-46.png)
 
 _(no embedded metadata)_
 
