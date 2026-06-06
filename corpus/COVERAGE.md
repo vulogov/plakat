@@ -34,7 +34,7 @@ committed under `images/`.
 | img2img (Cascade `--faithful`) | `img2img.sh` | ⬜ | ⬜ | CLI subcommand |
 | Inpaint (masked) | `img2img.sh` | ⬜ | ⬜ | `--mask` |
 | Outpaint | `outpaint.sh` | ⬜ | ⬜ | `plakat outpaint` |
-| Upscale (ML) | `upscale.sh` | ⬜ | ⬜ | `plakat upscale` |
+| Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
 
 ## Batch & scripting
 
