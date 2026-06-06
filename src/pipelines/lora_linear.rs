@@ -145,6 +145,13 @@ impl LoraLinear {
         self.train.read().expect("LoraLinear train poisoned").is_some()
     }
 
+    /// Shared handle to the trainable-adapter slot, so a backbone's
+    /// `install_train_adapters` can set it by registry path (parallel to
+    /// [`slots_handle`]).
+    pub fn train_handle(&self) -> Arc<RwLock<Option<(Var, Var, f64)>>> {
+        self.train.clone()
+    }
+
     /// Hand out an `Arc` handle to the shared LoRA stack. Used by the
     /// future `LoraRegistry` (7b-7) to drive `set_loras` from a
     /// path-keyed map without holding direct references to every
@@ -262,6 +269,20 @@ pub struct LoraRegistryEntry {
     pub handle: Arc<RwLock<Vec<LoraSlot>>>,
     pub out_dim: usize,
     pub in_dim: usize,
+    /// Trainable-adapter handle (`plakat style train`). `Default` (empty
+    /// `None`) for inference-only constructors via `..Default::default()`.
+    pub train: Arc<RwLock<Option<(Var, Var, f64)>>>,
+}
+
+impl Default for LoraRegistryEntry {
+    fn default() -> Self {
+        Self {
+            handle: Arc::new(RwLock::new(Vec::new())),
+            out_dim: 0,
+            in_dim: 0,
+            train: Arc::new(RwLock::new(None)),
+        }
+    }
 }
 
 /// Path → entry map, keyed by full safetensors key (including the

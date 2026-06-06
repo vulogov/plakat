@@ -267,6 +267,7 @@ fn wrap_linear(
             key,
             LoraRegistryEntry {
                 handle: ll.slots_handle(),
+                train: ll.train_handle(),
                 out_dim,
                 in_dim,
             },
@@ -295,6 +296,7 @@ fn wrap_linear_b(
             key,
             LoraRegistryEntry {
                 handle: ll.slots_handle(),
+                train: ll.train_handle(),
                 out_dim,
                 in_dim,
             },
