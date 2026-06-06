@@ -39,7 +39,7 @@ OUT_ROOT="$ROOT/corpus/images/portrait"
 
 # name|prompt — each is an invented persona, identity from the prompt only.
 PERSONAS=(
-    "cartographer|a wise elderly cartographer with weathered hands and kind eyes, leather apron, warm lamplit study, photorealistic, fine detail"
+    "cartographer|a wise elderly cartographer with a kind weathered face and round spectacles, rolled maps and a brass compass on the desk behind, warm lamplit study, head and shoulders portrait, photorealistic, fine detail"
     "astronaut|a determined young woman astronaut, short cropped hair, soft technical lighting inside a spacecraft, photorealistic portrait"
     "blacksmith|a rugged middle-aged blacksmith with a soot-streaked face and focused gaze, glowing forge behind, dramatic warm light, photorealistic"
 )
