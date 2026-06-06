@@ -1094,7 +1094,13 @@ impl Pipeline {
         progress: f32,
     ) -> Result<Tensor> {
         let x_doubled = Tensor::cat(&[x, x], 0)?;
-        let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
+        // The flow-match schedule lives in [0, 1], but SD3's MMDiT time
+        // embedder was trained on diffusers' timestep convention
+        // (`sigma * num_train_timesteps`, i.e. [0, 1000]). Passing the raw
+        // [0, 1] sigma gives a wildly wrong sinusoidal embedding → wrong
+        // velocity → garbage. (The single-forward reference check can't
+        // catch this: it feeds the same `t` to both sides.)
+        let t_vec = Tensor::full((t_curr * 1000.0) as f32, 2, &self.device)?;
 
         // v0.16 phase 3d: build the SD3 CN residual sum for this
         // step. Each active CN forwards once on the doubled batch
@@ -1552,9 +1558,12 @@ impl Pipeline {
         }
 
         // ---------- Pooled (y) ----------
-        // SD3 convention: CLIP-G pooled first (1280), CLIP-L pooled
-        // second (768) → (1, 2048).
-        let y = Tensor::cat(&[&clip_g_pooled, &clip_l_pooled], candle_core::D::Minus1)?;
+        // SD3 convention (diffusers): CLIP-L pooled FIRST (768), CLIP-G
+        // pooled second (1280) → (1, 2048). The previous order was
+        // swapped, which scrambles the y_embedder input (the pooled
+        // vector drives adaLN modulation across the whole MMDiT) and
+        // prevents the model from ever denoising.
+        let y = Tensor::cat(&[&clip_l_pooled, &clip_g_pooled], candle_core::D::Minus1)?;
 
         // ---------- CLIP-L penultimate (weighted if has_attn) ----------
         // CLIP-L's penultimate hidden state is what SD3 mixes with
@@ -2005,3 +2014,4 @@ mod tests {
         assert_eq!(sd3_mode_tag(false, false, true), "denoise");
     }
 }
+
