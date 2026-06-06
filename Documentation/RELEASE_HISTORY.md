@@ -1,12 +1,41 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.42. The current
+"What's new" sections for v0.13 through v0.43. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.43.0 — Proof corpus + the bugs it caught
+
+v0.43 is a **verification** cycle: a reproducible, self-documenting body
+of images — and the tooling to regenerate and index it — that proves
+plakat's pipelines actually work end to end. Rendering it surfaced (and
+fixed) a stack of correctness bugs that shape-tests had hidden for dozens
+of versions.
+
+```
+plakat gallery    → build a browsable Markdown index from generated images
+                    (AnimateDiff clips fold in as single animated-GIF entries)
+proof corpus      → scenario-driven stills (Cascade / SDXL / SD 1.5 / PixArt-Σ)
+                    + AnimateDiff clips, each embedding its full recipe
+```
+
+### What the corpus caught
+
+| Area | Was | Now |
+|---|---|---|
+| **SD 1.5 / 2.1** | pure **noise** on every backend since v0.16 | `clip_skip=1` now applies the CLIP final layer norm — the regression had been feeding the UNet pre-LN (un-normalized) embeddings |
+| **SDXL** | **black** image on Metal | the stock VAE overflows F16 → madebyollin `sdxl-vae-fp16-fix` drop-in for non-CPU |
+| **AnimateDiff** | pure **noise** since v0.26 (never verified) | every motion module matches diffusers at **corr 1.0** after **7 fixes**; coherent video on an aesthetic base (`--model Lykon/dreamshaper-8`) |
+| **PixArt-Σ** | errored on load → **black** → **noise** | generates; the DiT matches diffusers (pos-embed H/W + scaling, final-adaLN, BF16 T5, IDDPM linear betas) |
+| **Flux GGUF / Metal** | crash / garbage | fails fast with guidance (a candle 0.10.2 kernel bug, a layer below plakat) |
+
+The method, reused from the Cascade campaign: dump diffusers' intermediate
+activations on a fixed input and diff plakat's against them stage by stage
+until every forward matches.
 
 ## What's new in v0.42 — Stable Cascade completeness + polish
 

@@ -41,13 +41,21 @@ Validate a scenario without generating: `plakat scenario FILE --dry-run`.
 | `sdxl.hjson` | t2i variety + canny ControlNet | SDXL | ✅ ungated, ~7 GB |
 | `pixart.hjson` | t2i variety | PixArt-Σ | ✅ ungated |
 | `sd15.hjson` | t2i variety + canny ControlNet | SD 1.5 | ✅ ungated, ~4 GB |
+| `sd35.hjson` | t2i + legible text | SD 3.5-medium | ✅ ⚠️ gated, ~16 GB BF16 |
+| `animate.sh` | AnimateDiff motion clips (GIF) | SD 1.5 (DreamShaper) | ✅ ungated |
+| `upscale.sh` | ML upscale (Real-ESRGAN ×2) | — | ✅ ungated |
+| `img2img.sh` | style transfer (prompt-steered) | SDXL | ✅ ungated |
+| `portrait.sh` | text-only persona portraits | SD 1.5 | ✅ ungated |
+| `portrait.hjson` | reference-photo lookalike (IP-Adapter) | SD 1.5 | ✅ ungated |
+| `weather-scene.hjson` | scene × weather axes (one area) | SDXL | ✅ ungated |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.
 
 ## Notes
 
-- **Gated models** (Flux-dev, SD3) need a HuggingFace token; **Flux GGUF
+- **Gated models** (Flux-dev, SD 3.5) need a HuggingFace token (accept the
+  licence first). SD 3.5-medium runs BF16-native on Metal; **Flux GGUF
   does not work on Apple Metal** (a candle kernel bug — use `--device
   cpu`, non-quantized Flux, or skip on Metal). The corpus marks these.
 - Output images are committed so the proof is browsable without running
