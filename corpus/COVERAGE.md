@@ -14,7 +14,7 @@ committed under `images/`.
 | SDXL | `sdxl.hjson` | ✅ | ⬜ | ungated, ~7 GB; incl. canny CN |
 | PixArt-Σ | `pixart.hjson` | ✅ | ⬜ | ungated |
 | Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
-| SD3 / 3.5 | `sd3.hjson` | ⬜ | ⬜ | ⚠️ gated |
+| SD3.5 Medium | `sd35.hjson` | ✅ | ✅ | ⚠️ gated; BF16-native ~16 GB Metal; strong text |
 
 ## Conditioning & adapters
 
@@ -25,22 +25,23 @@ committed under `images/`.
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
 | Styles / Looks / Genres | `presets.hjson` | ⬜ | ⬜ | `style:` / `--look` / `--genre` |
-| Portrait / identity | `portrait.hjson` | ⬜ | ⬜ | needs a reference face photo |
+| Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 
 ## Transforms & post
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
-| img2img (Cascade `--faithful`) | `img2img.sh` | ⬜ | ⬜ | CLI subcommand |
+| img2img (style transfer, SDXL) | `img2img.sh` | ✅ | ✅ | prompt-steered medium restyle; no LoRA/download |
 | Inpaint (masked) | `img2img.sh` | ⬜ | ⬜ | `--mask` |
 | Outpaint | `outpaint.sh` | ⬜ | ⬜ | `plakat outpaint` |
-| Upscale (ML) | `upscale.sh` | ⬜ | ⬜ | `plakat upscale` |
+| Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
 
 ## Batch & scripting
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | Scenarios (HJSON batch) | every `*.hjson` | ✅ | ⬜ | the corpus is itself the proof |
+| Scene × weather axes | `weather-scene.hjson` | ✅ | ✅ | one area (prompt-header) re-lit + re-weathered across both axes |
 | Bund scripting | `script.bund` | ⬜ | ⬜ | `plakat run` |
 | Gallery generator | `plakat gallery` | ✅ | n/a | builds this corpus's index |
 
