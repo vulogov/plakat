@@ -248,6 +248,7 @@ impl LinearLoader {
                 weight_path,
                 crate::pipelines::lora_linear::LoraRegistryEntry {
                     handle: linear.slots_handle(),
+                    train: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     out_dim,
                     in_dim,
                 },

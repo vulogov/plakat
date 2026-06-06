@@ -28,7 +28,7 @@
 //! that far out, and the diffusers reference stops the residual loop
 //! at `depth - 1`. We mirror that.
 
-use candle_core::{Module, Result, Tensor, D, bail, DType};
+use candle_core::{Device, Module, Result, Tensor, Var, D, bail, DType};
 use candle_nn as nn;
 // v0.15 phase 7b-5: every Linear in the vendored MMDiT becomes a
 // `LoraLinear` so the model can apply a runtime LoRA stack at forward
@@ -66,6 +66,7 @@ fn wrap_linear(
                 handle: ll.slots_handle(),
                 out_dim,
                 in_dim,
+                train: ll.train_handle(),
             },
         );
     Ok(ll)
@@ -1189,6 +1190,42 @@ impl MMDiT {
     /// v0.15 phase 7b-5: how many LoraLinears were registered.
     pub fn n_registered_linears(&self) -> usize {
         self.lora_registry.len()
+    }
+
+    /// `plakat style train` (Phase 1): install a fresh **trainable** LoRA
+    /// adapter on every attention projection (registry keys containing
+    /// `.attn` — the joint blocks' qkv / proj for attn + attn2). Returns
+    /// `(registry_key, A, B)` for each, so the caller drives AdamW and
+    /// writes the kohya save. Standard init: `A ~ N(0, 0.02)`, `B = 0`, so
+    /// the adapter starts as a no-op on the frozen base and learns the
+    /// style delta. Vars are F32 (training dtype).
+    pub fn install_train_adapters(
+        &self,
+        rank: usize,
+        scale: f64,
+        device: &Device,
+    ) -> Result<Vec<(String, Var, Var)>> {
+        let mut keys: Vec<&String> =
+            self.lora_registry.keys().filter(|k| k.contains(".attn")).collect();
+        keys.sort();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let entry = &self.lora_registry[key];
+            let a = Var::from_tensor(&Tensor::randn(
+                0f32,
+                0.02f32,
+                (rank, entry.in_dim),
+                device,
+            )?)?;
+            let b = Var::from_tensor(&Tensor::zeros((entry.out_dim, rank), DType::F32, device)?)?;
+            *entry
+                .train
+                .write()
+                .map_err(|_| candle_core::Error::Msg("MMDiT train slot poisoned".into()))? =
+                Some((a.clone(), b.clone(), scale));
+            out.push((key.clone(), a, b));
+        }
+        Ok(out)
     }
 
     /// Standard forward — no ControlNet residuals. Byte-identical to
