@@ -1,6 +1,6 @@
 # plakat gallery
 
-38 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+41 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -15,16 +15,21 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/sdxl/sdxl_landscape/plakat-42.png" alt=""></td>
+    <td width="33%"><img src="images/sd21/sd21_landscape/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/day_storm/plakat-43.png" alt=""></td>
-    <td width="33%"><img src="images/sd15/sd15_portrait/plakat-43.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd15/sd15_portrait/plakat-43.png" alt=""></td>
     <td width="33%"><img src="images/sdxl/sdxl_portrait/plakat-43.png" alt=""></td>
+    <td width="33%"><img src="images/sd21/sd21_portrait/plakat-43.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/weather-scene/day_fog/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_still_life/plakat-44.png" alt=""></td>
+    <td width="33%"><img src="images/sdxl/sdxl_fantasy/plakat-44.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/sdxl/sdxl_fantasy/plakat-44.png" alt=""></td>
+    <td width="33%"><img src="images/sd21/sd21_still_life/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/dusk_clear/plakat-45.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_controlnet_canny/plakat-45.png" alt=""></td>
   </tr>
@@ -125,6 +130,12 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### plakat-42.png
+
+![plakat-42.png](images/sd21/sd21_landscape/plakat-42.png)
+
+_(no embedded metadata)_
+
 ### plakat-43.png
 
 ![plakat-43.png](images/weather-scene/day_storm/plakat-43.png)
@@ -143,6 +154,12 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### plakat-43.png
+
+![plakat-43.png](images/sd21/sd21_portrait/plakat-43.png)
+
+_(no embedded metadata)_
+
 ### plakat-44.png
 
 ![plakat-44.png](images/weather-scene/day_fog/plakat-44.png)
@@ -158,6 +175,12 @@ _(no embedded metadata)_
 ### plakat-44.png
 
 ![plakat-44.png](images/sdxl/sdxl_fantasy/plakat-44.png)
+
+_(no embedded metadata)_
+
+### plakat-44.png
+
+![plakat-44.png](images/sd21/sd21_still_life/plakat-44.png)
 
 _(no embedded metadata)_
 

@@ -1,0 +1,70 @@
+{
+    # ===================================================================
+    # plakat proof corpus — Stable Diffusion 2.1
+    # ===================================================================
+    #   plakat scenario corpus/sd21.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    #
+    # SD 2.1 — 768² native, OpenCLIP-H text encoder, **v-prediction**
+    # (the default scheduler uses candle's v2_1 config, which is v-pred;
+    # an explicit epsilon `--scheduler ddim` would corrupt it).
+    #
+    # The `sd21` alias was pointed at the now-gated stabilityai repo (a
+    # 404 for tokens without the licence); it now resolves to an ungated
+    # 768 mirror so this runs out of the box — the same fix plakat made
+    # for sd15 after Runway's deletion. Ungated, ~5 GB.
+    # Validate without rendering: plakat scenario corpus/sd21.hjson --dry-run
+    # ===================================================================
+
+    model: sd21
+    device: metal
+    size: 768x768
+    steps: 28
+    guidance: 9.0
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/sd21
+
+    negative: blurry, low quality, watermark, text, deformed
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: sd21_landscape
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a misty pine forest on a mountainside at dawn, a winding river below, photorealistic, detailed
+        }
+        {
+            name: sd21_portrait
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a close-up portrait of a red fox in a snowy forest, sharp detail, soft natural light, photorealistic
+        }
+        {
+            name: sd21_still_life
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a rustic still life of bread, cheese and grapes on a wooden table, warm window light, oil painting
+        }
+    ]
+}
