@@ -13,55 +13,70 @@ are pulled from HuggingFace and cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.43.0 — Proof corpus + the bugs it caught
+## What's new in v0.44.0 — SD 3.5 rescued + corpus breadth
 
-v0.43 is a **verification** cycle: a reproducible, self-documenting body
-of images — and the tooling to regenerate and index it — that proves
-plakat's pipelines actually work end to end. Rendering it surfaced (and
-fixed) a stack of correctness bugs that shape-tests had hidden for dozens
-of versions. Browse the [proof corpus](corpus/) and the [gallery](gallery/).
+v0.44 continues the verification cycle. The headline: **SD 3.5-medium —
+listed as supported since the SD3 line landed but never once rendering an
+image — now generates end to end** on a 24 GB Mac (BF16-native on Metal,
+the strongest open model plakat can GPU-accelerate there). It was the
+sixth "shape-tested, never verified" model the proof corpus has caught.
+Browse the [proof corpus](corpus/) and the [gallery](corpus/GALLERY.md).
 
 ```
-plakat gallery    → build a browsable Markdown index from generated images
-                    (AnimateDiff clips fold in as single animated-GIF entries)
-proof corpus      → scenario-driven stills (Cascade / SDXL / SD 1.5 / PixArt-Σ)
-                    + AnimateDiff clips, each embedding its full recipe
+SD 3.5-medium  → loads (diffusers→SAI MMDiT remapper) + generates;
+                 MMDiT verified against diffusers at corr 1.0
+corpus breadth → ML upscale, img2img restyle, portrait + reference
+                 lookalike, and a scene × weather demonstration (19 → 38)
 ```
 
-### What the corpus caught
+### How SD 3.5 was broken — and fixed
 
-| Area | Was | Now |
-|---|---|---|
-| **SD 1.5 / 2.1** | pure **noise** on every backend since v0.16 | `clip_skip=1` now applies the CLIP final layer norm — the regression had been feeding the UNet pre-LN (un-normalized) embeddings |
-| **SDXL** | **black** image on Metal | the stock VAE overflows F16 → madebyollin `sdxl-vae-fp16-fix` drop-in for non-CPU |
-| **AnimateDiff** | pure **noise** since v0.26 (never verified) | every motion module matches diffusers at **corr 1.0** after **7 fixes**; coherent video on an aesthetic base (`--model Lykon/dreamshaper-8`) |
-| **PixArt-Σ** | errored on load → **black** → **noise** | generates; the DiT matches diffusers (pos-embed H/W + scaling, final-adaLN, BF16 T5, IDDPM linear betas) |
-| **Flux GGUF / Metal** | crash / garbage | fails fast with guidance (a candle 0.10.2 kernel bug, a layer below plakat) |
+It didn't even **load**: plakat's MMDiT loader expects the SAI single-file
+layout (fused `joint_blocks` QKV), but Stability ships the diffusers
+transformer (split `transformer_blocks` Q/K/V) — a 404 on the first
+tensor. A diffusers→SAI remapper fixed the load. Then the **forward** and
+**conditioning** hid five more bugs, none catchable by a single-forward
+check:
 
-The method, reused from the Cascade campaign: dump diffusers' intermediate
-activations on a fixed input and diff plakat's against them stage by stage
-until every forward matches. It pinpointed the AnimateDiff positional-
-embedding bug and the PixArt DiT pos-embed / final-adaLN bugs — each in a
-single shot — where weeks of inspection had not.
+| Bug | Effect |
+|---|---|
+| pooled-`y` concatenated `[CLIP-G, CLIP-L]` vs diffusers' `[CLIP-L, CLIP-G]` | scrambled the vector that drives adaLN across the whole MMDiT → it **never denoised** (a grid) |
+| flow-match timestep passed raw `[0,1]`, not `×1000` | wrong time embedding |
+| `AdaLayerNormContinuous` read `(shift, scale)` vs diffusers' `(scale, shift)`, ×2 | a 2700-magnitude outlier the final norm propagated |
+| missing QK-norm on the context-qkv-only block; F16 timestep embed; `sd35-medium` variant mis-detect | load / precision |
+
+The MMDiT now matches diffusers' `SD3Transformer2DModel` at **corr 1.0** —
+found the same way as the prior campaigns: dump diffusers' intermediate
+activations on a fixed input and diff stage by stage (here, plus a full
+`encode_prompt` diff, which is what caught the pooled-`y` swap).
+
+### Corpus breadth (19 → 38 entries)
+
+| Added | Proves |
+|---|---|
+| `sd35.hjson` | SD 3.5-medium — incl. a legible **"FRESH BREAD"** sign (its text-rendering edge) |
+| `upscale.sh` | ML upscale (Real-ESRGAN ×2) — opens the **Transforms & post** category |
+| `img2img.sh` | prompt-steered style transfer (photo → oil / watercolour / sumi-e ink-wash) |
+| `portrait.sh` + `portrait.hjson` | text personas + a reference-photo **lookalike** (IP-Adapter-Plus-Face) |
+| `weather-scene.hjson` | one area re-lit + re-weathered across the scenario `scene` × `weather` axes |
 
 ### Try it
 
 ```bash
-# Render a proof-corpus category (downloads its model on first run)
-plakat scenario corpus/sdxl.hjson
+# SD 3.5-medium — now generates (gated; accept the HF licence first)
+plakat generate "a still life with fruit, oil painting" --model sd35-medium
 
-# AnimateDiff on an aesthetic SD 1.5 base → a coherent fox-in-snow clip
-plakat animate --animatediff --model Lykon/dreamshaper-8 \
-    --from "a red fox walking through a snowy forest" --gif
+# ML-upscale any image 2× (Real-ESRGAN)
+plakat upscale --in photo.png --out big.png --method real-esrgan-x2
 
-# PixArt-Σ — now generates
-plakat generate "a still life with fruit, oil painting" --model pixart
+# Restyle an image while keeping its composition
+plakat img2img photo.png --prompt "an impressionist oil painting" --model sdxl
 
-# Build a browsable index from a directory of generated images
-plakat gallery corpus/images --recursive --out corpus/GALLERY.md
+# A reference-photo lookalike portrait
+plakat portrait "a candlelit scholar" --photo face.png --model sd15
 ```
 
-**Earlier releases** (v0.13 – v0.42):
+**Earlier releases** (v0.13 – v0.43):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
