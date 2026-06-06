@@ -64,6 +64,128 @@ use candle_nn::VarBuilder;
 // `forward(...)` delegates to `forward_with_residuals(... None)`.
 use crate::pipelines::mmdit_inner as mmdit;
 use candle_transformers::models::{stable_diffusion::vae as sdvae, t5};
+
+/// Build the MMDiT VarBuilder, transparently remapping a **diffusers**-format
+/// transformer checkpoint to plakat's SAI/mmdit naming.
+///
+/// plakat's MMDiT loader was written for the original SAI single-file layout
+/// (`joint_blocks.N.x_block.attn.qkv`, fused QKV). Stability's diffusers
+/// checkpoints (what `transformer/diffusion_pytorch_model.safetensors`
+/// ships) use `transformer_blocks.N.attn.to_q/to_k/to_v` (split) — so the
+/// SAI loader 404s on every tensor. When we detect the diffusers layout we
+/// load the tensors eagerly, fuse Q/K/V, rename, and hand the MMDiT a
+/// `from_tensors` VarBuilder. SAI-format checkpoints take the mmap path
+/// unchanged (byte-identical to before).
+fn build_mmdit_vb<'a>(
+    path: &std::path::Path,
+    dtype: DType,
+    device: &Device,
+    depth: usize,
+) -> Result<VarBuilder<'a>> {
+    let tensors = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading MMDiT tensors from {}", path.display()))?;
+    if tensors.contains_key("transformer_blocks.0.attn.to_q.weight") {
+        let map = remap_diffusers_mmdit(&tensors, depth, dtype)
+            .context("remapping diffusers MMDiT → SAI layout")?;
+        Ok(VarBuilder::from_tensors(map, dtype, device))
+    } else {
+        Ok(unsafe { VarBuilder::from_mmaped_safetensors(&[path], dtype, device)? })
+    }
+}
+
+/// Remap a diffusers SD3/SD3.5 transformer tensor map to plakat's SAI naming.
+/// Fuses split Q/K/V into a single `qkv`, renames every tensor, and emits
+/// the dual-attention `attn2` block (SD3.5) when present. The final block is
+/// `context_pre_only` (no context output proj / MLP) — handled below.
+fn remap_diffusers_mmdit(
+    d: &std::collections::HashMap<String, Tensor>,
+    depth: usize,
+    dtype: DType,
+) -> Result<std::collections::HashMap<String, Tensor>> {
+    use std::collections::HashMap;
+    let mut m: HashMap<String, Tensor> = HashMap::new();
+    let take = |k: &str| -> Result<Tensor> {
+        d.get(k)
+            .ok_or_else(|| anyhow!("missing diffusers tensor `{k}`"))?
+            .to_dtype(dtype)
+            .map_err(Into::into)
+    };
+    let fuse = |a: &str, b: &str, c: &str| -> Result<Tensor> {
+        Ok(Tensor::cat(&[&take(a)?, &take(b)?, &take(c)?], 0)?)
+    };
+
+    // ---- top-level ----
+    for (sai, dif) in [
+        ("x_embedder.proj.weight", "pos_embed.proj.weight"),
+        ("x_embedder.proj.bias", "pos_embed.proj.bias"),
+        ("pos_embed", "pos_embed.pos_embed"),
+        ("t_embedder.mlp.0.weight", "time_text_embed.timestep_embedder.linear_1.weight"),
+        ("t_embedder.mlp.0.bias", "time_text_embed.timestep_embedder.linear_1.bias"),
+        ("t_embedder.mlp.2.weight", "time_text_embed.timestep_embedder.linear_2.weight"),
+        ("t_embedder.mlp.2.bias", "time_text_embed.timestep_embedder.linear_2.bias"),
+        ("y_embedder.mlp.0.weight", "time_text_embed.text_embedder.linear_1.weight"),
+        ("y_embedder.mlp.0.bias", "time_text_embed.text_embedder.linear_1.bias"),
+        ("y_embedder.mlp.2.weight", "time_text_embed.text_embedder.linear_2.weight"),
+        ("y_embedder.mlp.2.bias", "time_text_embed.text_embedder.linear_2.bias"),
+        ("context_embedder.weight", "context_embedder.weight"),
+        ("context_embedder.bias", "context_embedder.bias"),
+        ("final_layer.linear.weight", "proj_out.weight"),
+        ("final_layer.linear.bias", "proj_out.bias"),
+        ("final_layer.adaLN_modulation.1.weight", "norm_out.linear.weight"),
+        ("final_layer.adaLN_modulation.1.bias", "norm_out.linear.bias"),
+    ] {
+        m.insert(sai.to_string(), take(dif)?);
+    }
+
+    // ---- joint blocks ----
+    for i in 0..depth {
+        let dp = format!("transformer_blocks.{i}");
+        let jp = format!("joint_blocks.{i}");
+        let last = i == depth - 1;
+
+        for wb in ["weight", "bias"] {
+            // x-stream joint QKV (fused) + context joint QKV (fused).
+            m.insert(
+                format!("{jp}.x_block.attn.qkv.{wb}"),
+                fuse(&format!("{dp}.attn.to_q.{wb}"), &format!("{dp}.attn.to_k.{wb}"), &format!("{dp}.attn.to_v.{wb}"))?,
+            );
+            m.insert(
+                format!("{jp}.context_block.attn.qkv.{wb}"),
+                fuse(&format!("{dp}.attn.add_q_proj.{wb}"), &format!("{dp}.attn.add_k_proj.{wb}"), &format!("{dp}.attn.add_v_proj.{wb}"))?,
+            );
+            m.insert(format!("{jp}.x_block.attn.proj.{wb}"), take(&format!("{dp}.attn.to_out.0.{wb}"))?);
+            // x adaLN + MLP.
+            m.insert(format!("{jp}.x_block.adaLN_modulation.1.{wb}"), take(&format!("{dp}.norm1.linear.{wb}"))?);
+            m.insert(format!("{jp}.x_block.mlp.fc1.{wb}"), take(&format!("{dp}.ff.net.0.proj.{wb}"))?);
+            m.insert(format!("{jp}.x_block.mlp.fc2.{wb}"), take(&format!("{dp}.ff.net.2.{wb}"))?);
+            m.insert(format!("{jp}.context_block.adaLN_modulation.1.{wb}"), take(&format!("{dp}.norm1_context.linear.{wb}"))?);
+            if !last {
+                m.insert(format!("{jp}.context_block.attn.proj.{wb}"), take(&format!("{dp}.attn.to_add_out.{wb}"))?);
+                m.insert(format!("{jp}.context_block.mlp.fc1.{wb}"), take(&format!("{dp}.ff_context.net.0.proj.{wb}"))?);
+                m.insert(format!("{jp}.context_block.mlp.fc2.{wb}"), take(&format!("{dp}.ff_context.net.2.{wb}"))?);
+            }
+        }
+        // QK-norm (per-head RMSNorm scales, weight-only).
+        m.insert(format!("{jp}.x_block.attn.ln_q.weight"), take(&format!("{dp}.attn.norm_q.weight"))?);
+        m.insert(format!("{jp}.x_block.attn.ln_k.weight"), take(&format!("{dp}.attn.norm_k.weight"))?);
+        m.insert(format!("{jp}.context_block.attn.ln_q.weight"), take(&format!("{dp}.attn.norm_added_q.weight"))?);
+        m.insert(format!("{jp}.context_block.attn.ln_k.weight"), take(&format!("{dp}.attn.norm_added_k.weight"))?);
+
+        // Dual attention (SD3.5 blocks 0..N): x-stream self-attention.
+        if d.contains_key(&format!("{dp}.attn2.to_q.weight")) {
+            for wb in ["weight", "bias"] {
+                m.insert(
+                    format!("{jp}.x_block.attn2.qkv.{wb}"),
+                    fuse(&format!("{dp}.attn2.to_q.{wb}"), &format!("{dp}.attn2.to_k.{wb}"), &format!("{dp}.attn2.to_v.{wb}"))?,
+                );
+                m.insert(format!("{jp}.x_block.attn2.proj.{wb}"), take(&format!("{dp}.attn2.to_out.0.{wb}"))?);
+            }
+            m.insert(format!("{jp}.x_block.attn2.ln_q.weight"), take(&format!("{dp}.attn2.norm_q.weight"))?);
+            m.insert(format!("{jp}.x_block.attn2.ln_k.weight"), take(&format!("{dp}.attn2.norm_k.weight"))?);
+        }
+    }
+    Ok(m)
+}
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
@@ -470,11 +592,12 @@ impl Pipeline {
 
         // ---------- MMDiT + VAE ----------
         let load = progress::spinner("Loading MMDiT + VAE");
-        let mmdit_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[effective_mmdit_path], dtype, &req.device,
-            )?
-        };
+        let mmdit_vb = build_mmdit_vb(
+            effective_mmdit_path.as_path(),
+            dtype,
+            &req.device,
+            req.variant.mmdit_config().depth,
+        )?;
         let mmdit_model = mmdit::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
 
         // SD3 VAE: 4 down-blocks (128, 256, 512, 512), 2 layers each,
@@ -971,7 +1094,13 @@ impl Pipeline {
         progress: f32,
     ) -> Result<Tensor> {
         let x_doubled = Tensor::cat(&[x, x], 0)?;
-        let t_vec = Tensor::full(t_curr as f32, 2, &self.device)?;
+        // The flow-match schedule lives in [0, 1], but SD3's MMDiT time
+        // embedder was trained on diffusers' timestep convention
+        // (`sigma * num_train_timesteps`, i.e. [0, 1000]). Passing the raw
+        // [0, 1] sigma gives a wildly wrong sinusoidal embedding → wrong
+        // velocity → garbage. (The single-forward reference check can't
+        // catch this: it feeds the same `t` to both sides.)
+        let t_vec = Tensor::full((t_curr * 1000.0) as f32, 2, &self.device)?;
 
         // v0.16 phase 3d: build the SD3 CN residual sum for this
         // step. Each active CN forwards once on the doubled batch
@@ -1429,9 +1558,12 @@ impl Pipeline {
         }
 
         // ---------- Pooled (y) ----------
-        // SD3 convention: CLIP-G pooled first (1280), CLIP-L pooled
-        // second (768) → (1, 2048).
-        let y = Tensor::cat(&[&clip_g_pooled, &clip_l_pooled], candle_core::D::Minus1)?;
+        // SD3 convention (diffusers): CLIP-L pooled FIRST (768), CLIP-G
+        // pooled second (1280) → (1, 2048). The previous order was
+        // swapped, which scrambles the y_embedder input (the pooled
+        // vector drives adaLN modulation across the whole MMDiT) and
+        // prevents the model from ever denoising.
+        let y = Tensor::cat(&[&clip_l_pooled, &clip_g_pooled], candle_core::D::Minus1)?;
 
         // ---------- CLIP-L penultimate (weighted if has_attn) ----------
         // CLIP-L's penultimate hidden state is what SD3 mixes with
@@ -1882,3 +2014,4 @@ mod tests {
         assert_eq!(sd3_mode_tag(false, false, true), "denoise");
     }
 }
+

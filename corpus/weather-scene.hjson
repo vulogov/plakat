@@ -1,0 +1,119 @@
+{
+    # ===================================================================
+    # plakat proof corpus — scene × weather matrix (one area, many moods)
+    # ===================================================================
+    #   plakat scenario corpus/weather-scene.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    #
+    # Demonstrates the scenario engine's `scene` and `weather` axes. The
+    # AREA is held constant in `prompt-header`; each task composes it with
+    # one `scene` fragment (time of day / light) and one `weather`
+    # fragment (conditions). Final = header, scene, weather, task, footer.
+    #
+    # The five tasks form a cross around the SAME lighthouse:
+    #   * weather axis — neutral DAYLIGHT in clear / storm / fog, so the
+    #     weather sets the sky (a bright, a dark-stormy, and a grey-foggy
+    #     version of the same cliff).
+    #   * scene axis   — CLEAR weather at day / dusk / night, so the light
+    #     sets the mood (bright noon, golden sunset, starry night).
+    # `day_clear` is the shared corner of the cross.
+    #
+    # Note: the weather row deliberately uses neutral "full daylight" — a
+    # strong light fragment like "golden hour" overpowers the weather and
+    # makes clear/storm/fog collapse into near-identical frames.
+    # Ungated; reuses the cached SDXL base.
+    # Validate without rendering: plakat scenario corpus/weather-scene.hjson --dry-run
+    # ===================================================================
+
+    model: sdxl
+    device: metal
+    size: 1024x1024
+    steps: 30
+    guidance: 6.5
+    seed: 42
+    count: 1
+    enhancer: auto
+
+    # The constant area — every task inherits this verbatim.
+    prompt-header: a lone stone lighthouse on a rugged coastal headland, a winding stone path leading up to it, weathered rocks and the open sea beyond
+    prompt-footer: photorealistic, highly detailed, cinematic composition, sharp focus
+
+    out: ./corpus/images/weather-scene
+
+    negative: blurry, low quality, watermark, text, signature
+
+    # --- scene axis: time of day / light (neutral "day" lets weather lead) ---
+    scene:
+    [
+        {
+            name: day
+            prompt: in full daylight
+        }
+        {
+            name: dusk
+            prompt: at golden hour, the sun low and warm on the horizon, long amber shadows and a glowing rim of light
+        }
+        {
+            name: night
+            prompt: at night under a star-filled sky, the lighthouse beam sweeping the darkness, cool moonlight
+        }
+    ]
+
+    # --- weather axis: conditions (written to dominate the sky) ---
+    weather:
+    [
+        {
+            name: clear
+            prompt: clear blue skies, a calm sea, crisp bright air
+        }
+        {
+            name: storm
+            prompt: a violent storm, the sky black with heavy clouds, towering waves crashing over the rocks, wind-blown sea spray, dark and dramatic, almost no sunlight
+        }
+        {
+            name: fog
+            prompt: shrouded in thick rolling sea fog, the lighthouse reduced to a faint grey silhouette, muted diffuse light, very low visibility, everything soft and colourless
+        }
+    ]
+
+    tasks:
+    [
+        # weather axis — same neutral daylight, three conditions
+        {
+            name: day_clear
+            scene: day
+            weather: clear
+            enhance: false
+            prompt: ""
+        }
+        {
+            name: day_storm
+            scene: day
+            weather: storm
+            enhance: false
+            prompt: ""
+        }
+        {
+            name: day_fog
+            scene: day
+            weather: fog
+            enhance: false
+            prompt: ""
+        }
+        # scene axis — same clear weather, two more times of day
+        {
+            name: dusk_clear
+            scene: dusk
+            weather: clear
+            enhance: false
+            prompt: ""
+        }
+        {
+            name: night_clear
+            scene: night
+            weather: clear
+            enhance: false
+            prompt: ""
+        }
+    ]
+}

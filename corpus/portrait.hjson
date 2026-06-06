@@ -1,0 +1,79 @@
+{
+    # ===================================================================
+    # plakat proof corpus — lookalike portrait (reference-driven persona)
+    # ===================================================================
+    #   plakat scenario corpus/portrait.hjson
+    #   plakat gallery  corpus/images --recursive --out corpus/GALLERY.md
+    #
+    # The identity-conditioned half of the Portrait/identity row: a
+    # `personas:` catalog entry pins a reference face, and each task
+    # re-poses that same identity into a new scene. Routes through the
+    # SD 1.5 portrait pipeline (IP-Adapter-Plus-Face), so the generated
+    # subject is a "lookalike" of the reference rather than a fresh face.
+    #
+    # Reference: ./examples/persona/example.png (a grey-bearded man).
+    # The prompt sets the SCENE/role; the identity comes from the photo.
+    #
+    # Ungated, but `--identity plus-face` downloads the IP-Adapter-Plus-
+    # Face weights + CLIP-H image encoder (~1-2 GB) on first run. Runs on
+    # the cached SD 1.5 base. face-strength balances likeness (high) vs.
+    # prompt adherence (low); 0.85 keeps a clear resemblance.
+    # Validate without rendering: plakat scenario corpus/portrait.hjson --dry-run
+    # ===================================================================
+
+    model: sd15
+    device: metal
+    size: 576x768
+    steps: 30
+    seed: 42
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/portrait
+
+    negative: blurry, low quality, deformed, extra fingers, bad anatomy, disfigured
+
+    personas:
+    [
+        {
+            name: sage
+            photo: ./examples/persona/example.png
+            identity: plus-face
+            face-strength: 0.9
+        }
+    ]
+
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            name: sage_scholar
+            scene: plain
+            weather: any
+            personas: ["sage"]
+            enhance: false
+            prompt: a close-up head-and-shoulders portrait of a wise bearded scholar, candlelit study with bookshelves behind, dark academia, detailed face, photorealistic
+        }
+        {
+            name: sage_captain
+            scene: plain
+            weather: any
+            personas: ["sage"]
+            enhance: false
+            prompt: a portrait of a bearded sea captain on a ship deck at golden hour, weathered coat, dramatic rim light, photorealistic
+        }
+    ]
+}

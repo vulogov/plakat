@@ -39,6 +39,7 @@ use crate::pipelines::lora_linear::{
 };
 use std::sync::{Arc, RwLock};
 
+
 /// v0.15 phase 7b-5: wrap a candle Linear, register the slots handle
 /// in `<vb.prefix()>.weight` of the shared LoRA registry, return the
 /// LoraLinear ready to plug into a struct field. Same pattern as the
@@ -188,6 +189,11 @@ pub struct TimestepEmbedder {
     mlp_0: LoraLinear,
     mlp_2: LoraLinear,
     frequency_embedding_size: usize,
+    // The model dtype (BF16 on Metal/CUDA for SD3, F32 on CPU). The
+    // sinusoidal embedding must match the MLP weight dtype — hardcoding
+    // F16 mismatches BF16 weights (this only surfaced once SD3 actually
+    // loaded and ran).
+    dtype: DType,
 }
 
 impl TimestepEmbedder {
@@ -197,6 +203,7 @@ impl TimestepEmbedder {
         vb: nn::VarBuilder,
         registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
+        let dtype = vb.dtype();
         let mlp_0 = wrap_linear(
             frequency_embedding_size,
             hidden_size,
@@ -208,10 +215,11 @@ impl TimestepEmbedder {
             mlp_0,
             mlp_2,
             frequency_embedding_size,
+            dtype,
         })
     }
 
-    fn timestep_embedding(t: &Tensor, dim: usize, max_period: f64) -> Result<Tensor> {
+    fn timestep_embedding(t: &Tensor, dim: usize, max_period: f64, dtype: DType) -> Result<Tensor> {
         if dim % 2 != 0 {
             bail!("Embedding dimension must be even")
         }
@@ -232,13 +240,14 @@ impl TimestepEmbedder {
             .to_dtype(DType::F32)?
             .matmul(&freqs.unsqueeze(0)?)?;
         let embedding = Tensor::cat(&[args.cos()?, args.sin()?], 1)?;
-        embedding.to_dtype(DType::F16)
+        embedding.to_dtype(dtype)
     }
 }
 
 impl Module for TimestepEmbedder {
     fn forward(&self, t: &Tensor) -> Result<Tensor> {
-        let t_freq = Self::timestep_embedding(t, self.frequency_embedding_size, 10000.0)?;
+        let t_freq =
+            Self::timestep_embedding(t, self.frequency_embedding_size, 10000.0, self.dtype)?;
         // Manual mlp.0 → SiLU → mlp.2 chain (replaces nn::Sequential).
         t_freq.apply(&self.mlp_0)?.silu()?.apply(&self.mlp_2)
     }
@@ -312,6 +321,13 @@ impl Module for Mlp {
 pub struct QkvOnlyAttnProjections {
     qkv: LoraLinear,
     head_dim: usize,
+    // SD3.5 applies QK-norm (RMSNorm) to the context Q/K even in the
+    // final context-qkv-only block. Without it the context Q/K stay
+    // un-normalized → blown-up attention scores → a catastrophic outlier
+    // that the final LayerNorm then propagates to the whole output.
+    // Auto-detected (absent on the original SD3, present on SD3.5).
+    ln_k: Option<candle_nn::RmsNorm>,
+    ln_q: Option<candle_nn::RmsNorm>,
 }
 
 impl QkvOnlyAttnProjections {
@@ -323,12 +339,32 @@ impl QkvOnlyAttnProjections {
     ) -> Result<Self> {
         let head_dim = dim / num_heads;
         let qkv = wrap_linear(dim, dim * 3, vb.pp("qkv"), registry)?;
-        Ok(Self { qkv, head_dim })
+        let (ln_k, ln_q) = if vb.contains_tensor("ln_k.weight") {
+            (
+                Some(candle_nn::rms_norm(head_dim, 1e-6, vb.pp("ln_k"))?),
+                Some(candle_nn::rms_norm(head_dim, 1e-6, vb.pp("ln_q"))?),
+            )
+        } else {
+            (None, None)
+        };
+        Ok(Self { qkv, head_dim, ln_k, ln_q })
     }
 
     pub fn pre_attention(&self, x: &Tensor) -> Result<Qkv> {
         let qkv = self.qkv.forward(x)?;
-        split_qkv(&qkv, self.head_dim)
+        let Qkv { q, k, v } = split_qkv(&qkv, self.head_dim)?;
+        let norm = |t: Tensor, ln: Option<&candle_nn::RmsNorm>| -> Result<Tensor> {
+            match ln {
+                None => Ok(t),
+                Some(l) => {
+                    let (b, s, h) = t.dims3()?;
+                    Ok(l.forward(&t.reshape((b, s, (), self.head_dim))?)?.reshape((b, s, h))?)
+                }
+            }
+        };
+        let q = norm(q, self.ln_q.as_ref())?;
+        let k = norm(k, self.ln_k.as_ref())?;
+        Ok(Qkv { q, k, v })
     }
 }
 
@@ -668,7 +704,11 @@ impl QkvOnlyDiTBlock {
     pub fn pre_attention(&self, x: &Tensor, c: &Tensor) -> Result<Qkv> {
         let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(2, D::Minus1)?;
-        let (shift_msa, scale_msa) = (chunks[0].clone(), chunks[1].clone());
+        // diffusers' context_pre_only block uses AdaLayerNormContinuous,
+        // whose linear emits (scale, shift) — NOT AdaLayerNormZero's
+        // (shift, scale). Reading them swapped corrupts the context K/V
+        // for the final joint attention.
+        let (scale_msa, shift_msa) = (chunks[0].clone(), chunks[1].clone());
         let norm_x = self.norm1.forward(x)?;
         let modulated_x = modulate(&norm_x, &shift_msa, &scale_msa)?;
         self.attn.pre_attention(&modulated_x)
@@ -712,7 +752,9 @@ impl FinalLayer {
     pub fn forward(&self, x: &Tensor, c: &Tensor) -> Result<Tensor> {
         let modulation = c.silu()?.apply(&self.ada_ln_modulation_1)?;
         let chunks = modulation.chunk(2, D::Minus1)?;
-        let (shift, scale) = (chunks[0].clone(), chunks[1].clone());
+        // diffusers' final norm is AdaLayerNormContinuous → (scale, shift),
+        // not (shift, scale).
+        let (scale, shift) = (chunks[0].clone(), chunks[1].clone());
         let norm_x = self.norm_final.forward(x)?;
         let modulated_x = modulate(&norm_x, &shift, &scale)?;
         self.linear.forward(&modulated_x)
