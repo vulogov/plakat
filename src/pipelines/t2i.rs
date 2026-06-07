@@ -1989,7 +1989,7 @@ fn tokenize_with_attention(
 /// Fast path: prompts without any attention syntax skip both the
 /// parse and the per-token broadcast — byte-identical to the
 /// pre-phase-2 `clip_skip_forward(tokenize_padded(...))` call.
-fn encode_with_attention(
+pub(crate) fn encode_with_attention(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
     encoder: &crate::pipelines::vendored_clip::ClipTextTransformer,
