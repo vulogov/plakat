@@ -134,7 +134,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     .await?;
     let paths = [unet_path];
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, &device)? };
-    let unet = UNet2DConditionModel::new(vb, 4, 4, false, sd15_unet_config())?;
+    let unet = UNet2DConditionModel::new(vb, 4, 4, false, sd15_unet_config(), None)?;
     let adapters = unet.install_train_adapters(req.rank, 1.0, &device)?;
     tracing::info!(
         "sd-style-train: {} trainable attention adapters (rank {})",

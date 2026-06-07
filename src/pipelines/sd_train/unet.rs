@@ -10,6 +10,7 @@ use candle_nn as nn;
 use candle_nn::Module;
 use std::sync::{Arc, RwLock};
 use crate::pipelines::lora_linear::LoraRegistry;
+use crate::pipelines::sdxl_unet::SdxlAddEmbedConfig;
 
 // Config is just data (no LoRA hooks) — reuse candle's public types so a
 // `StableDiffusionConfig`'s `.unet` flows straight into our trainable UNet.
@@ -44,6 +45,10 @@ pub struct UNet2DConditionModel {
     /// LoRA registry — path → entry for every CrossAttention q/k/v/out
     /// LoraLinear. `plakat style train` installs trainable adapters here.
     pub(crate) lora_registry: LoraRegistry,
+    /// SDXL add-embedding (text_time conditioning). `None` for SD 1.5.
+    add_time_proj: Option<Timesteps>,
+    add_embedding: Option<TimestepEmbedding>,
+    add_cfg: Option<SdxlAddEmbedConfig>,
 }
 
 impl UNet2DConditionModel {
@@ -53,6 +58,7 @@ impl UNet2DConditionModel {
         out_channels: usize,
         use_flash_attn: bool,
         config: UNet2DConditionModelConfig,
+        add_cfg: Option<SdxlAddEmbedConfig>,
     ) -> Result<Self> {
         let n_blocks = config.blocks.len();
         let b_channels = config.blocks[0].out_channels;
@@ -68,6 +74,16 @@ impl UNet2DConditionModel {
         let time_proj = Timesteps::new(b_channels, config.flip_sin_to_cos, config.freq_shift);
         let time_embedding =
             TimestepEmbedding::new(vs.pp("time_embedding"), b_channels, time_embed_dim)?;
+
+        // SDXL add-embedding (text_time): build from `add_cfg` if present.
+        let (add_time_proj, add_embedding) = match &add_cfg {
+            Some(ac) => {
+                let atp = Timesteps::new(ac.addition_time_embed_dim, true, 0.0);
+                let ae = TimestepEmbedding::new(vs.pp("add_embedding"), ac.in_dim(), time_embed_dim)?;
+                (Some(atp), Some(ae))
+            }
+            None => (None, None),
+        };
 
         // LoRA registry — populated by the CrossAttention `wrap_lin` calls
         // as the blocks below are built; unwrapped into the field at the end.
@@ -253,6 +269,9 @@ impl UNet2DConditionModel {
             span,
             config,
             lora_registry,
+            add_time_proj,
+            add_embedding,
+            add_cfg,
         })
     }
 
@@ -292,7 +311,48 @@ impl UNet2DConditionModel {
         encoder_hidden_states: &Tensor,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
-        self.forward_with_additional_residuals(xs, timestep, encoder_hidden_states, None, None)
+        self.forward_with_additional_residuals(
+            xs,
+            timestep,
+            encoder_hidden_states,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// SDXL forward — builds the `add_embedding` aug-emb from the pooled
+    /// text embeds + add_time_ids and adds it to the time embedding.
+    /// Requires the UNet to have been built with an `add_cfg` (SDXL).
+    pub fn forward_sdxl(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: &Tensor,
+        add_time_ids: &Tensor,
+    ) -> Result<Tensor> {
+        let atp = self.add_time_proj.as_ref().ok_or_else(|| {
+            candle_core::Error::Msg("forward_sdxl on a non-SDXL UNet (no add_embedding)".into())
+        })?;
+        let ae = self.add_embedding.as_ref().unwrap();
+        let addition_dim = self.add_cfg.as_ref().unwrap().addition_time_embed_dim;
+        let (b_a, n_ids) = add_time_ids.dims2()?;
+        let flat_ids = add_time_ids.reshape((b_a * n_ids,))?;
+        let time_ids_emb = atp.forward(&flat_ids)?.reshape((b_a, n_ids * addition_dim))?;
+        let add_in = Tensor::cat(
+            &[&add_text_embeds.to_dtype(time_ids_emb.dtype())?, &time_ids_emb],
+            candle_core::D::Minus1,
+        )?;
+        let aug_emb = ae.forward(&add_in)?;
+        self.forward_with_additional_residuals(
+            xs,
+            timestep,
+            encoder_hidden_states,
+            None,
+            None,
+            Some(&aug_emb),
+        )
     }
 
     pub fn forward_with_additional_residuals(
@@ -302,6 +362,7 @@ impl UNet2DConditionModel {
         encoder_hidden_states: &Tensor,
         down_block_additional_residuals: Option<&[Tensor]>,
         mid_block_additional_residual: Option<&Tensor>,
+        aug_emb: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (bsize, _channels, height, width) = xs.dims4()?;
         let device = xs.device();
@@ -320,6 +381,11 @@ impl UNet2DConditionModel {
         let emb = (Tensor::ones(bsize, xs.dtype(), device)? * timestep)?;
         let emb = self.time_proj.forward(&emb)?;
         let emb = self.time_embedding.forward(&emb)?;
+        // 1b. SDXL add-embedding (text_time) aug_emb, if provided.
+        let emb = match aug_emb {
+            Some(a) => emb.broadcast_add(a)?,
+            None => emb,
+        };
         // 2. pre-process
         let xs = self.conv_in.forward(&xs)?;
         // 3. down
