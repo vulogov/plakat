@@ -7,6 +7,8 @@ use candle_transformers::models::stable_diffusion::resnet::{ResnetBlock2D, Resne
 use candle_nn::{conv2d, Conv2d};
 use candle_core::{Module, Result, Tensor, D};
 use candle_nn as nn;
+use std::sync::{Arc, RwLock};
+use crate::pipelines::lora_linear::LoraRegistry;
 
 #[derive(Debug)]
 struct Downsample2D {
@@ -400,6 +402,7 @@ impl UNetMidBlock2DCrossAttn {
         temb_channels: Option<usize>,
         use_flash_attn: bool,
         config: UNetMidBlock2DCrossAttnConfig,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let vs_resnets = vs.pp("resnets");
         let vs_attns = vs.pp("attentions");
@@ -431,6 +434,7 @@ impl UNetMidBlock2DCrossAttn {
                 in_channels / n_heads,
                 use_flash_attn,
                 attn_cfg,
+                registry,
             )?;
             let resnet = ResnetBlock2D::new(
                 vs_resnets.pp((index + 1).to_string()),
@@ -599,6 +603,7 @@ impl CrossAttnDownBlock2D {
         temb_channels: Option<usize>,
         use_flash_attn: bool,
         config: CrossAttnDownBlock2DConfig,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let downblock = DownBlock2D::new(
             vs.clone(),
@@ -625,6 +630,7 @@ impl CrossAttnDownBlock2D {
                     out_channels / n_heads,
                     use_flash_attn,
                     cfg,
+                    registry,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -805,6 +811,7 @@ impl CrossAttnUpBlock2D {
         temb_channels: Option<usize>,
         use_flash_attn: bool,
         config: CrossAttnUpBlock2DConfig,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let upblock = UpBlock2D::new(
             vs.clone(),
@@ -832,6 +839,7 @@ impl CrossAttnUpBlock2D {
                     out_channels / n_heads,
                     use_flash_attn,
                     cfg,
+                    registry,
                 )
             })
             .collect::<Result<Vec<_>>>()?;

@@ -1,7 +1,48 @@
 //! Attention Based Building Blocks
+//!
+//! Vendored from candle_transformers 0.10.2 with one augmentation: the
+//! `CrossAttention` q/k/v/out projections are `LoraLinear` (registered in
+//! a shared `LoraRegistry`) so `plakat style train` can install trainable
+//! adapters. With no adapter installed the forward is byte-identical to
+//! candle's `nn::Linear`.
 use candle_core::{DType, IndexOp, Result, Tensor, D};
 use candle_nn as nn;
 use candle_nn::Module;
+use std::sync::{Arc, RwLock};
+
+use crate::pipelines::lora_linear::{LoraLinear, LoraRegistry, LoraRegistryEntry};
+
+/// Build an `nn::Linear` and wrap it as a registered `LoraLinear` keyed by
+/// the VarBuilder's full path (`<prefix>.weight`).
+fn wrap_lin(
+    vs: nn::VarBuilder,
+    in_d: usize,
+    out_d: usize,
+    bias: bool,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = if bias {
+        nn::linear(in_d, out_d, vs.clone())?
+    } else {
+        nn::linear_no_bias(in_d, out_d, vs.clone())?
+    };
+    let ll = LoraLinear::from_linear(base)
+        .map_err(|e| candle_core::Error::Msg(format!("sd_train wrap_lin at {}: {e}", vs.prefix())))?;
+    let key = format!("{}.weight", vs.prefix());
+    registry
+        .write()
+        .map_err(|_| candle_core::Error::Msg("sd_train LoRA registry poisoned".into()))?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim: out_d,
+                in_dim: in_d,
+                train: ll.train_handle(),
+            },
+        );
+    Ok(ll)
+}
 
 #[derive(Debug)]
 struct GeGlu {
@@ -79,10 +120,10 @@ fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Ten
 
 #[derive(Debug)]
 pub struct CrossAttention {
-    to_q: nn::Linear,
-    to_k: nn::Linear,
-    to_v: nn::Linear,
-    to_out: nn::Linear,
+    to_q: LoraLinear,
+    to_k: LoraLinear,
+    to_v: LoraLinear,
+    to_out: LoraLinear,
     heads: usize,
     scale: f64,
     slice_size: Option<usize>,
@@ -102,14 +143,15 @@ impl CrossAttention {
         dim_head: usize,
         slice_size: Option<usize>,
         use_flash_attn: bool,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let inner_dim = dim_head * heads;
         let context_dim = context_dim.unwrap_or(query_dim);
         let scale = 1.0 / f64::sqrt(dim_head as f64);
-        let to_q = nn::linear_no_bias(query_dim, inner_dim, vs.pp("to_q"))?;
-        let to_k = nn::linear_no_bias(context_dim, inner_dim, vs.pp("to_k"))?;
-        let to_v = nn::linear_no_bias(context_dim, inner_dim, vs.pp("to_v"))?;
-        let to_out = nn::linear(inner_dim, query_dim, vs.pp("to_out.0"))?;
+        let to_q = wrap_lin(vs.pp("to_q"), query_dim, inner_dim, false, registry)?;
+        let to_k = wrap_lin(vs.pp("to_k"), context_dim, inner_dim, false, registry)?;
+        let to_v = wrap_lin(vs.pp("to_v"), context_dim, inner_dim, false, registry)?;
+        let to_out = wrap_lin(vs.pp("to_out.0"), inner_dim, query_dim, true, registry)?;
         let span = tracing::span!(tracing::Level::TRACE, "xa");
         let span_attn = tracing::span!(tracing::Level::TRACE, "xa-attn");
         let span_softmax = tracing::span!(tracing::Level::TRACE, "xa-softmax");
@@ -251,6 +293,7 @@ impl BasicTransformerBlock {
         context_dim: Option<usize>,
         sliced_attention_size: Option<usize>,
         use_flash_attn: bool,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let attn1 = CrossAttention::new(
             vs.pp("attn1"),
@@ -260,6 +303,7 @@ impl BasicTransformerBlock {
             d_head,
             sliced_attention_size,
             use_flash_attn,
+            registry,
         )?;
         let ff = FeedForward::new(vs.pp("ff"), dim, None, 4)?;
         let attn2 = CrossAttention::new(
@@ -270,6 +314,7 @@ impl BasicTransformerBlock {
             d_head,
             sliced_attention_size,
             use_flash_attn,
+            registry,
         )?;
         let norm1 = nn::layer_norm(dim, 1e-5, vs.pp("norm1"))?;
         let norm2 = nn::layer_norm(dim, 1e-5, vs.pp("norm2"))?;
@@ -340,6 +385,7 @@ impl SpatialTransformer {
         d_head: usize,
         use_flash_attn: bool,
         config: SpatialTransformerConfig,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let inner_dim = n_heads * d_head;
         let norm = nn::group_norm(config.num_groups, in_channels, 1e-6, vs.pp("norm"))?;
@@ -365,6 +411,7 @@ impl SpatialTransformer {
                 config.context_dim,
                 config.sliced_attention_size,
                 use_flash_attn,
+                registry,
             )?;
             transformer_blocks.push(tb)
         }
