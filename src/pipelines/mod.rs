@@ -10,6 +10,7 @@ pub mod openpose;
 pub mod openpose_post;
 pub mod sd_core;
 pub mod sdxl_clip;
+pub mod sd_train;
 pub mod sdxl_unet;
 pub mod vendored_clip;
 pub mod tiled;
