@@ -8,6 +8,8 @@ use candle_nn::{conv2d, Conv2d};
 use candle_core::{Result, Tensor};
 use candle_nn as nn;
 use candle_nn::Module;
+use std::sync::{Arc, RwLock};
+use crate::pipelines::lora_linear::LoraRegistry;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BlockConfig {
@@ -98,6 +100,9 @@ pub struct UNet2DConditionModel {
     conv_out: Conv2d,
     span: tracing::Span,
     config: UNet2DConditionModelConfig,
+    /// LoRA registry — path → entry for every CrossAttention q/k/v/out
+    /// LoraLinear. `plakat style train` installs trainable adapters here.
+    pub(crate) lora_registry: LoraRegistry,
 }
 
 impl UNet2DConditionModel {
@@ -122,6 +127,10 @@ impl UNet2DConditionModel {
         let time_proj = Timesteps::new(b_channels, config.flip_sin_to_cos, config.freq_shift);
         let time_embedding =
             TimestepEmbedding::new(vs.pp("time_embedding"), b_channels, time_embed_dim)?;
+
+        // LoRA registry — populated by the CrossAttention `wrap_lin` calls
+        // as the blocks below are built; unwrapped into the field at the end.
+        let registry: Arc<RwLock<LoraRegistry>> = Arc::new(RwLock::new(LoraRegistry::new()));
 
         let vs_db = vs.pp("down_blocks");
         let down_blocks = (0..n_blocks)
@@ -167,6 +176,7 @@ impl UNet2DConditionModel {
                         Some(time_embed_dim),
                         use_flash_attn,
                         config,
+                        &registry,
                     )?;
                     Ok(UNetDownBlock::CrossAttn(block))
                 } else {
@@ -204,6 +214,7 @@ impl UNet2DConditionModel {
             Some(time_embed_dim),
             use_flash_attn,
             mid_cfg,
+            &registry,
         )?;
 
         let vs_ub = vs.pp("up_blocks");
@@ -258,6 +269,7 @@ impl UNet2DConditionModel {
                         Some(time_embed_dim),
                         use_flash_attn,
                         config,
+                        &registry,
                     )?;
                     Ok(UNetUpBlock::CrossAttn(block))
                 } else {
@@ -282,6 +294,12 @@ impl UNet2DConditionModel {
         )?;
         let conv_out = conv2d(b_channels, out_channels, 3, conv_cfg, vs.pp("conv_out"))?;
         let span = tracing::span!(tracing::Level::TRACE, "unet2d");
+        // All blocks built — reclaim the registry (refcount 1; blocks held
+        // only `&registry`, never cloned the Arc).
+        let lora_registry = Arc::try_unwrap(registry)
+            .map_err(|_| candle_core::Error::Msg("sd_train registry still shared".into()))?
+            .into_inner()
+            .map_err(|_| candle_core::Error::Msg("sd_train registry poisoned".into()))?;
         Ok(Self {
             conv_in,
             time_proj,
@@ -293,7 +311,37 @@ impl UNet2DConditionModel {
             conv_out,
             span,
             config,
+            lora_registry,
         })
+    }
+
+    /// `plakat style train`: install a fresh trainable LoRA adapter on
+    /// every wrapped CrossAttention projection (the whole registry — only
+    /// q/k/v/out are wrapped). Returns `(key, A, B)` per target for the
+    /// optimizer + kohya save. Init `A ~ N(0, 0.02)`, `B = 0` (no-op start),
+    /// Vars F32 (mixed precision — the LoraLinear forward casts).
+    pub fn install_train_adapters(
+        &self,
+        rank: usize,
+        scale: f64,
+        device: &candle_core::Device,
+    ) -> Result<Vec<(String, candle_core::Var, candle_core::Var)>> {
+        use candle_core::{DType, Tensor, Var};
+        let mut keys: Vec<&String> = self.lora_registry.keys().collect();
+        keys.sort();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let entry = &self.lora_registry[key];
+            let a = Var::from_tensor(&Tensor::randn(0f32, 0.02f32, (rank, entry.in_dim), device)?)?;
+            let b = Var::from_tensor(&Tensor::zeros((entry.out_dim, rank), DType::F32, device)?)?;
+            *entry
+                .train
+                .write()
+                .map_err(|_| candle_core::Error::Msg("sd_train train slot poisoned".into()))? =
+                Some((a.clone(), b.clone(), scale));
+            out.push((key.clone(), a, b));
+        }
+        Ok(out)
     }
 
     pub fn forward(
