@@ -97,7 +97,7 @@ fn build_mmdit_vb<'a>(
 /// Fuses split Q/K/V into a single `qkv`, renames every tensor, and emits
 /// the dual-attention `attn2` block (SD3.5) when present. The final block is
 /// `context_pre_only` (no context output proj / MLP) — handled below.
-fn remap_diffusers_mmdit(
+pub(crate) fn remap_diffusers_mmdit(
     d: &std::collections::HashMap<String, Tensor>,
     depth: usize,
     dtype: DType,
@@ -1762,6 +1762,189 @@ pub async fn run(req: Request) -> Result<()> {
         controlnet_conditioning: Vec::new(),
         output_format,
     })
+}
+
+// =====================================================================
+// `plakat style train` (Phase 1, v0.45.0) — train a style LoRA on a
+// folder of images against the SD3.5 MMDiT, saving a diffusers-PEFT
+// `.safetensors` loadable via `--lora`. Rectified-flow objective.
+//
+// Two memory phases (24 GB-safe): encode the images + caption with the
+// BF16 pipeline and DROP it, then load the MMDiT in F32 for training.
+// =====================================================================
+
+/// Inputs for [`train_style_lora`].
+pub struct StyleTrainRequest {
+    pub variant: Variant,
+    pub repo: String,
+    pub device: Device,
+    pub images: Vec<std::path::PathBuf>,
+    pub trigger: String,
+    pub rank: usize,
+    pub steps: usize,
+    pub lr: f64,
+    pub size: u32,
+    pub out: std::path::PathBuf,
+}
+
+/// Train a style LoRA on the MMDiT attention projections; write a
+/// diffusers-PEFT safetensors. Rectified flow: `x_σ=(1-σ)x₀+σε`, the
+/// model predicts the velocity `v=ε-x₀`.
+pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
+    use candle_core::Var;
+    use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
+
+    let device = req.device.clone();
+    let cfg = req.variant.mmdit_config();
+    let hidden = cfg.head_size * cfg.depth;
+
+    // --- Phase A: encode images + caption (BF16 pipeline), then drop it.
+    tracing::info!(
+        "style-train: encoding {} image(s) + caption \"{}\"",
+        req.images.len(),
+        req.trigger
+    );
+    let (latents, y, context, dtype) = {
+        let mut pipe = Pipeline::load(LoadRequest {
+            variant: req.variant,
+            repo: req.repo.clone(),
+            device: device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            controlnets: Vec::new(),
+        })
+        .await?;
+        let dtype = pipe.dtype;
+        let (y, context) = pipe.encode_prompt(&req.trigger)?;
+        let mut latents = Vec::with_capacity(req.images.len());
+        for img in &req.images {
+            let px = crate::imaging::preprocess::sd_image_tensor(
+                img.as_path(),
+                req.size,
+                req.size,
+                &device,
+                dtype,
+            )?;
+            let z = pipe.vae.encode(&px)?.sample()?;
+            let lat = ((z - VAE_SHIFT)? * VAE_SCALE)?;
+            latents.push(lat);
+        }
+        (latents, y, context, dtype)
+    }; // BF16 pipeline (MMDiT + T5 + CLIP + VAE) dropped here → freed
+
+    // --- Phase B: load MMDiT in F32, install trainable adapters.
+    tracing::info!("style-train: loading MMDiT (F32) for training");
+    let mmdit_path = crate::hf::download::get_first_of(&[
+        (&req.repo, "transformer/diffusion_pytorch_model.safetensors"),
+        (&req.repo, "sd3.5_medium.safetensors"),
+    ])
+    .await?;
+    // BF16 base (Metal-fast, half the memory of F32); the trainable LoRA
+    // adapters stay F32 for stable AdamW (LoraLinear casts at the boundary).
+    let vb = build_mmdit_vb(&mmdit_path, dtype, &device, cfg.depth)?;
+    let model = mmdit::MMDiT::new(&cfg, false, vb)?;
+    let adapters = model.install_train_adapters(req.rank, 1.0, &device)?;
+    tracing::info!(
+        "style-train: {} trainable attention adapters (rank {})",
+        adapters.len(),
+        req.rank
+    );
+    let vars: Vec<Var> = adapters
+        .iter()
+        .flat_map(|(_, a, b)| [a.clone(), b.clone()])
+        .collect();
+    let mut opt = AdamW::new(vars, ParamsAdamW { lr: req.lr, ..Default::default() })?;
+
+    // --- Phase C: rectified-flow training loop.
+    let n = latents.len().max(1);
+    for step in 0..req.steps {
+        let x0 = &latents[step % n];
+        let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
+        let sigma = 0.05
+            + 0.90 * Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] as f64;
+        let x_t = ((x0 * (1.0 - sigma))? + (&noise * sigma)?)?;
+        let target = (&noise - x0)?;
+        // Timestep stays F32 — the embedder requires it and casts to the
+        // model dtype internally.
+        let t_vec = Tensor::full((sigma * 1000.0) as f32, (1usize,), &device)?;
+        let pred = model.forward(&x_t, &t_vec, &y, &context, None)?;
+        let loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        opt.step(&loss.backward()?)?;
+        if step % 10 == 0 || step + 1 == req.steps {
+            tracing::info!(
+                "style-train: step {}/{} loss {:.5}",
+                step + 1,
+                req.steps,
+                loss.to_scalar::<f32>()?
+            );
+        }
+        // Periodic checkpoint — `out` always holds the latest adapter so a
+        // long run is verifiable early and can be stopped at a good step.
+        if (step + 1) % 30 == 0 && step + 1 != req.steps {
+            save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
+            tracing::info!("style-train: checkpoint @ step {} → {}", step + 1, req.out.display());
+        }
+    }
+
+    // --- Phase D: save diffusers-PEFT safetensors.
+    save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
+    tracing::info!("style-train: wrote {}", req.out.display());
+    Ok(())
+}
+
+/// Write trained MMDiT attention adapters as a diffusers-PEFT LoRA
+/// (`lora_A`/`lora_B`/`alpha`). Fused qkv → q/k/v (shared A, sliced B);
+/// proj → to_out.0 / to_add_out. attn-only (the SD3 loader skips attn2).
+fn save_peft_lora(
+    adapters: &[(String, candle_core::Var, candle_core::Var)],
+    rank: usize,
+    hidden: usize,
+    out: &std::path::Path,
+) -> Result<()> {
+    use std::collections::HashMap;
+    let mut tensors: HashMap<String, Tensor> = HashMap::new();
+    let alpha = Tensor::new(rank as f32, &Device::Cpu)?;
+    for (key, a, b) in adapters {
+        // joint_blocks.{i}.{x_block|context_block}.attn.{qkv|proj}.weight
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let i: usize = match parts[1].parse() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let is_ctx = parts[2] == "context_block";
+        let kind = parts[4];
+        let a_t = a.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        let b_t = b.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        let base = format!("transformer.transformer_blocks.{i}.attn");
+        let subs: &[&str] = match (is_ctx, kind) {
+            (false, "qkv") => &["to_q", "to_k", "to_v"],
+            (true, "qkv") => &["add_q_proj", "add_k_proj", "add_v_proj"],
+            (false, "proj") => &["to_out.0"],
+            (true, "proj") => &["to_add_out"],
+            _ => &[],
+        };
+        let mut targets: Vec<(String, Tensor)> = Vec::new();
+        if kind == "qkv" {
+            for (j, s) in subs.iter().enumerate() {
+                targets.push((
+                    format!("{base}.{s}"),
+                    b_t.narrow(0, j * hidden, hidden)?.contiguous()?,
+                ));
+            }
+        } else if let Some(s) = subs.first() {
+            targets.push((format!("{base}.{s}"), b_t.clone()));
+        }
+        for (name, b_slice) in targets {
+            tensors.insert(format!("{name}.lora_A.weight"), a_t.clone());
+            tensors.insert(format!("{name}.lora_B.weight"), b_slice);
+            tensors.insert(format!("{name}.alpha"), alpha.clone());
+        }
+    }
+    candle_core::safetensors::save(&tensors, out)?;
+    Ok(())
 }
 
 #[cfg(test)]
