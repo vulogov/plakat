@@ -11,70 +11,11 @@ use candle_nn::Module;
 use std::sync::{Arc, RwLock};
 use crate::pipelines::lora_linear::LoraRegistry;
 
-#[derive(Debug, Clone, Copy)]
-pub struct BlockConfig {
-    pub out_channels: usize,
-    /// When `None` no cross-attn is used, when `Some(d)` then cross-attn is used and `d` is the
-    /// number of transformer blocks to be used.
-    pub use_cross_attn: Option<usize>,
-    pub attention_head_dim: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct UNet2DConditionModelConfig {
-    pub center_input_sample: bool,
-    pub flip_sin_to_cos: bool,
-    pub freq_shift: f64,
-    pub blocks: Vec<BlockConfig>,
-    pub layers_per_block: usize,
-    pub downsample_padding: usize,
-    pub mid_block_scale_factor: f64,
-    pub norm_num_groups: usize,
-    pub norm_eps: f64,
-    pub cross_attention_dim: usize,
-    pub sliced_attention_size: Option<usize>,
-    pub use_linear_projection: bool,
-}
-
-impl Default for UNet2DConditionModelConfig {
-    fn default() -> Self {
-        Self {
-            center_input_sample: false,
-            flip_sin_to_cos: true,
-            freq_shift: 0.,
-            blocks: vec![
-                BlockConfig {
-                    out_channels: 320,
-                    use_cross_attn: Some(1),
-                    attention_head_dim: 8,
-                },
-                BlockConfig {
-                    out_channels: 640,
-                    use_cross_attn: Some(1),
-                    attention_head_dim: 8,
-                },
-                BlockConfig {
-                    out_channels: 1280,
-                    use_cross_attn: Some(1),
-                    attention_head_dim: 8,
-                },
-                BlockConfig {
-                    out_channels: 1280,
-                    use_cross_attn: None,
-                    attention_head_dim: 8,
-                },
-            ],
-            layers_per_block: 2,
-            downsample_padding: 1,
-            mid_block_scale_factor: 1.,
-            norm_num_groups: 32,
-            norm_eps: 1e-5,
-            cross_attention_dim: 1280,
-            sliced_attention_size: None,
-            use_linear_projection: false,
-        }
-    }
-}
+// Config is just data (no LoRA hooks) — reuse candle's public types so a
+// `StableDiffusionConfig`'s `.unet` flows straight into our trainable UNet.
+pub use candle_transformers::models::stable_diffusion::unet_2d::{
+    BlockConfig, UNet2DConditionModelConfig,
+};
 
 #[derive(Debug)]
 pub(crate) enum UNetDownBlock {
