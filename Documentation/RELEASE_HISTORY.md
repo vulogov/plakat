@@ -1,12 +1,55 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.43. The current
+"What's new" sections for v0.13 through v0.44. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.44.0 — SD 3.5 rescued + corpus breadth
+
+v0.44 continues the verification cycle. The headline: **SD 3.5-medium —
+listed as supported since the SD3 line landed but never once rendering an
+image — now generates end to end** on a 24 GB Mac (BF16-native on Metal,
+the strongest open model plakat can GPU-accelerate there). It was the
+sixth "shape-tested, never verified" model the proof corpus caught.
+
+```
+SD 3.5-medium  → loads (diffusers→SAI MMDiT remapper) + generates;
+                 MMDiT verified against diffusers at corr 1.0
+corpus breadth → ML upscale, img2img restyle, portrait + reference
+                 lookalike, and a scene × weather demonstration (19 → 38)
+```
+
+### How SD 3.5 was broken — and fixed
+
+It didn't even **load**: plakat's MMDiT loader expects the SAI single-file
+layout (fused `joint_blocks` QKV), but Stability ships the diffusers
+transformer (split `transformer_blocks` Q/K/V) — a 404 on the first
+tensor. A diffusers→SAI remapper fixed the load. Then the **forward** and
+**conditioning** hid five more bugs, none catchable by a single-forward
+check:
+
+| Bug | Effect |
+|---|---|
+| pooled-`y` concatenated `[CLIP-G, CLIP-L]` vs diffusers' `[CLIP-L, CLIP-G]` | scrambled the vector that drives adaLN across the whole MMDiT → it **never denoised** (a grid) |
+| flow-match timestep passed raw `[0,1]`, not `×1000` | wrong time embedding |
+| `AdaLayerNormContinuous` read `(shift, scale)` vs diffusers' `(scale, shift)`, ×2 | a 2700-magnitude outlier the final norm propagated |
+| missing QK-norm on the context-qkv-only block; F16 timestep embed; `sd35-medium` variant mis-detect | load / precision |
+
+The MMDiT now matches diffusers' `SD3Transformer2DModel` at **corr 1.0** —
+found the same way as the prior campaigns, plus a full `encode_prompt`
+diff (which is what caught the pooled-`y` swap).
+
+### Corpus breadth (19 → 38 entries)
+
+`sd35.hjson` (incl. a legible **"FRESH BREAD"** sign), `upscale.sh`
+(Real-ESRGAN ×2 — opens **Transforms & post**), `img2img.sh` (prompt-
+steered restyle), `portrait.sh` + `portrait.hjson` (text personas + a
+reference-photo lookalike via IP-Adapter-Plus-Face), `weather-scene.hjson`
+(one area across the `scene` × `weather` axes).
 
 ## What's new in v0.43.0 — Proof corpus + the bugs it caught
 

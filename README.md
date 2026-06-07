@@ -13,70 +13,55 @@ are pulled from HuggingFace and cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.44.0 — SD 3.5 rescued + corpus breadth
+## What's new in v0.45.0 — Train your own style
 
-v0.44 continues the verification cycle. The headline: **SD 3.5-medium —
-listed as supported since the SD3 line landed but never once rendering an
-image — now generates end to end** on a 24 GB Mac (BF16-native on Metal,
-the strongest open model plakat can GPU-accelerate there). It was the
-sixth "shape-tested, never verified" model the proof corpus has caught.
-Browse the [proof corpus](corpus/) and the [gallery](corpus/GALLERY.md).
+The proof corpus showed that a *bundled* style LoRA paints "watercolour-
+ish but not **your** watercolour." v0.45 closes that gap: **`plakat style
+train` learns a style from a folder of images into a LoRA** you drop onto
+any generation — creation, not just detection. Train on nine watercolour
+references, and fresh subjects the model never saw render in that exact
+style. Browse the proof: [`corpus/images/style/`](corpus/images/style/).
 
 ```
-SD 3.5-medium  → loads (diffusers→SAI MMDiT remapper) + generates;
-                 MMDiT verified against diffusers at corr 1.0
-corpus breadth → ML upscale, img2img restyle, portrait + reference
-                 lookalike, and a scene × weather demonstration (19 → 38)
+plakat style train  → folder of images → a diffusers-PEFT LoRA (.safetensors)
+plakat generate … --lora my_style.safetensors → paints in your style
 ```
 
-### How SD 3.5 was broken — and fixed
-
-It didn't even **load**: plakat's MMDiT loader expects the SAI single-file
-layout (fused `joint_blocks` QKV), but Stability ships the diffusers
-transformer (split `transformer_blocks` Q/K/V) — a 404 on the first
-tensor. A diffusers→SAI remapper fixed the load. Then the **forward** and
-**conditioning** hid five more bugs, none catchable by a single-forward
-check:
-
-| Bug | Effect |
-|---|---|
-| pooled-`y` concatenated `[CLIP-G, CLIP-L]` vs diffusers' `[CLIP-L, CLIP-G]` | scrambled the vector that drives adaLN across the whole MMDiT → it **never denoised** (a grid) |
-| flow-match timestep passed raw `[0,1]`, not `×1000` | wrong time embedding |
-| `AdaLayerNormContinuous` read `(shift, scale)` vs diffusers' `(scale, shift)`, ×2 | a 2700-magnitude outlier the final norm propagated |
-| missing QK-norm on the context-qkv-only block; F16 timestep embed; `sd35-medium` variant mis-detect | load / precision |
-
-The MMDiT now matches diffusers' `SD3Transformer2DModel` at **corr 1.0** —
-found the same way as the prior campaigns: dump diffusers' intermediate
-activations on a fixed input and diff stage by stage (here, plus a full
-`encode_prompt` diff, which is what caught the pooled-`y` swap).
-
-### Corpus breadth (19 → 38 entries)
-
-| Added | Proves |
-|---|---|
-| `sd35.hjson` | SD 3.5-medium — incl. a legible **"FRESH BREAD"** sign (its text-rendering edge) |
-| `upscale.sh` | ML upscale (Real-ESRGAN ×2) — opens the **Transforms & post** category |
-| `img2img.sh` | prompt-steered style transfer (photo → oil / watercolour / sumi-e ink-wash) |
-| `portrait.sh` + `portrait.hjson` | text personas + a reference-photo **lookalike** (IP-Adapter-Plus-Face) |
-| `weather-scene.hjson` | one area re-lit + re-weathered across the scenario `scene` × `weather` axes |
-
-### Try it
+### Train your own style LoRA (Phase 1: SD 3.5)
 
 ```bash
-# SD 3.5-medium — now generates (gated; accept the HF licence first)
-plakat generate "a still life with fruit, oil painting" --model sd35-medium
+# Train once (slow — full back-prop through the MMDiT; ~a couple of hours)
+plakat style train --from-dir ./my_style_images --base sd35 \
+  --trigger "wcstyle watercolour painting illustration" \
+  --out ./my_style.safetensors
 
-# ML-upscale any image 2× (Real-ESRGAN)
-plakat upscale --in photo.png --out big.png --method real-esrgan-x2
-
-# Restyle an image while keeping its composition
-plakat img2img photo.png --prompt "an impressionist oil painting" --model sdxl
-
-# A reference-photo lookalike portrait
-plakat portrait "a candlelit scholar" --photo face.png --model sd15
+# Generate forever (fast — reuse the LoRA; never retrain to render)
+plakat generate "a harbour, wcstyle watercolour painting illustration" \
+  --model sd35-medium --lora ./my_style.safetensors
 ```
 
-**Earlier releases** (v0.13 – v0.43):
+How it fits a 24 GB Mac: **mixed precision** — a frozen BF16 base
+(Metal-fast) plus an F32 LoRA on the attention projections for stable
+optimization — encode-then-drop the text/VAE stack, train at 256² with
+periodic checkpoints so a long run is usable early. The output is a
+standard diffusers-PEFT `.safetensors`. Training and generation are kept
+**separate** (train for hours once; render in seconds forever). Full
+walkthrough:
+[`TRAIN_STYLE_LORA_TUTORIAL.md`](Documentation/Tutorials/TRAIN_STYLE_LORA_TUTORIAL.md)
+· reference:
+[`TRAIN_CUSTOM_LORA.md`](Documentation/TRAIN_CUSTOM_LORA.md).
+
+> **SDXL and SD 1.5** bases land in 0.46.0 (their UNets need a LoRA-wired
+> attention path). A LoRA is bound to its base — train one per model.
+
+### Also fixed
+
+| Area | Was | Now |
+|---|---|---|
+| **SD 3 `--lora`** on diffusers checkpoints (sd35-medium) | silently **0/N merged** (a no-op) — the merge looked for SAI keys in diffusers-keyed weights | remaps diffusers→SAI before merging → **191/191**; fixes *any* SD3 LoRA, not just trained ones |
+| **SD 2.1** | **404** — `stabilityai/stable-diffusion-2-1` had been gated; plakat still claimed ungated | repointed to an ungated 768 v-prediction mirror; the pipeline was always fine |
+
+**Earlier releases** (v0.13 – v0.44):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -340,7 +325,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. |
-| `style {detect,list,show,init,probe}` | Inspect, detect, and bootstrap art-style catalogs. |
+| `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
 | `embedding {info,flux-ip-adapter-info}` | Inspect Textual Inversion `.safetensors` files + XLabs Flux IP-Adapter weights. |

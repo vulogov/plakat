@@ -42,7 +42,7 @@
 //! 7b-5 (MMDiT), 7b-6 (SD UNet), and 7b-7 (scenario dispatch).
 
 use anyhow::Result;
-use candle_core::{DType, Device, Module, Tensor};
+use candle_core::{DType, Device, Module, Tensor, Var};
 use candle_nn as nn;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -104,6 +104,12 @@ pub struct LoraLinear {
     /// gives external code a handle for keyed registries (see
     /// future 7b-2+ subphases).
     slots: Arc<RwLock<Vec<LoraSlot>>>,
+    /// Optional **trainable** LoRA adapter for `plakat style train`.
+    /// `(A, B, scale)` where A/B are trainable `Var`s — `as_tensor()` is
+    /// read fresh each forward so optimizer updates are seen, and the
+    /// grad routes to the `Var` the optimizer holds (same `Arc`). `None`
+    /// for every inference path → byte-identical to frozen-slot forward.
+    train: Arc<RwLock<Option<(Var, Var, f64)>>>,
 }
 
 impl LoraLinear {
@@ -117,7 +123,33 @@ impl LoraLinear {
             out_dim,
             in_dim,
             slots: Arc::new(RwLock::new(Vec::new())),
+            train: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Install a **trainable** LoRA adapter (`plakat style train`). `a`/`b`
+    /// are trainable `Var`s — `a: (rank, in_dim)`, `b: (out_dim, rank)` —
+    /// `Clone`d in (cheap `Arc`), so the optimizer holding the same `Var`s
+    /// drives this forward. Replaces any prior train adapter.
+    pub fn set_train_adapter(&self, a: Var, b: Var, scale: f64) {
+        *self.train.write().expect("LoraLinear train poisoned") = Some((a, b, scale));
+    }
+
+    /// Drop the trainable adapter (forward reverts to base + frozen slots).
+    pub fn clear_train_adapter(&self) {
+        *self.train.write().expect("LoraLinear train poisoned") = None;
+    }
+
+    /// Whether a trainable adapter is installed.
+    pub fn has_train_adapter(&self) -> bool {
+        self.train.read().expect("LoraLinear train poisoned").is_some()
+    }
+
+    /// Shared handle to the trainable-adapter slot, so a backbone's
+    /// `install_train_adapters` can set it by registry path (parallel to
+    /// [`slots_handle`]).
+    pub fn train_handle(&self) -> Arc<RwLock<Option<(Var, Var, f64)>>> {
+        self.train.clone()
     }
 
     /// Hand out an `Arc` handle to the shared LoRA stack. Used by the
@@ -201,6 +233,30 @@ impl Module for LoraLinear {
             let delta = (delta * slot.scale as f64)?;
             y = y.broadcast_add(&delta)?;
         }
+        // Trainable adapter (`plakat style train`). Same low-rank math, but
+        // A/B are Var-backed so this delta carries gradients. Absent on
+        // every inference path → no effect.
+        if let Some((a, b, scale)) = self
+            .train
+            .read()
+            .map_err(|_| candle_core::Error::Msg("LoraLinear train poisoned".into()))?
+            .as_ref()
+        {
+            // Mixed precision: the adapter may be F32 (stable AdamW) while
+            // the base + x are BF16. Cast x into the adapter dtype for the
+            // low-rank path, then the delta back to the output dtype.
+            let adt = a.as_tensor().dtype();
+            let xc = if x.dtype() == adt { x.clone() } else { x.to_dtype(adt)? };
+            let lo = xc.broadcast_matmul(&a.as_tensor().t()?)?;
+            let delta = lo.broadcast_matmul(&b.as_tensor().t()?)?;
+            let delta = (delta * *scale)?;
+            let delta = if delta.dtype() == y.dtype() {
+                delta
+            } else {
+                delta.to_dtype(y.dtype())?
+            };
+            y = y.broadcast_add(&delta)?;
+        }
         Ok(y)
     }
 }
@@ -224,6 +280,20 @@ pub struct LoraRegistryEntry {
     pub handle: Arc<RwLock<Vec<LoraSlot>>>,
     pub out_dim: usize,
     pub in_dim: usize,
+    /// Trainable-adapter handle (`plakat style train`). `Default` (empty
+    /// `None`) for inference-only constructors via `..Default::default()`.
+    pub train: Arc<RwLock<Option<(Var, Var, f64)>>>,
+}
+
+impl Default for LoraRegistryEntry {
+    fn default() -> Self {
+        Self {
+            handle: Arc::new(RwLock::new(Vec::new())),
+            out_dim: 0,
+            in_dim: 0,
+            train: Arc::new(RwLock::new(None)),
+        }
+    }
 }
 
 /// Path → entry map, keyed by full safetensors key (including the

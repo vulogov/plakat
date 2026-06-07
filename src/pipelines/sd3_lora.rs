@@ -85,6 +85,21 @@ pub fn merge_sd3_loras_into_weights(
                 base_path.display()
             )
         })?;
+    // Diffusers-format checkpoints (e.g. sd35-medium's
+    // `transformer/diffusion_pytorch_model.safetensors`) key attention as
+    // `transformer_blocks.N.attn.to_q`, but `resolve_target` produces SAI
+    // keys (`joint_blocks.N…attn.qkv`) — so without remapping, nothing
+    // matches (0/N merged). Remap to SAI first; the merged output is then
+    // SAI and `build_mmdit_vb` skips its own remap. (head_size = 64.)
+    if merged.contains_key("transformer_blocks.0.attn.to_q.weight") {
+        let depth = hidden_size / 64;
+        let dtype = merged
+            .values()
+            .next()
+            .map(|t| t.dtype())
+            .unwrap_or(candle_core::DType::F16);
+        merged = crate::pipelines::sd3::remap_diffusers_mmdit(&merged, depth, dtype)?;
+    }
     let mut modified = 0usize;
     let mut total_groups = 0usize;
 
