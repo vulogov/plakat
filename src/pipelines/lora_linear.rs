@@ -242,9 +242,20 @@ impl Module for LoraLinear {
             .map_err(|_| candle_core::Error::Msg("LoraLinear train poisoned".into()))?
             .as_ref()
         {
-            let lo = x.broadcast_matmul(&a.as_tensor().t()?)?;
+            // Mixed precision: the adapter may be F32 (stable AdamW) while
+            // the base + x are BF16. Cast x into the adapter dtype for the
+            // low-rank path, then the delta back to the output dtype.
+            let adt = a.as_tensor().dtype();
+            let xc = if x.dtype() == adt { x.clone() } else { x.to_dtype(adt)? };
+            let lo = xc.broadcast_matmul(&a.as_tensor().t()?)?;
             let delta = lo.broadcast_matmul(&b.as_tensor().t()?)?;
-            y = y.broadcast_add(&(delta * *scale)?)?;
+            let delta = (delta * *scale)?;
+            let delta = if delta.dtype() == y.dtype() {
+                delta
+            } else {
+                delta.to_dtype(y.dtype())?
+            };
+            y = y.broadcast_add(&delta)?;
         }
         Ok(y)
     }
