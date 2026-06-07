@@ -29,9 +29,11 @@ exclude = [
     ".vscode/",
     "tests/fixtures/",
     "**/.DS_Store",
-    # Proof corpus (images, trained LoRA safetensors, gallery, drivers) —
-    # large and not part of the published crate. Keeps us under the 10 MB cap.
+    # Proof corpus + showcase gallery (images, trained LoRA safetensors,
+    # drivers) — large and not part of the published crate. Keeps us under
+    # the 10 MB cap.
     "corpus/",
+    "gallery/",
 ]
 
 [features]
