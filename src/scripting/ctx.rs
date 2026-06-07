@@ -1645,7 +1645,7 @@ mod tests {
         // The resolved-alias path is also exercised by the
         // canonical HF repo path:
         assert!(
-            pick_sd_family_identity("stabilityai/stable-diffusion-2-1", None)
+            pick_sd_family_identity("nlightcho/stable-diffusion-2-1", None)
                 .is_none()
         );
     }

@@ -52,6 +52,14 @@ If you're new to plakat, work through these in order:
  end-to-end pipeline (organize → init → build → use) and adding
  LoRAs to make detection turn into real style transfer.
 
+4a. [`TRAIN_STYLE_LORA_TUTORIAL.md`](TRAIN_STYLE_LORA_TUTORIAL.md) —
+ **v0.45.** The *creation* companion to the catalog tutorial: `plakat
+ style train` learns a style from a folder of images into a LoRA that
+ actually **paints** in that style (not just detects it). Phase 1
+ trains on SD 3.5. Covers corpus requirements, the train→generate
+ split, checkpointing, and tuning strength at render time with the
+ `--lora …:scale` suffix. Worked watercolour example in `corpus/`.
+
 5. [`ARTEFACTS_TUTORIAL.md`](ARTEFACTS_TUTORIAL.md) — composite named
  PNG cutouts (trees, sky elements, houses) into named zones of
  your generated images. Useful when you need specific objects in
@@ -205,6 +213,7 @@ feature:
 | `LOOKS_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. First-time use of a look hits Civitai over the network; subsequent runs are network-free (or use `--offline`). |
 | `GENRES_TUTORIAL.md` | Above + finished `LOOKS_TUTORIAL.md` (mirrors the look axis). |
 | `HOW_TO_CREATE_MY_OWN_STYLE.md` | Above + finished `STYLES_TUTORIAL.md`. Plus a corpus of images you want to teach plakat. |
+| `TRAIN_STYLE_LORA_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. A folder of 3+ style images, 24 GB Apple-Silicon/Metal, and a HuggingFace token (SD 3.5 is gated). Budget a couple of hours for training. |
 | `PORTRAIT_HOW_TO_AGE.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus 2-4 photos of the same person at different ages. |
 | `PORTRAIT_CHILD_PHOTO.md` | Above + finished `PORTRAIT_TUTORIAL.md`. Plus one head-shot per parent. |
 | `CIVITAI_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. Plus an internet connection. An optional `CIVITAI_API_KEY` if you want gated assets. |
@@ -230,6 +239,7 @@ manuals in [`Documentation/`](..):
 - Looking up a specific `plakat generate` flag → [`GENERATE.md`](../GENERATE.md)
 - Identity strategies and ArcFace setup → [`PERSONA.md`](../PERSONA.md)
 - Style catalog JSON schema → [`STYLES.md`](../STYLES.md)
+- Train your own style LoRA (flags + internals) → [`TRAIN_CUSTOM_LORA.md`](../TRAIN_CUSTOM_LORA.md)
 - Look (art-medium) presets reference → [`LOOKS.md`](../LOOKS.md)
 - Genre (subject-domain) presets reference → [`GENRES.md`](../GENRES.md)
 - AnimateDiff architecture + roadmap → [`ANIMATEDIFF.md`](../ANIMATEDIFF.md)

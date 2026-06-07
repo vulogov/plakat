@@ -62,13 +62,20 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         note: "9-channel UNet inpainting variant (4 latent + 1 mask + 4 masked-image latents)",
     },
     // ── SD 2.1 ───────────────────────────────────────────────────
+    // Stability gated `stabilityai/stable-diffusion-2-1` (404 for tokens
+    // that haven't accepted the licence), so `sd21` resolved to an
+    // unreachable repo. Point at an ungated 768 v-prediction mirror so
+    // `--model sd21` works out of the box — the same move plakat already
+    // made for `sd15` after Runway deleted the original SD 1.5 repo. The
+    // diffusers-safetensors layout + v-pred scheduler are identical to
+    // the canonical 2-1, verified end to end.
     AliasEntry {
         aliases: &["sd21", "sd-2.1"],
-        repo: "stabilityai/stable-diffusion-2-1",
+        repo: "nlightcho/stable-diffusion-2-1",
         family: "SD 2.1",
         kind: "base",
         gated: false,
-        note: "Stable Diffusion 2.1 base — 768×768 native, OpenCLIP-H text encoder",
+        note: "Stable Diffusion 2.1 — 768×768 native, OpenCLIP-H text encoder (ungated mirror)",
     },
     // ── SDXL ─────────────────────────────────────────────────────
     AliasEntry {
@@ -372,7 +379,7 @@ mod tests {
             resolve_alias("sd-1.5"),
             "stable-diffusion-v1-5/stable-diffusion-v1-5"
         );
-        assert_eq!(resolve_alias("sd21"), "stabilityai/stable-diffusion-2-1");
+        assert_eq!(resolve_alias("sd21"), "nlightcho/stable-diffusion-2-1");
         assert_eq!(
             resolve_alias("sdxl"),
             "stabilityai/stable-diffusion-xl-base-1.0"
