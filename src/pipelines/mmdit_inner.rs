@@ -1206,7 +1206,7 @@ impl MMDiT {
         device: &Device,
     ) -> Result<Vec<(String, Var, Var)>> {
         let mut keys: Vec<&String> =
-            self.lora_registry.keys().filter(|k| k.contains(".attn")).collect();
+            self.lora_registry.keys().filter(|k| k.contains(".attn.")).collect();
         keys.sort();
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {

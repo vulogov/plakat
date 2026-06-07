@@ -44,6 +44,39 @@ pub enum StyleOp {
     /// (slugified). Doesn't build the catalog itself — the next step is
     /// `cargo run --bin build_catalog -- --sources <HJSON> --out <DIR>`.
     Init(InitArgs),
+    /// Train a style LoRA from a folder of images (creation, not
+    /// detection). Phase 1: SD3.5 only. Writes a diffusers-PEFT
+    /// `.safetensors` loadable via `--lora`.
+    Train(TrainArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct TrainArgs {
+    /// Folder of style images to train on (3+ recommended; jpg/png).
+    #[arg(long, value_name = "DIR")]
+    pub from_dir: PathBuf,
+    /// Base model. Phase 1 supports `sd35` only (SD3.5 Medium).
+    #[arg(long, default_value = "sd35")]
+    pub base: String,
+    /// Trigger phrase woven into training — include it in your prompts
+    /// at inference to invoke the style.
+    #[arg(long, default_value = "in this style")]
+    pub trigger: String,
+    /// Output `.safetensors` path.
+    #[arg(long, value_name = "FILE")]
+    pub out: PathBuf,
+    /// Training steps.
+    #[arg(long, default_value_t = 90)]
+    pub steps: usize,
+    /// LoRA rank.
+    #[arg(long, default_value_t = 16)]
+    pub rank: usize,
+    /// Training resolution (256 fits 24 GB; higher needs more memory).
+    #[arg(long, default_value_t = 256)]
+    pub size: u32,
+    /// Learning rate.
+    #[arg(long, default_value_t = 1.5e-4)]
+    pub lr: f64,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -155,7 +188,64 @@ pub async fn run(args: StyleArgs, device: Device) -> Result<()> {
         StyleOp::Show(a) => show_cmd(a, &catalog_dir, &device),
         StyleOp::Probe(a) => probe_cmd(a, &catalog_dir, &device).await,
         StyleOp::Init(a) => init_cmd(a),
+        StyleOp::Train(a) => train_cmd(a, device).await,
     }
+}
+
+/// Train a style LoRA from a folder of images (Phase 1: SD3.5).
+async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
+    use crate::pipelines::sd3;
+    let (variant, repo) = match args.base.as_str() {
+        "sd35" | "sd35-medium" | "sd3.5-medium" => (
+            sd3::Variant::Sd35Medium,
+            "stabilityai/stable-diffusion-3.5-medium".to_string(),
+        ),
+        other => anyhow::bail!(
+            "style train: base '{other}' not supported yet — Phase 1 is sd35 only \
+             (sdxl / sd15 land in 0.46.0)"
+        ),
+    };
+    let mut images: Vec<PathBuf> = std::fs::read_dir(&args.from_dir)
+        .with_context(|| format!("reading {}", args.from_dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|x| x.to_str()),
+                Some("jpg") | Some("jpeg") | Some("png")
+            )
+        })
+        .collect();
+    images.sort();
+    if images.len() < 3 {
+        anyhow::bail!(
+            "style train: need 3+ images in {}, found {}",
+            args.from_dir.display(),
+            images.len()
+        );
+    }
+    println!(
+        "Training {} style LoRA on {} images ({} steps, rank {}, {}²) → {}",
+        args.base,
+        images.len(),
+        args.steps,
+        args.rank,
+        args.size,
+        args.out.display()
+    );
+    sd3::train_style_lora(sd3::StyleTrainRequest {
+        variant,
+        repo,
+        device,
+        images,
+        trigger: args.trigger,
+        rank: args.rank,
+        steps: args.steps,
+        lr: args.lr,
+        size: args.size,
+        out: args.out,
+    })
+    .await
 }
 
 async fn detect_cmd(args: DetectArgs, catalog_dir: &Path, device: Device) -> Result<()> {

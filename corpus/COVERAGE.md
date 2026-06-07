@@ -9,11 +9,11 @@ committed under `images/`.
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
-| Stable Cascade | `cascade.hjson` | ✅ | ⬜ | ungated, ~16 GB Metal |
-| SD 1.5 | `sd15.hjson` | ✅ | ⬜ | ungated, ~4 GB, 512²; incl. canny CN |
+| Stable Cascade | `cascade.hjson` | ✅ | ✅ | ungated, ~16 GB Metal |
+| SD 1.5 | `sd15.hjson` | ✅ | ✅ | ungated, ~4 GB, 512²; incl. canny CN |
 | SD 2.1 | `sd21.hjson` | ✅ | ✅ | ungated, ~5 GB, 768² v-prediction; alias repointed off the gated stabilityai repo |
-| SDXL | `sdxl.hjson` | ✅ | ⬜ | ungated, ~7 GB; incl. canny CN |
-| PixArt-Σ | `pixart.hjson` | ✅ | ⬜ | ungated |
+| SDXL | `sdxl.hjson` | ✅ | ✅ | ungated, ~7 GB; incl. canny CN |
+| PixArt-Σ | `pixart.hjson` | ✅ | ✅ | ungated |
 | Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
 | SD3.5 Medium | `sd35.hjson` | ✅ | ✅ | ⚠️ gated; BF16-native ~16 GB Metal; strong text |
 
@@ -21,12 +21,14 @@ committed under `images/`.
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
-| ControlNet (canny, Cascade) | `cascade.hjson` | ✅ | ⬜ | per-task `control:` |
-| ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ⬜ | auto-from |
+| ControlNet (canny, Cascade) | `cascade.hjson` | ✅ | ✅ | per-task `control:`; output within `images/cascade/` |
+| ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
 | Styles / Looks / Genres | `presets.hjson` | ⬜ | ⬜ | `style:` / `--look` / `--genre` |
+| **Style LoRA training (SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → diffusers-PEFT LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers (191/191 merged). Training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
+| AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
 
 ## Transforms & post
 
@@ -41,7 +43,7 @@ committed under `images/`.
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
-| Scenarios (HJSON batch) | every `*.hjson` | ✅ | ⬜ | the corpus is itself the proof |
+| Scenarios (HJSON batch) | every `*.hjson` | ✅ | ✅ | the corpus is itself the proof |
 | Scene × weather axes | `weather-scene.hjson` | ✅ | ✅ | one area (prompt-header) re-lit + re-weathered across both axes |
 | Bund scripting | `script.bund` | ⬜ | ⬜ | `plakat run` |
 | Gallery generator | `plakat gallery` | ✅ | n/a | builds this corpus's index |

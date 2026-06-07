@@ -1,6 +1,6 @@
 # plakat gallery
 
-41 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+44 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -62,6 +62,11 @@
     <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
+    <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
+    <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
@@ -333,6 +338,24 @@ _(no embedded metadata)_
 ### plakat-portrait-43.png
 
 ![plakat-portrait-43.png](images/portrait/sage_captain/plakat-portrait-43.png)
+
+_(no embedded metadata)_
+
+### plakat-sd3-denoise-42.png
+
+![plakat-sd3-denoise-42.png](images/style/harbour/plakat-sd3-denoise-42.png)
+
+_(no embedded metadata)_
+
+### plakat-sd3-denoise-42.png
+
+![plakat-sd3-denoise-42.png](images/style/winter-village/plakat-sd3-denoise-42.png)
+
+_(no embedded metadata)_
+
+### plakat-sd3-denoise-42.png
+
+![plakat-sd3-denoise-42.png](images/style/river-orchard/plakat-sd3-denoise-42.png)
 
 _(no embedded metadata)_
 
