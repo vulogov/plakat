@@ -55,7 +55,7 @@ pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
     #[arg(long, value_name = "DIR")]
     pub from_dir: PathBuf,
-    /// Base model. Phase 1 supports `sd35` only (SD3.5 Medium).
+    /// Base model: `sd15` (SD 1.5) or `sd35` (SD3.5 Medium). sdxl in progress.
     #[arg(long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -194,17 +194,6 @@ pub async fn run(args: StyleArgs, device: Device) -> Result<()> {
 
 /// Train a style LoRA from a folder of images (Phase 1: SD3.5).
 async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
-    use crate::pipelines::sd3;
-    let (variant, repo) = match args.base.as_str() {
-        "sd35" | "sd35-medium" | "sd3.5-medium" => (
-            sd3::Variant::Sd35Medium,
-            "stabilityai/stable-diffusion-3.5-medium".to_string(),
-        ),
-        other => anyhow::bail!(
-            "style train: base '{other}' not supported yet — Phase 1 is sd35 only \
-             (sdxl / sd15 land in 0.46.0)"
-        ),
-    };
     let mut images: Vec<PathBuf> = std::fs::read_dir(&args.from_dir)
         .with_context(|| format!("reading {}", args.from_dir.display()))?
         .filter_map(|e| e.ok())
@@ -233,19 +222,44 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
         args.size,
         args.out.display()
     );
-    sd3::train_style_lora(sd3::StyleTrainRequest {
-        variant,
-        repo,
-        device,
-        images,
-        trigger: args.trigger,
-        rank: args.rank,
-        steps: args.steps,
-        lr: args.lr,
-        size: args.size,
-        out: args.out,
-    })
-    .await
+
+    match args.base.as_str() {
+        "sd15" | "sd1.5" | "stable-diffusion-v1-5" => {
+            use crate::pipelines::sd_train::trainer;
+            trainer::train_style_lora_sd(trainer::SdStyleTrainRequest {
+                model: "sd15".to_string(),
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+            })
+            .await
+        }
+        "sd35" | "sd35-medium" | "sd3.5-medium" => {
+            use crate::pipelines::sd3;
+            sd3::train_style_lora(sd3::StyleTrainRequest {
+                variant: sd3::Variant::Sd35Medium,
+                repo: "stabilityai/stable-diffusion-3.5-medium".to_string(),
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+            })
+            .await
+        }
+        other => anyhow::bail!(
+            "style train: base '{other}' not supported — use sd15 or sd35 \
+             (sdxl in progress)"
+        ),
+    }
 }
 
 async fn detect_cmd(args: DetectArgs, catalog_dir: &Path, device: Device) -> Result<()> {

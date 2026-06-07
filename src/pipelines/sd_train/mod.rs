@@ -10,3 +10,5 @@
 pub mod attention;
 pub mod blocks;
 pub mod unet;
+
+pub mod trainer;
