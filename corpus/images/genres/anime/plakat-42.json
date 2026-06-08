@@ -1,0 +1,13 @@
+{
+  "prompt": "anime illustration, cel-shaded, clean line art, a lone knight resting under a blossoming cherry tree, anime aesthetic, expressive style, stylized proportions",
+  "negative": "photographic, realistic skin texture, photorealistic, 3d render, hyperrealism",
+  "model": "sd15",
+  "seed": 42,
+  "steps": 24,
+  "guidance": 8.0,
+  "scheduler": "eulera",
+  "width": 512,
+  "height": 512,
+  "generator": "plakat 0.46.0",
+  "genre": "anime"
+}

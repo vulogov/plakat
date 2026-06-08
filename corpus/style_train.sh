@@ -16,8 +16,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 BASE="${1:-sd15}"
 
+# Keep NUMBERED checkpoints (<out>-step<N>.safetensors, every 30 steps) so a
+# single run can be swept afterwards for the best step — the sd15 sweet spot
+# lives between the under-cooked 90-step and the over-cooked 240@lr3e-4. Gen
+# with each <out>-step<N> to pick it; delete the rest once chosen.
+export PLAKAT_TRAIN_CHECKPOINTS=1
+
 case "$BASE" in
-  sd15) SIZE=512; LR=3e-4;   STEPS=240; RANK=32; OUT=watercolour-sd15.safetensors ;;
+  sd15) SIZE=512; LR=2e-4;   STEPS=240; RANK=32; OUT=watercolour-sd15.safetensors ;;
   sdxl) SIZE=512; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour-sdxl.safetensors ;;
   sd35) SIZE=256; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour.safetensors ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;

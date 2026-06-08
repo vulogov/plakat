@@ -1,0 +1,13 @@
+{
+  "prompt": "oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments",
+  "negative": "photographic, smooth digital gradients, flat colors, 3d render, cgi",
+  "model": "sd15",
+  "seed": 42,
+  "steps": 40,
+  "guidance": 7.0,
+  "scheduler": "eulera",
+  "width": 512,
+  "height": 512,
+  "generator": "plakat 0.46.0",
+  "look": "oil-painting"
+}
