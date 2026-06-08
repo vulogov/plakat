@@ -72,8 +72,34 @@ fn alphas_cumprod() -> Vec<f64> {
         .collect()
 }
 
+/// SDXL UNet config (candle's `sdxl` values; cfg.unet is private).
+fn sdxl_unet_config() -> UNet2DConditionModelConfig {
+    let bc = |out_channels, use_cross_attn, attention_head_dim| BlockConfig {
+        out_channels,
+        use_cross_attn,
+        attention_head_dim,
+    };
+    UNet2DConditionModelConfig {
+        blocks: vec![bc(320, None, 5), bc(640, Some(2), 10), bc(1280, Some(10), 20)],
+        center_input_sample: false,
+        cross_attention_dim: 2048,
+        downsample_padding: 1,
+        flip_sin_to_cos: true,
+        freq_shift: 0.,
+        layers_per_block: 2,
+        mid_block_scale_factor: 1.,
+        norm_eps: 1e-5,
+        norm_num_groups: 32,
+        sliced_attention_size: None,
+        use_linear_projection: true,
+    }
+}
+
 /// Train a style LoRA on the SD UNet attention; write a kohya safetensors.
 pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
+    if req.model.contains("sdxl") {
+        return train_sdxl(req).await;
+    }
     let device = req.device.clone();
     let dtype = DType::BF16; // training base dtype; LoRA Vars stay F32
 
@@ -174,6 +200,116 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
     tracing::info!("sd-style-train: wrote {}", req.out.display());
+    Ok(())
+}
+
+/// SDXL branch — dual-CLIP conditioning (hidden 2048 + pooled 1280) +
+/// add_time_ids, trains the SDXL UNet via forward_sdxl. Same DDPM-epsilon
+/// loop + kohya save as SD 1.5.
+async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
+    use crate::pipelines::sdxl_unet::SdxlAddEmbedConfig;
+    let device = req.device.clone();
+    let dtype = DType::BF16;
+
+    tracing::info!(
+        "sdxl-style-train: encoding {} image(s) + caption \"{}\"",
+        req.images.len(),
+        req.trigger
+    );
+    let (latents, hidden, pooled, add_time_ids, base_repo) = {
+        let pipe = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+            model: req.model.clone(),
+            device: device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            use_refiner: false,
+            embeddings: Vec::new(),
+            vae_cache: None,
+        })
+        .await?;
+        let (hidden, pooled_opt) = pipe.encode_prompt(&req.trigger, "", false, 1)?;
+        let hidden = hidden.to_dtype(dtype)?;
+        let pooled = pooled_opt
+            .ok_or_else(|| anyhow::anyhow!("SDXL encode returned no pooled embedding"))?
+            .to_dtype(dtype)?;
+        let core = pipe.core();
+        let scale = core.variant.vae_scale();
+        let mut latents = Vec::with_capacity(req.images.len());
+        for img in &req.images {
+            let px = crate::imaging::preprocess::sd_image_tensor(
+                img.as_path(),
+                req.size,
+                req.size,
+                &device,
+                core.dtype,
+            )?;
+            let z = core.vae.encode(&px)?.sample()?;
+            latents.push((z * scale)?.to_dtype(dtype)?);
+        }
+        let add_time_ids =
+            crate::pipelines::sdxl_unet::build_add_time_ids_base(req.size, req.size, &device, dtype)?;
+        let base_repo = if req.model.contains('/') {
+            req.model.clone()
+        } else {
+            crate::hf::resolve_alias(&req.model).to_string()
+        };
+        (latents, hidden, pooled, add_time_ids, base_repo)
+    };
+
+    tracing::info!("sdxl-style-train: loading UNet for training");
+    let unet_path = crate::hf::download::get_first_of(&[
+        (&base_repo, "unet/diffusion_pytorch_model.fp16.safetensors"),
+        (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
+    ])
+    .await?;
+    let paths = [unet_path];
+    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, &device)? };
+    let unet = UNet2DConditionModel::new(
+        vb,
+        4,
+        4,
+        false,
+        sdxl_unet_config(),
+        Some(SdxlAddEmbedConfig::base()),
+    )?;
+    let adapters = unet.install_train_adapters(req.rank, 1.0, &device)?;
+    tracing::info!(
+        "sdxl-style-train: {} trainable attention adapters (rank {})",
+        adapters.len(),
+        req.rank
+    );
+    let vars: Vec<Var> = adapters
+        .iter()
+        .flat_map(|(_, a, b)| [a.clone(), b.clone()])
+        .collect();
+    let mut opt = AdamW::new(vars, ParamsAdamW { lr: req.lr, ..Default::default() })?;
+
+    let abar = alphas_cumprod();
+    let n = latents.len().max(1);
+    for step in 0..req.steps {
+        let x0 = &latents[step % n];
+        let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
+        let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
+        let a = abar[t];
+        let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
+        let pred = unet.forward_sdxl(&x_t, t as f64, &hidden, &pooled, &add_time_ids)?;
+        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        opt.step(&loss.backward()?)?;
+        if step % 10 == 0 || step + 1 == req.steps {
+            tracing::info!(
+                "sdxl-style-train: step {}/{} loss {:.5}",
+                step + 1,
+                req.steps,
+                loss.to_scalar::<f32>()?
+            );
+        }
+        if (step + 1) % 30 == 0 && step + 1 != req.steps {
+            save_kohya_lora(&adapters, req.rank, &req.out)?;
+            tracing::info!("sdxl-style-train: checkpoint @ step {} → {}", step + 1, req.out.display());
+        }
+    }
+    save_kohya_lora(&adapters, req.rank, &req.out)?;
+    tracing::info!("sdxl-style-train: wrote {}", req.out.display());
     Ok(())
 }
 
