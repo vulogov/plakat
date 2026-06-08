@@ -2,19 +2,19 @@
   "prompt": "a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration",
   "model": "sd15",
   "seed": 42,
-  "steps": 28,
+  "steps": 26,
   "guidance": 7.5,
   "scheduler": "default",
   "width": 512,
   "height": 512,
   "loras": [
-    "LoraSpec { source: Local(\"corpus/style/watercolour-sd15.safetensors\"), scale: 1.0 }"
+    "LoraSpec { source: Local(\"/Users/gandalf/Src/plakat/corpus/style/watercolour-sd15.safetensors\"), scale: 1.0 }"
   ],
   "lora_scale": 1.0,
   "generator": "plakat 0.46.0",
   "lora_stack": [
     {
-      "display": "corpus/style/watercolour-sd15.safetensors",
+      "display": "/Users/gandalf/Src/plakat/corpus/style/watercolour-sd15.safetensors",
       "scale": 1.0,
       "source": "local"
     }

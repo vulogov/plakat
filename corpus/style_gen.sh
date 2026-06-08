@@ -4,9 +4,9 @@
 # Requires the matching corpus/style/watercolour*.safetensors — run
 # style_train.sh <base> first (training and generation are separated).
 #
-# The LoRA loads via `--lora <path>:<scale>`. SD 1.5's imprint is weaker, so
-# we apply it at a hotter scale (1.3) to surface the style; SDXL / SD 3.5
-# look right at 1.0.
+# The LoRA loads via `--lora <path>:<scale>`. All three look right at scale
+# 1.0 — the sd15 LoRA is the swept step-120 checkpoint (a hotter scale just
+# pushed it toward the over-cooked look).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -14,7 +14,7 @@ BASE="${1:-sd15}"
 TRIGGER="wcstyle watercolour painting illustration"
 
 case "$BASE" in
-  sd15) MODEL=sd15;        LORA=watercolour-sd15.safetensors;  SCALE=":1.3"; SIZE=512x512; DIR=style-sd15 ;;
+  sd15) MODEL=sd15;        LORA=watercolour-sd15.safetensors;  SCALE="";     SIZE=512x512; DIR=style-sd15 ;;
   sdxl) MODEL=sdxl;        LORA=watercolour-sdxl.safetensors;  SCALE="";     SIZE=768x768; DIR=style-sdxl ;;
   sd35) MODEL=sd35-medium; LORA=watercolour.safetensors;       SCALE="";     SIZE=768x768; DIR=style ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
