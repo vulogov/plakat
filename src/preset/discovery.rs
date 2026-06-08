@@ -705,12 +705,25 @@ pub async fn discover_lora(
 ) -> Result<Option<DiscoveredLora>> {
     // 1. Cache check (cheap, always tried).
     if let Some(cached) = read_cache(options, preset_name) {
-        tracing::debug!(
-            target: "plakat",
-            "look-discovery cache hit for {preset_name}/{}",
-            options.base.cache_slug()
+        // Offline can't download: a cached *remote* (Civitai/HF) spec is
+        // only usable if its file is already on disk. A prior run can cache
+        // the discovery *spec* without ever completing the file download —
+        // returning it here would make the offline path hit the network and
+        // time out. So when offline + remote, skip the cached spec and fall
+        // through to the file-verified local scan (§2); a true miss returns
+        // None and the look falls back to its prompt preset.
+        let remote = matches!(
+            cached.source,
+            Source::Civitai { .. } | Source::HuggingFace { .. }
         );
-        return Ok(Some(cached.to_discovered(options.scale)));
+        if !(options.offline && remote) {
+            tracing::debug!(
+                target: "plakat",
+                "look-discovery cache hit for {preset_name}/{}",
+                options.base.cache_slug()
+            );
+            return Ok(Some(cached.to_discovered(options.scale)));
+        }
     }
 
     // 2. Offline short-circuit: local-cache scan only, no network.
@@ -1290,9 +1303,12 @@ mod tests {
         assert!(result.is_none(), "offline + no cache must return None");
     }
 
-    /// Cache hit short-circuits even when `offline: true`.
+    /// Offline + a cached *remote* (Civitai/HF) spec whose file isn't on
+    /// disk must NOT be returned — resolving it would hit the network and
+    /// time out. It falls through to the local-cache scan (empty here) →
+    /// None, so the look uses its prompt preset instead of crashing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn offline_with_cache_hits() {
+    async fn offline_remote_cache_without_file_returns_none() {
         let (_dir, mut opts) = tmp_options(BaseFamily::Sd15);
         opts.offline = true;
         write_cache(&opts, "watercolor", &fake_discovered());
@@ -1302,12 +1318,10 @@ mod tests {
             keywords: vec!["watercolor".into()],
         };
         let result = discover_lora(&q, "watercolor", &opts).await.unwrap();
-        let d = result.expect("cache should have hit");
-        assert_eq!(d.model_name, "Watercolor LoRA");
-        match d.source {
-            Source::Civitai { version_id, .. } => assert_eq!(version_id, 789),
-            other => panic!("expected Civitai, got {other:?}"),
-        }
+        assert!(
+            result.is_none(),
+            "offline + remote cached spec without a local file must return None"
+        );
     }
 
     /// Cache hit reconstructs a usable LoraSpec pointing at the
