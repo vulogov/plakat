@@ -481,6 +481,14 @@ pub struct GenerateArgs {
     #[arg(long, default_value_t = false)]
     pub offline: bool,
 
+    /// **v0.46**: re-rank `--look` / `--genre` Civitai discovery candidates
+    /// with a small local LLM that picks the best *style* LoRA and rejects
+    /// character/person LoRAs. Generic medium terms (watercolour, pencil)
+    /// otherwise match anime-character LoRAs that hijack the subject. Runs the
+    /// judge on CPU; falls back to the prompt preset if nothing suitable.
+    #[arg(long = "smart-discovery", default_value_t = false)]
+    pub smart_discovery: bool,
+
     /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
     /// conditioning to the standard Flux variants (`flux-dev`,
     /// `flux-schnell`, GGUF, NF4) by encoding the image through
@@ -981,6 +989,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             args.genre.as_deref(),
             args.offline,
             crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+            args.smart_discovery,
             &mut params,
             &mut args.loras,
         )
@@ -1759,6 +1768,7 @@ mod tests {
             look: None,
             genre: None,
             offline: false,
+            smart_discovery: false,
             redux_images: Vec::new(),
             concept_image: None,
             concept_from: None,

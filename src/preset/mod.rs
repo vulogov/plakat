@@ -447,6 +447,7 @@ pub async fn apply_presets_with_discovery(
     genre_name: Option<&str>,
     offline: bool,
     base: discovery::BaseFamily,
+    smart_discovery: bool,
     params: &mut GenerationParams,
     loras: &mut Vec<crate::pipelines::lora::LoraSpec>,
 ) -> Result<()> {
@@ -488,7 +489,15 @@ pub async fn apply_presets_with_discovery(
         return Ok(());
     };
     let query = spec.lora_query.as_ref().expect("filter guarantees Some");
-    let opts = discovery::DiscoveryOptions::with_defaults(offline, base);
+    let mut opts = discovery::DiscoveryOptions::with_defaults(offline, base);
+    if smart_discovery {
+        // The judge is a tiny classification — run it on CPU so it never
+        // competes with the image pipeline for GPU memory.
+        opts.judge = Some(discovery::JudgeConfig {
+            device: candle_core::Device::Cpu,
+            alias: "qwen2.5-1.5b".to_string(),
+        });
+    }
     match discovery::discover_lora(query, &spec.name, &opts).await {
         Ok(Some(d)) => {
             crate::ui::progress::println(&format!(
