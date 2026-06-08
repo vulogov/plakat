@@ -1,0 +1,13 @@
+{
+  "prompt": "gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative",
+  "negative": "photographic, glossy, transparent washes, 3d render, photorealistic",
+  "model": "sd15",
+  "seed": 42,
+  "steps": 32,
+  "guidance": 6.5,
+  "scheduler": "eulera",
+  "width": 512,
+  "height": 512,
+  "generator": "plakat 0.46.0",
+  "look": "gouache"
+}
