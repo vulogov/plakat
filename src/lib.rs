@@ -14,6 +14,7 @@ pub mod config;
 pub mod device;
 pub mod error_hints;
 pub mod hf;
+pub mod hw;
 pub mod imaging;
 pub mod llm;
 pub mod pipelines;
