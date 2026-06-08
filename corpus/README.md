@@ -69,6 +69,7 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `img2img.sh` | **img2img style transfer** — repaint a photo into a medium (oil / watercolour / ink-wash) while keeping its composition, on SDXL. |
 | `portrait.sh` | **Text-only persona portraits** (no reference photo) on SD 1.5. |
 | `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
+| `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.
