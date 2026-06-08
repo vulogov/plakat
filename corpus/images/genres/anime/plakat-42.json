@@ -1,13 +1,22 @@
 {
-  "prompt": "anime illustration, cel-shaded, clean line art, a lone knight resting under a blossoming cherry tree, anime aesthetic, expressive style, stylized proportions",
-  "negative": "photographic, realistic skin texture, photorealistic, 3d render, hyperrealism",
+  "prompt": "a lone knight resting under a blossoming cherry tree, anime screencap",
   "model": "sd15",
   "seed": 42,
-  "steps": 24,
-  "guidance": 8.0,
+  "steps": 28,
+  "guidance": 7.5,
   "scheduler": "eulera",
   "width": 512,
   "height": 512,
+  "loras": [
+    "LoraSpec { source: Civitai { id_kind: Version(5744), file: None }, scale: 1.0 }"
+  ],
+  "lora_scale": 1.0,
   "generator": "plakat 0.46.0",
-  "genre": "anime"
+  "lora_stack": [
+    {
+      "display": "civitai-version:5744",
+      "scale": 1.0,
+      "source": "civitai"
+    }
+  ]
 }
