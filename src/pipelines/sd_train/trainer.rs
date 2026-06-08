@@ -171,7 +171,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         .iter()
         .flat_map(|(_, a, b)| [a.clone(), b.clone()])
         .collect();
-    let mut opt = AdamW::new(vars, ParamsAdamW { lr: req.lr, ..Default::default() })?;
+    let mut opt = AdamW::new(vars.clone(), ParamsAdamW { lr: req.lr, ..Default::default() })?;
 
     // --- Phase C: DDPM-epsilon loop. x_t = √ᾱ·x0 + √(1-ᾱ)·ε; predict ε.
     let abar = alphas_cumprod();
@@ -184,7 +184,9 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward(&x_t, t as f64, &text_emb)?;
         let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
-        opt.step(&loss.backward()?)?;
+        let mut grads = loss.backward()?;
+        crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
+        opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
                 "sd-style-train: step {}/{} loss {:.5}",
@@ -282,7 +284,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         .iter()
         .flat_map(|(_, a, b)| [a.clone(), b.clone()])
         .collect();
-    let mut opt = AdamW::new(vars, ParamsAdamW { lr: req.lr, ..Default::default() })?;
+    let mut opt = AdamW::new(vars.clone(), ParamsAdamW { lr: req.lr, ..Default::default() })?;
 
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
@@ -294,7 +296,9 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward_sdxl(&x_t, t as f64, &hidden, &pooled, &add_time_ids)?;
         let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
-        opt.step(&loss.backward()?)?;
+        let mut grads = loss.backward()?;
+        crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
+        opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
                 "sdxl-style-train: step {}/{} loss {:.5}",

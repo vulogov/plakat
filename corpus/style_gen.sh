@@ -4,8 +4,9 @@
 # Requires the matching corpus/style/watercolour*.safetensors — run
 # style_train.sh <base> first (training and generation are separated).
 #
-# The LoRA loads via plain `--lora`; the trigger phrase invokes the style.
-# Proves the trained style transfers onto fresh subjects (not in the refs).
+# The LoRA loads via `--lora <path>:<scale>`. SD 1.5's imprint is weaker, so
+# we apply it at a hotter scale (1.3) to surface the style; SDXL / SD 3.5
+# look right at 1.0.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -13,15 +14,15 @@ BASE="${1:-sd15}"
 TRIGGER="wcstyle watercolour painting illustration"
 
 case "$BASE" in
-  sd15) MODEL=sd15;        LORA=watercolour-sd15.safetensors;  SIZE=512x512; DIR=style-sd15 ;;
-  sdxl) MODEL=sdxl;        LORA=watercolour-sdxl.safetensors;  SIZE=768x768; DIR=style-sdxl ;;
-  sd35) MODEL=sd35-medium; LORA=watercolour.safetensors;       SIZE=768x768; DIR=style ;;
+  sd15) MODEL=sd15;        LORA=watercolour-sd15.safetensors;  SCALE=":1.3"; SIZE=512x512; DIR=style-sd15 ;;
+  sdxl) MODEL=sdxl;        LORA=watercolour-sdxl.safetensors;  SCALE="";     SIZE=768x768; DIR=style-sdxl ;;
+  sd35) MODEL=sd35-medium; LORA=watercolour.safetensors;       SCALE="";     SIZE=768x768; DIR=style ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
 esac
 
 gen() {
   "$PLAKAT" generate "$1, $TRIGGER" \
-    --model "$MODEL" --lora "$ROOT/corpus/style/$LORA" \
+    --model "$MODEL" --lora "$ROOT/corpus/style/$LORA$SCALE" \
     --steps 26 --size "$SIZE" --seed 42 --device metal \
     --out "$ROOT/corpus/images/$DIR/$2"
 }

@@ -19,6 +19,7 @@ SUBJECT="a stone cottage by a forest stream"
 for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel linocut gouache; do
   "$PLAKAT" generate "$SUBJECT" \
     --model sd15 --look "$LOOK" \
+    --scheduler euler-a \
     --steps 28 --size 512x512 --seed 42 --device metal \
     --out "$ROOT/corpus/images/looks/$LOOK"
 done
