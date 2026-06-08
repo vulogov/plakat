@@ -14,6 +14,7 @@ PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 
 "$PLAKAT" generate "a lone knight resting under a blossoming cherry tree" \
   --model sd15 --genre anime \
+  --scheduler euler-a \
   --steps 28 --size 512x512 --seed 42 --device metal \
   --out "$ROOT/corpus/images/genres/anime"
 

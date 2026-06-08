@@ -353,6 +353,36 @@ pub(crate) fn pad_b_to_out_dim(
     Ok(Tensor::cat(&[&head, &b, &tail], 0)?)
 }
 
+/// Clip the global L2 norm of the gradients for `vars` (in place) to
+/// `max_norm`. `plakat style train` uses this so a single loss-spike step
+/// (the DDPM-epsilon loss occasionally jumps from ~0.01 to ~0.9 on a hard
+/// timestep) can't deliver a giant update that wrecks the adapter — which
+/// in turn lets us train at a hotter LR to imprint the style faster (needed
+/// on weaker bases like SD 1.5, where the base already denoises so well the
+/// LoRA gradient is otherwise tiny). Returns the pre-clip norm.
+pub fn clip_grad_norm(
+    grads: &mut candle_core::backprop::GradStore,
+    vars: &[Var],
+    max_norm: f64,
+) -> Result<f64> {
+    let mut total_sq = 0f64;
+    for v in vars {
+        if let Some(g) = grads.get(v.as_tensor()) {
+            total_sq += g.sqr()?.sum_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()? as f64;
+        }
+    }
+    let norm = total_sq.sqrt();
+    if norm.is_finite() && norm > max_norm {
+        let scale = max_norm / norm;
+        for v in vars {
+            if let Some(g) = grads.remove(v.as_tensor()) {
+                grads.insert(v.as_tensor(), (g * scale)?);
+            }
+        }
+    }
+    Ok(norm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
