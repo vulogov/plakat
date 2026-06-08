@@ -896,7 +896,7 @@ impl Pipeline {
     ///   * For SDXL: pooled is `Some((B, 1280))` feeding the UNet's
     ///     `add_embedding`. Caller pairs it with an `add_time_ids`
     ///     tensor built in `generate`.
-    fn encode_prompt(
+    pub(crate) fn encode_prompt(
         &self,
         prompt: &str,
         negative: &str,

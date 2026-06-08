@@ -55,7 +55,7 @@ pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
     #[arg(long, value_name = "DIR")]
     pub from_dir: PathBuf,
-    /// Base model: `sd15` (SD 1.5) or `sd35` (SD3.5 Medium). sdxl in progress.
+    /// Base model: `sd15`, `sdxl`, or `sd35` (SD3.5 Medium).
     #[arg(long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -228,6 +228,21 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             use crate::pipelines::sd_train::trainer;
             trainer::train_style_lora_sd(trainer::SdStyleTrainRequest {
                 model: "sd15".to_string(),
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+            })
+            .await
+        }
+        "sdxl" | "stable-diffusion-xl" | "sdxl-base" => {
+            use crate::pipelines::sd_train::trainer;
+            trainer::train_style_lora_sd(trainer::SdStyleTrainRequest {
+                model: "sdxl".to_string(),
                 device,
                 images,
                 trigger: args.trigger,
