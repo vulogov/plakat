@@ -89,8 +89,9 @@ impl Mask {
     }
 
     /// Apply a separable box blur of `radius` pixels for soft edges.
-    /// Zero radius is a no-op. Edges fade toward zero (implicit
-    /// boundary; this is intended for feathering).
+    /// Zero radius is a no-op. Edge-clamped (see `box_blur_inplace`): a
+    /// region saturated at the image border stays saturated, so only true
+    /// interior boundaries soften.
     pub fn feather(&mut self, radius: u32) {
         if radius == 0 {
             return;
@@ -158,15 +159,16 @@ impl Mask {
 }
 
 /// Separable box blur of `radius` (horizontal pass, then vertical).
-/// Border pixels past the edge act as 0 — they fade the mask out,
-/// which is the desired feathering behaviour. Same implementation
-/// shape as the v2 artefact-blend feather; kept independent here so
-/// callers in `imaging` don't need to depend on `pipelines`.
+/// **Edge-clamped**: each output divides the running sum by the count of
+/// *in-bounds* pixels in its window, not the full kernel. So a region that's
+/// saturated at the image border stays saturated — only true interior
+/// boundaries soften. Outpaint depends on this: its mask is white right up
+/// to the canvas edge, and dividing by the full kernel there (the old
+/// behaviour) faded it, leaving the new strip half-inpainted as a dark band.
 fn box_blur_inplace(buf: &mut [f32], w: usize, h: usize, radius: usize) {
-    if radius == 0 {
+    if radius == 0 || w == 0 || h == 0 {
         return;
     }
-    let k = (2 * radius + 1) as f32;
     let mut scratch = vec![0f32; buf.len()];
 
     // Horizontal.
@@ -184,7 +186,9 @@ fn box_blur_inplace(buf: &mut [f32], w: usize, h: usize, radius: usize) {
             if x > radius {
                 sum -= buf[row_start + x - radius - 1];
             }
-            scratch[row_start + x] = sum / k;
+            let lo = x.saturating_sub(radius);
+            let hi = (x + radius).min(w - 1);
+            scratch[row_start + x] = sum / (hi - lo + 1) as f32;
         }
     }
 
@@ -202,7 +206,9 @@ fn box_blur_inplace(buf: &mut [f32], w: usize, h: usize, radius: usize) {
             if y > radius {
                 sum -= scratch[(y - radius - 1) * w + x];
             }
-            buf[y * w + x] = sum / k;
+            let lo = y.saturating_sub(radius);
+            let hi = (y + radius).min(h - 1);
+            buf[y * w + x] = sum / (hi - lo + 1) as f32;
         }
     }
 }
