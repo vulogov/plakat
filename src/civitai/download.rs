@@ -322,11 +322,14 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
     let token = std::env::var("CIVITAI_API_KEY").ok().filter(|t| !t.is_empty());
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
-        // Downloads can be slow; no overall timeout. Per-chunk
-        // socket reads inherit the default 30s — enough to detect a
-        // hung CDN but not so short that a slow link aborts.
+        // Downloads can be large; we want NO overall request timeout, but a
+        // per-read timeout to detect a hung CDN. NOTE: `.timeout(ZERO)` does
+        // NOT mean "disabled" — reqwest treats it as a 0-second total
+        // timeout, so every download aborted instantly (the long-standing
+        // "operation timed out"). Use `read_timeout` (resets each chunk) and
+        // leave the overall timeout at its default (none).
         .pool_idle_timeout(std::time::Duration::from_secs(60))
-        .timeout(std::time::Duration::from_secs(0));
+        .read_timeout(std::time::Duration::from_secs(60));
     if let Some(t) = token.as_ref() {
         let mut headers = reqwest::header::HeaderMap::new();
         let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))
