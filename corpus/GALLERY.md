@@ -11,7 +11,7 @@
   <tr>
     <td width="33%"><img src="images/upscale/landscape_x2/landscape_x2.png" alt=""></td>
     <td width="33%"><img src="images/animate/ocean_waves/animation.gif" alt="ocean waves crashing on a rocky shore at sunset, cinematic, golden light"></td>
-    <td width="33%"><img src="images/genres/anime/plakat-11.png" alt="anime screencap, a tranquil Japanese shrine among blossoming cherry trees, koi pond, stone lanterns, vibrant flat colors, detailed anime background art"></td>
+    <td width="33%"><img src="images/genres/anime/plakat-7.png" alt="anime style, a lone samurai standing under a blossoming cherry tree, detailed anime illustration, vibrant flat colors, clean cel shading"></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/civitai/plakat-42.png" alt="an ancient cathedral shrouded in mist, towering spires, eldritch atmosphere, intricate detail"></td>
@@ -153,15 +153,15 @@ Negative: `bad quality, worse quality, blurry, low resolution`
 
 `Lykon/dreamshaper-8` · animatediff · 8 frames · 512×512 · 25 steps · CFG 7.5 · seed 42
 
-### plakat-11.png
+### plakat-7.png
 
-![plakat-11.png](images/genres/anime/plakat-11.png)
+![plakat-7.png](images/genres/anime/plakat-7.png)
 
-> anime screencap, a tranquil Japanese shrine among blossoming cherry trees, koi pond, stone lanterns, vibrant flat colors, detailed anime background art
+> anime style, a lone samurai standing under a blossoming cherry tree, detailed anime illustration, vibrant flat colors, clean cel shading
 
-Negative: `people, person, figure, deformed, ugly, blurry`
+Negative: `photorealistic, 3d render, deformed, ugly, blurry`
 
-`sd15` · LoRA: civitai-version:5744:1.5 · 512×512 · 30 steps · CFG 7.5 · seed 11
+`sdxl` · LoRA: civitai:129020:1.5 · 1024×1024 · 30 steps · CFG 7.5 · seed 7
 
 ### plakat-42.png
 
