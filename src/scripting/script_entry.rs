@@ -982,6 +982,7 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     genre_name.as_deref(),
                     offline,
                     base,
+                    false,
                     &mut params,
                     &mut ctx.loras,
                 ))?;
@@ -1141,6 +1142,7 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     genre_name.as_deref(),
                     offline,
                     base,
+                    false,
                     &mut params,
                     &mut ctx.loras,
                 ))?;
@@ -1254,6 +1256,7 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
                     genre_name.as_deref(),
                     offline,
                     base,
+                    false,
                     &mut params,
                     &mut ctx.loras,
                 ))?;

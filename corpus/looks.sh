@@ -8,6 +8,11 @@
 # so the discovery pulls SDXL medium LoRAs. SDXL is a far stronger base than
 # SD 1.5 (which muddied art styles), so the looks render crisply.
 #
+# `--smart-discovery` runs the candidate pool through a small local LLM that
+# picks the best STYLE LoRA and rejects character LoRAs (generic medium terms
+# otherwise match anime characters that hijack the subject). Falls back to the
+# SDXL prompt preset when the judge finds nothing suitable.
+#
 # Needs CIVITAI_API_KEY: the per-look LoRA downloads are auth-gated, reliable
 # now the download timeout(0) bug is fixed. `--scheduler euler-a` because the
 # look presets otherwise pick a DPM++/Karras scheduler candle's Metal backend
@@ -19,7 +24,7 @@ SUBJECT="a stone cottage by a forest stream"
 
 for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel linocut gouache; do
   "$PLAKAT" generate "$SUBJECT" \
-    --model sdxl --look "$LOOK" \
+    --model sdxl --look "$LOOK" --smart-discovery \
     --scheduler euler-a \
     --steps 30 --size 1024x1024 --seed 42 --device metal \
     --out "$ROOT/corpus/images/looks/$LOOK"

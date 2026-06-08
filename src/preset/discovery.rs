@@ -161,6 +161,18 @@ pub struct DiscoveredLora {
     pub source_url: Option<String>,
 }
 
+/// Configures the optional LLM judge that re-ranks Civitai discovery
+/// candidates. Set via `--smart-discovery`: the candidate pool is run through
+/// a small local LLM that picks the best *style* LoRA and rejects
+/// character/person LoRAs — which generic medium terms otherwise match (an
+/// "anime girl tagged watercolor" instead of a watercolor style).
+#[derive(Debug, Clone)]
+pub struct JudgeConfig {
+    pub device: candle_core::Device,
+    /// LLM alias, e.g. `qwen2.5-1.5b`.
+    pub alias: String,
+}
+
 /// Knobs the caller passes in: offline switch, pipeline family,
 /// and the cache roots.
 #[derive(Debug, Clone)]
@@ -179,6 +191,10 @@ pub struct DiscoveryOptions {
     /// default `0.8` — same as the v0.23 style catalog's typical
     /// LoRA scale.
     pub scale: f32,
+    /// When set, re-rank the Civitai candidate pool with a local LLM that
+    /// picks the best style LoRA and rejects characters. None = the legacy
+    /// behaviour (first base-compatible match).
+    pub judge: Option<JudgeConfig>,
 }
 
 impl DiscoveryOptions {
@@ -189,6 +205,7 @@ impl DiscoveryOptions {
             cache_root: default_cache_root(),
             civitai_cache_root: crate::civitai::download::cache_root(),
             scale: 0.8,
+            judge: None,
         }
     }
 }
@@ -278,8 +295,12 @@ fn cache_path(opts: &DiscoveryOptions, preset_name: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
+    // Judged and unjudged discoveries are cached under separate keys — a
+    // result picked by the first-base-match heuristic must not satisfy a
+    // later `--smart-discovery` request (and vice-versa).
+    let judged = if opts.judge.is_some() { "-judged" } else { "" };
     opts.cache_root
-        .join(format!("{safe}__{}.json", opts.base.cache_slug()))
+        .join(format!("{safe}__{}{judged}.json", opts.base.cache_slug()))
 }
 
 /// Read a cache entry if present + parseable. Errors are
@@ -661,10 +682,106 @@ fn try_local_scan(
 /// `Ok(None)` when no compatible LoRA shows up in the first page
 /// (we don't paginate — the top-20 results from Civitai's
 /// relevance-ranked search are the practical universe).
+/// A base-compatible, non-NSFW discovery candidate.
+struct Candidate<'a> {
+    model: &'a api::Model,
+    version: &'a api::ModelVersion,
+}
+
+/// Collect base-compatible, non-NSFW candidates (one version per model).
+fn collect_candidates(models: &[api::Model], base: BaseFamily) -> Vec<Candidate<'_>> {
+    let mut out = Vec::new();
+    for model in models {
+        if model.nsfw {
+            continue;
+        }
+        for version in &model.model_versions {
+            if version
+                .base_model
+                .as_deref()
+                .is_some_and(|bm| base.civitai_matches(bm))
+            {
+                out.push(Candidate { model, version });
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Ask the local LLM to pick the best *style* LoRA for `concept` from the
+/// candidate pool, rejecting character/person LoRAs. Returns the chosen model
+/// id, or None (no suitable style LoRA → the caller falls back to prompt-only).
+async fn judge_candidates(
+    concept: &str,
+    candidates: &[Candidate<'_>],
+    judge: &JudgeConfig,
+) -> Option<u64> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut list = String::new();
+    for c in candidates.iter().take(15) {
+        let desc: String = c
+            .model
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .map(|ch| if ch == '\n' { ' ' } else { ch })
+            .take(140)
+            .collect();
+        let triggers: String = c
+            .version
+            .trained_words
+            .join(", ")
+            .chars()
+            .take(100)
+            .collect();
+        list.push_str(&format!(
+            "[{}] \"{}\" | tags: {} | triggers: {} | {}\n",
+            c.model.id,
+            c.model.name,
+            c.model.tags.join(", "),
+            triggers,
+            desc
+        ));
+    }
+    let system = "You select a LoRA that applies a generic ART MEDIUM or visual STYLE to ANY \
+        subject. Rules, in order: (1) A LoRA whose triggers/tags/name describe a PERSON — 1girl, \
+        1boy, a personal or character name, hair colour, body, clothing, a franchise — is a \
+        CHARACTER LoRA; never pick it, even if it also mentions the medium. (2) Only pick a LoRA \
+        that is clearly a pure medium/style, with style-only or empty triggers. (3) If NO \
+        candidate clearly satisfies (2), answer none — do not guess. Answer with ONLY the chosen \
+        numeric id, or the single word: none.";
+    let user = format!(
+        "Wanted: a generic art-medium / style LoRA for \"{concept}\".\n\
+         Candidates (id, name, tags, description):\n{list}\n\
+         Reply with the id of the best STYLE LoRA, or none."
+    );
+    let opts = crate::llm::EnhanceOpts {
+        seed: 42,
+        temperature: 0.0,
+        max_new_tokens: 12,
+    };
+    let reply = crate::llm::enhance(&judge.alias, judge.device.clone(), system, &user, opts)
+        .await
+        .ok()?;
+    tracing::debug!(target: "plakat", "discovery judge reply for {concept:?}: {reply:?}");
+    // Parse the first integer; only accept it if it names a real candidate.
+    let id: u64 = reply
+        .split(|ch: char| !ch.is_ascii_digit())
+        .find(|s| !s.is_empty())?
+        .parse()
+        .ok()?;
+    candidates.iter().any(|c| c.model.id == id).then_some(id)
+}
+
 async fn try_civitai(
     query: &LoraQuery,
     base: BaseFamily,
     scale: f32,
+    judge: Option<&JudgeConfig>,
 ) -> Result<Option<DiscoveredLora>> {
     let q = build_query_string(query);
     if q.is_empty() {
@@ -673,8 +790,24 @@ async fn try_civitai(
     let resp = api::search(&q, Some(api::AssetType::Lora), 20, 1)
         .await
         .with_context(|| format!("Civitai search for {q:?}"))?;
-    let Some((model, version)) = pick_best_version(&resp.items, base) else {
-        return Ok(None);
+
+    // With a judge, re-rank the whole pool by style relevance; without one,
+    // keep the legacy first-base-compatible pick.
+    let (model, version) = match judge {
+        Some(j) => {
+            let cands = collect_candidates(&resp.items, base);
+            match judge_candidates(&q, &cands, j).await {
+                Some(id) => match cands.into_iter().find(|c| c.model.id == id) {
+                    Some(c) => (c.model, c.version),
+                    None => return Ok(None),
+                },
+                None => return Ok(None),
+            }
+        }
+        None => match pick_best_version(&resp.items, base) {
+            Some(pair) => pair,
+            None => return Ok(None),
+        },
     };
     let spec = LoraSpec {
         source: LoraSource::Civitai {
@@ -755,7 +888,7 @@ pub async fn discover_lora(
     }
 
     // 3. Online chain: Civitai → HF Hub → local-cache scan.
-    if let Some(d) = try_civitai(query, options.base, options.scale).await? {
+    if let Some(d) = try_civitai(query, options.base, options.scale, options.judge.as_ref()).await? {
         write_cache(options, preset_name, &d);
         return Ok(Some(d));
     }
@@ -947,6 +1080,7 @@ mod tests {
             // (try_local_scan early-returns None).
             civitai_cache_root: dir.path().join("civitai-empty"),
             scale: 0.8,
+            judge: None,
         };
         (dir, opts)
     }
@@ -1036,6 +1170,7 @@ mod tests {
             cache_root: dir.path().to_path_buf(),
             civitai_cache_root: dir.path().to_path_buf(),
             scale: 0.8,
+            judge: None,
         };
         let sd15 = cache_path(&make(BaseFamily::Sd15), "watercolor");
         let sdxl = cache_path(&make(BaseFamily::Sdxl), "watercolor");
@@ -1319,6 +1454,7 @@ mod tests {
             cache_root: dir.path().join("discovery"),
             civitai_cache_root: civitai_dir,
             scale: 0.8,
+            judge: None,
         };
         let q = LoraQuery {
             tags: vec![],
