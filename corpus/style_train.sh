@@ -8,22 +8,20 @@
 #
 # Per-base recipe: SD 1.5 is a weaker base whose UNet already denoises the
 # latents almost perfectly, so the LoRA gets a tiny gradient — it needs a
-# much HOTTER lr + more steps + more rank to imprint the style (gradient
-# clipping in the trainer keeps that stable through loss spikes). SDXL /
-# SD 3.5 are stronger bases and learn the style with the lighter recipe.
+# hotter lr + more rank than SDXL/SD3.5 to imprint the style (gradient
+# clipping in the trainer keeps that stable through loss spikes). The 120
+# steps below is the swept sweet spot for the watercolour set: lr 3e-4
+# over-cooked, and at lr 2e-4 the LoRA peaks ~step 120 then drifts to
+# photoreal by 240. To re-sweep on a different dataset, set STEPS higher +
+# export PLAKAT_TRAIN_CHECKPOINTS=1 (writes <out>-step<N> every 30 steps),
+# then gen with each to pick the best.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 BASE="${1:-sd15}"
 
-# Keep NUMBERED checkpoints (<out>-step<N>.safetensors, every 30 steps) so a
-# single run can be swept afterwards for the best step — the sd15 sweet spot
-# lives between the under-cooked 90-step and the over-cooked 240@lr3e-4. Gen
-# with each <out>-step<N> to pick it; delete the rest once chosen.
-export PLAKAT_TRAIN_CHECKPOINTS=1
-
 case "$BASE" in
-  sd15) SIZE=512; LR=2e-4;   STEPS=240; RANK=32; OUT=watercolour-sd15.safetensors ;;
+  sd15) SIZE=512; LR=2e-4;   STEPS=120; RANK=32; OUT=watercolour-sd15.safetensors ;;
   sdxl) SIZE=512; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour-sdxl.safetensors ;;
   sd35) SIZE=256; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour.safetensors ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
