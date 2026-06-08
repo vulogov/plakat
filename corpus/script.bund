@@ -29,5 +29,7 @@
 // Upscale handle 1 x2 in-memory (no save/reload) -> handle 2.
 2 plakat.upscale
 
-// Save the upscaled image (handle 2).
-"corpus/images/script/fox-2x.png" plakat.save
+// Save the upscaled image (handle 2). plakat.save writes relative to the
+// run's output dir (./out), so this lands at ./out/fox-2x.png; the
+// script.sh driver then relocates it into corpus/images/script/.
+"fox-2x.png" plakat.save

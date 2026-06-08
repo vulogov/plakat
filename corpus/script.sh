@@ -13,4 +13,9 @@ mkdir -p "$ROOT/corpus/images/script"
 cd "$ROOT"
 "$PLAKAT" run corpus/script.bund
 
-echo "✓ wrote corpus/images/script/"
+# plakat.save writes under the run's output dir (./out); relocate the
+# result into the corpus tree.
+mv -f "$ROOT/out/fox-2x.png" "$ROOT/corpus/images/script/fox-2x.png"
+rmdir "$ROOT/out" 2>/dev/null || true
+
+echo "✓ wrote corpus/images/script/fox-2x.png"
