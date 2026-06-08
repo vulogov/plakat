@@ -74,6 +74,7 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose). Civitai download on first run. |
 | `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
 | `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sd15-inpaint`). |
+| `stylize.sh` | **Stylize** (`plakat stylize`) — transfer a reference image's *look* onto a subject via IP-Adapter (no prompt, no training; distinct from img2img + style LoRAs). Bold subjects restyle best. SD 1.5. |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.

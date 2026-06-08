@@ -29,6 +29,7 @@ committed under `images/`.
 | **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 | AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
+| Stylize (IP-Adapter style transfer) | `stylize.sh` | ✅ | ⬜ | transfer a reference image's *look* onto a subject — no prompt, no training (vs img2img / style LoRAs). Bold subjects restyle best. |
 
 ## Transforms & post
 
