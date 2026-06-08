@@ -307,6 +307,15 @@ pub fn resolve_alias(name: &str) -> &str {
     name
 }
 
+/// Look up the full alias-table entry for a model name (canonical or any
+/// accepted synonym). Returns `None` for unknown names. Used by `doctor
+/// --capability` to read each model's repo + `gated` flag together.
+pub fn entry_for_alias(name: &str) -> Option<&'static AliasEntry> {
+    ALIAS_TABLE
+        .iter()
+        .find(|e| e.aliases.iter().any(|a| *a == name))
+}
+
 /// v0.33 phase 1: enumerate every known alias (first canonical
 /// + every accepted synonym) as a flat list. Used by
 /// `error_hints::hint_unknown_alias` to suggest the closest
