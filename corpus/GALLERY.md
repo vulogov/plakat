@@ -1,6 +1,6 @@
 # plakat gallery
 
-44 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+50 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -15,6 +15,16 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/sdxl/sdxl_landscape/plakat-42.png" alt=""></td>
+    <td width="33%"><img src="images/style-sd15/harbour/plakat-42.png" alt="a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration"></td>
+    <td width="33%"><img src="images/style-sd15/winter-village/plakat-42.png" alt="a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration"></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/style-sd15/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
+    <td width="33%"><img src="images/style-sdxl/harbour/plakat-42.png" alt="a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration"></td>
+    <td width="33%"><img src="images/style-sdxl/winter-village/plakat-42.png" alt="a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration"></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/style-sdxl/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
     <td width="33%"><img src="images/sd21/sd21_landscape/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/day_storm/plakat-43.png" alt=""></td>
   </tr>
@@ -134,6 +144,54 @@ _(no embedded metadata)_
 ![plakat-42.png](images/sdxl/sdxl_landscape/plakat-42.png)
 
 _(no embedded metadata)_
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sd15/harbour/plakat-42.png)
+
+> a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration
+
+`sd15` · LoRA: corpus/style/watercolour-sd15.safetensors:1 · 512×512 · 28 steps · CFG 7.5 · seed 42
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sd15/winter-village/plakat-42.png)
+
+> a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration
+
+`sd15` · LoRA: corpus/style/watercolour-sd15.safetensors:1 · 512×512 · 28 steps · CFG 7.5 · seed 42
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sd15/river-orchard/plakat-42.png)
+
+> a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration
+
+`sd15` · LoRA: corpus/style/watercolour-sd15.safetensors:1 · 512×512 · 28 steps · CFG 7.5 · seed 42
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sdxl/harbour/plakat-42.png)
+
+> a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration
+
+`sdxl` · LoRA: corpus/style/watercolour-sdxl.safetensors:1 · 768×768 · 26 steps · CFG 7.5 · seed 42
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sdxl/winter-village/plakat-42.png)
+
+> a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration
+
+`sdxl` · LoRA: corpus/style/watercolour-sdxl.safetensors:1 · 768×768 · 26 steps · CFG 7.5 · seed 42
+
+### plakat-42.png
+
+![plakat-42.png](images/style-sdxl/river-orchard/plakat-42.png)
+
+> a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration
+
+`sdxl` · LoRA: corpus/style/watercolour-sdxl.safetensors:1 · 768×768 · 26 steps · CFG 7.5 · seed 42
 
 ### plakat-42.png
 

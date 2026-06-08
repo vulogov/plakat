@@ -1,0 +1,22 @@
+{
+  "prompt": "a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration",
+  "model": "sd15",
+  "seed": 42,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 512,
+  "height": 512,
+  "loras": [
+    "LoraSpec { source: Local(\"corpus/style/watercolour-sd15.safetensors\"), scale: 1.0 }"
+  ],
+  "lora_scale": 1.0,
+  "generator": "plakat 0.46.0",
+  "lora_stack": [
+    {
+      "display": "corpus/style/watercolour-sd15.safetensors",
+      "scale": 1.0,
+      "source": "local"
+    }
+  ]
+}

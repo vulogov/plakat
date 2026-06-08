@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
-# Generate watercolour images with the trained style LoRA (FAST).
-# Requires corpus/style/watercolour.safetensors — run style_train.sh first
-# (training and generation are separated so rendering never retrains).
+# Generate watercolour images with a trained style LoRA (FAST).
+# Usage: ./style_gen.sh [sd15|sdxl|sd35]   (default: sd15).
+# Requires the matching corpus/style/watercolour*.safetensors — run
+# style_train.sh <base> first (training and generation are separated).
 #
-# The LoRA loads via plain `--lora`; include the trigger phrase in the
-# prompt to invoke the style. Proves the trained style transfers onto
-# fresh subjects the model never saw in the exemplars.
+# The LoRA loads via plain `--lora`; the trigger phrase invokes the style.
+# Proves the trained style transfers onto fresh subjects (not in the refs).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
-LORA="$ROOT/corpus/style/watercolour.safetensors"
+BASE="${1:-sd15}"
 TRIGGER="wcstyle watercolour painting illustration"
+
+case "$BASE" in
+  sd15) MODEL=sd15;        LORA=watercolour-sd15.safetensors;  SIZE=512x512; DIR=style-sd15 ;;
+  sdxl) MODEL=sdxl;        LORA=watercolour-sdxl.safetensors;  SIZE=768x768; DIR=style-sdxl ;;
+  sd35) MODEL=sd35-medium; LORA=watercolour.safetensors;       SIZE=768x768; DIR=style ;;
+  *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
+esac
 
 gen() {
   "$PLAKAT" generate "$1, $TRIGGER" \
-    --model sd35-medium --lora "$LORA" \
-    --steps 26 --size 768x768 --seed 42 --device metal \
-    --out "$ROOT/corpus/images/style/$2"
+    --model "$MODEL" --lora "$ROOT/corpus/style/$LORA" \
+    --steps 26 --size "$SIZE" --seed 42 --device metal \
+    --out "$ROOT/corpus/images/$DIR/$2"
 }
 
-gen "a fishing harbour with wooden boats and distant hills"            harbour
-gen "a snow-covered mountain village among pines at dusk"             winter-village
-gen "a quiet riverside orchard with a wooden footbridge in autumn"    river-orchard
+gen "a fishing harbour with wooden boats and distant hills"         harbour
+gen "a snow-covered mountain village among pines at dusk"           winter-village
+gen "a quiet riverside orchard with a wooden footbridge in autumn"  river-orchard
 
-echo "✓ wrote corpus/images/style/{harbour,winter-village,river-orchard}/"
+echo "✓ wrote corpus/images/$DIR/"
