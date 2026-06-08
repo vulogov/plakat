@@ -19,10 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 SUBJECT="a stone cottage by a forest stream"
 
-# NOTE: 'linocut' is omitted — its catalog entry pins a Civitai LoRA that
-# --offline doesn't suppress (it still tries to download + times out). The
-# other 7 mediums resolve to their prompt presets offline. (Deferred bug.)
-for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel gouache; do
+for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel linocut gouache; do
   "$PLAKAT" generate "$SUBJECT" \
     --model sd15 --look "$LOOK" --offline \
     --scheduler euler-a \
@@ -30,4 +27,4 @@ for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel gouach
     --out "$ROOT/corpus/images/looks/$LOOK"
 done
 
-echo "✓ wrote corpus/images/looks/{ink-wash,watercolor,oil-painting,charcoal,pencil,chalk-pastel,gouache}/"
+echo "✓ wrote corpus/images/looks/{ink-wash,watercolor,oil-painting,charcoal,pencil,chalk-pastel,linocut,gouache}/"
