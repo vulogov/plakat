@@ -70,8 +70,8 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `portrait.sh` | **Text-only persona portraits** (no reference photo) on SD 1.5. |
 | `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
 | `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
-| `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache); a generic counterpart to the trained style LoRAs. Civitai download per look on first run. |
-| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose). Civitai download on first run. |
+| `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache); a generic counterpart to the trained style LoRAs. Runs `--offline` (prompt presets; the optional per-look LoRA auto-discovery needs Civitai) + `--scheduler euler-a` (Metal). |
+| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose). Runs `--offline` + `--scheduler euler-a` (Metal). |
 | `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
 | `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sd15-inpaint`). |
 | `stylize.sh` | **Stylize** (`plakat stylize`) — transfer a reference image's *look* onto a subject via IP-Adapter (no prompt, no training; distinct from img2img + style LoRAs). Bold subjects restyle best. SD 1.5. |

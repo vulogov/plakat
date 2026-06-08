@@ -3,14 +3,17 @@
 # plakat proof corpus — art-medium looks (--look)
 # ===================================================================
 # One subject rendered across the 8 bundled `--look` art-medium presets.
-# Each `--look` auto-discovers + applies a medium LoRA (Civitai -> HF ->
-# local cache) plus a prompt/sampler preset — a bundled, *generic*
-# counterpart to the trained style LoRAs from style_train.sh (which learn a
-# *specific* style from your images).
+# Each look composes a medium-specific prompt + sampler/steps/guidance — a
+# bundled, *generic* counterpart to the trained style LoRAs from
+# style_train.sh (which learn a *specific* style from your images).
 #
-# NOTE: the first run of each look downloads a small LoRA from Civitai
-# (network). Pass PLAKAT_OFFLINE=1 / `--offline` to skip discovery once the
-# LoRAs are cached. Ungated SD 1.5, Metal-safe.
+# We run `--offline`: each look also has an OPTIONAL per-look LoRA that is
+# auto-discovered from Civitai, but that path needs the network, is flaky
+# (download timeouts), and isn't reliably available for SD 1.5 — so for a
+# reproducible corpus run we use the prompt presets only. `--scheduler
+# euler-a` because the look presets otherwise select a DPM++/Karras
+# scheduler that uses F64 ops candle's Metal backend can't run. Drop
+# `--offline` to let the LoRA discovery run. Ungated SD 1.5, Metal-safe.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -18,7 +21,7 @@ SUBJECT="a stone cottage by a forest stream"
 
 for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel linocut gouache; do
   "$PLAKAT" generate "$SUBJECT" \
-    --model sd15 --look "$LOOK" \
+    --model sd15 --look "$LOOK" --offline \
     --scheduler euler-a \
     --steps 28 --size 512x512 --seed 42 --device metal \
     --out "$ROOT/corpus/images/looks/$LOOK"
