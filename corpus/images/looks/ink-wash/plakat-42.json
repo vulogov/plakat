@@ -1,0 +1,13 @@
+{
+  "prompt": "ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space",
+  "negative": "photographic, colorful, smooth digital gradients, 3d render, oil painting",
+  "model": "sd15",
+  "seed": 42,
+  "steps": 32,
+  "guidance": 6.5,
+  "scheduler": "eulera",
+  "width": 512,
+  "height": 512,
+  "generator": "plakat 0.46.0",
+  "look": "ink-wash"
+}
