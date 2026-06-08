@@ -14,16 +14,18 @@ the look from your images and bakes it into a small adapter.
 
 ## Supported models
 
-| Base | Flag | Status | Notes |
-|------|------|--------|-------|
-| **SD 3.5 Medium** (MMDiT) | `--base sd35` | ✅ **supported** | gated on HuggingFace; ~2.5 B-param transformer |
-| SDXL (UNet) | `--base sdxl` | ⛔ planned (0.46.0) | needs a LoRA-wired UNet attention path |
-| SD 1.5 (UNet) | `--base sd15` | ⛔ planned (0.46.0) | same as SDXL |
+| Base | Flag | Status | LoRA format | Notes |
+|------|------|--------|-------------|-------|
+| **SD 1.5** (UNet) | `--base sd15` | ✅ **supported** | kohya | ungated, fastest to train + validate |
+| **SDXL** (UNet) | `--base sdxl` | ✅ **supported** | kohya | ungated; dual-CLIP + add-time conditioning |
+| **SD 3.5 Medium** (MMDiT) | `--base sd35` | ✅ **supported** | diffusers-PEFT | gated on HuggingFace; ~2.5 B-param transformer |
 
-A LoRA is **bound to the base architecture** — an SD 3.5 LoRA only loads
-on SD 3.5, not on SDXL/SD 1.5/Flux. Train once per base you want to use.
+A LoRA is **bound to the base architecture** — an SD 1.5 LoRA only loads
+on SD 1.5, not on SDXL / SD 3.5 / Flux. Train once per base you want to use.
 
-The trained file is a **diffusers-PEFT** `.safetensors` (`lora_A`/`lora_B`
+The UNet bases (SD 1.5 / SDXL) write a **kohya** `.safetensors`
+(`lora_unet_…lora_down/up.weight` + `.alpha`); SD 3.5 writes a
+**diffusers-PEFT** `.safetensors` (`lora_A`/`lora_B`
 /`alpha` keys), so it also loads in other diffusers-PEFT-aware tools.
 
 ---
@@ -173,10 +175,11 @@ when the style is strong enough, without losing work.
 
 ## Roadmap
 
-- **0.46.0:** SDXL and SD 1.5 (UNet) bases — these need a LoRA-wired UNet
-  attention path (the UNet currently merges LoRAs for inference without
-  per-layer training hooks), plus higher-resolution training as memory
-  allows.
+- **0.46.0 (done):** SDXL and SD 1.5 (UNet) bases — a vendored, LoRA-wired
+  SD UNet (separate from the inference path) trains the attention with a
+  DDPM-epsilon objective; SDXL adds the dual-CLIP + add-time conditioning.
+- **Next:** higher-resolution training as memory allows; gradient
+  checkpointing; more base models (PixArt / Cascade).
 
 ## See also
 

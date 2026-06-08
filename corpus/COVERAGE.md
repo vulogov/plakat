@@ -26,7 +26,7 @@ committed under `images/`.
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
 | Styles / Looks / Genres | `presets.hjson` | ⬜ | ⬜ | `style:` / `--look` / `--genre` |
-| **Style LoRA training (SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → diffusers-PEFT LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers (191/191 merged). Training + generation separated. |
+| **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 | AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
 
