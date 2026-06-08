@@ -82,11 +82,24 @@ pub struct DoctorArgs {
     /// Mutually exclusive with `--benchmark`.
     #[arg(long = "reproducibility-check", default_value_t = false, conflicts_with = "benchmark")]
     pub reproducibility_check: bool,
+
+    /// v0.46: report which supported models can run on THIS hardware.
+    /// Probes RAM + backend + a conservative memory budget, then for each
+    /// model derives its weight size — from the on-disk HF cache (exact),
+    /// or, when combined with `--verify`, the HF API (no download) for
+    /// models you haven't pulled yet — and judges runs / tight / won't-fit,
+    /// naming the tuning lever that helps. `--device` picks which backend to
+    /// probe. Combine with `--json` for a machine-readable report.
+    #[arg(long, default_value_t = false, conflicts_with = "benchmark")]
+    pub capability: bool,
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
     if args.benchmark {
         return run_benchmark(&args.device);
+    }
+    if args.capability {
+        return run_capability(&args).await;
     }
     if args.reproducibility_check {
         return run_reproducibility_check(args.json);
@@ -1029,6 +1042,84 @@ fn run_json() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("serializing doctor report: {e}"))?;
     println!("{json}");
     Ok(())
+}
+
+// =====================================================================
+// v0.46: model capability report (--capability).
+// =====================================================================
+
+async fn run_capability(args: &DoctorArgs) -> Result<()> {
+    let device = crate::device::select(&args.device)
+        .map_err(|e| anyhow::anyhow!("selecting device {:?}: {e}", args.device))?;
+    let report = crate::capability::build(crate::hw::probe(&device), args.verify).await;
+    if args.json {
+        let json = serde_json::to_string_pretty(&report)
+            .map_err(|e| anyhow::anyhow!("serializing capability report: {e}"))?;
+        println!("{json}");
+        return Ok(());
+    }
+    render_capability(&report);
+    Ok(())
+}
+
+fn render_capability(r: &crate::capability::CapabilityReport) {
+    use console::style;
+    let hw = &r.hardware;
+
+    println!("\n  {}\n", style("text-to-image hardware").bold());
+    println!(
+        "    backend   {} · features {}",
+        style(&hw.backend).cyan(),
+        if hw.features.is_empty() { "—".to_string() } else { hw.features.join("+") }
+    );
+    println!("    memory    {}", hw.budget_label());
+    println!("    cpu       {} cores · {} · {}", hw.cpu_cores, hw.arch, hw.os);
+
+    println!("\n  {}\n", style("model capability").bold());
+    for m in &r.models {
+        let sym = match m.verdict.as_str() {
+            "runs" => style("✓").green(),
+            "tight" => style("!").yellow(),
+            "wont-fit" => style("✗").red(),
+            "blocked" => style("⊘").red(),
+            "gated" => style("·").yellow(),
+            _ => style("·").dim(),
+        };
+        let verdict = match m.verdict.as_str() {
+            "wont-fit" => "won't fit",
+            other => other,
+        };
+        let size = match (m.weight_gb, m.size_source.as_str()) {
+            (Some(w), "cache") => format!("{w:.0} GB"),
+            (Some(w), _) => format!("≤{w:.0} GB"),
+            _ => "—".to_string(),
+        };
+        let note = m
+            .tuning
+            .clone()
+            .unwrap_or_else(|| format!("{}²", m.native_res));
+        println!(
+            "    {} {:<13} {:>7}  {:<9}  {}",
+            sym,
+            m.model,
+            size,
+            verdict,
+            style(note).dim()
+        );
+    }
+
+    println!(
+        "\n  {}",
+        style("sizes: exact from disk cache · ≤ HF upper-bound estimate · — unknown").dim()
+    );
+    let any_unknown = r.models.iter().any(|m| m.size_source == "unknown");
+    if any_unknown {
+        println!(
+            "  {}",
+            style("add --verify to fetch sizes for models you haven't downloaded").dim()
+        );
+    }
+    println!();
 }
 
 // =====================================================================
