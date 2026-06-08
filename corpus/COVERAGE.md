@@ -25,7 +25,7 @@ committed under `images/`.
 | ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
-| Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ⬜ | looks = the 8 bundled art-mediums on one subject; genres = the bundled `anime` subject-domain (independent axis, they compose). Civitai download per preset on first run. (Catalog `style:` still to add.) |
+| Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ⬜ | looks = the 8 bundled art-mediums on one subject; genres = the bundled `anime` subject-domain (independent axis, they compose). Run `--offline` + `--scheduler euler-a` (Metal); prompt presets, optional LoRA auto-discovery off. (Catalog `style:` still to add.) |
 | **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 | AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
