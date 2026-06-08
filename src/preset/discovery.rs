@@ -624,6 +624,15 @@ fn try_local_scan(
                 continue;
             }
 
+            // The local scan must only return an entry whose LoRA *file* is
+            // actually on disk. A metadata-only dir (an interrupted download
+            // that wrote metadata.json but never finished the .safetensors)
+            // would otherwise hand back a Civitai version spec that resolves
+            // over the network — defeating --offline (the `linocut` timeout).
+            if safetensors_lower.is_none() {
+                continue;
+            }
+
             // Hit — attribute to Civitai (LoraSpec resolution will
             // see the cached file and short-circuit the network).
             let spec = LoraSpec {
@@ -1249,6 +1258,44 @@ mod tests {
         };
         // Empty query → no scan.
         assert!(try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none());
+    }
+
+    /// A cache dir with metadata but NO `.safetensors` (an interrupted
+    /// download) must not produce a local-scan hit — returning a Civitai
+    /// spec there would resolve over the network and defeat --offline (the
+    /// `linocut` timeout).
+    #[test]
+    fn local_scan_skips_metadata_only_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            256917,
+            289702,
+            "SD 1.5",
+            &["linocut"],
+            "linocut.safetensors",
+        );
+        // Simulate the interrupted download: drop the weights, keep metadata.
+        for model in fs::read_dir(dir.path()).unwrap().flatten() {
+            for ver in fs::read_dir(model.path()).unwrap().flatten() {
+                if !ver.path().is_dir() {
+                    continue;
+                }
+                for f in fs::read_dir(ver.path()).unwrap().flatten() {
+                    if f.file_name().to_string_lossy().ends_with(".safetensors") {
+                        fs::remove_file(f.path()).unwrap();
+                    }
+                }
+            }
+        }
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["linocut".into()],
+        };
+        assert!(
+            try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none(),
+            "metadata-only entry must not resolve offline"
+        );
     }
 
     /// Offline + local-scan hit: full chain end-to-end with no
