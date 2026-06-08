@@ -15,16 +15,19 @@
 #
 # This is an old, gently-trained LoRA with a narrow usable band: at scale 1.0
 # with the trigger trailing it stays photoreal; leading the prompt with the
-# "anime screencap" trigger + anime descriptors at scale 1.5 gives a clean
-# cel-shaded screencap; >2.0 fries it.
+# "anime screencap" trigger at scale 1.5 gives a clean cel-shaded screencap;
+# >2.0 fries it. SD 1.5 + this LoRA mangles human figures, so we render an
+# anime *background/scenery* (which screencaps do beautifully) and negative
+# out people.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 
-"$PLAKAT" generate "anime screencap, anime cel-shaded illustration, vibrant flat colors, a lone samurai resting under a blossoming cherry tree" \
+"$PLAKAT" generate "anime screencap, a tranquil Japanese shrine among blossoming cherry trees, koi pond, stone lanterns, vibrant flat colors, detailed anime background art" \
   --model sd15 --lora "civitai-version:5744:1.5" \
+  --negative "people, person, figure, deformed, ugly, blurry" \
   --scheduler euler-a \
-  --steps 30 --size 512x512 --seed 7 --device metal \
+  --steps 30 --size 512x512 --seed 11 --device metal \
   --out "$ROOT/corpus/images/genres/anime"
 
 echo "✓ wrote corpus/images/genres/anime/  (Anime Screencap Style LoRA, Civitai model 4982)"
