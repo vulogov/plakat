@@ -71,6 +71,9 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
 | `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
 | `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache); a generic counterpart to the trained style LoRAs. Civitai download per look on first run. |
+| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose). Civitai download on first run. |
+| `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
+| `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sd15-inpaint`). |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.

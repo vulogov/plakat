@@ -25,7 +25,7 @@ committed under `images/`.
 | ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
-| Looks (`--look` art-mediums) | `looks.sh` | ✅ | ⬜ | the 8 bundled mediums (ink-wash … gouache) on one subject; generic counterpart to the trained style LoRAs. Civitai download per look on first run. (Genres `--genre` / catalog `style:` still to add.) |
+| Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ⬜ | looks = the 8 bundled art-mediums on one subject; genres = the bundled `anime` subject-domain (independent axis, they compose). Civitai download per preset on first run. (Catalog `style:` still to add.) |
 | **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 | AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
@@ -35,8 +35,8 @@ committed under `images/`.
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | img2img (style transfer, SDXL) | `img2img.sh` | ✅ | ✅ | prompt-steered medium restyle; no LoRA/download |
-| Inpaint (masked) | `img2img.sh` | ⬜ | ⬜ | `--mask` |
-| Outpaint | `outpaint.sh` | ⬜ | ⬜ | `plakat outpaint` |
+| Inpaint (masked) | `inpaint.sh` | ✅ | ⬜ | `img2img --mask` — repaint a region (the sky) and preserve the rest; committed input + procedural mask, self-contained |
+| Outpaint | `outpaint.sh` | ✅ | ⬜ | `plakat outpaint` — pad the canvas + paint the new strip in-context (sd15-inpaint, ungated) |
 | Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
 
 ## Batch & scripting
