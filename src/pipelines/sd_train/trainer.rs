@@ -196,8 +196,9 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
             );
         }
         if (step + 1) % 30 == 0 && step + 1 != req.steps {
-            save_kohya_lora(&adapters, req.rank, &req.out)?;
-            tracing::info!("sd-style-train: checkpoint @ step {} → {}", step + 1, req.out.display());
+            let ckpt = checkpoint_path(&req.out, step + 1);
+            save_kohya_lora(&adapters, req.rank, &ckpt)?;
+            tracing::info!("sd-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
         }
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
@@ -308,13 +309,28 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
             );
         }
         if (step + 1) % 30 == 0 && step + 1 != req.steps {
-            save_kohya_lora(&adapters, req.rank, &req.out)?;
-            tracing::info!("sdxl-style-train: checkpoint @ step {} → {}", step + 1, req.out.display());
+            let ckpt = checkpoint_path(&req.out, step + 1);
+            save_kohya_lora(&adapters, req.rank, &ckpt)?;
+            tracing::info!("sdxl-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
         }
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
     tracing::info!("sdxl-style-train: wrote {}", req.out.display());
     Ok(())
+}
+
+/// Where to write a periodic checkpoint. By default this is `out` itself
+/// (overwritten each interval — the historical behaviour). Set
+/// `PLAKAT_TRAIN_CHECKPOINTS=1` to instead keep **numbered** checkpoints
+/// (`<stem>-step<N>.<ext>`), so a single training run can be swept after the
+/// fact for the best step instead of guessing the schedule.
+fn checkpoint_path(out: &Path, step: usize) -> PathBuf {
+    if std::env::var_os("PLAKAT_TRAIN_CHECKPOINTS").is_none() {
+        return out.to_path_buf();
+    }
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("lora");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("safetensors");
+    out.with_file_name(format!("{stem}-step{step}.{ext}"))
 }
 
 /// Write trained adapters as a kohya SD LoRA: `lora_unet_<slug>.lora_down
