@@ -142,6 +142,17 @@ pub fn flood_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 3
             && (a[1] as i16 - b[1] as i16).abs() <= tol
             && (a[2] as i16 - b[2] as i16).abs() <= tol
     };
+    // Seed constraint: a background pixel must ALSO stay within this generous
+    // distance of the corner colour. This lets the fill follow a chroma gradient
+    // / soft shadow but stops it creeping through an anti-aliased edge into a
+    // far-coloured subject — which the neighbour test alone would consume (e.g.
+    // a smoothly-shaded red apple, all within `tolerance` step-to-step).
+    let seed_tol = (tol * 4).max(40);
+    let within_seed = |p: &[u8; 4]| {
+        (p[0] as i16 - key[0] as i16).abs() <= seed_tol
+            && (p[1] as i16 - key[1] as i16).abs() <= seed_tol
+            && (p[2] as i16 - key[2] as i16).abs() <= seed_tol
+    };
     let mut bg = vec![false; w * h];
     let mut q: VecDeque<(usize, usize)> = VecDeque::new();
     for (cx, cy) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
@@ -173,7 +184,11 @@ pub fn flood_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 3
         }
         for &(nx, ny) in &ns[..n] {
             let np = ny * w + nx;
-            if !bg[np] && close(&cur, &img.get_pixel(nx as u32, ny as u32).0) {
+            if bg[np] {
+                continue;
+            }
+            let nc = img.get_pixel(nx as u32, ny as u32).0;
+            if close(&cur, &nc) && within_seed(&nc) {
                 bg[np] = true;
                 q.push_back((nx, ny));
             }
