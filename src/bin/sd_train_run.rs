@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
         lr: 1e-4,
         size: 512,
         out: "corpus/style/watercolour-sd15.safetensors".into(),
+        checkpoint_every: None,
     })
     .await
 }

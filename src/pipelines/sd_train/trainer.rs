@@ -56,6 +56,9 @@ pub struct SdStyleTrainRequest {
     pub lr: f64,
     pub size: u32,
     pub out: PathBuf,
+    /// Explicit checkpoint interval in steps. `None` → ~10 evenly-spaced
+    /// (see [`checkpoint_interval`]). `0` is treated as `None`.
+    pub checkpoint_every: Option<usize>,
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
@@ -195,7 +198,9 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
                 loss.to_scalar::<f32>()?
             );
         }
-        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
+        if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
+            && step + 1 != req.steps
+        {
             let ckpt = checkpoint_path(&req.out, step + 1);
             save_kohya_lora(&adapters, req.rank, &ckpt)?;
             tracing::info!("sd-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
@@ -308,7 +313,9 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
                 loss.to_scalar::<f32>()?
             );
         }
-        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
+        if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
+            && step + 1 != req.steps
+        {
             let ckpt = checkpoint_path(&req.out, step + 1);
             save_kohya_lora(&adapters, req.rank, &ckpt)?;
             tracing::info!("sdxl-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
@@ -334,10 +341,13 @@ fn checkpoint_path(out: &Path, step: usize) -> PathBuf {
     out.with_file_name(format!("{stem}-step{step}.{ext}"))
 }
 
-/// Checkpoint every Nth step, sized so a run yields ~10 evenly-spaced
-/// checkpoints (minimum every 30). 900 steps → every 90; 90 steps → every 30.
-fn checkpoint_interval(total_steps: usize) -> usize {
-    (total_steps / 10).max(30)
+/// Resolve the checkpoint interval in steps: an explicit `--checkpoint-every`
+/// (`every`, a positive value) wins; otherwise ~10 evenly-spaced (min every
+/// 30). 900 steps → every 90; 90 steps → every 30.
+fn checkpoint_interval(every: Option<usize>, total_steps: usize) -> usize {
+    every
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| (total_steps / 10).max(30))
 }
 
 /// Write trained adapters as a kohya SD LoRA: `lora_unet_<slug>.lora_down

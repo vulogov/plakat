@@ -71,6 +71,12 @@ pub struct TrainArgs {
     /// LoRA rank.
     #[arg(long, default_value_t = 16)]
     pub rank: usize,
+    /// Checkpoint interval in steps. Each periodic checkpoint is written as
+    /// `<out>-step<N>` so a run can be swept for the sweet spot. Default: ~10
+    /// evenly-spaced checkpoints (min every 30). Set e.g. `30` for finer
+    /// granularity on a long run, or a large value for fewer files.
+    #[arg(long = "checkpoint-every", value_name = "STEPS")]
+    pub checkpoint_every: Option<usize>,
     /// Training resolution (256 fits 24 GB; higher needs more memory).
     #[arg(long, default_value_t = 256)]
     pub size: u32,
@@ -236,6 +242,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 lr: args.lr,
                 size: args.size,
                 out: args.out,
+                checkpoint_every: args.checkpoint_every,
             })
             .await
         }
@@ -251,6 +258,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 lr: args.lr,
                 size: args.size,
                 out: args.out,
+                checkpoint_every: args.checkpoint_every,
             })
             .await
         }
@@ -267,6 +275,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 lr: args.lr,
                 size: args.size,
                 out: args.out,
+                checkpoint_every: args.checkpoint_every,
             })
             .await
         }

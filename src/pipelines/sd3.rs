@@ -1785,6 +1785,9 @@ pub struct StyleTrainRequest {
     pub lr: f64,
     pub size: u32,
     pub out: std::path::PathBuf,
+    /// Explicit checkpoint interval in steps. `None` → ~10 evenly-spaced
+    /// (`checkpoint_interval`). `0` is treated as `None`.
+    pub checkpoint_every: Option<usize>,
 }
 
 /// Train a style LoRA on the MMDiT attention projections; write a
@@ -1884,7 +1887,9 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         // swept after the fact for the best step — the best LoRA is rarely the
         // last (training over-cooks). Set PLAKAT_TRAIN_SINGLE_FILE=1 to
         // overwrite one file instead. The final save writes plain `--out`.
-        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
+        if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
+            && step + 1 != req.steps
+        {
             let ckpt = checkpoint_path(&req.out, step + 1);
             save_peft_lora(&adapters, req.rank, hidden, &ckpt)?;
             tracing::info!("style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
@@ -1908,9 +1913,12 @@ fn checkpoint_path(out: &std::path::Path, step: usize) -> PathBuf {
     out.with_file_name(format!("{stem}-step{step}.{ext}"))
 }
 
-/// ~10 evenly-spaced checkpoints (minimum every 30 steps).
-fn checkpoint_interval(total_steps: usize) -> usize {
-    (total_steps / 10).max(30)
+/// Resolve checkpoint interval: explicit `--checkpoint-every` (positive) wins,
+/// else ~10 evenly-spaced (min every 30).
+fn checkpoint_interval(every: Option<usize>, total_steps: usize) -> usize {
+    every
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| (total_steps / 10).max(30))
 }
 
 /// Write trained MMDiT attention adapters as a diffusers-PEFT LoRA
