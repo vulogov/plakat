@@ -293,7 +293,16 @@ fn build_masked_pixels_tensor(
     // BLACK, which biased the inpaint dark and banded the far edge of an
     // outpaint extension (where there is no nearby content to anchor on).
     for (i, chunk) in raw.chunks_exact(3).enumerate() {
-        let inv_m = 1.0 - mask.pixels[i].clamp(0.0, 1.0);
+        // BINARY mask for the masked-image (diffusers convention): the soft
+        // feather is for the final composite only. A soft mask here half-grays
+        // the feather zone → a hazy vertical seam at the original/extension
+        // boundary. A hard cut at 0.5 keeps the original sharp up to the seam,
+        // so the generated side blends against real content.
+        let inv_m = if mask.pixels[i].clamp(0.0, 1.0) >= 0.5 {
+            0.0
+        } else {
+            1.0
+        };
         r_dst[i] = (chunk[0] as f32 * scale - 1.0) * inv_m;
         g_dst[i] = (chunk[1] as f32 * scale - 1.0) * inv_m;
         b_dst[i] = (chunk[2] as f32 * scale - 1.0) * inv_m;
