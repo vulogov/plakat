@@ -23,8 +23,14 @@ PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 SUBJECT="a stone cottage by a forest stream"
 
 for LOOK in ink-wash watercolor oil-painting charcoal pencil chalk-pastel linocut gouache; do
+  # chalk-pastel has no genuine STYLE LoRA on Civitai — discovery only finds
+  # characters (e.g. "Professor Chalk", which fooled the judge on the name), so
+  # it renders prompt-only on SDXL, which is clean. The rest use the LLM-judged
+  # style LoRA via --smart-discovery.
+  DISCO="--smart-discovery"
+  [ "$LOOK" = "chalk-pastel" ] && DISCO="--offline"
   "$PLAKAT" generate "$SUBJECT" \
-    --model sdxl --look "$LOOK" --smart-discovery \
+    --model sdxl --look "$LOOK" $DISCO \
     --scheduler euler-a \
     --steps 30 --size 1024x1024 --seed 42 --device metal \
     --out "$ROOT/corpus/images/looks/$LOOK"
