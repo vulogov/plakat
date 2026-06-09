@@ -43,6 +43,8 @@ pub struct Request {
     pub model: String,
     pub steps: usize,
     pub seed: Option<u64>,
+    pub ref_blur: f32,
+    pub ref_weight: f32,
     pub device: Device,
 }
 
@@ -72,6 +74,39 @@ pub struct GenRequest {
     pub strength: f32,
     pub steps: usize,
     pub seed: Option<u64>,
+    /// Gaussian-blur the reference before CLIP-encoding it (sigma; 0 = off).
+    /// Blurring wipes the ref's fine content (the subject/face) while keeping
+    /// its broad style — palette, texture, composition — so the transfer is
+    /// *style*, not subject. The cheap "style not content" knob.
+    pub ref_blur: f32,
+    /// Scale the reference's image-token contribution (1.0 = full). Lower lets
+    /// the prompt own the subject while the ref owns the look.
+    pub ref_weight: f32,
+}
+
+/// Blur the reference to a temp PNG when `sigma > 0` (the style-not-content
+/// heuristic), else return the original path. Normalises the short side to
+/// 512 first so `sigma` means the same thing at any reference resolution.
+fn maybe_blur_ref(path: &std::path::Path, sigma: f32) -> Result<std::path::PathBuf> {
+    if sigma <= 0.0 {
+        return Ok(path.to_path_buf());
+    }
+    let img = image::open(path)
+        .with_context(|| format!("opening reference {} for blur", path.display()))?
+        .to_rgb8();
+    let (w, h) = img.dimensions();
+    let (rw, rh) = if w < h {
+        (512, ((h as f32) * 512.0 / (w as f32)).round() as u32)
+    } else {
+        (((w as f32) * 512.0 / (h as f32)).round() as u32, 512)
+    };
+    let resized = image::imageops::resize(&img, rw, rh, image::imageops::FilterType::Triangle);
+    let blurred = image::imageops::blur(&resized, sigma);
+    let tmp = std::env::temp_dir().join(format!("plakat-stylize-ref-{}.png", std::process::id()));
+    blurred
+        .save(&tmp)
+        .with_context(|| format!("writing blurred reference {}", tmp.display()))?;
+    Ok(tmp)
 }
 
 pub struct Pipeline {
@@ -230,14 +265,21 @@ impl Pipeline {
 
         // -------- encode REF → image tokens --------
         let s = progress::spinner("Encoding reference image");
+        // Cheap "style not content" heuristic: blur the reference first so
+        // CLIP sees its broad style (palette/texture/composition), not the
+        // fine content that otherwise hijacks the subject.
+        let ref_for_clip = maybe_blur_ref(&req.reference, req.ref_blur)?;
         let ref_pixels = crate::imaging::preprocess::clip_image_tensor(
-            &req.reference,
+            &ref_for_clip,
             CLIP_H_INPUT,
             &self.device,
             self.dtype,
         )?;
         let img_embeds = self.image_encoder.encode(&ref_pixels)?;
-        let image_tokens = self.image_proj.forward(&img_embeds)?; // (1, 4, 768)
+        let mut image_tokens = self.image_proj.forward(&img_embeds)?; // (1, 4, 768)
+        if (req.ref_weight - 1.0).abs() > f32::EPSILON {
+            image_tokens = (image_tokens * req.ref_weight as f64)?;
+        }
         s.finish_with_message("✓ reference encoded");
 
         // (1, 77, 768) ⊕ (1, 4, 768) → (1, 81, 768)
@@ -330,6 +372,8 @@ pub async fn run(req: Request) -> Result<()> {
         strength: req.strength,
         steps: req.steps,
         seed: req.seed,
+        ref_blur: req.ref_blur,
+        ref_weight: req.ref_weight,
     })
 }
 
