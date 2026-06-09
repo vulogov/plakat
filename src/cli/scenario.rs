@@ -4456,6 +4456,8 @@ fn run_style_pass(
             strength,
             steps: 30,
             seed: Some(seed),
+            ref_blur: 0.0,
+            ref_weight: 1.0,
         };
         if let Err(e) = pipeline.stylize_one(&req) {
             crate::ui::progress::println(&format!(

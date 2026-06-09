@@ -110,6 +110,8 @@ fn do_plakat_stylize(vm: &mut VM) -> anyhow::Result<&mut VM> {
         strength,
         steps,
         seed,
+        ref_blur: 0.0,
+        ref_weight: 1.0,
     };
     with_ctx_mut(|ctx| {
         let pipeline = ctx.get_or_load_stylize(&alias)?;
