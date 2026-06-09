@@ -22,9 +22,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_transformers::models::stable_diffusion::{
-    StableDiffusionConfig, unet_2d::UNet2DConditionModel, vae::AutoEncoderKL,
-};
+use candle_transformers::models::stable_diffusion::clip as sdclip;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
@@ -50,6 +48,7 @@ pub struct Request {
 
 const IPA_REPO: &str = "h94/IP-Adapter";
 const SD15_CROSS_ATTN_DIM: usize = 768;
+const SDXL_CROSS_ATTN_DIM: usize = 2048;
 const IPA_TOKENS: usize = 4;
 const CLIP_H_PROJ_DIM: usize = 1024;
 const CLIP_H_INPUT: u32 = 224;
@@ -109,25 +108,86 @@ fn maybe_blur_ref(path: &std::path::Path, sigma: f32) -> Result<std::path::PathB
     Ok(tmp)
 }
 
+/// Encode the empty prompt → (hidden, pooled). SD 1.5: (1,77,768) + None.
+/// SDXL: (1,77,2048) (CLIP-L ⊕ CLIP-G penultimate hidden) + Some((1,1280))
+/// pooled CLIP-G for the UNet's add_embedding. Mirrors portrait's encode_text.
+fn encode_empty_text(
+    core: &crate::pipelines::sd_core::SdCore,
+) -> Result<(Tensor, Option<Tensor>)> {
+    if core.variant.is_xl() {
+        let cfg_g = core
+            .cfg
+            .clip2
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL stylize missing clip2 config"))?;
+        let tok_g = core
+            .tokenizer_g
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL stylize missing tokenizer_g"))?;
+        let enc_g = core
+            .text_encoder_g
+            .as_ref()
+            .ok_or_else(|| anyhow!("SDXL stylize missing text_encoder_g"))?;
+        let ids_l = tokenize_padded(&core.tokenizer_l, &core.cfg.clip, "", &core.device)?;
+        let ids_g = tokenize_padded(tok_g, cfg_g, "", &core.device)?;
+        let (_final_l, hidden_l) = core
+            .text_encoder_l
+            .forward_until_encoder_layer(&ids_l, usize::MAX, -2)?;
+        let (hidden_g, pooled_g) = enc_g.forward_for_sdxl(&ids_g)?;
+        let hidden = Tensor::cat(&[&hidden_l, &hidden_g], 2)?.to_dtype(core.dtype)?;
+        Ok((hidden, Some(pooled_g.to_dtype(core.dtype)?)))
+    } else {
+        let ids = tokenize_padded(&core.tokenizer_l, &core.cfg.clip, "", &core.device)?;
+        let hidden = core.text_encoder_l.forward(&ids)?.to_dtype(core.dtype)?;
+        Ok((hidden, None))
+    }
+}
+
+/// Tokenize `text` padded to the config's max length (mirrors portrait's
+/// helper — trivial duplication preferred over a shared module).
+fn tokenize_padded(
+    tokenizer: &Tokenizer,
+    cfg: &sdclip::Config,
+    text: &str,
+    device: &Device,
+) -> Result<Tensor> {
+    let pad_id: u32 = match &cfg.pad_with {
+        Some(s) => tokenizer
+            .token_to_id(s)
+            .ok_or_else(|| anyhow!("tokenizer missing pad token {s:?}"))?,
+        None => tokenizer
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?,
+    };
+    let mut ids = tokenizer
+        .encode(text, true)
+        .map_err(|e| anyhow!("encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids.resize(cfg.max_position_embeddings, pad_id);
+    Ok(Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?)
+}
+
 pub struct Pipeline {
-    cfg: StableDiffusionConfig,
-    #[allow(dead_code)]
-    tokenizer: Tokenizer,
-    #[allow(dead_code)]
-    text_encoder: crate::pipelines::vendored_clip::ClipTextTransformer,
-    vae: AutoEncoderKL,
-    unet: UNet2DConditionModel,
+    /// The SD backbone (UNet / VAE / CLIP-L [+ CLIP-G for SDXL] /
+    /// scheduler config), variant-dispatched. Delegating to `SdCore`
+    /// gives stylize SDXL for free — the dual encoders, the SDXL UNet
+    /// `add_embedding`, and the F16 SDXL-VAE black-image fix — exactly
+    /// as portrait does. `Arc` so it can be shared.
+    core: std::sync::Arc<crate::pipelines::sd_core::SdCore>,
     /// Phase 7f: `Arc` so the same CLIP-H weights can back both this
     /// pipeline and portrait's identity encoder when both run in one
     /// process.
     image_encoder: std::sync::Arc<ImageEncoder>,
+    /// IP-Adapter projection — `cross_attn_dim` 768 (SD 1.5) or 2048
+    /// (SDXL), loaded from the matching adapter file.
     image_proj: ImageProj,
-    /// Pre-computed empty-prompt text embeddings (1, 77, 768) at this
-    /// pipeline's dtype. Same across every stylize call — cached so we
-    /// don't re-run the text encoder for an empty prompt every time.
+    /// Pre-computed empty-prompt text embeddings — (1, 77, 768) for
+    /// SD 1.5, (1, 77, 2048) for SDXL. Constant per pipeline.
     empty_text_embeds: Tensor,
-    device: Device,
-    dtype: DType,
+    /// SDXL only — the pooled CLIP-G empty-prompt embedding (1, 1280)
+    /// for the UNet's `add_embedding`. `None` for SD 1.5.
+    empty_pooled: Option<Tensor>,
 }
 
 impl Pipeline {
@@ -139,77 +199,55 @@ impl Pipeline {
         } else {
             crate::hf::resolve_alias(&req.model).to_string()
         };
-        if base_repo.to_lowercase().contains("xl") || base_repo.to_lowercase().contains("flux") {
+        if base_repo.to_lowercase().contains("flux") {
             bail!(
-                "stylize currently supports SD 1.5 only. Use --model sd15 \
-                 (or any HF SD-1.5 repo)."
+                "stylize supports SD 1.5 and SDXL only (not Flux). \
+                 Use --model sd15 or --model sdxl."
             );
         }
-
-        // Placeholder dims — not baked into model weights, only stored in cfg.
-        let cfg = StableDiffusionConfig::v1_5(None, Some(512), Some(512));
-        let dtype = if matches!(req.device, Device::Cpu) {
-            DType::F32
-        } else {
-            DType::F16
+        let variant = crate::pipelines::sd_core::SdVariant::detect(&base_repo);
+        let (ipa_file, cross_attn_dim) = match variant {
+            crate::pipelines::sd_core::SdVariant::Sd15 => {
+                ("models/ip-adapter_sd15.safetensors", SD15_CROSS_ATTN_DIM)
+            }
+            crate::pipelines::sd_core::SdVariant::Sdxl => (
+                "sdxl_models/ip-adapter_sdxl_vit-h.safetensors",
+                SDXL_CROSS_ATTN_DIM,
+            ),
+            crate::pipelines::sd_core::SdVariant::Sd21 => bail!(
+                "stylize has no IP-Adapter wired for SD 2.1; use --model sd15 or --model sdxl."
+            ),
         };
 
-        // -------- download weights --------
-        let dl = progress::spinner("Downloading SD 1.5 + IP-Adapter weights");
-        let tokenizer_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "tokenizer/tokenizer.json"),
-            ("openai/clip-vit-large-patch14", "tokenizer.json"),
-        ])
-        .await
-        .with_context(|| format!("tokenizer for {base_repo}"))?;
-        let text_enc_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "text_encoder/model.fp16.safetensors"),
-            (&base_repo, "text_encoder/model.safetensors"),
-        ])
-        .await?;
-        let unet_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "unet/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "unet/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
-        let vae_path = crate::hf::download::get_first_of(&[
-            (&base_repo, "vae/diffusion_pytorch_model.fp16.safetensors"),
-            (&base_repo, "vae/diffusion_pytorch_model.safetensors"),
-        ])
-        .await?;
-        let ipa_weights =
-            crate::hf::download::get_file(IPA_REPO, "models/ip-adapter_sd15.safetensors").await?;
-        // Phase 7f: skip the CLIP-H download entirely when the caller
-        // supplied a pre-loaded encoder.
+        // -------- download the IP-Adapter weights --------
+        let dl = progress::spinner("Downloading IP-Adapter weights");
+        let ipa_weights = crate::hf::download::get_file(IPA_REPO, ipa_file).await?;
+        // Skip the CLIP-H download when the caller supplied a shared encoder.
         let img_enc_weights = if req.shared_clip_h.is_none() {
             Some(
-                crate::hf::download::get_file(
-                    IPA_REPO,
-                    "models/image_encoder/model.safetensors",
-                )
-                .await?,
+                crate::hf::download::get_file(IPA_REPO, "models/image_encoder/model.safetensors")
+                    .await?,
             )
         } else {
             None
         };
-        dl.finish_with_message("✓ weights ready");
+        dl.finish_with_message("✓ IP-Adapter weights ready");
 
-        // -------- build models --------
-        let build = progress::spinner("Loading stylize models");
-        let tokenizer =
-            Tokenizer::from_file(&tokenizer_path).map_err(|e| anyhow!("tokenizer: {e}"))?;
-        // v0.32 phase 1: vendored CLIP-L. Same numerics as
-        // `cfg.clip` for SD 1.5; built via plakat's vendored module
-        // to match SdCore / AnimateDiff / SD3 / Flux.
-        let clip_l_cfg = crate::pipelines::vendored_clip::Config::v1_5();
-        let text_encoder = crate::pipelines::vendored_clip::build_clip_transformer(
-            &clip_l_cfg,
-            &text_enc_path,
-            &req.device,
-            dtype,
-        )?;
-        let vae = cfg.build_vae(&vae_path, &req.device, dtype)?;
-        let unet = cfg.build_unet(&unet_path, &req.device, 4, false, dtype)?;
+        // -------- load the SD backbone via SdCore (SDXL dual-CLIP + F16-VAE-fix) --------
+        let build = progress::spinner("Loading stylize backbone");
+        let core = std::sync::Arc::new(
+            crate::pipelines::sd_core::SdCore::load(crate::pipelines::sd_core::SdLoadRequest {
+                model: req.model.clone(),
+                device: req.device.clone(),
+                loras: vec![],
+                lora_scale: 1.0,
+                embeddings: vec![],
+                vae_cache: None,
+            })
+            .await?,
+        );
+        let dtype = core.dtype;
+
         let image_encoder = match req.shared_clip_h {
             Some(shared) => shared,
             None => std::sync::Arc::new(ImageEncoder::load(
@@ -223,44 +261,32 @@ impl Pipeline {
         let image_proj = ImageProj::load(
             &ipa_weights,
             CLIP_H_PROJ_DIM,
-            SD15_CROSS_ATTN_DIM,
+            cross_attn_dim,
             IPA_TOKENS,
             &req.device,
             dtype,
         )?;
-        // Pre-compute empty-text embeddings — constant per pipeline.
-        let pad_id = tokenizer
-            .token_to_id("<|endoftext|>")
-            .ok_or_else(|| anyhow!("tokenizer missing <|endoftext|>"))?;
-        let mut ids = tokenizer
-            .encode("", true)
-            .map_err(|e| anyhow!("encode: {e}"))?
-            .get_ids()
-            .to_vec();
-        ids.resize(cfg.clip.max_position_embeddings, pad_id);
-        let ids_t = Tensor::new(ids.as_slice(), &req.device)?.unsqueeze(0)?;
-        let empty_text_embeds = text_encoder.forward(&ids_t)?.to_dtype(dtype)?;
+        // Pre-compute empty-text embeddings (variant-aware) — constant per pipeline.
+        let (empty_text_embeds, empty_pooled) = encode_empty_text(&core)?;
         build.finish_with_message("✓ stylize models loaded");
 
         Ok(Self {
-            cfg,
-            tokenizer,
-            text_encoder,
-            vae,
-            unet,
+            core,
             image_encoder,
             image_proj,
             empty_text_embeds,
-            device: req.device,
-            dtype,
+            empty_pooled,
         })
     }
 
     /// Apply one IN + REF → OUT stylization using the loaded models.
     pub fn stylize_one(&self, req: &GenRequest) -> Result<()> {
-        // Resolve output dims from IN. SD 1.5 expects multiples of 8.
+        let dtype = self.core.dtype;
+        let device = &self.core.device;
+        let vae_scale = self.core.variant.vae_scale();
+        // Resolve output dims from IN (multiples of 8; SDXL native = 1024).
         let (in_w, in_h) = read_image_size(&req.input)?;
-        let (w, h) = sd_dims(in_w, in_h);
+        let (w, h) = sd_dims(in_w, in_h, self.core.variant.is_xl());
         let strength = req.strength.clamp(0.0, 1.0);
 
         // -------- encode REF → image tokens --------
@@ -272,8 +298,8 @@ impl Pipeline {
         let ref_pixels = crate::imaging::preprocess::clip_image_tensor(
             &ref_for_clip,
             CLIP_H_INPUT,
-            &self.device,
-            self.dtype,
+            device,
+            dtype,
         )?;
         let img_embeds = self.image_encoder.encode(&ref_pixels)?;
         let mut image_tokens = self.image_proj.forward(&img_embeds)?; // (1, 4, 768)
@@ -282,8 +308,19 @@ impl Pipeline {
         }
         s.finish_with_message("✓ reference encoded");
 
-        // (1, 77, 768) ⊕ (1, 4, 768) → (1, 81, 768)
+        // SD15: (1,77,768) ⊕ (1,4,768) → (1,81,768).
+        // SDXL: (1,77,2048) ⊕ (1,4,2048) → (1,81,2048).
         let encoder_hidden_states = Tensor::cat(&[&self.empty_text_embeds, &image_tokens], 1)?;
+
+        // SDXL micro-conditioning (target size). stylize runs no CFG → batch 1
+        // (do NOT tile to 2 like the CFG portrait path).
+        let add_time_ids = if self.core.variant.is_xl() {
+            Some(crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                h, w, device, dtype,
+            )?)
+        } else {
+            None
+        };
 
         // v0.34 phase 1 fix: seed the device RNG BEFORE VAE encode.
         // `init_dist.sample()` below is RNG-touching — pre-v0.34
@@ -292,8 +329,8 @@ impl Pipeline {
         // mask. CPU/CUDA now get full u64 entropy; Metal high seeds
         // hash through SplitMix64 instead of colliding to low bits.
         let seed = req.seed.unwrap_or_else(rand::random);
-        let prepared = crate::pipelines::seeds::prepare_seed(seed, &self.device);
-        if let Err(e) = self.device.set_seed(prepared) {
+        let prepared = crate::pipelines::seeds::prepare_seed(seed, device);
+        if let Err(e) = device.set_seed(prepared) {
             tracing::debug!(target: "plakat", "set_seed not supported ({e}); using global RNG");
         }
 
@@ -303,31 +340,36 @@ impl Pipeline {
             &req.input,
             w,
             h,
-            &self.device,
-            self.dtype,
+            device,
+            dtype,
         )?;
-        let init_dist = self.vae.encode(&in_pixels)?;
-        let init_latents = (init_dist.sample()? * 0.18215)?;
+        let init_dist = self.core.vae.encode(&in_pixels)?;
+        let init_latents = (init_dist.sample()? * vae_scale)?;
         s.finish_with_message("✓ input encoded");
 
         // -------- img2img denoise --------
 
-        let mut scheduler = self.cfg.build_scheduler(req.steps)?;
+        let mut scheduler = self.core.cfg.build_scheduler(req.steps)?;
         let timesteps = scheduler.timesteps().to_vec();
         let init_skip = ((req.steps as f32) * (1.0 - strength)).round().max(0.0) as usize;
         let init_skip = init_skip.min(req.steps.saturating_sub(1));
         let active = &timesteps[init_skip..];
         let start_t = *active.first().ok_or_else(|| anyhow!("empty timestep list"))?;
 
-        let noise = Tensor::randn(0f32, 1f32, init_latents.shape(), &self.device)?
-            .to_dtype(self.dtype)?;
+        let noise = Tensor::randn(0f32, 1f32, init_latents.shape(), device)?
+            .to_dtype(dtype)?;
         let mut latents = scheduler.add_noise(&init_latents, noise, start_t)?;
 
         let bar = progress::step_bar(active.len() as u64, "stylize");
         for &timestep in active {
             let latent_in = scheduler.scale_model_input(latents.clone(), timestep)?;
-            let noise_pred =
-                self.unet.forward(&latent_in, timestep as f64, &encoder_hidden_states)?;
+            let noise_pred = self.core.unet.forward(
+                &latent_in,
+                timestep as f64,
+                &encoder_hidden_states,
+                self.empty_pooled.as_ref(),
+                add_time_ids.as_ref(),
+            )?;
             latents = scheduler.step(&noise_pred, timestep, &latents)?;
             bar.inc(1);
             bar.set_message(format!("t={timestep} strength={strength:.2}"));
@@ -335,7 +377,7 @@ impl Pipeline {
         bar.finish_and_clear();
 
         // -------- decode + save --------
-        let image = self.vae.decode(&(&latents / 0.18215)?)?;
+        let image = self.core.vae.decode(&(&latents / vae_scale)?)?;
         let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
         let image = (image * 255.0)?
             .to_dtype(DType::U8)?
@@ -382,10 +424,14 @@ fn read_image_size(path: &std::path::Path) -> Result<(u32, u32)> {
     Ok(image::GenericImageView::dimensions(&img))
 }
 
-/// Round IN dims to multiples of 8, capped at a sensible SD 1.5 max.
-fn sd_dims(in_w: u32, in_h: u32) -> (u32, u32) {
-    let cap = 768u32;
-    let scale = (cap as f32 / in_w.max(in_h) as f32).min(1.0);
+/// Round IN dims to multiples of 8, targeting the base's native size
+/// (768 SD 1.5, 1024 SDXL). SDXL is trained at ~1024² and degrades into
+/// glitch below it, so small inputs are scaled UP to the long side = 1024;
+/// SD 1.5 only ever scales down.
+fn sd_dims(in_w: u32, in_h: u32, is_xl: bool) -> (u32, u32) {
+    let cap = if is_xl { 1024u32 } else { 768u32 };
+    let raw = cap as f32 / in_w.max(in_h) as f32;
+    let scale = if is_xl { raw } else { raw.min(1.0) };
     let w = ((in_w as f32) * scale).round() as u32;
     let h = ((in_h as f32) * scale).round() as u32;
     ((w / 8).max(1) * 8, (h / 8).max(1) * 8)
