@@ -1,13 +1,13 @@
 {
   "prompt": "pencil drawing, fine graphite lines, hatching and cross-hatching, a stone cottage by a forest stream, on sketchbook paper, traditional pencil sketch, detailed line work",
   "negative": "colorful, photographic, painted, smooth digital gradients, vector art",
-  "model": "sd15",
+  "model": "sdxl",
   "seed": 42,
-  "steps": 28,
+  "steps": 30,
   "guidance": 6.5,
   "scheduler": "eulera",
-  "width": 512,
-  "height": 512,
+  "width": 1024,
+  "height": 1024,
   "generator": "plakat 0.46.0",
   "look": "pencil"
 }

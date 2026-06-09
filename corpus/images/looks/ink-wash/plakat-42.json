@@ -1,13 +1,24 @@
 {
-  "prompt": "ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space",
+  "prompt": "Ivy_ink, ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space",
   "negative": "photographic, colorful, smooth digital gradients, 3d render, oil painting",
-  "model": "sd15",
+  "model": "sdxl",
   "seed": 42,
-  "steps": 32,
+  "steps": 30,
   "guidance": 6.5,
   "scheduler": "eulera",
-  "width": 512,
-  "height": 512,
+  "width": 1024,
+  "height": 1024,
+  "loras": [
+    "LoraSpec { source: Civitai { id_kind: Version(2942895), file: None }, scale: 0.8 }"
+  ],
+  "lora_scale": 1.0,
   "generator": "plakat 0.46.0",
-  "look": "ink-wash"
+  "look": "ink-wash",
+  "lora_stack": [
+    {
+      "display": "civitai-version:2942895",
+      "scale": 0.8,
+      "source": "civitai"
+    }
+  ]
 }

@@ -1,13 +1,13 @@
 {
   "prompt": "chalk pastel drawing, soft pastel strokes, a stone cottage by a forest stream, on textured paper, vibrant matte pigments, dusty surface",
   "negative": "photographic, smooth digital gradients, glossy, 3d render",
-  "model": "sd15",
+  "model": "sdxl",
   "seed": 42,
-  "steps": 32,
+  "steps": 30,
   "guidance": 6.0,
   "scheduler": "eulera",
-  "width": 512,
-  "height": 512,
+  "width": 1024,
+  "height": 1024,
   "generator": "plakat 0.46.0",
   "look": "chalk-pastel"
 }
