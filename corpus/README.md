@@ -69,7 +69,7 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `img2img.sh` | **img2img style transfer** — repaint a photo into a medium (oil / watercolour / ink-wash) while keeping its composition, on SDXL. |
 | `portrait.sh` | **Text-only persona portraits** (no reference photo) on SD 1.5. |
 | `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
-| `transparent.sh` | **Transparent cut-out** (`plakat transparent`) — generate a subject on a flat background, then knock that colour out → an RGBA PNG (`--tolerance` softens edges). |
+| `transparent.sh` | **Transparent cut-out** (`plakat transparent`) — generate a subject on a flat background, then flood-fill the background out from the corners → an RGBA PNG (follows gradients / soft shadows, stops at the subject edge). |
 | `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
 | `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache) on **SDXL**. Uses **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA (rejecting characters), falling back to prompt-only if none fits. `--scheduler euler-a` (Metal). Needs `CIVITAI_API_KEY` for the LoRA downloads. |
 | `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose) on **SDXL** via a pinned Civitai anime LoRA (`civitai:129020`). Needs `CIVITAI_API_KEY`. |

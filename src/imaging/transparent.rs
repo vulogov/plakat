@@ -14,9 +14,12 @@ pub struct Report {
     pub total_pixels: u64,
 }
 
-/// Make every pixel within `tolerance` (per-channel max diff) of the upper-left
-/// pixel fully transparent. Matched pixels keep their RGB; alpha is set to 0.
-/// Non-matched pixels preserve their original alpha (255 for RGB inputs).
+/// Flood-fill the background to fully transparent, starting from the image
+/// corners: a pixel joins the background when it's within `tolerance` (per
+/// channel) of an already-background NEIGHBOUR. Smooth gradients / soft shadows
+/// are removed (each step is small) while a sharp subject edge stops the fill —
+/// robust on real, studio-lit renders where a single corner-colour key fails.
+/// Matched pixels keep their RGB with alpha 0; everything else is untouched.
 pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Result<Report> {
     if let Some(ext) = out_path
         .extension()
@@ -36,7 +39,7 @@ pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Resul
         return Err(anyhow!("empty image: {}", in_path.display()));
     }
 
-    let (out, hit, key_rgb) = chroma_key_image(img, tolerance);
+    let (out, hit, key_rgb) = flood_key_image(img, tolerance);
     let (kr, kg, kb) = (key_rgb[0], key_rgb[1], key_rgb[2]);
 
     if let Some(parent) = out_path.parent() {
@@ -87,4 +90,71 @@ pub fn chroma_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 
         }
     }
     (out, hit, [kr, kg, kb])
+}
+
+/// Corner flood-fill variant of [`chroma_key_image`]: removes only the
+/// background **connected to the four corners**, growing a pixel into the
+/// background when it's within `tolerance` (per channel) of an already-background
+/// *neighbour*. Follows smooth gradients / soft shadows yet stops at a sharp
+/// subject edge, and the subject's interior keeps colours that happen to match
+/// the background. Used by [`make_transparent`].
+pub fn flood_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 3]) {
+    use std::collections::VecDeque;
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w == 0 || h == 0 {
+        return (img, 0, [0, 0, 0]);
+    }
+    let key = img.get_pixel(0, 0).0;
+    let tol = tolerance as i16;
+    let close = |a: &[u8; 4], b: &[u8; 4]| {
+        (a[0] as i16 - b[0] as i16).abs() <= tol
+            && (a[1] as i16 - b[1] as i16).abs() <= tol
+            && (a[2] as i16 - b[2] as i16).abs() <= tol
+    };
+    let mut bg = vec![false; w * h];
+    let mut q: VecDeque<(usize, usize)> = VecDeque::new();
+    for (cx, cy) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+        let p = cy * w + cx;
+        if !bg[p] {
+            bg[p] = true;
+            q.push_back((cx, cy));
+        }
+    }
+    while let Some((x, y)) = q.pop_front() {
+        let cur = img.get_pixel(x as u32, y as u32).0;
+        let mut ns = [(0usize, 0usize); 4];
+        let mut n = 0;
+        if x > 0 {
+            ns[n] = (x - 1, y);
+            n += 1;
+        }
+        if x + 1 < w {
+            ns[n] = (x + 1, y);
+            n += 1;
+        }
+        if y > 0 {
+            ns[n] = (x, y - 1);
+            n += 1;
+        }
+        if y + 1 < h {
+            ns[n] = (x, y + 1);
+            n += 1;
+        }
+        for &(nx, ny) in &ns[..n] {
+            let np = ny * w + nx;
+            if !bg[np] && close(&cur, &img.get_pixel(nx as u32, ny as u32).0) {
+                bg[np] = true;
+                q.push_back((nx, ny));
+            }
+        }
+    }
+    let mut out = img;
+    let mut hit = 0u64;
+    for (i, &is_bg) in bg.iter().enumerate() {
+        if is_bg {
+            out.get_pixel_mut((i % w) as u32, (i / w) as u32).0[3] = 0;
+            hit += 1;
+        }
+    }
+    (out, hit, [key[0], key[1], key[2]])
 }
