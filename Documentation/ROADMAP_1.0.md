@@ -45,10 +45,26 @@ The single highest-value, irreversible item is **§2's API freeze**.
 
 Breaking changes are cheap before 1.0 and a major-version event after. Do them now.
 
-- [ ] **CLI surface audit** — all 23 subcommands + every flag: freeze names,
-      remove/rename inconsistencies, kill experimental flags. (Precedent: the
-      `PLAKAT_TRAIN_CHECKPOINTS` → `PLAKAT_TRAIN_SINGLE_FILE` rename.) **The
-      irreversible item — highest priority.**
+- [~] **CLI surface audit — DONE; renames pending.** Enumerated every flag across
+      the 23 subcommands. GOOD: common flags (`steps`/`seed`/`model`/`out`/
+      `negative`/`guidance`/`size`) are uniform; flag families (`control-*` /
+      `hires-*` / `enhance-*` / `adetailer-*` / `artefact-*` / `grid-*` / `tile-*` /
+      `window-*` / `motion-lora*`) are clean; **no legacy flag aliases** → renames
+      are a clean slate. Fix before the freeze (all breaking — do now, update
+      corpus + docs):
+  - [ ] **`--loras` → `--lora`** (repeatable) in `img2img` + `outpaint` —
+        `generate`/`portrait` already use `--lora`; unify the *name* AND the input
+        style (comma-list → repeatable). Clearest inconsistency.
+  - [ ] **`--for` (stylize) → `--preset`** — `--for` reads like a reserved word; it
+        selects a strength preset.
+  - [ ] **Quant flags** `--quantize-t5` / `--quant-level` / `--t5-quant-level` —
+        inconsistent (verb vs noun-level). Unify (semantics decision needed).
+  - [ ] **`--type` (civitai) → `--asset-type`** — minor clarity.
+  - [ ] **Declare input convention** — primary creative input is positional;
+        transform inputs use `--in` / `--ref`. Confirm + document.
+  - [ ] **Env-var contract** — document the public set (`PLAKAT_CACHE_DIR`,
+        `PLAKAT_DEVICE`, `PLAKAT_TRAIN_SINGLE_FILE`, `PLAKAT_ALLOW_GGUF_METAL`) vs
+        internal (`ARCFACE_*` / `SCRFD_*` / `FACEID_*`).
 - [ ] **Freeze the scenario HJSON schema** — public contract; the whole corpus
       depends on it.
 - [ ] **Freeze the Bund scripting word-set** — public DSL.
