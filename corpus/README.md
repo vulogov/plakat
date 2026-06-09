@@ -70,11 +70,12 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `portrait.sh` | **Text-only persona portraits** (no reference photo) on SD 1.5. |
 | `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
 | `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
-| `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache); a generic counterpart to the trained style LoRAs. Runs `--offline` (prompt presets; the optional per-look LoRA auto-discovery needs Civitai) + `--scheduler euler-a` (Metal). |
-| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose). Runs `--offline` + `--scheduler euler-a` (Metal). |
+| `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache) on **SDXL**. Uses **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA (rejecting characters), falling back to prompt-only if none fits. `--scheduler euler-a` (Metal). Needs `CIVITAI_API_KEY` for the LoRA downloads. |
+| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose) on **SDXL** via a pinned Civitai anime LoRA (`civitai:129020`). Needs `CIVITAI_API_KEY`. |
+| `civitai.sh` | **Civitai LoRA by id** (`--lora civitai:<id>:scale`) — pull a LoRA from Civitai by model id + render (Eldritch Watercolor on SDXL). Needs `CIVITAI_API_KEY` for the auth-gated download. |
 | `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
-| `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sd15-inpaint`). |
-| `stylize.sh` | **Stylize** (`plakat stylize`) — transfer a reference image's *look* onto a subject via IP-Adapter (no prompt, no training; distinct from img2img + style LoRAs). Bold subjects restyle best. SD 1.5. |
+| `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sdxl-inpaint`). Clean: the masked region is conditioned on mid-gray with a binary mask (no dark bands, no feather seams). |
+| `stylize.sh` | **Stylize** (`plakat stylize`) — apply a reference's *look* to a subject via IP-Adapter (no prompt, no training) on SD 1.5 or **SDXL** (`--model sdxl`). The IP-Adapter transfers content/appearance/palette, NOT painterly texture → a ref-*variation* tool (for true painterly style use `style_train.sh` / `--look`). `--ref-blur` suppresses ref content. |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.

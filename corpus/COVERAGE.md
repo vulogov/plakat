@@ -25,19 +25,20 @@ committed under `images/`.
 | ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
-| Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ⬜ | looks = the 8 bundled art-mediums on one subject; genres = the bundled `anime` subject-domain (independent axis, they compose). Run `--offline` + `--scheduler euler-a` (Metal); prompt presets, optional LoRA auto-discovery off. (Catalog `style:` still to add.) |
+| Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ✅ | looks = the 8 bundled art-mediums on one subject (SDXL); genres = the bundled `anime` subject-domain (independent axis, they compose). Looks use **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA, rejecting characters (7/8 judged style LoRAs + chalk-pastel prompt-only). Genres pin a Civitai SDXL LoRA by id. `--scheduler euler-a` (Metal). |
+| Civitai LoRA (by id) | `civitai.sh` | ✅ | ✅ | pull a LoRA from Civitai by model id (`civitai:<id>:scale`) + render — Eldritch Watercolor on SDXL. Needs `CIVITAI_API_KEY` for the auth-gated download. |
 | **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
 | Portrait / identity | `portrait.sh` + `portrait.hjson` | ✅ | ✅ | text personas (script) + `example.png` lookalike (scenario, IP-Adapter-Plus-Face) |
 | AnimateDiff (motion) | `animate.sh` | ✅ | ✅ | text→short video; frames in `images/animate/` |
-| Stylize (IP-Adapter style transfer) | `stylize.sh` | ✅ | ⬜ | transfer a reference image's *look* onto a subject — no prompt, no training (vs img2img / style LoRAs). Bold subjects restyle best. |
+| Stylize (IP-Adapter ref-variation) | `stylize.sh` | ✅ | ⬜ | apply a reference's *look* to a subject via IP-Adapter — no prompt, no training. SD 1.5 or **SDXL** (`--model sdxl`, sharper, native 1024²; SD 1.5 kept as fallback). NOTE: the IP-Adapter transfers content/appearance/palette, NOT painterly texture → a ref-*variation* tool (stays photoreal); for true painterly style use the LoRA paths / `--look`. `--ref-blur` suppresses ref content. |
 
 ## Transforms & post
 
 | Capability | Driver | Status | Rendered | Notes |
 |---|---|---|---|---|
 | img2img (style transfer, SDXL) | `img2img.sh` | ✅ | ✅ | prompt-steered medium restyle; no LoRA/download |
-| Inpaint (masked) | `inpaint.sh` | ✅ | ⬜ | `img2img --mask` — repaint a region (the sky) and preserve the rest; committed input + procedural mask, self-contained |
-| Outpaint | `outpaint.sh` | ✅ | ⬜ | `plakat outpaint` — pad the canvas + paint the new strip in-context (sd15-inpaint, ungated) |
+| Inpaint (masked) | `inpaint.sh` | ✅ | ✅ | `img2img --mask` — repaint a region (the sky) and preserve the rest; committed input + procedural mask, self-contained |
+| Outpaint | `outpaint.sh` | ✅ | ✅ | `plakat outpaint` — pad the canvas + paint the new strip in-context (sdxl-inpaint). Clean: the masked region is conditioned on mid-gray (no dark bands) with a binary mask (no feather seams) |
 | Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
 
 ## Batch & scripting
@@ -46,7 +47,7 @@ committed under `images/`.
 |---|---|---|---|---|
 | Scenarios (HJSON batch) | every `*.hjson` | ✅ | ✅ | the corpus is itself the proof |
 | Scene × weather axes | `weather-scene.hjson` | ✅ | ✅ | one area (prompt-header) re-lit + re-weathered across both axes |
-| Bund scripting | `script.bund` (`script.sh`) | ✅ | ⬜ | `plakat run` — load → generate → upscale → save handle-reuse chain (SD 1.5) |
+| Bund scripting | `script.bund` (`script.sh`) | ✅ | ✅ | `plakat run` — load → generate → upscale → save handle-reuse chain (SD 1.5) |
 | Gallery generator | `plakat gallery` | ✅ | n/a | builds this corpus's index |
 
 ---
