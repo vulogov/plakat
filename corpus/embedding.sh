@@ -11,14 +11,16 @@
 # blur / artefacts. We render a baseline and a +EasyNegative pair on the same
 # seed so the quality lift (hands, faces) is visible side by side.
 #
-# `--embedding` takes `PATH_OR_REPO[:trigger][:scale]` — here a HuggingFace repo
-# (downloaded + cached on first run). Inspect any TI file with:
+# `--embedding` takes `PATH_OR_REPO[:trigger][:scale]`. A bare repo looks for
+# `learned_embeds.safetensors`; use `repo#file.safetensors` to name a different
+# file (here EasyNegative ships `EasyNegative.safetensors`). Cached on first run.
+# Inspect any TI file with:
 #   plakat embedding info <file.safetensors>     # trigger word + dims + variant
 # Ungated, Metal-safe.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
-TI="gsdf/EasyNegative"
+TI="gsdf/EasyNegative#EasyNegative.safetensors"
 PROMPT="full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus"
 mkdir -p "$ROOT/corpus/images/embedding"
 

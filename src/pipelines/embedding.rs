@@ -635,17 +635,28 @@ pub async fn resolve(spec: &EmbeddingSpec) -> Result<PathBuf> {
     if as_path.exists() {
         return Ok(as_path);
     }
-    // Treat as HF repo. Supports `repo#path/to/file.safetensors`
-    // for explicit file selection.
-    let (repo, file) = if let Some((r, f)) = src.split_once('#') {
-        (r.to_string(), f.to_string())
-    } else {
-        // Default to common filenames in TI repos.
-        (src.to_string(), "learned_embeds.safetensors".to_string())
-    };
-    crate::hf::download::get_file(&repo, &file)
-        .await
-        .with_context(|| format!("resolving embedding {src:?}"))
+    // Explicit `repo#path/to/file.safetensors` → that exact file.
+    if let Some((repo, file)) = src.split_once('#') {
+        return crate::hf::download::get_file(repo, file)
+            .await
+            .with_context(|| format!("resolving embedding {src:?}"));
+    }
+    // Bare repo: TI repos don't share a filename convention — sd-concepts use
+    // `learned_embeds.safetensors`, others name the file after the repo (e.g.
+    // `gsdf/EasyNegative` → `EasyNegative.safetensors`). Try both before failing.
+    let tail = src.rsplit('/').next().unwrap_or(src.as_str());
+    let tail_file = format!("{tail}.safetensors");
+    crate::hf::download::get_first_of(&[
+        (src.as_str(), "learned_embeds.safetensors"),
+        (src.as_str(), tail_file.as_str()),
+    ])
+    .await
+    .with_context(|| {
+        format!(
+            "resolving embedding {src:?} (tried learned_embeds.safetensors + {tail_file}; \
+             use repo#file.safetensors to name another)"
+        )
+    })
 }
 
 #[cfg(test)]
