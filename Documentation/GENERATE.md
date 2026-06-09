@@ -54,8 +54,8 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | 4-bit quantized Flux Fill. |
-| `flux-kontext-dev-gguf` | `unsloth/FLUX.1-Kontext-dev-GGUF` | **v0.18**. GGUF Kontext via the unsloth mirror. Same `--quant-level` options as `flux-dev-gguf`. Composes with `--loras` (Kontext shares Dev's transformer layer names). NF4 isn't supported (no upstream pack). |
-| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--loras`. |
+| `flux-kontext-dev-gguf` | `unsloth/FLUX.1-Kontext-dev-GGUF` | **v0.18**. GGUF Kontext via the unsloth mirror. Same `--quant-level` options as `flux-dev-gguf`. Composes with `--lora` (Kontext shares Dev's transformer layer names). NF4 isn't supported (no upstream pack). |
+| `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--lora`. |
 | `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
 | `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | SD3.5 Large flagship. 8B-param MMDiT. Gated. |
 | `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
@@ -705,7 +705,7 @@ plakat generate "..." --model sdxl --fast lcm-sdxl
 plakat generate "..." --model sd15 --fast lcm-sd15
 ```
 
-The preset LoRA gets prepended to `--loras`; `--steps`,
+The preset LoRA gets prepended to `--lora`; `--steps`,
 `--guidance`, and (for the `lcm-*` presets) `--scheduler` are
 overridden **only** when you didn't pass them explicitly. Flux
 presets require a non-Fill Flux model; `lcm-sdxl` requires an
@@ -1281,9 +1281,9 @@ you want REF to do.
 | `0.8 +` | IN is essentially a composition hint; identity gone | heavy redraw |
 
 The default `0.7` is tuned for scenes/landscapes. For face inputs use
-`0.35` (or `--for portrait`, below).
+`0.35` (or `--preset portrait`, below).
 
-#### `--for <PRESET>` (default off)
+#### `--preset <PRESET>` (default off)
 
 Strength preset shortcut — picks a documented `--strength` for a use
 case. Explicit `--strength` always wins if both are passed.
@@ -1298,16 +1298,16 @@ Examples:
 
 ```bash
 # Face-preserving style transfer.
-plakat stylize --in face.jpg --ref painting.jpg --out styled.png --for portrait
+plakat stylize --in face.jpg --ref painting.jpg --out styled.png --preset portrait
 
 # Landscape restyling.
-plakat stylize --in landscape.jpg --ref ukiyoe.jpg --out styled.png --for scene
+plakat stylize --in landscape.jpg --ref ukiyoe.jpg --out styled.png --preset scene
 
 # Just borrow the reference's colour palette.
-plakat stylize --in photo.jpg --ref gradient.jpg --out graded.png --for grading
+plakat stylize --in photo.jpg --ref gradient.jpg --out graded.png --preset grading
 
 # Preset + explicit override → explicit wins (warns about the conflict).
-plakat stylize .. --for portrait --strength 0.45 # uses 0.45
+plakat stylize .. --preset portrait --strength 0.45 # uses 0.45
 ```
 
 #### `--steps <N>` (default `30`)
@@ -1469,7 +1469,7 @@ embeddings, ControlNet variants.
 
 | Subcommand | Purpose |
 |---|---|
-| `civitai search <QUERY> [--type lora\|checkpoint\|ti\|controlnet\|vae] [--limit N] [--page P] [--include-nsfw]` | Free-text search. Filters NSFW by default; pages 1-indexed. |
+| `civitai search <QUERY> [--asset-type lora\|checkpoint\|ti\|controlnet\|vae] [--limit N] [--page P] [--include-nsfw]` | Free-text search. Filters NSFW by default; pages 1-indexed. |
 | `civitai info <REF>` | Show model/version details — trigger words, base model, files. |
 | `civitai download <REF> [--file NAME]` | Fetch the asset into the local cache. Prints the absolute path. |
 
@@ -1486,7 +1486,7 @@ short-circuits on matching size. Authenticated downloads use
 `--lora` or `--model`.
 
 ```bash
-plakat civitai search "watercolor" --type lora --limit 10
+plakat civitai search "watercolor" --asset-type lora --limit 10
 plakat civitai info 12345
 plakat civitai download "https://civitai.com/models/12345?modelVersionId=789"
 ```

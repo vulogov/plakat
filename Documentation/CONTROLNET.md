@@ -175,7 +175,7 @@ plakat feature:
 | Feature | Interaction with `--control` |
 |---|---|
 | `--style` / `--style-ref` | Orthogonal. Style affects palette/aesthetic; control affects layout. |
-| `--loras` | Additive — both run in the same denoise. |
+| `--lora` | Additive — both run in the same denoise. |
 | `--artefact` / `--artefact-blend` | Orthogonal. ControlNet shapes the generated image first; artefacts get composited / blended on top. |
 | `--smart-zones` | Orthogonal. Both feature paths still apply. |
 | `--refiner` (SDXL) | Compatible — control runs through both base + refiner UNet passes when refiner is enabled, with the same ControlNet residuals. |

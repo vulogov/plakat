@@ -91,7 +91,7 @@ pub struct StylizeArgs {
     ///   portrait → 0.35 (face-preserving)
     ///   scene    → 0.55 (balanced; landscapes/objects)
     ///   grading  → 0.25 (tonal/colour only)
-    #[arg(long = "for", value_name = "PRESET")]
+    #[arg(long = "preset", value_name = "PRESET")]
     pub preset: Option<StylizePreset>,
 
     /// Base diffusion model (alias or HF repo id). Currently SD 1.5 only.

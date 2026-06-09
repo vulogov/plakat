@@ -148,7 +148,7 @@ sweep with `--count 4 --grid` produces `plakat-flux-grid-…`.
 
 ## Style + LoRA support
 
-`--style`, `--style-ref`, `--loras`, and `--lora-scale` work
+`--style`, `--style-ref`, `--lora`, and `--lora-scale` work
 identically to `plakat generate`. The denoise is the same modulo
 the partial-strength starting point.
 
@@ -239,7 +239,7 @@ plakat img2img photo.png --model sd35-large-turbo \
  --prompt "..." --guidance 0
 ```
 
-SD3 LoRA (`--loras`) composes with img2img and inpaint. Diffusers
+SD3 LoRA (`--lora`) composes with img2img and inpaint. Diffusers
 PEFT format is the supported convention (keys under
 `transformer.transformer_blocks.{i}.attn.*` / `ff.*` / `norm1*`).
 Affected Linears are merged into the MMDiT weights at load time.

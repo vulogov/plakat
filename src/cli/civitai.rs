@@ -59,7 +59,7 @@ pub struct SearchArgs {
     /// Filter to one asset type:
     /// `lora | checkpoint | ti | controlnet | vae | locon | hypernetwork`
     /// (synonyms accepted — `ckpt`, `embedding`, ...).
-    #[arg(long = "type", value_name = "TYPE")]
+    #[arg(long = "asset-type", value_name = "TYPE")]
     pub asset_type: Option<String>,
     /// Result page size (1..=100). Default 10.
     #[arg(long, default_value_t = 10, value_name = "N")]
@@ -108,7 +108,7 @@ pub struct SyncArgs {
     /// Filter to one asset type:
     /// `lora | checkpoint | ti | controlnet | vae | locon | hypernetwork`
     /// (synonyms accepted). Omitted = all the user's models.
-    #[arg(long = "type", value_name = "TYPE")]
+    #[arg(long = "asset-type", value_name = "TYPE")]
     pub asset_type: Option<String>,
     /// Cap total models synced. Useful for testing — `--limit 3`
     /// downloads at most three. Default: unlimited.

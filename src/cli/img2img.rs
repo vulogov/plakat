@@ -168,8 +168,8 @@ pub struct Img2ImgArgs {
     #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
     pub tile_stride: u32,
 
-    /// LoRA spec(s). Same grammar as `plakat generate --loras`.
-    #[arg(long = "loras", value_delimiter = ',')]
+    /// LoRA spec(s). Repeatable — same grammar as `plakat generate --lora`.
+    #[arg(long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// LoRA weight scale multiplier.

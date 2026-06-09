@@ -47,7 +47,7 @@ is hard to scan.
 Filter to a specific type:
 
 ```bash
-plakat civitai search "watercolor" --type lora
+plakat civitai search "watercolor" --asset-type lora
 ```
 
 Other types accepted by `--type`:
@@ -196,7 +196,7 @@ plakat generate "..." \
     --lora ~/.cache/plakat/civitai/model-2595428/version-2614696/MyLoRA_v1.safetensors:0.7 \
     --lora some/other-style-lora:0.4
 
-# Custom checkpoint (downloaded via `civitai download` with --type checkpoint)
+# Custom checkpoint (downloaded via `civitai download` with --asset-type checkpoint)
 plakat generate "..." \
     --model ~/.cache/plakat/civitai/model-12345/version-67890/the_checkpoint.safetensors
 ```
@@ -247,7 +247,7 @@ purely from scale (no triggers) print nothing. The notice fires
 every run rather than once, so it travels with the LoRA across
 sessions and scenarios.
 
-For Textual Inversion files (`--type ti`):
+For Textual Inversion files (`--asset-type ti`):
 
 ```bash
 plakat civitai download <id-of-a-TI>
@@ -266,7 +266,7 @@ By default `civitai search` filters out NSFW-tagged models. Pass
 `--include-nsfw` to see them too:
 
 ```bash
-plakat civitai search "portrait" --type lora --include-nsfw
+plakat civitai search "portrait" --asset-type lora --include-nsfw
 ```
 
 The filter is client-side (the API still returns the entries; we
@@ -280,10 +280,10 @@ walks to the requested page:
 
 ```bash
 # Top 50 LoRAs for "watercolor"
-plakat civitai search "watercolor" --type lora --limit 50
+plakat civitai search "watercolor" --asset-type lora --limit 50
 
 # Second page of 10 (matches 11-20)
-plakat civitai search "watercolor" --type lora --page 2
+plakat civitai search "watercolor" --asset-type lora --page 2
 ```
 
 Implementation note: Civitai's API uses **cursor-based** pagination
@@ -359,7 +359,7 @@ per-model dir is empty without its versions.
   community fine-tunes — drive them with `--model sdxl` (most
   Illustrious / Pony bases) or pull the matching checkpoint from
   Civitai too. They're not built-in plakat aliases.
-- **`--type checkpoint` downloads are big.** 5-7 GB is typical
+- **`--asset-type checkpoint` downloads are big.** 5-7 GB is typical
   for SDXL fine-tunes; some Flux community checkpoints are
   20-30 GB. Watch your `--cache-dir` capacity.
 - **Search results change over time.** Civitai's ranking algorithm

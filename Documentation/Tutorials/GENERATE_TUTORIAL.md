@@ -649,10 +649,10 @@ ships a built-in browser so you don't have to copy URLs around.
 
 ```bash
 # Top 10 LoRAs matching "watercolor"
-plakat civitai search "watercolor" --type lora
+plakat civitai search "watercolor" --asset-type lora
 
 # Checkpoints, page 2 of 20
-plakat civitai search "anime" --type checkpoint --limit 20 --page 2
+plakat civitai search "anime" --asset-type checkpoint --limit 20 --page 2
 ```
 
 Each result shows the model ID, name, type, base model, trigger

@@ -52,14 +52,12 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       `window-*` / `motion-lora*`) are clean; **no legacy flag aliases** → renames
       are a clean slate. Fix before the freeze (all breaking — do now, update
       corpus + docs):
-  - [ ] **`--loras` → `--lora`** (repeatable) in `img2img` + `outpaint` —
-        `generate`/`portrait` already use `--lora`; unify the *name* AND the input
-        style (comma-list → repeatable). Clearest inconsistency.
-  - [ ] **`--for` (stylize) → `--preset`** — `--for` reads like a reserved word; it
-        selects a strength preset.
+  - [x] **`--loras` → `--lora`** (repeatable) in `img2img` + `outpaint` — done
+        (source + docs); now uniform with `generate`/`portrait`, repeatable style.
+  - [x] **`--for` (stylize) → `--preset`** — done (source + docs).
   - [ ] **Quant flags** `--quantize-t5` / `--quant-level` / `--t5-quant-level` —
         inconsistent (verb vs noun-level). Unify (semantics decision needed).
-  - [ ] **`--type` (civitai) → `--asset-type`** — minor clarity.
+  - [x] **`--type` (civitai) → `--asset-type`** — done (source + docs).
   - [ ] **Declare input convention** — primary creative input is positional;
         transform inputs use `--in` / `--ref`. Confirm + document.
   - [ ] **Env-var contract** — document the public set (`PLAKAT_CACHE_DIR`,

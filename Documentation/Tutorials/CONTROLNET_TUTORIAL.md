@@ -206,7 +206,7 @@ feature:
 | `--mask` (inpaint) | Composes. Control applies inside the masked region (where denoise actually runs). |
 | `--style` / `--style-ref` | Orthogonal. Style sets palette/aesthetic; control sets layout. |
 | `--smart-zones` | Orthogonal. ControlNet shapes the generated image; smart-zones places artefact PNGs on top. |
-| `--loras` | Additive — both run in the same denoise. |
+| `--lora` | Additive — both run in the same denoise. |
 | `--refiner` (SDXL) | Compatible. Control residuals apply to both base + refiner UNet passes. |
 | Scenarios | Per-task `control: { ... }` block. The ControlNet network is cached across tasks. |
 | Flux | **Not supported.** ControlNet is SD-family only. |

@@ -99,8 +99,8 @@ pub struct OutpaintArgs {
     #[arg(long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
-    /// LoRA spec(s). Same grammar as `plakat generate --loras`.
-    #[arg(long = "loras", value_delimiter = ',')]
+    /// LoRA spec(s). Repeatable — same grammar as `plakat generate --lora`.
+    #[arg(long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// LoRA weight scale multiplier.
