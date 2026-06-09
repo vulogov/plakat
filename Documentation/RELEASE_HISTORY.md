@@ -1,12 +1,27 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.44. The current
+"What's new" sections for v0.13 through v0.45. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.45.0 — Train your own style
+
+**`plakat style train` learns a style from a folder of images into a LoRA**
+you drop onto any generation — creation, not just detection. Train on nine
+watercolour references and fresh subjects render in that exact style. Phase 1
+shipped SD 3.5 (mixed precision — frozen BF16 base + F32 LoRA on the attention
+projections; encode-then-drop the text/VAE stack; train at 256² with periodic
+checkpoints). Output is a standard diffusers-PEFT `.safetensors`; training and
+generation stay separate. (SD 1.5 + SDXL bases followed in v0.46.)
+
+Also fixed: **SD 3 `--lora`** on diffusers checkpoints (sd35-medium) was
+silently 0/N-merged — now remaps diffusers→SAI before merging (191/191), fixing
+*any* SD3 LoRA; **SD 2.1** repointed off the newly-gated stabilityai repo to an
+ungated 768 v-prediction mirror.
 
 ## What's new in v0.44.0 — SD 3.5 rescued + corpus breadth
 

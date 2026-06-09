@@ -30,6 +30,11 @@ No prior text-to-image experience assumed.
   with the same look + base model are network-free.
 - For air-gapped / reproducibility use, `--offline` short-circuits
   network discovery (uses cache + local LoRA scan only).
+- **`--smart-discovery`** (v0.46) improves discovery for generic medium
+  terms: a small local LLM judges the Civitai candidate pool and picks the
+  best *style* LoRA, **rejecting character LoRAs** (so "watercolour" no
+  longer resolves to "an anime girl tagged watercolour"). If nothing fits,
+  it falls back to the prompt-only preset. Best paired with `--model sdxl`.
 
 ---
 
