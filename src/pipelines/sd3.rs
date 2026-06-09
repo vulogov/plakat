@@ -1788,6 +1788,8 @@ pub struct StyleTrainRequest {
     /// Explicit checkpoint interval in steps. `None` → ~10 evenly-spaced
     /// (`checkpoint_interval`). `0` is treated as `None`.
     pub checkpoint_every: Option<usize>,
+    /// Log a progress line every N steps (min 1).
+    pub log_every: usize,
 }
 
 /// Train a style LoRA on the MMDiT attention projections; write a
@@ -1880,7 +1882,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
-        if step % 10 == 0 || step + 1 == req.steps {
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
             tracing::info!(
                 "{}",
                 progress.line("style-train", step + 1, loss.to_scalar::<f32>()?)

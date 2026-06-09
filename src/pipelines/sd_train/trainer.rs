@@ -59,6 +59,8 @@ pub struct SdStyleTrainRequest {
     /// Explicit checkpoint interval in steps. `None` → ~10 evenly-spaced
     /// (see [`checkpoint_interval`]). `0` is treated as `None`.
     pub checkpoint_every: Option<usize>,
+    /// Log a progress line every N steps (min 1).
+    pub log_every: usize,
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
@@ -195,7 +197,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
-        if step % 10 == 0 || step + 1 == req.steps {
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
             tracing::info!(
                 "{}",
                 progress.line("sd-style-train", step + 1, loss.to_scalar::<f32>()?)
@@ -314,7 +316,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
-        if step % 10 == 0 || step + 1 == req.steps {
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
             tracing::info!(
                 "{}",
                 progress.line("sdxl-style-train", step + 1, loss.to_scalar::<f32>()?)

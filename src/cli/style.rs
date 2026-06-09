@@ -77,6 +77,10 @@ pub struct TrainArgs {
     /// granularity on a long run, or a large value for fewer files.
     #[arg(long = "checkpoint-every", value_name = "STEPS")]
     pub checkpoint_every: Option<usize>,
+    /// Log a progress line every N steps (default 10). Larger = quieter logs on
+    /// a long run.
+    #[arg(long = "log-every", default_value_t = 10)]
+    pub log_every: usize,
     /// Training resolution (256 fits 24 GB; higher needs more memory).
     #[arg(long, default_value_t = 256)]
     pub size: u32,
@@ -243,6 +247,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 size: args.size,
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
             })
             .await
         }
@@ -259,6 +264,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 size: args.size,
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
             })
             .await
         }
@@ -276,6 +282,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 size: args.size,
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
             })
             .await
         }
