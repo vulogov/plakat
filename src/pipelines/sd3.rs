@@ -1860,6 +1860,11 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
 
     // --- Phase C: rectified-flow training loop.
     let n = latents.len().max(1);
+    let mut progress = crate::pipelines::train_progress::TrainProgress::new(
+        req.steps,
+        req.lr,
+        checkpoint_interval(req.checkpoint_every, req.steps),
+    );
     for step in 0..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
@@ -1877,10 +1882,8 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
-                "style-train: step {}/{} loss {:.5}",
-                step + 1,
-                req.steps,
-                loss.to_scalar::<f32>()?
+                "{}",
+                progress.line("style-train", step + 1, loss.to_scalar::<f32>()?)
             );
         }
         // Periodic NUMBERED checkpoint (`<stem>-step<N>`) so a long run can be
@@ -1899,6 +1902,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
     // --- Phase D: save diffusers-PEFT safetensors.
     save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
     tracing::info!("style-train: wrote {}", req.out.display());
+    tracing::info!("{}", progress.finish("style-train", &req.out));
     Ok(())
 }
 

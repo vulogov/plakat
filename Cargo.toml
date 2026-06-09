@@ -61,6 +61,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Errors
 anyhow = "1"
 thiserror = "1"
+humantime = "2"
 
 # Hashing — v0.19: SHA-256 cache keys for the local prompt enhancer
 # (--enhance-cache). Tiny dep, deterministic across rust versions /

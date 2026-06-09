@@ -1,6 +1,7 @@
 pub mod adetailer;
 pub mod artefact_blend;
 pub mod controlnet;
+pub(crate) mod train_progress;
 pub mod controlnet_annotator;
 pub mod depth;
 pub mod embedding;

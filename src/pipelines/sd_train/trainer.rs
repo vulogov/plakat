@@ -179,6 +179,11 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     // --- Phase C: DDPM-epsilon loop. x_t = √ᾱ·x0 + √(1-ᾱ)·ε; predict ε.
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let mut progress = crate::pipelines::train_progress::TrainProgress::new(
+        req.steps,
+        req.lr,
+        checkpoint_interval(req.checkpoint_every, req.steps),
+    );
     for step in 0..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
@@ -192,10 +197,8 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
-                "sd-style-train: step {}/{} loss {:.5}",
-                step + 1,
-                req.steps,
-                loss.to_scalar::<f32>()?
+                "{}",
+                progress.line("sd-style-train", step + 1, loss.to_scalar::<f32>()?)
             );
         }
         if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
@@ -208,6 +211,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
     tracing::info!("sd-style-train: wrote {}", req.out.display());
+    tracing::info!("{}", progress.finish("sd-style-train", &req.out));
     Ok(())
 }
 
@@ -294,6 +298,11 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
 
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let mut progress = crate::pipelines::train_progress::TrainProgress::new(
+        req.steps,
+        req.lr,
+        checkpoint_interval(req.checkpoint_every, req.steps),
+    );
     for step in 0..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
@@ -307,10 +316,8 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
-                "sdxl-style-train: step {}/{} loss {:.5}",
-                step + 1,
-                req.steps,
-                loss.to_scalar::<f32>()?
+                "{}",
+                progress.line("sdxl-style-train", step + 1, loss.to_scalar::<f32>()?)
             );
         }
         if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
@@ -323,6 +330,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
     tracing::info!("sdxl-style-train: wrote {}", req.out.display());
+    tracing::info!("{}", progress.finish("sdxl-style-train", &req.out));
     Ok(())
 }
 
