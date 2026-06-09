@@ -1,13 +1,24 @@
 {
-  "prompt": "oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments",
+  "prompt": "style, oil paint, impasto, chiaroscuro, rembrandt, oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments",
   "negative": "photographic, smooth digital gradients, flat colors, 3d render, cgi",
-  "model": "sd15",
+  "model": "sdxl",
   "seed": 42,
-  "steps": 40,
+  "steps": 30,
   "guidance": 7.0,
   "scheduler": "eulera",
-  "width": 512,
-  "height": 512,
+  "width": 1024,
+  "height": 1024,
+  "loras": [
+    "LoraSpec { source: Civitai { id_kind: Version(2925435), file: None }, scale: 0.8 }"
+  ],
+  "lora_scale": 1.0,
   "generator": "plakat 0.46.0",
-  "look": "oil-painting"
+  "look": "oil-painting",
+  "lora_stack": [
+    {
+      "display": "civitai-version:2925435",
+      "scale": 0.8,
+      "source": "civitai"
+    }
+  ]
 }
