@@ -1,6 +1,6 @@
 # plakat gallery
 
-62 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+63 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -25,12 +25,12 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/style-sd15/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
-    <td width="33%"><img src="images/looks/oil-painting/plakat-42.png" alt="oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments"></td>
-    <td width="33%"><img src="images/looks/charcoal/plakat-42.png" alt="charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks"></td>
+    <td width="33%"><img src="images/looks/oil-painting/plakat-42.png" alt="style, oil paint, impasto, chiaroscuro, rembrandt, oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments"></td>
+    <td width="33%"><img src="images/looks/charcoal/plakat-42.png" alt="chrcl_mstr, charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/looks/gouache/plakat-42.png" alt="gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative"></td>
-    <td width="33%"><img src="images/looks/ink-wash/plakat-42.png" alt="ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space"></td>
+    <td width="33%"><img src="images/looks/gouache/plakat-42.png" alt="Gouache, gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative"></td>
+    <td width="33%"><img src="images/looks/ink-wash/plakat-42.png" alt="Ivy_ink, ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space"></td>
     <td width="33%"><img src="images/looks/chalk-pastel/plakat-42.png" alt="chalk pastel drawing, soft pastel strokes, a stone cottage by a forest stream, on textured paper, vibrant matte pigments, dusty surface"></td>
   </tr>
   <tr>
@@ -79,31 +79,32 @@
     <td width="33%"><img src="images/img2img/coast_oil/plakat-img2img-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/outpaint/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
-    <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
     <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
     <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
-    <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
-    <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
     <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
-    <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
-    <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
   </tr>
@@ -217,41 +218,41 @@ _(no embedded metadata)_
 
 ![plakat-42.png](images/looks/oil-painting/plakat-42.png)
 
-> oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments
+> style, oil paint, impasto, chiaroscuro, rembrandt, oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments
 
 Negative: `photographic, smooth digital gradients, flat colors, 3d render, cgi`
 
-`sd15` · look: oil-painting · 512×512 · 40 steps · CFG 7 · seed 42
+`sdxl` · LoRA: civitai-version:2925435:0.800000011920929 · look: oil-painting · 1024×1024 · 30 steps · CFG 7 · seed 42
 
 ### plakat-42.png
 
 ![plakat-42.png](images/looks/charcoal/plakat-42.png)
 
-> charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks
+> chrcl_mstr, charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks
 
 Negative: `colorful, photographic, vector art, smooth digital gradients, painted`
 
-`sd15` · look: charcoal · 512×512 · 30 steps · CFG 6.5 · seed 42
+`sdxl` · LoRA: civitai-version:2566771:0.800000011920929 · look: charcoal · 1024×1024 · 30 steps · CFG 6.5 · seed 42
 
 ### plakat-42.png
 
 ![plakat-42.png](images/looks/gouache/plakat-42.png)
 
-> gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative
+> Gouache, gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative
 
 Negative: `photographic, glossy, transparent washes, 3d render, photorealistic`
 
-`sd15` · look: gouache · 512×512 · 32 steps · CFG 6.5 · seed 42
+`sdxl` · LoRA: civitai-version:956695:0.800000011920929 · look: gouache · 1024×1024 · 30 steps · CFG 6.5 · seed 42
 
 ### plakat-42.png
 
 ![plakat-42.png](images/looks/ink-wash/plakat-42.png)
 
-> ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space
+> Ivy_ink, ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space
 
 Negative: `photographic, colorful, smooth digital gradients, 3d render, oil painting`
 
-`sd15` · look: ink-wash · 512×512 · 32 steps · CFG 6.5 · seed 42
+`sdxl` · LoRA: civitai-version:2942895:0.800000011920929 · look: ink-wash · 1024×1024 · 30 steps · CFG 6.5 · seed 42
 
 ### plakat-42.png
 
@@ -261,7 +262,7 @@ Negative: `photographic, colorful, smooth digital gradients, 3d render, oil pain
 
 Negative: `photographic, smooth digital gradients, glossy, 3d render`
 
-`sd15` · look: chalk-pastel · 512×512 · 32 steps · CFG 6 · seed 42
+`sdxl` · look: chalk-pastel · 1024×1024 · 30 steps · CFG 6 · seed 42
 
 ### plakat-42.png
 
@@ -271,7 +272,7 @@ Negative: `photographic, smooth digital gradients, glossy, 3d render`
 
 Negative: `photographic, smooth gradients, soft edges, photorealistic, painted`
 
-`sd15` · look: linocut · 512×512 · 28 steps · CFG 7.5 · seed 42
+`sdxl` · look: linocut · 1024×1024 · 30 steps · CFG 7.5 · seed 42
 
 ### plakat-42.png
 
@@ -281,7 +282,7 @@ Negative: `photographic, smooth gradients, soft edges, photorealistic, painted`
 
 Negative: `photographic, smooth digital gradients, oil painting, 3d render, glossy`
 
-`sd15` · look: watercolor · 512×512 · 32 steps · CFG 6 · seed 42
+`sdxl` · LoRA: civitai-version:2991219:0.800000011920929 · look: watercolor · 1024×1024 · 30 steps · CFG 6 · seed 42
 
 ### plakat-42.png
 
@@ -291,7 +292,7 @@ Negative: `photographic, smooth digital gradients, oil painting, 3d render, glos
 
 Negative: `colorful, photographic, painted, smooth digital gradients, vector art`
 
-`sd15` · look: pencil · 512×512 · 28 steps · CFG 6.5 · seed 42
+`sdxl` · look: pencil · 1024×1024 · 30 steps · CFG 6.5 · seed 42
 
 ### plakat-42.png
 
@@ -460,6 +461,12 @@ _(no embedded metadata)_
 ### plakat-img2img-42.png
 
 ![plakat-img2img-42.png](images/img2img/coast_oil/plakat-img2img-42.png)
+
+_(no embedded metadata)_
+
+### plakat-inpaint-42.png
+
+![plakat-inpaint-42.png](images/outpaint/plakat-inpaint-42.png)
 
 _(no embedded metadata)_
 
