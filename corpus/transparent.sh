@@ -15,17 +15,18 @@ OUT="$ROOT/corpus/images/transparent"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT"
 
-# 1. Generate the subject on a flat chroma-key green backdrop. Green is far from
-#    the apple's reds / creams / browns, so the fill stops cleanly at the
-#    silhouette. Avoid "product photo / studio lighting" — those add the gradient
-#    + shadow + reflection that defeat a cut-out.
-"$PLAKAT" generate "a single ripe red apple, centered, floating on a plain flat solid chroma-key green background, evenly lit, no surface, no ground, no shadow, no reflection, sharp focus" \
-  --model sdxl --negative "shadow, reflection, gradient, surface, floor, table, ground, vignette, studio lighting, depth of field" \
+# 1. Generate the subject on a flat BLUE backdrop. The chroma must be far from
+#    the subject AND not a plausible subject colour — green is a natural apple
+#    colour, so "red apple + green" bleeds into a two-tone apple; blue doesn't.
+#    Avoid "product photo / studio lighting" — those add the gradient + shadow
+#    + reflection that defeat a cut-out.
+"$PLAKAT" generate "a single shiny red apple, solid uniform red colour, centered, floating, isolated on a plain flat solid blue screen background, evenly lit, no surface, no ground, no shadow, no reflection, sharp focus" \
+  --model sdxl --negative "green, green apple, two-tone, bicolour, shadow, reflection, gradient, surface, floor, ground, studio lighting, depth of field" \
   --steps 30 --size 1024x1024 --seed 7 --device metal \
   --out "$WORK/apple-raw"
 
-# 2. Flood-fill the green out → an RGBA cut-out (tolerance follows the green
-#    gradient/shadow but stops at the apple edge).
+# 2. Flood-fill the blue out → an RGBA cut-out (tolerance follows the blue
+#    gradient/shadow but stops at the red apple edge).
 "$PLAKAT" transparent \
   --in  "$WORK/apple-raw/plakat-7.png" \
   --out "$OUT/apple-cutout.png" \
