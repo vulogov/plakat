@@ -12,9 +12,10 @@
 # clipping in the trainer keeps that stable through loss spikes). The 120
 # steps below is the swept sweet spot for the watercolour set: lr 3e-4
 # over-cooked, and at lr 2e-4 the LoRA peaks ~step 120 then drifts to
-# photoreal by 240. To re-sweep on a different dataset, set STEPS higher +
-# export PLAKAT_TRAIN_CHECKPOINTS=1 (writes <out>-step<N> every 30 steps),
-# then gen with each to pick the best.
+# photoreal by 240. To re-sweep on a different dataset just raise STEPS: the
+# trainer writes NUMBERED checkpoints by default (<out>-step<N>, ~10 per run),
+# so gen with each to pick the best. (PLAKAT_TRAIN_SINGLE_FILE=1 overwrites one
+# file instead.)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"

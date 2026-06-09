@@ -1880,11 +1880,14 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
                 loss.to_scalar::<f32>()?
             );
         }
-        // Periodic checkpoint — `out` always holds the latest adapter so a
-        // long run is verifiable early and can be stopped at a good step.
-        if (step + 1) % 30 == 0 && step + 1 != req.steps {
-            save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
-            tracing::info!("style-train: checkpoint @ step {} → {}", step + 1, req.out.display());
+        // Periodic NUMBERED checkpoint (`<stem>-step<N>`) so a long run can be
+        // swept after the fact for the best step — the best LoRA is rarely the
+        // last (training over-cooks). Set PLAKAT_TRAIN_SINGLE_FILE=1 to
+        // overwrite one file instead. The final save writes plain `--out`.
+        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
+            let ckpt = checkpoint_path(&req.out, step + 1);
+            save_peft_lora(&adapters, req.rank, hidden, &ckpt)?;
+            tracing::info!("style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
         }
     }
 
@@ -1892,6 +1895,22 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
     save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
     tracing::info!("style-train: wrote {}", req.out.display());
     Ok(())
+}
+
+/// Numbered checkpoint path (`<stem>-step<N>.<ext>`) — see the SD trainer's
+/// copy. `PLAKAT_TRAIN_SINGLE_FILE=1` overwrites the plain `--out` instead.
+fn checkpoint_path(out: &std::path::Path, step: usize) -> PathBuf {
+    if std::env::var_os("PLAKAT_TRAIN_SINGLE_FILE").is_some() {
+        return out.to_path_buf();
+    }
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("lora");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("safetensors");
+    out.with_file_name(format!("{stem}-step{step}.{ext}"))
+}
+
+/// ~10 evenly-spaced checkpoints (minimum every 30 steps).
+fn checkpoint_interval(total_steps: usize) -> usize {
+    (total_steps / 10).max(30)
 }
 
 /// Write trained MMDiT attention adapters as a diffusers-PEFT LoRA

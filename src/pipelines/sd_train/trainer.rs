@@ -195,7 +195,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
                 loss.to_scalar::<f32>()?
             );
         }
-        if (step + 1) % 30 == 0 && step + 1 != req.steps {
+        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
             let ckpt = checkpoint_path(&req.out, step + 1);
             save_kohya_lora(&adapters, req.rank, &ckpt)?;
             tracing::info!("sd-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
@@ -308,7 +308,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
                 loss.to_scalar::<f32>()?
             );
         }
-        if (step + 1) % 30 == 0 && step + 1 != req.steps {
+        if (step + 1) % checkpoint_interval(req.steps) == 0 && step + 1 != req.steps {
             let ckpt = checkpoint_path(&req.out, step + 1);
             save_kohya_lora(&adapters, req.rank, &ckpt)?;
             tracing::info!("sdxl-style-train: checkpoint @ step {} → {}", step + 1, ckpt.display());
@@ -319,18 +319,25 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
     Ok(())
 }
 
-/// Where to write a periodic checkpoint. By default this is `out` itself
-/// (overwritten each interval — the historical behaviour). Set
-/// `PLAKAT_TRAIN_CHECKPOINTS=1` to instead keep **numbered** checkpoints
-/// (`<stem>-step<N>.<ext>`), so a single training run can be swept after the
-/// fact for the best step instead of guessing the schedule.
+/// Path for a periodic checkpoint at `step`: **numbered by default**
+/// (`<stem>-step<N>.<ext>`), so a run keeps every checkpoint and you can sweep
+/// for the best step after the fact — the best LoRA is rarely the last step
+/// (style training over-cooks). Set `PLAKAT_TRAIN_SINGLE_FILE=1` to instead
+/// overwrite the plain `--out` each interval (one file, no sweep). The final
+/// save always writes the plain `--out`.
 fn checkpoint_path(out: &Path, step: usize) -> PathBuf {
-    if std::env::var_os("PLAKAT_TRAIN_CHECKPOINTS").is_none() {
+    if std::env::var_os("PLAKAT_TRAIN_SINGLE_FILE").is_some() {
         return out.to_path_buf();
     }
     let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("lora");
     let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("safetensors");
     out.with_file_name(format!("{stem}-step{step}.{ext}"))
+}
+
+/// Checkpoint every Nth step, sized so a run yields ~10 evenly-spaced
+/// checkpoints (minimum every 30). 900 steps → every 90; 90 steps → every 30.
+fn checkpoint_interval(total_steps: usize) -> usize {
+    (total_steps / 10).max(30)
 }
 
 /// Write trained adapters as a kohya SD LoRA: `lora_unet_<slug>.lora_down
