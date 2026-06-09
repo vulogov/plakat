@@ -29,6 +29,6 @@ mkdir -p "$OUT"
 "$PLAKAT" transparent \
   --in  "$WORK/apple-raw/plakat-7.png" \
   --out "$OUT/apple-cutout.png" \
-  --tolerance 24
+  --tolerance 24 --crop
 
 echo "✓ wrote corpus/images/transparent/apple-cutout.png (RGBA — background flood-filled out)"

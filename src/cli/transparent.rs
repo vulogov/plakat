@@ -19,11 +19,21 @@ pub struct TransparentArgs {
     /// gradients / soft shadows; too high leaks into the subject.
     #[arg(long, default_value_t = 10)]
     pub tolerance: u8,
+
+    /// Crop the output to the subject's non-transparent bounding box — useful
+    /// when the cut-out feeds a compositor (e.g. the artefact library) that
+    /// scales by frame size, so a centred subject isn't left tiny.
+    #[arg(long, default_value_t = false)]
+    pub crop: bool,
 }
 
 pub async fn run(args: TransparentArgs) -> Result<()> {
-    let r =
-        crate::imaging::transparent::make_transparent(&args.input, &args.out, args.tolerance)?;
+    let r = crate::imaging::transparent::make_transparent(
+        &args.input,
+        &args.out,
+        args.tolerance,
+        args.crop,
+    )?;
     let pct = 100.0 * r.transparent_pixels as f64 / r.total_pixels.max(1) as f64;
     println!(
         "{}  key #{:02x}{:02x}{:02x}  •  {}×{}  •  {}/{} pixels transparent ({:.1}%)",

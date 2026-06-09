@@ -24,22 +24,24 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$LIB/sky" "$LIB/trees" "$LIB/houses" "$OUT"
 
 # make_artefact <prompt> <chroma colour> <tolerance> <out.png> <seed>
-# Generates the subject on a flat chroma background, then knocks the chroma out.
-# Chroma is picked per subject so it never collides with the subject's palette.
+# Generates the subject on a flat chroma backdrop, then flood-fills the chroma
+# out AND crops to the subject bbox (so the compositor scales the subject, not a
+# mostly-empty frame). Chroma is picked per subject so it never collides with
+# the subject's palette. Avoid "studio lighting" — it adds the gradient/shadow.
 make_artefact() {
   local prompt="$1" chroma="$2" tol="$3" out="$4" seed="$5"
-  "$PLAKAT" generate "$prompt, centered, on a plain solid $chroma background, studio lighting, sharp focus, no shadow, no ground" \
-    --model sdxl --negative "shadow, gradient, landscape, multiple, busy background" \
+  "$PLAKAT" generate "$prompt, centered, floating on a plain flat solid $chroma background, evenly lit, no surface, no ground, no shadow, no reflection, sharp focus" \
+    --model sdxl --negative "shadow, reflection, gradient, surface, floor, studio lighting, landscape, multiple, busy background" \
     --steps 30 --size 1024x1024 --seed "$seed" --device metal \
     --out "$WORK/raw-$seed"
-  "$PLAKAT" transparent --in "$WORK/raw-$seed/plakat-$seed.png" --out "$out" --tolerance "$tol"
+  "$PLAKAT" transparent --in "$WORK/raw-$seed/plakat-$seed.png" --out "$out" --tolerance "$tol" --crop
 }
 
 # Three real cutouts — one per zone. Chroma avoids each subject's colours
 # (green for the warm balloon / grey cottage; magenta for the green pine).
-make_artefact "a red and yellow striped hot-air balloon, floating"  "chroma-key green" 45 "$LIB/sky/balloon.png"    7
-make_artefact "a single tall green pine tree, full height"          "magenta"          50 "$LIB/trees/pine.png"     8
-make_artefact "a small grey stone cottage with a dark slate roof"   "chroma-key green" 45 "$LIB/houses/cottage.png" 9
+make_artefact "a red and yellow striped hot-air balloon, floating"  "chroma-key green" 24 "$LIB/sky/balloon.png"    7
+make_artefact "a single tall green pine tree, full height"          "magenta"          24 "$LIB/trees/pine.png"     8
+make_artefact "a small grey stone cottage with a dark slate roof"   "chroma-key green" 24 "$LIB/houses/cottage.png" 9
 
 # Composite ALL THREE into one valley scene + blend them in (multi-artefact).
 "$PLAKAT" generate "a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph, sharp focus" \

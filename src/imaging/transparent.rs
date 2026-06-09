@@ -20,7 +20,12 @@ pub struct Report {
 /// are removed (each step is small) while a sharp subject edge stops the fill —
 /// robust on real, studio-lit renders where a single corner-colour key fails.
 /// Matched pixels keep their RGB with alpha 0; everything else is untouched.
-pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Result<Report> {
+pub fn make_transparent(
+    in_path: &Path,
+    out_path: &Path,
+    tolerance: u8,
+    crop: bool,
+) -> Result<Report> {
     if let Some(ext) = out_path
         .extension()
         .and_then(|s| s.to_str())
@@ -39,8 +44,17 @@ pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Resul
         return Err(anyhow!("empty image: {}", in_path.display()));
     }
 
-    let (out, hit, key_rgb) = flood_key_image(img, tolerance);
+    let (mut out, hit, key_rgb) = flood_key_image(img, tolerance);
     let (kr, kg, kb) = (key_rgb[0], key_rgb[1], key_rgb[2]);
+
+    // Crop to the non-transparent bounding box so a downstream compositor
+    // (e.g. the artefact library) scales the *subject*, not the mostly-
+    // transparent full frame — otherwise a centred subject lands tiny.
+    if crop {
+        if let Some((x0, y0, cw, ch)) = opaque_bbox(&out) {
+            out = image::imageops::crop_imm(&out, x0, y0, cw, ch).to_image();
+        }
+    }
 
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -50,12 +64,29 @@ pub fn make_transparent(in_path: &Path, out_path: &Path, tolerance: u8) -> Resul
     out.save(out_path)?;
 
     Ok(Report {
-        width: w,
-        height: h,
+        width: out.width(),
+        height: out.height(),
         key_rgb: [kr, kg, kb],
         transparent_pixels: hit,
         total_pixels: (w as u64) * (h as u64),
     })
+}
+
+/// Bounding box `(x, y, w, h)` of pixels with non-zero alpha, or `None` if the
+/// image is fully transparent.
+fn opaque_bbox(img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    let mut any = false;
+    for (x, y, px) in img.enumerate_pixels() {
+        if px.0[3] != 0 {
+            any = true;
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    any.then(|| (x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 }
 
 /// In-memory variant of [`make_transparent`]: chroma-key the upper-
