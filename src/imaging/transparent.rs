@@ -147,7 +147,7 @@ pub fn flood_key_image(img: RgbaImage, tolerance: u8) -> (RgbaImage, u64, [u8; 3
     // / soft shadow but stops it creeping through an anti-aliased edge into a
     // far-coloured subject — which the neighbour test alone would consume (e.g.
     // a smoothly-shaded red apple, all within `tolerance` step-to-step).
-    let seed_tol = (tol * 4).max(40);
+    let seed_tol = (tol * 4).clamp(40, 96);
     let within_seed = |p: &[u8; 4]| {
         (p[0] as i16 - key[0] as i16).abs() <= seed_tol
             && (p[1] as i16 - key[1] as i16).abs() <= seed_tol
