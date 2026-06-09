@@ -1,0 +1,75 @@
+{
+    # ===================================================================
+    # plakat proof corpus — artefact compositing in a scenario
+    # ===================================================================
+    # Declarative counterpart to corpus/artefact.sh: composites the REAL cutout
+    # library (balloon / pine / cottage, built by artefact.sh) into scenes via
+    # each task's `artefacts: [...]` list, then blends them in. Demonstrates the
+    # multi-artefact case (one task, three cutouts, one per zone).
+    #
+    #   ./corpus/artefact.sh                 # FIRST: builds the cutout library
+    #   plakat scenario corpus/artefact.hjson
+    #
+    # SDXL only — the --artefact-blend pass runs through the SD-core img2img
+    # pipeline (SD 3.5's MMDiT has no blend path).
+    # ===================================================================
+
+    model: sdxl
+    device: metal
+    size: 1024x1024
+    steps: 30
+    guidance: 7.0
+    seed: 11
+    count: 1
+    enhancer: auto
+    out: ./corpus/images/artefact
+
+    negative: blurry, low quality, watermark, text, signature
+
+    # The real cutout library built by corpus/artefact.sh — per-task `artefacts`
+    # resolve against this directory.
+    artefact-library: ./corpus/assets/artefact_library
+
+    # Required by the scenario schema; one neutral entry of each so every task's
+    # own `prompt` stands alone (no cross-product).
+    scene:
+    [
+        {
+            name: plain
+            prompt: ""
+        }
+    ]
+    weather:
+    [
+        {
+            name: any
+            prompt: ""
+        }
+    ]
+
+    tasks:
+    [
+        {
+            # MULTI-artefact: three real cutouts, one per zone, blended in.
+            name: valley_multi
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph
+            artefacts: [ "balloon@sky", "pine@middle_plan", "cottage@close_plan" ]
+            artefact-blend: true
+            artefact-blend-strength: 0.3
+        }
+        {
+            # Same library reused in a different scene (subset of artefacts).
+            name: lake_scene
+            scene: plain
+            weather: any
+            enhance: false
+            prompt: a calm mountain lake at sunset, forested far shore, warm reflective water, photorealistic landscape photograph
+            artefacts: [ "balloon@sky", "pine@middle_plan" ]
+            artefact-blend: true
+            artefact-blend-strength: 0.3
+        }
+    ]
+}

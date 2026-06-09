@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "artefacts": [
+    {
+      "name": "balloon",
+      "category": "vehicle",
+      "path": "sky/balloon.png",
+      "natural_zone": "sky",
+      "natural_size_pct": 0.32,
+      "anchor": "center",
+      "license": "CC0",
+      "tags": ["sky", "vehicle"]
+    },
+    {
+      "name": "pine",
+      "category": "tree",
+      "path": "trees/pine.png",
+      "natural_zone": "middle_plan",
+      "natural_size_pct": 0.6,
+      "anchor": "bottom_center",
+      "license": "CC0",
+      "tags": ["nature", "tree"]
+    },
+    {
+      "name": "cottage",
+      "category": "building",
+      "path": "houses/cottage.png",
+      "natural_zone": "close_plan",
+      "natural_size_pct": 0.55,
+      "anchor": "bottom_center",
+      "license": "CC0",
+      "tags": ["building"]
+    }
+  ]
+}
