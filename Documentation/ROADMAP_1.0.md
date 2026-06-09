@@ -58,11 +58,11 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
   - [ ] **Quant flags** `--quantize-t5` / `--quant-level` / `--t5-quant-level` —
         inconsistent (verb vs noun-level). Unify (semantics decision needed).
   - [x] **`--type` (civitai) → `--asset-type`** — done (source + docs).
-  - [ ] **Declare input convention** — primary creative input is positional;
-        transform inputs use `--in` / `--ref`. Confirm + document.
-  - [ ] **Env-var contract** — document the public set (`PLAKAT_CACHE_DIR`,
-        `PLAKAT_DEVICE`, `PLAKAT_TRAIN_SINGLE_FILE`, `PLAKAT_ALLOW_GGUF_METAL`) vs
-        internal (`ARCFACE_*` / `SCRFD_*` / `FACEID_*`).
+  - [x] **Input convention + env-var public/internal split documented** →
+        `Documentation/CLI_CONVENTIONS.md` (the 1.0 CLI contract).
+  - [?] **Deviation surfaced:** `stylize` / `transparent` / `upscale` take the
+        primary image via `--in`, vs `img2img` / `outpaint` positional. DECIDE:
+        unify to positional, or freeze the `--in` exception (postponed, like #3).
 - [ ] **Freeze the scenario HJSON schema** — public contract; the whole corpus
       depends on it.
 - [ ] **Freeze the Bund scripting word-set** — public DSL.
