@@ -23,7 +23,7 @@ committed under `images/`.
 |---|---|---|---|---|
 | ControlNet (canny, Cascade) | `cascade.hjson` | ✅ | ✅ | per-task `control:`; output within `images/cascade/` |
 | ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
-| LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
+| LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | **engine done** (v0.38/v0.42): merges into Stage B (`decoder.`) + Stage C (`prior.`), kohya + diffusers-PEFT prefixes, DoRA auto-detected; works via CLI (`--lora`) AND scenarios (per-task `lora:`). Gap is only the driver + a real Cascade LoRA to point at — they're scarce (Cascade never grew SDXL's LoRA ecosystem; plakat can't train one). |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
 | Textual Inversion (embedding) | `embedding.sh` | ✅ | ⬜ | `generate --embedding` — inject a TI trigger at runtime (EasyNegative, SD 1.5); baseline vs +embedding pair. `PATH_OR_REPO[:trigger][:scale]`. |
 | Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ✅ | looks = the 8 bundled art-mediums on one subject (SDXL); genres = the bundled `anime` subject-domain (independent axis, they compose). Looks use **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA, rejecting characters (7/8 judged style LoRAs + chalk-pastel prompt-only). Genres pin a Civitai SDXL LoRA by id. `--scheduler euler-a` (Metal). |
