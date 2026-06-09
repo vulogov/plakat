@@ -161,7 +161,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             stylize::run(args, device).await
         }
-        Command::Transparent(args) => transparent::run(args).await,
+        Command::Transparent(args) => {
+            let device = crate::device::select(&cli.device)?;
+            transparent::run(args, device).await
+        }
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;
             upscale::run(args, device).await

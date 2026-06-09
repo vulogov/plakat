@@ -1,4 +1,5 @@
 use anyhow::Result;
+use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
 use std::path::PathBuf;
@@ -25,9 +26,26 @@ pub struct TransparentArgs {
     /// scales by frame size, so a centred subject isn't left tiny.
     #[arg(long, default_value_t = false)]
     pub crop: bool,
+
+    /// Smart, content-aware cut-out: a salient-object model (U2Net) predicts the
+    /// foreground matte directly from image content — no chroma backdrop needed,
+    /// works on photoreal / painted subjects on ANY background. Overrides the
+    /// corner flood-fill (`--tolerance` is ignored). Downloads the model once.
+    #[arg(long, default_value_t = false)]
+    pub matte: bool,
 }
 
-pub async fn run(args: TransparentArgs) -> Result<()> {
+pub async fn run(args: TransparentArgs, device: Device) -> Result<()> {
+    if args.matte {
+        crate::pipelines::matting::cutout(&args.input, &args.out, args.crop, &device).await?;
+        println!(
+            "{}  smart matte cut-out  •  {}",
+            style("✓").green(),
+            args.out.display()
+        );
+        return Ok(());
+    }
+
     let r = crate::imaging::transparent::make_transparent(
         &args.input,
         &args.out,
