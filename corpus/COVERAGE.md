@@ -25,6 +25,7 @@ committed under `images/`.
 | ControlNet (canny, SDXL) | `sdxl.hjson` | ✅ | ✅ | auto-from; output within `images/sdxl/` |
 | LoRA / DoRA (Cascade) | `lora.sh` | ⬜ | ⬜ | per-task Cascade LoRA not yet in scenarios → CLI |
 | Image variation (Cascade) | `variation.sh` | ⬜ | ⬜ | `--image-variation` |
+| Textual Inversion (embedding) | `embedding.sh` | ✅ | ⬜ | `generate --embedding` — inject a TI trigger at runtime (EasyNegative, SD 1.5); baseline vs +embedding pair. `PATH_OR_REPO[:trigger][:scale]`. |
 | Looks / Genres (`--look` / `--genre`) | `looks.sh` / `genres.sh` | ✅ | ✅ | looks = the 8 bundled art-mediums on one subject (SDXL); genres = the bundled `anime` subject-domain (independent axis, they compose). Looks use **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA, rejecting characters (7/8 judged style LoRAs + chalk-pastel prompt-only). Genres pin a Civitai SDXL LoRA by id. `--scheduler euler-a` (Metal). |
 | Civitai LoRA (by id) | `civitai.sh` | ✅ | ✅ | pull a LoRA from Civitai by model id (`civitai:<id>:scale`) + render — Eldritch Watercolor on SDXL. Needs `CIVITAI_API_KEY` for the auth-gated download. |
 | **Style LoRA training (SD1.5 / SDXL / SD3.5)** | `style_train.sh` → `style_gen.sh` | ✅ | ✅ | **train your own style** from a folder of images → a LoRA loadable via `--lora`. 9 watercolour refs → LoRA → style transfers on all three bases: SD1.5 (kohya, 128/128), SDXL (kohya, 560/560), SD3.5 (diffusers-PEFT, 191/191). `plakat style train --base {sd15,sdxl,sd35}`; training + generation separated. |
@@ -40,6 +41,7 @@ committed under `images/`.
 | Inpaint (masked) | `inpaint.sh` | ✅ | ✅ | `img2img --mask` — repaint a region (the sky) and preserve the rest; committed input + procedural mask, self-contained |
 | Outpaint | `outpaint.sh` | ✅ | ✅ | `plakat outpaint` — pad the canvas + paint the new strip in-context (sdxl-inpaint). Clean: the masked region is conditioned on mid-gray (no dark bands) with a binary mask (no feather seams) |
 | Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
+| Transparent (background knock-out) | `transparent.sh` | ✅ | ⬜ | `plakat transparent` — make the upper-left corner colour transparent → RGBA cut-out; generates a subject on a flat backdrop, then knocks it out (`--tolerance` softens edges) |
 
 ## Batch & scripting
 
