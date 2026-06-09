@@ -54,6 +54,16 @@ impl std::str::FromStr for StylizePreset {
     }
 }
 
+/// Transfer a reference image's *look* onto a subject via IP-Adapter — no
+/// prompt, no training. Runs on SD 1.5 (`--model sd15`) or SDXL
+/// (`--model sdxl` — sharper, native 1024²; SD 1.5 kept as a fallback).
+///
+/// NOTE: the IP-Adapter transfers a reference's CONTENT / appearance / palette,
+/// NOT painterly *texture* — so stylize is a ref-guided *variation* tool, and
+/// output tends to stay photoreal even on SDXL (the limit is the IP-Adapter,
+/// not the base — SDXL paints fine from prompts/LoRAs). Use `--ref-blur` to
+/// suppress the ref's content; for true painterly STYLE transfer prefer a
+/// trained style LoRA (`plakat style train`) or `--look`.
 #[derive(ClapArgs, Debug)]
 pub struct StylizeArgs {
     /// Input image to transform.
@@ -95,6 +105,18 @@ pub struct StylizeArgs {
     /// Random seed.
     #[arg(long)]
     pub seed: Option<u64>,
+
+    /// **v0.46**: Gaussian-blur the reference before encoding it (sigma; 0 =
+    /// off). Wipes the ref's fine content (subject/face) while keeping its
+    /// broad style — palette, texture, composition — so stylize transfers a
+    /// LOOK, not a subject. The cheap "style not content" knob; try ~8-14.
+    #[arg(long = "ref-blur", default_value_t = 0.0)]
+    pub ref_blur: f32,
+
+    /// **v0.46**: scale the reference's influence (1.0 = full). Lower lets the
+    /// prompt own the subject while the ref owns the look.
+    #[arg(long = "ref-weight", default_value_t = 1.0)]
+    pub ref_weight: f32,
 }
 
 /// Sentinel matching `StylizeArgs::strength`'s `default_value_t`. Used to
@@ -141,6 +163,8 @@ pub async fn run(args: StylizeArgs, device: Device) -> Result<()> {
         model: args.model,
         steps: args.steps,
         seed: args.seed,
+        ref_blur: args.ref_blur,
+        ref_weight: args.ref_weight,
         device,
     })
     .await

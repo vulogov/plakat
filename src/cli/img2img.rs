@@ -351,6 +351,7 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
             args.genre.as_deref(),
             args.offline,
             crate::preset::discovery::BaseFamily::from_model_arg(&args.model),
+            false,
             &mut params,
             &mut args.loras,
         )

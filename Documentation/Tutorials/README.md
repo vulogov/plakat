@@ -47,6 +47,12 @@ If you're new to plakat, work through these in order:
  Bundled `anime` only; user-extension directory for photoreal /
  fantasy / cyberpunk / etc. Same discovery + override semantics.
 
+3c. [`STYLIZE_TUTORIAL.md`](STYLIZE_TUTORIAL.md) — **v0.46.** Apply a
+ reference image's look to a subject via IP-Adapter (`plakat stylize`,
+ SD 1.5 / SDXL). A ref-*variation* tool (content/palette, not painterly
+ texture); `--ref-blur` / `--ref-weight` knobs. For true painterly style,
+ use `--look` or train a LoRA.
+
 4. [`HOW_TO_CREATE_MY_OWN_STYLE.md`](HOW_TO_CREATE_MY_OWN_STYLE.md) —
  build your own style catalog from a folder of images. Covers the
  end-to-end pipeline (organize → init → build → use) and adding

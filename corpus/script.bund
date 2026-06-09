@@ -1,0 +1,35 @@
+// ===================================================================
+// plakat proof corpus — Bund scripting (`plakat run`)
+// ===================================================================
+//   plakat run corpus/script.bund        (or: corpus/script.sh)
+//
+// Proves plakat's scripting surface: a stack-based (Forth-flavoured)
+// script that loads a model ONCE, sets config, renders a prompt to an
+// in-memory image *handle*, upscales that handle with no disk round-trip,
+// and saves it — the load -> generate -> upscale -> save handle-reuse
+// chain. Ungated SD 1.5, Metal-safe.
+//
+// Stack effects (see Documentation/Tutorials/SCRIPTING_TUTORIAL.md):
+//   plakat.load       ( model-alias -- )
+//   plakat.config.set ( value key   -- )
+//   plakat.generate   ( prompt       -- handle )
+//   plakat.upscale    ( handle scale -- handle )
+//   plakat.save       ( handle path  -- )
+
+// Load the pipeline (lazy — actually loads on the first generate).
+"sd15" plakat.load
+
+// Tune a couple of knobs (value key --).
+"42" "seed"  plakat.config.set
+"28" "steps" plakat.config.set
+
+// Render the prompt -> image handle 1.
+"a red fox curled asleep in an autumn meadow, soft morning light, painterly" plakat.generate
+
+// Upscale handle 1 x2 in-memory (no save/reload) -> handle 2.
+2 plakat.upscale
+
+// Save the upscaled image (handle 2). plakat.save writes relative to the
+// run's output dir (./out), so this lands at ./out/fox-2x.png; the
+// script.sh driver then relocates it into corpus/images/script/.
+"fox-2x.png" plakat.save

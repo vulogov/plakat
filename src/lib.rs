@@ -8,12 +8,14 @@
 //! non-trivial code like CLIP-H preprocessing or model loading.
 
 pub mod artefacts;
+pub mod capability;
 pub mod civitai;
 pub mod cli;
 pub mod config;
 pub mod device;
 pub mod error_hints;
 pub mod hf;
+pub mod hw;
 pub mod imaging;
 pub mod llm;
 pub mod pipelines;

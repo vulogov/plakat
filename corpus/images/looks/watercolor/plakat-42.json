@@ -1,0 +1,24 @@
+{
+  "prompt": "watercolor painting, soft transparent washes, a stone cottage by a forest stream, on cold-pressed paper, traditional watercolor techniques, visible paper texture",
+  "negative": "photographic, smooth digital gradients, oil painting, 3d render, glossy",
+  "model": "sdxl",
+  "seed": 42,
+  "steps": 30,
+  "guidance": 6.0,
+  "scheduler": "eulera",
+  "width": 1024,
+  "height": 1024,
+  "loras": [
+    "LoraSpec { source: Civitai { id_kind: Version(2991219), file: None }, scale: 0.8 }"
+  ],
+  "lora_scale": 1.0,
+  "generator": "plakat 0.46.0",
+  "look": "watercolor",
+  "lora_stack": [
+    {
+      "display": "civitai-version:2991219",
+      "scale": 0.8,
+      "source": "civitai"
+    }
+  ]
+}

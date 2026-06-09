@@ -303,15 +303,33 @@ fn pick_file<'a>(
     })
 }
 
+/// Hint appended when a Civitai download *request* fails outright (connect
+/// / timeout — distinct from a successful response that returns 401). The
+/// download endpoint is auth-gated, and without a key the GET frequently
+/// hangs instead of returning a clean 401, so a bare "operation timed out"
+/// is misleading — point at the API key.
+fn civitai_download_hint(has_token: bool) -> &'static str {
+    if has_token {
+        "the CIVITAI_API_KEY may be invalid/expired, or the network/CDN is unreachable"
+    } else {
+        "Civitai gates downloads behind authentication — set CIVITAI_API_KEY \
+         (https://civitai.com/user/account → API Keys); without it the download \
+         endpoint 401s or hangs"
+    }
+}
+
 async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
     let token = std::env::var("CIVITAI_API_KEY").ok().filter(|t| !t.is_empty());
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
-        // Downloads can be slow; no overall timeout. Per-chunk
-        // socket reads inherit the default 30s — enough to detect a
-        // hung CDN but not so short that a slow link aborts.
+        // Downloads can be large; we want NO overall request timeout, but a
+        // per-read timeout to detect a hung CDN. NOTE: `.timeout(ZERO)` does
+        // NOT mean "disabled" — reqwest treats it as a 0-second total
+        // timeout, so every download aborted instantly (the long-standing
+        // "operation timed out"). Use `read_timeout` (resets each chunk) and
+        // leave the overall timeout at its default (none).
         .pool_idle_timeout(std::time::Duration::from_secs(60))
-        .timeout(std::time::Duration::from_secs(0));
+        .read_timeout(std::time::Duration::from_secs(60));
     if let Some(t) = token.as_ref() {
         let mut headers = reqwest::header::HeaderMap::new();
         let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))
@@ -322,7 +340,12 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
     }
     let client = builder.build()?;
 
-    let resp = client.get(url).send().await?;
+    let resp = client.get(url).send().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Civitai download request to {url} failed: {e}. {}",
+            civitai_download_hint(token.is_some())
+        )
+    })?;
     let status = resp.status();
     if status.as_u16() == 401 {
         bail!(
@@ -385,6 +408,16 @@ mod tests {
     fn version_file_path_is_under_cache_root() {
         let p = version_file_path(123, 456, "model.safetensors");
         assert!(p.ends_with("civitai/model-123/version-456/model.safetensors"));
+    }
+
+    #[test]
+    fn download_hint_points_at_api_key_without_token() {
+        // No token → the failure is most likely the missing API key.
+        let no_token = civitai_download_hint(false);
+        assert!(no_token.contains("CIVITAI_API_KEY"));
+        // With a token → don't blame the (present) key's absence.
+        let with_token = civitai_download_hint(true);
+        assert!(!with_token.contains("set CIVITAI_API_KEY"));
     }
 
     #[test]

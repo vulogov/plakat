@@ -286,15 +286,26 @@ fn build_masked_pixels_tensor(
     let (g_dst, b_dst) = rest.split_at_mut(total);
     let scale = 1.0 / 127.5;
     let raw = resized.as_raw();
-    // Diffusers masked-image convention: mask=1 → zero out, mask=0 →
-    // keep. After multiplying raw pixels by (1 - mask) in [0, 255]
-    // space, we apply the standard SD VAE normalisation (`x/127.5 - 1`)
-    // to land in [-1, 1]. Masked (zeroed) pixels land at -1 (black).
+    // Diffusers masked-image convention: NORMALISE to [-1, 1] first
+    // (`x/127.5 - 1`), THEN zero the masked region — so masked pixels land at
+    // 0.0 (mid-gray), a NEUTRAL inpaint conditioning. The previous order
+    // (zero in [0,255] space, then normalise) landed masked pixels at -1.0 =
+    // BLACK, which biased the inpaint dark and banded the far edge of an
+    // outpaint extension (where there is no nearby content to anchor on).
     for (i, chunk) in raw.chunks_exact(3).enumerate() {
-        let inv_m = 1.0 - mask.pixels[i].clamp(0.0, 1.0);
-        r_dst[i] = (chunk[0] as f32 * inv_m) * scale - 1.0;
-        g_dst[i] = (chunk[1] as f32 * inv_m) * scale - 1.0;
-        b_dst[i] = (chunk[2] as f32 * inv_m) * scale - 1.0;
+        // BINARY mask for the masked-image (diffusers convention): the soft
+        // feather is for the final composite only. A soft mask here half-grays
+        // the feather zone → a hazy vertical seam at the original/extension
+        // boundary. A hard cut at 0.5 keeps the original sharp up to the seam,
+        // so the generated side blends against real content.
+        let inv_m = if mask.pixels[i].clamp(0.0, 1.0) >= 0.5 {
+            0.0
+        } else {
+            1.0
+        };
+        r_dst[i] = (chunk[0] as f32 * scale - 1.0) * inv_m;
+        g_dst[i] = (chunk[1] as f32 * scale - 1.0) * inv_m;
+        b_dst[i] = (chunk[2] as f32 * scale - 1.0) * inv_m;
     }
     let t = candle_core::Tensor::from_vec(data, (1, 3, h as usize, w as usize), device)?
         .to_dtype(dtype)?;

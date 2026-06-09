@@ -13,55 +13,40 @@ are pulled from HuggingFace and cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.45.0 — Train your own style
+## What's new in v0.46.0 — Train your own style, on any base
 
-The proof corpus showed that a *bundled* style LoRA paints "watercolour-
-ish but not **your** watercolour." v0.45 closes that gap: **`plakat style
-train` learns a style from a folder of images into a LoRA** you drop onto
-any generation — creation, not just detection. Train on nine watercolour
-references, and fresh subjects the model never saw render in that exact
-style. Browse the proof: [`corpus/images/style/`](corpus/images/style/).
-
-```
-plakat style train  → folder of images → a diffusers-PEFT LoRA (.safetensors)
-plakat generate … --lora my_style.safetensors → paints in your style
-```
-
-### Train your own style LoRA (Phase 1: SD 3.5)
+v0.45 shipped "train your own style" on SD 3.5 only. v0.46 **completes the
+trilogy: SD 1.5 and SDXL style-LoRA training**. plakat vendored candle's SD
+UNet and wired a trainable LoRA attention path into it, so you can now learn a
+style on whichever base you render with (a LoRA is bound to its base).
 
 ```bash
-# Train once (slow — full back-prop through the MMDiT; ~a couple of hours)
-plakat style train --from-dir ./my_style_images --base sd35 \
-  --trigger "wcstyle watercolour painting illustration" \
-  --out ./my_style.safetensors
-
-# Generate forever (fast — reuse the LoRA; never retrain to render)
-plakat generate "a harbour, wcstyle watercolour painting illustration" \
-  --model sd35-medium --lora ./my_style.safetensors
+# Train a style on the base you render with — now SD 1.5 / SDXL / SD 3.5
+plakat style train --from-dir ./my_style_images --base sdxl \
+  --trigger "wcstyle watercolour" --out ./my_style-sdxl.safetensors
+plakat generate "a harbour, wcstyle watercolour" \
+  --model sdxl --lora ./my_style-sdxl.safetensors
 ```
 
-How it fits a 24 GB Mac: **mixed precision** — a frozen BF16 base
-(Metal-fast) plus an F32 LoRA on the attention projections for stable
-optimization — encode-then-drop the text/VAE stack, train at 256² with
-periodic checkpoints so a long run is usable early. The output is a
-standard diffusers-PEFT `.safetensors`. Training and generation are kept
-**separate** (train for hours once; render in seconds forever). Full
-walkthrough:
-[`TRAIN_STYLE_LORA_TUTORIAL.md`](Documentation/Tutorials/TRAIN_STYLE_LORA_TUTORIAL.md)
-· reference:
-[`TRAIN_CUSTOM_LORA.md`](Documentation/TRAIN_CUSTOM_LORA.md).
+Around the trainer, a verification-and-polish cycle hardened the surface
+against a committed proof corpus:
 
-> **SDXL and SD 1.5** bases land in 0.46.0 (their UNets need a LoRA-wired
-> attention path). A LoRA is bound to its base — train one per model.
+- **`plakat doctor --capability`** — a table of which supported models actually
+  run on *your* hardware (RAM-budgeted), so you know before downloading 30 GB.
+- **`--smart-discovery`** — for `--look` / `--genre`, a small local LLM judges
+  the Civitai candidate pool and picks the best *style* LoRA, rejecting
+  character LoRAs (so "watercolour" stops resolving to "an anime girl tagged
+  watercolour"). All 8 bundled looks render clean on SDXL.
+- **Civitai by id** — `--lora civitai:<id>:scale` pulls a LoRA straight from
+  Civitai (a `timeout(0)` bug that instantly failed every download is fixed).
+- **Outpaint, clean** — the masked region is conditioned on mid-gray (no dark
+  edge bands) with a binary mask (no hazy feather seams); extensions blend in.
+- **SDXL stylize** — `plakat stylize --model sdxl` (sharper, native 1024²; SD 1.5
+  kept as fallback). Honest scope: the IP-Adapter is a ref-*variation* tool
+  (content / appearance / palette, not painterly texture) — for true painterly
+  style, train a LoRA or use `--look`.
 
-### Also fixed
-
-| Area | Was | Now |
-|---|---|---|
-| **SD 3 `--lora`** on diffusers checkpoints (sd35-medium) | silently **0/N merged** (a no-op) — the merge looked for SAI keys in diffusers-keyed weights | remaps diffusers→SAI before merging → **191/191**; fixes *any* SD3 LoRA, not just trained ones |
-| **SD 2.1** | **404** — `stabilityai/stable-diffusion-2-1` had been gated; plakat still claimed ungated | repointed to an ungated 768 v-prediction mirror; the pipeline was always fine |
-
-**Earlier releases** (v0.13 – v0.44):
+**Earlier releases** (v0.13 – v0.45):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

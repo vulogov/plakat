@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "0.45.0"
+version = "0.46.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -49,6 +49,8 @@ cudnn = ["cuda", "candle-core/cudnn"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [dependencies]
+# Hardware probe (doctor --capability): system RAM detection.
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # CLI / UX
 clap = { version = "4.5", features = ["derive", "env"] }
 indicatif = "0.17"

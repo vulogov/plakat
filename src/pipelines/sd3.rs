@@ -1853,7 +1853,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         .iter()
         .flat_map(|(_, a, b)| [a.clone(), b.clone()])
         .collect();
-    let mut opt = AdamW::new(vars, ParamsAdamW { lr: req.lr, ..Default::default() })?;
+    let mut opt = AdamW::new(vars.clone(), ParamsAdamW { lr: req.lr, ..Default::default() })?;
 
     // --- Phase C: rectified-flow training loop.
     let n = latents.len().max(1);
@@ -1869,7 +1869,9 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         let t_vec = Tensor::full((sigma * 1000.0) as f32, (1usize,), &device)?;
         let pred = model.forward(&x_t, &t_vec, &y, &context, None)?;
         let loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
-        opt.step(&loss.backward()?)?;
+        let mut grads = loss.backward()?;
+        crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
+        opt.step(&grads)?;
         if step % 10 == 0 || step + 1 == req.steps {
             tracing::info!(
                 "style-train: step {}/{} loss {:.5}",

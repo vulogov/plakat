@@ -161,6 +161,18 @@ pub struct DiscoveredLora {
     pub source_url: Option<String>,
 }
 
+/// Configures the optional LLM judge that re-ranks Civitai discovery
+/// candidates. Set via `--smart-discovery`: the candidate pool is run through
+/// a small local LLM that picks the best *style* LoRA and rejects
+/// character/person LoRAs — which generic medium terms otherwise match (an
+/// "anime girl tagged watercolor" instead of a watercolor style).
+#[derive(Debug, Clone)]
+pub struct JudgeConfig {
+    pub device: candle_core::Device,
+    /// LLM alias, e.g. `qwen2.5-1.5b`.
+    pub alias: String,
+}
+
 /// Knobs the caller passes in: offline switch, pipeline family,
 /// and the cache roots.
 #[derive(Debug, Clone)]
@@ -179,6 +191,10 @@ pub struct DiscoveryOptions {
     /// default `0.8` — same as the v0.23 style catalog's typical
     /// LoRA scale.
     pub scale: f32,
+    /// When set, re-rank the Civitai candidate pool with a local LLM that
+    /// picks the best style LoRA and rejects characters. None = the legacy
+    /// behaviour (first base-compatible match).
+    pub judge: Option<JudgeConfig>,
 }
 
 impl DiscoveryOptions {
@@ -189,6 +205,7 @@ impl DiscoveryOptions {
             cache_root: default_cache_root(),
             civitai_cache_root: crate::civitai::download::cache_root(),
             scale: 0.8,
+            judge: None,
         }
     }
 }
@@ -278,8 +295,12 @@ fn cache_path(opts: &DiscoveryOptions, preset_name: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
+    // Judged and unjudged discoveries are cached under separate keys — a
+    // result picked by the first-base-match heuristic must not satisfy a
+    // later `--smart-discovery` request (and vice-versa).
+    let judged = if opts.judge.is_some() { "-judged" } else { "" };
     opts.cache_root
-        .join(format!("{safe}__{}.json", opts.base.cache_slug()))
+        .join(format!("{safe}__{}{judged}.json", opts.base.cache_slug()))
 }
 
 /// Read a cache entry if present + parseable. Errors are
@@ -624,6 +645,15 @@ fn try_local_scan(
                 continue;
             }
 
+            // The local scan must only return an entry whose LoRA *file* is
+            // actually on disk. A metadata-only dir (an interrupted download
+            // that wrote metadata.json but never finished the .safetensors)
+            // would otherwise hand back a Civitai version spec that resolves
+            // over the network — defeating --offline (the `linocut` timeout).
+            if safetensors_lower.is_none() {
+                continue;
+            }
+
             // Hit — attribute to Civitai (LoraSpec resolution will
             // see the cached file and short-circuit the network).
             let spec = LoraSpec {
@@ -652,10 +682,106 @@ fn try_local_scan(
 /// `Ok(None)` when no compatible LoRA shows up in the first page
 /// (we don't paginate — the top-20 results from Civitai's
 /// relevance-ranked search are the practical universe).
+/// A base-compatible, non-NSFW discovery candidate.
+struct Candidate<'a> {
+    model: &'a api::Model,
+    version: &'a api::ModelVersion,
+}
+
+/// Collect base-compatible, non-NSFW candidates (one version per model).
+fn collect_candidates(models: &[api::Model], base: BaseFamily) -> Vec<Candidate<'_>> {
+    let mut out = Vec::new();
+    for model in models {
+        if model.nsfw {
+            continue;
+        }
+        for version in &model.model_versions {
+            if version
+                .base_model
+                .as_deref()
+                .is_some_and(|bm| base.civitai_matches(bm))
+            {
+                out.push(Candidate { model, version });
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Ask the local LLM to pick the best *style* LoRA for `concept` from the
+/// candidate pool, rejecting character/person LoRAs. Returns the chosen model
+/// id, or None (no suitable style LoRA → the caller falls back to prompt-only).
+async fn judge_candidates(
+    concept: &str,
+    candidates: &[Candidate<'_>],
+    judge: &JudgeConfig,
+) -> Option<u64> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut list = String::new();
+    for c in candidates.iter().take(15) {
+        let desc: String = c
+            .model
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .map(|ch| if ch == '\n' { ' ' } else { ch })
+            .take(140)
+            .collect();
+        let triggers: String = c
+            .version
+            .trained_words
+            .join(", ")
+            .chars()
+            .take(100)
+            .collect();
+        list.push_str(&format!(
+            "[{}] \"{}\" | tags: {} | triggers: {} | {}\n",
+            c.model.id,
+            c.model.name,
+            c.model.tags.join(", "),
+            triggers,
+            desc
+        ));
+    }
+    let system = "You select a LoRA that applies a generic ART MEDIUM or visual STYLE to ANY \
+        subject. Rules, in order: (1) A LoRA whose triggers/tags/name describe a PERSON — 1girl, \
+        1boy, a personal or character name, hair colour, body, clothing, a franchise — is a \
+        CHARACTER LoRA; never pick it, even if it also mentions the medium. (2) Only pick a LoRA \
+        that is clearly a pure medium/style, with style-only or empty triggers. (3) If NO \
+        candidate clearly satisfies (2), answer none — do not guess. Answer with ONLY the chosen \
+        numeric id, or the single word: none.";
+    let user = format!(
+        "Wanted: a generic art-medium / style LoRA for \"{concept}\".\n\
+         Candidates (id, name, tags, description):\n{list}\n\
+         Reply with the id of the best STYLE LoRA, or none."
+    );
+    let opts = crate::llm::EnhanceOpts {
+        seed: 42,
+        temperature: 0.0,
+        max_new_tokens: 12,
+    };
+    let reply = crate::llm::enhance(&judge.alias, judge.device.clone(), system, &user, opts)
+        .await
+        .ok()?;
+    tracing::debug!(target: "plakat", "discovery judge reply for {concept:?}: {reply:?}");
+    // Parse the first integer; only accept it if it names a real candidate.
+    let id: u64 = reply
+        .split(|ch: char| !ch.is_ascii_digit())
+        .find(|s| !s.is_empty())?
+        .parse()
+        .ok()?;
+    candidates.iter().any(|c| c.model.id == id).then_some(id)
+}
+
 async fn try_civitai(
     query: &LoraQuery,
     base: BaseFamily,
     scale: f32,
+    judge: Option<&JudgeConfig>,
 ) -> Result<Option<DiscoveredLora>> {
     let q = build_query_string(query);
     if q.is_empty() {
@@ -664,8 +790,24 @@ async fn try_civitai(
     let resp = api::search(&q, Some(api::AssetType::Lora), 20, 1)
         .await
         .with_context(|| format!("Civitai search for {q:?}"))?;
-    let Some((model, version)) = pick_best_version(&resp.items, base) else {
-        return Ok(None);
+
+    // With a judge, re-rank the whole pool by style relevance; without one,
+    // keep the legacy first-base-compatible pick.
+    let (model, version) = match judge {
+        Some(j) => {
+            let cands = collect_candidates(&resp.items, base);
+            match judge_candidates(&q, &cands, j).await {
+                Some(id) => match cands.into_iter().find(|c| c.model.id == id) {
+                    Some(c) => (c.model, c.version),
+                    None => return Ok(None),
+                },
+                None => return Ok(None),
+            }
+        }
+        None => match pick_best_version(&resp.items, base) {
+            Some(pair) => pair,
+            None => return Ok(None),
+        },
     };
     let spec = LoraSpec {
         source: LoraSource::Civitai {
@@ -705,12 +847,25 @@ pub async fn discover_lora(
 ) -> Result<Option<DiscoveredLora>> {
     // 1. Cache check (cheap, always tried).
     if let Some(cached) = read_cache(options, preset_name) {
-        tracing::debug!(
-            target: "plakat",
-            "look-discovery cache hit for {preset_name}/{}",
-            options.base.cache_slug()
+        // Offline can't download: a cached *remote* (Civitai/HF) spec is
+        // only usable if its file is already on disk. A prior run can cache
+        // the discovery *spec* without ever completing the file download —
+        // returning it here would make the offline path hit the network and
+        // time out. So when offline + remote, skip the cached spec and fall
+        // through to the file-verified local scan (§2); a true miss returns
+        // None and the look falls back to its prompt preset.
+        let remote = matches!(
+            cached.source,
+            Source::Civitai { .. } | Source::HuggingFace { .. }
         );
-        return Ok(Some(cached.to_discovered(options.scale)));
+        if !(options.offline && remote) {
+            tracing::debug!(
+                target: "plakat",
+                "look-discovery cache hit for {preset_name}/{}",
+                options.base.cache_slug()
+            );
+            return Ok(Some(cached.to_discovered(options.scale)));
+        }
     }
 
     // 2. Offline short-circuit: local-cache scan only, no network.
@@ -733,7 +888,7 @@ pub async fn discover_lora(
     }
 
     // 3. Online chain: Civitai → HF Hub → local-cache scan.
-    if let Some(d) = try_civitai(query, options.base, options.scale).await? {
+    if let Some(d) = try_civitai(query, options.base, options.scale, options.judge.as_ref()).await? {
         write_cache(options, preset_name, &d);
         return Ok(Some(d));
     }
@@ -925,6 +1080,7 @@ mod tests {
             // (try_local_scan early-returns None).
             civitai_cache_root: dir.path().join("civitai-empty"),
             scale: 0.8,
+            judge: None,
         };
         (dir, opts)
     }
@@ -1014,6 +1170,7 @@ mod tests {
             cache_root: dir.path().to_path_buf(),
             civitai_cache_root: dir.path().to_path_buf(),
             scale: 0.8,
+            judge: None,
         };
         let sd15 = cache_path(&make(BaseFamily::Sd15), "watercolor");
         let sdxl = cache_path(&make(BaseFamily::Sdxl), "watercolor");
@@ -1238,6 +1395,44 @@ mod tests {
         assert!(try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none());
     }
 
+    /// A cache dir with metadata but NO `.safetensors` (an interrupted
+    /// download) must not produce a local-scan hit — returning a Civitai
+    /// spec there would resolve over the network and defeat --offline (the
+    /// `linocut` timeout).
+    #[test]
+    fn local_scan_skips_metadata_only_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        make_fake_civitai_entry(
+            dir.path(),
+            256917,
+            289702,
+            "SD 1.5",
+            &["linocut"],
+            "linocut.safetensors",
+        );
+        // Simulate the interrupted download: drop the weights, keep metadata.
+        for model in fs::read_dir(dir.path()).unwrap().flatten() {
+            for ver in fs::read_dir(model.path()).unwrap().flatten() {
+                if !ver.path().is_dir() {
+                    continue;
+                }
+                for f in fs::read_dir(ver.path()).unwrap().flatten() {
+                    if f.file_name().to_string_lossy().ends_with(".safetensors") {
+                        fs::remove_file(f.path()).unwrap();
+                    }
+                }
+            }
+        }
+        let q = LoraQuery {
+            tags: vec![],
+            keywords: vec!["linocut".into()],
+        };
+        assert!(
+            try_local_scan(&q, BaseFamily::Sd15, 0.8, dir.path()).unwrap().is_none(),
+            "metadata-only entry must not resolve offline"
+        );
+    }
+
     /// Offline + local-scan hit: full chain end-to-end with no
     /// network. Also writes a cache entry so the next call is even
     /// faster.
@@ -1259,6 +1454,7 @@ mod tests {
             cache_root: dir.path().join("discovery"),
             civitai_cache_root: civitai_dir,
             scale: 0.8,
+            judge: None,
         };
         let q = LoraQuery {
             tags: vec![],
@@ -1290,9 +1486,12 @@ mod tests {
         assert!(result.is_none(), "offline + no cache must return None");
     }
 
-    /// Cache hit short-circuits even when `offline: true`.
+    /// Offline + a cached *remote* (Civitai/HF) spec whose file isn't on
+    /// disk must NOT be returned — resolving it would hit the network and
+    /// time out. It falls through to the local-cache scan (empty here) →
+    /// None, so the look uses its prompt preset instead of crashing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn offline_with_cache_hits() {
+    async fn offline_remote_cache_without_file_returns_none() {
         let (_dir, mut opts) = tmp_options(BaseFamily::Sd15);
         opts.offline = true;
         write_cache(&opts, "watercolor", &fake_discovered());
@@ -1302,12 +1501,10 @@ mod tests {
             keywords: vec!["watercolor".into()],
         };
         let result = discover_lora(&q, "watercolor", &opts).await.unwrap();
-        let d = result.expect("cache should have hit");
-        assert_eq!(d.model_name, "Watercolor LoRA");
-        match d.source {
-            Source::Civitai { version_id, .. } => assert_eq!(version_id, 789),
-            other => panic!("expected Civitai, got {other:?}"),
-        }
+        assert!(
+            result.is_none(),
+            "offline + remote cached spec without a local file must return None"
+        );
     }
 
     /// Cache hit reconstructs a usable LoraSpec pointing at the
