@@ -34,9 +34,15 @@ The single highest-value, irreversible item is **§2's API freeze**.
       content-aware U2Net salient-object matting (`src/pipelines/matting.rs`;
       `jamino30/u2net-saliency`, MIT, ungated). This is the prerequisite for BOTH
       a smart cut-out AND clean artefact-library cutouts that the
-      `--artefact-blend` pass integrates into a scene (not paste). Model built +
-      compiles; verifying the matte, then re-pointing `transparent.sh` /
-      `artefact.sh` off chroma.
+      `--artefact-blend` pass integrates into a scene (not paste). Model
+      **VERIFIED correct** via a PyTorch reference comparison — the candle forward
+      matches the reference bit-for-bit (side1_raw, fused logits, d0 all match).
+      The first weights (`jamino30/u2net-saliency`) turned out to be a DEAD
+      checkpoint (d0 max 0.04 even in PyTorch); good weights (`Carve/u2net-
+      universal`) fire at d0 max 1.0 through the same code. Remaining: a good
+      u2net checkpoint in a **candle-loadable format** — Carve's is legacy-pickle
+      `.pth` (candle only reads safetensors / zip-`.pth`), so sourcing/converting
+      one. Then re-point `transparent.sh` / `artefact.sh` off chroma.
 - [ ] **Render the 4 pending corpus drivers** (written, unrendered): `transparent.sh`,
       `embedding.sh`, `variation.sh`, `artefact.sh` + `artefact.hjson`. Judge
       each at full size; commit the proofs. *(GPU-bound.)*
