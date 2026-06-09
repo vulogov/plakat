@@ -28,6 +28,15 @@ The single highest-value, irreversible item is **§2's API freeze**.
 
 ## 1. Verification — prove every claim (hard gate)
 
+- [~] **Smart transparent + integral artefacts (RELEASE BLOCKERS).** Chroma-key
+      only works on a clean studio backdrop; real-world cut-outs are photoreal /
+      painted subjects on arbitrary backgrounds. Added **`transparent --matte`**:
+      content-aware U2Net salient-object matting (`src/pipelines/matting.rs`;
+      `jamino30/u2net-saliency`, MIT, ungated). This is the prerequisite for BOTH
+      a smart cut-out AND clean artefact-library cutouts that the
+      `--artefact-blend` pass integrates into a scene (not paste). Model built +
+      compiles; verifying the matte, then re-pointing `transparent.sh` /
+      `artefact.sh` off chroma.
 - [ ] **Render the 4 pending corpus drivers** (written, unrendered): `transparent.sh`,
       `embedding.sh`, `variation.sh`, `artefact.sh` + `artefact.hjson`. Judge
       each at full size; commit the proofs. *(GPU-bound.)*
