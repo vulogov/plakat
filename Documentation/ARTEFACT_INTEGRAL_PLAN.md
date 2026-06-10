@@ -34,10 +34,19 @@ shifts: lean on **classical, generation-free** cues (shadow ✓, colour transfer
 ↓) that can't stylize, and dial Phase 4 down to a *light seam-blend*
 (strength 0.55 → 0.4) with a photoreal negative — not a relight.
 
-### Phase 3 — Colour harmonisation  *(GPU-free)*
-- Transfer the scene's per-channel colour statistics (mean/std, or a soft
-  histogram match over the target region) onto the artefact before compositing →
-  its palette sits in the scene instead of clashing.
+### Phase 3 — Colour harmonisation  *(GPU-free — DONE)*
+- `region_mean` (local scene ambient) + `harmonize_colors`: shift the artefact's
+  opaque pixels by `0.35·(scene_mean − art_mean)` per channel → its palette
+  *agrees* with the scene's light (warm/cool) without forcing a colour, internal
+  contrast preserved. Fixes the cool-grey-cottage-on-warm-scene clash.
+
+### Demo decision — anime-style scene
+Photoreal integration hit its ceiling: the cutouts ground (shadow) and colour-
+agree (harmonise), but the generative re-paint stylizes and the base scene's
+grass is illustrative — it reads "good composite," not VFX. **The feature reads
+most naturally on stylized / anime scenes** (the re-paint *helps* there). So the
+corpus demo is anime-style (Makoto-Shinkai-ish valley + anime cutouts, blend
+0.55). Photoreal stays supported + documented as a grounded composite, not VFX.
 
 ### Phase 4 — ControlNet-guided re-paint (the core)  *(GPU — IMPLEMENTED, verifying)*
 - **DONE in code:** the blend's existing `&[ControlRequest]` slot (was `&[]`) now

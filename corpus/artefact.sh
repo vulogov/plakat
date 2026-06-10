@@ -29,13 +29,14 @@ SKIP_GEN=0
 for a in "$@"; do [ "$a" = "--skip-artefacts-gen" ] && SKIP_GEN=1; done
 
 # make_artefact <prompt> <out.png> <seed>
-# Generates the subject as a normal photoreal object (any background), then the
-# U2Net smart matte (`--matte`) lifts it out AND crops to the subject bbox (so
-# the compositor scales the subject, not a mostly-empty frame). No chroma needed.
+# Generates the subject as an anime-style object, then the U2Net smart matte
+# (`--matte`) lifts it out AND crops to the subject bbox. The artefact feature
+# reads most naturally on stylized / anime scenes (the blend re-paint integrates
+# there); on photoreal it's a grounded composite, not VFX relighting. No chroma.
 make_artefact() {
   local prompt="$1" out="$2" seed="$3"
-  "$PLAKAT" generate "$prompt, centered, isolated, single object, simple plain background, photorealistic, sharp focus" \
-    --model sdxl --negative "multiple, busy background, clutter, scene" \
+  "$PLAKAT" generate "$prompt, anime illustration, cel-shaded, clean lineart, vibrant colors, centered, isolated, single object, simple plain background, sharp focus" \
+    --model sdxl --negative "photorealistic, photograph, realistic, multiple, busy background, clutter, scene" \
     --steps 30 --size 1024x1024 --seed "$seed" --device metal \
     --out "$WORK/raw-$seed"
   "$PLAKAT" transparent --in "$WORK/raw-$seed/plakat-$seed.png" --out "$out" --matte --crop --device cpu
@@ -51,11 +52,11 @@ else
 fi
 
 # Composite ALL THREE into one valley scene + blend them in (multi-artefact).
-"$PLAKAT" generate "a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph, sharp focus" \
-  --model sdxl --negative "illustration, anime, painting, cartoon, drawing, cgi, 3d render, oversaturated" \
+"$PLAKAT" generate "anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style" \
+  --model sdxl --negative "photorealistic, photograph, realistic, 3d render, blurry" \
   --artefact-library "$LIB" \
   --artefact "balloon@sky" --artefact "pine@middle_plan" --artefact "cottage@close_plan" \
-  --artefact-blend --artefact-blend-strength 0.4 \
+  --artefact-blend --artefact-blend-strength 0.55 \
   --steps 30 --size 1024x1024 --seed 11 --device metal \
   --out "$OUT/cli-multi"
 

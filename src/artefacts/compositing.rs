@@ -75,6 +75,10 @@ fn composite_one(canvas: &mut RgbaImage, r: &ResolvedArtefact) -> Result<()> {
         return Ok(());
     }
 
+    // Sample the local scene ambient (the CLEAN canvas where the artefact will
+    // land) before any modification — drives the colour harmonisation below.
+    let scene_mean = region_mean(canvas, tx0, ty0, tw, th);
+
     // 4. Resize artefact to (tw, th).
     if rgba.width() != tw || rgba.height() != th {
         rgba = image::imageops::resize(&rgba, tw, th, RESIZE_FILTER);
@@ -84,6 +88,11 @@ fn composite_one(canvas: &mut RgbaImage, r: &ResolvedArtefact) -> Result<()> {
     if r.flip {
         rgba = image::imageops::flip_horizontal(&rgba);
     }
+
+    // 5b. Colour harmonisation: pull the artefact's palette toward the local
+    //     scene ambient so it AGREES with the scene's light (warm/cool) — not a
+    //     forced colour, just a per-channel mean shift. Photoreal, no generation.
+    harmonize_colors(&mut rgba, scene_mean, HARMONIZE_STRENGTH);
 
     // 6. Contact shadow (grounding) for ground-anchored artefacts. Photoreal —
     //    no generation — it just ties the object to the surface so it doesn't
@@ -130,6 +139,64 @@ fn draw_contact_shadow(canvas: &mut RgbaImage, x0: i64, y0: i64, w: u32, h: u32)
             p.0[0] = (p.0[0] as f32 * (1.0 - a)) as u8;
             p.0[1] = (p.0[1] as f32 * (1.0 - a)) as u8;
             p.0[2] = (p.0[2] as f32 * (1.0 - a)) as u8;
+        }
+    }
+}
+
+/// Harmonisation strength: fraction of the (scene − artefact) mean gap applied.
+const HARMONIZE_STRENGTH: f32 = 0.35;
+
+/// Mean RGB of the canvas over a rect (clamped to bounds) — the local scene
+/// ambient an artefact should agree with.
+fn region_mean(canvas: &RgbaImage, x0: i64, y0: i64, w: u32, h: u32) -> [f32; 3] {
+    let (cw, ch) = (canvas.width() as i64, canvas.height() as i64);
+    let (mut sum, mut n) = ([0f64; 3], 0u64);
+    for py in y0.max(0)..(y0 + h as i64).min(ch) {
+        for px in x0.max(0)..(x0 + w as i64).min(cw) {
+            let p = canvas.get_pixel(px as u32, py as u32);
+            for c in 0..3 {
+                sum[c] += p.0[c] as f64;
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return [128.0; 3];
+    }
+    [
+        (sum[0] / n as f64) as f32,
+        (sum[1] / n as f64) as f32,
+        (sum[2] / n as f64) as f32,
+    ]
+}
+
+/// Shift the artefact's opaque pixels by `strength · (scene_mean − art_mean)`
+/// per channel — pulls its palette toward the scene's light without forcing a
+/// specific colour, preserving the artefact's internal contrast.
+fn harmonize_colors(artefact: &mut RgbaImage, scene_mean: [f32; 3], strength: f32) {
+    let (mut sum, mut n) = ([0f64; 3], 0u64);
+    for p in artefact.pixels() {
+        if p.0[3] > 0 {
+            for c in 0..3 {
+                sum[c] += p.0[c] as f64;
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return;
+    }
+    let shift = [
+        strength * (scene_mean[0] - (sum[0] / n as f64) as f32),
+        strength * (scene_mean[1] - (sum[1] / n as f64) as f32),
+        strength * (scene_mean[2] - (sum[2] / n as f64) as f32),
+    ];
+    for p in artefact.pixels_mut() {
+        if p.0[3] == 0 {
+            continue;
+        }
+        for c in 0..3 {
+            p.0[c] = (p.0[c] as f32 + shift[c]).clamp(0.0, 255.0) as u8;
         }
     }
 }
