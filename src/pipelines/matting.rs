@@ -17,8 +17,10 @@ use image::{RgbImage, RgbaImage};
 use std::path::Path;
 
 const SIZE: usize = 320;
-const REPO: &str = "jamino30/u2net-saliency";
-const WEIGHTS: &str = "u2net-duts-msra.safetensors";
+/// Full U2NET converted from `Carve/u2net-universal` (Apache-2.0; verified to
+/// fire, d0 max 1.0). candle can't read Carve's legacy-pickle `.pth`, so it is
+/// re-serialised to safetensors (see `scripts/convert_u2net_to_safetensors.py`).
+const WEIGHTS_FILE: &str = "u2net-universal.safetensors";
 
 // ---- REBNCONV: Conv2d(k3, dilation=d, pad=d, bias) → BatchNorm → ReLU ----
 struct RebnConv {
@@ -33,8 +35,8 @@ impl RebnConv {
             dilation,
             ..Default::default()
         };
-        let conv = candle_nn::conv2d(in_ch, out_ch, 3, cfg, vb.pp("conv"))?;
-        let bn = candle_nn::batch_norm(out_ch, BatchNormConfig::default(), vb.pp("bn"))?;
+        let conv = candle_nn::conv2d(in_ch, out_ch, 3, cfg, vb.pp("conv_s1"))?;
+        let bn = candle_nn::batch_norm(out_ch, BatchNormConfig::default(), vb.pp("bn_s1"))?;
         Ok(Self { conv, bn })
     }
 
@@ -72,22 +74,30 @@ impl Rsu {
         out_ch: usize,
         dilated: bool,
     ) -> Result<Self> {
-        let conv = RebnConv::load(vb.pp("conv"), in_ch, out_ch, 1)?;
-        let enc_vb = vb.pp("enc");
+        let conv = RebnConv::load(vb.pp("rebnconvin"), in_ch, out_ch, 1)?;
         let mut enc = Vec::new();
         for i in 0..(height - 1) {
             let ci = if i == 0 { out_ch } else { mid_ch };
             let d = if dilated { 1 << i } else { 1 };
-            enc.push(RebnConv::load(enc_vb.pp(i), ci, mid_ch, d)?);
+            enc.push(RebnConv::load(
+                vb.pp(format!("rebnconv{}", i + 1)),
+                ci,
+                mid_ch,
+                d,
+            )?);
         }
         let mid_d = if dilated { 1 << (height - 1) } else { 2 };
-        let mid = RebnConv::load(vb.pp("mid"), mid_ch, mid_ch, mid_d)?;
-        let dec_vb = vb.pp("dec");
+        let mid = RebnConv::load(vb.pp(format!("rebnconv{height}")), mid_ch, mid_ch, mid_d)?;
         let mut dec = Vec::new();
         for k in 0..(height - 1) {
             let co = if k == height - 2 { out_ch } else { mid_ch };
             let d = if dilated { 1 << (height - 2 - k) } else { 1 };
-            dec.push(RebnConv::load(dec_vb.pp(k), mid_ch * 2, co, d)?);
+            dec.push(RebnConv::load(
+                vb.pp(format!("rebnconv{}d", height - 1 - k)),
+                mid_ch * 2,
+                co,
+                d,
+            )?);
         }
         Ok(Self {
             conv,
@@ -152,28 +162,25 @@ impl U2Net {
             (6, 256, 32, 64, false),                       // De_2 RSU6
             (7, 128, 16, 64, false),                       // De_1 RSU7
         ];
-        let enc_vb = vb.pp("enc");
         let mut enc = Vec::new();
         for (i, &(hh, ic, mc, oc, dl)) in enc_cfg.iter().enumerate() {
-            enc.push(Rsu::load(enc_vb.pp(i), hh, ic, mc, oc, dl)?);
+            enc.push(Rsu::load(vb.pp(format!("stage{}", i + 1)), hh, ic, mc, oc, dl)?);
         }
-        let dec_vb = vb.pp("dec");
         let mut dec = Vec::new();
         for (i, &(hh, ic, mc, oc, dl)) in dec_cfg.iter().enumerate() {
-            dec.push(Rsu::load(dec_vb.pp(i), hh, ic, mc, oc, dl)?);
+            dec.push(Rsu::load(vb.pp(format!("stage{}d", 5 - i)), hh, ic, mc, oc, dl)?);
         }
         // side convs (3×3, pad 1): channels = the stage they read from.
         let side_ch = [64usize, 64, 128, 256, 512, 512];
-        let convs_vb = vb.pp("convs");
         let scfg = Conv2dConfig {
             padding: 1,
             ..Default::default()
         };
         let mut side = Vec::new();
         for (i, &c) in side_ch.iter().enumerate() {
-            side.push(candle_nn::conv2d(c, 1, 3, scfg, convs_vb.pp(i))?);
+            side.push(candle_nn::conv2d(c, 1, 3, scfg, vb.pp(format!("side{}", i + 1)))?);
         }
-        let outconv = candle_nn::conv2d(6, 1, 1, Conv2dConfig::default(), vb.pp("lastconv"))?;
+        let outconv = candle_nn::conv2d(6, 1, 1, Conv2dConfig::default(), vb.pp("outconv"))?;
         Ok(Self {
             enc,
             dec,
@@ -261,6 +268,14 @@ fn matte_alpha(d0: &Tensor, w: u32, h: u32) -> Result<image::GrayImage> {
         mxv = mxv.max(v);
     }
     let range = (mxv - mn).max(1e-6);
+    if std::env::var("PLAKAT_MATTE_DEBUG").is_ok() {
+        let mean: f32 = raw.iter().sum::<f32>() / raw.len() as f32;
+        let over_half = raw.iter().filter(|&&v| v > 0.5).count();
+        eprintln!(
+            "[matte] d0 min={mn:.4} max={mxv:.4} mean={mean:.4} range={range:.4} frac>0.5={:.3}",
+            over_half as f32 / raw.len() as f32
+        );
+    }
     let mut g = image::GrayImage::new(SIZE as u32, SIZE as u32);
     for (i, &v) in raw.iter().enumerate() {
         let a = (((v - mn) / range) * 255.0).clamp(0.0, 255.0) as u8;
@@ -289,6 +304,27 @@ fn matte_bbox(img: &RgbaImage, thresh: u8) -> Option<(u32, u32, u32, u32)> {
     any.then(|| (x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 }
 
+/// Resolve the matte weights: `PLAKAT_MATTE_WEIGHTS` (a safetensors path) wins,
+/// else the converted file in the plakat cache (`~/.cache/plakat/u2net/`).
+fn matte_weights_path() -> Result<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("PLAKAT_MATTE_WEIGHTS") {
+        return Ok(p.into());
+    }
+    let base = std::env::var("HOME").unwrap_or_default();
+    let p = std::path::PathBuf::from(base)
+        .join(".cache/plakat/u2net")
+        .join(WEIGHTS_FILE);
+    if p.exists() {
+        Ok(p)
+    } else {
+        Err(anyhow!(
+            "matte weights not found at {} — run scripts/convert_u2net_to_safetensors.py \
+             or set PLAKAT_MATTE_WEIGHTS to a U2NET safetensors",
+            p.display()
+        ))
+    }
+}
+
 /// Smart cut-out: predict the foreground matte, write it as the alpha channel,
 /// optionally crop to the subject's bounding box. Output must keep alpha
 /// (`.png` / `.webp`).
@@ -305,21 +341,24 @@ pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device
         }
     }
 
-    let weights = crate::hf::download::get_file(REPO, WEIGHTS)
-        .await
-        .with_context(|| format!("downloading matting model {REPO}/{WEIGHTS}"))?;
+    let weights = matte_weights_path()?;
 
     let img = image::open(in_path)?.to_rgb8();
     let (w, h) = (img.width(), img.height());
 
     let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, device)
+        VarBuilder::from_mmaped_safetensors(&[&weights], DType::F32, device)
             .context("loading U2Net safetensors")?
     };
-    let net = U2Net::load(vb.pp("module"))?;
+    let net = U2Net::load(vb)?;
     let x = preprocess(&img, device)?;
     let d0 = net.forward(&x)?;
     let alpha = matte_alpha(&d0, w, h)?;
+    if std::env::var("PLAKAT_MATTE_DEBUG").is_ok() {
+        let dbg = out_path.with_extension("matte.png");
+        let _ = alpha.save(&dbg);
+        eprintln!("[matte] raw matte → {}", dbg.display());
+    }
 
     let mut out = RgbaImage::new(w, h);
     for (x0, y0, p) in img.enumerate_pixels() {
