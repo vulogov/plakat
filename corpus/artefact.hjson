@@ -24,7 +24,7 @@
     enhancer: auto
     out: ./corpus/images/artefact
 
-    negative: blurry, low quality, watermark, text, signature
+    negative: blurry, low quality, watermark, text, signature, photorealistic, photograph, realistic, 3d render
 
     # The real cutout library built by corpus/artefact.sh — per-task `artefacts`
     # resolve against this directory.
@@ -55,10 +55,10 @@
             scene: plain
             weather: any
             enhance: false
-            prompt: a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph
+            prompt: anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, Makoto Shinkai style
             artefacts: [ "balloon@sky", "pine@middle_plan", "cottage@close_plan" ]
             artefact-blend: true
-            artefact-blend-strength: 0.3
+            artefact-blend-strength: 0.55
         }
         {
             # Same library reused in a different scene (subset of artefacts).
@@ -66,10 +66,10 @@
             scene: plain
             weather: any
             enhance: false
-            prompt: a calm mountain lake at sunset, forested far shore, warm reflective water, photorealistic landscape photograph
+            prompt: anime landscape illustration, a calm mountain lake at sunset, forested far shore, warm reflective water, cel-shaded, vibrant colors, Makoto Shinkai style
             artefacts: [ "balloon@sky", "pine@middle_plan" ]
             artefact-blend: true
-            artefact-blend-strength: 0.3
+            artefact-blend-strength: 0.55
         }
     ]
 }
