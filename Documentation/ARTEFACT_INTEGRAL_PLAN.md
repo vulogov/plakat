@@ -31,7 +31,12 @@ first multi-artefact render came out as pasted stickers.
   histogram match over the target region) onto the artefact before compositing →
   its palette sits in the scene instead of clashing.
 
-### Phase 4 — ControlNet-guided re-paint (the core)  *(GPU)*
+### Phase 4 — ControlNet-guided re-paint (the core)  *(GPU — IMPLEMENTED, verifying)*
+- **DONE in code:** the blend's existing `&[ControlRequest]` slot (was `&[]`) now
+  carries a **canny of the composited canvas** (`artefact_blend.rs`): `ControlSpec
+  { kind: Canny, from: composited_path, strength: 0.9 }` → `load_control_stack` →
+  fed to `blend_latents_one`. Corpus strength raised 0.3 → 0.55. Pending a GPU
+  render to judge integration (downloads the SDXL canny ControlNet on first run).
 - Replace `--artefact-blend`: take **canny/depth of the composited canvas** → run
   ControlNet img2img at a *meaningful* strength (~0.4–0.6) over the artefact
   regions. ControlNet **holds the shape**; the denoise repaints the surface to

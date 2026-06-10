@@ -54,7 +54,7 @@ fi
 "$PLAKAT" generate "a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph, sharp focus" \
   --model sdxl --artefact-library "$LIB" \
   --artefact "balloon@sky" --artefact "pine@middle_plan" --artefact "cottage@close_plan" \
-  --artefact-blend --artefact-blend-strength 0.3 \
+  --artefact-blend --artefact-blend-strength 0.55 \
   --steps 30 --size 1024x1024 --seed 11 --device metal \
   --out "$OUT/cli-multi"
 

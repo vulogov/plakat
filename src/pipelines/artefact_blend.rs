@@ -181,16 +181,55 @@ pub async fn blend_files(
             face_bbox: None,
             face_landmarks: None,
         };
+
+        // Phase 4: ControlNet-guided re-paint. Canny of the COMPOSITED image
+        // holds the artefact shapes while the masked denoise (at a meaningful
+        // strength) repaints their surface to match the scene's light / colour /
+        // texture — so they read as part of the scene instead of pasted.
+        let cn_dtype = if matches!(cfg.device, Device::Cpu) {
+            candle_core::DType::F32
+        } else {
+            candle_core::DType::F16
+        };
+        let canny = crate::pipelines::controlnet::ControlSpec {
+            kind: crate::pipelines::controlnet::ControlKind::Canny,
+            image: None,
+            from: Some(path.to_path_buf()),
+            video: None,
+            strength: 0.9,
+            start: 0.0,
+            end: 1.0,
+        };
+        let control_owned = crate::pipelines::controlnet::load_control_stack(
+            std::slice::from_ref(&canny),
+            &cfg.model,
+            cfg.image_w,
+            cfg.image_h,
+            &cfg.device,
+            cn_dtype,
+            Some(path.as_path()),
+            None,
+        )
+        .await?;
+        let control_reqs: Vec<crate::pipelines::controlnet::ControlRequest> = control_owned
+            .iter()
+            .map(|owned| crate::pipelines::controlnet::ControlRequest {
+                net: &owned.net,
+                conditioning: owned.conditioning.clone(),
+                strength: owned.strength,
+                start: owned.start,
+                end: owned.end,
+            })
+            .collect();
+
         let new_latents = pipeline
-            // Artefact-blend doesn't expose --control; the conditioner
-            // here is the artefact mask itself, not a ControlNet guide.
             .blend_latents_one(
                 &base_latents,
                 &mask,
                 &req,
                 cfg.strength,
                 seed,
-                &[],
+                &control_reqs,
                 // Artefact-blend uses the pipeline's base UNet (regular
                 // SD 1.5 / SDXL) — RePaint blending. SDXL-Inpaint
                 // isn't supported on the artefact-blend path.
