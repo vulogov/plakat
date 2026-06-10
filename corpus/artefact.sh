@@ -35,8 +35,8 @@ for a in "$@"; do [ "$a" = "--skip-artefacts-gen" ] && SKIP_GEN=1; done
 # there); on photoreal it's a grounded composite, not VFX relighting. No chroma.
 make_artefact() {
   local prompt="$1" out="$2" seed="$3"
-  "$PLAKAT" generate "$prompt, anime illustration, cel-shaded, clean lineart, vibrant colors, centered, isolated, single object, simple plain background, sharp focus" \
-    --model sdxl --negative "photorealistic, photograph, realistic, multiple, busy background, clutter, scene" \
+  "$PLAKAT" generate "$prompt, anime illustration, cel-shaded, clean lineart, vibrant colors, centered, isolated, single object, on a plain solid white background, nothing else in frame, sharp focus" \
+    --model sdxl --negative "photorealistic, photograph, realistic, multiple, busy background, clutter, scenery, sky, clouds, landscape, ground" \
     --steps 30 --size 1024x1024 --seed "$seed" --device metal \
     --out "$WORK/raw-$seed"
   "$PLAKAT" transparent --in "$WORK/raw-$seed/plakat-$seed.png" --out "$out" --matte --crop --device cpu
