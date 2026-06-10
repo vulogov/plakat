@@ -21,6 +21,8 @@ const SIZE: usize = 320;
 /// fire, d0 max 1.0). candle can't read Carve's legacy-pickle `.pth`, so it is
 /// re-serialised to safetensors (see `scripts/convert_u2net_to_safetensors.py`).
 const WEIGHTS_FILE: &str = "u2net-universal.safetensors";
+/// HF repo hosting the redistributed safetensors (auto-downloaded on first use).
+const MATTE_REPO: &str = "vulogov98/u2net-universal";
 
 // ---- REBNCONV: Conv2d(k3, dilation=d, pad=d, bias) → BatchNorm → ReLU ----
 struct RebnConv {
@@ -305,24 +307,22 @@ fn matte_bbox(img: &RgbaImage, thresh: u8) -> Option<(u32, u32, u32, u32)> {
 }
 
 /// Resolve the matte weights: `PLAKAT_MATTE_WEIGHTS` (a safetensors path) wins,
-/// else the converted file in the plakat cache (`~/.cache/plakat/u2net/`).
-fn matte_weights_path() -> Result<std::path::PathBuf> {
+/// else a locally-converted file in the plakat cache (`~/.cache/plakat/u2net/`),
+/// else download the redistributed safetensors from HF.
+async fn matte_weights_path() -> Result<std::path::PathBuf> {
     if let Ok(p) = std::env::var("PLAKAT_MATTE_WEIGHTS") {
         return Ok(p.into());
     }
     let base = std::env::var("HOME").unwrap_or_default();
-    let p = std::path::PathBuf::from(base)
+    let local = std::path::PathBuf::from(base)
         .join(".cache/plakat/u2net")
         .join(WEIGHTS_FILE);
-    if p.exists() {
-        Ok(p)
-    } else {
-        Err(anyhow!(
-            "matte weights not found at {} — run scripts/convert_u2net_to_safetensors.py \
-             or set PLAKAT_MATTE_WEIGHTS to a U2NET safetensors",
-            p.display()
-        ))
+    if local.exists() {
+        return Ok(local);
     }
+    crate::hf::download::get_file(MATTE_REPO, WEIGHTS_FILE)
+        .await
+        .with_context(|| format!("downloading matte weights {MATTE_REPO}/{WEIGHTS_FILE}"))
 }
 
 /// Smart cut-out: predict the foreground matte, write it as the alpha channel,
@@ -341,7 +341,7 @@ pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device
         }
     }
 
-    let weights = matte_weights_path()?;
+    let weights = matte_weights_path().await?;
 
     let img = image::open(in_path)?.to_rgb8();
     let (w, h) = (img.width(), img.height());
