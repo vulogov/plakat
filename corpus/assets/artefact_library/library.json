@@ -6,7 +6,7 @@
       "category": "vehicle",
       "path": "sky/balloon.png",
       "natural_zone": "sky",
-      "natural_size_pct": 0.32,
+      "natural_size_pct": 0.12,
       "anchor": "center",
       "license": "CC0",
       "tags": ["sky", "vehicle"]
@@ -16,7 +16,7 @@
       "category": "tree",
       "path": "trees/pine.png",
       "natural_zone": "middle_plan",
-      "natural_size_pct": 0.6,
+      "natural_size_pct": 0.35,
       "anchor": "bottom_center",
       "license": "CC0",
       "tags": ["nature", "tree"]
@@ -26,7 +26,7 @@
       "category": "building",
       "path": "houses/cottage.png",
       "natural_zone": "close_plan",
-      "natural_size_pct": 0.55,
+      "natural_size_pct": 0.42,
       "anchor": "bottom_center",
       "license": "CC0",
       "tags": ["building"]

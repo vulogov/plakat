@@ -154,6 +154,7 @@ async fn offline_discovery_no_cache_is_noop() {
         cache_root: dir.path().join("discovery"),
         civitai_cache_root: dir.path().join("civitai-empty"),
         scale: 0.8,
+        judge: None,
     };
     let q = LoraQuery {
         tags: vec!["watercolor".into()],
@@ -283,6 +284,7 @@ async fn offline_cache_round_trip_end_to_end() {
         cache_root: dir.path().join("discovery"),
         civitai_cache_root: dir.path().join("civitai-empty"),
         scale: 0.8,
+        judge: None,
     };
 
     // Plant a cache entry by hand (same shape discover_lora would
@@ -377,6 +379,7 @@ async fn offline_local_scan_full_round_trip() {
         cache_root: dir.path().join("discovery"),
         civitai_cache_root: civitai_dir,
         scale: 0.8,
+        judge: None,
     };
     let q = LoraQuery {
         tags: vec!["watercolor".into()],

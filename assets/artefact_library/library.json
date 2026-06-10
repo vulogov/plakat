@@ -6,7 +6,7 @@
       "category": "celestial",
       "path": "sky/sun.png",
       "natural_zone": "sky",
-      "natural_size_pct": 0.7,
+      "natural_size_pct": 0.16,
       "anchor": "center",
       "license": "CC0",
       "tags": ["sky", "weather", "day"]
@@ -16,7 +16,7 @@
       "category": "celestial",
       "path": "sky/moon.png",
       "natural_zone": "sky",
-      "natural_size_pct": 0.7,
+      "natural_size_pct": 0.16,
       "anchor": "center",
       "license": "CC0",
       "tags": ["sky", "weather", "night"]
@@ -26,7 +26,7 @@
       "category": "weather",
       "path": "sky/cloud.png",
       "natural_zone": "sky",
-      "natural_size_pct": 0.8,
+      "natural_size_pct": 0.22,
       "anchor": "center",
       "license": "CC0",
       "tags": ["sky", "weather"]
@@ -36,7 +36,7 @@
       "category": "tree",
       "path": "trees/oak.png",
       "natural_zone": "middle_plan",
-      "natural_size_pct": 0.95,
+      "natural_size_pct": 0.38,
       "anchor": "bottom_center",
       "license": "CC0",
       "tags": ["nature", "vegetation"]
@@ -46,7 +46,7 @@
       "category": "tree",
       "path": "trees/pine.png",
       "natural_zone": "middle_plan",
-      "natural_size_pct": 0.95,
+      "natural_size_pct": 0.35,
       "anchor": "bottom_center",
       "license": "CC0",
       "tags": ["nature", "vegetation", "conifer"]
@@ -56,7 +56,7 @@
       "category": "building",
       "path": "houses/cottage.png",
       "natural_zone": "close_plan",
-      "natural_size_pct": 0.8,
+      "natural_size_pct": 0.42,
       "anchor": "bottom_center",
       "license": "CC0",
       "tags": ["architecture", "rural"]

@@ -23,6 +23,11 @@ OUT="$ROOT/corpus/images/artefact"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$LIB/sky" "$LIB/trees" "$LIB/houses" "$OUT"
 
+# --skip-artefacts-gen: reuse the already-generated cutouts in $LIB and only
+# re-run the composite (fast iteration on scaling/blend without the GPU re-gen).
+SKIP_GEN=0
+for a in "$@"; do [ "$a" = "--skip-artefacts-gen" ] && SKIP_GEN=1; done
+
 # make_artefact <prompt> <out.png> <seed>
 # Generates the subject as a normal photoreal object (any background), then the
 # U2Net smart matte (`--matte`) lifts it out AND crops to the subject bbox (so
@@ -37,9 +42,13 @@ make_artefact() {
 }
 
 # Three real cutouts — one per zone, each matted off its background.
-make_artefact "a red and yellow striped hot-air balloon"          "$LIB/sky/balloon.png"    7
-make_artefact "a single tall green pine tree, full height"        "$LIB/trees/pine.png"     8
-make_artefact "a small grey stone cottage with a dark slate roof" "$LIB/houses/cottage.png" 9
+if [ "$SKIP_GEN" = 0 ]; then
+  make_artefact "a red and yellow striped hot-air balloon"          "$LIB/sky/balloon.png"    7
+  make_artefact "a single tall green pine tree, full height"        "$LIB/trees/pine.png"     8
+  make_artefact "a small grey stone cottage with a dark slate roof" "$LIB/houses/cottage.png" 9
+else
+  echo "↷ --skip-artefacts-gen: reusing existing cutouts in $LIB"
+fi
 
 # Composite ALL THREE into one valley scene + blend them in (multi-artefact).
 "$PLAKAT" generate "a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph, sharp focus" \

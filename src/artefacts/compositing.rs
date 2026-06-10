@@ -122,9 +122,11 @@ fn compute_target_rect(
     let zone_w = zone.width() as f32;
     let zone_h = zone.height() as f32;
 
-    // Target height = zone height × scale fraction. Aspect-preserving
-    // width derived from artefact's intrinsic aspect ratio.
-    let target_h = (zone_h * r.scale_fraction).round().max(1.0);
+    // Target height = CANVAS height × scale fraction (canvas-relative): a
+    // foreground artefact can be large even though its zone band is short — the
+    // zone controls position, not size. Aspect-preserving width from the
+    // artefact's intrinsic aspect ratio.
+    let target_h = (canvas.height() as f32 * r.scale_fraction).round().max(1.0);
     let aspect = src_w as f32 / src_h as f32;
     let target_w = (target_h * aspect).round().max(1.0);
 
