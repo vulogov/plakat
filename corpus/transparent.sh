@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ===================================================================
-# plakat proof corpus — transparent (background knock-out → RGBA)
+# plakat proof corpus — transparent (smart content-aware cut-out → RGBA)
 # ===================================================================
-# `plakat transparent` flood-fills the background to alpha 0 — starting from the
-# image corners, growing while each step stays within `--tolerance` of its
-# neighbour. That follows a gradient or soft shadow yet stops at a sharp subject
-# edge, so it works on real (studio-lit) renders, not just a perfectly flat
-# colour. We generate the subject on a chroma-key backdrop, then cut it out.
-# Output must be `.png` (or `.webp`) to keep alpha. Ungated, Metal-safe.
+# `plakat transparent --matte` predicts the foreground subject with a U2Net
+# salient-object model — NO chroma backdrop, works on photoreal / painted
+# subjects on ANY background. We render a normal apple scene (apple on a real
+# table), then lift the apple cleanly out into an RGBA PNG. (The corner
+# flood-fill `--tolerance` path stays for flat studio/chroma backdrops.)
+# Output must be `.png` (or `.webp`) to keep alpha. The matte runs on CPU.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -15,21 +15,15 @@ OUT="$ROOT/corpus/images/transparent"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT"
 
-# 1. Generate the subject on a flat BLUE backdrop. The chroma must be far from
-#    the subject AND not a plausible subject colour — green is a natural apple
-#    colour, so "red apple + green" bleeds into a two-tone apple; blue doesn't.
-#    Avoid "product photo / studio lighting" — those add the gradient + shadow
-#    + reflection that defeat a cut-out.
-"$PLAKAT" generate "a single shiny red apple, solid uniform red colour, centered, floating, isolated on a plain flat solid blue screen background, evenly lit, no surface, no ground, no shadow, no reflection, sharp focus" \
-  --model sdxl --negative "green, green apple, two-tone, bicolour, shadow, reflection, gradient, surface, floor, ground, studio lighting, depth of field" \
-  --steps 30 --size 1024x1024 --seed 7 --device metal \
+# 1. A normal photoreal subject on a real surface — no chroma, no flat backdrop.
+"$PLAKAT" generate "a single ripe red apple on a rustic wooden table, soft window light, photorealistic, sharp focus" \
+  --model sdxl --steps 30 --size 1024x1024 --seed 7 --device metal \
   --out "$WORK/apple-raw"
 
-# 2. Flood-fill the blue out → an RGBA cut-out (tolerance follows the blue
-#    gradient/shadow but stops at the red apple edge).
+# 2. Smart matte cut-out → RGBA (content-aware; lifts the apple off the scene).
 "$PLAKAT" transparent \
   --in  "$WORK/apple-raw/plakat-7.png" \
   --out "$OUT/apple-cutout.png" \
-  --tolerance 40 --crop
+  --matte --crop --device cpu
 
-echo "✓ wrote corpus/images/transparent/apple-cutout.png (RGBA — background flood-filled out)"
+echo "✓ wrote corpus/images/transparent/apple-cutout.png (RGBA — smart matte cut-out)"
