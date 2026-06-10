@@ -42,7 +42,7 @@ committed under `images/`.
 | Inpaint (masked) | `inpaint.sh` | ✅ | ✅ | `img2img --mask` — repaint a region (the sky) and preserve the rest; committed input + procedural mask, self-contained |
 | Outpaint | `outpaint.sh` | ✅ | ✅ | `plakat outpaint` — pad the canvas + paint the new strip in-context (sdxl-inpaint). Clean: the masked region is conditioned on mid-gray (no dark bands) with a binary mask (no feather seams) |
 | Upscale (ML) | `upscale.sh` | ✅ | ✅ | Real-ESRGAN ×2 (Metal-safe); ×4 buffers OOM Metal → `--device cpu` |
-| Transparent (background knock-out) | `transparent.sh` | ✅ | ⬜ | `plakat transparent` — flood-fill the corner-connected background to transparent → RGBA cut-out (robust on real renders: follows gradients/shadows, stops at the subject edge); generates a chroma-key subject, then cuts it out |
+| Transparent (smart cut-out) | `transparent.sh` | ✅ | ✅ | `plakat transparent --matte` — content-aware **U2Net** smart cut-out: lifts a photoreal subject off ANY background (no chroma) → clean RGBA. Apple-on-a-table → tight cut-out, no fringe. (Corner flood-fill `--tolerance` stays for flat studio backdrops.) Weights auto-download (`vulogov98/u2net-universal`). |
 
 ## Batch & scripting
 
