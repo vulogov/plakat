@@ -22,9 +22,17 @@ first multi-artefact render came out as pasted stickers.
 - `natural_size_pct` now means *fraction of canvas height*. Re-tune both
   libraries (bundled `assets/…` + corpus `corpus/assets/…`) and the default.
 
-### Phase 2 — Contact shadow (grounding)  *(GPU-free)*
-- From the artefact's alpha silhouette: a soft, offset, darkened blob under the
-  anchor, composited *before* the artefact → grounds it on the surface.
+### Phase 2 — Contact shadow (grounding)  *(GPU-free — DONE)*
+- `draw_contact_shadow`: soft elliptical darkening at a ground-anchored artefact's
+  base (gated on `anchor.y >= 0.75`), composited before the artefact. Photoreal,
+  no generation — the biggest "sitting in the scene" cue.
+
+### PHOTOREAL PIVOT (after the first re-paint render)
+The generative re-paint (Phase 4) **stylizes toward illustration** ("anime, not
+photo") — SDXL img2img always risks this. So for a *photo* result the strategy
+shifts: lean on **classical, generation-free** cues (shadow ✓, colour transfer
+↓) that can't stylize, and dial Phase 4 down to a *light seam-blend*
+(strength 0.55 → 0.4) with a photoreal negative — not a relight.
 
 ### Phase 3 — Colour harmonisation  *(GPU-free)*
 - Transfer the scene's per-channel colour statistics (mean/std, or a soft

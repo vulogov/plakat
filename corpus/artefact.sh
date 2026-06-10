@@ -52,9 +52,10 @@ fi
 
 # Composite ALL THREE into one valley scene + blend them in (multi-artefact).
 "$PLAKAT" generate "a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, photorealistic landscape photograph, sharp focus" \
-  --model sdxl --artefact-library "$LIB" \
+  --model sdxl --negative "illustration, anime, painting, cartoon, drawing, cgi, 3d render, oversaturated" \
+  --artefact-library "$LIB" \
   --artefact "balloon@sky" --artefact "pine@middle_plan" --artefact "cottage@close_plan" \
-  --artefact-blend --artefact-blend-strength 0.55 \
+  --artefact-blend --artefact-blend-strength 0.4 \
   --steps 30 --size 1024x1024 --seed 11 --device metal \
   --out "$OUT/cli-multi"
 

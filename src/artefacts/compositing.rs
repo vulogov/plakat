@@ -85,9 +85,53 @@ fn composite_one(canvas: &mut RgbaImage, r: &ResolvedArtefact) -> Result<()> {
         rgba = image::imageops::flip_horizontal(&rgba);
     }
 
-    // 6. Alpha-composite.
+    // 6. Contact shadow (grounding) for ground-anchored artefacts. Photoreal —
+    //    no generation — it just ties the object to the surface so it doesn't
+    //    float. Drawn before the artefact so the object sits on top of it.
+    if r.anchor.y >= 0.75 {
+        draw_contact_shadow(canvas, tx0, ty0, tw, th);
+    }
+
+    // 7. Alpha-composite.
     alpha_composite_in_place(canvas, &rgba, tx0, ty0, r.alpha);
     Ok(())
+}
+
+/// Soft elliptical contact shadow at an artefact's base. Darkens the scene
+/// pixels under the object with a smooth falloff — a cheap, photoreal grounding
+/// cue (the single biggest "it's sitting in the scene" signal).
+fn draw_contact_shadow(canvas: &mut RgbaImage, x0: i64, y0: i64, w: u32, h: u32) {
+    const SHADOW_ALPHA: f32 = 0.42; // darkest at the centre
+    let cx = x0 as f32 + w as f32 * 0.5;
+    let cy = y0 as f32 + h as f32; // the artefact's base
+    let rx = (w as f32 * 0.48).max(1.0);
+    let ry = (h as f32 * 0.06).max(2.0);
+    let (cw, ch) = (canvas.width() as i64, canvas.height() as i64);
+    let x_min = (cx - rx).floor() as i64;
+    let x_max = (cx + rx).ceil() as i64;
+    let y_min = (cy - ry).floor() as i64;
+    let y_max = (cy + ry).ceil() as i64;
+    for py in y_min..=y_max {
+        if py < 0 || py >= ch {
+            continue;
+        }
+        for px in x_min..=x_max {
+            if px < 0 || px >= cw {
+                continue;
+            }
+            let dx = (px as f32 - cx) / rx;
+            let dy = (py as f32 - cy) / ry;
+            let d = dx * dx + dy * dy;
+            if d >= 1.0 {
+                continue;
+            }
+            let a = SHADOW_ALPHA * (1.0 - d) * (1.0 - d); // smooth falloff to the edge
+            let p = canvas.get_pixel_mut(px as u32, py as u32);
+            p.0[0] = (p.0[0] as f32 * (1.0 - a)) as u8;
+            p.0[1] = (p.0[1] as f32 * (1.0 - a)) as u8;
+            p.0[2] = (p.0[2] as f32 * (1.0 - a)) as u8;
+        }
+    }
 }
 
 /// Promote any input image to RGBA8. If the source has no alpha
