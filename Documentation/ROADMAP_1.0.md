@@ -37,12 +37,16 @@ The single highest-value, irreversible item is **§2's API freeze**.
       `--artefact-blend` pass integrates into a scene (not paste). Model
       **VERIFIED correct** via a PyTorch reference comparison — the candle forward
       matches the reference bit-for-bit (side1_raw, fused logits, d0 all match).
-      The first weights (`jamino30/u2net-saliency`) turned out to be a DEAD
-      checkpoint (d0 max 0.04 even in PyTorch); good weights (`Carve/u2net-
-      universal`) fire at d0 max 1.0 through the same code. Remaining: a good
-      u2net checkpoint in a **candle-loadable format** — Carve's is legacy-pickle
-      `.pth` (candle only reads safetensors / zip-`.pth`), so sourcing/converting
-      one. Then re-point `transparent.sh` / `artefact.sh` off chroma.
+      The first weights (`jamino30/u2net-saliency`) were a DEAD checkpoint (d0 max
+      0.04 even in PyTorch); good weights (`Carve/u2net-universal`, Apache-2.0)
+      fire at d0 max 1.0 through the same code. **DONE:** candle can't read
+      Carve's legacy-pickle `.pth`, so it's re-serialised to safetensors
+      (`scripts/convert_u2net_to_safetensors.py`), hosted at
+      `vulogov98/u2net-universal`, and auto-downloaded on first use. The matte
+      fires end-to-end through candle (d0 max 1.0, identical to the PyTorch
+      reference; clean salient-object silhouettes). Both `transparent.sh` /
+      `artefact.sh` re-pointed to `--matte` (off chroma). **Remaining: render the
+      proofs (GPU).**
 - [ ] **Render the 4 pending corpus drivers** (written, unrendered): `transparent.sh`,
       `embedding.sh`, `variation.sh`, `artefact.sh` + `artefact.hjson`. Judge
       each at full size; commit the proofs. *(GPU-bound.)*
