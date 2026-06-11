@@ -395,6 +395,15 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
     SD 1.5 / 2.1, SDXL, Flux (Union Pro v2), and SD3 / SD3.5
     (InstantX adapter family).
 
+## Reproducibility
+
+A given `--seed` makes a render repeatable **on the same machine + backend**.
+Across machines/backends — and on **Metal specifically** — renders are *not*
+bit-reproducible: Apple Silicon's GPU kernels are non-deterministic, so identical
+inputs can differ slightly between runs. Every output still embeds its full
+recipe (prompt, seed, settings) as a PNG `parameters` chunk + JSON sidecar, and
+`generate --reproducibility-check` re-runs a recipe to measure the drift.
+
 ## Releases
 
 Pre-built binaries for the 0.7+ tags are attached to each

@@ -30,7 +30,13 @@ pub struct UpscaleArgs {
 
 pub async fn run(args: UpscaleArgs, device: Device) -> Result<()> {
     let (w, h, nw, nh) = if args.method.is_ml() {
-        crate::imaging::upscale::ml_upscale(&args.input, &args.out, args.method, &device).await?
+        // Real-ESRGAN ×4 can blow the Metal single-buffer cap on large inputs;
+        // decorate the OOM with a `--device cpu` hint instead of a raw crash.
+        crate::imaging::upscale::ml_upscale(&args.input, &args.out, args.method, &device)
+            .await
+            .map_err(|e| {
+                crate::error_hints::decorate_oom(e, crate::error_hints::OomContext::Upscale)
+            })?
     } else {
         crate::imaging::upscale::upscale(&args.input, &args.out, args.scale, args.method)?
     };

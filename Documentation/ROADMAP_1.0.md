@@ -57,9 +57,10 @@ The single highest-value, irreversible item is **§2's API freeze**.
       Metal quantized matmul kernel corrupts GGUF (upstream, not plakat-fixable);
       BF16 is ~33 GB. Not dropped — it works off-Metal. Claims corrected:
       COVERAGE + `FEATURE_TO_MODEL.md` mark Flux ⚠️ CPU/CUDA-only / untested on Metal.
-- [ ] **Final model-list audit** — confirm **zero** "listed but never rendered"
-      models remain across `doctor models` (the corpus caught 7; verify the
-      count is 0). Every supported model has a committed proof.
+- [x] **Final model-list audit — count is 0.** The 7 once-never-rendered models
+      are all fixed + committed: SD 1.5 / 2.1 / SDXL / SD3.5 / Cascade / PixArt-Σ
+      have proofs; Flux is the only un-rendered family and is explicitly
+      CPU/CUDA-only-scoped (COVERAGE + FEATURE_TO_MODEL). No silent gaps.
 - [x] **Cascade LoRA/DoRA** — engine complete (v0.38/v0.42); no ungated asset
       exists to demo → marked BLOCKED in COVERAGE (ecosystem, not code).
 
@@ -96,11 +97,14 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
 
 ## 3. Resolve or document known issues
 
-- [ ] **Metal single-buffer OOM** (Real-ESRGAN ×4, large SD 1.5 portraits) —
-      catch it and emit a clear "retry with `--device cpu`" hint instead of a
-      cryptic crash. 1.0 must not fail opaquely.
-- [ ] **SDXL VAE-F16 black image** — memory flags it "unverified"; confirm the
-      `madebyollin/sdxl-vae-fp16-fix` VAE (in `SdCore`) closes it, then mark resolved.
+- [x] **Metal single-buffer OOM** — the upscale path now wraps its result in
+      `decorate_oom(OomContext::Upscale)`, so a Real-ESRGAN ×4 OOM emits a
+      "retry with `--device cpu`" hint (+ "use ×2") instead of a raw crash.
+      Generate already had the OOM decorator; both covered + tested.
+- [x] **SDXL VAE-F16 black image — RESOLVED.** `SdCore` swaps in
+      `madebyollin/sdxl-vae-fp16-fix` for F16 SDXL (`sd_core.rs:307-316`), and the
+      committed SDXL corpus renders (sdxl.hjson, stylize, artefact) are clean — no
+      black image.
 - [x] **Stylize / InstantStyle** — BUILT + verified (0.47.0). `stylize
       --instantstyle` does true painterly style transfer via a decoupled IP
       cross-attention on the style block (SDXL `up_blocks.0.attentions.1` / SD 1.5
@@ -119,8 +123,10 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       `sd_train_run`, `style_train_run`, `spike_catalog`).
 - [~] **Error-message coverage** — OOM hints now offer `--device cpu` (Metal
       single-buffer). The broader audit continues.
-- [ ] **Reproducibility note** — Metal renders are not bit-reproducible; state
-      it plainly (acceptable for 1.0 if documented).
+- [x] **Reproducibility note** — stated plainly: a `## Reproducibility` section in
+      the README (Metal is non-deterministic; `--seed` is repeatable same-machine;
+      every output embeds its recipe + `--reproducibility-check` measures drift),
+      and in STABILITY.md's "not frozen" list.
 
 ## 5. Infrastructure
 
@@ -131,7 +137,9 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       math. (Matte verified via the diffusers reference comparison instead.)
 - [x] **docs.rs build** — verified the CPU/no-Metal doc build is clean
       (`cargo doc --no-default-features` exit 0); pinned `[package.metadata.docs.rs]`.
-- [ ] **Crate metadata** — license, keywords, description, repo links 1.0-ready.
+- [x] **Crate metadata — 1.0-ready.** license (Unlicense), keywords, categories,
+      repository + homepage all present; description refreshed (dropped the stale
+      "color-key" → the current feature surface); `docs.rs` metadata pinned.
 - [x] **Tutorial completeness** — TRANSPARENT / EMBEDDING / VARIATION tutorials
       added + InstantStyle section in STYLIZE; ARTEFACTS already covered.
 

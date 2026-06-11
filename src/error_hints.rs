@@ -39,6 +39,8 @@ pub enum OomContext {
     Flux,
     /// AnimateDiff long-form — window-size + frame-count knobs.
     Animate,
+    /// Real-ESRGAN upscale — ×4 buffers blow the Metal single-buffer cap.
+    Upscale,
 }
 
 impl OomContext {
@@ -71,6 +73,10 @@ impl OomContext {
                 "reduce `--window-size` (max 32 per window)",
                 "drop ControlNet stacking; each conditioner adds ~1-2 GB",
                 "switch to SD 1.5 from SDXL animate beta",
+            ],
+            OomContext::Upscale => vec![
+                "use a smaller factor (×2 instead of ×4)",
+                "on Apple/Metal, retry on CPU: `--device cpu` (Real-ESRGAN ×4 buffers exceed the Metal single-buffer cap)",
             ],
         }
     }
@@ -304,7 +310,7 @@ mod tests {
     fn sd_and_sdxl_oom_offer_cpu_fallback() {
         // v0.47: Metal single-buffer OOM (Real-ESRGAN ×4, large portraits) → the
         // Sd/Sdxl hints must point at `--device cpu`.
-        for ctx in [OomContext::Sd, OomContext::Sdxl] {
+        for ctx in [OomContext::Sd, OomContext::Sdxl, OomContext::Upscale] {
             assert!(ctx.suggestions().iter().any(|s| s.contains("--device cpu")));
         }
     }
