@@ -20,6 +20,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # System libraries needed by transitive deps. font-kit (text rendering)
+      # links fontconfig + freetype via pkg-config; the runner lacks them by
+      # default. A plain native-amd64 apt install — no mirror splicing.
+      - name: system deps (fontconfig / freetype)
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+
       # CPU-only build (no metal/cuda) — the same surface docs.rs and
       # `cargo install plakat` (default features) compile.
       - name: build (CPU)
