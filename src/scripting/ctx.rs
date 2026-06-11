@@ -664,6 +664,8 @@ impl ScriptCtx {
                         model: alias.to_string(),
                         device,
                         shared_clip_h: None,
+                        instantstyle: false,
+                        style_scale: 1.0,
                     },
                 ))
             })?;

@@ -1857,6 +1857,8 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 model: "sd15".to_string(),
                 device: device.clone(),
                 shared_clip_h: shared_clip_h.clone(),
+                instantstyle: false,
+                style_scale: 1.0,
             })
             .await?,
         )

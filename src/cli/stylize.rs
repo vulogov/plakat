@@ -117,6 +117,17 @@ pub struct StylizeArgs {
     /// prompt own the subject while the ref owns the look.
     #[arg(long = "ref-weight", default_value_t = 1.0)]
     pub ref_weight: f32,
+
+    /// **InstantStyle (SDXL only)**: true painterly STYLE transfer — inject the
+    /// reference only into the SDXL style block (`up_blocks.0.attentions.1`) via a
+    /// decoupled IP cross-attention, not the content/palette concat path. The
+    /// real style machine vs the ref-variation default.
+    #[arg(long, default_value_t = false)]
+    pub instantstyle: bool,
+
+    /// InstantStyle injection strength (the style-block IP scale).
+    #[arg(long = "style-scale", default_value_t = 1.0)]
+    pub style_scale: f32,
 }
 
 /// Sentinel matching `StylizeArgs::strength`'s `default_value_t`. Used to
@@ -165,6 +176,8 @@ pub async fn run(args: StylizeArgs, device: Device) -> Result<()> {
         seed: args.seed,
         ref_blur: args.ref_blur,
         ref_weight: args.ref_weight,
+        instantstyle: args.instantstyle,
+        style_scale: args.style_scale,
         device,
     })
     .await

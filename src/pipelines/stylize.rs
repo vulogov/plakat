@@ -43,6 +43,11 @@ pub struct Request {
     pub seed: Option<u64>,
     pub ref_blur: f32,
     pub ref_weight: f32,
+    /// InstantStyle: true painterly style transfer via decoupled IP injection on
+    /// the SDXL style block (vs the content/palette concat path). SDXL-only.
+    pub instantstyle: bool,
+    /// InstantStyle injection strength (the style-block IP scale).
+    pub style_scale: f32,
     pub device: Device,
 }
 
@@ -64,6 +69,10 @@ pub struct LoadRequest {
     /// with `portrait::Pipeline`'s identity encoder. `None` causes
     /// stylize to download + load CLIP-H itself (pre-7f behaviour).
     pub shared_clip_h: Option<std::sync::Arc<ImageEncoder>>,
+    /// InstantStyle (SDXL only): load the vendored UNet + install the style-block
+    /// IP injection at `style_scale`. `false` keeps the concat ref-variation path.
+    pub instantstyle: bool,
+    pub style_scale: f32,
 }
 
 pub struct GenRequest {
@@ -188,6 +197,16 @@ pub struct Pipeline {
     /// SDXL only — the pooled CLIP-G empty-prompt embedding (1, 1280)
     /// for the UNet's `add_embedding`. `None` for SD 1.5.
     empty_pooled: Option<Tensor>,
+    /// InstantStyle: the vendored UNet (style-block IP injection installed) +
+    /// the shared style-token cell it reads. `None` unless `--instantstyle`.
+    instant: Option<InstantCtx>,
+}
+
+/// InstantStyle context: the vendored SD UNet with a decoupled IP cross-attention
+/// installed on the style block, plus the shared style-token cell it reads.
+struct InstantCtx {
+    unet: crate::pipelines::sd_train::unet::UNet2DConditionModel,
+    tokens: std::sync::Arc<std::sync::RwLock<Option<Tensor>>>,
 }
 
 impl Pipeline {
@@ -268,6 +287,37 @@ impl Pipeline {
         )?;
         // Pre-compute empty-text embeddings (variant-aware) — constant per pipeline.
         let (empty_text_embeds, empty_pooled) = encode_empty_text(&core)?;
+
+        // InstantStyle: load the vendored UNet and install the decoupled IP
+        // cross-attention on the SDXL style block (`up_blocks.0.attentions.1`),
+        // so the style ref drives that block only — true style transfer, not the
+        // content/palette of the concat path. SDXL-only (the mapping is SDXL).
+        let instant = if req.instantstyle {
+            if !core.variant.is_xl() {
+                bail!("--instantstyle requires --model sdxl (the style-block mapping is SDXL-only)");
+            }
+            let tokens = std::sync::Arc::new(std::sync::RwLock::new(None));
+            let mut unet = crate::pipelines::instantstyle::load_vendored_unet(
+                &base_repo, true, &req.device, dtype,
+            )
+            .await?;
+            let ip_vb = unsafe {
+                candle_nn::VarBuilder::from_mmaped_safetensors(
+                    &[ipa_weights.clone()],
+                    dtype,
+                    &req.device,
+                )?
+            };
+            crate::pipelines::instantstyle::install_instantstyle(
+                &mut unet,
+                &ip_vb,
+                req.style_scale as f64,
+                tokens.clone(),
+            )?;
+            Some(InstantCtx { unet, tokens })
+        } else {
+            None
+        };
         build.finish_with_message("✓ stylize models loaded");
 
         Ok(Self {
@@ -276,6 +326,7 @@ impl Pipeline {
             image_proj,
             empty_text_embeds,
             empty_pooled,
+            instant,
         })
     }
 
@@ -308,9 +359,16 @@ impl Pipeline {
         }
         s.finish_with_message("✓ reference encoded");
 
-        // SD15: (1,77,768) ⊕ (1,4,768) → (1,81,768).
-        // SDXL: (1,77,2048) ⊕ (1,4,2048) → (1,81,2048).
-        let encoder_hidden_states = Tensor::cat(&[&self.empty_text_embeds, &image_tokens], 1)?;
+        // Concat path: SD15 (1,77,768)⊕(1,4,768)→(1,81,768); SDXL ⊕(1,4,2048).
+        // InstantStyle path: style rides the IP injection (style block), NOT the
+        // cross-attn context — the UNet sees just the (empty) text and the style
+        // tokens go into the shared cell the injection reads each step.
+        let encoder_hidden_states = if let Some(ic) = &self.instant {
+            *ic.tokens.write().unwrap() = Some(image_tokens.clone());
+            self.empty_text_embeds.clone()
+        } else {
+            Tensor::cat(&[&self.empty_text_embeds, &image_tokens], 1)?
+        };
 
         // SDXL micro-conditioning (target size). stylize runs no CFG → batch 1
         // (do NOT tile to 2 like the CFG portrait path).
@@ -363,13 +421,25 @@ impl Pipeline {
         let bar = progress::step_bar(active.len() as u64, "stylize");
         for &timestep in active {
             let latent_in = scheduler.scale_model_input(latents.clone(), timestep)?;
-            let noise_pred = self.core.unet.forward(
-                &latent_in,
-                timestep as f64,
-                &encoder_hidden_states,
-                self.empty_pooled.as_ref(),
-                add_time_ids.as_ref(),
-            )?;
+            let noise_pred = if let Some(ic) = &self.instant {
+                // InstantStyle: the vendored UNet, with the style block injecting
+                // the style ref via its decoupled IP cross-attention.
+                ic.unet.forward_sdxl(
+                    &latent_in,
+                    timestep as f64,
+                    &encoder_hidden_states,
+                    self.empty_pooled.as_ref().expect("SDXL pooled for instantstyle"),
+                    add_time_ids.as_ref().expect("SDXL add_time_ids for instantstyle"),
+                )?
+            } else {
+                self.core.unet.forward(
+                    &latent_in,
+                    timestep as f64,
+                    &encoder_hidden_states,
+                    self.empty_pooled.as_ref(),
+                    add_time_ids.as_ref(),
+                )?
+            };
             latents = scheduler.step(&noise_pred, timestep, &latents)?;
             bar.inc(1);
             bar.set_message(format!("t={timestep} strength={strength:.2}"));
@@ -405,6 +475,8 @@ pub async fn run(req: Request) -> Result<()> {
         model: req.model,
         device: req.device,
         shared_clip_h: None,
+        instantstyle: req.instantstyle,
+        style_scale: req.style_scale,
     })
     .await?;
     p.stylize_one(&GenRequest {
