@@ -80,14 +80,16 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
   - [x] **`--type` (civitai) → `--asset-type`** — done (source + docs).
   - [x] **Input convention + env-var public/internal split documented** →
         `Documentation/CLI_CONVENTIONS.md` (the 1.0 CLI contract).
-  - [?] **Deviation surfaced:** `stylize` / `transparent` / `upscale` take the
-        primary image via `--in`, vs `img2img` / `outpaint` positional. DECIDE:
-        unify to positional, or freeze the `--in` exception (postponed, like #3).
-- [ ] **Freeze the scenario HJSON schema** — public contract; the whole corpus
-      depends on it.
-- [ ] **Freeze the Bund scripting word-set** — public DSL.
-- [?] **Define the library API** — decide what is `pub` for crate consumers vs
-      CLI-only; SemVer binds it after 1.0.
+  - [x] **Deviation resolved:** the `--in` exception is FROZEN (STABILITY.md) —
+        positional for `generate` (prompt) + `img2img`/`outpaint` (image you're
+        continuing); `--in` for the post-process operands `stylize`/`transparent`/
+        `upscale`. Deliberate, documented.
+- [x] **Freeze the scenario HJSON schema** — declared in STABILITY.md (the
+      `Scenario`/`Task` key set is the frozen 1.0 contract).
+- [x] **Freeze the Bund scripting word-set** — declared in STABILITY.md (the
+      ~50 `plakat.*` host words).
+- [x] **Library API** — DECIDED (STABILITY.md): plakat is a CLI; the `plakat::*`
+      Rust API is **not** a stability contract. Consume via CLI / scenario / Bund.
 
 ## 3. Resolve or document known issues
 
