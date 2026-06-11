@@ -20,7 +20,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
-TI="gsdf/EasyNegative#EasyNegative.safetensors"
+# embed/EasyNegative — the canonical ungated `embed/` org mirror (gsdf/EasyNegative
+# was emptied to 0 files). Same EasyNegative.safetensors, resolves on Metal.
+TI="embed/EasyNegative#EasyNegative.safetensors"
 PROMPT="full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus"
 mkdir -p "$ROOT/corpus/images/embedding"
 
