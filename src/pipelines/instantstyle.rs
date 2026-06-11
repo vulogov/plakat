@@ -72,12 +72,17 @@ pub async fn load_vendored_unet(
     ])
     .await?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[unet_path], dtype, device)? };
-    let cfg = if is_xl {
-        sdxl_unet_config()
+    // SDXL needs the add_embedding (text_time conditioning) config, or
+    // forward_sdxl has no aug-emb to build. SD 1.5 has none (uses `forward`).
+    let (cfg, add_cfg) = if is_xl {
+        (
+            sdxl_unet_config(),
+            Some(crate::pipelines::sdxl_unet::SdxlAddEmbedConfig::base()),
+        )
     } else {
-        sd15_unet_config()
+        (sd15_unet_config(), None)
     };
-    Ok(UNet2DConditionModel::new(vb, 4, 4, false, cfg, None)?)
+    Ok(UNet2DConditionModel::new(vb, 4, 4, false, cfg, add_cfg)?)
 }
 
 /// Load the SDXL style block's IP-Adapter K/V and install them on the vendored
