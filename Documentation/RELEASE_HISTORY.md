@@ -1,12 +1,35 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.45. The current
+"What's new" sections for v0.13 through v0.46. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.46.0 — Train your own style, on any base
+
+v0.45 shipped style training on SD 3.5 only. v0.46 **completed the trilogy:
+SD 1.5 and SDXL style-LoRA training** — plakat vendored candle's SD UNet and
+wired a trainable LoRA attention path into it, so you learn a style on whichever
+base you render with (a LoRA is bound to its base).
+
+Around the trainer, a verification-and-polish cycle hardened the surface against
+a committed proof corpus:
+
+- **`plakat doctor --capability`** — a RAM-budgeted table of which models run on
+  *your* hardware, before downloading 30 GB.
+- **`--smart-discovery`** — for `--look` / `--genre`, a local LLM judges the
+  Civitai candidate pool and picks the best *style* LoRA, rejecting character
+  LoRAs. All 8 bundled looks render clean on SDXL.
+- **Civitai by id** — `--lora civitai:<id>:scale` pulls straight from Civitai (a
+  `timeout(0)` bug that instantly failed every download is fixed).
+- **Outpaint, clean** — the masked region is conditioned on mid-gray (no dark
+  bands) with a binary mask (no feather seams); extensions blend in.
+- **SDXL stylize** — `plakat stylize --model sdxl` (sharper, native 1024²).
+  Honest scope: a ref-*variation* tool (content/palette, not painterly texture) —
+  the true-style path (InstantStyle) landed in v0.47.
 
 ## What's new in v0.45.0 — Train your own style
 

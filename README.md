@@ -13,40 +13,47 @@ are pulled from HuggingFace and cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.46.0 — Train your own style, on any base
+## What's new in v0.47.0 — InstantStyle, smart cut-outs, and 1.0-ready
 
-v0.45 shipped "train your own style" on SD 3.5 only. v0.46 **completes the
-trilogy: SD 1.5 and SDXL style-LoRA training**. plakat vendored candle's SD
-UNet and wired a trainable LoRA attention path into it, so you can now learn a
-style on whichever base you render with (a LoRA is bound to its base).
+v0.47 lands the last marquee features and **freezes the surface for 1.0**: every
+claim is proven by a committed render, the CLI / scenario / scripting contracts
+are frozen, and the docs are honest.
 
 ```bash
-# Train a style on the base you render with — now SD 1.5 / SDXL / SD 3.5
-plakat style train --from-dir ./my_style_images --base sdxl \
-  --trigger "wcstyle watercolour" --out ./my_style-sdxl.safetensors
-plakat generate "a harbour, wcstyle watercolour" \
-  --model sdxl --lora ./my_style-sdxl.safetensors
+# True painterly STYLE transfer — the reference's brushwork, not its content
+plakat stylize --in portrait.png --ref watercolour.jpg \
+  --instantstyle --style-scale 4 --strength 0.8 --model sdxl --out styled.png
 ```
 
-Around the trainer, a verification-and-polish cycle hardened the surface
-against a committed proof corpus:
+- **InstantStyle** — `stylize --instantstyle` is true painterly **style** transfer.
+  A decoupled IP cross-attention injects the reference into the SDXL *style block*
+  only (`up_blocks.0.attentions.1`), so the **texture** transfers without cloning
+  the content — exactly what the default IP-Adapter (ref-variation) can't do.
+  (SD 1.5 is supported but experimental — softer; SDXL is the verified backbone.)
+- **Smart transparent** — `transparent --matte` removes the background with
+  content-aware **U2Net** matting: it lifts a subject off *any* background (photo,
+  painted, cluttered), not just a studio backdrop. Verified bit-for-bit against a
+  PyTorch reference.
+- **Integral artefacts** — `--artefact … --artefact-blend` composites cutouts as
+  *part of the scene*, not paste: canvas-relative scale, contact-shadow grounding,
+  scene-ambient colour harmony, and a canny-ControlNet re-paint. The cutout
+  library is built with `transparent --matte`.
+- **Friendly crashes** — `human-panic`: a calm message + a TOML crash report
+  instead of a raw backtrace (release builds).
 
-- **`plakat doctor --capability`** — a table of which supported models actually
-  run on *your* hardware (RAM-budgeted), so you know before downloading 30 GB.
-- **`--smart-discovery`** — for `--look` / `--genre`, a small local LLM judges
-  the Civitai candidate pool and picks the best *style* LoRA, rejecting
-  character LoRAs (so "watercolour" stops resolving to "an anime girl tagged
-  watercolour"). All 8 bundled looks render clean on SDXL.
-- **Civitai by id** — `--lora civitai:<id>:scale` pulls a LoRA straight from
-  Civitai (a `timeout(0)` bug that instantly failed every download is fixed).
-- **Outpaint, clean** — the masked region is conditioned on mid-gray (no dark
-  edge bands) with a binary mask (no hazy feather seams); extensions blend in.
-- **SDXL stylize** — `plakat stylize --model sdxl` (sharper, native 1024²; SD 1.5
-  kept as fallback). Honest scope: the IP-Adapter is a ref-*variation* tool
-  (content / appearance / palette, not painterly texture) — for true painterly
-  style, train a LoRA or use `--look`.
+**1.0 readiness** — the cycle that closes the roadmap:
 
-**Earlier releases** (v0.13 – v0.45):
+- **Frozen contracts** — final CLI renames (`--lora`, `--preset`, `--asset-type`,
+  `--flux-quant-level`); the 1.0-frozen CLI flags + scenario HJSON schema + Bund
+  word-set are documented in
+  [`Documentation/STABILITY.md`](Documentation/STABILITY.md).
+- **Proof corpus complete** — every pipeline has a committed render in the gallery;
+  scenario outputs now self-document (embedded recipe + JSON sidecar).
+- **Flux scoped** — CPU/CUDA-only, untested on Metal (candle's Metal GGUF kernel
+  is broken upstream) — corrected, not silently listed. Full per-feature matrix:
+  [`Documentation/FEATURE_TO_MODEL.md`](Documentation/FEATURE_TO_MODEL.md).
+
+**Earlier releases** (v0.13 – v0.46):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
