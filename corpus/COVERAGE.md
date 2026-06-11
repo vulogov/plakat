@@ -14,7 +14,7 @@ committed under `images/`.
 | SD 2.1 | `sd21.hjson` | ✅ | ✅ | ungated, ~5 GB, 768² v-prediction; alias repointed off the gated stabilityai repo |
 | SDXL | `sdxl.hjson` | ✅ | ✅ | ungated, ~7 GB; incl. canny CN |
 | PixArt-Σ | `pixart.hjson` | ✅ | ✅ | ungated |
-| Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ gated (dev) / ~33 GB; GGUF broken on Metal |
+| Flux (BF16) | `flux.hjson` | ⬜ | ⬜ | ⚠️ **CPU/CUDA-only; untested on Metal** (1.0 decision). Gated (dev), BF16 ~33 GB, and candle's Metal quantized matmul kernel corrupts GGUF (upstream, not plakat-fixable). Scoped out of the Metal-verified surface; see `FEATURE_TO_MODEL.md`. |
 | SD3.5 Medium | `sd35.hjson` | ✅ | ✅ | ⚠️ gated; BF16-native ~16 GB Metal; strong text |
 
 ## Conditioning & adapters

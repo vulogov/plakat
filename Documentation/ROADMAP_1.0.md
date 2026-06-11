@@ -51,10 +51,10 @@ The single highest-value, irreversible item is **§2's API freeze**.
       `artefact.sh`/`.hjson` (+ the scenario-metadata fix so artefact proofs land
       in the gallery). **Remaining (GPU): `embedding.sh`, `variation.sh`,
       `stylize.sh` (the new concat-vs-InstantStyle A/B).** Judge + commit.
-- [?] **Flux-on-Metal** — broken (candle's Metal quantized matmul kernel; not
-      plakat-fixable). **Decide:** scope Flux as **CPU/CUDA-only** and correct
-      every "supported" claim, or drop it from the 1.0 model list. A 1.0 must
-      not silently list a model broken on the primary platform.
+- [x] **Flux-on-Metal — DECIDED: CPU/CUDA-only, untested on Metal.** candle's
+      Metal quantized matmul kernel corrupts GGUF (upstream, not plakat-fixable);
+      BF16 is ~33 GB. Not dropped — it works off-Metal. Claims corrected:
+      COVERAGE + `FEATURE_TO_MODEL.md` mark Flux ⚠️ CPU/CUDA-only / untested on Metal.
 - [ ] **Final model-list audit** — confirm **zero** "listed but never rendered"
       models remain across `doctor models` (the corpus caught 7; verify the
       count is 0). Every supported model has a committed proof.
@@ -104,8 +104,8 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       `up_blocks.1.attentions.1`); confirmed clear watercolour transfer at
       `--style-scale` ~3-5 + `--strength` ~0.8. The default concat path stays as
       ref-variation. Decision resolved by building it.
-- [?] **Minor deferrals** — Cascade Stage-B + ControlNet combo; SDXL tiled
-      scripting. Almost certainly post-1.0; label them explicitly.
+- [x] **Minor deferrals — CONFIRMED post-1.0:** Cascade Stage-B + ControlNet
+      combo; SDXL tiled scripting. Listed in the non-goals below.
 
 ## 4. Polish
 
@@ -140,10 +140,12 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
 
 ## Decisions needed (blockers on scope, flagged `[?]` above)
 
-1. **Flux**: CPU/CUDA-only, or out of 1.0?
-2. **Library API**: what's `pub` and SemVer-bound?
+1. ~~Flux~~ — RESOLVED: CPU/CUDA-only, untested on Metal.
+2. ~~Library API~~ — RESOLVED: not a stability contract (STABILITY.md).
 3. ~~Stylize~~ — RESOLVED: InstantStyle built + verified (0.47.0).
-4. **Minor deferrals**: confirm post-1.0.
+4. ~~Minor deferrals~~ — CONFIRMED post-1.0.
+
+**All four scope decisions resolved.**
 
 ## Explicitly post-1.0 (non-goals for the cut)
 
