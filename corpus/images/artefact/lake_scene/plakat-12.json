@@ -1,0 +1,12 @@
+{
+  "prompt": "anime landscape illustration, a calm mountain lake at sunset, forested far shore, warm reflective water, cel-shaded, vibrant colors, Makoto Shinkai style",
+  "negative": "blurry, low quality, watermark, text, signature, photorealistic, photograph, realistic, 3d render",
+  "model": "sdxl",
+  "seed": 12,
+  "steps": 30,
+  "guidance": 7.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.47.0"
+}

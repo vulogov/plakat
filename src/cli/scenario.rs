@@ -3430,6 +3430,41 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
 
             TaskPersonas::None => {
             // -------- regular t2i / flux dispatch (unchanged behaviour) --------
+            // v0.47: the SD/Flux scenario arm now embeds per-image recipe
+            // metadata (sidecar + `parameters` tEXt chunk) like the Cascade/PixArt
+            // arms — so every proof, including artefact-composited ones, self-
+            // documents and surfaces in `plakat gallery`. (Closes the v0.17
+            // `metadata: None` deferral.)
+            let mut t2i_meta = crate::imaging::metadata::GenerationMetadata::new(
+                final_prompt.clone(),
+                model.clone(),
+                task_seed,
+                eff_steps,
+                eff_guidance,
+                format!("{:?}", eff_scheduler).to_lowercase(),
+                eff_w,
+                eff_h,
+            );
+            t2i_meta.negative = eff_negative.clone();
+            let t2i_lora_entries: Vec<crate::imaging::metadata::LoraEntry> =
+                loras.iter().map(|s| s.to_entry()).collect();
+            if !t2i_lora_entries.is_empty() {
+                t2i_meta.with_lora_stack(t2i_lora_entries);
+                t2i_meta.lora_scale = Some(lora_scale);
+            }
+            if let Ok(specs) = task_effective_controls(task) {
+                if let Some(spec) = specs.first() {
+                    t2i_meta.with_control_stack(vec![crate::imaging::metadata::ControlEntry {
+                        kind: spec.kind.clone(),
+                        image: spec.image.as_ref().map(|p| p.display().to_string()),
+                        from: spec.auto_from.as_ref().map(|p| p.display().to_string()),
+                        video: None,
+                        strength: spec.strength.unwrap_or(1.0),
+                        start: spec.start.unwrap_or(0.0),
+                        end: spec.end.unwrap_or(1.0),
+                    }]);
+                }
+            }
             let gen_req = GenRequest {
                 prompt: final_prompt.clone(),
                 negative: eff_negative.clone(),
@@ -3448,12 +3483,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // clip-skip yet. Default `1` = bit-identical to
                 // pre-phase-5 behaviour.
                 clip_skip: 1,
-                // v0.17 phase 3: scenarios skip per-task PNG
-                // metadata for now. Adding it cleanly would require
-                // threading task name + scenario file path into the
-                // metadata extras; deferred to keep the surface
-                // small. None = no tEXt chunk, no sidecar.
-                metadata: None,
+                // v0.47: per-image recipe metadata (built above) → the t2i
+                // save writes the `parameters` tEXt chunk + JSON sidecar, so
+                // scenario proofs are self-documenting and gallery-visible.
+                metadata: Some(t2i_meta),
                 // v0.17 phase D: scenarios don't surface live-
                 // preview cadence — batch runs typically don't
                 // need the per-step PNG churn. None = disabled.
