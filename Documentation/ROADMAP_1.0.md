@@ -45,11 +45,12 @@ The single highest-value, irreversible item is **§2's API freeze**.
       `vulogov98/u2net-universal`, and auto-downloaded on first use. The matte
       fires end-to-end through candle (d0 max 1.0, identical to the PyTorch
       reference; clean salient-object silhouettes). Both `transparent.sh` /
-      `artefact.sh` re-pointed to `--matte` (off chroma). **Remaining: render the
-      proofs (GPU).**
-- [ ] **Render the 4 pending corpus drivers** (written, unrendered): `transparent.sh`,
-      `embedding.sh`, `variation.sh`, `artefact.sh` + `artefact.hjson`. Judge
-      each at full size; commit the proofs. *(GPU-bound.)*
+      `artefact.sh` re-pointed to `--matte` (off chroma). **DONE: both rendered +
+      committed — transparent apple cut-out + integral anime artefact scenes.**
+- [~] **Render the pending corpus drivers.** DONE: `transparent.sh`,
+      `artefact.sh`/`.hjson` (+ the scenario-metadata fix so artefact proofs land
+      in the gallery). **Remaining (GPU): `embedding.sh`, `variation.sh`,
+      `stylize.sh` (the new concat-vs-InstantStyle A/B).** Judge + commit.
 - [?] **Flux-on-Metal** — broken (candle's Metal quantized matmul kernel; not
       plakat-fixable). **Decide:** scope Flux as **CPU/CUDA-only** and correct
       every "supported" claim, or drop it from the 1.0 model list. A 1.0 must
@@ -95,10 +96,12 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       cryptic crash. 1.0 must not fail opaquely.
 - [ ] **SDXL VAE-F16 black image** — memory flags it "unverified"; confirm the
       `madebyollin/sdxl-vae-fp16-fix` VAE (in `SdCore`) closes it, then mark resolved.
-- [?] **Stylize / InstantStyle** — the IP-Adapter transfers content/palette, not
-      painterly texture (confirmed on SD 1.5 **and** SDXL). **Decide:** ship 1.0
-      with stylize documented as a *ref-variation* tool (recommended), or build
-      InstantStyle per-layer injection (a full cycle — defer).
+- [x] **Stylize / InstantStyle** — BUILT + verified (0.47.0). `stylize
+      --instantstyle` does true painterly style transfer via a decoupled IP
+      cross-attention on the style block (SDXL `up_blocks.0.attentions.1` / SD 1.5
+      `up_blocks.1.attentions.1`); confirmed clear watercolour transfer at
+      `--style-scale` ~3-5 + `--strength` ~0.8. The default concat path stays as
+      ref-variation. Decision resolved by building it.
 - [?] **Minor deferrals** — Cascade Stage-B + ControlNet combo; SDXL tiled
       scripting. Almost certainly post-1.0; label them explicitly.
 
@@ -137,12 +140,12 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
 
 1. **Flux**: CPU/CUDA-only, or out of 1.0?
 2. **Library API**: what's `pub` and SemVer-bound?
-3. **Stylize**: document-as-ref-variation, or build InstantStyle?
+3. ~~Stylize~~ — RESOLVED: InstantStyle built + verified (0.47.0).
 4. **Minor deferrals**: confirm post-1.0.
 
 ## Explicitly post-1.0 (non-goals for the cut)
 
-- InstantStyle (per-layer IP-style transfer).
+- ~~InstantStyle~~ — DONE in 0.47.0 (`stylize --instantstyle`); no longer post-1.0.
 - Additional ControlNet types beyond canny (depth / pose).
 - Cascade Stage-B + ControlNet; SDXL tiled scripting.
 - Flux on Metal (blocked upstream in candle).
