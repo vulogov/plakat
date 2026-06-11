@@ -289,16 +289,14 @@ impl Pipeline {
         let (empty_text_embeds, empty_pooled) = encode_empty_text(&core)?;
 
         // InstantStyle: load the vendored UNet and install the decoupled IP
-        // cross-attention on the SDXL style block (`up_blocks.0.attentions.1`),
-        // so the style ref drives that block only — true style transfer, not the
-        // content/palette of the concat path. SDXL-only (the mapping is SDXL).
+        // cross-attention on the style block (SDXL `up_blocks.0.attentions.1`,
+        // SD 1.5 `up_blocks.1.attentions.1`), so the style ref drives that block
+        // only — true style transfer, not the content/palette of the concat path.
         let instant = if req.instantstyle {
-            if !core.variant.is_xl() {
-                bail!("--instantstyle requires --model sdxl (the style-block mapping is SDXL-only)");
-            }
+            let is_xl = core.variant.is_xl();
             let tokens = std::sync::Arc::new(std::sync::RwLock::new(None));
             let mut unet = crate::pipelines::instantstyle::load_vendored_unet(
-                &base_repo, true, &req.device, dtype,
+                &base_repo, is_xl, &req.device, dtype,
             )
             .await?;
             let ip_vb = unsafe {
@@ -313,6 +311,7 @@ impl Pipeline {
                 &ip_vb,
                 req.style_scale as f64,
                 tokens.clone(),
+                is_xl,
             )?;
             Some(InstantCtx { unet, tokens })
         } else {
@@ -424,13 +423,18 @@ impl Pipeline {
             let noise_pred = if let Some(ic) = &self.instant {
                 // InstantStyle: the vendored UNet, with the style block injecting
                 // the style ref via its decoupled IP cross-attention.
-                ic.unet.forward_sdxl(
-                    &latent_in,
-                    timestep as f64,
-                    &encoder_hidden_states,
-                    self.empty_pooled.as_ref().expect("SDXL pooled for instantstyle"),
-                    add_time_ids.as_ref().expect("SDXL add_time_ids for instantstyle"),
-                )?
+                if self.core.variant.is_xl() {
+                    ic.unet.forward_sdxl(
+                        &latent_in,
+                        timestep as f64,
+                        &encoder_hidden_states,
+                        self.empty_pooled.as_ref().expect("SDXL pooled for instantstyle"),
+                        add_time_ids.as_ref().expect("SDXL add_time_ids for instantstyle"),
+                    )?
+                } else {
+                    ic.unet
+                        .forward(&latent_in, timestep as f64, &encoder_hidden_states)?
+                }
             } else {
                 self.core.unet.forward(
                     &latent_in,

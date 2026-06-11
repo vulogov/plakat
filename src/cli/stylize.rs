@@ -119,10 +119,10 @@ pub struct StylizeArgs {
     #[arg(long = "ref-weight", default_value_t = 1.0)]
     pub ref_weight: f32,
 
-    /// **InstantStyle (SDXL only)**: true painterly STYLE transfer — inject the
-    /// reference only into the SDXL style block (`up_blocks.0.attentions.1`) via a
-    /// decoupled IP cross-attention, not the content/palette concat path. The
-    /// real style machine vs the ref-variation default.
+    /// **InstantStyle** (SD 1.5 + SDXL): true painterly STYLE transfer — inject the
+    /// reference only into the style block (SDXL `up_blocks.0.attentions.1`, SD 1.5
+    /// `up_blocks.1.attentions.1`) via a decoupled IP cross-attention, not the
+    /// content/palette concat path. The real style machine vs the ref-variation default.
     #[arg(long, default_value_t = false)]
     pub instantstyle: bool,
 

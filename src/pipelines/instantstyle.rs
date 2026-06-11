@@ -31,14 +31,27 @@ use crate::pipelines::sd_train::trainer::{sd15_unet_config, sdxl_unet_config};
 use crate::pipelines::sd_train::unet::UNet2DConditionModel;
 
 // --- SDXL style block (InstantStyle): up_blocks.0.attentions.1 ---
-// Verified against ip-adapter_sdxl_vit-h: its 10 attn2 layers are the
-// IP-Adapter raw keys 89,91,…,107 (attn2 sit at odd attn_processors indices;
-// raw = 2·cross_ordinal+1, cross ordinals 44..54). inner_dim 1280, ctx 2048.
+// diffusers enumerates attn_processors down → up → mid (mid LAST). With that
+// order up_blocks.0 starts at cross-ordinal 24, so attentions.1 = ordinals
+// 34..44 → ip_adapter raw keys 2·ord+1 = 69,71,…,87 (attn2 at odd raw indices).
+// inner_dim 1280, ctx 2048. (89..107 would be attentions.2 — the off-by-one from
+// the earlier down→mid→up assumption.)
 const SDXL_STYLE_UP_IDX: usize = 0;
 const SDXL_STYLE_ATTN_IDX: usize = 1;
-const SDXL_STYLE_IP_KEYS: [usize; 10] = [89, 91, 93, 95, 97, 99, 101, 103, 105, 107];
+const SDXL_STYLE_IP_KEYS: [usize; 10] = [69, 71, 73, 75, 77, 79, 81, 83, 85, 87];
 const SDXL_STYLE_INNER_DIM: usize = 1280;
 const SDXL_CTX_DIM: usize = 2048;
+
+// --- SD 1.5 style block: up_blocks.1.attentions.1 (analogous to SDXL's
+// up_blocks.0.attentions.1 — SD15's up_blocks.0 is a plain UpBlock2D with no
+// attention; up_blocks.1 is the first CrossAttnUpBlock2D at 1280). 1 attn2 layer
+// (transformer_layers_per_block=1). Verified against the real SD1.5 UNet
+// attn_processors (down → up → mid): cross-ordinal 7 → ip_adapter raw key 15.
+const SD15_STYLE_UP_IDX: usize = 1;
+const SD15_STYLE_ATTN_IDX: usize = 1;
+const SD15_STYLE_IP_KEYS: [usize; 1] = [15];
+const SD15_STYLE_INNER_DIM: usize = 1280;
+const SD15_CTX_DIM: usize = 768;
 /// IP-Adapter `image_proj` → 4 style tokens (8192 / 2048).
 pub const IP_NUM_TOKENS: usize = 4;
 
@@ -77,18 +90,34 @@ pub fn install_instantstyle(
     ip_vb: &VarBuilder,
     scale: f64,
     tokens: Arc<RwLock<Option<Tensor>>>,
+    is_xl: bool,
 ) -> Result<()> {
+    let (up_idx, attn_idx, keys, inner, ctx): (usize, usize, &[usize], usize, usize) = if is_xl {
+        (
+            SDXL_STYLE_UP_IDX,
+            SDXL_STYLE_ATTN_IDX,
+            &SDXL_STYLE_IP_KEYS,
+            SDXL_STYLE_INNER_DIM,
+            SDXL_CTX_DIM,
+        )
+    } else {
+        (
+            SD15_STYLE_UP_IDX,
+            SD15_STYLE_ATTN_IDX,
+            &SD15_STYLE_IP_KEYS,
+            SD15_STYLE_INNER_DIM,
+            SD15_CTX_DIM,
+        )
+    };
     let ip = ip_vb.pp("ip_adapter");
-    let mut ips = Vec::with_capacity(SDXL_STYLE_IP_KEYS.len());
-    for &idx in SDXL_STYLE_IP_KEYS.iter() {
+    let mut ips = Vec::with_capacity(keys.len());
+    for &idx in keys.iter() {
         let lvb = ip.pp(idx.to_string());
         // to_k_ip/to_v_ip: weight (inner_dim, ctx) = (out, in), no bias.
-        let to_k_ip =
-            candle_nn::linear_no_bias(SDXL_CTX_DIM, SDXL_STYLE_INNER_DIM, lvb.pp("to_k_ip"))?;
-        let to_v_ip =
-            candle_nn::linear_no_bias(SDXL_CTX_DIM, SDXL_STYLE_INNER_DIM, lvb.pp("to_v_ip"))?;
+        let to_k_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_k_ip"))?;
+        let to_v_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_v_ip"))?;
         ips.push(IpInjection::new(to_k_ip, to_v_ip, scale, tokens.clone()));
     }
-    unet.install_style_ip(SDXL_STYLE_UP_IDX, SDXL_STYLE_ATTN_IDX, ips)?;
+    unet.install_style_ip(up_idx, attn_idx, ips)?;
     Ok(())
 }
