@@ -1,0 +1,31 @@
+name: CI
+
+# Continuous build + test on the CPU path (no GPU backend). Deliberately
+# simple/reliable — no cross-compile or apt-mirror splicing (that complexity
+# lives only in release.yml's arm64 job). Runs on every push + PR.
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: build + test (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # CPU-only build (no metal/cuda) — the same surface docs.rs and
+      # `cargo install plakat` (default features) compile.
+      - name: build (CPU)
+        run: cargo build --no-default-features
+
+      # Library unit tests — pure logic + candle's CPU backend. Network- and
+      # GPU-dependent integration tests are excluded here for reliability.
+      - name: test (CPU, lib)
+        run: cargo test --no-default-features --lib

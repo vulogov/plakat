@@ -36,6 +36,12 @@ exclude = [
     "gallery/",
 ]
 
+# docs.rs builds the CPU path (no GPU backend). metal/cuda are mutually
+# exclusive + platform-specific, so docs are built with no features.
+[package.metadata.docs.rs]
+no-default-features = true
+features = []
+
 [features]
 # No backend selected by default. `cargo install plakat` builds a CPU-only
 # binary that runs everywhere but is slow. For real perf, pick one:

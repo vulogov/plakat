@@ -47,11 +47,15 @@ If you're new to plakat, work through these in order:
  Bundled `anime` only; user-extension directory for photoreal /
  fantasy / cyberpunk / etc. Same discovery + override semantics.
 
-3c. [`STYLIZE_TUTORIAL.md`](STYLIZE_TUTORIAL.md) — **v0.46.** Apply a
- reference image's look to a subject via IP-Adapter (`plakat stylize`,
- SD 1.5 / SDXL). A ref-*variation* tool (content/palette, not painterly
- texture); `--ref-blur` / `--ref-weight` knobs. For true painterly style,
- use `--look` or train a LoRA.
+3c. [`STYLIZE_TUTORIAL.md`](STYLIZE_TUTORIAL.md) — **v0.46–47.** Apply a
+ reference image's look to a subject via IP-Adapter (`plakat stylize`).
+ Default = ref-*variation* (content/palette); **`--instantstyle` (v0.47,
+ SDXL)** = true painterly STYLE transfer (texture, via decoupled style-block
+ injection). `--ref-blur` / `--ref-weight` / `--style-scale` knobs.
+
+3d. [`EMBEDDING_TUTORIAL.md`](EMBEDDING_TUTORIAL.md) — **Textual Inversion.**
+ Inject a TI embedding at generation time (`generate --embedding
+ REPO#FILE:trigger`) — EasyNegative & friends, no training. SD 1.5 / SDXL.
 
 4. [`HOW_TO_CREATE_MY_OWN_STYLE.md`](HOW_TO_CREATE_MY_OWN_STYLE.md) —
  build your own style catalog from a folder of images. Covers the
@@ -73,6 +77,11 @@ If you're new to plakat, work through these in order:
  scenes. The hands-on runnable companion lives at
  [`examples/tutorials/ZONES/`](../../examples/tutorials/ZONES/)
  (seven shell scripts + an HJSON scenario, end-to-end).
+
+5a. [`TRANSPARENT_TUTORIAL.md`](TRANSPARENT_TUTORIAL.md) — **smart cut-out.**
+ `plakat transparent --matte` removes the background with content-aware U2Net
+ matting (any background → clean RGBA); chroma-key fallback for studio shots.
+ Builds the artefact cutout library.
 
 6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
  image with a prompt (img2img), or repaint just a masked region
@@ -116,6 +125,11 @@ If you're new to plakat, work through these in order:
     (`--faithful`) via the CLIP ViT-L/14 encoder (v0.42), the canny
     ControlNet, and driving Cascade from Bund scripts. The most
     memory-efficient high-quality model — 1024² on ~16 GB.
+
+9b. [`VARIATION_TUTORIAL.md`](VARIATION_TUTORIAL.md) — **image variation.**
+    `generate --image-variation REF` re-imagines a reference from its CLIP
+    embedding (unCLIP-style, Cascade) — keeps semantics, re-composes. Pure
+    (empty prompt) or steered.
 
 10. [`CIVITAI_TUTORIAL.md`](CIVITAI_TUTORIAL.md) — browsing,
     downloading, and using Civitai community assets from the
