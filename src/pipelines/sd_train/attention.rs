@@ -118,6 +118,20 @@ fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Ten
     unimplemented!("compile with '--features flash-attn'")
 }
 
+/// InstantStyle decoupled IP cross-attention for ONE layer: separate K/V
+/// projections for the image (style) tokens, whose attention output (same query
+/// as the text branch) is added to the text attention scaled by `scale`. Only
+/// the style block(s) carry this; everywhere else `CrossAttention.ip` is `None`
+/// (behaviour unchanged). `tokens` is the shared projected style embedding, set
+/// once before the denoise loop.
+#[derive(Debug)]
+pub struct IpInjection {
+    to_k_ip: nn::Linear,
+    to_v_ip: nn::Linear,
+    scale: f64,
+    tokens: Arc<RwLock<Option<Tensor>>>,
+}
+
 #[derive(Debug)]
 pub struct CrossAttention {
     to_q: LoraLinear,
@@ -131,6 +145,8 @@ pub struct CrossAttention {
     span_attn: tracing::Span,
     span_softmax: tracing::Span,
     use_flash_attn: bool,
+    /// InstantStyle IP injection — `None` for self-attn and non-style layers.
+    ip: Option<IpInjection>,
 }
 
 impl CrossAttention {
@@ -167,6 +183,7 @@ impl CrossAttention {
             span_attn,
             span_softmax,
             use_flash_attn,
+            ip: None,
         })
     }
 
@@ -264,11 +281,51 @@ impl CrossAttention {
                 Some(slice_size)
             }
         });
-        let xs = match slice_size {
+        let mut xs = match slice_size {
             None => self.attention(&query, &key, &value)?,
             Some(slice_size) => self.sliced_attention(&query, &key, &value, slice_size)?,
         };
+        // InstantStyle: add the decoupled IP (style) attention — same query,
+        // separate K/V over the style tokens — scaled and summed before `to_out`.
+        if let Some(ip) = &self.ip {
+            if ip.scale != 0.0 {
+                if let Ok(guard) = ip.tokens.read() {
+                    if let Some(tokens) = guard.as_ref() {
+                        let ip_k =
+                            self.reshape_heads_to_batch_dim(&ip.to_k_ip.forward(tokens)?)?;
+                        let ip_v =
+                            self.reshape_heads_to_batch_dim(&ip.to_v_ip.forward(tokens)?)?;
+                        let ip_xs = self.attention(&query, &ip_k, &ip_v)?;
+                        xs = (xs + (ip_xs * ip.scale)?)?;
+                    }
+                }
+            }
+        }
         self.to_out.forward(&xs)
+    }
+
+    /// InstantStyle: attach a decoupled IP cross-attention to this layer. The
+    /// caller does this only for the style block(s); everywhere else stays `None`.
+    pub fn set_ip(&mut self, ip: IpInjection) {
+        self.ip = Some(ip);
+    }
+}
+
+impl IpInjection {
+    /// Build from this layer's IP-Adapter K/V projections, the injection scale,
+    /// and the shared style-token cell (set once before the denoise loop).
+    pub fn new(
+        to_k_ip: nn::Linear,
+        to_v_ip: nn::Linear,
+        scale: f64,
+        tokens: Arc<RwLock<Option<Tensor>>>,
+    ) -> Self {
+        Self {
+            to_k_ip,
+            to_v_ip,
+            scale,
+            tokens,
+        }
     }
 }
 

@@ -47,23 +47,22 @@ a per-block scale, and drive it for stylize inference.
 - **Next:** verify forward-parity (vendored `forward` ≈ `core.unet.forward` on
   the same `(latent, t, ehs)`) on GPU, then Phase 2 (per-block IP cross-attn).
 
-### Phase 1 — Decoupled IP cross-attention in the vendored `CrossAttention`
-- Add `to_k_ip`, `to_v_ip` (plain `Linear`, **per cross-attn block**) to
-  `CrossAttention`, loaded from the IP-Adapter weights plakat already downloads
-  (`ip-adapter_sd15` / `ip-adapter_sdxl_vit-h` — the `to_k_ip`/`to_v_ip` tensors
-  the concat path currently ignores).
-- Forward becomes: `out = textπ(q,k,v) + ip_scale · ipπ(q, to_k_ip(img), to_v_ip(img))`,
-  where `img` = the projected style tokens (reuse `ImageProj` from
-  `ip_adapter.rs`). This is the *real* IP-Adapter the concat path approximated.
-
-### Phase 2 — Per-block scale (the InstantStyle core)
-- Thread a **per-block `ip_scale`** through the UNet's block iteration (a `Vec`
-  indexed by cross-attn block, or a shared cell each block reads).
-- **Identify the style block** in the vendored indexing: SDXL
-  `up_blocks.0.attentions.1`; SD 1.5 the analogous up-block. Map diffusers names
-  → the vendored `blocks.rs` order.
-- Default InstantStyle scale: `ip_scale` at the style block, `0` elsewhere
-  (the legacy "all blocks" = content leak, kept as a `--style-block all` escape).
+### Phase 1+2 — Decoupled IP cross-attention + per-block scale  *(MECHANISM DONE)*
+- **DONE** (`sd_train/attention.rs`): `IpInjection { to_k_ip, to_v_ip, scale,
+  tokens }` on `CrossAttention` (`ip: Option`, `None` by default → zero behaviour
+  change for training + normal inference). Forward becomes
+  `out = textπ(q,k,v) + scale · ipπ(q, to_k_ip(tokens), to_v_ip(tokens))` — same
+  query, separate K/V over the shared style tokens. `set_ip` attaches it; the
+  per-layer `scale` IS the per-block scale (Phase 2), so only the style block
+  gets an `IpInjection`. Compiles clean.
+- **Remaining (wiring, Phase 2b):**
+  - Load the IP-Adapter `to_k_ip`/`to_v_ip` per cross-attn layer
+    (`ip-adapter_sd15` / `ip-adapter_sdxl_vit-h` — the tensors the concat path
+    ignores) → build `IpInjection`s.
+  - **Identify the style block** (SDXL `up_blocks.0.attentions.1`; SD 1.5
+    analogous up-block); reach its `attn2` in the vendored UNet to `set_ip`.
+  - The shared `tokens` cell = the projected style embedding (reuse `ImageProj`),
+    set once before the loop.
 
 ### Phase 3 — Stylize InstantStyle inference path
 - New path in `stylize.rs`: VAE-encode the subject (`--in`), start an img2img-style
