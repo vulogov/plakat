@@ -1,6 +1,6 @@
 # plakat gallery
 
-68 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+74 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -74,44 +74,54 @@
     <td width="33%"><img src="images/weather-scene/night_clear/plakat-46.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/variation/steered/plakat-cascade-7.png" alt="the same rugged coastline under a dramatic stormy sky"></td>
+    <td width="33%"><img src="images/variation/pure/plakat-cascade-7.png" alt=""></td>
     <td width="33%"><img src="images/cascade/cascade_landscape/plakat-cascade-42.png" alt="a serene mountain lake at golden sunrise, snow-capped peak behind, autumn forest on the shore, photorealistic"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/cascade/cascade_portrait_oil/plakat-cascade-43.png" alt="a portrait of a weathered fisherman in his sixties, kind eyes, knitted sweater, soft window light, oil paint style"></td>
     <td width="33%"><img src="images/cascade/cascade_watercolour/plakat-cascade-44.png" alt="an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor"></td>
+    <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
     <td width="33%"><img src="images/cascade/cascade_controlnet_canny/plakat-cascade-46.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
     <td width="33%"><img src="images/img2img/forest_inkwash/plakat-img2img-42.png" alt=""></td>
+    <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/img2img/coast_oil/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/outpaint/plakat-inpaint-42.png" alt=""></td>
+    <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
     <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
+    <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
     <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
+    <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
+    <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
+    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle-sd15.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt=""></td>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt=""></td>
+    <td width="33%"><img src="images/stylize/portrait-variation.png" alt=""></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
@@ -451,6 +461,20 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### plakat-cascade-7.png
+
+![plakat-cascade-7.png](images/variation/steered/plakat-cascade-7.png)
+
+> the same rugged coastline under a dramatic stormy sky
+
+`stable-cascade` · 1024×1024 · 20 steps · CFG 7.5 · seed 7
+
+### plakat-cascade-7.png
+
+![plakat-cascade-7.png](images/variation/pure/plakat-cascade-7.png)
+
+`stable-cascade` · 1024×1024 · 20 steps · CFG 7.5 · seed 7
+
 ### plakat-cascade-42.png
 
 ![plakat-cascade-42.png](images/cascade/cascade_landscape/plakat-cascade-42.png)
@@ -624,6 +648,30 @@ _(no embedded metadata)_
 ### plakat-sd3-denoise-44.png
 
 ![plakat-sd3-denoise-44.png](images/sd35/sd35_text/plakat-sd3-denoise-44.png)
+
+_(no embedded metadata)_
+
+### portrait-instantstyle-sd15.png
+
+![portrait-instantstyle-sd15.png](images/stylize/portrait-instantstyle-sd15.png)
+
+_(no embedded metadata)_
+
+### portrait-instantstyle-snow.png
+
+![portrait-instantstyle-snow.png](images/stylize/portrait-instantstyle-snow.png)
+
+_(no embedded metadata)_
+
+### portrait-instantstyle.png
+
+![portrait-instantstyle.png](images/stylize/portrait-instantstyle.png)
+
+_(no embedded metadata)_
+
+### portrait-variation.png
+
+![portrait-variation.png](images/stylize/portrait-variation.png)
 
 _(no embedded metadata)_
 

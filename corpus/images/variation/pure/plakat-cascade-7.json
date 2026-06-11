@@ -1,0 +1,11 @@
+{
+  "prompt": "",
+  "model": "stable-cascade",
+  "seed": 7,
+  "steps": 20,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.47.0"
+}

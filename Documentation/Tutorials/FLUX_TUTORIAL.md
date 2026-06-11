@@ -80,7 +80,7 @@ quantization paths to fit Flux into 12-16 GB GPUs:
 ### GGUF (community standard)
 
 ```bash
-plakat generate "..." --model flux-dev-gguf --quant-level Q4_K_S
+plakat generate "..." --model flux-dev-gguf --flux-quant-level Q4_K_S
 ```
 
 Uses [city96/FLUX.1-dev-gguf](https://huggingface.co/city96/FLUX.1-dev-gguf)
@@ -98,7 +98,7 @@ same size as BF16). The trade-off:
 
 Pair with `--quantize-t5` and `--t5-quant-level Q4_K_M` to also
 quantize the T5-XXL text encoder (drops it from ~9 GB to ~3 GB).
-Most users land on the combo `--model flux-dev-gguf --quant-level
+Most users land on the combo `--model flux-dev-gguf --flux-quant-level
 Q5_K_M --quantize-t5` as the sweet spot.
 
 ### NF4 (bitsandbytes 4-bit)
@@ -150,7 +150,7 @@ quantized. Memory savings preserved.
 
 ```bash
 # LoRA on quantized Flux — works fine
-plakat generate "..." --model flux-dev-gguf --quant-level Q5_K_M \
+plakat generate "..." --model flux-dev-gguf --flux-quant-level Q5_K_M \
  --lora "user/style-lora:0.8"
 
 plakat generate "..." --model flux-dev-nf4 \
@@ -372,7 +372,7 @@ GGUF (4-bit/6-bit/8-bit) is supported via the unsloth mirror — same
 
 ```bash
 plakat generate "..." --model flux-kontext-dev-gguf \
- --concept-image input.png --quant-level Q6_K
+ --concept-image input.png --flux-quant-level Q6_K
 
 # GGUF + LoRA composes (Kontext shares Dev's transformer layer
 # names, so any flux-dev LoRA applies unchanged)
@@ -506,8 +506,8 @@ raises an explicit error if you set per-task `loras:` on those.
 | GPU VRAM | Recommended config |
 |---|---|
 | 8 GB | `--model flux-dev-nf4`. Just barely fits. Skip `--tiled`. |
-| 12 GB | `--model flux-dev-nf4` or `--model flux-dev-gguf --quant-level Q4_K_S --quantize-t5`. |
-| 16 GB | `--model flux-dev-gguf --quant-level Q5_K_M --quantize-t5`. Most flexibility for stacking features. |
+| 12 GB | `--model flux-dev-nf4` or `--model flux-dev-gguf --flux-quant-level Q4_K_S --quantize-t5`. |
+| 16 GB | `--model flux-dev-gguf --flux-quant-level Q5_K_M --quantize-t5`. Most flexibility for stacking features. |
 | 24 GB | `--model flux-dev` (BF16). Full quality. `--tiled` works for 2K-4K outputs. |
 | 32 GB+ | `--model flux-dev` + `--tiled` for 4K+. Stack LoRAs freely. |
 

@@ -167,7 +167,7 @@ denoise directly rather than being a RePaint-style overlay, so
 Default `--guidance 30` per BFL's recommendation.
 
 Both Flux paths compose with LoRA (PEFT + AI-Toolkit formats), GGUF
-quantization (`flux-dev-gguf`, `--quant-level`, `--quantize-t5`),
+quantization (`flux-dev-gguf`, `--flux-quant-level`, `--quantize-t5`),
 ControlNet via the standard `--control-spec` grammar, and — as of
 **** — `--tiled` on Flux.1-Fill-dev for 4K+ inpaint via
 per-tile masked-latent + mask packing.
@@ -184,7 +184,7 @@ plakat img2img init.png --mask region.png --model flux-fill-dev \
 
 # Flux on a 16 GB GPU via GGUF
 plakat img2img init.png --model flux-fill-dev-gguf \
- --mask region.png --quant-level Q5_K_M --quantize-t5 \
+ --mask region.png --flux-quant-level Q5_K_M --quantize-t5 \
  --prompt "..."
 
 # Flux Kontext (v0.18) — input is the reference, prompt describes
@@ -195,7 +195,7 @@ plakat img2img photo.png --model flux-kontext-dev \
 
 # Same recipe via GGUF for 16 GB GPUs
 plakat img2img photo.png --model flux-kontext-dev-gguf \
- --prompt "add snow on the rooftops" --quant-level Q5_K_M
+ --prompt "add snow on the rooftops" --flux-quant-level Q5_K_M
 
 # Opt-in aspect-bucket snap (one of 17 BFL-recommended resolutions)
 plakat img2img tall_photo.png --model flux-kontext-dev \

@@ -51,10 +51,10 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `flux-canny-dev` | `black-forest-labs/FLUX.1-Canny-dev` | BFL "concept" Flux with canny conditioning baked into `img_in` (128 channels = 64 noise + 64 canny latent). Pass the canny map via `--concept-image PATH`. Recommended guidance ~30. Gated. |
 | `flux-depth-dev` | `black-forest-labs/FLUX.1-Depth-dev` | BFL "concept" Flux with depth-map conditioning. Same shape as Canny-dev. Pass the depth map via `--concept-image PATH`. Gated. |
 | `flux-kontext-dev` | `black-forest-labs/FLUX.1-Kontext-dev` | **v0.18**. BFL image-editing Flux. Reference VAE-encoded + sequence-concatenated onto the noise tokens (`img_in` stays at 64ch, unlike Canny/Depth which widen it). Pass the reference via `--concept-image PATH` on `plakat generate`, or `plakat img2img input.png --model flux-kontext-dev --prompt "..."`. Recommended guidance 3.5 (same as Dev — not 30 like Canny/Depth, since the conditioning flows through cross-attention not channel-concat). Optional `--kontext-bucket` snaps `--size` to one of 17 BFL-recommended resolutions. Gated. |
-| `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--quant-level` to pick precision. |
+| `flux-dev-gguf` | `city96/FLUX.1-dev-gguf` | 4-bit quantized FLUX.1-dev. ~7 GB transformer (vs ~24 GB BF16). Pair with `--flux-quant-level` to pick precision. |
 | `flux-schnell-gguf` | `city96/FLUX.1-schnell-gguf` | 4-bit quantized FLUX.1-schnell. |
 | `flux-fill-dev-gguf` | `city96/FLUX.1-Fill-dev-gguf` | 4-bit quantized Flux Fill. |
-| `flux-kontext-dev-gguf` | `unsloth/FLUX.1-Kontext-dev-GGUF` | **v0.18**. GGUF Kontext via the unsloth mirror. Same `--quant-level` options as `flux-dev-gguf`. Composes with `--lora` (Kontext shares Dev's transformer layer names). NF4 isn't supported (no upstream pack). |
+| `flux-kontext-dev-gguf` | `unsloth/FLUX.1-Kontext-dev-GGUF` | **v0.18**. GGUF Kontext via the unsloth mirror. Same `--flux-quant-level` options as `flux-dev-gguf`. Composes with `--lora` (Kontext shares Dev's transformer layer names). NF4 isn't supported (no upstream pack). |
 | `flux-dev-nf4` | `lllyasviel/flux1-dev-bnb-nf4-v2` | NF4 (bitsandbytes 4-bit) quantization. ~6 GB transformer. Composes with `--lora`. |
 | `sd35-medium` | `stabilityai/stable-diffusion-3.5-medium` | Stable Diffusion 3.5 Medium. 2.5B-param MMDiT. Gated. |
 | `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | SD3.5 Large flagship. 8B-param MMDiT. Gated. |
@@ -69,7 +69,7 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
 `ae.safetensors` + text encoders come from the original BFL repo
 ("donor") on first run.
 
-#### `--quant-level <LEVEL>` (default `Q4_K_S`)
+#### `--flux-quant-level <LEVEL>` (default `Q4_K_S`)
 
 GGUF quant level for the Flux transformer when running a `flux-*-gguf`
 model. city96 publishes Q2_K through Q8_0 plus F16. Common picks:

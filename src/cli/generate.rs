@@ -424,8 +424,8 @@ pub struct GenerateArgs {
     ///   * `Q5_K_M` (~8.5 GB) — sweeter quality/memory tradeoff
     ///   * `Q8_0`   (~13 GB) — near-BF16 quality at half the memory
     ///   * `F16`    (~24 GB) — equivalent to BF16
-    #[arg(long = "quant-level", value_name = "LEVEL")]
-    pub quant_level: Option<String>,
+    #[arg(long = "flux-quant-level", value_name = "LEVEL")]
+    pub flux_quant_level: Option<String>,
 
     /// **v0.13 phase 5**: GGUF quant level for the T5-XXL encoder.
     /// Defaults to `Q4_K_M` (~3 GB). Only meaningful with
@@ -1138,7 +1138,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             None
         },
         quantize_t5: args.quantize_t5,
-        flux_quant_level: args.quant_level,
+        flux_quant_level: args.flux_quant_level,
         t5_quant_level: args.t5_quant_level,
         redux_images: args.redux_images,
         // v0.15 phase 4: conditioning map for Flux Canny-dev / Depth-dev.
@@ -1762,7 +1762,7 @@ mod tests {
             tile_size: 1024,
             tile_stride: 768,
             quantize_t5: false,
-            quant_level: None,
+            flux_quant_level: None,
             t5_quant_level: None,
             fast: None,
             look: None,

@@ -97,7 +97,7 @@ plakat outpaint photo.jpg --prompt "wide mountain valley, panorama" \
     --left 512 --right 512 --model sdxl-inpaint
 
 # FLUX.1-dev quantized — runs on 16 GB consumer GPUs
-plakat generate "..." --model flux-dev-gguf --quant-level Q5_K_M \
+plakat generate "..." --model flux-dev-gguf --flux-quant-level Q5_K_M \
     --quantize-t5 --size 1024x1024
 
 # Flux Inpainting via Flux.1-Fill-dev
@@ -208,7 +208,7 @@ plakat img2img photo.png --model flux-kontext-dev \
 
 # Same recipe via GGUF for 16 GB GPUs.
 plakat generate "make it sunset" --model flux-kontext-dev-gguf \
-    --concept-image photo.png --quant-level Q5_K_M
+    --concept-image photo.png --flux-quant-level Q5_K_M
 
 # v0.18: read back the recipe (prompt, seed, LoRAs, sampler) from
 # any plakat-written PNG. Pipe --json-only to jq for scripting.
