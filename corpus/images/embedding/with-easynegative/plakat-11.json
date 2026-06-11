@@ -1,0 +1,12 @@
+{
+  "prompt": "full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus",
+  "negative": "EasyNegative, lowres, blurry",
+  "model": "sd15",
+  "seed": 11,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 512,
+  "height": 512,
+  "generator": "plakat 0.47.0"
+}

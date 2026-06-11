@@ -166,7 +166,7 @@ struct ScenarioFile {
     /// v0.13 phase 5: Flux GGUF quant level (e.g. `Q5_K_M`, `Q8_0`,
     /// `F16`). `None` falls back to `Q4_K_S`. Only meaningful with a
     /// GGUF Flux model.
-    #[serde(rename = "quant-level", default)]
+    #[serde(rename = "flux-quant-level", default)]
     quant_level: Option<String>,
     /// v0.13 phase 5: T5-XXL GGUF quant level (e.g. `Q5_K_M`, `Q8_0`).
     /// `None` falls back to `Q4_K_S`. Only meaningful with
