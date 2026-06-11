@@ -102,20 +102,13 @@ impl Module for FeedForward {
     }
 }
 
-#[cfg(feature = "flash-attn")]
-fn flash_attn(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    softmax_scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
-    candle_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
-}
-
-#[cfg(not(feature = "flash-attn"))]
+// plakat doesn't declare a `flash-attn` Cargo feature (it would pull in
+// candle-flash-attn + CUDA build prerequisites). The vendored UNet is always
+// built with `use_flash_attn = false`, so this is never reached — it exists only
+// for upstream signature parity. Mirrors `mmdit_inner.rs` (no `cfg` gate → no
+// `unexpected_cfgs` warning).
 fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Tensor> {
-    unimplemented!("compile with '--features flash-attn'")
+    unimplemented!("flash-attn not enabled in plakat; the softmax attention path is used")
 }
 
 /// InstantStyle decoupled IP cross-attention for ONE layer: separate K/V
