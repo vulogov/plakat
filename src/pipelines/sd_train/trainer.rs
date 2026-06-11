@@ -18,7 +18,7 @@ use candle_transformers::models::stable_diffusion::unet_2d::{
 };
 
 /// SD 1.5 UNet config (candle's `v1_5` values; `cfg.unet` is private).
-fn sd15_unet_config() -> UNet2DConditionModelConfig {
+pub(crate) fn sd15_unet_config() -> UNet2DConditionModelConfig {
     let bc = |out_channels, use_cross_attn, attention_head_dim| BlockConfig {
         out_channels,
         use_cross_attn,
@@ -78,7 +78,7 @@ fn alphas_cumprod() -> Vec<f64> {
 }
 
 /// SDXL UNet config (candle's `sdxl` values; cfg.unet is private).
-fn sdxl_unet_config() -> UNet2DConditionModelConfig {
+pub(crate) fn sdxl_unet_config() -> UNet2DConditionModelConfig {
     let bc = |out_channels, use_cross_attn, attention_head_dim| BlockConfig {
         out_channels,
         use_cross_attn,

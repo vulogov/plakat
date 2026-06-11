@@ -33,12 +33,19 @@ a per-block scale, and drive it for stylize inference.
 
 ## Phases
 
-### Phase 0 — Vendored UNet as an inference engine
-- The vendored UNet (`sd_train/unet.rs`) is train-wired today. Add/confirm a
-  clean **inference** forward (no-grad, eval dtype) for SD 1.5 + SDXL.
-- **Decision:** drive a dedicated InstantStyle denoise loop in `stylize.rs`
-  (scheduler + CFG + VAE) using the vendored UNet, rather than making `SdCore`
-  pluggable. Isolated, doesn't disturb the candle-UNet inference path.
+### Phase 0/1 — Vendored UNet as an inference engine  *(FOUNDATION DONE)*
+- **Finding (much smaller than feared):** the vendored UNet's `forward` /
+  `forward_sdxl` already predict ε — the trainer drives them every step
+  (`trainer.rs:195`), which *is* the denoise forward. And the denoise loop
+  already exists in `stylize.rs:352-380` (scheduler → `add_noise` → forward →
+  `scheduler.step` → `vae.decode`, all via `SdCore`). So the *only* thing that
+  changes for InstantStyle is one line — `core.unet.forward` → the vendored
+  UNet's `forward`. Not a from-scratch engine.
+- **DONE:** `instantstyle::load_vendored_unet` (`src/pipelines/instantstyle.rs`)
+  loads the vendored UNet for inference (SD 1.5 / SDXL); the two UNet configs are
+  now `pub(crate)`. Compiles clean.
+- **Next:** verify forward-parity (vendored `forward` ≈ `core.unet.forward` on
+  the same `(latent, t, ehs)`) on GPU, then Phase 2 (per-block IP cross-attn).
 
 ### Phase 1 — Decoupled IP cross-attention in the vendored `CrossAttention`
 - Add `to_k_ip`, `to_v_ip` (plain `Linear`, **per cross-attn block**) to
