@@ -77,8 +77,9 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
   - [x] **`--loras` → `--lora`** (repeatable) in `img2img` + `outpaint` — done
         (source + docs); now uniform with `generate`/`portrait`, repeatable style.
   - [x] **`--for` (stylize) → `--preset`** — done (source + docs).
-  - [ ] **Quant flags** `--quantize-t5` / `--quant-level` / `--t5-quant-level` —
-        inconsistent (verb vs noun-level). Unify (semantics decision needed).
+  - [x] **Quant flags** — `--quant-level` (ambiguous; it's the *Flux* level) →
+        `--flux-quant-level`, parallel to `--t5-quant-level`; scenario key renamed
+        to match. `--quantize-t5` toggle kept. Clean rename, no alias.
   - [x] **`--type` (civitai) → `--asset-type`** — done (source + docs).
   - [x] **Input convention + env-var public/internal split documented** →
         `Documentation/CLI_CONVENTIONS.md` (the 1.0 CLI contract).
@@ -136,7 +137,8 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
 
 ## 6. The corpus is the 1.0 proof
 
-- [ ] **Fully-rendered corpus + complete GALLERY** = the release evidence.
+- [x] **Fully-rendered corpus + complete GALLERY** = the release evidence. §1
+      render gate CLOSED; 74 gallery images (37 with embedded metadata).
       Gated on §1's pending renders.
 
 ---
