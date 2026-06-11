@@ -52,14 +52,16 @@ impl OomContext {
                 "try a smaller image: `--size 768x768` (currently bigger)",
                 "drop the refiner: omit `--refiner` if you set it",
                 "skip ADetailer / hires-fix passes if any are stacked",
+                "on Apple/Metal, retry on CPU: `--device cpu` (no single-buffer cap; slower but always fits)",
             ],
             OomContext::Sdxl => vec![
                 "try a smaller image: `--size 768x768` (SDXL trains at 1024²)",
                 "drop the refiner: omit `--refiner` if you set it",
                 "switch to `--scheduler lcm` + an LCM-LoRA for 4-step inference",
+                "on Apple/Metal, retry on CPU: `--device cpu` (no single-buffer cap; slower but always fits)",
             ],
             OomContext::Flux => vec![
-                "use a quantized model: `--model flux-dev-gguf --quant-level Q4_K_S` (~6 GB transformer)",
+                "use a quantized model: `--model flux-dev-gguf --flux-quant-level Q4_K_S` (~6 GB transformer)",
                 "use NF4: `--model flux-dev-nf4` (~6 GB transformer)",
                 "add `--quantize-t5` to keep the T5 encoder in BF16 → INT8 (~50% smaller)",
                 "use `--tiled` for hires runs at >1024²",

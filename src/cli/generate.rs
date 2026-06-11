@@ -655,10 +655,9 @@ pub struct GenerateArgs {
     /// the parser. Use `plakat embedding info PATH` to inspect a
     /// TI file's trigger word + dims before generating.
     ///
-    /// **Status**: parser + merger ship; runtime injection is gated
-    /// by candle 0.8's private `clip::Config.vocab_size` (sd_core
-    /// bails loud when set). Wiring lands alongside a vendored
-    /// CLIP path in a follow-up phase.
+    /// Runtime injection works (v0.30): the TI is injected at runtime via the
+    /// vendored CLIP path — the corpus `embedding.sh` proves it (baseline vs
+    /// +EasyNegative on SD 1.5).
     #[arg(long = "embedding", value_name = "SPEC")]
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 

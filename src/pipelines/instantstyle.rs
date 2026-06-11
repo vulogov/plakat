@@ -42,16 +42,66 @@ const SDXL_STYLE_IP_KEYS: [usize; 10] = [69, 71, 73, 75, 77, 79, 81, 83, 85, 87]
 const SDXL_STYLE_INNER_DIM: usize = 1280;
 const SDXL_CTX_DIM: usize = 2048;
 
-// --- SD 1.5 style block: up_blocks.1.attentions.1 (analogous to SDXL's
-// up_blocks.0.attentions.1 — SD15's up_blocks.0 is a plain UpBlock2D with no
-// attention; up_blocks.1 is the first CrossAttnUpBlock2D at 1280). 1 attn2 layer
-// (transformer_layers_per_block=1). Verified against the real SD1.5 UNet
-// attn_processors (down → up → mid): cross-ordinal 7 → ip_adapter raw key 15.
-const SD15_STYLE_UP_IDX: usize = 1;
-const SD15_STYLE_ATTN_IDX: usize = 1;
-const SD15_STYLE_IP_KEYS: [usize; 1] = [15];
-const SD15_STYLE_INNER_DIM: usize = 1280;
+// --- SD 1.5 style-block candidates (EXPLORATION) ---
+// The SDXL analogy (`up_blocks.1.attentions.1`) corrupts STRUCTURE on SD 1.5
+// (melts faces, no texture) — SD 1.5's deep up-block is a single structural
+// layer, not a style carrier like SDXL's 10-layer one. Until the real style
+// block is found empirically, every cross-attn up-block is a candidate,
+// selectable at runtime via `PLAKAT_SD15_STYLE_BLOCK` (e.g. "up2.1"). The
+// attn_processors order is down→up→mid; raw = 2·cross_ordinal+1;
+// transformer_layers_per_block=1 → one attn2 per attention.
+// (name, up_idx, attn_idx, raw_key, inner_dim).
+const SD15_CANDIDATES: &[(&str, usize, usize, usize, usize)] = &[
+    ("up1.0", 1, 0, 13, 1280),
+    ("up1.1", 1, 1, 15, 1280), // SDXL-analogy default — corrupts structure
+    ("up1.2", 1, 2, 17, 1280),
+    ("up2.0", 2, 0, 19, 640),
+    ("up2.1", 2, 1, 21, 640),
+    ("up2.2", 2, 2, 23, 640),
+    ("up3.0", 3, 0, 25, 320),
+    ("up3.1", 3, 1, 27, 320),
+    ("up3.2", 3, 2, 29, 320),
+];
+// Default = InstantStyle's official SD 1.5 target `["up_blocks.1"]`, which is a
+// SUBSTRING match → ALL 3 attentions of up_blocks.1 (keys 13/15/17), NOT a single
+// attention. (`infer_style_sd15.py`; SDXL's single-`.attentions.1` is XL-specific.)
+const SD15_DEFAULT_BLOCK: &str = "up1.all";
 const SD15_CTX_DIM: usize = 768;
+
+/// The 3 cross-attn layers of an SD 1.5 up-block: (up_idx, attn_idx, [raw_key]) ×3
+/// + inner dim. Raw keys are contiguous odds from the block base (up1→13,15,17
+/// @1280; up2→19,21,23 @640; up3→25,27,29 @320).
+fn sd15_full_block(up_idx: usize) -> (Vec<(usize, usize, Vec<usize>)>, usize) {
+    let (base, inner) = match up_idx {
+        2 => (19, 640),
+        3 => (25, 320),
+        _ => (13, 1280), // up_blocks.1
+    };
+    let up = if (1..=3).contains(&up_idx) { up_idx } else { 1 };
+    let groups = (0..3).map(|a| (up, a, vec![base + 2 * a])).collect();
+    (groups, inner)
+}
+
+/// Resolve the SD 1.5 style target → injection groups + inner dim.
+/// `PLAKAT_SD15_STYLE_BLOCK` overrides: `upN.all` (full block, the real target) or
+/// `upN.M` (one attention, for diagnosis).
+fn sd15_groups() -> (Vec<(usize, usize, Vec<usize>)>, usize, usize) {
+    let sel = std::env::var("PLAKAT_SD15_STYLE_BLOCK")
+        .unwrap_or_else(|_| SD15_DEFAULT_BLOCK.to_string());
+    let (groups, inner) = if let Some(n) = sel.strip_suffix(".all") {
+        sd15_full_block(n.trim_start_matches("up").parse().unwrap_or(1))
+    } else if let Some(c) = SD15_CANDIDATES.iter().find(|c| c.0 == sel) {
+        (vec![(c.1, c.2, vec![c.3])], c.4)
+    } else {
+        sd15_full_block(1)
+    };
+    crate::ui::progress::println(&format!(
+        "InstantStyle: SD1.5 style target = {sel} ({} attn layer(s), inner {inner}) \
+         — set PLAKAT_SD15_STYLE_BLOCK to explore",
+        groups.len()
+    ));
+    (groups, inner, SD15_CTX_DIM)
+}
 /// IP-Adapter `image_proj` → 4 style tokens (8192 / 2048).
 pub const IP_NUM_TOKENS: usize = 4;
 
@@ -97,32 +147,30 @@ pub fn install_instantstyle(
     tokens: Arc<RwLock<Option<Tensor>>>,
     is_xl: bool,
 ) -> Result<()> {
-    let (up_idx, attn_idx, keys, inner, ctx): (usize, usize, &[usize], usize, usize) = if is_xl {
+    let (groups, inner, ctx): (Vec<(usize, usize, Vec<usize>)>, usize, usize) = if is_xl {
         (
-            SDXL_STYLE_UP_IDX,
-            SDXL_STYLE_ATTN_IDX,
-            &SDXL_STYLE_IP_KEYS,
+            vec![(
+                SDXL_STYLE_UP_IDX,
+                SDXL_STYLE_ATTN_IDX,
+                SDXL_STYLE_IP_KEYS.to_vec(),
+            )],
             SDXL_STYLE_INNER_DIM,
             SDXL_CTX_DIM,
         )
     } else {
-        (
-            SD15_STYLE_UP_IDX,
-            SD15_STYLE_ATTN_IDX,
-            &SD15_STYLE_IP_KEYS,
-            SD15_STYLE_INNER_DIM,
-            SD15_CTX_DIM,
-        )
+        sd15_groups()
     };
     let ip = ip_vb.pp("ip_adapter");
-    let mut ips = Vec::with_capacity(keys.len());
-    for &idx in keys.iter() {
-        let lvb = ip.pp(idx.to_string());
-        // to_k_ip/to_v_ip: weight (inner_dim, ctx) = (out, in), no bias.
-        let to_k_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_k_ip"))?;
-        let to_v_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_v_ip"))?;
-        ips.push(IpInjection::new(to_k_ip, to_v_ip, scale, tokens.clone()));
+    for (up_idx, attn_idx, keys) in groups {
+        let mut ips = Vec::with_capacity(keys.len());
+        for &idx in keys.iter() {
+            let lvb = ip.pp(idx.to_string());
+            // to_k_ip/to_v_ip: weight (inner_dim, ctx) = (out, in), no bias.
+            let to_k_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_k_ip"))?;
+            let to_v_ip = candle_nn::linear_no_bias(ctx, inner, lvb.pp("to_v_ip"))?;
+            ips.push(IpInjection::new(to_k_ip, to_v_ip, scale, tokens.clone()));
+        }
+        unet.install_style_ip(up_idx, attn_idx, ips)?;
     }
-    unet.install_style_ip(up_idx, attn_idx, ips)?;
     Ok(())
 }
