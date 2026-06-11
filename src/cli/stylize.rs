@@ -126,8 +126,12 @@ pub struct StylizeArgs {
     #[arg(long, default_value_t = false)]
     pub instantstyle: bool,
 
-    /// InstantStyle injection strength (the style-block IP scale).
-    #[arg(long = "style-scale", default_value_t = 1.0)]
+    /// InstantStyle injection strength (the style-block IP scale). 1.0 is the
+    /// t2i-canonical value, but stylize is **img2img**, which dilutes a single
+    /// block — the style reads clearly only at higher scale (~3-5) AND higher
+    /// `--strength` (~0.8, so the denoise has room to repaint). 3.0 is a visible
+    /// default; raise for heavier paint, lower to keep more of the photo.
+    #[arg(long = "style-scale", default_value_t = 3.0)]
     pub style_scale: f32,
 }
 

@@ -47,8 +47,8 @@ mkdir -p "$OUT"
 "$PLAKAT" stylize \
   --in  "$SUBJECT" \
   --ref "$WC/figures.jpeg" \
-  --instantstyle --style-scale 1.0 \
-  --strength 0.6 --model sdxl --seed 42 --device metal \
+  --instantstyle --style-scale 4 \
+  --strength 0.8 --model sdxl --seed 42 --device metal \
   --out "$OUT/portrait-instantstyle.png"
 
 # 3. InstantStyle (SDXL) — a DIFFERENT watercolour ref, to show the style range
@@ -56,8 +56,8 @@ mkdir -p "$OUT"
 "$PLAKAT" stylize \
   --in  "$SUBJECT" \
   --ref "$WC/snow-village.jpeg" \
-  --instantstyle --style-scale 1.0 \
-  --strength 0.6 --model sdxl --seed 42 --device metal \
+  --instantstyle --style-scale 4 \
+  --strength 0.8 --model sdxl --seed 42 --device metal \
   --out "$OUT/portrait-instantstyle-snow.png"
 
 # 4. InstantStyle (SD 1.5) — the same feature on the lighter backbone (style
@@ -65,8 +65,8 @@ mkdir -p "$OUT"
 "$PLAKAT" stylize \
   --in  "$SUBJECT" \
   --ref "$WC/coast.jpeg" \
-  --instantstyle --style-scale 1.0 \
-  --strength 0.6 --model sd15 --seed 42 --device metal \
+  --instantstyle --style-scale 4 \
+  --strength 0.8 --model sd15 --seed 42 --device metal \
   --out "$OUT/portrait-instantstyle-sd15.png"
 
 echo "✓ wrote corpus/images/stylize/:"
