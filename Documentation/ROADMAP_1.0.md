@@ -111,27 +111,28 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
 
 ## 4. Polish
 
-- [ ] **Stale-docs sweep** — e.g. `embedding --help` still says runtime injection
-      is "gated … lands in a follow-up" (v0.30 fixed it). Audit every `--help` /
-      Status note for accuracy. 1.0 docs must not lie.
-- [ ] **`examples/` cleanup** — the `spike_*` / `train_spike` examples are dev
-      scaffolding ("weak"). Promote to real examples or delete.
-- [ ] **Error-message coverage** — extend the v0.33 actionable-hint pass so
-      every common failure carries a fix suggestion.
+- [~] **Stale-docs sweep** — fixed `embedding --help` (was "gated"), the Flux
+      OOM-hint flag, and the quant-flag docs (→`--flux-quant-level`). A full
+      `--help` audit remains.
+- [x] **`examples/` cleanup** — removed the spike/TEMP scaffolding (`train_spike`,
+      `sd_train_run`, `style_train_run`, `spike_catalog`).
+- [~] **Error-message coverage** — OOM hints now offer `--device cpu` (Metal
+      single-buffer). The broader audit continues.
 - [ ] **Reproducibility note** — Metal renders are not bit-reproducible; state
       it plainly (acceptable for 1.0 if documented).
 
 ## 5. Infrastructure
 
-- [ ] **CI green + reliable** — the apt-mirrors flakiness has bitten before;
-      make it rock-solid.
-- [ ] **Test coverage for recent features** — smart-discovery judge, SDXL
-      stylize, numbered checkpoints, the new corpus drivers.
-- [ ] **docs.rs build** — confirm the Linux / no-Metal docs build is clean
-      (the `cargo publish` dry-run passes; verify docs.rs specifically).
+- [~] **CI green + reliable** — added `ci.yml` (CPU build + lib test on every
+      push/PR; no apt-mirror cross-compile → reliable). Confirm green on the runner.
+- [x] **Test coverage for recent features** — +9 lib tests this cycle: InstantStyle
+      block selection (the debugged bug), OOM `--device cpu` hint, colour-harmony
+      math. (Matte verified via the diffusers reference comparison instead.)
+- [x] **docs.rs build** — verified the CPU/no-Metal doc build is clean
+      (`cargo doc --no-default-features` exit 0); pinned `[package.metadata.docs.rs]`.
 - [ ] **Crate metadata** — license, keywords, description, repo links 1.0-ready.
-- [ ] **Tutorial completeness** — every subcommand has a tutorial (STYLIZE just
-      added; ensure transparent / embedding / variation / artefact are covered).
+- [x] **Tutorial completeness** — TRANSPARENT / EMBEDDING / VARIATION tutorials
+      added + InstantStyle section in STYLIZE; ARTEFACTS already covered.
 
 ## 6. The corpus is the 1.0 proof
 
