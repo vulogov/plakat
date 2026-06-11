@@ -304,6 +304,40 @@ impl UNet2DConditionModel {
         Ok(out)
     }
 
+    /// InstantStyle: attach per-layer IP injections to ONE up-block attention —
+    /// the style block (SDXL `up_blocks.0.attentions.1`). `ips` must have one
+    /// entry per `attn2` layer in that attention (one per transformer block).
+    /// Every other layer stays `ip: None`, so style is injected only here.
+    pub fn install_style_ip(
+        &mut self,
+        up_idx: usize,
+        attn_idx: usize,
+        ips: Vec<super::attention::IpInjection>,
+    ) -> anyhow::Result<()> {
+        let block = self
+            .up_blocks
+            .get_mut(up_idx)
+            .ok_or_else(|| anyhow::anyhow!("up_blocks[{up_idx}] out of range"))?;
+        let attentions = match block {
+            UNetUpBlock::CrossAttn(b) => &mut b.attentions,
+            UNetUpBlock::Basic(_) => anyhow::bail!("up_blocks[{up_idx}] has no cross-attention"),
+        };
+        let transformer = attentions
+            .get_mut(attn_idx)
+            .ok_or_else(|| anyhow::anyhow!("up_blocks[{up_idx}].attentions[{attn_idx}] out of range"))?;
+        let attn2s = transformer.attn2s_mut();
+        anyhow::ensure!(
+            attn2s.len() == ips.len(),
+            "style block has {} attn2 layers but {} IP injections supplied",
+            attn2s.len(),
+            ips.len()
+        );
+        for (attn, ip) in attn2s.into_iter().zip(ips) {
+            attn.set_ip(ip);
+        }
+        Ok(())
+    }
+
     pub fn forward(
         &self,
         xs: &Tensor,

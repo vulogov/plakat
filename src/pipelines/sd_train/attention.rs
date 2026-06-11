@@ -536,6 +536,15 @@ impl SpatialTransformer {
         };
         xs + residual
     }
+
+    /// InstantStyle: mutable refs to every cross-attention (`attn2`) in this
+    /// transformer, in order — for installing per-layer IP injections.
+    pub fn attn2s_mut(&mut self) -> Vec<&mut CrossAttention> {
+        self.transformer_blocks
+            .iter_mut()
+            .map(|tb| &mut tb.attn2)
+            .collect()
+    }
 }
 
 /// Configuration for an attention block.

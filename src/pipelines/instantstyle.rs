@@ -22,11 +22,25 @@
 //!   to the vendored `CrossAttention`, injected only into the style block.
 
 use anyhow::Result;
-use candle_core::{DType, Device};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use std::sync::{Arc, RwLock};
 
+use crate::pipelines::sd_train::attention::IpInjection;
 use crate::pipelines::sd_train::trainer::{sd15_unet_config, sdxl_unet_config};
 use crate::pipelines::sd_train::unet::UNet2DConditionModel;
+
+// --- SDXL style block (InstantStyle): up_blocks.0.attentions.1 ---
+// Verified against ip-adapter_sdxl_vit-h: its 10 attn2 layers are the
+// IP-Adapter raw keys 89,91,…,107 (attn2 sit at odd attn_processors indices;
+// raw = 2·cross_ordinal+1, cross ordinals 44..54). inner_dim 1280, ctx 2048.
+const SDXL_STYLE_UP_IDX: usize = 0;
+const SDXL_STYLE_ATTN_IDX: usize = 1;
+const SDXL_STYLE_IP_KEYS: [usize; 10] = [89, 91, 93, 95, 97, 99, 101, 103, 105, 107];
+const SDXL_STYLE_INNER_DIM: usize = 1280;
+const SDXL_CTX_DIM: usize = 2048;
+/// IP-Adapter `image_proj` → 4 style tokens (8192 / 2048).
+pub const IP_NUM_TOKENS: usize = 4;
 
 /// Load the vendored SD UNet for **inference** (no train adapters), SD 1.5 or
 /// SDXL. Mirrors the trainer's load (`trainer.rs:161-168`); the resulting UNet's
@@ -51,4 +65,30 @@ pub async fn load_vendored_unet(
         sd15_unet_config()
     };
     Ok(UNet2DConditionModel::new(vb, 4, 4, false, cfg, None)?)
+}
+
+/// Load the SDXL style block's IP-Adapter K/V and install them on the vendored
+/// UNet's style block (`up_blocks.0.attentions.1`), sharing `tokens` — the
+/// projected style embedding, filled before the denoise loop. `ip_vb` is a
+/// VarBuilder over the IP-Adapter safetensors at the UNet's dtype. SDXL only.
+#[allow(dead_code)] // wired by the stylize InstantStyle path.
+pub fn install_instantstyle(
+    unet: &mut UNet2DConditionModel,
+    ip_vb: &VarBuilder,
+    scale: f64,
+    tokens: Arc<RwLock<Option<Tensor>>>,
+) -> Result<()> {
+    let ip = ip_vb.pp("ip_adapter");
+    let mut ips = Vec::with_capacity(SDXL_STYLE_IP_KEYS.len());
+    for &idx in SDXL_STYLE_IP_KEYS.iter() {
+        let lvb = ip.pp(idx.to_string());
+        // to_k_ip/to_v_ip: weight (inner_dim, ctx) = (out, in), no bias.
+        let to_k_ip =
+            candle_nn::linear_no_bias(SDXL_CTX_DIM, SDXL_STYLE_INNER_DIM, lvb.pp("to_k_ip"))?;
+        let to_v_ip =
+            candle_nn::linear_no_bias(SDXL_CTX_DIM, SDXL_STYLE_INNER_DIM, lvb.pp("to_v_ip"))?;
+        ips.push(IpInjection::new(to_k_ip, to_v_ip, scale, tokens.clone()));
+    }
+    unet.install_style_ip(SDXL_STYLE_UP_IDX, SDXL_STYLE_ATTN_IDX, ips)?;
+    Ok(())
 }
