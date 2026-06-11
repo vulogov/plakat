@@ -436,4 +436,24 @@ mod tests {
             assert_eq!(px.0, [100, 100, 100, 255]);
         }
     }
+
+    #[test]
+    fn region_mean_averages_rgb_and_falls_back_when_empty() {
+        let img = RgbaImage::from_pixel(2, 2, Rgba([10, 20, 30, 255]));
+        assert_eq!(region_mean(&img, 0, 0, 2, 2), [10.0, 20.0, 30.0]);
+        // a fully off-canvas region samples nothing → neutral 128 fallback
+        assert_eq!(region_mean(&img, 100, 100, 2, 2), [128.0, 128.0, 128.0]);
+    }
+
+    #[test]
+    fn harmonize_shifts_opaque_toward_scene_and_skips_transparent() {
+        // art mean 100, scene 200, strength 0.5 → shift +50 → 150.
+        let mut art = RgbaImage::new(2, 1);
+        art.put_pixel(0, 0, Rgba([100, 100, 100, 255])); // opaque
+        art.put_pixel(1, 0, Rgba([0, 0, 0, 0])); // transparent → excluded + untouched
+        harmonize_colors(&mut art, [200.0, 200.0, 200.0], 0.5);
+        let o = art.get_pixel(0, 0).0;
+        assert_eq!([o[0], o[1], o[2]], [150, 150, 150]);
+        assert_eq!(art.get_pixel(1, 0).0, [0, 0, 0, 0]);
+    }
 }

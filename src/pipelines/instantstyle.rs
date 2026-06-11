@@ -85,16 +85,22 @@ fn sd15_full_block(up_idx: usize) -> (Vec<(usize, usize, Vec<usize>)>, usize) {
 /// Resolve the SD 1.5 style target → injection groups + inner dim.
 /// `PLAKAT_SD15_STYLE_BLOCK` overrides: `upN.all` (full block, the real target) or
 /// `upN.M` (one attention, for diagnosis).
-fn sd15_groups() -> (Vec<(usize, usize, Vec<usize>)>, usize, usize) {
-    let sel = std::env::var("PLAKAT_SD15_STYLE_BLOCK")
-        .unwrap_or_else(|_| SD15_DEFAULT_BLOCK.to_string());
-    let (groups, inner) = if let Some(n) = sel.strip_suffix(".all") {
+/// Pure selection (testable): a style-target string → injection groups + inner.
+/// `upN.all` = full block N; `upN.M` = one attention; anything else = up1.all.
+fn sd15_select(sel: &str) -> (Vec<(usize, usize, Vec<usize>)>, usize) {
+    if let Some(n) = sel.strip_suffix(".all") {
         sd15_full_block(n.trim_start_matches("up").parse().unwrap_or(1))
     } else if let Some(c) = SD15_CANDIDATES.iter().find(|c| c.0 == sel) {
         (vec![(c.1, c.2, vec![c.3])], c.4)
     } else {
         sd15_full_block(1)
-    };
+    }
+}
+
+fn sd15_groups() -> (Vec<(usize, usize, Vec<usize>)>, usize, usize) {
+    let sel = std::env::var("PLAKAT_SD15_STYLE_BLOCK")
+        .unwrap_or_else(|_| SD15_DEFAULT_BLOCK.to_string());
+    let (groups, inner) = sd15_select(&sel);
     crate::ui::progress::println(&format!(
         "InstantStyle: SD1.5 style target = {sel} ({} attn layer(s), inner {inner}) \
          — set PLAKAT_SD15_STYLE_BLOCK to explore",
@@ -173,4 +179,60 @@ pub fn install_instantstyle(
         unet.install_style_ip(up_idx, attn_idx, ips)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdxl_style_keys_are_the_verified_69_to_87() {
+        // up_blocks.0.attentions.1 = cross-ordinals 34..44 (attn_processors order
+        // is down→up→mid) → ip raw keys 69,71,…,87 — NOT 89..107 (that's
+        // attentions.2, the off-by-one from a down→mid→up assumption).
+        assert_eq!(SDXL_STYLE_IP_KEYS, [69, 71, 73, 75, 77, 79, 81, 83, 85, 87]);
+        assert_eq!((SDXL_STYLE_UP_IDX, SDXL_STYLE_ATTN_IDX), (0, 1));
+        assert_eq!(SDXL_STYLE_INNER_DIM, 1280);
+        assert_eq!(IP_NUM_TOKENS, 4);
+    }
+
+    #[test]
+    fn sd15_up1_is_the_full_block_all_three_attentions() {
+        // InstantStyle SD1.5 target_blocks=["up_blocks.1"] is a SUBSTRING match →
+        // ALL 3 attentions (keys 13/15/17), NOT a single attention (the bug).
+        let (groups, inner) = sd15_full_block(1);
+        assert_eq!(inner, 1280);
+        assert_eq!(
+            groups,
+            vec![(1, 0, vec![13]), (1, 1, vec![15]), (1, 2, vec![17])]
+        );
+    }
+
+    #[test]
+    fn sd15_full_block_dims_and_keys_per_up_block() {
+        assert_eq!(sd15_full_block(2).1, 640);
+        assert_eq!(sd15_full_block(3).1, 320);
+        assert_eq!(
+            sd15_full_block(2).0,
+            vec![(2, 0, vec![19]), (2, 1, vec![21]), (2, 2, vec![23])]
+        );
+        assert_eq!(
+            sd15_full_block(3).0,
+            vec![(3, 0, vec![25]), (3, 1, vec![27]), (3, 2, vec![29])]
+        );
+        // out-of-range up_idx falls back to up_blocks.1
+        assert_eq!(sd15_full_block(9).1, 1280);
+    }
+
+    #[test]
+    fn sd15_select_default_single_and_full_overrides() {
+        assert_eq!(SD15_DEFAULT_BLOCK, "up1.all");
+        assert_eq!(sd15_select(SD15_DEFAULT_BLOCK), sd15_full_block(1));
+        // single-attention override
+        assert_eq!(sd15_select("up2.1"), (vec![(2, 1, vec![21])], 640));
+        // full-block override
+        assert_eq!(sd15_select("up3.all"), sd15_full_block(3));
+        // unknown → safe fallback to the full up_blocks.1
+        assert_eq!(sd15_select("garbage"), sd15_full_block(1));
+    }
 }

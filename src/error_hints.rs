@@ -301,6 +301,15 @@ mod tests {
     }
 
     #[test]
+    fn sd_and_sdxl_oom_offer_cpu_fallback() {
+        // v0.47: Metal single-buffer OOM (Real-ESRGAN ×4, large portraits) → the
+        // Sd/Sdxl hints must point at `--device cpu`.
+        for ctx in [OomContext::Sd, OomContext::Sdxl] {
+            assert!(ctx.suggestions().iter().any(|s| s.contains("--device cpu")));
+        }
+    }
+
+    #[test]
     fn oom_context_suggestions_are_pipeline_specific() {
         let sd = OomContext::Sd.suggestions().join(" ");
         assert!(sd.contains("--size"));
