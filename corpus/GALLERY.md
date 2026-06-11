@@ -1,17 +1,22 @@
 # plakat gallery
 
-63 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+66 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
+    <td width="33%"><img src="images/transparent/apple-cutout.png" alt=""></td>
     <td width="33%"><img src="images/animate/flower_bloom/animation.gif" alt="a time-lapse of a red rose blooming, macro photography, soft light"></td>
     <td width="33%"><img src="images/script/fox-2x.png" alt=""></td>
-    <td width="33%"><img src="images/animate/fox_snow/animation.gif" alt="a red fox walking through a snowy forest, cinematic, highly detailed"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/animate/fox_snow/animation.gif" alt="a red fox walking through a snowy forest, cinematic, highly detailed"></td>
     <td width="33%"><img src="images/upscale/landscape_x2/landscape_x2.png" alt=""></td>
     <td width="33%"><img src="images/animate/ocean_waves/animation.gif" alt="ocean waves crashing on a rocky shore at sunset, cinematic, golden light"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/genres/anime/plakat-7.png" alt="anime style, a lone samurai standing under a blossoming cherry tree, detailed anime illustration, vibrant flat colors, clean cel shading"></td>
+    <td width="33%"><img src="images/artefact/cli-multi/plakat-11.png" alt="anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style"></td>
+    <td width="33%"><img src="images/embedding/baseline/plakat-11.png" alt="full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus"></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/civitai/plakat-42.png" alt="an ancient cathedral shrouded in mist, towering spires, eldritch atmosphere, intricate detail"></td>
@@ -112,6 +117,12 @@
 
 ## Images
 
+### apple-cutout.png
+
+![apple-cutout.png](images/transparent/apple-cutout.png)
+
+_(no embedded metadata)_
+
 ### flower_bloom
 
 ![flower_bloom](images/animate/flower_bloom/animation.gif)
@@ -163,6 +174,26 @@ Negative: `bad quality, worse quality, blurry, low resolution`
 Negative: `photorealistic, 3d render, deformed, ugly, blurry`
 
 `sdxl` · LoRA: civitai:129020:1.5 · 1024×1024 · 30 steps · CFG 7.5 · seed 7
+
+### plakat-11.png
+
+![plakat-11.png](images/artefact/cli-multi/plakat-11.png)
+
+> anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style
+
+Negative: `photorealistic, photograph, realistic, 3d render, blurry`
+
+`sdxl` · 1024×1024 · 30 steps · CFG 7.5 · seed 11
+
+### plakat-11.png
+
+![plakat-11.png](images/embedding/baseline/plakat-11.png)
+
+> full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus
+
+Negative: `lowres, blurry`
+
+`sd15` · 512×512 · 28 steps · CFG 7.5 · seed 11
 
 ### plakat-42.png
 
