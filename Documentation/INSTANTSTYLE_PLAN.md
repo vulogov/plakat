@@ -1,9 +1,12 @@
 # InstantStyle for `plakat stylize` — implementation plan
 
-**Status:** prepared, not started. Begin after the matte/generation proofs are
-confirmed. Goal: make `stylize` transfer **painterly style (texture)** from a
-reference, not just its content/palette — the limitation that makes today's
-stylize a *ref-variation* tool.
+**Status: CODE-COMPLETE (0.47.0) — GPU verification remaining.** All phases built
++ compiling: vendored-UNet inference, decoupled IP cross-attention, verified IP
+K/V loading + style-block install (`up_blocks.0.attentions.1`), and the full
+`plakat stylize --instantstyle` integration. What's left is a GPU run to confirm
+the actual style transfer + a style-block A/B + (optional) Phase 4 content
+subtraction. Goal: make `stylize` transfer **painterly style (texture)**, not
+just content/palette (the limit of the default ref-variation path).
 
 ## Why the current approach can't do it
 

@@ -58,12 +58,13 @@ impl std::str::FromStr for StylizePreset {
 /// prompt, no training. Runs on SD 1.5 (`--model sd15`) or SDXL
 /// (`--model sdxl` — sharper, native 1024²; SD 1.5 kept as a fallback).
 ///
-/// NOTE: the IP-Adapter transfers a reference's CONTENT / appearance / palette,
-/// NOT painterly *texture* — so stylize is a ref-guided *variation* tool, and
-/// output tends to stay photoreal even on SDXL (the limit is the IP-Adapter,
-/// not the base — SDXL paints fine from prompts/LoRAs). Use `--ref-blur` to
-/// suppress the ref's content; for true painterly STYLE transfer prefer a
-/// trained style LoRA (`plakat style train`) or `--look`.
+/// The DEFAULT path is a ref-guided *variation* tool: the IP-Adapter transfers a
+/// reference's CONTENT / appearance / palette, NOT painterly *texture*, so output
+/// stays photoreal even on SDXL. For true painterly STYLE transfer use
+/// **`--instantstyle`** (SDXL only — InstantStyle injects the reference only into
+/// the style block via a decoupled IP cross-attention, decoupling style from
+/// content), or a trained style LoRA (`plakat style train`) / `--look`.
+/// `--ref-blur` suppresses the ref's content on the default path.
 #[derive(ClapArgs, Debug)]
 pub struct StylizeArgs {
     /// Input image to transform.
