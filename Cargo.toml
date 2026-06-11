@@ -140,6 +140,7 @@ easy-error = "1"
 # v0.21 phase 7: REPL line editor + history for `plakat run --repl`.
 rustyline = "18"
 safetensors = "0.7.0"
+human-panic = "2.0.5"
 
 [profile.release]
 opt-level = 3
