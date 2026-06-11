@@ -1,6 +1,6 @@
 # plakat gallery
 
-75 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+74 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -119,12 +119,11 @@
     <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/stylize/portrait-instantstyle-sd15.png" alt=""></td>
-    <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt=""></td>
-    <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt=""></td>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → cool watercolour 'snow-village' via InstantStyle on the SDXL style block (up_blocks.0.attentions.1)"></td>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)"></td>
+    <td width="33%"><img src="images/stylize/portrait-variation.png" alt="stylize (concat ref-variation): SD 1.5 portrait restyled toward the watercolour 'figures' reference — palette shifts, stays photoreal"></td>
   </tr>
   <tr>
-    <td width="33%"><img src="images/stylize/portrait-variation.png" alt=""></td>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
   </tr>
@@ -662,29 +661,29 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
-### portrait-instantstyle-sd15.png
-
-![portrait-instantstyle-sd15.png](images/stylize/portrait-instantstyle-sd15.png)
-
-_(no embedded metadata)_
-
 ### portrait-instantstyle-snow.png
 
 ![portrait-instantstyle-snow.png](images/stylize/portrait-instantstyle-snow.png)
 
-_(no embedded metadata)_
+> stylize --instantstyle (true painterly style): SD 1.5 portrait → cool watercolour 'snow-village' via InstantStyle on the SDXL style block (up_blocks.0.attentions.1)
+
+`sdxl` · 1024×1024 · 30 steps · CFG 0 · seed 42
 
 ### portrait-instantstyle.png
 
 ![portrait-instantstyle.png](images/stylize/portrait-instantstyle.png)
 
-_(no embedded metadata)_
+> stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)
+
+`sdxl` · 1024×1024 · 30 steps · CFG 0 · seed 42
 
 ### portrait-variation.png
 
 ![portrait-variation.png](images/stylize/portrait-variation.png)
 
-_(no embedded metadata)_
+> stylize (concat ref-variation): SD 1.5 portrait restyled toward the watercolour 'figures' reference — palette shifts, stays photoreal
+
+`sdxl` · 1024×1024 · 30 steps · CFG 0 · seed 42
 
 ### portrait_x2.png
 

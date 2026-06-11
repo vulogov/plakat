@@ -1,0 +1,12 @@
+{
+  "prompt": "stylize (concat ref-variation): SD 1.5 portrait restyled toward the watercolour 'figures' reference — palette shifts, stays photoreal",
+  "negative": "",
+  "model": "sdxl",
+  "seed": 42,
+  "steps": 30,
+  "guidance": 0.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.47.0"
+}

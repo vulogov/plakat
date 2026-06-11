@@ -47,10 +47,12 @@ The single highest-value, irreversible item is **§2's API freeze**.
       reference; clean salient-object silhouettes). Both `transparent.sh` /
       `artefact.sh` re-pointed to `--matte` (off chroma). **DONE: both rendered +
       committed — transparent apple cut-out + integral anime artefact scenes.**
-- [~] **Render the pending corpus drivers.** DONE: `transparent.sh`,
-      `artefact.sh`/`.hjson` (+ the scenario-metadata fix so artefact proofs land
-      in the gallery). **Remaining (GPU): `embedding.sh`, `variation.sh`,
-      `stylize.sh` (the new concat-vs-InstantStyle A/B).** Judge + commit.
+- [x] **Render the pending corpus drivers — DONE.** `transparent.sh`,
+      `artefact.sh`/`.hjson`, `embedding.sh` (EasyNegative repointed to `embed/`),
+      `variation.sh` (Cascade pure+steered), `stylize.sh` (concat baseline + 2
+      verified SDXL watercolours; SD 1.5 InstantStyle dropped from the demo as
+      experimental/soft). All committed + in the gallery (74 images, 37 with
+      metadata). **§1 render gate CLOSED.**
 - [x] **Flux-on-Metal — DECIDED: CPU/CUDA-only, untested on Metal.** candle's
       Metal quantized matmul kernel corrupts GGUF (upstream, not plakat-fixable);
       BF16 is ~33 GB. Not dropped — it works off-Metal. Claims corrected:

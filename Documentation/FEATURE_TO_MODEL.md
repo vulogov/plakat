@@ -53,7 +53,7 @@ in [`corpus/COVERAGE.md`](../corpus/COVERAGE.md).
 |---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | **Looks / Genres** (`--look` / `--genre`) | ❌ | ❌ | ✅⁷ | ❌ | ❌ | ❌ | ❌ |
 | **Stylize — ref-variation** (concat IP-Adapter) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Stylize — InstantStyle** (true style) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Stylize — InstantStyle** (true style) | ⚠️⁹ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Style LoRA training** (`style train`) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | **Artefact compositing** (`--artefact` + blend) | ❌ | ❌ | ✅⁸ | ❌ | ❌ | ❌ | ❌ |
 
@@ -118,6 +118,13 @@ image), so they have no per-model column:
    scale + contact shadow + colour harmony + canny-ControlNet re-paint) runs
    through the SD-core img2img pipeline and is demoed on SDXL; the matted cutout
    library is built with `transparent --matte` (model-agnostic).
+9. **InstantStyle on SD 1.5 is EXPERIMENTAL.** The mechanism works and the style
+   block is correct (the *full* `up_blocks.1`, all 3 attentions — the InstantStyle
+   repo's `target_blocks=["up_blocks.1"]`, a substring match), but SD 1.5's style
+   perception is weak: scale climbs photoreal → faint → structure-melt with no
+   clean strong-watercolour window like SDXL. Use `--model sdxl` for verified
+   results; SD 1.5 is supported but soft. `PLAKAT_SD15_STYLE_BLOCK` exposes the
+   block for further experimentation.
 
 ---
 

@@ -1,0 +1,12 @@
+{
+  "prompt": "stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)",
+  "negative": "",
+  "model": "sdxl",
+  "seed": 42,
+  "steps": 30,
+  "guidance": 0.0,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.47.0 (--instantstyle --style-scale 4 --strength 0.8)"
+}
