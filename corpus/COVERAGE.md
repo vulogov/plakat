@@ -52,7 +52,7 @@ committed under `images/`.
 | Scenarios (HJSON batch) | every `*.hjson` | ✅ | ✅ | the corpus is itself the proof |
 | Scene × weather axes | `weather-scene.hjson` | ✅ | ✅ | one area (prompt-header) re-lit + re-weathered across both axes |
 | Bund scripting | `script.bund` (`script.sh`) | ✅ | ✅ | `plakat run` — load → generate → upscale → save handle-reuse chain (SD 1.5) |
-| Tiled hi-res scripting | `tiled_script.bund` (`tiled_script.sh`) | ✅ | ⬜ | **v1.0**. `plakat.tiled.enable` routes the SD-family `plakat.generate` through `generate_tiled` — SDXL at 1280² from 768 tiles (above native), the scripting counterpart of `--tiled`. **Base-anchored** (generate a coherent base at tile_size² → upscale latent → tiled img2img REFINE at 0.55) to avoid MultiDiffusion global incoherence; per-tile `synchronize` bounds Metal memory to one tile. |
+| Tiled hi-res scripting | `tiled_script.bund` (`tiled_script.sh`) | ✅ | ✅ | **v1.0**. `plakat.tiled.enable` routes the SD-family `plakat.generate` through `generate_tiled` — SDXL at 1280² from 768 tiles (above native), the scripting counterpart of `--tiled`. **Base-anchored** (generate a coherent base at tile_size² → upscale latent → tiled img2img REFINE at 0.55) to avoid MultiDiffusion global incoherence; per-tile `synchronize` bounds Metal memory to one tile. Verified: one coherent valley (single river/range/horizon), no seams. |
 | Gallery generator | `plakat gallery` | ✅ | n/a | builds this corpus's index |
 
 ---
