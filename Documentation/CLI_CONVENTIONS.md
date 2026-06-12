@@ -59,6 +59,8 @@ existing feature joins its family; it does not invent a sibling spelling.
 | `PLAKAT_DEVICE` | Default device (= `--device`). |
 | `PLAKAT_TRAIN_SINGLE_FILE` | Style training overwrites one checkpoint file instead of writing numbered ones. |
 | `PLAKAT_ALLOW_GGUF_METAL` | Opt into GGUF on Metal (broken upstream; escape hatch). |
+| `PLAKAT_OOM_GUARD_GB` | Critical free-RAM floor (GB) for the memory watchdog: if free RAM stays below it during generation, plakat self-aborts (exit 137) before a unified-memory exhaustion can crash the host. Default `1.5`; `0` disables. |
+| `PLAKAT_NO_PREFLIGHT` | Silence the up-front low-RAM warning printed before a model load. |
 
 **Internal / advanced — may change without notice (not part of the 1.0 contract):**
 `PLAKAT_ARCFACE_HF` / `PLAKAT_ARCFACE_WEIGHTS`, `PLAKAT_SCRFD_HF` /

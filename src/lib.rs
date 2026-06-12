@@ -17,6 +17,7 @@ pub mod error_hints;
 pub mod hf;
 pub mod hw;
 pub mod imaging;
+pub mod memwatch;
 pub mod llm;
 pub mod pipelines;
 pub mod preset;

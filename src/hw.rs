@@ -76,6 +76,51 @@ fn total_ram_bytes() -> u64 {
     sys.total_memory() // bytes (sysinfo >= 0.30)
 }
 
+/// RAM the OS reports as available for new allocations right now (GB). Unlike
+/// `total_memory`, this reflects current pressure from other processes / file
+/// cache — the figure that actually predicts an OOM kill of a fresh load.
+pub fn available_ram_gb() -> f64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.available_memory() as f64 / 1e9
+}
+
+/// Pre-load memory preflight (recommendation #3). Large diffusion weights need
+/// several–tens of GB resident; on a unified-memory box already under pressure,
+/// the load is silently killed by the OS ("Killed: 9"). This converts that into
+/// an actionable, up-front **warning** — never fatal (the `available` figure is
+/// approximate, and blocking a run that would have fit is worse than a heads-up).
+///
+/// No-op on CUDA (separate VRAM we don't probe here) and when
+/// `PLAKAT_NO_PREFLIGHT` is set. The durable fix for batch OOM is one in-process
+/// run (`plakat scenario`), not this check — this only improves the failure UX.
+pub fn memory_preflight(device: &Device, model_label: &str) {
+    if std::env::var_os("PLAKAT_NO_PREFLIGHT").is_some() {
+        return;
+    }
+    if matches!(device.location(), DeviceLocation::Cuda { .. }) {
+        return;
+    }
+    let total = total_ram_bytes() as f64 / 1e9;
+    let avail = available_ram_gb();
+    // Warn when free RAM dips under ~6 GB (or half of a small machine's total)
+    // — below that even mid-size models risk an OOM kill.
+    let floor = 6.0_f64.min(total * 0.5);
+    if avail < floor {
+        eprintln!(
+            "{} low free RAM: ~{:.1} GB available of {:.0} GB total — loading '{}' may be \
+             killed by the OS (\"Killed: 9\").\n   Free up memory (close apps / a prior \
+             plakat run), pick a smaller model, or use --device cpu. For batches, run one \
+             `plakat scenario` (loads the model once) instead of N separate `generate` calls. \
+             Silence with PLAKAT_NO_PREFLIGHT=1.",
+            console::style("⚠").yellow().bold(),
+            avail,
+            total,
+            model_label,
+        );
+    }
+}
+
 fn tier_for(ram_gb: f64) -> &'static str {
     match ram_gb.round() as u64 {
         0..=9 => "8 GB",

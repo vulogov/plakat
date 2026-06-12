@@ -1485,6 +1485,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // -------- resolve global parameters --------
     let model = s.model.clone().unwrap_or_else(|| "sd15".to_string());
     let device = crate::device::select(s.device.as_deref().unwrap_or("auto"))?;
+    // Memory safety for the whole batch (loaded once, looped): warn up-front if
+    // RAM is already tight, and run a watchdog that aborts plakat before a
+    // unified-memory exhaustion can take the host down.
+    crate::hw::memory_preflight(&device, &model);
+    let _mem_guard = crate::memwatch::MemoryGuard::start(&device, &model);
     let base = s.base.unwrap_or(768);
     let count = s.count.unwrap_or(1);
     // `steps` / `guidance` start at the user's scenario values; the

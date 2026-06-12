@@ -734,6 +734,13 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     let known = crate::hf::all_known_aliases();
     crate::error_hints::hint_unknown_alias(&args.model, &known)?;
 
+    // Memory safety (recs #3 + the host-crash guard): warn up-front if RAM is
+    // already tight, then run a watchdog for the whole load+generate that aborts
+    // plakat before a unified-memory exhaustion can crash the host. Bound to a
+    // named local so it lives until run() returns.
+    crate::hw::memory_preflight(&device, &args.model);
+    let _mem_guard = crate::memwatch::MemoryGuard::start(&device, &args.model);
+
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
     // resolution (negative-preset combine, wildcards, enhance,
     // dispatch) operate against the merged config. Recipe fields
