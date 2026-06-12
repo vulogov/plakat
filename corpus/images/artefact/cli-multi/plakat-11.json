@@ -1,0 +1,12 @@
+{
+  "prompt": "anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style",
+  "negative": "photorealistic, photograph, realistic, 3d render, blurry",
+  "model": "sdxl",
+  "seed": 11,
+  "steps": 30,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 1024,
+  "height": 1024,
+  "generator": "plakat 0.47.0"
+}
