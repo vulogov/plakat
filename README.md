@@ -3,12 +3,14 @@
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
 Local text-to-image **and animation** across the major open model families —
-SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, and Stable Cascade — with
-img2img, inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking,
-identity-preserving portraits, AnimateDiff video, ML upscaling, and batch
-scenarios. All built on [candle](https://github.com/huggingface/candle).
-Pure Rust inference. No Python, no PyTorch, no external T2I services. Models
-are pulled from HuggingFace and cached locally.
+SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, and Stable Cascade — with img2img,
+inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking, **your own trained
+style LoRAs**, **InstantStyle** painterly style transfer, identity-preserving
+portraits, AnimateDiff video, ML upscaling, **smart (U2Net) background removal**,
+**integral artefact compositing**, and batch scenarios. All built on
+[candle](https://github.com/huggingface/candle). Pure Rust inference. No Python,
+no PyTorch, no external T2I services. Models are pulled from HuggingFace and
+cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.

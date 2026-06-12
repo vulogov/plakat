@@ -198,6 +198,11 @@ If you're new to plakat, work through these in order:
     choice (`sdxl-inpaint` / `sd15-inpaint` /
     `flux-fill-dev`), iterative-stage workflow.
 
+16a. [`UPSCALE_TUTORIAL.md`](UPSCALE_TUTORIAL.md) — `plakat upscale`
+    enlarges an image: classical resampling (Lanczos, instant) or
+    **Real-ESRGAN** ML super-resolution (`--method real-esrgan-x2/x4`).
+    The Metal ×4 OOM → `--device cpu` knob.
+
 17. [`SCRIPTING_TUTORIAL.md`](SCRIPTING_TUTORIAL.md) — **v0.21.**
     Drive plakat from a Bund script (`plakat run SCRIPT.bund`).
     Stack-based syntax (Forth-flavoured), the seven `plakat.*`
@@ -205,6 +210,12 @@ If you're new to plakat, work through these in order:
     save + config.set), handle reuse for `generate → upscale →
     save` chains, the interactive REPL (`plakat run --repl`),
     composition patterns + limitations.
+
+18. [`UTILITIES_TUTORIAL.md`](UTILITIES_TUTORIAL.md) — the small commands
+    around the generators: `doctor` (health-check), `models` (cache),
+    `inspect` (.safetensors tensors), `gallery` (Markdown index), `clone`
+    (PNG → re-runnable command), `init` (scaffold a project), and
+    `motion-adapter` (AnimateDiff inspection).
 
 ## Specialized portrait techniques
 
