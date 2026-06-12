@@ -12,12 +12,18 @@ Each item notes **what exists**, **candle-feasibility**, and **effort** (S/M/L).
 
 ## Part 0 — Close the deferrals (warm-up; quick wins)
 
-- [ ] **Cascade Stage-B + ControlNet** — *(M)* `cascade_cn.rs` injects a ControlNet
-      into **Stage C** (down/up ResBlock triples). The gap is conditioning **Stage B**
-      (the decoder) too, so structural control survives the decode. Reuse the Stage-C
-      injection pattern on Stage B's ResBlock sequence; needs the upstream Stage-B CN
-      weights (or a zero-init residual if none ship). Feasibility: the engine pattern
-      is already proven on Stage C.
+- [x] **Cascade Stage-B + ControlNet — FALSIFIED (no work needed).** Investigation
+      found this is a *non-feature*: Stable Cascade's decoupled design applies
+      ControlNet (and LoRA) to **Stage C alone** — "the stages B and A models do not
+      need to be updated … we only need to finetune the Stage C model to achieve a
+      custom style or ControlNet" (Stability-AI, *Introducing Stable Cascade*). Stage B
+      is a fixed semantic-compressor/super-resolver that preserves Stage C's structure
+      through the decode, so a Stage-B CN is redundant — and no upstream Stage-B CN
+      weights exist to align against (the diffusers-reference comparison every plakat
+      model relies on would be impossible). Cascade + CN already works end-to-end
+      (`cascade.hjson` canny, rendered). Action taken: reframed the `forward_with_cn`
+      Stage-C-only guard from "follow-up" to a documented design invariant; added the
+      Stage-C-only note to the Cascade tutorial. Dropped like CannyFilter-224 / INT8.
 - [x] **SDXL tiled scripting — DONE.** Added `plakat.tiled.enable` / `disable`
       words (`scripting/words/tiled.rs`) + dispatched the SD-family `plakat.generate`
       to the pipeline's `generate_tiled` when set (bails on tiled+ControlNet).
