@@ -1583,27 +1583,95 @@ impl Pipeline {
                 );
             }
 
+            // ---- Base-anchored hi-res (fixes MultiDiffusion global
+            // incoherence). Anchorless tiled txt2img lets every tile invent its
+            // own scene → stacked horizons / disjoint rivers. Instead:
+            //   (1) generate a COHERENT base at the model's native resolution
+            //       (= tile_size, a single full-canvas pass that fits memory),
+            //   (2) upscale that latent to the target canvas,
+            //   (3) run the tiled pass as a low-strength img2img REFINE, so tiles
+            //       add detail without overriding the locked global structure.
+            let refine_strength = 0.55f32;
+
+            // (1) Base pass — full-canvas denoise at tile_size² (native res).
+            let add_time_ids_base = if is_xl {
+                let cond = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                    cfg.tile_size,
+                    cfg.tile_size,
+                    &self.core.device,
+                    self.core.dtype,
+                )?;
+                Some(if do_cfg {
+                    Tensor::cat(&[&cond, &cond], 0)?
+                } else {
+                    cond
+                })
+            } else {
+                None
+            };
+            let mut base_sched =
+                crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
+            let base_ts = base_sched.timesteps().to_vec();
+            let mut base_latents = Tensor::randn(
+                0f32,
+                1f32,
+                (1usize, 4usize, tile_latent, tile_latent),
+                &self.core.device,
+            )?
+            .to_dtype(self.core.dtype)?;
+            base_latents = (base_latents * base_sched.init_noise_sigma())?;
+            let base_bar = crate::ui::progress::step_bar(
+                base_ts.len() as u64,
+                &format!("tiled base {}/{} ({}²)", idx + 1, req.count, cfg.tile_size),
+            );
+            for &timestep in &base_ts {
+                base_latents = self.denoise_step(
+                    &self.core.unet,
+                    &base_latents,
+                    timestep,
+                    &text_embeddings,
+                    pooled_text_sdxl.as_ref(),
+                    add_time_ids_base.as_ref(),
+                    &mut base_sched,
+                    req.guidance,
+                    do_cfg,
+                    &[],
+                )?;
+                base_bar.inc(1);
+            }
+            base_bar.finish_and_clear();
+
+            // (2) Upscale the coherent base latent → target canvas. F32 round-trip
+            // so the bilinear kernel never hits an F16 gap on Metal.
+            let upscaled = base_latents
+                .to_dtype(DType::F32)?
+                .upsample_bilinear2d(latent_h, latent_w, false)?
+                .to_dtype(self.core.dtype)?;
+
+            // (3) Refine init — img2img truncation: keep the upscaled base's
+            // low-frequency structure, re-noise to a partial start, refine tiled.
             let mut scheduler =
                 crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
             let timesteps = scheduler.timesteps().to_vec();
-
-            // Full-size latent, scaled by init_noise_sigma to match
-            // the scheduler's first step expectation.
-            let mut latents = Tensor::randn(
+            let init_skip = (((req.steps as f32) * (1.0 - refine_strength)).round() as usize)
+                .min(req.steps.saturating_sub(1));
+            let active: Vec<usize> = timesteps[init_skip..].to_vec();
+            let start_t = *active.first().unwrap_or(&timesteps[0]);
+            let noise = Tensor::randn(
                 0f32,
                 1f32,
                 (1usize, 4usize, latent_h, latent_w),
                 &self.core.device,
             )?
             .to_dtype(self.core.dtype)?;
-            latents = (latents * scheduler.init_noise_sigma())?;
+            let mut latents = scheduler.add_noise(&upscaled, noise, start_t)?;
 
             let bar = crate::ui::progress::step_bar(
-                timesteps.len() as u64,
-                &format!("tiled img {}/{}", idx + 1, req.count),
+                active.len() as u64,
+                &format!("tiled refine {}/{}", idx + 1, req.count),
             );
 
-            for &timestep in &timesteps {
+            for &timestep in &active {
                 // Accumulator + weight buffers, full-latent-sized.
                 // `acc` holds Σ window·noise_pred, `weights` holds Σ window.
                 let mut acc = Tensor::zeros(
