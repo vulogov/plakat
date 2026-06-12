@@ -1691,6 +1691,15 @@ impl Pipeline {
                         &[0..1, 0..1, y..y + size, x..x + size],
                         &w_updated,
                     )?;
+
+                    // Bound peak memory to one tile: force this tile's GPU
+                    // work to finish before starting the next so Metal can
+                    // reclaim its transient command buffers. Without this, a
+                    // long tiled loop (steps × tiles) queues unbounded
+                    // buffers and the working set climbs until Metal OOMs —
+                    // which on a memory-constrained Mac hard-crashes the host
+                    // rather than returning a clean error.
+                    acc.device().synchronize()?;
                 }
 
                 // Average: noise_pred_full = acc / weights (broadcast

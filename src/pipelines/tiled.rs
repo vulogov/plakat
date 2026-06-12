@@ -204,6 +204,11 @@ where
             &weights_updated,
         )?;
 
+        // Finish this tile's GPU work before the next so Metal reclaims the
+        // decode's transient buffers (see the denoise-loop note in t2i.rs —
+        // unbounded queued buffers OOM Metal). VAE decode at pixel resolution
+        // is the memory-tightest op in the tiled pipeline.
+        acc_t.device().synchronize()?;
         acc = Some(acc_t);
         weights = Some(weights_t);
     }

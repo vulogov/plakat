@@ -22,11 +22,15 @@
 // Turn on tiled hi-res.
 plakat.tiled.enable
 
-// Render at 1536² (1.5× SDXL native) from 1024 tiles with stride 768.
-"1536" "width"       plakat.config.set
-"1536" "height"      plakat.config.set
-"1024" "tile_size"   plakat.config.set
-"768"  "tile_stride" plakat.config.set
+// Render at 1280² (above SDXL's native 1024²) from 768 tiles with stride 512.
+// Deliberately conservative for memory-constrained Metal: the per-tile working
+// set scales with tile_size², so 768 tiles use ~56% of a 1024 tile's memory.
+// On a roomy GPU you can push width/height/tile_size higher; if Metal is tight,
+// shrink tile_size further or render with `--device cpu`.
+"1280" "width"       plakat.config.set
+"1280" "height"      plakat.config.set
+"768"  "tile_size"   plakat.config.set
+"512"  "tile_stride" plakat.config.set
 "42"   "seed"        plakat.config.set
 "30"   "steps"       plakat.config.set
 
