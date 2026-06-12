@@ -38,7 +38,16 @@ The matte → integral-artefacts → InstantStyle trio is already a *scene compo
 tool. This turns it into an **editing** capability. The enabler is precise
 selection; everything else composes pieces plakat owns.
 
-- [~] **Selection: SAM + depth** — *(M, enabler; SCOPED ✅ — feasibility confirmed)*
+- [x] **Selection: SAM — BUILT & VERIFIED.** `plakat segment` ships: MobileSAM
+      (`pipelines/sam.rs` wrapping candle-transformers' TinyViT SAM) + point prompts
+      (`--point X,Y[:bg]`, normalized-or-pixel, multi-point refine) + `--invert` →
+      binary mask PNG. Weights mirrored to ungated `vulogov98/mobile-sam` (resolves
+      `PLAKAT_SAM_WEIGHTS` → cache → mirror → `lmz/candle-sam` fallback). Verified
+      end-to-end on Metal (~0.4 s inference): single click → coherent subject mask;
+      7 new unit tests. Driver `corpus/segment.sh` (select subject → invert → inpaint
+      new background). **Depth-band selection** (`depth.rs`) deferred as a follow-up
+      mask source — not needed to unblock the edit ops below.
+      *Original scoping (for reference):*
       **No port needed.** candle-transformers 0.10.2 (our exact pin) already ships a
       *complete* Segment-Anything under `models/segment_anything/`: `image_encoder`
       (ViT-B/L/H), **`tiny_vit` (MobileSAM)**, `prompt_encoder`, `mask_decoder`. This
@@ -63,10 +72,12 @@ selection; everything else composes pieces plakat owns.
         "select by depth band" mask source is nearly free. **Everything below depends
         on this.** Verifiable against the official SAM/MobileSAM (candle's port is
         already validated) via a `corpus/` driver.
-- [ ] **Object removal / replacement** — *(M)* SAM/matte mask → inpaint
-      (`img2img --mask`, which exists). "remove the person" (inpaint background),
-      "replace the car" (masked img2img with a prompt). New surface: a `plakat edit`
-      verb wrapping select → inpaint.
+- [~] **Object removal / replacement** — *(M)* **the capability already composes**:
+      `plakat segment` → mask → `img2img --mask` (both ship). `corpus/segment.sh`
+      proves it (select subject → invert → repaint background). "remove the person"
+      (inpaint background) / "replace the car" (masked img2img + prompt) work today as
+      two commands. **Remaining (S):** a `plakat edit` convenience verb that wraps
+      select → inpaint in one call (sugar, not new capability).
 - [ ] **Regional prompting** — *(L)* different prompts in different canvas regions
       (reuse the artefact **zones**). Needs masked/region-routed cross-attention in
       the SD-core UNet — the hardest candle piece here; prototype on SD 1.5/SDXL.

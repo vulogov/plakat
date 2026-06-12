@@ -53,6 +53,7 @@ pub mod cascade_vae;
 pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;
+pub mod sam;
 pub mod scheduler;
 pub mod seeds;
 pub mod scrfd;
