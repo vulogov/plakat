@@ -3,17 +3,25 @@
 //! On Apple-Silicon Metal the GPU allocates from the **same** memory pool as
 //! the OS, so when a generation exhausts unified memory the kernel /
 //! WindowServer are starved faster than jetsam can cleanly kill plakat — and
-//! the whole **host** hangs or crashes (the observed failure). Polling free RAM
-//! on a background thread and aborting plakat *before* the cliff turns that into
-//! a clean exit: the OS reclaims every allocation (including Metal buffers) on
-//! process death, relieving pressure immediately so the host survives.
+//! the whole **host** hangs or crashes (the observed failure). A background
+//! thread watching for danger and aborting plakat *before* the cliff turns that
+//! into a clean exit: the OS reclaims every allocation (including Metal buffers)
+//! on process death, relieving pressure immediately so the host survives.
+//!
+//! **Signal:** on macOS we read the kernel's own memory-pressure level
+//! ([`crate::hw::mem_pressure`]) and abort only on *sustained critical*. This is
+//! deliberately NOT a free-RAM threshold: `sysinfo`'s "available" under-reports
+//! reclaimable inactive / compressed pages on macOS, so a big-but-reclaimable
+//! load (e.g. the SD3.5 T5 encoders) reads as ~0 GB free yet loads fine — a
+//! free-RAM guard cried wolf on exactly that. Critical pressure means the kernel
+//! is genuinely out of road. Elsewhere we fall back to a free-RAM floor.
 //!
 //! This is the during-generation complement to [`crate::hw::memory_preflight`]
 //! (which only warns up-front). The durable fix for *batch* OOM is still one
 //! in-process run (`plakat scenario`) rather than N `generate` processes.
 //!
-//! Tuning: `PLAKAT_OOM_GUARD_GB` sets the critical free-RAM floor in GB
-//! (default 1.5); `0` disables the guard. No-op on CUDA (separate VRAM).
+//! Tuning: `PLAKAT_OOM_GUARD_GB` `0` disables the guard; any value > 0 enables it
+//! (and sets the free-RAM floor on non-macOS platforms). No-op on CUDA.
 
 use candle_core::{Device, DeviceLocation};
 use std::sync::Arc;
@@ -65,19 +73,31 @@ impl MemoryGuard {
                 let mut sys = sysinfo::System::new();
                 let mut breaches = 0u32;
                 while !stop_t.load(Ordering::Relaxed) {
-                    sys.refresh_memory();
-                    let avail = sys.available_memory() as f64 / 1e9;
-                    if avail < floor {
+                    // On macOS trust the kernel pressure level — it accounts for
+                    // reclaimable pages, so a big-but-reclaimable load (e.g. the
+                    // T5 encoders) does NOT read as danger the way free-RAM does.
+                    // Only sustained CRITICAL means the OS is out of road and a
+                    // host crash is imminent. Elsewhere (Unknown) fall back to the
+                    // free-RAM floor, which is accurate on Linux.
+                    let danger = match crate::hw::mem_pressure() {
+                        crate::hw::Pressure::Critical => true,
+                        crate::hw::Pressure::Unknown => {
+                            sys.refresh_memory();
+                            (sys.available_memory() as f64 / 1e9) < floor
+                        }
+                        crate::hw::Pressure::Normal | crate::hw::Pressure::Warning => false,
+                    };
+                    if danger {
                         breaches += 1;
                         if breaches >= SUSTAINED {
                             eprintln!(
-                                "\n{} OOM GUARD — only ~{:.1} GB RAM free while generating \
-                                 '{}'; aborting plakat now to avoid crashing the host. \
-                                 Try a smaller model, --device cpu, fewer parallel runs, or \
-                                 a single `plakat scenario` for batches. \
-                                 (tune/disable with PLAKAT_OOM_GUARD_GB)",
+                                "\n{} OOM GUARD — sustained critical memory pressure while \
+                                 generating '{}'; aborting plakat now to avoid crashing the \
+                                 host. Free RAM (close apps / `sudo purge`), use a smaller \
+                                 model or --device cpu, or run one `plakat scenario` for \
+                                 batches. (PLAKAT_OOM_GUARD_GB=0 disables; on non-macOS it \
+                                 sets the free-RAM floor.)",
                                 console::style("⛔").red().bold(),
-                                avail,
                                 label,
                             );
                             // Hard exit: the OS reclaims all memory (incl. Metal

@@ -2847,6 +2847,7 @@ dependencies = [
  "image 0.25.10",
  "imageproc",
  "indicatif",
+ "libc",
  "png 0.18.1",
  "rand 0.8.6",
  "reqwest",

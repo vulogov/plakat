@@ -85,15 +85,62 @@ pub fn available_ram_gb() -> f64 {
     sys.available_memory() as f64 / 1e9
 }
 
+/// Coarse memory-pressure level. On macOS this is the **kernel's own** signal
+/// (`kern.memorystatus_vm_pressure_level`) which — unlike "free RAM" — already
+/// accounts for the reclaimable inactive / compressed / cached pages the OS
+/// frees to satisfy a load. (sysinfo's `available_memory` under-reports these on
+/// macOS, so a healthy idle box can read ~0 GB "free" with GBs reclaimable —
+/// that mismatch is what made an earlier free-RAM guard cry wolf.) Elsewhere it
+/// is `Unknown`; callers fall back to a free-RAM figure, which is accurate on
+/// Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pressure {
+    Normal,
+    Warning,
+    Critical,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+pub fn mem_pressure() -> Pressure {
+    let mut val: i32 = 0;
+    let mut size = std::mem::size_of::<i32>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_vm_pressure_level".as_ptr(),
+            (&mut val as *mut i32).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Pressure::Unknown;
+    }
+    // dispatch memory-pressure flags: 1 = normal, 2 = warn, 4 = critical.
+    match val {
+        v if v >= 4 => Pressure::Critical,
+        2 | 3 => Pressure::Warning,
+        1 => Pressure::Normal,
+        _ => Pressure::Unknown,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn mem_pressure() -> Pressure {
+    Pressure::Unknown
+}
+
 /// Pre-load memory preflight (recommendation #3). Large diffusion weights need
-/// several–tens of GB resident; on a unified-memory box already under pressure,
-/// the load is silently killed by the OS ("Killed: 9"). This converts that into
-/// an actionable, up-front **warning** — never fatal (the `available` figure is
-/// approximate, and blocking a run that would have fit is worse than a heads-up).
+/// several–tens of GB resident; on a box already under pressure the load is
+/// silently killed by the OS ("Killed: 9"). This converts that into an
+/// actionable, up-front **warning** — never fatal.
 ///
-/// No-op on CUDA (separate VRAM we don't probe here) and when
+/// Uses the kernel pressure level on macOS (so it does NOT cry wolf when
+/// "available" looks low but GBs are reclaimable — the common idle state); on
+/// other platforms it falls back to a free-RAM floor. No-op on CUDA and when
 /// `PLAKAT_NO_PREFLIGHT` is set. The durable fix for batch OOM is one in-process
-/// run (`plakat scenario`), not this check — this only improves the failure UX.
+/// run (`plakat scenario`), not this check.
 pub fn memory_preflight(device: &Device, model_label: &str) {
     if std::env::var_os("PLAKAT_NO_PREFLIGHT").is_some() {
         return;
@@ -101,23 +148,29 @@ pub fn memory_preflight(device: &Device, model_label: &str) {
     if matches!(device.location(), DeviceLocation::Cuda { .. }) {
         return;
     }
-    let total = total_ram_bytes() as f64 / 1e9;
-    let avail = available_ram_gb();
-    // Warn when free RAM dips under ~6 GB (or half of a small machine's total)
-    // — below that even mid-size models risk an OOM kill.
-    let floor = 6.0_f64.min(total * 0.5);
-    if avail < floor {
+    let warn = |reason: String| {
         eprintln!(
-            "{} low free RAM: ~{:.1} GB available of {:.0} GB total — loading '{}' may be \
-             killed by the OS (\"Killed: 9\").\n   Free up memory (close apps / a prior \
-             plakat run), pick a smaller model, or use --device cpu. For batches, run one \
-             `plakat scenario` (loads the model once) instead of N separate `generate` calls. \
-             Silence with PLAKAT_NO_PREFLIGHT=1.",
+            "{} {reason} — loading '{}' may be killed by the OS (\"Killed: 9\"). \
+             Free up memory (close apps / `sudo purge`), pick a smaller model, or use \
+             --device cpu. For batches, run one `plakat scenario` (loads the model once) \
+             instead of N separate `generate` calls. Silence with PLAKAT_NO_PREFLIGHT=1.",
             console::style("⚠").yellow().bold(),
-            avail,
-            total,
             model_label,
         );
+    };
+    match mem_pressure() {
+        Pressure::Critical => warn("system under CRITICAL memory pressure".to_string()),
+        Pressure::Warning => warn("system under memory pressure".to_string()),
+        Pressure::Normal => {} // healthy — low "available" on macOS is not a risk
+        Pressure::Unknown => {
+            // Linux / older: free RAM is a sound proxy here.
+            let total = total_ram_bytes() as f64 / 1e9;
+            let avail = available_ram_gb();
+            let floor = 6.0_f64.min(total * 0.5);
+            if avail < floor {
+                warn(format!("low free RAM: ~{avail:.1} GB of {total:.0} GB"));
+            }
+        }
     }
 }
 
@@ -167,5 +220,18 @@ mod tests {
         assert_eq!(tier_for(16.0), "16 GB");
         assert_eq!(tier_for(24.0), "32 GB");
         assert_eq!(tier_for(128.0), "64 GB+");
+    }
+
+    #[test]
+    fn mem_pressure_returns_a_known_variant() {
+        // Must not panic and must yield a defined level. On macOS this exercises
+        // the sysctl path; elsewhere it's Unknown.
+        let p = mem_pressure();
+        assert!(matches!(
+            p,
+            Pressure::Normal | Pressure::Warning | Pressure::Critical | Pressure::Unknown
+        ));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(p, Pressure::Unknown);
     }
 }
