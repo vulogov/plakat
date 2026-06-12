@@ -1,0 +1,38 @@
+// ===================================================================
+// plakat proof corpus — SDXL tiled hi-res scripting (`plakat run`)
+// ===================================================================
+//   plakat run corpus/tiled_script.bund      (or: corpus/tiled_script.sh)
+//
+// Proves the v1.0 `plakat.tiled.*` words: enabling tiled hi-res routes the
+// SD-family `plakat.generate` through the pipeline's `generate_tiled` denoise
+// (the UNet only ever sees `tile_size` tiles, Hann-blended), so a script can
+// render ABOVE SDXL's native 1024² without the OOM / repetition of one huge
+// pass. Mirrors the CLI `--tiled`. Ungated SDXL, Metal-safe.
+//
+// Stack effects (see Documentation/Tutorials/SCRIPTING_TUTORIAL.md):
+//   plakat.load          ( model-alias -- )
+//   plakat.tiled.enable  ( -- )                ← v1.0
+//   plakat.config.set    ( value key   -- )
+//   plakat.generate      ( prompt       -- handle )
+//   plakat.save          ( handle path  -- )
+
+// Load SDXL (lazy — loads on first generate).
+"sdxl" plakat.load
+
+// Turn on tiled hi-res.
+plakat.tiled.enable
+
+// Render at 1536² (1.5× SDXL native) from 1024 tiles with stride 768.
+"1536" "width"       plakat.config.set
+"1536" "height"      plakat.config.set
+"1024" "tile_size"   plakat.config.set
+"768"  "tile_stride" plakat.config.set
+"42"   "seed"        plakat.config.set
+"30"   "steps"       plakat.config.set
+
+// Render the prompt -> image handle.
+"a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus" plakat.generate
+
+// Save the handle. plakat.save writes relative to the run's output dir (./out),
+// so this lands at ./out/tiled-valley.png; the .sh driver relocates it.
+"tiled-valley.png" plakat.save

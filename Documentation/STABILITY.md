@@ -58,7 +58,7 @@ namespaces: `plakat.load` / `generate` / `save` / `echo`; `plakat.lora.*`,
 `plakat.style.*`, `plakat.artefact.*`, `plakat.portrait*`; `plakat.animate`,
 `plakat.inpaint`, `plakat.outpaint`, `plakat.upscale`, `plakat.stylize`,
 `plakat.enhance`; `plakat.cascade` / `pixart` / `pixart`; `plakat.hires.*`,
-`plakat.refiner.*`, `plakat.adetailer.*`, `plakat.config.set`,
+`plakat.tiled.*`, `plakat.refiner.*`, `plakat.adetailer.*`, `plakat.config.set`,
 `plakat.metadata.*`.
 
 ## NOT a frozen contract — the Rust library API

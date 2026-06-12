@@ -18,11 +18,11 @@ Each item notes **what exists**, **candle-feasibility**, and **effort** (S/M/L).
       injection pattern on Stage B's ResBlock sequence; needs the upstream Stage-B CN
       weights (or a zero-init residual if none ship). Feasibility: the engine pattern
       is already proven on Stage C.
-- [ ] **SDXL tiled scripting** — *(S)* `tiled.rs` + the CLI `--tiled` path exist; the
-      gap is a Bund host word (e.g. `plakat.tiled.enable` / a `tiled:` option on
-      `plakat.generate`) so scripts can drive tiled hi-res. Pure plumbing — thread the
-      existing tiled config through the scripting context. Freeze it into the word-set
-      ([`STABILITY.md`](STABILITY.md)).
+- [x] **SDXL tiled scripting — DONE.** Added `plakat.tiled.enable` / `disable`
+      words (`scripting/words/tiled.rs`) + dispatched the SD-family `plakat.generate`
+      to the pipeline's `generate_tiled` when set (bails on tiled+ControlNet).
+      `tile_size`/`tile_stride` were already config keys. Frozen in STABILITY.md;
+      driver `corpus/tiled_script.{bund,sh}` (1536² SDXL, pending render).
 
 ---
 
