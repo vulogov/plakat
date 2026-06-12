@@ -38,10 +38,31 @@ The matte → integral-artefacts → InstantStyle trio is already a *scene compo
 tool. This turns it into an **editing** capability. The enabler is precise
 selection; everything else composes pieces plakat owns.
 
-- [ ] **Selection: SAM + depth** — *(M, enabler)* port candle's **Segment-Anything**
-      (`mobile-sam`/SAM ViT) for click/box → mask. `depth.rs` already exists, so
-      "select by depth band" is nearly free. Output: a reusable mask any edit op
-      consumes. **Everything below depends on this.**
+- [~] **Selection: SAM + depth** — *(M, enabler; SCOPED ✅ — feasibility confirmed)*
+      **No port needed.** candle-transformers 0.10.2 (our exact pin) already ships a
+      *complete* Segment-Anything under `models/segment_anything/`: `image_encoder`
+      (ViT-B/L/H), **`tiny_vit` (MobileSAM)**, `prompt_encoder`, `mask_decoder`. This
+      is turnkey, unlike the vendored SD UNet. API surface (`sam.rs`):
+      - `Sam::new_tiny(vb)` — **MobileSAM** (TinyViT-5M encoder + tiny decoder); far
+        below SDXL, comfortable on Metal/CPU → the default for interactive selection.
+        `Sam::new(vb, …)` is the heavy ViT-H if ever needed.
+      - `forward(img, points: &[(x, y, fg_bool)], multimask) -> (mask, iou)` — point
+        prompts, normalised 0..1, `fg_bool` = include/exclude. **Box** = 2 corner
+        points (the encoder has 4 point slots, SAM's box convention) → thin wrapper.
+      - `embeddings()` + `forward_for_embeddings()` — split the expensive encode (cache
+        once) from cheap re-prompting → true interactive click-to-refine.
+      - `generate_masks(…)` — automatic "everything" mode → `Vec<Bbox<mask>>`, for
+        layered scenes / "segment all objects".
+      - **Weights:** not hardcoded (caller supplies the `VarBuilder`), so we mirror
+        MobileSAM tiny-vit (~40 MB) to an ungated `vulogov*` HF repo — the **U2Net
+        pattern** (`vulogov98/u2net-universal`). candle's example uses `lmz/candle-sam`.
+      - **Verdict:** the enabler drops **L → M** (candle did the model work). Recommended
+        shape: a `plakat segment` / `select` subcommand (image + point/box prompt → mask
+        PNG) that feeds the **existing `--mask` consumers** (inpaint/img2img) — Unix-y,
+        composable, matches plakat's mask convention. `depth.rs` exists, so a
+        "select by depth band" mask source is nearly free. **Everything below depends
+        on this.** Verifiable against the official SAM/MobileSAM (candle's port is
+        already validated) via a `corpus/` driver.
 - [ ] **Object removal / replacement** — *(M)* SAM/matte mask → inpaint
       (`img2img --mask`, which exists). "remove the person" (inpaint background),
       "replace the car" (masked img2img with a prompt). New surface: a `plakat edit`
