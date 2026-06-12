@@ -28,6 +28,18 @@ pub struct SegmentArgs {
     /// for "change the background, keep the subject").
     #[arg(long, default_value_t = false)]
     pub invert: bool,
+
+    /// Grow the selection by N pixels (dilate) before output. For inpaint edits,
+    /// a small margin (~8–12) keeps the repaint off the subject's fringe — the
+    /// cure for rope/halo artefacts at the mask boundary. Applied before
+    /// `--invert`, so it always expands the *subject*.
+    #[arg(long, default_value_t = 0, value_name = "PX")]
+    pub grow: u32,
+
+    /// Feather the mask edge by N pixels (gaussian) for a soft inpaint blend
+    /// instead of a hard seam.
+    #[arg(long, default_value_t = 0, value_name = "PX")]
+    pub feather: u32,
 }
 
 /// Parse `X,Y`, `X,Y:fg`, or `X,Y:bg` into a point prompt (default foreground).
@@ -63,7 +75,16 @@ pub async fn run(args: SegmentArgs, device: Device) -> Result<()> {
         .map(|s| parse_point(s))
         .collect::<Result<_>>()?;
 
-    crate::pipelines::sam::segment(&args.input, &args.out, &points, args.invert, &device).await?;
+    crate::pipelines::sam::segment(
+        &args.input,
+        &args.out,
+        &points,
+        args.invert,
+        args.grow,
+        args.feather,
+        &device,
+    )
+    .await?;
 
     let n = points.len();
     println!(

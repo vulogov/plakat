@@ -26,10 +26,12 @@ OUT="$ROOT/corpus/images/segment"
 mkdir -p "$OUT"
 
 # 1) Select the subject (three points down the figure for a robust mask —
-#    a single click can land on an ambiguous sub-part like the face), invert
-#    → the mask covers the background (white = repaint).
+#    a single click can land on an ambiguous sub-part like the face). --invert
+#    → the mask covers the background (white = repaint). --grow keeps the repaint
+#    off the subject's fringe (no rope/halo artefacts); --feather softens the seam.
 "$PLAKAT" segment --in "$SRC" --out "$OUT/bg-mask.png" \
-  --point 0.5,0.45 --point 0.5,0.62 --point 0.5,0.78 --invert --device metal
+  --point 0.5,0.45 --point 0.5,0.62 --point 0.5,0.78 \
+  --invert --grow 12 --feather 8 --device metal
 
 # 2) Repaint ONLY the background (white), preserving the masked-black subject.
 "$PLAKAT" img2img "$SRC" \

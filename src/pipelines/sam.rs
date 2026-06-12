@@ -103,11 +103,52 @@ fn to_tensor(img: &RgbImage, device: &Device) -> Result<Tensor> {
 /// 0 = excluded), sized to the original image. The mask is the SAM
 /// multimask-best (highest predicted IoU), which gives the cleanest single
 /// object for a single click while still honoring extra refine points.
+/// Grow white regions by `r` px (separable box dilation). Used to add a margin
+/// around the selection so a downstream edit doesn't repaint the subject's
+/// fringe (the cause of boundary artefacts).
+fn dilate(mask: &GrayImage, r: u32) -> GrayImage {
+    if r == 0 {
+        return mask.clone();
+    }
+    let (w, h) = (mask.width(), mask.height());
+    let mut tmp = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (x0, x1) = (x.saturating_sub(r), (x + r).min(w - 1));
+            let mut v = 0u8;
+            for xx in x0..=x1 {
+                v = v.max(mask.get_pixel(xx, y).0[0]);
+                if v == 255 {
+                    break;
+                }
+            }
+            tmp.put_pixel(x, y, Luma([v]));
+        }
+    }
+    let mut out = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (y0, y1) = (y.saturating_sub(r), (y + r).min(h - 1));
+            let mut v = 0u8;
+            for yy in y0..=y1 {
+                v = v.max(tmp.get_pixel(x, yy).0[0]);
+                if v == 255 {
+                    break;
+                }
+            }
+            out.put_pixel(x, y, Luma([v]));
+        }
+    }
+    out
+}
+
 pub async fn segment(
     in_path: &Path,
     out_path: &Path,
     points: &[PointPrompt],
     invert: bool,
+    grow: u32,
+    feather: u32,
     device: &Device,
 ) -> Result<()> {
     if points.is_empty() {
@@ -158,19 +199,35 @@ pub async fn segment(
     };
     let sel = masks.i(best)?; // (rh, rw) logits
 
-    // Threshold at 0 (the model's mask threshold) → binary, at the resized
-    // resolution, then nearest-resize back to the true original size.
+    // Threshold at 0 (the model's mask threshold) → the SELECTION binary mask at
+    // the resized resolution, then nearest-resize back to the original size.
     let vals: Vec<f32> = sel.flatten_all()?.to_vec1()?;
     let mut g = GrayImage::new(rw, rh);
     for (i, &v) in vals.iter().enumerate() {
-        let on = (v > 0.0) ^ invert;
-        g.put_pixel((i as u32) % rw, (i as u32) / rw, Luma([if on { 255 } else { 0 }]));
+        g.put_pixel((i as u32) % rw, (i as u32) / rw, Luma([if v > 0.0 { 255 } else { 0 }]));
     }
-    let mask = if (rw, rh) != (w0, h0) {
+    let mut mask = if (rw, rh) != (w0, h0) {
         image::imageops::resize(&g, w0, h0, image::imageops::FilterType::Nearest)
     } else {
         g
     };
+
+    // Grow the SELECTION first (before any invert) so an edit driven by this mask
+    // leaves a margin around the subject's fringe rather than repainting it — the
+    // fix for boundary artefacts (rope/halo where the inpaint meets the subject).
+    if grow > 0 {
+        mask = dilate(&mask, grow);
+    }
+    if invert {
+        for p in mask.pixels_mut() {
+            p.0[0] = 255 - p.0[0];
+        }
+    }
+    // Feather the edge into a soft grayscale falloff so the inpaint blends
+    // instead of showing a hard seam.
+    if feather > 0 {
+        mask = image::imageops::blur(&mask, feather as f32);
+    }
 
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
