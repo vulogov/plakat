@@ -30,18 +30,20 @@ mkdir -p "$OUT"
 #    the background and the inpaint repaints it into rigging. --invert → the mask
 #    covers the background (white = repaint). --grow leaves a margin around the
 #    subject so the repaint never touches its fringe; --feather softens the seam.
+# (feather kept small: the subject has wild frizzy hair, and a wide soft edge
+#  lets that strand texture bleed into the repaint as rope.)
 "$PLAKAT" segment --in "$SRC" --out "$OUT/bg-mask.png" \
   --point 0.5,0.22 --point 0.5,0.42 --point 0.5,0.62 --point 0.5,0.8 \
-  --invert --grow 16 --feather 8 --device metal
+  --invert --grow 16 --feather 4 --device metal
 
 # 2) Repaint ONLY the background (white), preserving the masked-black subject.
-# 2) Repaint ONLY the background. The prompt steers the upper region to clear sky
-#    and keeps the ships DISTANT/on the horizon, so sd15 doesn't fill the area
-#    around the head with rigging.
+# 2) Repaint ONLY the background with SDXL-inpaint (clean boundaries + style-matches
+#    the SDXL portrait; sd15 frayed the head edge into rope). No ship/rigging cues
+#    in the prompt — a plain sea-and-sky backdrop so nothing strand-like is invited.
 "$PLAKAT" img2img "$SRC" \
-  --prompt "a calm misty harbour at dawn, distant tall ships on the far horizon, glassy reflective water, soft golden light, clear pale sky" \
+  --prompt "a calm sea at dawn beneath a clear pale sky, soft golden light on glassy water, distant hazy coastline" \
   --mask "$OUT/bg-mask.png" \
-  --model sd15 --strength 0.85 --steps 28 --seed 42 --device metal \
+  --model sdxl-inpaint --strength 0.85 --steps 28 --seed 42 --device metal \
   --out "$OUT"
 
 echo "✓ wrote corpus/images/segment/ (subject kept, background swapped via one SAM click)"
