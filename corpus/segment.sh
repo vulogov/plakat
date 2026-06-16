@@ -37,12 +37,15 @@ mkdir -p "$OUT"
   --point 0.5,0.2 --point 0.5,0.45 --point 0.5,0.7 \
   --invert --grow 16 --feather 4 --device metal
 
-# 2) Repaint ONLY the background with SDXL-inpaint (clean boundaries, style-matches
-#    the SDXL portrait) — swap the spacecraft interior for the lunar surface.
+# 2) Repaint ONLY the background — swap the spacecraft interior for the lunar
+#    surface. sd15 with --mask reliably repaints the white region (proven); the
+#    astronaut's hard suit edge needs no special handling, and there's no tangled
+#    foreground to preserve. (sdxl-inpaint via --mask left the region untouched in
+#    testing — a separate 9-channel-inpaint handling issue, not used here.)
 "$PLAKAT" img2img "$SRC" \
   --prompt "standing on the grey cratered surface of the Moon, the blue Earth rising in a black starry sky, harsh raking sunlight, sharp shadows" \
   --mask "$OUT/bg-mask.png" \
-  --model sdxl-inpaint --strength 0.85 --steps 28 --seed 42 --device metal \
+  --model sd15 --strength 0.9 --steps 28 --seed 42 --device metal \
   --out "$OUT"
 
 echo "✓ wrote corpus/images/segment/ (astronaut kept, background swapped to the Moon via SAM clicks)"
