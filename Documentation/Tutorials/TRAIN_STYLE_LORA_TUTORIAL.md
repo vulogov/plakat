@@ -155,6 +155,30 @@ different medium — that's the LoRA doing its job.
 
 ---
 
+## Train a SUBJECT instead of a style (DreamBooth)
+
+The same command learns a **subject** ("my dog", a specific person/object) rather
+than a style — point `--trigger` at an *instance prompt* with a rare token and add
+a **class** set for prior preservation (a few generic examples of the category, so
+the new token doesn't overfit or drag the whole class toward your photos):
+
+```bash
+plakat style train --base sd15 \
+  --from-dir ./my-dog \
+  --trigger "a photo of sks dog" \
+  --class-dir ./generic-dogs --class-prompt "a photo of a dog" \
+  --prior-weight 1.0 --steps 800 --rank 16
+# then generate:  plakat generate "a photo of sks dog astronaut on the moon" \
+#                   --model sd15 --lora my-dog.safetensors
+```
+
+`--class-dir` makes it a subject LoRA (DreamBooth): each step trains your subject
+**and** a class image, so the model keeps its general "dog" while binding `sks` to
+your dog. Omit `--class-dir` to skip prior preservation. sd15 / sdxl (sd35's
+separate trainer doesn't support prior preservation yet). `--resume` works here too.
+
+---
+
 ## Step 4 — Tune it
 
 - **Style too weak?** Dial the influence up at render time with a scale

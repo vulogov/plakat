@@ -67,6 +67,16 @@ pub struct SdStyleTrainRequest {
     /// up to `steps`. `None` = train from scratch (the default). Additive: when
     /// unset the loop is identical to before.
     pub resume_from: Option<PathBuf>,
+    /// DreamBooth prior preservation: a few generic CLASS images (e.g. other
+    /// dogs) trained alongside the subject under `class_prompt`, so the subject
+    /// token doesn't overfit or drag the whole class with it. Empty (the default)
+    /// = plain style/subject training with no prior loss — identical to before.
+    pub class_images: Vec<PathBuf>,
+    /// Class prompt for `class_images` (e.g. "a photo of a dog"). Required when
+    /// `class_images` is non-empty.
+    pub class_prompt: Option<String>,
+    /// Weight on the prior-preservation loss (DreamBooth's λ; typical ~1.0).
+    pub prior_weight: f32,
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
@@ -120,7 +130,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         req.images.len(),
         req.trigger
     );
-    let (latents, text_emb, base_repo) = {
+    let (latents, text_emb, class_data, base_repo) = {
         let core = SdCore::load(SdLoadRequest {
             model: req.model.clone(),
             device: device.clone(),
@@ -131,35 +141,51 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         })
         .await?;
         let scale = core.variant.vae_scale();
-        let text_emb = crate::pipelines::t2i::encode_with_attention(
-            &core.tokenizer_l,
-            &core.cfg.clip,
-            &core.text_encoder_l,
-            &req.trigger,
-            1,
-            &device,
-            dtype,
-        )?
-        .to_dtype(dtype)?; // encode_with_attention's simple path keeps the encoder dtype (F16)
-        let mut latents = Vec::with_capacity(req.images.len());
-        for img in &req.images {
-            let px = crate::imaging::preprocess::sd_image_tensor(
-                img.as_path(),
-                req.size,
-                req.size,
+        let encode_text = |p: &str| -> Result<Tensor> {
+            // encode_with_attention's simple path keeps the encoder dtype (F16).
+            Ok(crate::pipelines::t2i::encode_with_attention(
+                &core.tokenizer_l,
+                &core.cfg.clip,
+                &core.text_encoder_l,
+                p,
+                1,
                 &device,
-                core.dtype,
-            )?;
-            let z = core.vae.encode(&px)?.sample()?;
-            let lat = (z * scale)?.to_dtype(dtype)?;
-            latents.push(lat);
-        }
+                dtype,
+            )?
+            .to_dtype(dtype)?)
+        };
+        let encode_imgs = |imgs: &[PathBuf]| -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    core.dtype,
+                )?;
+                let z = core.vae.encode(&px)?.sample()?;
+                v.push((z * scale)?.to_dtype(dtype)?);
+            }
+            Ok(v)
+        };
+        let text_emb = encode_text(&req.trigger)?;
+        let latents = encode_imgs(&req.images)?;
+        // DreamBooth prior preservation (optional): encode the class set too.
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            Some((encode_imgs(&req.class_images)?, encode_text(cp)?))
+        };
         let base_repo = if req.model.contains('/') {
             req.model.clone()
         } else {
             crate::hf::resolve_alias(&req.model).to_string()
         };
-        (latents, text_emb, base_repo)
+        (latents, text_emb, class_data, base_repo)
     };
 
     // --- Phase B: load the vendored UNet (BF16) + install adapters.
@@ -201,7 +227,22 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward(&x_t, t as f64, &text_emb)?;
-        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let mut loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // DreamBooth prior preservation: add the class-image loss (an independent
+        // class sample / timestep) so the subject token doesn't overfit or drag
+        // the whole class. No class data → this is plain training.
+        if let Some((class_lat, class_emb)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let cx0 = &class_lat[step % cn];
+            let cnoise = Tensor::randn(0f32, 1f32, cx0.dims(), &device)?.to_dtype(dtype)?;
+            let ct =
+                (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
+            let ca = abar[ct];
+            let cx_t = ((cx0 * ca.sqrt())? + (&cnoise * (1.0 - ca).sqrt())?)?;
+            let cpred = unet.forward(&cx_t, ct as f64, class_emb)?;
+            let closs = (&cpred - &cnoise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            loss = (&loss + (closs * req.prior_weight as f64)?)?;
+        }
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
@@ -238,7 +279,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         req.images.len(),
         req.trigger
     );
-    let (latents, hidden, pooled, add_time_ids, base_repo) = {
+    let (latents, hidden, pooled, add_time_ids, class_data, base_repo) = {
         let pipe = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
             model: req.model.clone(),
             device: device.clone(),
@@ -249,25 +290,43 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
             vae_cache: None,
         })
         .await?;
-        let (hidden, pooled_opt) = pipe.encode_prompt(&req.trigger, "", false, 1)?;
-        let hidden = hidden.to_dtype(dtype)?;
-        let pooled = pooled_opt
-            .ok_or_else(|| anyhow::anyhow!("SDXL encode returned no pooled embedding"))?
-            .to_dtype(dtype)?;
+        let encode_text = |p: &str| -> Result<(Tensor, Tensor)> {
+            let (h, po) = pipe.encode_prompt(p, "", false, 1)?;
+            Ok((
+                h.to_dtype(dtype)?,
+                po.ok_or_else(|| anyhow!("SDXL encode returned no pooled embedding"))?
+                    .to_dtype(dtype)?,
+            ))
+        };
         let core = pipe.core();
         let scale = core.variant.vae_scale();
-        let mut latents = Vec::with_capacity(req.images.len());
-        for img in &req.images {
-            let px = crate::imaging::preprocess::sd_image_tensor(
-                img.as_path(),
-                req.size,
-                req.size,
-                &device,
-                core.dtype,
-            )?;
-            let z = core.vae.encode(&px)?.sample()?;
-            latents.push((z * scale)?.to_dtype(dtype)?);
-        }
+        let encode_imgs = |imgs: &[PathBuf]| -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    core.dtype,
+                )?;
+                let z = core.vae.encode(&px)?.sample()?;
+                v.push((z * scale)?.to_dtype(dtype)?);
+            }
+            Ok(v)
+        };
+        let (hidden, pooled) = encode_text(&req.trigger)?;
+        let latents = encode_imgs(&req.images)?;
+        // DreamBooth prior preservation (optional): class set with class_prompt.
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            let (ch, cpooled) = encode_text(cp)?;
+            Some((encode_imgs(&req.class_images)?, ch, cpooled))
+        };
         let add_time_ids =
             crate::pipelines::sdxl_unet::build_add_time_ids_base(req.size, req.size, &device, dtype)?;
         let base_repo = if req.model.contains('/') {
@@ -275,7 +334,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         } else {
             crate::hf::resolve_alias(&req.model).to_string()
         };
-        (latents, hidden, pooled, add_time_ids, base_repo)
+        (latents, hidden, pooled, add_time_ids, class_data, base_repo)
     };
 
     tracing::info!("sdxl-style-train: loading UNet for training");
@@ -322,7 +381,21 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward_sdxl(&x_t, t as f64, &hidden, &pooled, &add_time_ids)?;
-        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let mut loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // DreamBooth prior preservation (class loss on an independent sample).
+        if let Some((class_lat, class_hidden, class_pooled)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let cx0 = &class_lat[step % cn];
+            let cnoise = Tensor::randn(0f32, 1f32, cx0.dims(), &device)?.to_dtype(dtype)?;
+            let ct =
+                (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
+            let ca = abar[ct];
+            let cx_t = ((cx0 * ca.sqrt())? + (&cnoise * (1.0 - ca).sqrt())?)?;
+            let cpred =
+                unet.forward_sdxl(&cx_t, ct as f64, class_hidden, class_pooled, &add_time_ids)?;
+            let closs = (&cpred - &cnoise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            loss = (&loss + (closs * req.prior_weight as f64)?)?;
+        }
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
