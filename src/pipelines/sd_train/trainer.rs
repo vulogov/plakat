@@ -4,7 +4,7 @@
 //! objective with CLIP-L conditioning, training the vendored LoRA-wired
 //! UNet. Mixed precision (BF16 base + F32 LoRA — the LoraLinear forward
 //! casts). Output is a **kohya**-format `.safetensors` (`lora_unet_…`).
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor, Var};
 use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
 use candle_nn::VarBuilder;
@@ -61,6 +61,12 @@ pub struct SdStyleTrainRequest {
     pub checkpoint_every: Option<usize>,
     /// Log a progress line every N steps (min 1).
     pub log_every: usize,
+    /// Resume from a checkpoint (a kohya LoRA written by an earlier run). The
+    /// adapters are initialized from it and the step counter continues from the
+    /// checkpoint's step (parsed from `…-step<N>.safetensors`), so training runs
+    /// up to `steps`. `None` = train from scratch (the default). Additive: when
+    /// unset the loop is identical to before.
+    pub resume_from: Option<PathBuf>,
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
@@ -181,12 +187,14 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     // --- Phase C: DDPM-epsilon loop. x_t = √ᾱ·x0 + √(1-ᾱ)·ε; predict ε.
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let start_step =
+        resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sd-style-train")?;
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
@@ -300,12 +308,14 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
 
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let start_step =
+        resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sdxl-style-train")?;
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
@@ -378,4 +388,83 @@ fn save_kohya_lora(adapters: &[(String, Var, Var)], rank: usize, out: &Path) -> 
     }
     candle_core::safetensors::save(&tensors, out)?;
     Ok(())
+}
+
+/// Parse the step number from a checkpoint filename written by
+/// [`checkpoint_path`] (`<stem>-step<N>.<ext>`). `None` if the name carries no
+/// step (e.g. resuming from the final, no-suffix output) — caller defaults to 0.
+fn parse_resume_step(path: &Path) -> Option<usize> {
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    let idx = stem.rfind("-step")?;
+    stem[idx + "-step".len()..].parse::<usize>().ok()
+}
+
+/// Load a kohya LoRA checkpoint (written by [`save_kohya_lora`]) back into the
+/// live training adapters — the inverse of the save. Used by `--resume`. Errors
+/// if a tensor is missing (a rank / base-model mismatch with the current run).
+fn load_kohya_into_adapters(
+    adapters: &[(String, Var, Var)],
+    path: &Path,
+    device: &Device,
+) -> Result<()> {
+    let loaded = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading resume checkpoint {}", path.display()))?;
+    for (key, a, b) in adapters {
+        let logical = key.strip_suffix(".weight").unwrap_or(key);
+        let slug = format!("lora_unet_{}", logical.replace('.', "_"));
+        let down = loaded.get(&format!("{slug}.lora_down.weight")).ok_or_else(|| {
+            anyhow!("resume: checkpoint missing {slug}.lora_down.weight (rank/base mismatch?)")
+        })?;
+        let up = loaded
+            .get(&format!("{slug}.lora_up.weight"))
+            .ok_or_else(|| anyhow!("resume: checkpoint missing {slug}.lora_up.weight"))?;
+        a.set(&down.to_dtype(a.as_tensor().dtype())?)?;
+        b.set(&up.to_dtype(b.as_tensor().dtype())?)?;
+    }
+    Ok(())
+}
+
+/// Shared `--resume` handling: load the checkpoint into the adapters and return
+/// the step to continue from (clamped below `steps`). `None` request → 0.
+fn resume_start_step(
+    resume_from: &Option<PathBuf>,
+    adapters: &[(String, Var, Var)],
+    device: &Device,
+    steps: usize,
+    tag: &str,
+) -> Result<usize> {
+    let Some(ckpt) = resume_from else {
+        return Ok(0);
+    };
+    load_kohya_into_adapters(adapters, ckpt, device)?;
+    let start = parse_resume_step(ckpt).unwrap_or(0).min(steps);
+    if start >= steps {
+        anyhow::bail!(
+            "{tag}: --resume checkpoint is already at step {start} ≥ --steps {steps}; \
+             raise --steps to continue training"
+        );
+    }
+    tracing::info!("{tag}: resuming from {} at step {start}/{steps}", ckpt.display());
+    Ok(start)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_checkpoint_step_from_filename() {
+        assert_eq!(
+            parse_resume_step(Path::new("watercolour-step288.safetensors")),
+            Some(288)
+        );
+        assert_eq!(
+            parse_resume_step(Path::new("/a/b/my-lora-step1440.safetensors")),
+            Some(1440)
+        );
+        assert_eq!(parse_resume_step(Path::new("style-step0.safetensors")), Some(0));
+        // No "-step<N>" → None (caller defaults to 0).
+        assert_eq!(parse_resume_step(Path::new("final.safetensors")), None);
+        assert_eq!(parse_resume_step(Path::new("lora-step.safetensors")), None);
+    }
 }

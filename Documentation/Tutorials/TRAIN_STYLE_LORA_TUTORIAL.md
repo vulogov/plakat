@@ -104,6 +104,17 @@ is a couple of hours. Two things make that bearable:
 - **It checkpoints every 30 steps**, overwriting `--out`. So from step 30
   on you have a usable LoRA *even if you stop early* — render with it,
   and if the style's strong enough, `Ctrl-C` and move on.
+- **Resume an interrupted run** (sd15 / sdxl) with `--resume`: point it at a
+  numbered `…-step<N>.safetensors` checkpoint and it continues from that step up
+  to `--steps`, so raise `--steps` to train further:
+
+  ```bash
+  plakat style train --base sdxl --in ./my-style \
+    --resume my-style-step60.safetensors --steps 120   # 60 more steps
+  ```
+
+  Numbered checkpoints are written by default (unset `PLAKAT_TRAIN_SINGLE_FILE`).
+  sd35's separate MMDiT trainer doesn't support `--resume` yet.
 
 > **Why it's separate from generation:** training takes hours, rendering
 > takes a minute. You train **once**, then reuse the LoRA forever. The
