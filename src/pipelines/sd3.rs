@@ -1790,6 +1790,10 @@ pub struct StyleTrainRequest {
     pub checkpoint_every: Option<usize>,
     /// Log a progress line every N steps (min 1).
     pub log_every: usize,
+    /// Resume from a checkpoint (a diffusers-PEFT LoRA written by an earlier
+    /// run). The fused adapters are reconstructed from it and the step counter
+    /// continues from the checkpoint's step up to `steps`. `None` = from scratch.
+    pub resume_from: Option<std::path::PathBuf>,
 }
 
 /// Train a style LoRA on the MMDiT attention projections; write a
@@ -1867,7 +1871,30 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    // Additive: `start_step` is 0 unless --resume, so the loop is unchanged.
+    let start_step = match &req.resume_from {
+        Some(ckpt) => {
+            load_peft_into_adapters(&adapters, ckpt, &device)?;
+            let s = crate::pipelines::sd_train::trainer::parse_resume_step(ckpt)
+                .unwrap_or(0)
+                .min(req.steps);
+            if s >= req.steps {
+                bail!(
+                    "style-train: --resume checkpoint at step {s} ≥ --steps {}; \
+                     raise --steps to continue training",
+                    req.steps
+                );
+            }
+            tracing::info!(
+                "style-train: resuming from {} at step {s}/{}",
+                ckpt.display(),
+                req.steps
+            );
+            s
+        }
+        None => 0,
+    };
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let sigma = 0.05
@@ -1982,9 +2009,108 @@ fn save_peft_lora(
     Ok(())
 }
 
+/// Load a diffusers-PEFT LoRA checkpoint (written by [`save_peft_lora`]) back
+/// into the live fused MMDiT adapters — the inverse of the save: the shared
+/// `lora_A` is read once per fused projection and the per-q/k/v `lora_B` slices
+/// are concatenated back into the fused B. Used by `--resume`. The slug mapping
+/// mirrors `save_peft_lora` exactly (the round-trip test guards against drift).
+fn load_peft_into_adapters(
+    adapters: &[(String, candle_core::Var, candle_core::Var)],
+    path: &std::path::Path,
+    device: &Device,
+) -> Result<()> {
+    let loaded = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading resume checkpoint {}", path.display()))?;
+    let get = |name: &str| -> Result<Tensor> {
+        loaded
+            .get(name)
+            .ok_or_else(|| anyhow!("resume: checkpoint missing {name} (rank/base mismatch?)"))
+            .cloned()
+    };
+    for (key, a, b) in adapters {
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let i: usize = match parts[1].parse() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let is_ctx = parts[2] == "context_block";
+        let kind = parts[4];
+        let base = format!("transformer.transformer_blocks.{i}.attn");
+        let subs: &[&str] = match (is_ctx, kind) {
+            (false, "qkv") => &["to_q", "to_k", "to_v"],
+            (true, "qkv") => &["add_q_proj", "add_k_proj", "add_v_proj"],
+            (false, "proj") => &["to_out.0"],
+            (true, "proj") => &["to_add_out"],
+            _ => continue,
+        };
+        // Shared A: read once from the first sub. B: concat the per-sub slices
+        // back into the fused adapter (inverse of save's narrow).
+        let a_loaded = get(&format!("{base}.{}.lora_A.weight", subs[0]))?;
+        let mut b_parts = Vec::with_capacity(subs.len());
+        for s in subs {
+            b_parts.push(get(&format!("{base}.{s}.lora_B.weight"))?);
+        }
+        let b_loaded = if b_parts.len() == 1 {
+            b_parts.pop().unwrap()
+        } else {
+            Tensor::cat(&b_parts, 0)?
+        };
+        a.set(&a_loaded.to_dtype(a.as_tensor().dtype())?)?;
+        b.set(&b_loaded.to_dtype(b.as_tensor().dtype())?)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peft_lora_save_load_roundtrip() {
+        // The fused-qkv split (save) ↔ concat (load) must round-trip, or --resume
+        // silently corrupts the adapters. Verified on CPU, no training needed.
+        let dev = Device::Cpu;
+        let (rank, hidden, in_dim) = (2usize, 4usize, 6usize);
+        let mk = |key: &str, b_rows: usize| -> (String, candle_core::Var, candle_core::Var) {
+            let a = candle_core::Var::from_tensor(
+                &Tensor::randn(0f32, 1f32, (rank, in_dim), &dev).unwrap(),
+            )
+            .unwrap();
+            let b = candle_core::Var::from_tensor(
+                &Tensor::randn(0f32, 1f32, (b_rows, rank), &dev).unwrap(),
+            )
+            .unwrap();
+            (key.to_string(), a, b)
+        };
+        let keys = || {
+            vec![
+                mk("joint_blocks.0.x_block.attn.qkv.weight", 3 * hidden),
+                mk("joint_blocks.0.context_block.attn.proj.weight", hidden),
+            ]
+        };
+        let src = keys();
+        let tmp = std::env::temp_dir().join("plakat_sd3_peft_roundtrip.safetensors");
+        save_peft_lora(&src, rank, hidden, &tmp).unwrap();
+        let dst = keys(); // fresh adapters, overwritten by the load
+        load_peft_into_adapters(&dst, &tmp, &dev).unwrap();
+        let max_abs = |x: &candle_core::Var, y: &candle_core::Var| -> f32 {
+            let d: Vec<f32> = (x.as_tensor() - y.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            d.iter().fold(0f32, |m, v| m.max(v.abs()))
+        };
+        for ((_, sa, sb), (_, da, db)) in src.iter().zip(dst.iter()) {
+            assert!(max_abs(sa, da) < 1e-2, "A drift (F16 round-trip)");
+            assert!(max_abs(sb, db) < 1e-2, "B drift (F16 round-trip)");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
 
     // v0.14 phase 1a — schedule transform.
 

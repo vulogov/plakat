@@ -89,7 +89,7 @@ pub struct TrainArgs {
     pub lr: f64,
     /// Resume from a checkpoint (a `…-step<N>.safetensors` written by an earlier
     /// run). Continues from that step up to `--steps`, so bump `--steps` to train
-    /// further. Omit to train from scratch. (sd15 / sdxl; sd35 not yet supported.)
+    /// further. Omit to train from scratch. Works on all bases (sd15/sdxl/sd35).
     #[arg(long, value_name = "CKPT")]
     pub resume: Option<PathBuf>,
 }
@@ -276,12 +276,6 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             .await
         }
         "sd35" | "sd35-medium" | "sd3.5-medium" => {
-            if args.resume.is_some() {
-                anyhow::bail!(
-                    "style train: --resume is not yet supported for sd35 (separate MMDiT \
-                     trainer) — use --base sd15 or --base sdxl, or omit --resume"
-                );
-            }
             use crate::pipelines::sd3;
             sd3::train_style_lora(sd3::StyleTrainRequest {
                 variant: sd3::Variant::Sd35Medium,
@@ -296,6 +290,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
                 log_every: args.log_every,
+                resume_from: args.resume,
             })
             .await
         }

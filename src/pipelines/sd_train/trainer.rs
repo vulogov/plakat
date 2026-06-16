@@ -393,7 +393,7 @@ fn save_kohya_lora(adapters: &[(String, Var, Var)], rank: usize, out: &Path) -> 
 /// Parse the step number from a checkpoint filename written by
 /// [`checkpoint_path`] (`<stem>-step<N>.<ext>`). `None` if the name carries no
 /// step (e.g. resuming from the final, no-suffix output) — caller defaults to 0.
-fn parse_resume_step(path: &Path) -> Option<usize> {
+pub(crate) fn parse_resume_step(path: &Path) -> Option<usize> {
     let stem = path.file_stem().and_then(|s| s.to_str())?;
     let idx = stem.rfind("-step")?;
     stem[idx + "-step".len()..].parse::<usize>().ok()
