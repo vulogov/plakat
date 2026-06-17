@@ -81,10 +81,13 @@ selection; everything else composes pieces plakat owns.
 - [ ] **Regional prompting** — *(L)* different prompts in different canvas regions
       (reuse the artefact **zones**). Needs masked/region-routed cross-attention in
       the SD-core UNet — the hardest candle piece here; prototype on SD 1.5/SDXL.
-- [ ] **Layered scenes** — *(M)* a scenario construct that stacks
-      `generate → matte → composite → blend` as named **layers** with z-order +
-      per-layer ops. Builds directly on artefacts + scenarios; mostly schema + a
-      compositor loop. Freeze the new scenario keys.
+- [~] **Layered scenes** — *(M)* **`plakat compose <scene.hjson>` SHIPPED & CPU-verified
+      (`src/cli/compose.rs`).** Stacks image **layers** (z-order): a no-`at` layer fills
+      the canvas; placed layers positioned (9-grid / `x,y`), scaled, alpha-composited +
+      opacity. Self-contained compositor (no GPU) → composes `load` + artefact-library
+      cut-outs; verified (valley + cottage + pine + balloon, `corpus/compose.sh`). 3 unit
+      tests. **Remaining (next):** `generate:` layers (render a layer inline) and inline
+      `matte:` (U2Net a layer on the fly) — both GPU; then freeze the schema in STABILITY.md.
 - [ ] **Relighting composited artefacts** (IC-Light) — *(L, stretch)* the honest weak
       spot of artefact compositing — a relight pass would make composites *real*, not
       just grounded. IC-Light is an SD 1.5-based relighting model; porting the model +
