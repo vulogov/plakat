@@ -22,8 +22,11 @@ CONCEPT="$WORK/concept-$BASE"; EMB="$WORK/glass-$BASE.safetensors"
 OUT="$ROOT/corpus/images/embedding-train/$BASE"
 TRIG="sgwin"
 case "$BASE" in
-  sd15) SIZE=512x512 ;;
-  sd21) SIZE=768x768 ;;   # SD 2.1 is a 768² model — rendering it at 512² degrades badly
+  # SD 2.1 is a 768² model; rendering it at 512² degrades badly — but 768² is
+  # memory-heavy (it OOMs a 24 GB Mac with apps open). Override with e.g.
+  # `SIZE=640x640 ./embedding_train.sh sd21` to trade quality for memory.
+  sd15) SIZE="${SIZE:-512x512}" ;;
+  sd21) SIZE="${SIZE:-768x768}" ;;
   *) echo "base must be sd15 | sd21 (single CLIP-L)"; exit 1 ;;
 esac
 mkdir -p "$CONCEPT" "$OUT"
