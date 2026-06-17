@@ -2112,7 +2112,7 @@ fn save_with_optional_metadata(
     }
 }
 
-fn tokenize_padded(
+pub(crate) fn tokenize_padded(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
     text: &str,

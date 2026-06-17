@@ -80,7 +80,7 @@ pub struct SdStyleTrainRequest {
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
-fn alphas_cumprod() -> Vec<f64> {
+pub(crate) fn alphas_cumprod() -> Vec<f64> {
     let (n, bs, be) = (1000usize, 0.00085f64, 0.012f64);
     let mut acc = 1.0;
     (0..n)
