@@ -83,6 +83,11 @@ If you're new to plakat, work through these in order:
  matting (any background → clean RGBA); chroma-key fallback for studio shots.
  Builds the artefact cutout library.
 
+5b. [`COMPOSE_TUTORIAL.md`](COMPOSE_TUTORIAL.md) — **v1.0. compose layered
+ scenes.** `plakat compose <scene.hjson>` stacks a background + cut-outs by
+ z-order, position (9-grid / `x,y`), scale, and opacity. No GPU — composes
+ existing assets. Pairs with `transparent` (matte the cut-outs first).
+
 6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
  image with a prompt (img2img), or repaint just a masked region
  (inpaint). Same `plakat img2img` subcommand drives both modes —
