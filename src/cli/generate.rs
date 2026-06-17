@@ -391,6 +391,13 @@ pub struct GenerateArgs {
     #[arg(long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
+    /// Regional prompting: a prompted region `"X0,Y0,X1,Y1:prompt"` (coords are
+    /// `[0,1]` canvas fractions). Repeatable — each region's prompt applies in
+    /// its box, blended over the main prompt for one coherent image. SD 1.5 /
+    /// SDXL, native resolution. Not composed with `--tiled` / `--control*`.
+    #[arg(long = "region", value_name = "X0,Y0,X1,Y1:PROMPT")]
+    pub region: Vec<String>,
+
     /// Tile side length in pixels. Default 1024 — SDXL's native
     /// working resolution. Must be a multiple of 8 (VAE constraint).
     #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
@@ -1143,6 +1150,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         } else {
             None
         },
+        regions: args
+            .region
+            .iter()
+            .map(|s| crate::pipelines::tiled::RegionSpec::parse(s))
+            .collect::<Result<Vec<_>>>()?,
         quantize_t5: args.quantize_t5,
         flux_quant_level: args.flux_quant_level,
         t5_quant_level: args.t5_quant_level,

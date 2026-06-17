@@ -79,6 +79,12 @@ pub struct Request {
     /// switch mid-stream don't compose with MultiDiffusion.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
 
+    /// Regional prompting (MultiDiffusion with per-region prompts). Empty = a
+    /// normal single-prompt generation. Each region's bbox (canvas fractions)
+    /// gets its own prompt blended over the base `prompt` at native resolution.
+    /// SD-family only; not composed with tiled / ControlNet / Flux / SD3.
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
+
     /// v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When `true`
     /// AND model is `--model flux-kontext-dev`, the requested
     /// (width, height) is snapped to the nearest of 17 BFL-recommended
@@ -1819,6 +1825,148 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Regional prompting (MultiDiffusion with per-region prompts). At native
+    /// resolution: every timestep, compute a full-canvas noise prediction for
+    /// the base prompt AND for each region prompt, then blend them by the
+    /// regions' bbox masks (the base fills everywhere the regions don't and
+    /// supplies global coherence). SD-family only; ~`1 + N` UNet passes/step.
+    pub fn generate_regional(
+        &self,
+        req: &GenRequest,
+        regions: &[crate::pipelines::tiled::RegionSpec],
+    ) -> Result<()> {
+        use crate::pipelines::tiled::region_mask;
+        crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
+        std::fs::create_dir_all(&req.out_dir)
+            .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
+
+        let (w, h) = (req.width as usize, req.height as usize);
+        let (lh, lw) = (h / 8, w / 8);
+        let do_cfg = req.guidance > 1.0;
+        let is_xl = self.core.variant.is_xl();
+        let dtype = self.core.dtype;
+        let device = self.core.device.clone();
+
+        // SDXL micro-conditioning (full canvas), CFG-batched. SD 1.5/2.1 → None.
+        let add_time_ids = if is_xl {
+            let cond = crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                req.width, req.height, &device, dtype,
+            )?;
+            Some(if do_cfg {
+                Tensor::cat(&[&cond, &cond], 0)?
+            } else {
+                cond
+            })
+        } else {
+            None
+        };
+
+        // Encode the base prompt + each region prompt; build region masks.
+        let (base_emb, base_pooled) =
+            self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
+        let mut prompts: Vec<(Tensor, Option<Tensor>, Tensor)> = Vec::new();
+        let mut covered = Tensor::zeros((1usize, 1, lh, lw), dtype, &device)?;
+        for r in regions {
+            let (emb, pooled) =
+                self.encode_prompt(&r.prompt, &req.negative, do_cfg, req.clip_skip)?;
+            let mask = region_mask(r.bbox, lh, lw, &device, dtype)?;
+            covered = (covered + &mask)?;
+            prompts.push((emb, pooled, mask));
+        }
+        // Base covers everywhere the regions don't (and gives global coherence).
+        let ones = Tensor::ones((1usize, 1, lh, lw), dtype, &device)?;
+        let base_mask = (&ones - &covered)?.clamp(0f32, 1f32)?;
+
+        crate::ui::progress::println(&format!(
+            "  {} regional: {} region(s) over base · {}×{}",
+            console::style("◆").cyan().bold(),
+            regions.len(),
+            w,
+            h
+        ));
+
+        let vae_scale = self.core.variant.vae_scale();
+        for idx in 0..req.count {
+            let seed = req.seed.map(|s| s + idx as u64).unwrap_or_else(rand::random);
+            let prepared = crate::pipelines::seeds::prepare_seed(seed, &device);
+            let _ = self.core.device.set_seed(prepared);
+
+            let mut scheduler =
+                crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
+            let timesteps = scheduler.timesteps().to_vec();
+            let mut latents = (Tensor::randn(0f32, 1f32, (1usize, 4, lh, lw), &device)?
+                .to_dtype(dtype)?
+                * scheduler.init_noise_sigma())?;
+            let bar = crate::ui::progress::step_bar(
+                timesteps.len() as u64,
+                &format!("regional img {}/{}", idx + 1, req.count),
+            );
+
+            for &timestep in &timesteps {
+                // Scale the (CFG-batched) latent once — all prompts denoise the
+                // SAME latent, only the conditioning differs. Computed outside the
+                // closure so it never borrows the scheduler (frees `scheduler.step`).
+                let latent_in = if do_cfg {
+                    Tensor::cat(&[&latents, &latents], 0)?
+                } else {
+                    latents.clone()
+                };
+                let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
+                let predict = |emb: &Tensor, pooled: &Option<Tensor>| -> Result<Tensor> {
+                    let pred = self.core.unet.forward(
+                        &latent_in,
+                        timestep as f64,
+                        emb,
+                        pooled.as_ref(),
+                        add_time_ids.as_ref(),
+                    )?;
+                    if do_cfg {
+                        let c = pred.chunk(2, 0)?;
+                        Ok((&c[0] + ((&c[1] - &c[0])? * req.guidance)?)?)
+                    } else {
+                        Ok(pred)
+                    }
+                };
+
+                let base_pred = predict(&base_emb, &base_pooled)?;
+                let mut acc = base_pred.broadcast_mul(&base_mask)?;
+                let mut weights = base_mask.clone();
+                for (emb, pooled, mask) in &prompts {
+                    let rp = predict(emb, pooled)?;
+                    acc = (acc + rp.broadcast_mul(mask)?)?;
+                    weights = (weights + mask)?;
+                    // Bound peak memory: finish each region's pass before the next.
+                    acc.device().synchronize()?;
+                }
+                let noise_pred = acc.broadcast_div(&weights)?;
+                latents = scheduler.step(&noise_pred, timestep, &latents)?;
+                bar.inc(1);
+                bar.set_message(format!("t={timestep} seed={seed}"));
+            }
+            bar.finish_and_clear();
+
+            // Normal (full-canvas) VAE decode — regional runs at native res.
+            let image = self.core.vae.decode(&(&latents / vae_scale)?)?;
+            let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
+            let image = (image * 255.0)?.to_dtype(DType::U8)?.i(0)?.permute((1, 2, 0))?;
+            let (oh, ow, _) = image.dims3()?;
+            let buf = image.flatten_all()?.to_vec1::<u8>()?;
+            let out_path = req
+                .out_dir
+                .join(format!("plakat-{seed}.{}", req.output_format.extension()));
+            save_with_optional_metadata(
+                &buf,
+                ow as u32,
+                oh as u32,
+                &out_path,
+                req.metadata.as_ref(),
+                seed,
+            )?;
+            crate::ui::progress::println(&format!("→ {}", out_path.display()));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn denoise_step(
         &self,
@@ -2819,9 +2967,13 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         preview_size,
         output_format: req.output_format,
     };
-    match req.tiled {
-        None => pipeline.generate(&gen_req, &control_reqs)?,
-        Some(cfg) => pipeline.generate_tiled(&gen_req, cfg)?,
+    if !req.regions.is_empty() {
+        pipeline.generate_regional(&gen_req, &req.regions)?;
+    } else {
+        match req.tiled {
+            None => pipeline.generate(&gen_req, &control_reqs)?,
+            Some(cfg) => pipeline.generate_tiled(&gen_req, cfg)?,
+        }
     }
     Ok(Some(pipeline.core()))
 }

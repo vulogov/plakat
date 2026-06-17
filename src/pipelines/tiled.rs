@@ -302,3 +302,98 @@ mod tests {
         }
     }
 }
+
+// ---- Regional prompting (MultiDiffusion with per-region prompts) ----
+
+/// One prompted region: a bbox in `[x0, y0, x1, y1]` canvas fractions (`[0,1]`)
+/// and the prompt that applies there. The base `plakat.generate` prompt covers
+/// everything else (and provides global coherence).
+#[derive(Debug, Clone)]
+pub struct RegionSpec {
+    pub bbox: [f32; 4],
+    pub prompt: String,
+}
+
+impl RegionSpec {
+    /// Parse `"x0,y0,x1,y1:prompt"` (coords are `[0,1]` canvas fractions).
+    pub fn parse(s: &str) -> Result<Self> {
+        let (coords, prompt) = s
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("region {s:?}: expected \"x0,y0,x1,y1:prompt\""))?;
+        let v: Vec<f32> = coords
+            .split(',')
+            .map(|p| p.trim().parse::<f32>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| anyhow::anyhow!("region {s:?}: coords must be 4 numbers in [0,1]"))?;
+        if v.len() != 4 {
+            anyhow::bail!("region {s:?}: expected 4 coords x0,y0,x1,y1, got {}", v.len());
+        }
+        let (x0, y0, x1, y1) = (v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3]));
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            anyhow::bail!("region {s:?}: empty prompt");
+        }
+        Ok(Self {
+            bbox: [
+                x0.clamp(0.0, 1.0),
+                y0.clamp(0.0, 1.0),
+                x1.clamp(0.0, 1.0),
+                y1.clamp(0.0, 1.0),
+            ],
+            prompt: prompt.to_string(),
+        })
+    }
+}
+
+/// Build a `(1, 1, lh, lw)` latent-space mask that is `1.0` inside the bbox and
+/// `0.0` outside (a latent pixel is "inside" if its center falls in the bbox).
+pub fn region_mask(
+    bbox: [f32; 4],
+    lh: usize,
+    lw: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let [x0, y0, x1, y1] = bbox;
+    let mut data = vec![0f32; lh * lw];
+    for i in 0..lh {
+        let cy = (i as f32 + 0.5) / lh as f32;
+        for j in 0..lw {
+            let cx = (j as f32 + 0.5) / lw as f32;
+            if cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 {
+                data[i * lw + j] = 1.0;
+            }
+        }
+    }
+    Ok(Tensor::from_vec(data, (1, 1, lh, lw), device)?.to_dtype(dtype)?)
+}
+
+#[cfg(test)]
+mod regional_tests {
+    use super::*;
+
+    #[test]
+    fn parses_region_spec() {
+        let r = RegionSpec::parse("0,0,0.5,1:a dense forest").unwrap();
+        assert_eq!(r.bbox, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(r.prompt, "a dense forest");
+        // coords normalize (min/max) + clamp.
+        assert_eq!(RegionSpec::parse("0.5,0,1,1:x").unwrap().bbox, [0.5, 0.0, 1.0, 1.0]);
+        assert!(RegionSpec::parse("0,0,1:bad").is_err());
+        assert!(RegionSpec::parse("no colon").is_err());
+        assert!(RegionSpec::parse("0,0,1,1:").is_err());
+    }
+
+    #[test]
+    fn region_mask_left_half() {
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 4, 4, &Device::Cpu, DType::F32).unwrap();
+        let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
+        // 4×4: columns 0,1 (centers 0.125,0.375 < 0.5) inside; cols 2,3 outside.
+        for row in 0..4 {
+            assert_eq!(v[row * 4], 1.0);
+            assert_eq!(v[row * 4 + 1], 1.0);
+            assert_eq!(v[row * 4 + 2], 0.0);
+            assert_eq!(v[row * 4 + 3], 0.0);
+        }
+    }
+}
