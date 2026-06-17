@@ -1073,6 +1073,16 @@ fn render_capability(r: &crate::capability::CapabilityReport) {
         if hw.features.is_empty() { "—".to_string() } else { hw.features.join("+") }
     );
     println!("    memory    {}", hw.budget_label());
+    println!(
+        "    pressure  {} · ~{:.1} GB free now (the OOM guard's signal)",
+        match crate::hw::mem_pressure() {
+            crate::hw::Pressure::Normal => "normal",
+            crate::hw::Pressure::Warning => "⚠ warning",
+            crate::hw::Pressure::Critical => "⛔ critical",
+            crate::hw::Pressure::Unknown => "n/a",
+        },
+        crate::hw::available_ram_gb(),
+    );
     println!("    cpu       {} cores · {} · {}", hw.cpu_cores, hw.arch, hw.os);
 
     println!("\n  {}\n", style("model capability").bold());

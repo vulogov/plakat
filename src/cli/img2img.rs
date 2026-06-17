@@ -1284,6 +1284,7 @@ async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         } else {
             None
         },
+        regions: Vec::new(),
         // v0.16 phase 3e: SD3 img2img path doesn't take
         // --control-spec — the CN integration lives on the t2i
         // dispatch only. The img2img CLI doesn't surface --control*,

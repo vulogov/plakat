@@ -1,0 +1,16 @@
+// plakat proof corpus — layered scene (plakat compose). No GPU: stacks a
+// landscape background + RGBA cut-outs (z-order = array order) with per-layer
+// position (9-grid), scale (fraction of canvas width), and alpha. Paths are
+// relative to this file.
+{
+  size: "1024x1024"
+  out: "images/compose/valley-scene.png"
+  layers: [
+    // Background — no `at` ⇒ fills the canvas.
+    { load: "images/script/tiled-valley.png" }
+    // A cottage nestled at the bottom, a pine to its left, a balloon up high.
+    { load: "assets/artefact_library/houses/cottage.png", at: "bottom_center", scale: 0.34 }
+    { load: "assets/artefact_library/trees/pine.png",     at: "bottom_left",   scale: 0.22 }
+    { load: "assets/artefact_library/sky/balloon.png",    at: "top_right",     scale: 0.17 }
+  ]
+}

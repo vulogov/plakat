@@ -204,6 +204,11 @@ where
             &weights_updated,
         )?;
 
+        // Finish this tile's GPU work before the next so Metal reclaims the
+        // decode's transient buffers (see the denoise-loop note in t2i.rs —
+        // unbounded queued buffers OOM Metal). VAE decode at pixel resolution
+        // is the memory-tightest op in the tiled pipeline.
+        acc_t.device().synchronize()?;
         acc = Some(acc_t);
         weights = Some(weights_t);
     }
@@ -295,5 +300,145 @@ mod tests {
         for &x in &v {
             assert!(centre >= x - 1e-5);
         }
+    }
+}
+
+// ---- Regional prompting (MultiDiffusion with per-region prompts) ----
+
+/// One prompted region: a bbox in `[x0, y0, x1, y1]` canvas fractions (`[0,1]`)
+/// and the prompt that applies there. The base `plakat.generate` prompt covers
+/// everything else (and provides global coherence).
+#[derive(Debug, Clone)]
+pub struct RegionSpec {
+    pub bbox: [f32; 4],
+    pub prompt: String,
+}
+
+impl RegionSpec {
+    /// Parse `"x0,y0,x1,y1:prompt"` (coords are `[0,1]` canvas fractions).
+    pub fn parse(s: &str) -> Result<Self> {
+        let (coords, prompt) = s
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("region {s:?}: expected \"x0,y0,x1,y1:prompt\""))?;
+        let v: Vec<f32> = coords
+            .split(',')
+            .map(|p| p.trim().parse::<f32>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| anyhow::anyhow!("region {s:?}: coords must be 4 numbers in [0,1]"))?;
+        if v.len() != 4 {
+            anyhow::bail!("region {s:?}: expected 4 coords x0,y0,x1,y1, got {}", v.len());
+        }
+        let (x0, y0, x1, y1) = (v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3]));
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            anyhow::bail!("region {s:?}: empty prompt");
+        }
+        Ok(Self {
+            bbox: [
+                x0.clamp(0.0, 1.0),
+                y0.clamp(0.0, 1.0),
+                x1.clamp(0.0, 1.0),
+                y1.clamp(0.0, 1.0),
+            ],
+            prompt: prompt.to_string(),
+        })
+    }
+}
+
+/// Build a `(1, 1, lh, lw)` latent-space mask that is `1.0` inside the bbox and
+/// `0.0` outside (a latent pixel is "inside" if its center falls in the bbox).
+pub fn region_mask(
+    bbox: [f32; 4],
+    lh: usize,
+    lw: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let [x0, y0, x1, y1] = bbox;
+    // Soft edge: the mask ramps 0→1 across ~`FEATHER` of the canvas, centered on
+    // the bbox boundary (signed distance to the nearest edge, corner-aware), so
+    // neighbouring regions blend instead of seaming. Hard masks left visible
+    // joins between regions.
+    const FEATHER: f32 = 0.05;
+    let mut data = vec![0f32; lh * lw];
+    for i in 0..lh {
+        let cy = (i as f32 + 0.5) / lh as f32;
+        let sy = (cy - y0).min(y1 - cy); // +inside, −outside (y)
+        for j in 0..lw {
+            let cx = (j as f32 + 0.5) / lw as f32;
+            let sx = (cx - x0).min(x1 - cx); // +inside, −outside (x)
+            let s = sx.min(sy); // signed distance to the nearest box edge
+            data[i * lw + j] = (s / FEATHER + 0.5).clamp(0.0, 1.0);
+        }
+    }
+    Ok(Tensor::from_vec(data, (1, 1, lh, lw), device)?.to_dtype(dtype)?)
+}
+
+/// Reject regional prompting combined with options it can't compose with —
+/// both would otherwise be silently dropped. Called from the CLI and scenario
+/// dispatch when `regions` is non-empty.
+pub fn check_regional_combo(tiled: bool, control: bool) -> Result<()> {
+    if tiled {
+        anyhow::bail!(
+            "--region (regional prompting) doesn't compose with --tiled — both are \
+             MultiDiffusion passes over the same canvas; use one or the other"
+        );
+    }
+    if control {
+        anyhow::bail!(
+            "--region (regional prompting) doesn't compose with ControlNet (--control*) — \
+             the regional path doesn't apply CN residuals; use one or the other"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod regional_tests {
+    use super::*;
+
+    #[test]
+    fn parses_region_spec() {
+        let r = RegionSpec::parse("0,0,0.5,1:a dense forest").unwrap();
+        assert_eq!(r.bbox, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(r.prompt, "a dense forest");
+        // coords normalize (min/max) + clamp.
+        assert_eq!(RegionSpec::parse("0.5,0,1,1:x").unwrap().bbox, [0.5, 0.0, 1.0, 1.0]);
+        assert!(RegionSpec::parse("0,0,1:bad").is_err());
+        assert!(RegionSpec::parse("no colon").is_err());
+        assert!(RegionSpec::parse("0,0,1,1:").is_err());
+    }
+
+    #[test]
+    fn region_mask_left_half() {
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 4, 4, &Device::Cpu, DType::F32).unwrap();
+        let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
+        // 4×4: columns 0,1 (centers 0.125,0.375 < 0.5) inside; cols 2,3 outside.
+        for row in 0..4 {
+            assert_eq!(v[row * 4], 1.0);
+            assert_eq!(v[row * 4 + 1], 1.0);
+            assert_eq!(v[row * 4 + 2], 0.0);
+            assert_eq!(v[row * 4 + 3], 0.0);
+        }
+    }
+
+    #[test]
+    fn region_mask_feathers_at_edge() {
+        // 40-wide row, box [0,0,0.5,1]: columns straddling x=0.5 are PARTIAL
+        // (soft falloff), not a hard 0/1 cut.
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32).unwrap();
+        let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
+        let soft = v.iter().filter(|&&x| x > 0.05 && x < 0.95).count();
+        assert!(soft >= 1, "expected soft (partial) values near the edge, got {soft}");
+        // Well inside the box (away from any edge, incl. the canvas edge at x=0) ≈ 1.
+        assert!((v[5] - 1.0).abs() < 1e-4, "far inside ≈ 1, got {}", v[5]);
+        assert!(v[39] < 1e-4, "far outside ≈ 0");
+    }
+
+    #[test]
+    fn regional_combo_guard() {
+        assert!(check_regional_combo(false, false).is_ok());
+        assert!(check_regional_combo(true, false).is_err()); // + tiled
+        assert!(check_regional_combo(false, true).is_err()); // + control
     }
 }

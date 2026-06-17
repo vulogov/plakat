@@ -460,6 +460,7 @@ fn build_sd3_gen_request(
         mask_invert: false,
         strength: Some(ctx.config.strength),
         tiled: tiled_cfg_from(ctx),
+        regions: Vec::new(),
         controlnet_conditioning: Vec::new(),
         output_format: crate::imaging::io::OutputFormat::Png,
     }
@@ -1036,10 +1037,32 @@ pub fn generate_one(ctx: &mut ScriptCtx, prompt: &str) -> Result<DynamicImage> {
             }
             // Scope-bound pipeline borrow so we can restore
             // ctx.loras after the generate call returns.
+            // v1.0: tiled hi-res scripting — when the `tiled` config key is set
+            // (`plakat.tiled.enable`), dispatch to the SD t2i pipeline's
+            // `generate_tiled` instead of `generate` (mirrors the CLI `--tiled`).
+            // Computed before the pipeline borrow to avoid aliasing `ctx`.
+            let tiled_cfg = tiled_cfg_from(ctx);
             let shared_core = {
                 let pipeline = ctx.get_or_load_sd_t2i(&alias)?;
-                pipeline.generate(&req, &control_reqs)
-                    .context("t2i::Pipeline::generate (plakat.generate SD path)")?;
+                match tiled_cfg {
+                    Some(tcfg) => {
+                        if !control_reqs.is_empty() {
+                            bail!(
+                                "plakat.generate: tiled hi-res doesn't compose with \
+                                 ControlNet — disable one (plakat.tiled.disable OR \
+                                 plakat.controlnet.clear)."
+                            );
+                        }
+                        pipeline.generate_tiled(&req, tcfg).context(
+                            "t2i::Pipeline::generate_tiled (plakat.generate SD tiled path)",
+                        )?;
+                    }
+                    None => {
+                        pipeline.generate(&req, &control_reqs).context(
+                            "t2i::Pipeline::generate (plakat.generate SD path)",
+                        )?;
+                    }
+                }
                 pipeline.core()
             };
             // Restore user LoRA stack now that the pipeline borrow

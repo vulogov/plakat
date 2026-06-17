@@ -38,7 +38,7 @@ The keys accepted by `plakat scenario <file.hjson>` are frozen (defined by the
 - **Run:** `model`, `device`, `size`, `steps`, `guidance`, `seed`, `count`,
   `scheduler`, `out`, `negative`, `enhancer`/`enhance`.
 - **Axes & tasks:** `scene[]`, `weather[]`, `tasks[]`, `prompt-header`,
-  `prompt-footer`, `name`, `prompt`.
+  `prompt-footer`, `name`, `prompt`, `regions`.
 - **Adapters:** `lora-header`, `lora-footer`, `lora-scale`, `controls`,
   `control-*`, `style-catalog`, `style-ref`, `style-strength`.
 - **Transforms:** `init-image`, `mask-feather`, `mask-invert`, `refine-strength`,
@@ -48,6 +48,14 @@ The keys accepted by `plakat scenario <file.hjson>` are frozen (defined by the
   `motion-lora`, `motion-lora-scale`, `window-size`, `window-overlap`,
   `face-bbox`, `face-landmarks`, `face-strength`.
 - **Flux quant:** `flux-quant-level`, `quantize-t5`, `t5-quant-level`.
+- **Regional:** `regions` (per-task list of `"x0,y0,x1,y1:prompt"`).
+
+## Frozen contract #2b — Compose scene schema
+
+`plakat compose <scene.hjson>` reads a layered-scene file. Frozen keys: top-level
+`size` (`"WxH"`), `out`, `layers[]`; per layer `load`, `at` (9-grid name or
+`"x,y"`), `scale`, `opacity`. Future layer kinds (`generate`, `matte`) and per-layer
+keys are *additive* (non-breaking). See [`Tutorials/COMPOSE_TUTORIAL.md`](Tutorials/COMPOSE_TUTORIAL.md).
 
 ## Frozen contract #3 — Bund scripting word-set
 
@@ -58,7 +66,7 @@ namespaces: `plakat.load` / `generate` / `save` / `echo`; `plakat.lora.*`,
 `plakat.style.*`, `plakat.artefact.*`, `plakat.portrait*`; `plakat.animate`,
 `plakat.inpaint`, `plakat.outpaint`, `plakat.upscale`, `plakat.stylize`,
 `plakat.enhance`; `plakat.cascade` / `pixart` / `pixart`; `plakat.hires.*`,
-`plakat.refiner.*`, `plakat.adetailer.*`, `plakat.config.set`,
+`plakat.tiled.*`, `plakat.refiner.*`, `plakat.adetailer.*`, `plakat.config.set`,
 `plakat.metadata.*`.
 
 ## NOT a frozen contract — the Rust library API

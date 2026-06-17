@@ -391,6 +391,13 @@ pub struct GenerateArgs {
     #[arg(long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
+    /// Regional prompting: a prompted region `"X0,Y0,X1,Y1:prompt"` (coords are
+    /// `[0,1]` canvas fractions). Repeatable — each region's prompt applies in
+    /// its box, blended over the main prompt for one coherent image. SD 1.5 /
+    /// SDXL, native resolution. Not composed with `--tiled` / `--control*`.
+    #[arg(long = "region", value_name = "X0,Y0,X1,Y1:PROMPT")]
+    pub region: Vec<String>,
+
     /// Tile side length in pixels. Default 1024 — SDXL's native
     /// working resolution. Must be a multiple of 8 (VAE constraint).
     #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
@@ -733,6 +740,13 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // serialized canonical name).
     let known = crate::hf::all_known_aliases();
     crate::error_hints::hint_unknown_alias(&args.model, &known)?;
+
+    // Memory safety (recs #3 + the host-crash guard): warn up-front if RAM is
+    // already tight, then run a watchdog for the whole load+generate that aborts
+    // plakat before a unified-memory exhaustion can crash the host. Bound to a
+    // named local so it lives until run() returns.
+    crate::hw::memory_preflight(&device, &args.model);
+    let _mem_guard = crate::memwatch::MemoryGuard::start(&device, &args.model);
 
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
     // resolution (negative-preset combine, wildcards, enhance,
@@ -1136,6 +1150,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         } else {
             None
         },
+        regions: args
+            .region
+            .iter()
+            .map(|s| crate::pipelines::tiled::RegionSpec::parse(s))
+            .collect::<Result<Vec<_>>>()?,
         quantize_t5: args.quantize_t5,
         flux_quant_level: args.flux_quant_level,
         t5_quant_level: args.t5_quant_level,
@@ -1758,6 +1777,7 @@ mod tests {
             control_end: 1.0,
             control_specs: Vec::new(),
             tiled: false,
+            region: Vec::new(),
             tile_size: 1024,
             tile_stride: 768,
             quantize_t5: false,

@@ -4,7 +4,7 @@
 //! objective with CLIP-L conditioning, training the vendored LoRA-wired
 //! UNet. Mixed precision (BF16 base + F32 LoRA — the LoraLinear forward
 //! casts). Output is a **kohya**-format `.safetensors` (`lora_unet_…`).
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor, Var};
 use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
 use candle_nn::VarBuilder;
@@ -61,6 +61,22 @@ pub struct SdStyleTrainRequest {
     pub checkpoint_every: Option<usize>,
     /// Log a progress line every N steps (min 1).
     pub log_every: usize,
+    /// Resume from a checkpoint (a kohya LoRA written by an earlier run). The
+    /// adapters are initialized from it and the step counter continues from the
+    /// checkpoint's step (parsed from `…-step<N>.safetensors`), so training runs
+    /// up to `steps`. `None` = train from scratch (the default). Additive: when
+    /// unset the loop is identical to before.
+    pub resume_from: Option<PathBuf>,
+    /// DreamBooth prior preservation: a few generic CLASS images (e.g. other
+    /// dogs) trained alongside the subject under `class_prompt`, so the subject
+    /// token doesn't overfit or drag the whole class with it. Empty (the default)
+    /// = plain style/subject training with no prior loss — identical to before.
+    pub class_images: Vec<PathBuf>,
+    /// Class prompt for `class_images` (e.g. "a photo of a dog"). Required when
+    /// `class_images` is non-empty.
+    pub class_prompt: Option<String>,
+    /// Weight on the prior-preservation loss (DreamBooth's λ; typical ~1.0).
+    pub prior_weight: f32,
 }
 
 /// SD 1.5 scaled-linear beta schedule → cumulative alphas (length 1000).
@@ -114,7 +130,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         req.images.len(),
         req.trigger
     );
-    let (latents, text_emb, base_repo) = {
+    let (latents, text_emb, class_data, base_repo) = {
         let core = SdCore::load(SdLoadRequest {
             model: req.model.clone(),
             device: device.clone(),
@@ -125,35 +141,51 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         })
         .await?;
         let scale = core.variant.vae_scale();
-        let text_emb = crate::pipelines::t2i::encode_with_attention(
-            &core.tokenizer_l,
-            &core.cfg.clip,
-            &core.text_encoder_l,
-            &req.trigger,
-            1,
-            &device,
-            dtype,
-        )?
-        .to_dtype(dtype)?; // encode_with_attention's simple path keeps the encoder dtype (F16)
-        let mut latents = Vec::with_capacity(req.images.len());
-        for img in &req.images {
-            let px = crate::imaging::preprocess::sd_image_tensor(
-                img.as_path(),
-                req.size,
-                req.size,
+        let encode_text = |p: &str| -> Result<Tensor> {
+            // encode_with_attention's simple path keeps the encoder dtype (F16).
+            Ok(crate::pipelines::t2i::encode_with_attention(
+                &core.tokenizer_l,
+                &core.cfg.clip,
+                &core.text_encoder_l,
+                p,
+                1,
                 &device,
-                core.dtype,
-            )?;
-            let z = core.vae.encode(&px)?.sample()?;
-            let lat = (z * scale)?.to_dtype(dtype)?;
-            latents.push(lat);
-        }
+                dtype,
+            )?
+            .to_dtype(dtype)?)
+        };
+        let encode_imgs = |imgs: &[PathBuf]| -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    core.dtype,
+                )?;
+                let z = core.vae.encode(&px)?.sample()?;
+                v.push((z * scale)?.to_dtype(dtype)?);
+            }
+            Ok(v)
+        };
+        let text_emb = encode_text(&req.trigger)?;
+        let latents = encode_imgs(&req.images)?;
+        // DreamBooth prior preservation (optional): encode the class set too.
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            Some((encode_imgs(&req.class_images)?, encode_text(cp)?))
+        };
         let base_repo = if req.model.contains('/') {
             req.model.clone()
         } else {
             crate::hf::resolve_alias(&req.model).to_string()
         };
-        (latents, text_emb, base_repo)
+        (latents, text_emb, class_data, base_repo)
     };
 
     // --- Phase B: load the vendored UNet (BF16) + install adapters.
@@ -181,19 +213,36 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     // --- Phase C: DDPM-epsilon loop. x_t = √ᾱ·x0 + √(1-ᾱ)·ε; predict ε.
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let start_step =
+        resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sd-style-train")?;
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward(&x_t, t as f64, &text_emb)?;
-        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let mut loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // DreamBooth prior preservation: add the class-image loss (an independent
+        // class sample / timestep) so the subject token doesn't overfit or drag
+        // the whole class. No class data → this is plain training.
+        if let Some((class_lat, class_emb)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let cx0 = &class_lat[step % cn];
+            let cnoise = Tensor::randn(0f32, 1f32, cx0.dims(), &device)?.to_dtype(dtype)?;
+            let ct =
+                (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
+            let ca = abar[ct];
+            let cx_t = ((cx0 * ca.sqrt())? + (&cnoise * (1.0 - ca).sqrt())?)?;
+            let cpred = unet.forward(&cx_t, ct as f64, class_emb)?;
+            let closs = (&cpred - &cnoise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            loss = (&loss + (closs * req.prior_weight as f64)?)?;
+        }
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
@@ -230,7 +279,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         req.images.len(),
         req.trigger
     );
-    let (latents, hidden, pooled, add_time_ids, base_repo) = {
+    let (latents, hidden, pooled, add_time_ids, class_data, base_repo) = {
         let pipe = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
             model: req.model.clone(),
             device: device.clone(),
@@ -241,25 +290,43 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
             vae_cache: None,
         })
         .await?;
-        let (hidden, pooled_opt) = pipe.encode_prompt(&req.trigger, "", false, 1)?;
-        let hidden = hidden.to_dtype(dtype)?;
-        let pooled = pooled_opt
-            .ok_or_else(|| anyhow::anyhow!("SDXL encode returned no pooled embedding"))?
-            .to_dtype(dtype)?;
+        let encode_text = |p: &str| -> Result<(Tensor, Tensor)> {
+            let (h, po) = pipe.encode_prompt(p, "", false, 1)?;
+            Ok((
+                h.to_dtype(dtype)?,
+                po.ok_or_else(|| anyhow!("SDXL encode returned no pooled embedding"))?
+                    .to_dtype(dtype)?,
+            ))
+        };
         let core = pipe.core();
         let scale = core.variant.vae_scale();
-        let mut latents = Vec::with_capacity(req.images.len());
-        for img in &req.images {
-            let px = crate::imaging::preprocess::sd_image_tensor(
-                img.as_path(),
-                req.size,
-                req.size,
-                &device,
-                core.dtype,
-            )?;
-            let z = core.vae.encode(&px)?.sample()?;
-            latents.push((z * scale)?.to_dtype(dtype)?);
-        }
+        let encode_imgs = |imgs: &[PathBuf]| -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    core.dtype,
+                )?;
+                let z = core.vae.encode(&px)?.sample()?;
+                v.push((z * scale)?.to_dtype(dtype)?);
+            }
+            Ok(v)
+        };
+        let (hidden, pooled) = encode_text(&req.trigger)?;
+        let latents = encode_imgs(&req.images)?;
+        // DreamBooth prior preservation (optional): class set with class_prompt.
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            let (ch, cpooled) = encode_text(cp)?;
+            Some((encode_imgs(&req.class_images)?, ch, cpooled))
+        };
         let add_time_ids =
             crate::pipelines::sdxl_unet::build_add_time_ids_base(req.size, req.size, &device, dtype)?;
         let base_repo = if req.model.contains('/') {
@@ -267,7 +334,7 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
         } else {
             crate::hf::resolve_alias(&req.model).to_string()
         };
-        (latents, hidden, pooled, add_time_ids, base_repo)
+        (latents, hidden, pooled, add_time_ids, class_data, base_repo)
     };
 
     tracing::info!("sdxl-style-train: loading UNet for training");
@@ -300,19 +367,35 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
 
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
+    let start_step =
+        resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sdxl-style-train")?;
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward_sdxl(&x_t, t as f64, &hidden, &pooled, &add_time_ids)?;
-        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let mut loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // DreamBooth prior preservation (class loss on an independent sample).
+        if let Some((class_lat, class_hidden, class_pooled)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let cx0 = &class_lat[step % cn];
+            let cnoise = Tensor::randn(0f32, 1f32, cx0.dims(), &device)?.to_dtype(dtype)?;
+            let ct =
+                (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
+            let ca = abar[ct];
+            let cx_t = ((cx0 * ca.sqrt())? + (&cnoise * (1.0 - ca).sqrt())?)?;
+            let cpred =
+                unet.forward_sdxl(&cx_t, ct as f64, class_hidden, class_pooled, &add_time_ids)?;
+            let closs = (&cpred - &cnoise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            loss = (&loss + (closs * req.prior_weight as f64)?)?;
+        }
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;
@@ -378,4 +461,83 @@ fn save_kohya_lora(adapters: &[(String, Var, Var)], rank: usize, out: &Path) -> 
     }
     candle_core::safetensors::save(&tensors, out)?;
     Ok(())
+}
+
+/// Parse the step number from a checkpoint filename written by
+/// [`checkpoint_path`] (`<stem>-step<N>.<ext>`). `None` if the name carries no
+/// step (e.g. resuming from the final, no-suffix output) — caller defaults to 0.
+pub(crate) fn parse_resume_step(path: &Path) -> Option<usize> {
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    let idx = stem.rfind("-step")?;
+    stem[idx + "-step".len()..].parse::<usize>().ok()
+}
+
+/// Load a kohya LoRA checkpoint (written by [`save_kohya_lora`]) back into the
+/// live training adapters — the inverse of the save. Used by `--resume`. Errors
+/// if a tensor is missing (a rank / base-model mismatch with the current run).
+fn load_kohya_into_adapters(
+    adapters: &[(String, Var, Var)],
+    path: &Path,
+    device: &Device,
+) -> Result<()> {
+    let loaded = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading resume checkpoint {}", path.display()))?;
+    for (key, a, b) in adapters {
+        let logical = key.strip_suffix(".weight").unwrap_or(key);
+        let slug = format!("lora_unet_{}", logical.replace('.', "_"));
+        let down = loaded.get(&format!("{slug}.lora_down.weight")).ok_or_else(|| {
+            anyhow!("resume: checkpoint missing {slug}.lora_down.weight (rank/base mismatch?)")
+        })?;
+        let up = loaded
+            .get(&format!("{slug}.lora_up.weight"))
+            .ok_or_else(|| anyhow!("resume: checkpoint missing {slug}.lora_up.weight"))?;
+        a.set(&down.to_dtype(a.as_tensor().dtype())?)?;
+        b.set(&up.to_dtype(b.as_tensor().dtype())?)?;
+    }
+    Ok(())
+}
+
+/// Shared `--resume` handling: load the checkpoint into the adapters and return
+/// the step to continue from (clamped below `steps`). `None` request → 0.
+fn resume_start_step(
+    resume_from: &Option<PathBuf>,
+    adapters: &[(String, Var, Var)],
+    device: &Device,
+    steps: usize,
+    tag: &str,
+) -> Result<usize> {
+    let Some(ckpt) = resume_from else {
+        return Ok(0);
+    };
+    load_kohya_into_adapters(adapters, ckpt, device)?;
+    let start = parse_resume_step(ckpt).unwrap_or(0).min(steps);
+    if start >= steps {
+        anyhow::bail!(
+            "{tag}: --resume checkpoint is already at step {start} ≥ --steps {steps}; \
+             raise --steps to continue training"
+        );
+    }
+    tracing::info!("{tag}: resuming from {} at step {start}/{steps}", ckpt.display());
+    Ok(start)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_checkpoint_step_from_filename() {
+        assert_eq!(
+            parse_resume_step(Path::new("watercolour-step288.safetensors")),
+            Some(288)
+        );
+        assert_eq!(
+            parse_resume_step(Path::new("/a/b/my-lora-step1440.safetensors")),
+            Some(1440)
+        );
+        assert_eq!(parse_resume_step(Path::new("style-step0.safetensors")), Some(0));
+        // No "-step<N>" → None (caller defaults to 0).
+        assert_eq!(parse_resume_step(Path::new("final.safetensors")), None);
+        assert_eq!(parse_resume_step(Path::new("lora-step.safetensors")), None);
+    }
 }

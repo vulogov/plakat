@@ -59,7 +59,7 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (49 total)
+## Host words (51 total)
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
@@ -176,6 +176,19 @@ at moderate strength. Reuses the cached SD backbone. SD-family
 only. When combined with `plakat.artefact.*` (non-empty stack),
 `plakat.generate` bails — mirrors the CLI's
 `--hires-fix` + `--artefact` mutual-exclusion gate.
+
+### `plakat.tiled.*` — tiled hi-res (v1.0)
+
+| Word | Stack effect |
+|---|---|
+| `plakat.tiled.enable` | `( -- )` |
+| `plakat.tiled.disable` | `( -- )` |
+
+Routes the SD-family `plakat.generate` through `generate_tiled` (the UNet only
+sees `tile_size` tiles, Hann-blended), so a script can render above a model's
+native size — the scripting counterpart of `--tiled`. Config keys: `tile_size`
+(default 1024), `tile_stride` (default 768). Doesn't compose with ControlNet —
+`plakat.generate` bails if both are set.
 
 ### `plakat.artefact.*` — compose + blend (phase 9)
 

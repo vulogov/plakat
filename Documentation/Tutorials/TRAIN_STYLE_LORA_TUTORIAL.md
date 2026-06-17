@@ -104,6 +104,16 @@ is a couple of hours. Two things make that bearable:
 - **It checkpoints every 30 steps**, overwriting `--out`. So from step 30
   on you have a usable LoRA *even if you stop early* — render with it,
   and if the style's strong enough, `Ctrl-C` and move on.
+- **Resume an interrupted run** with `--resume` (all bases — sd15/sdxl/sd35):
+  point it at a numbered `…-step<N>.safetensors` checkpoint and it continues from
+  that step up to `--steps`, so raise `--steps` to train further:
+
+  ```bash
+  plakat style train --base sd35 --in ./my-style \
+    --resume my-style-step60.safetensors --steps 120   # 60 more steps
+  ```
+
+  Numbered checkpoints are written by default (unset `PLAKAT_TRAIN_SINGLE_FILE`).
 
 > **Why it's separate from generation:** training takes hours, rendering
 > takes a minute. You train **once**, then reuse the LoRA forever. The
@@ -142,6 +152,30 @@ watercolour.)
 Compare against the same prompt+seed **without** `--lora`: the base model
 renders a photograph; the LoRA turns it into a watercolour. Same scene,
 different medium — that's the LoRA doing its job.
+
+---
+
+## Train a SUBJECT instead of a style (DreamBooth)
+
+The same command learns a **subject** ("my dog", a specific person/object) rather
+than a style — point `--trigger` at an *instance prompt* with a rare token and add
+a **class** set for prior preservation (a few generic examples of the category, so
+the new token doesn't overfit or drag the whole class toward your photos):
+
+```bash
+plakat style train --base sd15 \
+  --from-dir ./my-dog \
+  --trigger "a photo of sks dog" \
+  --class-dir ./generic-dogs --class-prompt "a photo of a dog" \
+  --prior-weight 1.0 --steps 800 --rank 16
+# then generate:  plakat generate "a photo of sks dog astronaut on the moon" \
+#                   --model sd15 --lora my-dog.safetensors
+```
+
+`--class-dir` makes it a subject LoRA (DreamBooth): each step trains your subject
+**and** a class image, so the model keeps its general "dog" while binding `sks` to
+your dog. Omit `--class-dir` to skip prior preservation. sd15 / sdxl (sd35's
+separate trainer doesn't support prior preservation yet). `--resume` works here too.
 
 ---
 

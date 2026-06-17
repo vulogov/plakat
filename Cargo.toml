@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "0.47.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -57,6 +57,9 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 [dependencies]
 # Hardware probe (doctor --capability): system RAM detection.
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+# macOS kernel memory-pressure sysctl (kern.memorystatus_vm_pressure_level) for
+# the OOM guard — the reclaim-aware signal that free-RAM numbers miss.
+libc = "0.2"
 # CLI / UX
 clap = { version = "4.5", features = ["derive", "env"] }
 indicatif = "0.17"

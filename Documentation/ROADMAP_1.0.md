@@ -111,8 +111,11 @@ Breaking changes are cheap before 1.0 and a major-version event after. Do them n
       `up_blocks.1.attentions.1`); confirmed clear watercolour transfer at
       `--style-scale` ~3-5 + `--strength` ~0.8. The default concat path stays as
       ref-variation. Decision resolved by building it.
-- [x] **Minor deferrals — CONFIRMED post-1.0:** Cascade Stage-B + ControlNet
-      combo; SDXL tiled scripting. Listed in the non-goals below.
+- [x] **Minor deferrals — RESOLVED in the 1.0.0 cycle, not deferred:** SDXL tiled
+      scripting was *built* (`plakat.tiled.*` words + driver). Cascade Stage-B +
+      ControlNet was *falsified* — Stable Cascade applies CN to Stage C alone by
+      design (Stages B/A are fixed), so there is nothing to build. See
+      [`ROADMAP_1.0.0.md`](ROADMAP_1.0.0.md) Part 0.
 
 ## 4. Polish
 

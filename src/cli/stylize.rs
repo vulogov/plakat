@@ -166,7 +166,7 @@ pub async fn run(args: StylizeArgs, device: Device) -> Result<()> {
     if user_set_strength && args.preset.is_some() {
         let preset = args.preset.unwrap();
         crate::ui::progress::println(&format!(
-            "note: both --strength {:.2} and --for {} were given; \
+            "note: both --strength {:.2} and --preset {} were given; \
              using --strength (explicit override).",
             args.strength,
             preset.label(),

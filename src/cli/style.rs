@@ -87,6 +87,25 @@ pub struct TrainArgs {
     /// Learning rate.
     #[arg(long, default_value_t = 1.5e-4)]
     pub lr: f64,
+    /// Resume from a checkpoint (a `…-step<N>.safetensors` written by an earlier
+    /// run). Continues from that step up to `--steps`, so bump `--steps` to train
+    /// further. Omit to train from scratch. Works on all bases (sd15/sdxl/sd35).
+    #[arg(long, value_name = "CKPT")]
+    pub resume: Option<PathBuf>,
+    /// DreamBooth prior preservation — a folder of generic CLASS images (e.g.
+    /// other dogs) trained alongside your subject so its token doesn't overfit
+    /// or drag the whole class. Makes this a **subject** LoRA: set `--trigger`
+    /// to an instance prompt like "a photo of sks dog". Omit for plain style
+    /// training. (sd15 / sdxl only.)
+    #[arg(long = "class-dir", value_name = "DIR")]
+    pub class_dir: Option<PathBuf>,
+    /// Class prompt for `--class-dir` (e.g. "a photo of a dog"). Required with
+    /// `--class-dir`.
+    #[arg(long = "class-prompt", value_name = "TEXT")]
+    pub class_prompt: Option<String>,
+    /// Weight (λ) on the prior-preservation loss. Default 1.0.
+    #[arg(long = "prior-weight", default_value_t = 1.0)]
+    pub prior_weight: f32,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -203,9 +222,10 @@ pub async fn run(args: StyleArgs, device: Device) -> Result<()> {
 }
 
 /// Train a style LoRA from a folder of images (Phase 1: SD3.5).
-async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
-    let mut images: Vec<PathBuf> = std::fs::read_dir(&args.from_dir)
-        .with_context(|| format!("reading {}", args.from_dir.display()))?
+/// Read a folder's jpg/png images, sorted (deterministic training order).
+fn gather_images(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut images: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -216,6 +236,22 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
         })
         .collect();
     images.sort();
+    Ok(images)
+}
+
+async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
+    let images = gather_images(&args.from_dir)?;
+    // DreamBooth prior preservation: gather the optional class set.
+    let class_images: Vec<PathBuf> = match &args.class_dir {
+        Some(dir) => {
+            let imgs = gather_images(dir)?;
+            if imgs.is_empty() {
+                anyhow::bail!("--class-dir {} has no jpg/png images", dir.display());
+            }
+            imgs
+        }
+        None => Vec::new(),
+    };
     if images.len() < 3 {
         anyhow::bail!(
             "style train: need 3+ images in {}, found {}",
@@ -223,9 +259,15 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             images.len()
         );
     }
+    let kind = if class_images.is_empty() {
+        "style".to_string()
+    } else {
+        format!("subject (DreamBooth, {} class img, λ={})", class_images.len(), args.prior_weight)
+    };
     println!(
-        "Training {} style LoRA on {} images ({} steps, rank {}, {}²) → {}",
+        "Training {} {} LoRA on {} images ({} steps, rank {}, {}²) → {}",
         args.base,
+        kind,
         images.len(),
         args.steps,
         args.rank,
@@ -248,6 +290,10 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
                 log_every: args.log_every,
+                resume_from: args.resume,
+                class_images: class_images.clone(),
+                class_prompt: args.class_prompt.clone(),
+                prior_weight: args.prior_weight,
             })
             .await
         }
@@ -265,10 +311,20 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
                 log_every: args.log_every,
+                resume_from: args.resume,
+                class_images: class_images.clone(),
+                class_prompt: args.class_prompt.clone(),
+                prior_weight: args.prior_weight,
             })
             .await
         }
         "sd35" | "sd35-medium" | "sd3.5-medium" => {
+            if args.class_dir.is_some() {
+                anyhow::bail!(
+                    "style train: --class-dir (DreamBooth prior preservation) is not yet \
+                     supported for sd35 — use --base sd15 or --base sdxl"
+                );
+            }
             use crate::pipelines::sd3;
             sd3::train_style_lora(sd3::StyleTrainRequest {
                 variant: sd3::Variant::Sd35Medium,
@@ -283,6 +339,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 out: args.out,
                 checkpoint_every: args.checkpoint_every,
                 log_every: args.log_every,
+                resume_from: args.resume,
             })
             .await
         }

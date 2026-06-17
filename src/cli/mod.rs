@@ -6,6 +6,7 @@ pub mod animate;
 pub mod artefact;
 pub mod civitai;
 pub mod clone;
+pub mod compose;
 pub mod doctor;
 pub mod embedding;
 pub mod gallery;
@@ -20,6 +21,7 @@ pub mod outpaint;
 pub mod portrait;
 pub mod run;
 pub mod scenario;
+pub mod segment;
 pub mod style;
 pub mod stylize;
 pub mod transparent;
@@ -62,10 +64,19 @@ pub enum Command {
     Stylize(stylize::StylizeArgs),
     /// Make pixels matching the upper-left corner color transparent.
     Transparent(transparent::TransparentArgs),
+    /// Segment an object by clicking it (Segment-Anything / MobileSAM):
+    /// point prompts → a binary mask PNG that feeds `img2img --mask`
+    /// (inpaint) and any other `--mask` consumer. The selection enabler
+    /// for compose-and-edit (object removal / replacement).
+    Segment(segment::SegmentArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Batch-generate images from an HJSON scenario file.
     Scenario(scenario::ScenarioArgs),
+    /// Compose a layered scene from an HJSON file: stack image layers
+    /// (background + placed cut-outs / artefacts) with z-order, position,
+    /// scale, and opacity. No GPU — composes existing image assets.
+    Compose(compose::ComposeArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -165,11 +176,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             transparent::run(args, device).await
         }
+        Command::Segment(args) => {
+            let device = crate::device::select(&cli.device)?;
+            segment::run(args, device).await
+        }
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;
             upscale::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
+        Command::Compose(args) => compose::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,

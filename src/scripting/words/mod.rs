@@ -21,6 +21,7 @@ pub mod enhance;
 pub mod generate;
 pub mod genre;
 pub mod hires;
+pub mod tiled;
 pub mod img2img;
 pub mod inpaint;
 pub mod load;
@@ -125,6 +126,17 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         hires::plakat_hires_disable,
     )
     .map_err(|e| anyhow!("registering plakat.hires.disable: {e}"))?;
+    // v1.0: plakat.tiled.* namespace (SDXL tiled hi-res scripting).
+    vm.register_inline(
+        "plakat.tiled.enable".to_string(),
+        tiled::plakat_tiled_enable,
+    )
+    .map_err(|e| anyhow!("registering plakat.tiled.enable: {e}"))?;
+    vm.register_inline(
+        "plakat.tiled.disable".to_string(),
+        tiled::plakat_tiled_disable,
+    )
+    .map_err(|e| anyhow!("registering plakat.tiled.disable: {e}"))?;
     // v0.22 phase 9: plakat.artefact.* namespace.
     vm.register_inline(
         "plakat.artefact.add".to_string(),

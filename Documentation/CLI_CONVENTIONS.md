@@ -59,6 +59,8 @@ existing feature joins its family; it does not invent a sibling spelling.
 | `PLAKAT_DEVICE` | Default device (= `--device`). |
 | `PLAKAT_TRAIN_SINGLE_FILE` | Style training overwrites one checkpoint file instead of writing numbered ones. |
 | `PLAKAT_ALLOW_GGUF_METAL` | Opt into GGUF on Metal (broken upstream; escape hatch). |
+| `PLAKAT_OOM_GUARD_GB` | Memory watchdog: `0` disables it; any value > 0 enables it. On macOS it aborts (exit 137) only on sustained **critical** kernel memory pressure — reclaim-aware, so it won't trip on a big-but-reclaimable load (e.g. the SD3.5 T5 encoders). On other platforms the value is the free-RAM floor in GB (default `1.5`). The abort prevents a unified-memory exhaustion from crashing the host. |
+| `PLAKAT_NO_PREFLIGHT` | Silence the up-front low-RAM warning printed before a model load. |
 
 **Internal / advanced — may change without notice (not part of the 1.0 contract):**
 `PLAKAT_ARCFACE_HF` / `PLAKAT_ARCFACE_WEIGHTS`, `PLAKAT_SCRFD_HF` /

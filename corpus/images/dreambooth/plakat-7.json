@@ -1,0 +1,22 @@
+{
+  "prompt": "a sks fox plush toy riding a skateboard down a neon city street at night",
+  "model": "sd15",
+  "seed": 7,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 512,
+  "height": 512,
+  "loras": [
+    "LoraSpec { source: Local(\"/tmp/plakat-dreambooth/fox.safetensors\"), scale: 1.0 }"
+  ],
+  "lora_scale": 1.0,
+  "generator": "plakat 1.0.0",
+  "lora_stack": [
+    {
+      "display": "/tmp/plakat-dreambooth/fox.safetensors",
+      "scale": 1.0,
+      "source": "local"
+    }
+  ]
+}

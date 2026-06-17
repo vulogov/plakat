@@ -164,6 +164,14 @@ Cascade ships a **canny** ControlNet that conditions Stage C on an edge
 map. The weights auto-resolve from the model repo — you don't pass a
 weights path. Supply the conditioning two ways:
 
+> **Why Stage C only?** This is Stable Cascade's design, not a plakat
+> limitation. The decoupled cascade applies ControlNet (and LoRA) to the
+> Stage C prior *alone* — "the stages B and A models do not need to be
+> updated" (Stability AI). Stage B is a fixed semantic-compressor /
+> super-resolver that preserves Stage C's structure through the decode, so
+> the edge control already survives to the final image. There is no
+> Stage-B ControlNet to add.
+
 ```bash
 # Auto-annotate any photo to canny edges
 plakat generate "a cozy cottage in an autumn forest, photorealistic" \

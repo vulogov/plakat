@@ -947,9 +947,27 @@ impl Pipeline {
         // Re-noise the base latents at the partial-noise level.
         let initial_noise = Tensor::randn(0f32, 1f32, base_latents.shape(), &self.core.device)?
             .to_dtype(self.core.dtype)?;
-        let mut latents = scheduler.add_noise(base_latents, initial_noise, first_t)?;
-
         let inv_mask = (mask.ones_like()? - mask)?;
+        let noised_base = scheduler.add_noise(base_latents, initial_noise.clone(), first_t)?;
+
+        // The 9-channel inpaint UNet regenerates the masked region from its
+        // mask-context channels, so that region must start from NOISE — not the
+        // strength-noised original. If the original leaks into the masked init,
+        // the network reconstructs it instead of repainting (observed: a
+        // `*-inpaint` model + `--strength < 1.0` left the masked region unchanged,
+        // while the regular RePaint path repainted at the same strength). So for
+        // the inpaint UNet we seed the masked region with pure noise at the same
+        // schedule level (`add_noise` of zeros = just the noise term) and keep the
+        // strength-noised base in the unmasked region — the context channels and
+        // the final composite preserve it. The regular path is unchanged.
+        let mut latents = if use_inpaint_unet {
+            let pure_at_t =
+                scheduler.add_noise(&base_latents.zeros_like()?, initial_noise, first_t)?;
+            (pure_at_t.broadcast_mul(mask)? + noised_base.broadcast_mul(&inv_mask)?)?
+        } else {
+            noised_base
+        };
+
         let bar_tag = if use_inpaint_unet { "inpaint-blend" } else { "blend" };
         let bar = progress::step_bar(active.len() as u64, bar_tag);
         // Diffusers convention: control_start/end is measured

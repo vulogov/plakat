@@ -947,7 +947,14 @@ impl StableCascadePrior {
     /// upstream cnet deliverer (Stability-AI/StableCascade stage_c.py),
     /// which fires only before ResBlocks.
     ///
-    /// Stage C only — bails if effnet/pixels paths are wired (Stage B).
+    /// Stage C only — by design, not a limitation. Stable Cascade's
+    /// decoupled architecture applies ControlNet (and LoRA) to Stage C
+    /// **alone**; Stages B/A are fixed and "do not need to be updated"
+    /// (Stability-AI/StableCascade). Stage B is a semantic-compressor /
+    /// super-resolver that preserves Stage C's structure through the
+    /// decode, so a Stage-B CN is redundant — and no upstream Stage-B CN
+    /// weights exist to align against. The guard below asserts that
+    /// invariant (effnet path ⇒ Stage B ⇒ no CN).
     pub fn forward_with_cn(
         &self,
         x: &Tensor,
@@ -961,7 +968,7 @@ impl StableCascadePrior {
     ) -> Result<Tensor> {
         anyhow::ensure!(
             self.cfg.effnet_input_channels.is_none(),
-            "forward_with_cn is Stage C only; Stage B + CN combo is a follow-up"
+            "forward_with_cn is Stage C only by design — Stable Cascade applies ControlNet to Stage C alone; Stage B is a fixed decoder (no Stage-B CN exists)"
         );
         anyhow::ensure!(
             !cn_residuals.is_empty() && cn_residuals.len() == cn_blocks.len(),

@@ -2827,7 +2827,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plakat"
-version = "0.47.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bund_language_parser",
@@ -2847,6 +2847,7 @@ dependencies = [
  "image 0.25.10",
  "imageproc",
  "indicatif",
+ "libc",
  "png 0.18.1",
  "rand 0.8.6",
  "reqwest",

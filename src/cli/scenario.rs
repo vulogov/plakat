@@ -536,6 +536,12 @@ struct TaskDef {
     weather: String,
     prompt: String,
 
+    /// Regional prompting: per-region prompts `"x0,y0,x1,y1:prompt"` (canvas
+    /// fractions in `[0,1]`). Each region steers its box, blended over the
+    /// task `prompt` (MultiDiffusion). SD 1.5 / SDXL / SD3.5. Empty = off.
+    #[serde(default)]
+    regions: Vec<String>,
+
     // ---------- per-task style pass ----------
     /// Optional path to a style reference image. If set, every generated
     /// image for this task is also run through `stylize` (IP-Adapter) using
@@ -1485,6 +1491,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
     // -------- resolve global parameters --------
     let model = s.model.clone().unwrap_or_else(|| "sd15".to_string());
     let device = crate::device::select(s.device.as_deref().unwrap_or("auto"))?;
+    // Memory safety for the whole batch (loaded once, looped): warn up-front if
+    // RAM is already tight, and run a watchdog that aborts plakat before a
+    // unified-memory exhaustion can take the host down.
+    crate::hw::memory_preflight(&device, &model);
+    let _mem_guard = crate::memwatch::MemoryGuard::start(&device, &model);
     let base = s.base.unwrap_or(768);
     let count = s.count.unwrap_or(1);
     // `steps` / `guidance` start at the user's scenario values; the
@@ -3465,6 +3476,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     }]);
                 }
             }
+            let eff_regions: Vec<crate::pipelines::tiled::RegionSpec> = task
+                .regions
+                .iter()
+                .map(|r| crate::pipelines::tiled::RegionSpec::parse(r))
+                .collect::<Result<_>>()?;
             let gen_req = GenRequest {
                 prompt: final_prompt.clone(),
                 negative: eff_negative.clone(),
@@ -3776,6 +3792,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // pure t2i; img2img + tiled bails inside the SD3
                     // pipeline (mutually-exclusive design).
                     tiled: eff_tiled.clone(),
+                    regions: eff_regions.clone(),
                     // v0.16 phase 3: SD3 CN per-call conditioning
                     // overrides. Empty Vec preserves whatever the
                     // load-time conditioning paths were (which is
@@ -3836,12 +3853,29 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     )
                     .await?;
                 }
-                (Some(p), _) => match eff_tiled.as_ref() {
-                    Some(tcfg) => p.generate_tiled(&gen_req, tcfg.clone())?,
-                    None => p.generate(&gen_req, &make_control_reqs())?,
-                },
+                (Some(p), _) => {
+                    if !eff_regions.is_empty() {
+                        crate::pipelines::tiled::check_regional_combo(
+                            eff_tiled.is_some(),
+                            !make_control_reqs().is_empty(),
+                        )?;
+                        p.generate_regional(&gen_req, &eff_regions)?;
+                    } else {
+                        match eff_tiled.as_ref() {
+                            Some(tcfg) => p.generate_tiled(&gen_req, tcfg.clone())?,
+                            None => p.generate(&gen_req, &make_control_reqs())?,
+                        }
+                    }
+                }
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
+                    if !eff_regions.is_empty() {
+                        anyhow::bail!(
+                            "task '{}': regions are not supported for Flux yet — \
+                             use an SD 1.5 / SDXL / SD3.5 model",
+                            task.name
+                        );
+                    }
                     // Pass `steps` / `guidance` through to Flux only if they
                     // diverge from plakat's generic defaults (28 / 7.5) so
                     // Flux's variant-specific defaults stay in play otherwise.

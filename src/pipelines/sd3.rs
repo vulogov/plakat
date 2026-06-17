@@ -334,6 +334,9 @@ pub struct Request {
     /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
     /// canvas (phase 1a behaviour).
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// Regional prompting: per-region prompts (MultiDiffusion velocity blend).
+    /// Empty = single-prompt. Wired from `--region` / the scenario `regions` key.
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
     /// v0.16 phase 3e: SD3 ControlNet stack to load. Each entry
     /// carries the InstantX repo + per-instance runtime knobs
     /// (`scale`, `conditioning`, `start`, `end`). Empty Vec means no
@@ -385,6 +388,8 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// Regional prompting (see `Request::regions`).
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
     /// v0.16 phase 3: per-call conditioning override for the loaded
     /// SD3 ControlNets. Indexed parallel to
     /// `LoadRequest::controlnets`. An entry of `None` keeps the path
@@ -814,6 +819,34 @@ impl Pipeline {
 
         let lat_h = h / 8;
         let lat_w = w / 8;
+
+        // Regional prompting: encode each region prompt (CFG-batched with the
+        // shared negative) + build its bbox mask; the base covers the rest and
+        // supplies global coherence. Empty `regions` = the normal single-prompt
+        // path (no extra work).
+        let mut region_data: Vec<(Tensor, Tensor, Tensor)> = Vec::new();
+        for r in &req.regions {
+            let (py, pctx) = self.encode_prompt(&r.prompt)?;
+            region_data.push((
+                Tensor::cat(&[&neg_y, &py], 0)?,
+                Tensor::cat(&[&neg_ctx, &pctx], 0)?,
+                crate::pipelines::tiled::region_mask(r.bbox, lat_h, lat_w, &self.device, self.dtype)?,
+            ));
+        }
+        let region_base_mask = if region_data.is_empty() {
+            None
+        } else {
+            let mut covered = Tensor::zeros((1usize, 1, lat_h, lat_w), self.dtype, &self.device)?;
+            for (_, _, m) in &region_data {
+                covered = (covered + m)?;
+            }
+            let ones = Tensor::ones((1usize, 1, lat_h, lat_w), self.dtype, &self.device)?;
+            Some((&ones - &covered)?.clamp(0f32, 1f32)?)
+        };
+        if region_base_mask.is_some() && req.tiled.is_some() {
+            bail!("regions don't compose with tiled hi-res on SD3.5 — use one or the other");
+        }
+
         let time_shift = self.variant.default_time_shift();
 
         // ---------- v0.15 phase 2: img2img / inpaint prep ----------
@@ -999,26 +1032,41 @@ impl Pipeline {
                 // so the CN forwards can run + step-gating works.
                 let num_steps = timesteps.windows(2).count().max(1);
                 let progress = step_i as f32 / num_steps as f32;
-                let pred = match req.tiled.as_ref() {
-                    None => self.predict_velocity_full(
+                let pred = if let Some(base_mask) = region_base_mask.as_ref() {
+                    // Regional: blend the base + per-region velocities by masks.
+                    self.predict_velocity_regional(
                         &x,
                         t_curr,
                         &cfg_y,
                         &cfg_ctx,
+                        base_mask,
+                        &region_data,
                         guidance,
                         &cn_conditionings,
                         progress,
-                    )?,
-                    Some(cfg) => self.predict_velocity_tiled(
-                        &x,
-                        t_curr,
-                        &cfg_y,
-                        &cfg_ctx,
-                        guidance,
-                        cfg,
-                        &cn_conditionings,
-                        progress,
-                    )?,
+                    )?
+                } else {
+                    match req.tiled.as_ref() {
+                        None => self.predict_velocity_full(
+                            &x,
+                            t_curr,
+                            &cfg_y,
+                            &cfg_ctx,
+                            guidance,
+                            &cn_conditionings,
+                            progress,
+                        )?,
+                        Some(cfg) => self.predict_velocity_tiled(
+                            &x,
+                            t_curr,
+                            &cfg_y,
+                            &cfg_ctx,
+                            guidance,
+                            cfg,
+                            &cn_conditionings,
+                            progress,
+                        )?,
+                    }
                 };
                 x = (x + pred * (t_prev - t_curr))?;
 
@@ -1083,6 +1131,51 @@ impl Pipeline {
     /// `[0, 1)`; each CN's `active_at` window gates whether its
     /// residuals contribute. When no CN is active for this step the
     /// forward path is identical to the pre-3d call.
+    /// Regional prompting velocity blend: the base velocity plus each region's
+    /// velocity (each a full `predict_velocity_full` MMDiT pass), blended by the
+    /// bbox masks — the base fills where no region covers. ~(1 + N) passes/step.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_velocity_regional(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        base_cfg_y: &Tensor,
+        base_cfg_ctx: &Tensor,
+        base_mask: &Tensor,
+        regions: &[(Tensor, Tensor, Tensor)],
+        guidance: f64,
+        cn_conditionings: &[Option<Tensor>],
+        progress: f32,
+    ) -> Result<Tensor> {
+        let base_v = self.predict_velocity_full(
+            x,
+            t_curr,
+            base_cfg_y,
+            base_cfg_ctx,
+            guidance,
+            cn_conditionings,
+            progress,
+        )?;
+        let mut acc = base_v.broadcast_mul(base_mask)?;
+        let mut weights = base_mask.clone();
+        for (cfg_y, cfg_ctx, mask) in regions {
+            let v = self.predict_velocity_full(
+                x,
+                t_curr,
+                cfg_y,
+                cfg_ctx,
+                guidance,
+                cn_conditionings,
+                progress,
+            )?;
+            acc = (acc + v.broadcast_mul(mask)?)?;
+            weights = (weights + mask)?;
+            // Bound peak memory: finish each region's MMDiT pass before the next.
+            acc.device().synchronize()?;
+        }
+        Ok(acc.broadcast_div(&weights)?)
+    }
+
     fn predict_velocity_full(
         &self,
         x: &Tensor,
@@ -1759,6 +1852,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask_invert: req.mask_invert,
         strength: req.strength,
         tiled: req.tiled,
+        regions: req.regions,
         controlnet_conditioning: Vec::new(),
         output_format,
     })
@@ -1790,6 +1884,10 @@ pub struct StyleTrainRequest {
     pub checkpoint_every: Option<usize>,
     /// Log a progress line every N steps (min 1).
     pub log_every: usize,
+    /// Resume from a checkpoint (a diffusers-PEFT LoRA written by an earlier
+    /// run). The fused adapters are reconstructed from it and the step counter
+    /// continues from the checkpoint's step up to `steps`. `None` = from scratch.
+    pub resume_from: Option<std::path::PathBuf>,
 }
 
 /// Train a style LoRA on the MMDiT attention projections; write a
@@ -1867,7 +1965,30 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
-    for step in 0..req.steps {
+    // Additive: `start_step` is 0 unless --resume, so the loop is unchanged.
+    let start_step = match &req.resume_from {
+        Some(ckpt) => {
+            load_peft_into_adapters(&adapters, ckpt, &device)?;
+            let s = crate::pipelines::sd_train::trainer::parse_resume_step(ckpt)
+                .unwrap_or(0)
+                .min(req.steps);
+            if s >= req.steps {
+                bail!(
+                    "style-train: --resume checkpoint at step {s} ≥ --steps {}; \
+                     raise --steps to continue training",
+                    req.steps
+                );
+            }
+            tracing::info!(
+                "style-train: resuming from {} at step {s}/{}",
+                ckpt.display(),
+                req.steps
+            );
+            s
+        }
+        None => 0,
+    };
+    for step in start_step..req.steps {
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let sigma = 0.05
@@ -1982,9 +2103,108 @@ fn save_peft_lora(
     Ok(())
 }
 
+/// Load a diffusers-PEFT LoRA checkpoint (written by [`save_peft_lora`]) back
+/// into the live fused MMDiT adapters — the inverse of the save: the shared
+/// `lora_A` is read once per fused projection and the per-q/k/v `lora_B` slices
+/// are concatenated back into the fused B. Used by `--resume`. The slug mapping
+/// mirrors `save_peft_lora` exactly (the round-trip test guards against drift).
+fn load_peft_into_adapters(
+    adapters: &[(String, candle_core::Var, candle_core::Var)],
+    path: &std::path::Path,
+    device: &Device,
+) -> Result<()> {
+    let loaded = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading resume checkpoint {}", path.display()))?;
+    let get = |name: &str| -> Result<Tensor> {
+        loaded
+            .get(name)
+            .ok_or_else(|| anyhow!("resume: checkpoint missing {name} (rank/base mismatch?)"))
+            .cloned()
+    };
+    for (key, a, b) in adapters {
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let i: usize = match parts[1].parse() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let is_ctx = parts[2] == "context_block";
+        let kind = parts[4];
+        let base = format!("transformer.transformer_blocks.{i}.attn");
+        let subs: &[&str] = match (is_ctx, kind) {
+            (false, "qkv") => &["to_q", "to_k", "to_v"],
+            (true, "qkv") => &["add_q_proj", "add_k_proj", "add_v_proj"],
+            (false, "proj") => &["to_out.0"],
+            (true, "proj") => &["to_add_out"],
+            _ => continue,
+        };
+        // Shared A: read once from the first sub. B: concat the per-sub slices
+        // back into the fused adapter (inverse of save's narrow).
+        let a_loaded = get(&format!("{base}.{}.lora_A.weight", subs[0]))?;
+        let mut b_parts = Vec::with_capacity(subs.len());
+        for s in subs {
+            b_parts.push(get(&format!("{base}.{s}.lora_B.weight"))?);
+        }
+        let b_loaded = if b_parts.len() == 1 {
+            b_parts.pop().unwrap()
+        } else {
+            Tensor::cat(&b_parts, 0)?
+        };
+        a.set(&a_loaded.to_dtype(a.as_tensor().dtype())?)?;
+        b.set(&b_loaded.to_dtype(b.as_tensor().dtype())?)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peft_lora_save_load_roundtrip() {
+        // The fused-qkv split (save) ↔ concat (load) must round-trip, or --resume
+        // silently corrupts the adapters. Verified on CPU, no training needed.
+        let dev = Device::Cpu;
+        let (rank, hidden, in_dim) = (2usize, 4usize, 6usize);
+        let mk = |key: &str, b_rows: usize| -> (String, candle_core::Var, candle_core::Var) {
+            let a = candle_core::Var::from_tensor(
+                &Tensor::randn(0f32, 1f32, (rank, in_dim), &dev).unwrap(),
+            )
+            .unwrap();
+            let b = candle_core::Var::from_tensor(
+                &Tensor::randn(0f32, 1f32, (b_rows, rank), &dev).unwrap(),
+            )
+            .unwrap();
+            (key.to_string(), a, b)
+        };
+        let keys = || {
+            vec![
+                mk("joint_blocks.0.x_block.attn.qkv.weight", 3 * hidden),
+                mk("joint_blocks.0.context_block.attn.proj.weight", hidden),
+            ]
+        };
+        let src = keys();
+        let tmp = std::env::temp_dir().join("plakat_sd3_peft_roundtrip.safetensors");
+        save_peft_lora(&src, rank, hidden, &tmp).unwrap();
+        let dst = keys(); // fresh adapters, overwritten by the load
+        load_peft_into_adapters(&dst, &tmp, &dev).unwrap();
+        let max_abs = |x: &candle_core::Var, y: &candle_core::Var| -> f32 {
+            let d: Vec<f32> = (x.as_tensor() - y.as_tensor())
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            d.iter().fold(0f32, |m, v| m.max(v.abs()))
+        };
+        for ((_, sa, sb), (_, da, db)) in src.iter().zip(dst.iter()) {
+            assert!(max_abs(sa, da) < 1e-2, "A drift (F16 round-trip)");
+            assert!(max_abs(sb, db) < 1e-2, "B drift (F16 round-trip)");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
 
     // v0.14 phase 1a — schedule transform.
 
