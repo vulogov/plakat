@@ -7,11 +7,11 @@
 # of VARIED subjects, so the token learns the STYLE not a subject), trains the
 # TI embedding, then renders NEW subjects in that learned style via the token.
 #
-#   Usage:  ./embedding_train.sh [sd15|sd21]    STEPS=1000 default
+#   Usage:  ./embedding_train.sh [sd15|sd21|sdxl]    STEPS=1000 default
 #
-# FAST — TI optimizes a single vector (~0.2 s/step at 256²), so a full run is a
-# few minutes, not hours. Output loads with `--embedding PATH:trigger`. sd15/sd21
-# (single CLIP-L); SDXL is a follow-up.
+# FAST — TI optimizes one vector for sd15/sd21 (single CLIP-L), a CLIP-L+CLIP-G
+# pair for sdxl, the model frozen. A full run is minutes, not hours. Output loads
+# with `--embedding PATH:trigger`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -22,12 +22,13 @@ CONCEPT="$WORK/concept-$BASE"; EMB="$WORK/glass-$BASE.safetensors"
 OUT="$ROOT/corpus/images/embedding-train/$BASE"
 TRIG="sgwin"
 case "$BASE" in
-  # SD 2.1 is a 768² model; rendering it at 512² degrades badly — but 768² is
-  # memory-heavy (it OOMs a 24 GB Mac with apps open). Override with e.g.
-  # `SIZE=640x640 ./embedding_train.sh sd21` to trade quality for memory.
-  sd15) SIZE="${SIZE:-512x512}" ;;
-  sd21) SIZE="${SIZE:-768x768}" ;;
-  *) echo "base must be sd15 | sd21 (single CLIP-L)"; exit 1 ;;
+  # Native resolutions differ; off-native rendering degrades (esp. SD 2.1), but
+  # native is memory-heavy — 768²/1024² OOM a 24 GB Mac with apps open. Override
+  # to trade quality for memory: `SIZE=640x640 ./embedding_train.sh sdxl`.
+  sd15) SIZE="${SIZE:-512x512}" ;;   # single CLIP-L (768d)
+  sd21) SIZE="${SIZE:-768x768}" ;;   # single CLIP-L (1024d)
+  sdxl) SIZE="${SIZE:-768x768}" ;;   # dual CLIP-L+CLIP-G; native 1024² (heavy), 768² safer default
+  *) echo "base must be sd15 | sd21 | sdxl"; exit 1 ;;
 esac
 mkdir -p "$CONCEPT" "$OUT"
 
@@ -39,7 +40,8 @@ for i in "${!SUBJ[@]}"; do
     --model "$BASE" --seed "$((i+1))" --size "$SIZE" --steps 28 --out "$CONCEPT"
 done
 
-# 2) Train the Textual Inversion embedding (one vector, model frozen).
+# 2) Train the Textual Inversion embedding (one vector; a clip_l+clip_g pair for
+#    sdxl — saved as a dual-encoder TI in a single file). Model frozen.
 "$PLAKAT" embedding train --base "$BASE" --from-dir "$CONCEPT" \
   --token "$TRIG" --init-word "glass" --steps "$STEPS" --size 256 --out "$EMB"
 

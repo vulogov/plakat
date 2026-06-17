@@ -448,6 +448,45 @@ impl ClipTextTransformer {
         self.final_layer_norm.forward(&xs)
     }
 
+    /// From-embeds counterpart of [`Self::forward_until_encoder_layer`] — the
+    /// SDXL Textual-Inversion training path, where the trainable placeholder
+    /// vector is spliced into the token embeddings before the encoder runs (a
+    /// differentiable masked combine; the gradient reaches only that vector).
+    /// `token_embeds` is `(bsz, seq, embed_dim)` (post token-embedding, pre
+    /// position-embedding). Returns `(final_layer_norm(last), hidden_at_until_layer)`
+    /// — identical outputs to the id-based version, so SDXL's penultimate-layer
+    /// (`until_layer = -2`) concat and CLIP-G pooling are reproduced exactly.
+    pub fn forward_until_encoder_layer_from_embeds(
+        &self,
+        token_embeds: &Tensor,
+        mask_after: usize,
+        until_layer: isize,
+    ) -> Result<(Tensor, Tensor)> {
+        let (bsz, seq_len, _) = token_embeds.dims3()?;
+        let pos_emb = self
+            .embeddings
+            .position_embedding
+            .forward(&self.embeddings.position_ids)?;
+        let xs = token_embeds.broadcast_add(&pos_emb)?;
+        let causal_attention_mask =
+            Self::build_causal_attention_mask(bsz, seq_len, mask_after, xs.device())?;
+
+        let mut xs = xs.clone();
+        let mut intermediate = xs.clone();
+        let until_layer = if until_layer < 0 {
+            self.encoder.layers.len() as isize + until_layer
+        } else {
+            until_layer
+        } as usize;
+        for (layer_id, layer) in self.encoder.layers.iter().enumerate() {
+            xs = layer.forward(&xs, &causal_attention_mask)?;
+            if layer_id == until_layer {
+                intermediate = xs.clone();
+            }
+        }
+        Ok((self.final_layer_norm.forward(&xs)?, intermediate))
+    }
+
     pub fn forward_until_encoder_layer(
         &self,
         xs: &Tensor,

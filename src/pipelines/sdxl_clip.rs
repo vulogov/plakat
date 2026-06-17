@@ -106,6 +106,38 @@ impl SdxlClipGTextTransformer {
         Ok((penultimate, pooled))
     }
 
+    /// Token-embedding lookup only (no position embedding) — the SDXL
+    /// Textual-Inversion training splice point for the CLIP-G half. Pass-through
+    /// to the inner vendored CLIP's [`ClipTextTransformer::embed_tokens`].
+    pub fn embed_tokens(&self, token_ids: &Tensor) -> Result<Tensor> {
+        self.inner.embed_tokens(token_ids)
+    }
+
+    /// From-embeds counterpart of [`Self::forward_for_sdxl`] for TI training:
+    /// the trainable placeholder vector is spliced into `token_embeds` before
+    /// the encoder runs. `ids` (the original token ids) locates the EOT row for
+    /// pooling via `argmax`, mirroring `forward_for_sdxl`. Returns
+    /// `(penultimate_hidden, pooled)` — bit-identical assembly to the id path.
+    pub fn forward_for_sdxl_from_embeds(
+        &self,
+        token_embeds: &Tensor,
+        ids: &Tensor,
+    ) -> Result<(Tensor, Tensor)> {
+        let (final_hidden, penultimate) = self
+            .inner
+            .forward_until_encoder_layer_from_embeds(token_embeds, usize::MAX, -2)?;
+        let (b, _seq_len) = ids.dims2()?;
+        let argmax = ids.argmax(D::Minus1)?;
+        let argmax_v: Vec<u32> = argmax.to_dtype(candle_core::DType::U32)?.to_vec1()?;
+        let mut rows = Vec::with_capacity(b);
+        for (bi, &idx) in argmax_v.iter().enumerate() {
+            rows.push(final_hidden.i((bi, idx as usize))?);
+        }
+        let pooled = Tensor::stack(&rows, 0)?;
+        let pooled = self.text_projection.forward(&pooled)?;
+        Ok((penultimate, pooled))
+    }
+
     /// Stable Cascade's combined output. Differs from
     /// [`forward_for_sdxl`](Self::forward_for_sdxl) in ONE place: the
     /// per-token embeddings are the **LAST** hidden state

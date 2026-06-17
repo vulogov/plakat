@@ -41,8 +41,9 @@ pub enum EmbeddingCmd {
     /// Flux hidden dim, the number of per-block IP attention
     /// modules, and the matching Flux variant.
     FluxIpAdapterInfo(InfoArgs),
-    /// Train a Textual Inversion: learn ONE new token embedding (a "word") from a
-    /// few images, the whole model frozen. SD 1.5 / 2.1. The output loads via
+    /// Train a Textual Inversion: learn a new token embedding (a "word") from a
+    /// few images, the whole model frozen. SD 1.5 / 2.1 (one CLIP-L vector) or
+    /// SDXL (a CLIP-L + CLIP-G vector pair). The output loads via
     /// `--embedding PATH:trigger` — the inverse of `info`.
     Train(EmbTrainArgs),
 }
@@ -52,7 +53,7 @@ pub struct EmbTrainArgs {
     /// Folder of images teaching the new token (3+ recommended; jpg/png).
     #[arg(long = "from-dir", value_name = "DIR")]
     pub from_dir: std::path::PathBuf,
-    /// Base model: `sd15` or `sd21` (single CLIP-L; SDXL is a follow-up).
+    /// Base model: `sd15` / `sd21` (single CLIP-L) or `sdxl` (dual CLIP-L+CLIP-G).
     #[arg(long, default_value = "sd15")]
     pub base: String,
     /// The trigger you'll use the embedding under later (load with
