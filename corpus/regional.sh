@@ -8,10 +8,11 @@
 # right half is tropical — two biomes blended into one coherent golden-hour
 # landscape. SD-family, native resolution.
 #
-#   Usage:  ./regional.sh [sd15|sdxl]     (default: sd15 — lighter / faster)
+#   Usage:  ./regional.sh [sd15|sdxl|sd35]   (default: sd15 — lighter / faster)
 #
-# GPU. Regional does (1 + N_regions) UNet passes per step, so it's heavier than a
-# plain generate; the OOM guard aborts cleanly if RAM is tight. ⬜ until rendered.
+# GPU. Regional does (1 + N_regions) UNet/MMDiT passes per step, so it's heavier
+# than a plain generate; the OOM guard aborts cleanly if RAM is tight. sd35
+# (MMDiT velocity blend) is the heaviest — likely needs >24 GB. ⬜ until rendered.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
@@ -20,7 +21,8 @@ BASE="${1:-sd15}"
 case "$BASE" in
   sd15) MODEL=sd15; SIZE=512  ;;
   sdxl) MODEL=sdxl; SIZE=1024 ;;
-  *) echo "base must be sd15 | sdxl"; exit 1 ;;
+  sd35) MODEL=sd35; SIZE=1024 ;;
+  *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
 esac
 
 "$PLAKAT" generate \

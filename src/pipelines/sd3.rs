@@ -334,6 +334,9 @@ pub struct Request {
     /// SD3 / SD3.5-Large, 384 for SD3.5-Medium). `None` = single-pass
     /// canvas (phase 1a behaviour).
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// Regional prompting: per-region prompts (MultiDiffusion velocity blend).
+    /// Empty = single-prompt. Wired from `--region` / the scenario `regions` key.
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
     /// v0.16 phase 3e: SD3 ControlNet stack to load. Each entry
     /// carries the InstantX repo + per-instance runtime knobs
     /// (`scale`, `conditioning`, `start`, `end`). Empty Vec means no
@@ -385,6 +388,8 @@ pub struct GenRequest {
     pub strength: Option<f32>,
     /// v0.15 phase 5: tiled denoise config. See `Request::tiled`.
     pub tiled: Option<crate::pipelines::tiled::TiledConfig>,
+    /// Regional prompting (see `Request::regions`).
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
     /// v0.16 phase 3: per-call conditioning override for the loaded
     /// SD3 ControlNets. Indexed parallel to
     /// `LoadRequest::controlnets`. An entry of `None` keeps the path
@@ -814,6 +819,31 @@ impl Pipeline {
 
         let lat_h = h / 8;
         let lat_w = w / 8;
+
+        // Regional prompting: encode each region prompt (CFG-batched with the
+        // shared negative) + build its bbox mask; the base covers the rest and
+        // supplies global coherence. Empty `regions` = the normal single-prompt
+        // path (no extra work).
+        let mut region_data: Vec<(Tensor, Tensor, Tensor)> = Vec::new();
+        for r in &req.regions {
+            let (py, pctx) = self.encode_prompt(&r.prompt)?;
+            region_data.push((
+                Tensor::cat(&[&neg_y, &py], 0)?,
+                Tensor::cat(&[&neg_ctx, &pctx], 0)?,
+                crate::pipelines::tiled::region_mask(r.bbox, lat_h, lat_w, &self.device, self.dtype)?,
+            ));
+        }
+        let region_base_mask = if region_data.is_empty() {
+            None
+        } else {
+            let mut covered = Tensor::zeros((1usize, 1, lat_h, lat_w), self.dtype, &self.device)?;
+            for (_, _, m) in &region_data {
+                covered = (covered + m)?;
+            }
+            let ones = Tensor::ones((1usize, 1, lat_h, lat_w), self.dtype, &self.device)?;
+            Some((&ones - &covered)?.clamp(0f32, 1f32)?)
+        };
+
         let time_shift = self.variant.default_time_shift();
 
         // ---------- v0.15 phase 2: img2img / inpaint prep ----------
@@ -999,26 +1029,41 @@ impl Pipeline {
                 // so the CN forwards can run + step-gating works.
                 let num_steps = timesteps.windows(2).count().max(1);
                 let progress = step_i as f32 / num_steps as f32;
-                let pred = match req.tiled.as_ref() {
-                    None => self.predict_velocity_full(
+                let pred = if let Some(base_mask) = region_base_mask.as_ref() {
+                    // Regional: blend the base + per-region velocities by masks.
+                    self.predict_velocity_regional(
                         &x,
                         t_curr,
                         &cfg_y,
                         &cfg_ctx,
+                        base_mask,
+                        &region_data,
                         guidance,
                         &cn_conditionings,
                         progress,
-                    )?,
-                    Some(cfg) => self.predict_velocity_tiled(
-                        &x,
-                        t_curr,
-                        &cfg_y,
-                        &cfg_ctx,
-                        guidance,
-                        cfg,
-                        &cn_conditionings,
-                        progress,
-                    )?,
+                    )?
+                } else {
+                    match req.tiled.as_ref() {
+                        None => self.predict_velocity_full(
+                            &x,
+                            t_curr,
+                            &cfg_y,
+                            &cfg_ctx,
+                            guidance,
+                            &cn_conditionings,
+                            progress,
+                        )?,
+                        Some(cfg) => self.predict_velocity_tiled(
+                            &x,
+                            t_curr,
+                            &cfg_y,
+                            &cfg_ctx,
+                            guidance,
+                            cfg,
+                            &cn_conditionings,
+                            progress,
+                        )?,
+                    }
                 };
                 x = (x + pred * (t_prev - t_curr))?;
 
@@ -1083,6 +1128,51 @@ impl Pipeline {
     /// `[0, 1)`; each CN's `active_at` window gates whether its
     /// residuals contribute. When no CN is active for this step the
     /// forward path is identical to the pre-3d call.
+    /// Regional prompting velocity blend: the base velocity plus each region's
+    /// velocity (each a full `predict_velocity_full` MMDiT pass), blended by the
+    /// bbox masks — the base fills where no region covers. ~(1 + N) passes/step.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_velocity_regional(
+        &self,
+        x: &Tensor,
+        t_curr: f64,
+        base_cfg_y: &Tensor,
+        base_cfg_ctx: &Tensor,
+        base_mask: &Tensor,
+        regions: &[(Tensor, Tensor, Tensor)],
+        guidance: f64,
+        cn_conditionings: &[Option<Tensor>],
+        progress: f32,
+    ) -> Result<Tensor> {
+        let base_v = self.predict_velocity_full(
+            x,
+            t_curr,
+            base_cfg_y,
+            base_cfg_ctx,
+            guidance,
+            cn_conditionings,
+            progress,
+        )?;
+        let mut acc = base_v.broadcast_mul(base_mask)?;
+        let mut weights = base_mask.clone();
+        for (cfg_y, cfg_ctx, mask) in regions {
+            let v = self.predict_velocity_full(
+                x,
+                t_curr,
+                cfg_y,
+                cfg_ctx,
+                guidance,
+                cn_conditionings,
+                progress,
+            )?;
+            acc = (acc + v.broadcast_mul(mask)?)?;
+            weights = (weights + mask)?;
+            // Bound peak memory: finish each region's MMDiT pass before the next.
+            acc.device().synchronize()?;
+        }
+        Ok(acc.broadcast_div(&weights)?)
+    }
+
     fn predict_velocity_full(
         &self,
         x: &Tensor,
@@ -1759,6 +1849,7 @@ pub async fn run(req: Request) -> Result<()> {
         mask_invert: req.mask_invert,
         strength: req.strength,
         tiled: req.tiled,
+        regions: req.regions,
         controlnet_conditioning: Vec::new(),
         output_format,
     })

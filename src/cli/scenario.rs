@@ -3781,6 +3781,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // pure t2i; img2img + tiled bails inside the SD3
                     // pipeline (mutually-exclusive design).
                     tiled: eff_tiled.clone(),
+                    regions: Vec::new(), // scenario regional wired below
                     // v0.16 phase 3: SD3 CN per-call conditioning
                     // overrides. Empty Vec preserves whatever the
                     // load-time conditioning paths were (which is

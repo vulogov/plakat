@@ -2573,6 +2573,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // standard t2i path only — img2img/inpaint + tiled bail
             // in sd3::Pipeline::generate.
             tiled: req.tiled,
+            regions: req.regions,
             // v0.16 phase 3e: SD3 ControlNet stack built above from
             // `req.controls` (Vec<ControlSpec>). Each load entry
             // carries the resolved InstantX repo + per-spec

@@ -460,6 +460,7 @@ fn build_sd3_gen_request(
         mask_invert: false,
         strength: Some(ctx.config.strength),
         tiled: tiled_cfg_from(ctx),
+        regions: Vec::new(),
         controlnet_conditioning: Vec::new(),
         output_format: crate::imaging::io::OutputFormat::Png,
     }
