@@ -19,26 +19,32 @@ BASE="${1:-sd15}"
 STEPS="${STEPS:-1000}"
 WORK="${WORK:-/tmp/plakat-ti}"
 CONCEPT="$WORK/concept-$BASE"; EMB="$WORK/glass-$BASE.safetensors"
-OUT="$ROOT/corpus/images/embedding-train"
+OUT="$ROOT/corpus/images/embedding-train/$BASE"
 TRIG="sgwin"
+case "$BASE" in
+  sd15) SIZE=512x512 ;;
+  sd21) SIZE=768x768 ;;   # SD 2.1 is a 768² model — rendering it at 512² degrades badly
+  *) echo "base must be sd15 | sd21 (single CLIP-L)"; exit 1 ;;
+esac
 mkdir -p "$CONCEPT" "$OUT"
-
-case "$BASE" in sd15|sd21) ;; *) echo "base must be sd15 | sd21 (single CLIP-L)"; exit 1 ;; esac
 
 # 1) STYLE set — stained glass of VARIED subjects, so the token learns the STYLE.
 SUBJ=("an owl" "a rose" "a sailing ship" "a leaping fox" "a mountain")
 for i in "${!SUBJ[@]}"; do
   "$PLAKAT" generate \
     "an ornate stained glass window of ${SUBJ[$i]}, vivid jewel colours, bold black leading, backlit" \
-    --model "$BASE" --seed "$((i+1))" --size 512x512 --steps 28 --out "$CONCEPT"
+    --model "$BASE" --seed "$((i+1))" --size "$SIZE" --steps 28 --out "$CONCEPT"
 done
 
 # 2) Train the Textual Inversion embedding (one vector, model frozen).
 "$PLAKAT" embedding train --base "$BASE" --from-dir "$CONCEPT" \
   --token "$TRIG" --init-word "glass" --steps "$STEPS" --size 256 --out "$EMB"
 
-# 3) Render NEW subjects "in the learned style" via the token.
-"$PLAKAT" generate "a $TRIG cat"             --model "$BASE" --embedding "$EMB:$TRIG" --seed 42 --size 512x512 --steps 28 --out "$OUT"
-"$PLAKAT" generate "a $TRIG steam locomotive" --model "$BASE" --embedding "$EMB:$TRIG" --seed 7  --size 512x512 --steps 28 --out "$OUT"
+# 3) Render NEW subjects "in the learned style" via the token (per-base subdir so
+#    bases don't clobber each other; descriptive names).
+"$PLAKAT" generate "a $TRIG cat"             --model "$BASE" --embedding "$EMB:$TRIG" --seed 42 --size "$SIZE" --steps 28 --out "$OUT"
+"$PLAKAT" generate "a $TRIG steam locomotive" --model "$BASE" --embedding "$EMB:$TRIG" --seed 7  --size "$SIZE" --steps 28 --out "$OUT"
+mv -f "$OUT/plakat-42.png" "$OUT/cat.png";        mv -f "$OUT/plakat-42.json" "$OUT/cat.json"        2>/dev/null || true
+mv -f "$OUT/plakat-7.png"  "$OUT/locomotive.png"; mv -f "$OUT/plakat-7.json"  "$OUT/locomotive.json" 2>/dev/null || true
 
-echo "✓ TI ($BASE): learned '$TRIG' (stained-glass style) → cat + locomotive in corpus/images/embedding-train/"
+echo "✓ TI ($BASE): learned '$TRIG' (stained-glass style) → cat + locomotive in corpus/images/embedding-train/$BASE/"
