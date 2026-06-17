@@ -8,9 +8,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Carryovers from the 1.0.0 cycle
 
-- [ ] **Textual-Inversion training** — *(M)* `plakat embedding train`: optimize a
-      trigger token vector against a few images (we already load/inject TIs via the
-      vendored CLIP). Cheaper than a LoRA, composes with one. The last Part 2 item.
+- [x] **Textual-Inversion training — SHIPPED & VERIFIED (SD 1.5 / 2.1).**
+      `plakat embedding train` learns one token embedding from a few images, model
+      frozen (differentiable splice into the vendored CLIP via `embed_tokens` +
+      `forward_from_input_embeds`). ~0.1 s/step (single vector). Verified: stained-
+      glass style set → `a sgwin cat` takes the look (`corpus/embedding_train.sh`).
+      **SDXL (dual-encoder) is the remaining follow-up.**
 - [ ] **Compose `generate:` / inline `matte:` layers** — *(M)* render a layer
       inline, or U2Net-matte a layer on the fly, inside `plakat compose` (today's
       layers are `load`-only; pre-render / pre-matte for now). GPU.
