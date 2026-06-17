@@ -18,7 +18,7 @@ PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 BASE="${1:-sd15}"
 STEPS="${STEPS:-1000}"
 WORK="${WORK:-/tmp/plakat-ti}"
-CONCEPT="$WORK/concept-$BASE"; EMB="$WORK/glass-$BASE.safetensors"
+EMB="$WORK/glass-$BASE.safetensors"
 OUT="$ROOT/corpus/images/embedding-train/$BASE"
 TRIG="sgwin"
 case "$BASE" in
@@ -30,14 +30,28 @@ case "$BASE" in
   sdxl) SIZE="${SIZE:-768x768}" ;;   # dual CLIP-L+CLIP-G; native 1024² (heavy), 768² safer default
   *) echo "base must be sd15 | sd21 | sdxl"; exit 1 ;;
 esac
+# Concept (training-exemplar) generation can use a LIGHTER base than the TI base:
+# the stained-glass set is plain training data (downscaled to 256² to train), so
+# rendering it with SDXL just wastes memory — and SDXL generate OOMs a 24 GB Mac.
+# Default SDXL's exemplars to sd15/512²; sd15/sd21 keep their own base. Override
+# with CONCEPT_BASE / CONCEPT_SIZE. This isolates the *new* SDXL-TI training code
+# from the (pre-existing, memory-heavy) SDXL inference path.
+case "$BASE" in
+  sdxl) CONCEPT_BASE="${CONCEPT_BASE:-sd15}"; CONCEPT_SIZE="${CONCEPT_SIZE:-512x512}" ;;
+  *)    CONCEPT_BASE="${CONCEPT_BASE:-$BASE}"; CONCEPT_SIZE="${CONCEPT_SIZE:-$SIZE}" ;;
+esac
+CONCEPT="$WORK/concept-$CONCEPT_BASE"
 mkdir -p "$CONCEPT" "$OUT"
 
 # 1) STYLE set — stained glass of VARIED subjects, so the token learns the STYLE.
+#    Generated with CONCEPT_BASE (light), reused across runs of the same base.
 SUBJ=("an owl" "a rose" "a sailing ship" "a leaping fox" "a mountain")
 for i in "${!SUBJ[@]}"; do
+  out="$CONCEPT/plakat-$((i+1)).png"
+  [ -f "$out" ] && continue   # reuse already-generated exemplars
   "$PLAKAT" generate \
     "an ornate stained glass window of ${SUBJ[$i]}, vivid jewel colours, bold black leading, backlit" \
-    --model "$BASE" --seed "$((i+1))" --size "$SIZE" --steps 28 --out "$CONCEPT"
+    --model "$CONCEPT_BASE" --seed "$((i+1))" --size "$CONCEPT_SIZE" --steps 28 --out "$CONCEPT"
 done
 
 # 2) Train the Textual Inversion embedding (one vector; a clip_l+clip_g pair for
