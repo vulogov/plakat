@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.46. The current
+"What's new" sections for v0.13 through v0.47. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in v0.47.0 — InstantStyle, smart cut-outs, and 1.0-ready
+
+v0.47 landed the last marquee features and **froze the surface for 1.0**.
+
+- **InstantStyle** — `stylize --instantstyle`: true painterly STYLE transfer via a
+  decoupled IP cross-attention into the SDXL style block (`up_blocks.0.attentions.1`)
+  — the reference's brushwork without cloning its content.
+- **Smart transparent** — `transparent --matte`: content-aware U2Net background
+  removal off *any* background (verified bit-for-bit vs a PyTorch reference).
+- **Integral artefacts** — `--artefact … --artefact-blend`: composites cut-outs as
+  *part of* the scene (canvas-relative scale, contact-shadow grounding, colour
+  harmony, a canny-ControlNet re-paint).
+- **Friendly crashes** (`human-panic`) + the **1.0 contract freeze**: final CLI
+  renames (`--lora`, `--preset`, `--asset-type`, `--flux-quant-level`); CLI flags /
+  scenario HJSON / Bund word-set frozen in `STABILITY.md`; Flux scoped CPU/CUDA-only.
 
 ## What's new in v0.46.0 — Train your own style, on any base
 

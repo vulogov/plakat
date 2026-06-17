@@ -5,9 +5,11 @@
 Local text-to-image **and animation** across the major open model families —
 SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, and Stable Cascade — with img2img,
 inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking, **your own trained
-style LoRAs**, **InstantStyle** painterly style transfer, identity-preserving
-portraits, AnimateDiff video, ML upscaling, **smart (U2Net) background removal**,
-**integral artefact compositing**, and batch scenarios. All built on
+style _and_ subject (DreamBooth) LoRAs**, **InstantStyle** painterly style
+transfer, **regional prompting**, identity-preserving portraits, AnimateDiff
+video, ML upscaling, **SAM object selection**, **smart (U2Net) background
+removal**, **layered-scene compositing**, integral artefact compositing, and
+batch scenarios. All built on
 [candle](https://github.com/huggingface/candle). Pure Rust inference. No Python,
 no PyTorch, no external T2I services. Models are pulled from HuggingFace and
 cached locally.
@@ -15,47 +17,53 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in v0.47.0 — InstantStyle, smart cut-outs, and 1.0-ready
+## What's new in 1.0.0 — compose & edit scenes, train your own everything
 
-v0.47 lands the last marquee features and **freezes the surface for 1.0**: every
-claim is proven by a committed render, the CLI / scenario / scripting contracts
-are frozen, and the docs are honest.
+The **1.0 release**: SemVer-stable contracts, plus two capability themes on top of
+the v0.47 freeze. Every claim is proven by a committed render in the
+[proof corpus](corpus/).
 
 ```bash
-# True painterly STYLE transfer — the reference's brushwork, not its content
-plakat stylize --in portrait.png --ref watercolour.jpg \
-  --instantstyle --style-scale 4 --strength 0.8 --model sdxl --out styled.png
+# Different prompts in different regions of ONE image
+plakat generate "a vast landscape at golden hour" --model sd15 \
+  --region "0,0,0.5,1:snowy alpine peaks" --region "0.5,0,1,1:a tropical jungle"
+
+# Train a SUBJECT (your dog "sks") with class prior-preservation
+plakat style train --base sd15 --from-dir ./my-dog --trigger "a photo of sks dog" \
+  --class-dir ./dogs --class-prompt "a photo of a dog"
 ```
 
-- **InstantStyle** — `stylize --instantstyle` is true painterly **style** transfer.
-  A decoupled IP cross-attention injects the reference into the SDXL *style block*
-  only (`up_blocks.0.attentions.1`), so the **texture** transfers without cloning
-  the content — exactly what the default IP-Adapter (ref-variation) can't do.
-  (SD 1.5 is supported but experimental — softer; SDXL is the verified backbone.)
-- **Smart transparent** — `transparent --matte` removes the background with
-  content-aware **U2Net** matting: it lifts a subject off *any* background (photo,
-  painted, cluttered), not just a studio backdrop. Verified bit-for-bit against a
-  PyTorch reference.
-- **Integral artefacts** — `--artefact … --artefact-blend` composites cutouts as
-  *part of the scene*, not paste: canvas-relative scale, contact-shadow grounding,
-  scene-ambient colour harmony, and a canny-ControlNet re-paint. The cutout
-  library is built with `transparent --matte`.
-- **Friendly crashes** — `human-panic`: a calm message + a TOML crash report
-  instead of a raw backtrace (release builds).
+**Compose & edit scenes**
 
-**1.0 readiness** — the cycle that closes the roadmap:
+- **Select** — `plakat segment --point X,Y` masks an object via **MobileSAM**
+  (`--grow`/`--feather` for clean edges); the mask feeds `img2img --mask`, so
+  *select → remove / replace / swap background* composes from owned pieces.
+- **Compose** — `plakat compose <scene.hjson>` stacks image layers (background +
+  cut-outs) by z-order, position, scale, and opacity. No GPU.
+- **Regional prompting** — `--region "x0,y0,x1,y1:prompt"` puts different prompts
+  in different canvas regions of one image (SD 1.5 / SDXL / SD3.5; also a scenario
+  `regions` key), feather-blended into one scene.
 
-- **Frozen contracts** — final CLI renames (`--lora`, `--preset`, `--asset-type`,
-  `--flux-quant-level`); the 1.0-frozen CLI flags + scenario HJSON schema + Bund
-  word-set are documented in
-  [`Documentation/STABILITY.md`](Documentation/STABILITY.md).
-- **Proof corpus complete** — every pipeline has a committed render in the gallery;
-  scenario outputs now self-document (embedded recipe + JSON sidecar).
-- **Flux scoped** — CPU/CUDA-only, untested on Metal (candle's Metal GGUF kernel
-  is broken upstream) — corrected, not silently listed. Full per-feature matrix:
-  [`Documentation/FEATURE_TO_MODEL.md`](Documentation/FEATURE_TO_MODEL.md).
+**Train your own everything**
 
-**Earlier releases** (v0.13 – v0.46):
+- **Subject (DreamBooth) LoRAs** — `style train --class-dir … --class-prompt …
+  --prior-weight` learns a specific *subject* (not a style) with class
+  prior-preservation, so its token binds your subject without overrunning the class.
+- **Resumable training** — `style train --resume …-step<N>.safetensors --steps M`
+  continues an interrupted (or finished) run; all bases.
+
+**Rock-solid on Metal**
+
+- **OOM guard** — a background watchdog (macOS kernel memory-pressure aware) that
+  aborts plakat *cleanly* before a unified-memory exhaustion can crash the host.
+- Fixes: 9-channel inpaint models now honour `--strength`; tiled hi-res is
+  base-anchored (globally coherent) and per-tile memory-bounded.
+
+**Stable & honest** — SemVer from 1.0; CLI flags / scenario HJSON / Bund word-set
+frozen ([`STABILITY.md`](Documentation/STABILITY.md)); Flux scoped CPU/CUDA-only
+([`FEATURE_TO_MODEL.md`](Documentation/FEATURE_TO_MODEL.md)).
+
+**Earlier releases** (v0.13 – v0.47):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

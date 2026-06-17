@@ -55,6 +55,9 @@ in [`corpus/COVERAGE.md`](../corpus/COVERAGE.md).
 | **Stylize — ref-variation** (concat IP-Adapter) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Stylize — InstantStyle** (true style) | ⚠️⁹ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Style LoRA training** (`style train`) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Subject training — DreamBooth** (`style train --class-dir`) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Resume training** (`style train --resume`) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Regional prompting** (`--region`, scenario `regions`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | **Artefact compositing** (`--artefact` + blend) | ❌ | ❌ | ✅⁸ | ❌ | ❌ | ❌ | ❌ |
 
 ### Motion
