@@ -19,9 +19,9 @@ PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 BASE="${1:-sd15}"
 
 case "$BASE" in
-  sd15) MODEL=sd15; SIZE=512  ;;
-  sdxl) MODEL=sdxl; SIZE=1024 ;;
-  sd35) MODEL=sd35; SIZE=1024 ;;
+  sd15) MODEL=sd15; SIZE=512x512   ;;
+  sdxl) MODEL=sdxl; SIZE=1024x1024 ;;
+  sd35) MODEL=sd35; SIZE=1024x1024 ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
 esac
 
