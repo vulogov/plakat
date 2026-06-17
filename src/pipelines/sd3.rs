@@ -843,6 +843,9 @@ impl Pipeline {
             let ones = Tensor::ones((1usize, 1, lat_h, lat_w), self.dtype, &self.device)?;
             Some((&ones - &covered)?.clamp(0f32, 1f32)?)
         };
+        if region_base_mask.is_some() && req.tiled.is_some() {
+            bail!("regions don't compose with tiled hi-res on SD3.5 — use one or the other");
+        }
 
         let time_shift = self.variant.default_time_shift();
 

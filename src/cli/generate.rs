@@ -1777,6 +1777,7 @@ mod tests {
             control_end: 1.0,
             control_specs: Vec::new(),
             tiled: false,
+            region: Vec::new(),
             tile_size: 1024,
             tile_stride: 768,
             quantize_t5: false,

@@ -3855,6 +3855,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 }
                 (Some(p), _) => {
                     if !eff_regions.is_empty() {
+                        crate::pipelines::tiled::check_regional_combo(
+                            eff_tiled.is_some(),
+                            !make_control_reqs().is_empty(),
+                        )?;
                         p.generate_regional(&gen_req, &eff_regions)?;
                     } else {
                         match eff_tiled.as_ref() {
@@ -3865,6 +3869,13 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 }
                 // Flux: reuse the loaded transformer + AE + T5 + CLIP across tasks.
                 (_, Some(fp)) => {
+                    if !eff_regions.is_empty() {
+                        anyhow::bail!(
+                            "task '{}': regions are not supported for Flux yet — \
+                             use an SD 1.5 / SDXL / SD3.5 model",
+                            task.name
+                        );
+                    }
                     // Pass `steps` / `guidance` through to Flux only if they
                     // diverge from plakat's generic defaults (28 / 7.5) so
                     // Flux's variant-specific defaults stay in play otherwise.

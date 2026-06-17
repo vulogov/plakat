@@ -355,17 +355,42 @@ pub fn region_mask(
     dtype: DType,
 ) -> Result<Tensor> {
     let [x0, y0, x1, y1] = bbox;
+    // Soft edge: the mask ramps 0→1 across ~`FEATHER` of the canvas, centered on
+    // the bbox boundary (signed distance to the nearest edge, corner-aware), so
+    // neighbouring regions blend instead of seaming. Hard masks left visible
+    // joins between regions.
+    const FEATHER: f32 = 0.05;
     let mut data = vec![0f32; lh * lw];
     for i in 0..lh {
         let cy = (i as f32 + 0.5) / lh as f32;
+        let sy = (cy - y0).min(y1 - cy); // +inside, −outside (y)
         for j in 0..lw {
             let cx = (j as f32 + 0.5) / lw as f32;
-            if cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 {
-                data[i * lw + j] = 1.0;
-            }
+            let sx = (cx - x0).min(x1 - cx); // +inside, −outside (x)
+            let s = sx.min(sy); // signed distance to the nearest box edge
+            data[i * lw + j] = (s / FEATHER + 0.5).clamp(0.0, 1.0);
         }
     }
     Ok(Tensor::from_vec(data, (1, 1, lh, lw), device)?.to_dtype(dtype)?)
+}
+
+/// Reject regional prompting combined with options it can't compose with —
+/// both would otherwise be silently dropped. Called from the CLI and scenario
+/// dispatch when `regions` is non-empty.
+pub fn check_regional_combo(tiled: bool, control: bool) -> Result<()> {
+    if tiled {
+        anyhow::bail!(
+            "--region (regional prompting) doesn't compose with --tiled — both are \
+             MultiDiffusion passes over the same canvas; use one or the other"
+        );
+    }
+    if control {
+        anyhow::bail!(
+            "--region (regional prompting) doesn't compose with ControlNet (--control*) — \
+             the regional path doesn't apply CN residuals; use one or the other"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -395,5 +420,25 @@ mod regional_tests {
             assert_eq!(v[row * 4 + 2], 0.0);
             assert_eq!(v[row * 4 + 3], 0.0);
         }
+    }
+
+    #[test]
+    fn region_mask_feathers_at_edge() {
+        // 40-wide row, box [0,0,0.5,1]: columns straddling x=0.5 are PARTIAL
+        // (soft falloff), not a hard 0/1 cut.
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32).unwrap();
+        let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
+        let soft = v.iter().filter(|&&x| x > 0.05 && x < 0.95).count();
+        assert!(soft >= 1, "expected soft (partial) values near the edge, got {soft}");
+        // Well inside the box (away from any edge, incl. the canvas edge at x=0) ≈ 1.
+        assert!((v[5] - 1.0).abs() < 1e-4, "far inside ≈ 1, got {}", v[5]);
+        assert!(v[39] < 1e-4, "far outside ≈ 0");
+    }
+
+    #[test]
+    fn regional_combo_guard() {
+        assert!(check_regional_combo(false, false).is_ok());
+        assert!(check_regional_combo(true, false).is_err()); // + tiled
+        assert!(check_regional_combo(false, true).is_err()); // + control
     }
 }

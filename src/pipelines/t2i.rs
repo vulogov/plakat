@@ -2594,6 +2594,12 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // Flux routes to its own pipeline. v0.12: LoRAs ARE supported via
     // the new flux_lora merge path (diffusers PEFT format).
     if variant.is_flux() {
+        if !req.regions.is_empty() {
+            anyhow::bail!(
+                "--region (regional prompting) isn't supported for Flux yet — \
+                 use SD 1.5 / SDXL / SD3.5"
+            );
+        }
         use crate::pipelines::flux;
         let fvar = match variant {
             Variant::FluxDev => flux::Variant::Dev,
@@ -2969,6 +2975,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         output_format: req.output_format,
     };
     if !req.regions.is_empty() {
+        crate::pipelines::tiled::check_regional_combo(req.tiled.is_some(), !control_reqs.is_empty())?;
         pipeline.generate_regional(&gen_req, &req.regions)?;
     } else {
         match req.tiled {
