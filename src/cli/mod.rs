@@ -6,6 +6,7 @@ pub mod animate;
 pub mod artefact;
 pub mod civitai;
 pub mod clone;
+pub mod compose;
 pub mod doctor;
 pub mod embedding;
 pub mod gallery;
@@ -72,6 +73,10 @@ pub enum Command {
     Upscale(upscale::UpscaleArgs),
     /// Batch-generate images from an HJSON scenario file.
     Scenario(scenario::ScenarioArgs),
+    /// Compose a layered scene from an HJSON file: stack image layers
+    /// (background + placed cut-outs / artefacts) with z-order, position,
+    /// scale, and opacity. No GPU — composes existing image assets.
+    Compose(compose::ComposeArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -180,6 +185,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             upscale::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
+        Command::Compose(args) => compose::run(args).await,
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
