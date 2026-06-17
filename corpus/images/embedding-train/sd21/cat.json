@@ -1,0 +1,11 @@
+{
+  "prompt": "a sgwin cat",
+  "model": "sd21",
+  "seed": 42,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 640,
+  "height": 640,
+  "generator": "plakat 1.1.0"
+}
