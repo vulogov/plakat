@@ -38,7 +38,7 @@ The keys accepted by `plakat scenario <file.hjson>` are frozen (defined by the
 - **Run:** `model`, `device`, `size`, `steps`, `guidance`, `seed`, `count`,
   `scheduler`, `out`, `negative`, `enhancer`/`enhance`.
 - **Axes & tasks:** `scene[]`, `weather[]`, `tasks[]`, `prompt-header`,
-  `prompt-footer`, `name`, `prompt`.
+  `prompt-footer`, `name`, `prompt`, `regions`.
 - **Adapters:** `lora-header`, `lora-footer`, `lora-scale`, `controls`,
   `control-*`, `style-catalog`, `style-ref`, `style-strength`.
 - **Transforms:** `init-image`, `mask-feather`, `mask-invert`, `refine-strength`,
