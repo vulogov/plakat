@@ -220,13 +220,20 @@ async fn run_info(args: InfoArgs) -> Result<()> {
 
     let num_tokens = resolved.num_tokens()?;
     let embed_dim = resolved.embed_dim()?;
-    let variant_hint = match embed_dim {
-        SD15_EMBED_DIM => "SD 1.5 (CLIP-L 768)",
-        SD21_EMBED_DIM => "SD 2.1 (OpenCLIP-H 1024)",
-        SDXL_G_EMBED_DIM => "SDXL CLIP-G (1280)",
-        other => return Err(anyhow::anyhow!(
-            "unknown CLIP variant for embed_dim {other} (expected 768 / 1024 / 1280)"
-        )),
+    // A dual-encoder TI carries both halves in one file (clip_l 768 + clip_g
+    // 1280) — that's an SDXL TI, regardless of the clip_l dim matching SD 1.5's.
+    let variant_hint = if resolved.has_clip_g() {
+        let g = resolved.embed_dim_g()?;
+        format!("SDXL dual-encoder (CLIP-L {embed_dim} + CLIP-G {g})")
+    } else {
+        match embed_dim {
+            SD15_EMBED_DIM => "SD 1.5 (CLIP-L 768)".to_string(),
+            SD21_EMBED_DIM => "SD 2.1 (OpenCLIP-H 1024)".to_string(),
+            SDXL_G_EMBED_DIM => "SDXL CLIP-G (1280)".to_string(),
+            other => return Err(anyhow::anyhow!(
+                "unknown CLIP variant for embed_dim {other} (expected 768 / 1024 / 1280)"
+            )),
+        }
     };
 
     println!(

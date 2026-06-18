@@ -25,9 +25,12 @@ case "$BASE" in
   # Native resolutions differ; off-native rendering degrades (esp. SD 2.1), but
   # native is memory-heavy — 768²/1024² OOM a 24 GB Mac with apps open. Override
   # to trade quality for memory: `SIZE=640x640 ./embedding_train.sh sdxl`.
-  sd15) SIZE="${SIZE:-512x512}" ;;   # single CLIP-L (768d)
-  sd21) SIZE="${SIZE:-768x768}" ;;   # single CLIP-L (1024d)
-  sdxl) SIZE="${SIZE:-768x768}" ;;   # dual CLIP-L+CLIP-G; native 1024² (heavy), 768² safer default
+  sd15) SIZE="${SIZE:-512x512}"; LR="${LR:-5e-3}" ;;   # single CLIP-L (768d)
+  sd21) SIZE="${SIZE:-768x768}"; LR="${LR:-5e-3}" ;;   # single CLIP-L (1024d)
+  # SDXL's dual-encoder TI (incl. the 1280d CLIP-G vector + pooled path) over-cooks
+  # to a featureless blob at the sd15 single-vector rate (5e-3) — diffusers' SDXL
+  # textual inversion uses 5e-4 (10× lower). 1000 steps @ 5e-4 lands in the good window.
+  sdxl) SIZE="${SIZE:-768x768}"; LR="${LR:-5e-4}" ;;   # dual CLIP-L+CLIP-G; native 1024² (heavy), 768² safer
   *) echo "base must be sd15 | sd21 | sdxl"; exit 1 ;;
 esac
 # Concept (training-exemplar) generation can use a LIGHTER base than the TI base:
@@ -57,7 +60,7 @@ done
 # 2) Train the Textual Inversion embedding (one vector; a clip_l+clip_g pair for
 #    sdxl — saved as a dual-encoder TI in a single file). Model frozen.
 "$PLAKAT" embedding train --base "$BASE" --from-dir "$CONCEPT" \
-  --token "$TRIG" --init-word "glass" --steps "$STEPS" --size 256 --out "$EMB"
+  --token "$TRIG" --init-word "glass" --steps "$STEPS" --lr "$LR" --size 256 --out "$EMB"
 
 # 3) Render NEW subjects "in the learned style" via the token (per-base subdir so
 #    bases don't clobber each other; descriptive names).
