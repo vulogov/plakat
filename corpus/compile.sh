@@ -34,4 +34,24 @@ DIFF="$("$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-neg
   | "$PLAKAT" compile - --no-enhance --no-negative --out - \
   | "$PLAKAT" scenario - --dry-run >/dev/null
 
+# 6) COMPILE-2: end-to-end Tera → scenario — only if this binary was built with
+#    `--features templates` (otherwise the stub errors and we skip gracefully).
+TERA_VARS=("--vars" "$ROOT/corpus/compile/series.json")
+if "$PLAKAT" compile "$ROOT/corpus/compile/series.tera" "${TERA_VARS[@]}" \
+     --dump-rendered-only >/tmp/plakat-series-rendered.txt 2>/dev/null; then
+  # a) the Tera render is byte-stable vs the committed prompts.txt.
+  diff -q /tmp/plakat-series-rendered.txt "$ROOT/corpus/compile/series.rendered.txt" >/dev/null \
+    || { echo "✗ Tera render is not byte-stable vs the committed series.rendered.txt"; exit 1; }
+  rm -f /tmp/plakat-series-rendered.txt
+  # b) END TO END: series.tera (+series.json) → compile → COMMITTED scenario HJSON.
+  "$PLAKAT" compile "$ROOT/corpus/compile/series.tera" "${TERA_VARS[@]}" \
+    --no-enhance --no-negative --out "$ROOT/corpus/compile/series.hjson"
+  # c) that committed scenario must itself validate (2 character tasks).
+  "$PLAKAT" scenario "$ROOT/corpus/compile/series.hjson" --dry-run >/dev/null
+  TERA="+ COMPILE-2: series.tera (+series.json) → series.hjson (committed, 2 tasks) → scenario validated"
+else
+  TERA="(COMPILE-2 skipped — binary built without --features templates)"
+fi
+
 echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"
+echo "  $TERA"

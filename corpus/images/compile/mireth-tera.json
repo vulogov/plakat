@@ -1,0 +1,12 @@
+{
+  "prompt": "arcane glow, magical atmosphere, an elven sorceress in deep blue robes holding a crystal staff, a moonlit library tower., character portrait, full body",
+  "negative": "blurry, low quality, watermark, text",
+  "model": "sdxl",
+  "seed": 0,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 768,
+  "height": 768,
+  "generator": "plakat 1.3.0"
+}

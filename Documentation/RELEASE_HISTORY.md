@@ -1,12 +1,26 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.1. The current
+"What's new" sections for v0.13 through 1.2. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.2.0 — write prose, get a render plan (`plakat compile`)
+
+1.2.0 opened the two-track `compile` + `map` arc; Track C is `plakat compile`.
+
+- **`plakat compile prompts.txt`** → a `scenario` HJSON, one task per blank-line
+  block: free-text descriptions + `key: value` commands, global→scene inheritance,
+  model-family-aware prompt rewriting (SD15 / SDXL / Flux) + auto-negatives via the
+  `--enhance` stack.
+- **Deterministic core** — `--no-enhance --no-negative` assembles verbatim (no LLM,
+  byte-stable). `--lint` / `--dry-run` validate without a call.
+- **Workflow glue** — `scenario -` stdin pipe, `--decompile` (scenario → prompts.txt),
+  `--diff`, two-namespace `--compile-cache`, `--compile-parallel`, `translate:` /
+  `persona:`.
 
 ## What's new in 1.1.0 — train your own words, compose live, select by depth
 

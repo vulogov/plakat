@@ -79,6 +79,7 @@ or empty negative.
 | `--no-negative` | off | skip the negative LLM call (seed terms verbatim) |
 | `--compile-cache` | off | two-namespace SHA-256 disk cache |
 | `--compile-cache-clear [all\|positive\|negative]` | — | clear the cache and exit |
+| `--compile-parallel <N>` | `1` | max concurrent scenes; `0` = auto (deepseek 3, gemini 5, local/auto 1). Output order is preserved regardless. |
 | `--lint` | off | validate (unknown commands, misplaced `skip:`); no LLM |
 | `--dry-run` | off | per-block summary + LLM-call count; no LLM |
 | `--diff <PATH>` | — | per-task add/change/remove vs an existing scenario |
@@ -103,4 +104,6 @@ plakat compile prompts.txt --diff scene.hjson   # what changed since last compil
 ```
 
 See [`Tutorials/COMPILE_TUTORIAL.md`](Tutorials/COMPILE_TUTORIAL.md) for a
-walkthrough. The Tera template pre-pass (`.tera` inputs) lands in COMPILE-2.
+walkthrough, and [`COMPILE_TEMPLATES.md`](COMPILE_TEMPLATES.md) for the optional
+**Tera template pre-pass** (`.tera` inputs, `--features templates`) — generate a
+scene series from a data file, with `--var`/`--vars` context and custom filters.

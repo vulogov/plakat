@@ -1,0 +1,16 @@
+
+model: sdxl
+style: fantasy concept art, highly detailed
+negative: blurry, low quality, watermark, text
+
+# ── Lady Mireth ───────────────────────────
+name: lady_mireth
+header: arcane glow, magical atmosphere,
+footer: character portrait, full body
+an elven sorceress in deep blue robes holding a crystal staff, a moonlit library tower.
+
+# ── Bjorn Oakshield ───────────────────────
+name: bjorn_oakshield
+header: natural forest lighting,
+footer: character portrait, full body
+a grizzled human ranger in green leathers with a longbow, a misty pine forest at dawn.

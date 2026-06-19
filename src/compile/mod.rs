@@ -21,6 +21,41 @@ pub mod emitter;
 pub mod cache;
 pub mod scenario_read;
 
+// COMPILE-2: the Tera template pre-pass is feature-gated. When `templates` is on,
+// `template` renders `.tera`/`.j2`/… inputs to a `prompts.txt` string before the
+// parser; when off, `template_stub` returns a "recompile with --features templates"
+// error. Both expose the same `render(input, input_path, opts)` signature.
+#[cfg(feature = "templates")]
+pub mod template;
+#[cfg(not(feature = "templates"))]
+pub mod template_stub;
+#[cfg(not(feature = "templates"))]
+pub use template_stub as template;
+
+/// Inputs for the Tera pre-pass (always compiled, so the CLI layer is
+/// feature-agnostic).
+#[derive(Debug, Default)]
+pub struct TemplateOpts {
+    /// `--var KEY=VALUE` pairs (highest precedence).
+    pub vars: Vec<(String, String)>,
+    /// `--vars <PATH>` JSON/TOML files (later files win).
+    pub vars_files: Vec<std::path::PathBuf>,
+    /// `--vars-env <PREFIX>` env-var imports (prefix stripped, key lowercased).
+    pub env_prefixes: Vec<String>,
+}
+
+/// Whether the input should go through the Tera pre-pass: `--template` forces it,
+/// else a `.tera`/`.j2`/`.jinja`/`.jinja2` extension triggers it.
+pub fn should_use_template(path: Option<&std::path::Path>, force: bool) -> bool {
+    if force {
+        return true;
+    }
+    matches!(
+        path.and_then(|p| p.extension()).and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("tera" | "j2" | "jinja" | "jinja2")
+    )
+}
+
 /// How repeated occurrences of a command within one block combine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Merge {
@@ -115,8 +150,79 @@ pub struct CompileOpts {
     pub system_override: Option<String>,
     /// `--compile-cache`: read/write the two-namespace disk cache.
     pub cache: bool,
+    /// `--compile-parallel`: max concurrent scenes. `0` = auto (per-provider).
+    pub parallel: usize,
     /// Name shown in the output's header comment (kept deterministic).
     pub input_name: String,
+}
+
+/// Resolve the concurrency: an explicit value wins; `0` auto-picks per provider
+/// (API providers parallelize well; the in-process `local` LLM is mutex-guarded,
+/// so 1).
+fn effective_parallelism(requested: usize, provider: &str) -> usize {
+    if requested >= 1 {
+        return requested;
+    }
+    match provider.to_ascii_lowercase().as_str() {
+        "deepseek" => 3,
+        "gemini" => 5,
+        _ => 1, // local / auto / unknown → serial
+    }
+}
+
+/// Compile one scene end-to-end (translate → positive → negative). Never errors —
+/// every LLM step falls back (verbatim / seed terms), so scenes are independent
+/// and parallelizable.
+async fn compile_one_scene(
+    scene: &resolver::ResolvedScene,
+    opts: &CompileOpts,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> emitter::CompiledScene {
+    // 0) translate the body to English first (LLM, unless --no-enhance).
+    let body = match (&scene.translate, opts.no_enhance) {
+        (Some(lang), false) if !lang.trim().is_empty() => {
+            let sys = format!(
+                "You are a translator. Translate the user's text from {lang} to English. \
+                 Output ONLY the translation — no notes, no quotes, no markdown."
+            );
+            cached_call(&opts.provider, &sys, scene.free_text.trim(), cache::POSITIVE, opts.cache, eargs)
+                .await
+                .unwrap_or_else(|| scene.free_text.clone())
+        }
+        _ => scene.free_text.clone(),
+    };
+
+    // 1) personas → loaded fragments.
+    let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
+
+    let assembled = assembler::assemble_with_body(scene, &body);
+
+    // 2) positive.
+    let prompt = if opts.no_enhance || assembled.is_empty() {
+        assembled.clone()
+    } else {
+        let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
+        cached_call(&opts.provider, &sys, &assembled, cache::POSITIVE, opts.cache, eargs)
+            .await
+            .map(|p| assembler::clean(&p))
+            .unwrap_or_else(|| {
+                tracing::warn!(target: "plakat", "compile: positive enhance failed for '{}', using verbatim", scene.name);
+                assembled.clone()
+            })
+    };
+
+    // 3) negative — from the final positive prompt (RFC step 9).
+    let negative = if opts.no_negative {
+        scene.negative_seeds.clone()
+    } else {
+        let nsys = assembler::negative_system(scene);
+        cached_call(&opts.provider, &nsys, &prompt, cache::NEGATIVE, opts.cache, eargs)
+            .await
+            .map(|n| assembler::clean(&n))
+            .unwrap_or_else(|| scene.negative_seeds.clone())
+    };
+
+    emitter::CompiledScene { scene: scene.clone(), prompt, negative }
 }
 
 /// One provider call, optionally cached. Returns the trimmed output, or None on
@@ -166,64 +272,29 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
     let doc = parser::parse(input)?;
     let resolved = resolver::resolve(&doc, &opts.default_model)?;
     let eargs = crate::prompt::EnhanceArgs::default();
-    let mut compiled = Vec::new();
 
-    for scene in &resolved.scenes {
-        if scene.skip {
-            continue;
-        }
-
-        // 0) translate: the body to English before assembly (LLM, unless --no-enhance).
-        let body = match (&scene.translate, opts.no_enhance) {
-            (Some(lang), false) if !lang.trim().is_empty() => {
-                let sys = format!(
-                    "You are a translator. Translate the user's text from {lang} to English. \
-                     Output ONLY the translation — no notes, no quotes, no markdown."
-                );
-                cached_call(&opts.provider, &sys, scene.free_text.trim(), cache::POSITIVE, opts.cache, &eargs)
-                    .await
-                    .unwrap_or_else(|| scene.free_text.clone())
-            }
-            _ => scene.free_text.clone(),
-        };
-
-        // 1) personas: load each fragment for the system prompt.
-        let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
-
-        let assembled = assembler::assemble_with_body(scene, &body);
-
-        // 2) positive: LLM-enhanced, or verbatim under --no-enhance / empty input.
-        let prompt = if opts.no_enhance || assembled.is_empty() {
-            assembled.clone()
-        } else {
-            let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
-            cached_call(&opts.provider, &sys, &assembled, cache::POSITIVE, opts.cache, &eargs)
-                .await
-                .map(|p| assembler::clean(&p))
-                .unwrap_or_else(|| {
-                    tracing::warn!(target: "plakat", "compile: positive enhance failed for '{}', using verbatim", scene.name);
-                    assembled.clone()
-                })
-        };
-
-        // 3) negative: generated from the FINAL positive prompt (RFC step 9), or
-        //    the seed terms verbatim under --no-negative.
-        let negative = if opts.no_negative {
-            scene.negative_seeds.clone()
-        } else {
-            let nsys = assembler::negative_system(scene);
-            cached_call(&opts.provider, &nsys, &prompt, cache::NEGATIVE, opts.cache, &eargs)
-                .await
-                .map(|n| assembler::clean(&n))
-                .unwrap_or_else(|| scene.negative_seeds.clone())
-        };
-
-        compiled.push(emitter::CompiledScene { scene: scene.clone(), prompt, negative });
-    }
-
-    if compiled.is_empty() {
+    let active: Vec<&resolver::ResolvedScene> = resolved.scenes.iter().filter(|s| !s.skip).collect();
+    if active.is_empty() {
         anyhow::bail!("compile: every scene was skipped (skip: true)");
     }
+
+    // Scenes are independent → run up to N concurrently. `buffered` preserves
+    // input order, so the emitted task order is deterministic regardless of N.
+    let n = effective_parallelism(opts.parallel, &opts.provider);
+    let compiled: Vec<emitter::CompiledScene> = if n <= 1 {
+        let mut v = Vec::with_capacity(active.len());
+        for s in active.iter().copied() {
+            v.push(compile_one_scene(s, opts, &eargs).await);
+        }
+        v
+    } else {
+        use futures_util::stream::{self, StreamExt};
+        stream::iter(active.iter().copied().map(|s| compile_one_scene(s, opts, &eargs)))
+            .buffered(n)
+            .collect()
+            .await
+    };
+
     Ok(emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider))
 }
 
@@ -298,6 +369,7 @@ mod tests {
             no_negative: true,
             system_override: None,
             cache: false,
+            parallel: 0,
             input_name: "t.txt".into(),
         };
         let a = compile_to_string(input, &opts).await.unwrap();
@@ -308,6 +380,15 @@ mod tests {
         assert!(a.contains("seed: 7"));
         // Must parse as the same HJSON `scenario` consumes.
         let _: serde_json::Value = deser_hjson::from_str(&a).expect("compiled HJSON parses");
+    }
+
+    #[test]
+    fn parallelism_auto_picks_per_provider() {
+        assert_eq!(effective_parallelism(4, "deepseek"), 4, "explicit wins");
+        assert_eq!(effective_parallelism(0, "deepseek"), 3);
+        assert_eq!(effective_parallelism(0, "gemini"), 5);
+        assert_eq!(effective_parallelism(0, "local"), 1);
+        assert_eq!(effective_parallelism(0, "auto"), 1);
     }
 
     #[test]

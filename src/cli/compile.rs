@@ -53,6 +53,11 @@ pub struct CompileArgs {
     #[arg(long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
 
+    /// Max concurrent scenes when calling the LLM. `0` = auto (per provider:
+    /// deepseek 3, gemini 5, local/auto 1).
+    #[arg(long = "compile-parallel", value_name = "N", default_value_t = 1)]
+    pub parallel: usize,
+
     /// Read/write the two-namespace LLM disk cache (`positive/` + `negative/`).
     #[arg(long = "compile-cache", default_value_t = false)]
     pub compile_cache: bool,
@@ -69,6 +74,32 @@ pub struct CompileArgs {
     /// per-task add/change/remove diff instead of writing output.
     #[arg(long, value_name = "PATH")]
     pub diff: Option<PathBuf>,
+
+    // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
+    /// Force the Tera template pre-pass regardless of file extension.
+    #[arg(long, default_value_t = false)]
+    pub template: bool,
+
+    /// Inject a template variable `KEY=VALUE` (repeatable; highest precedence).
+    #[arg(long = "var", value_name = "KEY=VALUE")]
+    pub var: Vec<String>,
+
+    /// Load template variables from a JSON or TOML file (repeatable; later wins).
+    #[arg(long = "vars", value_name = "PATH")]
+    pub vars: Vec<PathBuf>,
+
+    /// Import env vars with PREFIX into the template context (prefix stripped, key
+    /// lowercased: `PLAKAT_MODEL` → `{{ model }}`). Repeatable.
+    #[arg(long = "vars-env", value_name = "PREFIX")]
+    pub vars_env: Vec<String>,
+
+    /// Write the rendered `prompts.txt` (before parsing) to PATH (`-` = stdout).
+    #[arg(long = "dump-rendered", value_name = "PATH")]
+    pub dump_rendered: Option<PathBuf>,
+
+    /// Render the template, write it, and exit — no parse, no LLM.
+    #[arg(long = "dump-rendered-only", default_value_t = false)]
+    pub dump_rendered_only: bool,
 }
 
 fn read_input(path: &std::path::Path) -> Result<String> {
@@ -117,6 +148,43 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         args.input.file_name().and_then(|n| n.to_str()).unwrap_or("prompts.txt").to_string()
     };
 
+    // COMPILE-2: Tera template pre-pass (feature-gated). Fires BEFORE the parser —
+    // a `.tera`/`.j2`/… input (or --template) renders to a prompts.txt string that
+    // everything below then treats normally.
+    let path = if stdin_input { None } else { Some(args.input.as_path()) };
+    let input = if compile::should_use_template(path, args.template) {
+        let mut vars = Vec::with_capacity(args.var.len());
+        for s in &args.var {
+            match s.split_once('=') {
+                Some((k, v)) => vars.push((k.to_string(), v.to_string())),
+                None => bail!("--var must be KEY=VALUE, got `{s}`"),
+            }
+        }
+        let topts = compile::TemplateOpts {
+            vars,
+            vars_files: args.vars.clone(),
+            env_prefixes: args.vars_env.clone(),
+        };
+        let rendered = compile::template::render(&input, path, &topts)?;
+        if let Some(p) = &args.dump_rendered {
+            if p.as_os_str() == "-" {
+                print!("{rendered}");
+            } else {
+                std::fs::write(p, &rendered).with_context(|| format!("writing {}", p.display()))?;
+                println!("{}  rendered → {}", style("✓").green(), p.display());
+            }
+        }
+        if args.dump_rendered_only {
+            if args.dump_rendered.is_none() {
+                print!("{rendered}");
+            }
+            return Ok(());
+        }
+        rendered
+    } else {
+        input
+    };
+
     // --lint: validate and exit (non-zero on issues, for CI).
     if args.lint {
         let issues = compile::lint(&input)?;
@@ -135,7 +203,7 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         let doc = compile::parser::parse(&input)?;
         let resolved = compile::resolver::resolve(&doc, &args.model)?;
         println!("{}  compile dry-run · {input_name} · provider {}", style("◆").cyan(), args.provider);
-        let mut calls = 0usize;
+        let (mut calls, mut tokens) = (0usize, 0usize);
         for s in &resolved.scenes {
             if s.skip {
                 println!("  - {} [skipped]", s.name);
@@ -144,14 +212,22 @@ pub async fn run(args: CompileArgs) -> Result<()> {
             let pos = if args.no_enhance { 0 } else { 1 };
             let neg = if args.no_negative { 0 } else { 1 };
             calls += pos + neg;
+            // Rough token estimate: ~1 token per 4 chars of input + a typical
+            // output budget per call (positive ~120, negative ~50).
+            let assembled = compile::assembler::assemble_input(s);
+            let est = assembled.len() / 4 + pos * 120 + neg * 50;
+            tokens += est;
             println!(
-                "  - {} · family {} · {} LLM call(s)",
+                "  - {} · family {} · {} LLM call(s) · ~{est} tok",
                 style(&s.name).bold(),
                 s.family.label(),
                 pos + neg
             );
         }
-        println!("  total: {} scene(s) · {calls} LLM call(s)", resolved.scenes.iter().filter(|s| !s.skip).count());
+        let n_scenes = resolved.scenes.iter().filter(|s| !s.skip).count();
+        println!(
+            "  total: {n_scenes} scene(s) · {calls} LLM call(s) · ~{tokens} tokens (rough; cost depends on provider)"
+        );
         return Ok(());
     }
 
@@ -169,6 +245,7 @@ pub async fn run(args: CompileArgs) -> Result<()> {
             no_negative: args.no_negative,
             system_override,
             cache: args.compile_cache,
+            parallel: args.parallel,
             input_name,
         },
     )
