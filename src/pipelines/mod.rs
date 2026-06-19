@@ -63,3 +63,4 @@ pub mod sd3_controlnet;
 pub mod sd3_lora;
 pub mod stylize;
 pub mod t2i;
+pub mod ti_train;

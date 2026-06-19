@@ -41,6 +41,44 @@ pub enum EmbeddingCmd {
     /// Flux hidden dim, the number of per-block IP attention
     /// modules, and the matching Flux variant.
     FluxIpAdapterInfo(InfoArgs),
+    /// Train a Textual Inversion: learn a new token embedding (a "word") from a
+    /// few images, the whole model frozen. SD 1.5 / 2.1 (one CLIP-L vector) or
+    /// SDXL (a CLIP-L + CLIP-G vector pair). The output loads via
+    /// `--embedding PATH:trigger` — the inverse of `info`.
+    Train(EmbTrainArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EmbTrainArgs {
+    /// Folder of images teaching the new token (3+ recommended; jpg/png).
+    #[arg(long = "from-dir", value_name = "DIR")]
+    pub from_dir: std::path::PathBuf,
+    /// Base model: `sd15` / `sd21` (single CLIP-L) or `sdxl` (dual CLIP-L+CLIP-G).
+    #[arg(long, default_value = "sd15")]
+    pub base: String,
+    /// The trigger you'll use the embedding under later (load with
+    /// `--embedding PATH:<token>`).
+    #[arg(long, default_value = "sks")]
+    pub token: String,
+    /// A coarse single class word to initialize from (e.g. "toy", "art", "style")
+    /// — TI converges much faster from a sensible starting point.
+    #[arg(long = "init-word", default_value = "object")]
+    pub init_word: String,
+    /// Output `.safetensors` (A1111 `emb_params`).
+    #[arg(long)]
+    pub out: std::path::PathBuf,
+    /// Training steps. (Each is a full frozen UNet forward+backward, so this is
+    /// as slow per-step as LoRA training, despite learning only one vector.)
+    #[arg(long, default_value_t = 500)]
+    pub steps: usize,
+    /// Learning rate (TI tolerates a high LR — it's one vector).
+    #[arg(long, default_value_t = 5e-3)]
+    pub lr: f64,
+    /// Training resolution (256² is faster; 512² captures more).
+    #[arg(long, default_value_t = 256)]
+    pub size: u32,
+    #[arg(long = "log-every", default_value_t = 25)]
+    pub log_every: usize,
 }
 
 #[derive(Args, Debug)]
@@ -57,7 +95,54 @@ pub async fn run(args: EmbeddingArgs) -> Result<()> {
     match args.cmd {
         EmbeddingCmd::Info(a) => run_info(a).await,
         EmbeddingCmd::FluxIpAdapterInfo(a) => run_flux_ip_adapter_info(a).await,
+        EmbeddingCmd::Train(a) => run_train(a).await,
     }
+}
+
+async fn run_train(args: EmbTrainArgs) -> Result<()> {
+    let mut images: Vec<std::path::PathBuf> = std::fs::read_dir(&args.from_dir)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", args.from_dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|x| x.to_str()),
+                Some("jpg") | Some("jpeg") | Some("png")
+            )
+        })
+        .collect();
+    images.sort();
+    if images.len() < 3 {
+        anyhow::bail!(
+            "embedding train: need 3+ images in {}, found {}",
+            args.from_dir.display(),
+            images.len()
+        );
+    }
+    let device = crate::device::select("auto")?;
+    println!(
+        "{}  training textual inversion {:?} on {} image(s) ({} steps, {}², init {:?}) → {}",
+        style("◆").cyan().bold(),
+        args.token,
+        images.len(),
+        args.steps,
+        args.size,
+        args.init_word,
+        args.out.display()
+    );
+    crate::pipelines::ti_train::train_textual_inversion(crate::pipelines::ti_train::TiTrainRequest {
+        model: args.base,
+        device,
+        images,
+        token: args.token,
+        init_word: args.init_word,
+        steps: args.steps,
+        lr: args.lr,
+        size: args.size,
+        out: args.out,
+        log_every: args.log_every,
+    })
+    .await
 }
 
 async fn run_flux_ip_adapter_info(args: InfoArgs) -> Result<()> {
@@ -135,13 +220,20 @@ async fn run_info(args: InfoArgs) -> Result<()> {
 
     let num_tokens = resolved.num_tokens()?;
     let embed_dim = resolved.embed_dim()?;
-    let variant_hint = match embed_dim {
-        SD15_EMBED_DIM => "SD 1.5 (CLIP-L 768)",
-        SD21_EMBED_DIM => "SD 2.1 (OpenCLIP-H 1024)",
-        SDXL_G_EMBED_DIM => "SDXL CLIP-G (1280)",
-        other => return Err(anyhow::anyhow!(
-            "unknown CLIP variant for embed_dim {other} (expected 768 / 1024 / 1280)"
-        )),
+    // A dual-encoder TI carries both halves in one file (clip_l 768 + clip_g
+    // 1280) — that's an SDXL TI, regardless of the clip_l dim matching SD 1.5's.
+    let variant_hint = if resolved.has_clip_g() {
+        let g = resolved.embed_dim_g()?;
+        format!("SDXL dual-encoder (CLIP-L {embed_dim} + CLIP-G {g})")
+    } else {
+        match embed_dim {
+            SD15_EMBED_DIM => "SD 1.5 (CLIP-L 768)".to_string(),
+            SD21_EMBED_DIM => "SD 2.1 (OpenCLIP-H 1024)".to_string(),
+            SDXL_G_EMBED_DIM => "SDXL CLIP-G (1280)".to_string(),
+            other => return Err(anyhow::anyhow!(
+                "unknown CLIP variant for embed_dim {other} (expected 768 / 1024 / 1280)"
+            )),
+        }
     };
 
     println!(

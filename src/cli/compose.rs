@@ -3,14 +3,19 @@
 //! Stacks image layers (z-order = array order) onto a canvas: a layer with no
 //! `at` fills the canvas (a background), each placed layer is positioned
 //! (9-grid name or `x,y` fractions), scaled (fraction of canvas width), and
-//! alpha-composited with optional opacity. **No GPU** — it composes existing
-//! image assets (RGBA cutouts from `plakat transparent` / the artefact library,
-//! or any image). `generate:` and inline `matte:` layers (which would need the
-//! GPU) are a planned follow-up — pre-render / pre-matte those for now.
+//! alpha-composited with optional opacity.
+//!
+//! Each layer's pixels come from exactly one source:
+//!   * `load:` — an existing image (an RGBA cutout, or any image). No GPU.
+//!   * `matte:` — an image matted on the fly (U2Net) into an RGBA cutout
+//!     (subject kept, background transparent). GPU (light).
+//!   * `generate:` — rendered inline from a text prompt (a t2i generate, with
+//!     optional `model` / `seed` / `steps` / `gen_size`). GPU.
 //!
 //! Paths in the scene file resolve relative to the scene file's directory.
 
 use anyhow::{Context, Result, anyhow, bail};
+use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -35,8 +40,30 @@ struct Scene {
 
 #[derive(Deserialize, Debug)]
 struct Layer {
-    /// Image file for this layer (an RGBA cutout, or any image).
-    load: PathBuf,
+    /// Source A — load an existing image as-is (an RGBA cutout, or any image).
+    #[serde(default)]
+    load: Option<PathBuf>,
+    /// Source B — load an image and matte it on the fly (U2Net) into an RGBA
+    /// cutout (subject kept, background transparent), for dropping a raw photo's
+    /// subject onto the scene without pre-cutting it.
+    #[serde(default)]
+    matte: Option<PathBuf>,
+    /// Source C — render this layer inline from a text prompt (a t2i generate).
+    #[serde(default)]
+    generate: Option<String>,
+    /// `generate:` only — base model (default `sd15`).
+    #[serde(default)]
+    model: Option<String>,
+    /// `generate:` only — seed (default random).
+    #[serde(default)]
+    seed: Option<u64>,
+    /// `generate:` only — steps (default `28`).
+    #[serde(default)]
+    steps: Option<usize>,
+    /// `generate:` only — render size `"WxH"` (default `512x512`); the rendered
+    /// layer is then placed/scaled like any other.
+    #[serde(default)]
+    gen_size: Option<String>,
     /// Placement: a 9-grid name (`center`, `top_left`, `bottom_right`, …) or
     /// `"x,y"` fractions in `[0,1]`. Omit → the layer fills the canvas.
     #[serde(default)]
@@ -111,18 +138,97 @@ fn composite(canvas: &mut RgbaImage, overlay: &RgbaImage, ox: i64, oy: i64, opac
     }
 }
 
-fn compose_scene(scene: &Scene, base_dir: &Path) -> Result<RgbaImage> {
+/// How many pixel sources a layer declares — must be exactly 1.
+fn source_count(l: &Layer) -> u8 {
+    l.load.is_some() as u8 + l.matte.is_some() as u8 + l.generate.is_some() as u8
+}
+
+fn resolve(base_dir: &Path, p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
+    }
+}
+
+/// Resolve one layer's pixels (pre-placement) from its single source — `load`,
+/// `matte` (U2Net cutout), or `generate` (t2i render). The `matte`/`generate`
+/// paths render to a tempfile and read it back, reusing the file-based pipelines.
+async fn layer_image(
+    layer: &Layer,
+    idx: usize,
+    base_dir: &Path,
+    device: &Device,
+) -> Result<RgbaImage> {
+    let sources = source_count(layer);
+    if sources != 1 {
+        bail!("layer {idx}: set exactly one of `load`, `matte`, or `generate` (got {sources})");
+    }
+
+    if let Some(p) = &layer.load {
+        let path = resolve(base_dir, p);
+        return Ok(image::open(&path)
+            .with_context(|| format!("layer {idx}: opening {}", path.display()))?
+            .to_rgba8());
+    }
+
+    if let Some(p) = &layer.matte {
+        let path = resolve(base_dir, p);
+        let tmp = tempfile::Builder::new()
+            .prefix("plakat-compose-matte-")
+            .suffix(".png")
+            .tempfile()?;
+        crate::pipelines::matting::cutout(&path, tmp.path(), false, device)
+            .await
+            .with_context(|| format!("layer {idx}: matting {}", path.display()))?;
+        return Ok(image::open(tmp.path())
+            .with_context(|| format!("layer {idx}: reading matte output"))?
+            .to_rgba8());
+    }
+
+    // generate: render the prompt to a temp dir, then read the single image back.
+    let prompt = layer.generate.as_ref().expect("validated above");
+    let model = layer.model.clone().unwrap_or_else(|| "sd15".to_string());
+    let (gw, gh) = match &layer.gen_size {
+        Some(s) => parse_size(s).with_context(|| format!("layer {idx}: gen_size"))?,
+        None => (512, 512),
+    };
+    let steps = layer.steps.unwrap_or(28);
+    let dir = tempfile::Builder::new()
+        .prefix("plakat-compose-gen-")
+        .tempdir()?;
+    crate::pipelines::t2i::run(crate::pipelines::t2i::Request::simple(
+        prompt.clone(),
+        model,
+        gw,
+        gh,
+        steps,
+        layer.seed,
+        device.clone(),
+        dir.path().to_path_buf(),
+    ))
+    .await
+    .with_context(|| format!("layer {idx}: generating \"{prompt}\""))?;
+    let produced = std::fs::read_dir(dir.path())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            matches!(
+                p.extension().and_then(|x| x.to_str()).map(|s| s.to_lowercase()).as_deref(),
+                Some("png" | "webp" | "jpg" | "jpeg")
+            )
+        })
+        .ok_or_else(|| anyhow!("layer {idx}: generate produced no image"))?;
+    Ok(image::open(&produced)
+        .with_context(|| format!("layer {idx}: reading generated image"))?
+        .to_rgba8())
+}
+
+async fn compose_scene(scene: &Scene, base_dir: &Path, device: &Device) -> Result<RgbaImage> {
     let (cw, ch) = parse_size(&scene.size)?;
     let mut canvas = RgbaImage::new(cw, ch);
     for (i, layer) in scene.layers.iter().enumerate() {
-        let path = if layer.load.is_absolute() {
-            layer.load.clone()
-        } else {
-            base_dir.join(&layer.load)
-        };
-        let img = image::open(&path)
-            .with_context(|| format!("layer {i}: opening {}", path.display()))?
-            .to_rgba8();
+        let img = layer_image(layer, i, base_dir, device).await?;
         let opacity = layer.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
         match &layer.at {
             None => {
@@ -147,7 +253,7 @@ fn compose_scene(scene: &Scene, base_dir: &Path) -> Result<RgbaImage> {
     Ok(canvas)
 }
 
-pub async fn run(args: ComposeArgs) -> Result<()> {
+pub async fn run(args: ComposeArgs, device: Device) -> Result<()> {
     let text = std::fs::read_to_string(&args.scene)
         .with_context(|| format!("reading scene {}", args.scene.display()))?;
     let scene: Scene = deser_hjson::from_str(&text)
@@ -156,7 +262,7 @@ pub async fn run(args: ComposeArgs) -> Result<()> {
         bail!("compose: scene has no layers");
     }
     let base_dir = args.scene.parent().unwrap_or_else(|| Path::new("."));
-    let canvas = compose_scene(&scene, base_dir)?;
+    let canvas = compose_scene(&scene, base_dir, &device).await?;
 
     let out = if scene.out.is_absolute() {
         scene.out.clone()
@@ -205,6 +311,33 @@ mod tests {
         assert_eq!(parse_at("bottom_right").unwrap(), (1.0, 1.0));
         assert_eq!(parse_at("0.25,0.75").unwrap(), (0.25, 0.75));
         assert!(parse_at("nowhere").is_err());
+    }
+
+    #[test]
+    fn source_count_enforces_exactly_one() {
+        let load: Layer = deser_hjson::from_str(r#"{ load: "a.png" }"#).unwrap();
+        assert_eq!(source_count(&load), 1);
+        let generated: Layer = deser_hjson::from_str(r#"{ generate: "a sunset", model: "sd15" }"#).unwrap();
+        assert_eq!(source_count(&generated), 1);
+        let matte: Layer = deser_hjson::from_str(r#"{ matte: "photo.png" }"#).unwrap();
+        assert_eq!(source_count(&matte), 1);
+        let none: Layer = deser_hjson::from_str(r#"{ at: "center" }"#).unwrap();
+        assert_eq!(source_count(&none), 0, "no source");
+        let two: Layer = deser_hjson::from_str(r#"{ load: "a.png", generate: "x" }"#).unwrap();
+        assert_eq!(source_count(&two), 2, "ambiguous");
+    }
+
+    #[test]
+    fn generate_layer_params_deserialize() {
+        let l: Layer = deser_hjson::from_str(
+            r#"{ generate: "a forest", model: "sdxl", seed: 7, steps: 30, gen_size: "768x768", at: "center", scale: 0.5 }"#,
+        )
+        .unwrap();
+        assert_eq!(l.generate.as_deref(), Some("a forest"));
+        assert_eq!(l.model.as_deref(), Some("sdxl"));
+        assert_eq!(l.seed, Some(7));
+        assert_eq!(l.steps, Some(30));
+        assert_eq!(l.gen_size.as_deref(), Some("768x768"));
     }
 
     #[test]

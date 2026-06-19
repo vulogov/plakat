@@ -1,0 +1,26 @@
+// plakat proof corpus — compose with INLINE layer sources (v1.1).
+// Two layers, neither pre-made:
+//   1. `generate:` — the background is rendered inline from a prompt (sd15).
+//   2. `matte:`    — a raw photo's subject is cut out on the fly (U2Net) and
+//                    dropped onto that generated background.
+// No pre-rendering, no pre-matting. Paths are relative to this file.
+{
+  size: "1024x1024"
+  out: "images/compose/beach-generate-matte.png"
+  layers: [
+    // Background — GENERATED inline (fills the canvas; no asset on disk).
+    {
+      generate: "a serene tropical beach at sunset, calm turquoise ocean, golden hour light, wispy clouds, photographic"
+      model: "sd15"
+      seed: 42
+      gen_size: "512x512"
+    }
+    // Foreground — the astronaut, MATTED on the fly from a raw photo (its
+    // background dropped to transparent), placed on the sand.
+    {
+      matte: "images/portrait/astronaut/plakat-portrait-42.png"
+      at: "bottom_center"
+      scale: 0.6
+    }
+  ]
+}

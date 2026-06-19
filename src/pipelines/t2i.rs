@@ -207,6 +207,72 @@ pub struct Request {
     pub cascade_controlnet_weights: Option<std::path::PathBuf>,
 }
 
+impl Request {
+    /// Minimal single-image request — everything but the essentials defaulted.
+    /// For callers that just want "render this prompt to `out_dir`" (e.g.
+    /// `compose` `generate:` layers). Centralizes the long default list so adding
+    /// a `Request` field doesn't ripple into every such caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn simple(
+        prompt: impl Into<String>,
+        model: impl Into<String>,
+        width: u32,
+        height: u32,
+        steps: usize,
+        seed: Option<u64>,
+        device: Device,
+        out_dir: PathBuf,
+    ) -> Self {
+        Request {
+            prompt: prompt.into(),
+            negative: String::new(),
+            model: model.into(),
+            width,
+            height,
+            count: 1,
+            steps,
+            guidance: 7.5,
+            seed,
+            out_dir,
+            device,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            scheduler: SchedulerKind::default(),
+            refine: None,
+            refine_strength: 0.3,
+            use_refiner: false,
+            refiner_frac: 0.0,
+            controls: Vec::new(),
+            tiled: None,
+            regions: Vec::new(),
+            kontext_bucket: false,
+            quantize_t5: false,
+            flux_quant_level: None,
+            t5_quant_level: None,
+            redux_images: Vec::new(),
+            flux_concept_image: None,
+            clip_skip: 1,
+            embeddings: Vec::new(),
+            write_metadata: false,
+            preview_every: None,
+            preview_size: None,
+            output_format: crate::imaging::io::OutputFormat::default(),
+            look: None,
+            genre: None,
+            negative_preset: None,
+            lora_stack: None,
+            embedding_stack: None,
+            control_stack: None,
+            enhancement: None,
+            cascade_stage_c_steps: None,
+            cascade_decoder_guidance: 1.1,
+            cascade_stage_b_steps: None,
+            cascade_image_prompt: None,
+            cascade_controlnet_weights: None,
+        }
+    }
+}
+
 /// Stuff that's fixed for the lifetime of a Pipeline.
 pub struct LoadRequest {
     pub model: String,
@@ -2112,7 +2178,7 @@ fn save_with_optional_metadata(
     }
 }
 
-fn tokenize_padded(
+pub(crate) fn tokenize_padded(
     tokenizer: &Tokenizer,
     cfg: &sdclip::Config,
     text: &str,

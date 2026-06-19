@@ -1888,6 +1888,16 @@ pub struct StyleTrainRequest {
     /// run). The fused adapters are reconstructed from it and the step counter
     /// continues from the checkpoint's step up to `steps`. `None` = from scratch.
     pub resume_from: Option<std::path::PathBuf>,
+    /// DreamBooth prior preservation: a few generic CLASS images (e.g. other
+    /// dogs) trained alongside the subject under `class_prompt`, so the rare
+    /// subject token doesn't overfit or collapse the whole class. Empty (the
+    /// default) = plain style/subject training, no prior loss — loop unchanged.
+    pub class_images: Vec<std::path::PathBuf>,
+    /// Class prompt for `class_images` (e.g. "a photo of a dog"). Required when
+    /// `class_images` is non-empty.
+    pub class_prompt: Option<String>,
+    /// Weight on the prior-preservation loss (DreamBooth's λ; typical ~1.0).
+    pub prior_weight: f32,
 }
 
 /// Train a style LoRA on the MMDiT attention projections; write a
@@ -1907,7 +1917,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         req.images.len(),
         req.trigger
     );
-    let (latents, y, context, dtype) = {
+    let (latents, y, context, class_data, dtype) = {
         let mut pipe = Pipeline::load(LoadRequest {
             variant: req.variant,
             repo: req.repo.clone(),
@@ -1918,21 +1928,36 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         })
         .await?;
         let dtype = pipe.dtype;
+        let encode_imgs = |pipe: &mut Pipeline, imgs: &[std::path::PathBuf]| -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    dtype,
+                )?;
+                let z = pipe.vae.encode(&px)?.sample()?;
+                v.push(((z - VAE_SHIFT)? * VAE_SCALE)?);
+            }
+            Ok(v)
+        };
         let (y, context) = pipe.encode_prompt(&req.trigger)?;
-        let mut latents = Vec::with_capacity(req.images.len());
-        for img in &req.images {
-            let px = crate::imaging::preprocess::sd_image_tensor(
-                img.as_path(),
-                req.size,
-                req.size,
-                &device,
-                dtype,
-            )?;
-            let z = pipe.vae.encode(&px)?.sample()?;
-            let lat = ((z - VAE_SHIFT)? * VAE_SCALE)?;
-            latents.push(lat);
-        }
-        (latents, y, context, dtype)
+        let latents = encode_imgs(&mut pipe, &req.images)?;
+        // DreamBooth prior preservation (optional): encode the class set + its
+        // prompt's (y, context) too, while the triple encoder is still loaded.
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            let (cy, ccontext) = pipe.encode_prompt(cp)?;
+            let clats = encode_imgs(&mut pipe, &req.class_images)?;
+            Some((clats, cy, ccontext))
+        };
+        (latents, y, context, class_data, dtype)
     }; // BF16 pipeline (MMDiT + T5 + CLIP + VAE) dropped here → freed
 
     // --- Phase B: load MMDiT in F32, install trainable adapters.
@@ -2000,6 +2025,25 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         let t_vec = Tensor::full((sigma * 1000.0) as f32, (1usize,), &device)?;
         let pred = model.forward(&x_t, &t_vec, &y, &context, None)?;
         let loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // DreamBooth prior preservation: add the class loss on an INDEPENDENT
+        // class sample / sigma / noise (same rectified-flow objective), so the
+        // rare subject token doesn't overfit or collapse the broader class. No
+        // class data → this is plain training and the term is skipped.
+        let loss = if let Some((class_lat, cy, ccontext)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let cx0 = &class_lat[step % cn];
+            let cnoise = Tensor::randn(0f32, 1f32, cx0.dims(), &device)?.to_dtype(dtype)?;
+            let csigma = 0.05
+                + 0.90 * Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] as f64;
+            let cx_t = ((cx0 * (1.0 - csigma))? + (&cnoise * csigma)?)?;
+            let ctarget = (&cnoise - cx0)?;
+            let ct_vec = Tensor::full((csigma * 1000.0) as f32, (1usize,), &device)?;
+            let cpred = model.forward(&cx_t, &ct_vec, cy, ccontext, None)?;
+            let closs = (&cpred - &ctarget)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            (&loss + (closs * req.prior_weight as f64)?)?
+        } else {
+            loss
+        };
         let mut grads = loss.backward()?;
         crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
         opt.step(&grads)?;

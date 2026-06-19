@@ -41,6 +41,33 @@ plakat img2img portrait.png --prompt "the surface of the Moon, Earth rising" \
 
 That's the committed corpus proof (`corpus/segment.sh`): astronaut → the Moon.
 
+## Select by depth — no clicks (`--depth-band`)
+
+Instead of (or together with) point clicks, select pixels by their **depth**.
+`--depth-band LO,HI` runs Depth-Anything-V2 and keeps pixels whose normalized
+depth falls in `[LO, HI]`, where **1.0 = nearest the camera, 0.0 = farthest**:
+
+```bash
+# Foreground only — the nearest subject, no clicks at all
+plakat segment --in photo.png --out fg.png --depth-band 0.45,1.0
+
+# The far background instead
+plakat segment --in photo.png --out bg.png --depth-band 0.0,0.4
+```
+
+It composes with everything else (`--invert`, `--grow`, `--feather`), and you can
+**combine it with `--point` to intersect** — "this specific object, but only the
+part of it that's near the camera":
+
+```bash
+plakat segment --in photo.png --out near-subject.png \
+  --point 0.5,0.5 --depth-band 0.5,1.0
+```
+
+The depth model is small (runs even on CPU), so this is cheap. Proof:
+`corpus/segment.sh` stage 3 lifts the foreground astronaut click-free
+(`corpus/images/segment/depth-foreground.png`).
+
 ## Tips
 
 - **Subject choice matters.** A cleanly-separable subject swaps cleanly; a figure

@@ -112,7 +112,7 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
     },
     // ── SD 3.x ───────────────────────────────────────────────────
     AliasEntry {
-        aliases: &["sd35-medium", "sd3.5-medium", "stable-diffusion-3.5-medium"],
+        aliases: &["sd35", "sd35-medium", "sd3.5-medium", "stable-diffusion-3.5-medium"],
         repo: "stabilityai/stable-diffusion-3.5-medium",
         family: "SD 3.x",
         kind: "base",

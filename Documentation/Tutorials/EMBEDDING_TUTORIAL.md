@@ -36,6 +36,33 @@ Repeatable — pass `--embedding` more than once to stack several.
 plakat embedding info EasyNegative.safetensors   # trigger word + dims + variant
 ```
 
+## Train your own word (`embedding train`)
+
+The inverse of loading a TI: learn a **new token embedding** from a few images
+with the whole model **frozen** — only the placeholder vector(s) are optimized.
+Point it at a folder of images that share a look (or a subject), give the new
+token a name, and seed it from a coarse class word:
+
+```bash
+plakat embedding train --base sdxl --from-dir ./stained-glass \
+  --token sgwin --init-word glass --steps 1000 --out glass.safetensors
+
+plakat generate "a sgwin cat" --model sdxl --embedding glass.safetensors:sgwin:0.6
+```
+
+- **Bases:** `sd15` / `sd21` learn one CLIP-L vector; **`sdxl`** learns a CLIP-L +
+  CLIP-G pair (a dual-encoder TI, saved as one file with both halves).
+- **`--init-word`** — a simple class word to start from (e.g. `glass`, `toy`,
+  `art`); TI converges far faster from a sensible seed than from noise.
+- **It's subject-dependent** — one vector lands harder on some subjects than
+  others. Lower the load-time scale (`…:trigger:0.6`) if a strong token overpowers
+  the composition; raise `--steps` if it's too faint.
+- **SDXL tuning:** use `--lr 5e-4` (the sd15 default `5e-3` over-cooks the
+  dual-encoder TI to a blur), and render around `…:0.6` scale.
+
+Proof: `corpus/embedding_train.sh <sd15|sd21|sdxl>` learns a stained-glass token
+and applies it to new subjects (`corpus/images/embedding-train/<base>/`).
+
 ## Notes
 
 - TI embeddings are **model-family specific** — an SD 1.5 embedding won't load on

@@ -174,8 +174,9 @@ plakat style train --base sd15 \
 
 `--class-dir` makes it a subject LoRA (DreamBooth): each step trains your subject
 **and** a class image, so the model keeps its general "dog" while binding `sks` to
-your dog. Omit `--class-dir` to skip prior preservation. sd15 / sdxl (sd35's
-separate trainer doesn't support prior preservation yet). `--resume` works here too.
+your dog. Omit `--class-dir` to skip prior preservation. Works on **sd15 / sdxl /
+sd35** (on sd35 the class loss uses the MMDiT rectified-flow objective). `--resume`
+works here too.
 
 ---
 

@@ -48,4 +48,12 @@ mkdir -p "$OUT"
   --model sd15 --strength 0.9 --steps 28 --seed 42 --device metal \
   --out "$OUT"
 
-echo "✓ wrote corpus/images/segment/ (astronaut kept, background swapped to the Moon via SAM clicks)"
+# 3) DEPTH-BAND selection (v1.1) — a click-free extra mask source. Depth-Anything-V2
+#    produces a normalized depth map (1.0 = nearest, 0.0 = farthest); --depth-band
+#    LO,HI masks pixels in that range. Here 0.45,1.0 lifts the FOREGROUND astronaut
+#    (nearest to camera) with NO points at all. Light (small depth model, runs even
+#    on CPU). Combine with --point to intersect ("this object, only where it's near").
+"$PLAKAT" segment --in "$SRC" --out "$OUT/depth-foreground.png" \
+  --depth-band 0.45,1.0 --device metal
+
+echo "✓ wrote corpus/images/segment/ (astronaut kept, background swapped to the Moon via SAM clicks; depth-band foreground mask)"
