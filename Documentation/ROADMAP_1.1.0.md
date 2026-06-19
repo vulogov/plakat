@@ -13,7 +13,7 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       frozen (differentiable splice into the vendored CLIP via `embed_tokens` +
       `forward_from_input_embeds`). ~0.1 s/step (single vector). Verified: stained-
       glass style set → `a sgwin cat` takes the look (`corpus/embedding_train.sh`,
-      proofs in `corpus/images/embedding-train/{sd15,sd21}/`).
+      proofs in `corpus/images/embedding-train/{sd15,sd21,sdxl}/`).
       **SDXL (dual-encoder) done**: learns a CLIP-L 768d + CLIP-G 1280d vector pair
       (splice into both encoders, penultimate-L ⊕ penultimate-G + CLIP-G pooled —
       bit-identical to inference `embed_xl`); saved as a dual `clip_l`+`clip_g` TI,

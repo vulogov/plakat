@@ -1,13 +1,17 @@
-//! Textual Inversion training — learn ONE new token embedding (a "word") for the
-//! SD CLIP-L text encoder with the whole model **frozen**; only the placeholder
-//! vector is optimized. SD 1.5 / 2.1 (single CLIP-L). The output is an A1111
-//! `emb_params` safetensors loadable via `--embedding PATH:trigger` — the inverse
-//! of what plakat already does at load time (it can use TIs; this *makes* them).
+//! Textual Inversion training — learn a new token embedding (a "word") with the
+//! whole model **frozen**; only the placeholder vector(s) are optimized.
+//! **SD 1.5 / 2.1** learn one CLIP-L vector ([`train_textual_inversion`]); **SDXL**
+//! learns a CLIP-L 768d + CLIP-G 1280d pair ([`train_ti_sdxl`], a dual-encoder TI).
+//! The output is loadable via `--embedding PATH:trigger` — the inverse of what
+//! plakat already does at load time (it can use TIs; this *makes* them):
+//! sd15/sd21 → an A1111 `emb_params` file, SDXL → a dual `clip_l`+`clip_g` file.
 //!
 //! Mechanism: forward through the frozen UNet + CLIP with the template
 //! "a photo of <init-word>", but **splice the trainable vector** into the
 //! init-word's token slot (a differentiable masked combine, so the gradient
-//! reaches only that vector), and backprop the DDPM-ε loss into it.
+//! reaches only that vector), and backprop the loss into it. SDXL reproduces the
+//! inference dual-encoder conditioning (penultimate-L ⊕ penultimate-G + CLIP-G
+//! pooled + add_time_ids) so the learned vectors transfer at generate time.
 
 use anyhow::{Result, anyhow, bail};
 use candle_core::{DType, Device, IndexOp, Tensor, Var};

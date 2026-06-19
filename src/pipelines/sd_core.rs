@@ -743,8 +743,7 @@ impl SdCore {
         >,
     ) -> Result<usize> {
         // sd_core uses anyhow::Result; SdUNet returns candle_core::Result.
-        // Bridge via `?` + `into`/`with_context`.
-        Ok(self.unet.apply_loras(specs).map_err(anyhow::Error::from)?)
+        self.unet.apply_loras(specs).map_err(anyhow::Error::from)
     }
 
     /// v0.15 phase 7b-6: no-op for SD-family (no runtime stack
