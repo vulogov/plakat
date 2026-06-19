@@ -69,6 +69,30 @@ pub async fn enhance_with_args(
     }
 }
 
+/// Like [`enhance_with_args`] but with an explicit, caller-built `system`
+/// prompt (not the built-in / `--enhance-system`). `plakat compile` uses this to
+/// pass a family-aware system prompt per scene through the same provider stack.
+pub async fn complete(
+    provider: &str,
+    system: &str,
+    user: &str,
+    args: &EnhanceArgs,
+) -> Result<String> {
+    match provider.to_lowercase().as_str() {
+        "deepseek" => deepseek::enhance_with_system(system, user).await,
+        "gemini" => gemini::enhance_with_system(system, user).await,
+        "local" => enhance_local(crate::llm::DEFAULT_ALIAS, user, system, args).await,
+        other if other.starts_with("local:") => {
+            let alias = other["local:".len()..].to_string();
+            enhance_local(&alias, user, system, args).await
+        }
+        "auto" => enhance_auto(user, system, args).await,
+        other => Err(anyhow!(
+            "unknown provider: {other} (supported: deepseek, gemini, local, local:<alias>, auto)"
+        )),
+    }
+}
+
 /// Load `--enhance-system PATH` from disk when set; fall back to
 /// the built-in [`SYSTEM`] default otherwise. Returns an owned
 /// string so the lifetime stays unambiguous across the async dispatch.

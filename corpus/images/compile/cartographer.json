@@ -1,0 +1,12 @@
+{
+  "prompt": "close-up portrait, An elderly cartographer hunched over a candlelit table, tracing coastlines on parchment with a quill, ink-stained fingers.",
+  "negative": "blurry, low quality, watermark, text, deformed",
+  "model": "sdxl",
+  "seed": 42,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 768,
+  "height": 768,
+  "generator": "plakat 1.2.0"
+}

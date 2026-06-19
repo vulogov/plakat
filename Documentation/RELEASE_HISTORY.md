@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.0. The current
+"What's new" sections for v0.13 through 1.1. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.1.0 — train your own words, compose live, select by depth
+
+1.1.0 finished the "train your own everything" and "compose & edit" threads from 1.0.
+
+- **Textual-Inversion training** — `plakat embedding train` learns a new token
+  embedding from a few images, the model frozen. SD 1.5 / 2.1 learn one CLIP-L
+  vector; **SDXL** learns a CLIP-L + CLIP-G pair (a dual-encoder TI). Loads via
+  `--embedding PATH:trigger[:scale]`.
+- **Compose `generate:` / `matte:` layers** — a `compose` layer's pixels can come
+  from `load:`, `matte:` (U2Net cutout on the fly), or `generate:` (t2i inline) —
+  build a scene with nothing on disk.
+- **`segment --depth-band LO,HI`** — a click-free mask source via Depth-Anything-V2
+  (1.0 = nearest), combinable with `--point` to intersect.
+- **SD3.5 DreamBooth** — `style train --base sd35 --class-dir … --prior-weight`
+  ports class prior-preservation to the MMDiT rectified-flow trainer.
 
 ## What's new in 1.0.0 — compose & edit scenes, train your own everything
 

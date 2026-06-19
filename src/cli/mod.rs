@@ -6,6 +6,7 @@ pub mod animate;
 pub mod artefact;
 pub mod civitai;
 pub mod clone;
+pub mod compile;
 pub mod compose;
 pub mod doctor;
 pub mod embedding;
@@ -77,6 +78,10 @@ pub enum Command {
     /// (background + placed cut-outs / artefacts) with z-order, position,
     /// scale, and opacity. No GPU — composes existing image assets.
     Compose(compose::ComposeArgs),
+    /// Compile a prose `prompts.txt` into a `scenario` HJSON: each block becomes
+    /// a task, prompts are LLM-enhanced (family-aware) with auto-negatives.
+    /// `--no-enhance --no-negative` is deterministic (no LLM).
+    Compile(compile::CompileArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -185,6 +190,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             upscale::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
+        Command::Compile(args) => compile::run(args).await,
         Command::Compose(args) => {
             let device = crate::device::select(&cli.device)?;
             compose::run(args, device).await

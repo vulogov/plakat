@@ -17,50 +17,39 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.1.0 — train your own words, compose live, select by depth
+## What's new in 1.2.0 — write prose, get a render plan (`plakat compile`)
 
-1.1.0 finishes the "train your own everything" and "compose & edit" threads from
-1.0 — all **SemVer-additive** on the frozen 1.0 contracts. Every verifiable claim
-is proven by a committed render in the [proof corpus](corpus/).
+1.2.0 opens the two-track **`compile` + `map`** arc (see the
+[plan](Documentation/RFC_MAP_COMPILE_PLAN.md)). This release is **Track C**:
+`plakat compile` turns a natural-language `prompts.txt` into a ready-to-run
+`scenario` HJSON — write scenes as paragraphs, render the batch. SemVer-additive;
+no GPU, no API key required for the deterministic path.
 
 ```bash
-# Teach the model a new "word" from a few images (the model stays FROZEN)
-plakat embedding train --base sdxl --from-dir ./my-style \
-  --token sgwin --init-word glass --out glass.safetensors
-plakat generate "a sgwin cat" --model sdxl --embedding glass.safetensors:sgwin:0.6
-
-# Build a scene from NOTHING on disk: a generated backdrop + a matted subject
-plakat compose scene.hjson   # layers: { generate: "a beach…" } + { matte: "photo.png" }
+# prompts.txt: blank-line scenes + optional `key: value` commands
+plakat compile prompts.txt --out - | plakat scenario -      # prose → batch render
 ```
 
-**Train your own words (Textual Inversion)**
+**Compile prose into a scenario**
 
-- **`plakat embedding train`** learns a new token embedding from a few images with
-  the whole model **frozen** — the inverse of plakat's existing `--embedding` load.
-  **SD 1.5 / 2.1** learn one CLIP-L vector; **SDXL** learns a CLIP-L 768d + CLIP-G
-  1280d pair (a dual-encoder TI, matching SDXL's inference conditioning exactly).
-  The output loads via `--embedding PATH:trigger[:scale]`.
+- **`plakat compile prompts.txt`** → one task per block. Blank-line scenes with
+  free-text descriptions plus `key: value` commands (`header:`/`footer:`/`style:`/
+  `seed:`/`count:`/`lora:`/`translate:`/…), global→scene inheritance, and
+  **model-family-aware** prompt rewriting (SD15 / SDXL / Flux) with an
+  auto-generated negative — all through the existing `--enhance` provider stack.
+- **Deterministic core** — `--no-enhance --no-negative` assembles verbatim (no
+  LLM), so the output is byte-stable and CI-friendly; `--lint` / `--dry-run`
+  validate without spending a call.
+- **Workflow glue** — `scenario -` reads stdin (pipe `compile | scenario`),
+  `--decompile` turns a scenario back into an editable `prompts.txt`, `--diff`
+  shows what changed, `--compile-cache` skips re-enhancing unchanged prompts.
 
-**Compose, live**
+Proven end to end: a two-scene `prompts.txt` compiles and renders the tundra rider
+and the cartographer ([`corpus/images/compile/`](corpus/images/compile/)), per-scene
+seed/count honoured. See [`Documentation/COMPILE.md`](Documentation/COMPILE.md).
+Next on the arc: COMPILE-2 (Tera template pre-pass), then `plakat map`.
 
-- **`compose` `generate:` / `matte:` layers** — a scene layer's pixels can now be
-  rendered inline from a prompt (`generate:`) or matted from a raw photo on the fly
-  (`matte:`, a U2Net cutout), not just `load:`ed from disk — build a whole scene
-  with no pre-made assets.
-
-**Select by depth**
-
-- **`segment --depth-band LO,HI`** — a click-free mask source: select pixels by
-  normalized depth (1.0 = nearest) via Depth-Anything-V2, combinable with `--point`
-  to intersect ("this object, but only where it's near").
-
-**Train your own subject, on SD3.5**
-
-- **SD3.5 DreamBooth** — `style train --base sd35 --class-dir … --prior-weight`
-  ports class prior-preservation to the MMDiT rectified-flow trainer, completing
-  DreamBooth across sd15 / sdxl / sd35.
-
-**Earlier releases** (v0.13 – v1.0):
+**Earlier releases** (v0.13 – v1.1):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -323,7 +312,8 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
-| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. |
+| `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
+| `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
 | `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |

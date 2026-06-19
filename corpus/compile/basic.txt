@@ -1,0 +1,18 @@
+# Global defaults — apply to every scene (no free text here).
+model: sdxl
+style: cinematic photography, dramatic lighting, photorealistic
+negative: blurry, low quality, watermark, text, deformed
+
+# Scene 1
+header: wide establishing shot,
+A vast frozen tundra stretching to the horizon, a lone rider on horseback
+silhouetted against an aurora-lit sky, sparse wind-bent pines.
+footer: 8k, award-winning landscape photography
+
+# Scene 2
+header: close-up portrait,
+style: oil painting, Rembrandt lighting
+An elderly cartographer hunched over a candlelit table, tracing coastlines
+on parchment with a quill, ink-stained fingers.
+seed: 42
+count: 2

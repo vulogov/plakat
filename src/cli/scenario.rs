@@ -1235,8 +1235,19 @@ impl PersonaRef {
 }
 
 pub async fn run(args: ScenarioArgs) -> Result<()> {
-    let text = std::fs::read_to_string(&args.file)
-        .with_context(|| format!("reading {}", args.file.display()))?;
+    // `-` reads the scenario from stdin (pipe integration: `plakat compile … --out -
+    // | plakat scenario -`).
+    let text = if args.file.as_os_str() == "-" {
+        use std::io::Read;
+        let mut s = String::new();
+        std::io::stdin()
+            .read_to_string(&mut s)
+            .context("reading scenario from stdin")?;
+        s
+    } else {
+        std::fs::read_to_string(&args.file)
+            .with_context(|| format!("reading {}", args.file.display()))?
+    };
     let s: ScenarioFile = deser_hjson::from_str(&text)
         .map_err(|e| {
             // v0.33 phase 1: enrich with the surrounding task name

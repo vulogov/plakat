@@ -11,6 +11,7 @@ pub mod artefacts;
 pub mod capability;
 pub mod civitai;
 pub mod cli;
+pub mod compile;
 pub mod config;
 pub mod device;
 pub mod error_hints;
