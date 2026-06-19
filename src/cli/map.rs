@@ -52,6 +52,10 @@ pub struct MapArgs {
     /// MAP-2: write the full-canvas tectonic heightmap PNG (L0+L1).
     #[arg(long = "map-dump-heightmap", value_name = "PATH")]
     pub dump_heightmap: Option<PathBuf>,
+
+    /// MAP-2: write the river network over the terrain (L2 hydraulics).
+    #[arg(long = "map-dump-rivers", value_name = "PATH")]
+    pub dump_rivers: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -95,20 +99,34 @@ pub async fn run(args: MapArgs) -> Result<()> {
 
     let mut did_dump = false;
 
-    // MAP-2 (L0+L1): full-canvas tectonic heightmap.
-    if let Some(p) = &args.dump_heightmap {
+    // MAP-2 geometry dumps (share the canvas + heightfield).
+    if args.dump_heightmap.is_some() || args.dump_rivers.is_some() {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
-        hf.save_gray_png(p)?;
-        println!(
-            "{}  heightmap → {}  ({}x{}, seed {})",
-            style("✓").green(),
-            p.display(),
-            canvas.width,
-            canvas.height,
-            args.seed
-        );
-        did_dump = true;
+        if let Some(p) = &args.dump_heightmap {
+            hf.save_gray_png(p)?;
+            println!(
+                "{}  heightmap → {}  ({}x{}, seed {})",
+                style("✓").green(),
+                p.display(),
+                canvas.width,
+                canvas.height,
+                args.seed
+            );
+            did_dump = true;
+        }
+        if let Some(p) = &args.dump_rivers {
+            let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+            hydro.render_overlay(&hf, p)?;
+            println!(
+                "{}  rivers → {}  ({} channel(s), seed {})",
+                style("✓").green(),
+                p.display(),
+                hydro.rivers.len(),
+                args.seed
+            );
+            did_dump = true;
+        }
     }
 
     let json = serde_json::to_string_pretty(&spec)?;

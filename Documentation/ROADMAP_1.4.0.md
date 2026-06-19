@@ -40,8 +40,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       `corpus/images/map/island-heightmap.png` (the Emberspine spine over fBm terrain),
       re-dump-and-`cmp` in `corpus/map.sh`. Pure fn of (spec, seed); 4 engine tests.
       (Voronoi continental structure via `spade` deferred to an L1 refinement.)
-- [ ] **L2 hydraulics** (D8 flow + the **breach algorithm** — spike-first with a
-      Tier-4 "river must reach the sea" test, the highest-risk component).
+- [x] **L2 hydraulics — DONE.** `Hydrology`: priority-flood depression filling
+      (Barnes 2014 — every cell drains to the boundary, the "river must reach the sea"
+      property) → D8 steepest-descent flow → flow accumulation → channel-head river
+      tracing. `--map-dump-rivers` (dendritic network over the terrain). **Gate MET:**
+      byte-stable `corpus/images/map/island-rivers.png`; tests assert drainage +
+      a river reaches the boundary + determinism. Pure `Vec<f32>` algorithms (no new
+      dep — `ndarray` wasn't needed). *Refinements deferred:* flat-resolution (a few
+      parallel threads remain in flats), the breach algorithm (carve vs fill), delta
+      detection, named-river ↔ traced-channel matching.
 - [ ] **L3 coastline** (marching squares + `rstar` index) + **L4 biome** + **L5
       landmark resolver** (topological sort over the anchor graph; all anchor types
       resolve or error on a cycle).

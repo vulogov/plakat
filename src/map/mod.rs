@@ -4,6 +4,7 @@
 
 pub mod cache;
 pub mod engine;
+pub mod hydrology;
 pub mod parser;
 pub mod spec;
 
