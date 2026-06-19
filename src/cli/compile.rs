@@ -52,6 +52,23 @@ pub struct CompileArgs {
     /// Print a per-block summary (family, LLM call count) without calling the LLM.
     #[arg(long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
+
+    /// Read/write the two-namespace LLM disk cache (`positive/` + `negative/`).
+    #[arg(long = "compile-cache", default_value_t = false)]
+    pub compile_cache: bool,
+
+    /// Clear the compile cache and exit: `all` (default), `positive`, or `negative`.
+    #[arg(long = "compile-cache-clear", value_name = "WHICH", num_args = 0..=1, default_missing_value = "all")]
+    pub cache_clear: Option<String>,
+
+    /// Inverse: read a scenario HJSON (the INPUT) and emit a `prompts.txt`.
+    #[arg(long, default_value_t = false)]
+    pub decompile: bool,
+
+    /// Compare the freshly-compiled scenario against an existing HJSON; print the
+    /// per-task add/change/remove diff instead of writing output.
+    #[arg(long, value_name = "PATH")]
+    pub diff: Option<PathBuf>,
 }
 
 fn read_input(path: &std::path::Path) -> Result<String> {
@@ -65,7 +82,34 @@ fn read_input(path: &std::path::Path) -> Result<String> {
 }
 
 pub async fn run(args: CompileArgs) -> Result<()> {
+    // --compile-cache-clear: wipe the cache and exit (before reading input).
+    if let Some(which) = &args.cache_clear {
+        let ns = match which.as_str() {
+            "positive" => Some(compile::cache::POSITIVE),
+            "negative" => Some(compile::cache::NEGATIVE),
+            "all" | "" => None,
+            other => bail!("--compile-cache-clear: expected all|positive|negative, got `{other}`"),
+        };
+        let n = compile::cache::clear(ns);
+        println!("{}  cleared {n} compile cache entries", style("✓").green());
+        return Ok(());
+    }
+
     let input = read_input(&args.input)?;
+
+    // --decompile: the INPUT is a scenario HJSON → emit a prompts.txt.
+    if args.decompile {
+        let txt = compile::scenario_read::decompile(&input)?;
+        match &args.out {
+            Some(p) if p.as_os_str() != "-" => {
+                std::fs::write(p, &txt).with_context(|| format!("writing {}", p.display()))?;
+                println!("{}  decompiled → {}", style("✓").green(), p.display());
+            }
+            _ => print!("{txt}"),
+        }
+        return Ok(());
+    }
+
     let stdin_input = args.input.as_os_str() == "-";
     let input_name = if stdin_input {
         "<stdin>".to_string()
@@ -124,10 +168,20 @@ pub async fn run(args: CompileArgs) -> Result<()> {
             no_enhance: args.no_enhance,
             no_negative: args.no_negative,
             system_override,
+            cache: args.compile_cache,
             input_name,
         },
     )
     .await?;
+
+    // --diff: compare against an existing scenario instead of writing.
+    if let Some(existing) = &args.diff {
+        let prev = std::fs::read_to_string(existing)
+            .with_context(|| format!("reading --diff target {}", existing.display()))?;
+        let report = compile::scenario_read::diff(&hjson, &prev)?;
+        print!("{report}");
+        return Ok(());
+    }
 
     // Resolve output target: --out, else stdout for stdin, else <stem>.hjson.
     let out: Option<PathBuf> = match &args.out {

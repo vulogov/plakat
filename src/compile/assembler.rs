@@ -25,13 +25,17 @@ pub fn clean(s: &str) -> String {
     out
 }
 
-/// The positive *user* text: header, description (or translation placeholder),
-/// footer — comma-joined and cleaned. This is the verbatim prompt under
-/// `--no-enhance`, and the LLM input otherwise.
-pub fn assemble_input(scene: &ResolvedScene) -> String {
-    let body = scene.free_text.trim();
-    let joined = [scene.header.as_str(), body, scene.footer.as_str()].join(", ");
+/// The positive *user* text from an explicit body (possibly a translation):
+/// header, body, footer — comma-joined and cleaned.
+pub fn assemble_with_body(scene: &ResolvedScene, body: &str) -> String {
+    let joined = [scene.header.as_str(), body.trim(), scene.footer.as_str()].join(", ");
     clean(&joined)
+}
+
+/// The positive *user* text from the scene's own free text. Verbatim prompt
+/// under `--no-enhance`, LLM input otherwise.
+pub fn assemble_input(scene: &ResolvedScene) -> String {
+    assemble_with_body(scene, scene.free_text.trim())
 }
 
 const POSITIVE_BASE: &str = "\
@@ -67,19 +71,23 @@ fn family_section(f: ModelFamily) -> &'static str {
     }
 }
 
-/// Build the positive-call system prompt: base + style injections + persona
-/// fragments + the family-specific section. `style_override` replaces
-/// [`POSITIVE_BASE`] when `--compile-system` is given.
-pub fn positive_system(scene: &ResolvedScene, base_override: Option<&str>) -> String {
+/// Build the positive-call system prompt: base + style injections + the
+/// (already-loaded) persona fragments + the family-specific section.
+/// `base_override` replaces [`POSITIVE_BASE`] when `--compile-system` is given.
+pub fn positive_system(
+    scene: &ResolvedScene,
+    base_override: Option<&str>,
+    persona_fragments: &[String],
+) -> String {
     let mut s = String::new();
     s.push_str(base_override.unwrap_or(POSITIVE_BASE));
     for style in &scene.styles {
         s.push_str("\n\nSTYLE DIRECTION: ");
         s.push_str(style);
     }
-    for persona in &scene.personas {
+    for frag in persona_fragments {
         s.push_str("\n\nPERSONA: ");
-        s.push_str(persona);
+        s.push_str(frag.trim());
     }
     s.push_str("\n\n");
     s.push_str(family_section(scene.family));
@@ -148,9 +156,10 @@ mod tests {
     fn positive_system_carries_family_and_styles() {
         let mut s = scene("", "x", "", ModelFamily::Flux);
         s.styles = vec!["impressionist".into()];
-        let sys = positive_system(&s, None);
+        let sys = positive_system(&s, None, &["a grizzled sea captain".to_string()]);
         assert!(sys.contains("Flux"));
         assert!(sys.contains("STYLE DIRECTION: impressionist"));
+        assert!(sys.contains("PERSONA: a grizzled sea captain"));
     }
 
     #[test]

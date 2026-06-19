@@ -24,4 +24,14 @@ PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
 "$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-negative --out - \
   | "$PLAKAT" scenario - --dry-run >/dev/null
 
-echo "✓ compile: basic.txt → basic.hjson (2 tasks; validated via scenario --dry-run + pipe)"
+# 4) Determinism guard: re-compiling against the committed output is a no-op diff.
+DIFF="$("$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-negative \
+  --diff "$ROOT/corpus/compile/basic.hjson")"
+[ "$DIFF" = "(no changes)" ] || { echo "✗ compile is not byte-stable: $DIFF"; exit 1; }
+
+# 5) Round-trip: scenario → prompts.txt (--decompile) → recompile → still valid.
+"$PLAKAT" compile "$ROOT/corpus/compile/basic.hjson" --decompile --out - \
+  | "$PLAKAT" compile - --no-enhance --no-negative --out - \
+  | "$PLAKAT" scenario - --dry-run >/dev/null
+
+echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"

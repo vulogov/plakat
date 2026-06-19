@@ -25,11 +25,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       system prompt threaded to deepseek/gemini/local/auto); graceful fallback to
       verbatim/seed-terms on failure.
 - [x] **Pipe** — `scenario -` (stdin). **`--lint`** (E-C2, deterministic) shipped.
-- [ ] *Deferred to a 1.2.x point-fix:* two-namespace `--compile-cache`, `--diff`,
-      `--decompile` (E-C1), `translate:`/`persona:` execution (parsed, not yet wired).
+- [x] **Point-fixes — DONE:** two-namespace `--compile-cache` (+ `--compile-cache-clear
+      [all|positive|negative]`), `--diff <scenario>` (per-task add/change/remove),
+      `--decompile` (E-C1, scenario→prompts.txt), and `translate:` / `persona:`
+      execution (LLM translate pre-pass; persona fragments loaded from
+      `~/.config/plakat/personas/`).
 - [x] **Corpus gate MET:** `corpus/compile/basic.txt` → `--no-enhance --no-negative`
-      **byte-stable** `basic.hjson` (committed), validated via `scenario --dry-run` +
-      the stdin pipe (`corpus/compile.sh`). 21 compile unit tests.
+      **byte-stable** `basic.hjson` (committed), validated via `scenario --dry-run`,
+      the stdin pipe, a **no-op `--diff`** determinism guard, and a `--decompile`
+      round-trip (`corpus/compile.sh`). 24 compile unit tests.
 
 ## Later in the arc (see the plan)
 

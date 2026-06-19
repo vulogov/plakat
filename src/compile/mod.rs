@@ -18,6 +18,8 @@ pub mod parser;
 pub mod resolver;
 pub mod assembler;
 pub mod emitter;
+pub mod cache;
+pub mod scenario_read;
 
 /// How repeated occurrences of a command within one block combine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,8 +113,51 @@ pub struct CompileOpts {
     pub no_negative: bool,
     /// `--compile-system` override for the positive system prompt.
     pub system_override: Option<String>,
+    /// `--compile-cache`: read/write the two-namespace disk cache.
+    pub cache: bool,
     /// Name shown in the output's header comment (kept deterministic).
     pub input_name: String,
+}
+
+/// One provider call, optionally cached. Returns the trimmed output, or None on
+/// empty/failed (callers fall back to verbatim / seed terms).
+async fn cached_call(
+    provider: &str,
+    system: &str,
+    user: &str,
+    namespace: &str,
+    cache_on: bool,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> Option<String> {
+    let key = if cache_on { Some(cache::key(&[provider, system, user])) } else { None };
+    if let Some(k) = &key {
+        if let Some(hit) = cache::lookup(namespace, k) {
+            return Some(hit);
+        }
+    }
+    let out = match crate::prompt::complete(provider, system, user, eargs).await {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return None,
+    };
+    if let Some(k) = &key {
+        cache::store(namespace, k, &out);
+    }
+    Some(out)
+}
+
+/// Load a persona fragment from `~/.config/plakat/personas/<name>`; on miss the
+/// name itself is used as the fragment (with a warn) so the prompt still gets a
+/// persona cue.
+fn load_persona(name: &str) -> String {
+    let path = std::env::var_os("HOME")
+        .map(|h| std::path::Path::new(&h).join(".config/plakat/personas").join(name));
+    match path.and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(content) => content,
+        None => {
+            tracing::warn!(target: "plakat", "compile: persona '{name}' not found in ~/.config/plakat/personas — using the name as the cue");
+            name.to_string()
+        }
+    }
 }
 
 /// Compile a `prompts.txt` string into a scenario HJSML string. With
@@ -127,35 +172,50 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         if scene.skip {
             continue;
         }
-        let assembled = assembler::assemble_input(scene);
 
-        // Positive: LLM-enhanced, or verbatim under --no-enhance / empty input.
+        // 0) translate: the body to English before assembly (LLM, unless --no-enhance).
+        let body = match (&scene.translate, opts.no_enhance) {
+            (Some(lang), false) if !lang.trim().is_empty() => {
+                let sys = format!(
+                    "You are a translator. Translate the user's text from {lang} to English. \
+                     Output ONLY the translation — no notes, no quotes, no markdown."
+                );
+                cached_call(&opts.provider, &sys, scene.free_text.trim(), cache::POSITIVE, opts.cache, &eargs)
+                    .await
+                    .unwrap_or_else(|| scene.free_text.clone())
+            }
+            _ => scene.free_text.clone(),
+        };
+
+        // 1) personas: load each fragment for the system prompt.
+        let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
+
+        let assembled = assembler::assemble_with_body(scene, &body);
+
+        // 2) positive: LLM-enhanced, or verbatim under --no-enhance / empty input.
         let prompt = if opts.no_enhance || assembled.is_empty() {
             assembled.clone()
         } else {
-            let sys = assembler::positive_system(scene, opts.system_override.as_deref());
-            match crate::prompt::complete(&opts.provider, &sys, &assembled, &eargs).await {
-                Ok(p) if !p.trim().is_empty() => assembler::clean(p.trim()),
-                Ok(_) | Err(_) => {
+            let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
+            cached_call(&opts.provider, &sys, &assembled, cache::POSITIVE, opts.cache, &eargs)
+                .await
+                .map(|p| assembler::clean(&p))
+                .unwrap_or_else(|| {
                     tracing::warn!(target: "plakat", "compile: positive enhance failed for '{}', using verbatim", scene.name);
                     assembled.clone()
-                }
-            }
+                })
         };
 
-        // Negative: generated from the FINAL positive prompt (RFC step 9), or the
-        // seed terms verbatim under --no-negative.
+        // 3) negative: generated from the FINAL positive prompt (RFC step 9), or
+        //    the seed terms verbatim under --no-negative.
         let negative = if opts.no_negative {
             scene.negative_seeds.clone()
         } else {
             let nsys = assembler::negative_system(scene);
-            match crate::prompt::complete(&opts.provider, &nsys, &prompt, &eargs).await {
-                Ok(n) if !n.trim().is_empty() => assembler::clean(n.trim()),
-                Ok(_) | Err(_) => {
-                    tracing::warn!(target: "plakat", "compile: negative gen failed for '{}', using seed terms", scene.name);
-                    scene.negative_seeds.clone()
-                }
-            }
+            cached_call(&opts.provider, &nsys, &prompt, cache::NEGATIVE, opts.cache, &eargs)
+                .await
+                .map(|n| assembler::clean(&n))
+                .unwrap_or_else(|| scene.negative_seeds.clone())
         };
 
         compiled.push(emitter::CompiledScene { scene: scene.clone(), prompt, negative });
@@ -237,6 +297,7 @@ mod tests {
             no_enhance: true,
             no_negative: true,
             system_override: None,
+            cache: false,
             input_name: "t.txt".into(),
         };
         let a = compile_to_string(input, &opts).await.unwrap();
