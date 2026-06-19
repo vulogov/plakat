@@ -106,10 +106,11 @@ impl HeightField {
     }
 }
 
-/// Resolve the anchors L1 needs (terrain placement): cardinal + canvas. Anchors
-/// that depend on later layers (rivers, coastline) return None here and are
-/// resolved by the full Layer-5 resolver.
-fn resolve_simple(anchor: &Anchor) -> Option<(f32, f32)> {
+/// Resolve the anchors the early layers need (terrain/biome placement): cardinal
+/// + canvas → normalized (x, y) in [0,1]. Anchors that depend on later layers
+/// (rivers, coastline) return None here and are resolved by the full Layer-5
+/// resolver.
+pub fn resolve_simple(anchor: &Anchor) -> Option<(f32, f32)> {
     match anchor {
         Anchor::Canvas { x, y } => Some((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0))),
         Anchor::Cardinal { position } => cardinal_xy(position),

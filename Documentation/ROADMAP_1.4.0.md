@@ -57,8 +57,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       byte-stable `corpus/images/map/island-coast.png` — a recognizable island; 3 tests
       (sea+land, coast distance, determinism). *`rstar` nearest-coast index + marching-
       squares polylines deferred to L5/render.*
-- [ ] **L4 biome** + **L5 landmark resolver** (topological sort over the anchor
-      graph; all anchor types resolve or error on a cycle).
+- [x] **L4 biome — DONE.** Per-pixel `Biome` (RFC Appendix B palette) from a base
+      (the spec's `regions`, coverage-limited influence discs + noise-jittered
+      boundaries, else a climate+latitude default) with elevation overrides
+      (peaks → mountain/snow) + coast overrides (shore → beach/coastal-plain), using
+      L3's distance-to-sea. `--map-dump-biome`. **Gate MET:** byte-stable
+      `corpus/images/map/island-biome.png` — a forested island with a central volcanic
+      massif crowned in snow, organic biome boundaries; 3 tests.
+- [ ] **L5 landmark resolver** (topological sort over the anchor graph; all anchor
+      types resolve or error on a cycle).
 - [ ] **L6 infrastructure** (`petgraph` Dijkstra roads) + **L7 conditioning assembly**
       (heightmap/biome/feature-overlay full-canvas + per-tile crops).
 - **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,

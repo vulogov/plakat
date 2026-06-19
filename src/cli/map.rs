@@ -60,6 +60,10 @@ pub struct MapArgs {
     /// MAP-2: write land/sea + coastline (L3).
     #[arg(long = "map-dump-coast", value_name = "PATH")]
     pub dump_coast: Option<PathBuf>,
+
+    /// MAP-2: write the biome map (L4).
+    #[arg(long = "map-dump-biome", value_name = "PATH")]
+    pub dump_biome: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -104,7 +108,11 @@ pub async fn run(args: MapArgs) -> Result<()> {
     let mut did_dump = false;
 
     // MAP-2 geometry dumps (share the canvas + heightfield).
-    if args.dump_heightmap.is_some() || args.dump_rivers.is_some() || args.dump_coast.is_some() {
+    if args.dump_heightmap.is_some()
+        || args.dump_rivers.is_some()
+        || args.dump_coast.is_some()
+        || args.dump_biome.is_some()
+    {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
         if let Some(p) = &args.dump_heightmap {
@@ -131,17 +139,26 @@ pub async fn run(args: MapArgs) -> Result<()> {
             );
             did_dump = true;
         }
-        if let Some(p) = &args.dump_coast {
+        // L3/L4 share the coastline (biome reads its distance-to-sea field).
+        if args.dump_coast.is_some() || args.dump_biome.is_some() {
             let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
-            coast.render_overlay(&hf, p)?;
-            println!(
-                "{}  coastline → {}  ({:.0}% land, seed {})",
-                style("✓").green(),
-                p.display(),
-                coast.land_fraction() * 100.0,
-                args.seed
-            );
-            did_dump = true;
+            if let Some(p) = &args.dump_coast {
+                coast.render_overlay(&hf, p)?;
+                println!(
+                    "{}  coastline → {}  ({:.0}% land, seed {})",
+                    style("✓").green(),
+                    p.display(),
+                    coast.land_fraction() * 100.0,
+                    args.seed
+                );
+                did_dump = true;
+            }
+            if let Some(p) = &args.dump_biome {
+                let bm = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
+                bm.save_png(p)?;
+                println!("{}  biome map → {}  (seed {})", style("✓").green(), p.display(), args.seed);
+                did_dump = true;
+            }
         }
     }
 
