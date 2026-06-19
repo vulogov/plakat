@@ -49,9 +49,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       dep — `ndarray` wasn't needed). *Refinements deferred:* flat-resolution (a few
       parallel threads remain in flats), the breach algorithm (carve vs fill), delta
       detection, named-river ↔ traced-channel matching.
-- [ ] **L3 coastline** (marching squares + `rstar` index) + **L4 biome** + **L5
-      landmark resolver** (topological sort over the anchor graph; all anchor types
-      resolve or error on a cycle).
+- [x] **L3 coastline — DONE.** A spec-driven **landmass falloff** in L1 (island →
+      radial taper to sea; continental → sea-positioned edges lowered) gives the map
+      real coasts and makes rivers drain into the sea. `Coastline`: sea-level land/sea
+      mask + a multi-source-BFS distance-to-sea field (feeds L4) + coast-cell detection.
+      `--map-dump-coast` (tan land, depth-shaded blue sea, dark coastline). **Gate MET:**
+      byte-stable `corpus/images/map/island-coast.png` — a recognizable island; 3 tests
+      (sea+land, coast distance, determinism). *`rstar` nearest-coast index + marching-
+      squares polylines deferred to L5/render.*
+- [ ] **L4 biome** + **L5 landmark resolver** (topological sort over the anchor
+      graph; all anchor types resolve or error on a cycle).
 - [ ] **L6 infrastructure** (`petgraph` Dijkstra roads) + **L7 conditioning assembly**
       (heightmap/biome/feature-overlay full-canvas + per-tile crops).
 - **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,

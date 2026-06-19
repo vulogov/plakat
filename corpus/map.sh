@@ -37,8 +37,12 @@ cmp /tmp/plakat-map-hm.png "$ROOT/corpus/images/map/island-heightmap.png" \
 "$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-rivers /tmp/plakat-map-riv.png >/dev/null
 cmp /tmp/plakat-map-riv.png "$ROOT/corpus/images/map/island-rivers.png" \
   || { echo "✗ river overlay drifted from the committed proof"; exit 1; }
-rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-coast /tmp/plakat-map-coast.png >/dev/null
+cmp /tmp/plakat-map-coast.png "$ROOT/corpus/images/map/island-coast.png" \
+  || { echo "✗ coastline drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
 echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"
 echo "  + MAP-2 (L2): river network byte-stable vs corpus/images/map/island-rivers.png"
+echo "  + MAP-2 (L3): land/sea + coastline byte-stable vs corpus/images/map/island-coast.png"

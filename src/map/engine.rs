@@ -82,6 +82,10 @@ impl HeightField {
             }
         }
 
+        // Shape the landmass so the map actually has coasts (island radial taper /
+        // sea-positioned edges) — this also makes rivers drain into the sea.
+        apply_landmass_shape(&mut data, spec, w, h);
+
         normalize(&mut data);
         HeightField { width: w, height: h, data }
     }
@@ -177,6 +181,67 @@ fn add_ridge(data: &mut [f32], w: u32, h: u32, cx: f32, cy: f32, orientation: &s
                 continue;
             }
             data[(y * w + x) as usize] += amp * (-(perp * perp) / two_sp2 - (along * along) / two_sa2).exp();
+        }
+    }
+}
+
+fn idx(x: u32, y: u32, w: u32) -> usize {
+    (y * w + x) as usize
+}
+
+/// Smoothstep: 0 below `e0`, 1 above `e1`, smooth between.
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Is this map island-like (terrain surrounded by water)?
+fn is_island(spec: &MapSpec) -> bool {
+    let n = spec.name.to_ascii_lowercase();
+    spec.scale_tier <= 1
+        || n.contains("isle")
+        || n.contains("island")
+        || spec.water.seas.iter().any(|s| s.enclosed)
+}
+
+/// Multiply the elevation by a landmass mask so the map has coasts: island maps
+/// taper radially to sea; otherwise the sea-positioned edges are lowered.
+fn apply_landmass_shape(data: &mut [f32], spec: &MapSpec, w: u32, h: u32) {
+    if is_island(spec) {
+        let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+        let land_r = (cx * cx + cy * cy).sqrt() * 0.6; // land reaches ~60% toward the corners
+        for y in 0..h {
+            for x in 0..w {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let r = (dx * dx + dy * dy).sqrt() / land_r; // 0 center … 1 at the coast
+                let mask = 1.0 - smoothstep(0.78, 1.12, r); // 1 inland, → 0 offshore
+                data[idx(x, y, w)] *= mask;
+            }
+        }
+    } else {
+        for sea in &spec.water.seas {
+            lower_sea_edge(data, w, h, &sea.position);
+        }
+    }
+}
+
+/// Lower the named edge toward sea (a smooth ramp from the edge inward).
+fn lower_sea_edge(data: &mut [f32], w: u32, h: u32, position: &str) {
+    let p = position.to_ascii_lowercase();
+    let depth = 0.22; // ramp depth as a fraction of the extent
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 / w.max(1) as f32, y as f32 / h.max(1) as f32);
+            // distance into the map from the named edge, 0 at edge → 1 deep inland.
+            let d = match () {
+                _ if p.contains("west") => fx / depth,
+                _ if p.contains("east") => (1.0 - fx) / depth,
+                _ if p.contains("north") => fy / depth,
+                _ if p.contains("south") => (1.0 - fy) / depth,
+                _ => continue,
+            };
+            data[idx(x, y, w)] *= smoothstep(0.0, 1.0, d);
         }
     }
 }

@@ -56,6 +56,10 @@ pub struct MapArgs {
     /// MAP-2: write the river network over the terrain (L2 hydraulics).
     #[arg(long = "map-dump-rivers", value_name = "PATH")]
     pub dump_rivers: Option<PathBuf>,
+
+    /// MAP-2: write land/sea + coastline (L3).
+    #[arg(long = "map-dump-coast", value_name = "PATH")]
+    pub dump_coast: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -100,7 +104,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
     let mut did_dump = false;
 
     // MAP-2 geometry dumps (share the canvas + heightfield).
-    if args.dump_heightmap.is_some() || args.dump_rivers.is_some() {
+    if args.dump_heightmap.is_some() || args.dump_rivers.is_some() || args.dump_coast.is_some() {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
         if let Some(p) = &args.dump_heightmap {
@@ -123,6 +127,18 @@ pub async fn run(args: MapArgs) -> Result<()> {
                 style("✓").green(),
                 p.display(),
                 hydro.rivers.len(),
+                args.seed
+            );
+            did_dump = true;
+        }
+        if let Some(p) = &args.dump_coast {
+            let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
+            coast.render_overlay(&hf, p)?;
+            println!(
+                "{}  coastline → {}  ({:.0}% land, seed {})",
+                style("✓").green(),
+                p.display(),
+                coast.land_fraction() * 100.0,
                 args.seed
             );
             did_dump = true;
