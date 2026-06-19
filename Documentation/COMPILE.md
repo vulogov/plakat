@@ -1,0 +1,106 @@
+# `plakat compile` — prose `prompts.txt` → scenario HJSON
+
+`plakat compile` turns a natural-language `prompts.txt` into a ready-to-run
+[`scenario`](../README.md) HJSON. Write scenes as paragraphs with optional
+`key: value` commands; compile rewrites each through the LLM provider stack
+(family-aware) with an auto-generated negative, and emits one task per block.
+
+```bash
+plakat compile prompts.txt                 # → prompts.hjson
+plakat compile prompts.txt --out -         # → stdout
+plakat compile prompts.txt --out - | plakat scenario -   # pipe straight to render
+```
+
+## The `prompts.txt` format
+
+Blank-line-separated **blocks**. Each block is free-text lines (the description)
+plus `key: value` **command** lines. `#` lines are comments. The **first block is
+the global block** iff it has no free text — its commands become the scenario
+defaults; every other block becomes one task.
+
+```
+# Global defaults (no free text here → this is the global block).
+model: sdxl
+style: cinematic photography, dramatic lighting
+negative: blurry, low quality, watermark
+
+# Scene 1
+header: wide establishing shot,
+A vast frozen tundra, a lone rider against an aurora-lit sky.
+footer: 8k, award-winning landscape photography
+
+# Scene 2
+An elderly cartographer tracing coastlines by candlelight.
+seed: 42
+count: 2
+```
+
+## Commands
+
+**Prompt commands** (shape or feed the LLM; never appear verbatim unless noted):
+
+| Command | Merge | Effect |
+|---|---|---|
+| `header:` | concatenate | prepended to the prompt (joined with `, `; empty value resets the inherited global) |
+| `footer:` | concatenate | appended to the prompt |
+| `negative:` | concatenate | seed terms guaranteed in the generated negative |
+| `style:` | concatenate | injected into the LLM **system** prompt (shapes *how* it writes) |
+| `translate:` | last-wins | pre-translate the body from this language to English (LLM) |
+| `persona:` | concatenate | inject `~/.config/plakat/personas/<name>` into the system prompt |
+
+**Scenario commands** (straight to HJSON, no LLM):
+
+| Command | Merge | HJSON |
+|---|---|---|
+| `model:` | last-wins | global `model` + per-scene **family profile** (scenarios share one model) |
+| `lora:` | accumulate | global `loras` |
+| `seed:` `count:` `size:` `steps:` `guidance:` `scheduler:` `refine:` | last-wins | per-task override |
+| `name:` | last-wins | task name (auto from the first 6 words if absent) |
+| `skip:` | last-wins | `true` omits the block |
+
+**Inheritance:** concatenate = global + scene merged; accumulate = global + scene
+combined; last-wins = scene beats global.
+
+**Model family** (`SD15` / `SDXL` / `Flux`) is detected from the scene model, else
+the global model, else `--model`. It selects the prompt-writing profile: SD15 →
+comma-keyword & <75 tokens; SDXL → mixed prose/keywords 60–150; Flux → prose, short
+or empty negative.
+
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `INPUT` | — | `prompts.txt` (`-` = stdin) |
+| `--out <PATH>` | `<stem>.hjson` | output (`-`/stdin → stdout) |
+| `--compile-provider <P>` | `auto` | `deepseek`/`gemini`/`local`/`local:<alias>`/`auto` |
+| `--model <NAME>` | `sdxl` | family fallback when no block names a model |
+| `--compile-system <PATH>` | built-in | override the positive system prompt |
+| `--no-enhance` | off | skip the positive LLM call (verbatim assembly) |
+| `--no-negative` | off | skip the negative LLM call (seed terms verbatim) |
+| `--compile-cache` | off | two-namespace SHA-256 disk cache |
+| `--compile-cache-clear [all\|positive\|negative]` | — | clear the cache and exit |
+| `--lint` | off | validate (unknown commands, misplaced `skip:`); no LLM |
+| `--dry-run` | off | per-block summary + LLM-call count; no LLM |
+| `--diff <PATH>` | — | per-task add/change/remove vs an existing scenario |
+| `--decompile` | off | inverse: read a scenario HJSON → emit a `prompts.txt` |
+
+`--no-enhance --no-negative` is **fully deterministic** (no LLM) — the path the
+proof corpus exercises (`corpus/compile.sh`).
+
+## Caching
+
+Two SHA-256 namespaces under `~/.cache/plakat/compile/`: `positive/` keys on
+(provider, system, input); `negative/` keys on (provider, system, **enhanced
+positive**, seeds) — so editing a positive prompt correctly invalidates its
+negative. Opt-in (`--compile-cache`); clear with `--compile-cache-clear`.
+
+## Pipe / round-trip
+
+```bash
+plakat compile prompts.txt --compile-cache --out - | plakat scenario - --out ./renders/
+plakat compile scene.hjson --decompile         # scenario → prompts.txt (re-editable)
+plakat compile prompts.txt --diff scene.hjson   # what changed since last compile
+```
+
+See [`Tutorials/COMPILE_TUTORIAL.md`](Tutorials/COMPILE_TUTORIAL.md) for a
+walkthrough. The Tera template pre-pass (`.tera` inputs) lands in COMPILE-2.

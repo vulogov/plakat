@@ -1,0 +1,12 @@
+{
+  "prompt": "wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography",
+  "negative": "blurry, low quality, watermark, text, deformed",
+  "model": "sdxl",
+  "seed": 0,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 768,
+  "height": 768,
+  "generator": "plakat 1.2.0"
+}

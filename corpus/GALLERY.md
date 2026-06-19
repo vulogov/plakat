@@ -1,16 +1,21 @@
 # plakat gallery
 
-87 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+91 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
     <td width="33%"><img src="images/transparent/apple-cutout.png" alt=""></td>
+    <td width="33%"><img src="images/compose/beach-generate-matte.png" alt=""></td>
     <td width="33%"><img src="images/segment/bg-mask.png" alt=""></td>
-    <td width="33%"><img src="images/embedding-train/sd15/cat.png" alt="a sgwin cat"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/compile/cartographer.png" alt="close-up portrait, An elderly cartographer hunched over a candlelit table, tracing coastlines on parchment with a quill, ink-stained fingers."></td>
+    <td width="33%"><img src="images/embedding-train/sd15/cat.png" alt="a sgwin cat"></td>
     <td width="33%"><img src="images/embedding-train/sdxl/cat.png" alt="a sgwin cat"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/embedding-train/sd21/cat.png" alt="a sgwin cat"></td>
+    <td width="33%"><img src="images/segment/depth-foreground.png" alt=""></td>
     <td width="33%"><img src="images/animate/flower_bloom/animation.gif" alt="a time-lapse of a red rose blooming, macro photography, soft light"></td>
   </tr>
   <tr>
@@ -146,6 +151,9 @@
   <tr>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
     <td width="33%"><img src="images/script/tiled-valley.png" alt="a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus"></td>
+    <td width="33%"><img src="images/compile/tundra.png" alt="wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography"></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/compose/valley-scene.png" alt=""></td>
   </tr>
 </table>
@@ -158,11 +166,27 @@
 
 _(no embedded metadata)_
 
+### beach-generate-matte.png
+
+![beach-generate-matte.png](images/compose/beach-generate-matte.png)
+
+_(no embedded metadata)_
+
 ### bg-mask.png
 
 ![bg-mask.png](images/segment/bg-mask.png)
 
 _(no embedded metadata)_
+
+### cartographer.png
+
+![cartographer.png](images/compile/cartographer.png)
+
+> close-up portrait, An elderly cartographer hunched over a candlelit table, tracing coastlines on parchment with a quill, ink-stained fingers.
+
+Negative: `blurry, low quality, watermark, text, deformed`
+
+`sdxl` · 768×768 · 28 steps · CFG 7.5 · seed 42
 
 ### cat.png
 
@@ -187,6 +211,12 @@ _(no embedded metadata)_
 > a sgwin cat
 
 `sd21` · 640×640 · 28 steps · CFG 7.5 · seed 42
+
+### depth-foreground.png
+
+![depth-foreground.png](images/segment/depth-foreground.png)
+
+_(no embedded metadata)_
 
 ### flower_bloom
 
@@ -809,6 +839,16 @@ _(no embedded metadata)_
 > a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus
 
 `sdxl` · 1280×1280 · 30 steps · CFG 7.5 · seed 42
+
+### tundra.png
+
+![tundra.png](images/compile/tundra.png)
+
+> wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography
+
+Negative: `blurry, low quality, watermark, text, deformed`
+
+`sdxl` · 768×768 · 28 steps · CFG 7.5 · seed 0
 
 ### valley-scene.png
 
