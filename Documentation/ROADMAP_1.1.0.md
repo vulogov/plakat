@@ -23,8 +23,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       layers are `load`-only; pre-render / pre-matte for now). GPU.
 - [ ] **Flux regional prompting** — *(M)* `--region` for Flux (today it bails).
       Flux's flow-matching transformer needs its own per-region velocity blend.
-- [ ] **sd35 DreamBooth** — *(M)* prior preservation for the SD3.5 MMDiT trainer
-      (the `--class-dir` path is sd15/sdxl only; sd35 bails).
+- [x] **sd35 DreamBooth — DONE (render verification pending).** Prior preservation
+      ported to the SD3.5 MMDiT trainer: the class loss uses the rectified-flow
+      objective (`v=ε−x₀`, independent class σ/noise, λ-weighted), mirroring the
+      SD/SDXL DreamBooth. `--base sd35 --class-dir/--class-prompt --prior-weight`.
+      Driver `corpus/dreambooth_sd35.sh` (subject/class sets generated on a light
+      base; train 256², render 1024²/768²). SD3.5 is memory-heavy — render proof is
+      memory-bound on 24 GB (carries the same debt as sd21/sdxl renders).
 - [ ] **IC-Light relighting** — *(L, stretch)* relight composited artefacts so they
       sit in the scene's light, not just on it. SD 1.5-based; porting the model is
       the work.

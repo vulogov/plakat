@@ -96,7 +96,7 @@ pub struct TrainArgs {
     /// other dogs) trained alongside your subject so its token doesn't overfit
     /// or drag the whole class. Makes this a **subject** LoRA: set `--trigger`
     /// to an instance prompt like "a photo of sks dog". Omit for plain style
-    /// training. (sd15 / sdxl only.)
+    /// training. (sd15 / sdxl / sd35.)
     #[arg(long = "class-dir", value_name = "DIR")]
     pub class_dir: Option<PathBuf>,
     /// Class prompt for `--class-dir` (e.g. "a photo of a dog"). Required with
@@ -319,12 +319,6 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             .await
         }
         "sd35" | "sd35-medium" | "sd3.5-medium" => {
-            if args.class_dir.is_some() {
-                anyhow::bail!(
-                    "style train: --class-dir (DreamBooth prior preservation) is not yet \
-                     supported for sd35 — use --base sd15 or --base sdxl"
-                );
-            }
             use crate::pipelines::sd3;
             sd3::train_style_lora(sd3::StyleTrainRequest {
                 variant: sd3::Variant::Sd35Medium,
@@ -340,6 +334,9 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
                 checkpoint_every: args.checkpoint_every,
                 log_every: args.log_every,
                 resume_from: args.resume,
+                class_images: class_images.clone(),
+                class_prompt: args.class_prompt.clone(),
+                prior_weight: args.prior_weight,
             })
             .await
         }
