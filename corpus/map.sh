@@ -43,10 +43,14 @@ cmp /tmp/plakat-map-coast.png "$ROOT/corpus/images/map/island-coast.png" \
 "$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-biome /tmp/plakat-map-biome.png >/dev/null
 cmp /tmp/plakat-map-biome.png "$ROOT/corpus/images/map/island-biome.png" \
   || { echo "✗ biome map drifted from the committed proof"; exit 1; }
-rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-landmarks /tmp/plakat-map-lm.png >/dev/null
+cmp /tmp/plakat-map-lm.png "$ROOT/corpus/images/map/island-landmarks.png" \
+  || { echo "✗ landmark placement drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
 echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"
 echo "  + MAP-2 (L2): river network byte-stable vs corpus/images/map/island-rivers.png"
 echo "  + MAP-2 (L3): land/sea + coastline byte-stable vs corpus/images/map/island-coast.png"
 echo "  + MAP-2 (L4): biome map byte-stable vs corpus/images/map/island-biome.png"
+echo "  + MAP-2 (L5): landmarks resolved + placed byte-stable vs corpus/images/map/island-landmarks.png"

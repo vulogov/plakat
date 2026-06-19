@@ -64,8 +64,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       L3's distance-to-sea. `--map-dump-biome`. **Gate MET:** byte-stable
       `corpus/images/map/island-biome.png` — a forested island with a central volcanic
       massif crowned in snow, organic biome boundaries; 3 tests.
-- [ ] **L5 landmark resolver** (topological sort over the anchor graph; all anchor
-      types resolve or error on a cycle).
+- [x] **L5 landmark resolver — DONE.** Resolves each landmark's typed `Anchor` to a
+      pixel position against the now-existing layers: `mouth_of`/`source_of`/`delta`
+      (L2 rivers, mouth snapped to coast), `natural_harbor`/`coast_nearest`/
+      `shore_nearest` (L3 coast, nearest-point), `bearing{from,dir,dist,constraint}`
+      (offset from a resolved point + optional coast/river snap), `range_slope`/
+      `pass_between`/`region_interior`/`confluence`. Fixpoint over the dependency
+      graph; unresolved-with-no-progress → cycle error. `--map-dump-landmarks`
+      (markers by kind). **Gate MET:** byte-stable `island-landmarks.png` — the port +
+      lighthouse at the SW river-mouth/harbour, the city bearing-east, the fortress on
+      the range; tests assert all resolve + the river-mouth port is coastal +
+      determinism. (rstar / concavity for natural-harbor deferred.)
+- [ ] **L6 infrastructure (roads)** — `petgraph` Dijkstra between resolved landmarks.
 - [ ] **L6 infrastructure** (`petgraph` Dijkstra roads) + **L7 conditioning assembly**
       (heightmap/biome/feature-overlay full-canvas + per-tile crops).
 - **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,

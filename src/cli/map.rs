@@ -64,6 +64,10 @@ pub struct MapArgs {
     /// MAP-2: write the biome map (L4).
     #[arg(long = "map-dump-biome", value_name = "PATH")]
     pub dump_biome: Option<PathBuf>,
+
+    /// MAP-2: write resolved landmarks placed at their anchors (L5).
+    #[arg(long = "map-dump-landmarks", value_name = "PATH")]
+    pub dump_landmarks: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -112,6 +116,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
         || args.dump_rivers.is_some()
         || args.dump_coast.is_some()
         || args.dump_biome.is_some()
+        || args.dump_landmarks.is_some()
     {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
@@ -139,8 +144,8 @@ pub async fn run(args: MapArgs) -> Result<()> {
             );
             did_dump = true;
         }
-        // L3/L4 share the coastline (biome reads its distance-to-sea field).
-        if args.dump_coast.is_some() || args.dump_biome.is_some() {
+        // L3/L4/L5 share the coastline (biome + the resolver read its fields).
+        if args.dump_coast.is_some() || args.dump_biome.is_some() || args.dump_landmarks.is_some() {
             let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
             if let Some(p) = &args.dump_coast {
                 coast.render_overlay(&hf, p)?;
@@ -157,6 +162,19 @@ pub async fn run(args: MapArgs) -> Result<()> {
                 let bm = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
                 bm.save_png(p)?;
                 println!("{}  biome map → {}  (seed {})", style("✓").green(), p.display(), args.seed);
+                did_dump = true;
+            }
+            if let Some(p) = &args.dump_landmarks {
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+                let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
+                map::resolver::render_overlay(&hf, &coast, &lms, p)?;
+                println!(
+                    "{}  landmarks → {}  ({} placed, seed {})",
+                    style("✓").green(),
+                    p.display(),
+                    lms.len(),
+                    args.seed
+                );
                 did_dump = true;
             }
         }
