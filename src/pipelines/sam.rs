@@ -142,15 +142,15 @@ fn dilate(mask: &GrayImage, r: u32) -> GrayImage {
     out
 }
 
-pub async fn segment(
+/// Build the raw SAM selection mask (white = selected) at the input's ORIGINAL
+/// resolution — before grow / invert / feather. Split out so the point and
+/// depth-band paths can share the same [`finish_mask`] post-processing (and be
+/// intersected via [`intersect_masks`]).
+pub async fn build_selection_mask(
     in_path: &Path,
-    out_path: &Path,
     points: &[PointPrompt],
-    invert: bool,
-    grow: u32,
-    feather: u32,
     device: &Device,
-) -> Result<()> {
+) -> Result<GrayImage> {
     if points.is_empty() {
         return Err(anyhow!(
             "no prompt: pass at least one --point X,Y (append :bg to exclude a region)"
@@ -206,12 +206,49 @@ pub async fn segment(
     for (i, &v) in vals.iter().enumerate() {
         g.put_pixel((i as u32) % rw, (i as u32) / rw, Luma([if v > 0.0 { 255 } else { 0 }]));
     }
-    let mut mask = if (rw, rh) != (w0, h0) {
+    Ok(if (rw, rh) != (w0, h0) {
         image::imageops::resize(&g, w0, h0, image::imageops::FilterType::Nearest)
     } else {
         g
-    };
+    })
+}
 
+/// White (255) where the normalized depth is within `[lo, hi]`, black elsewhere.
+/// Depth-Anything is disparity-like, min-max normalized → **1.0 = nearest, 0.0 =
+/// farthest**, so `0.6,1.0` selects the foreground and `0.0,0.3` the far
+/// background. `depth` is row-major `w*h`. Pure (no model load) → unit-tested.
+pub fn depth_band_to_mask(depth: &[f32], w: u32, h: u32, lo: f32, hi: f32) -> GrayImage {
+    let mut g = GrayImage::new(w, h);
+    for (i, &d) in depth.iter().enumerate() {
+        let on = d >= lo && d <= hi;
+        g.put_pixel((i as u32) % w, (i as u32) / w, Luma([if on { 255 } else { 0 }]));
+    }
+    g
+}
+
+/// Per-pixel AND (min) of two equal-sized masks — the "point AND depth-band"
+/// intersection (e.g. *this* object, but only where it's near the camera).
+pub fn intersect_masks(a: &GrayImage, b: &GrayImage) -> GrayImage {
+    let (w, h) = (a.width(), a.height());
+    let mut out = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let v = a.get_pixel(x, y).0[0].min(b.get_pixel(x, y).0[0]);
+            out.put_pixel(x, y, Luma([v]));
+        }
+    }
+    out
+}
+
+/// Shared mask post-processing + save: grow (dilate the SELECTION, pre-invert) →
+/// invert → feather → write PNG. Used by both the point and depth-band paths.
+pub fn finish_mask(
+    mut mask: GrayImage,
+    invert: bool,
+    grow: u32,
+    feather: u32,
+    out_path: &Path,
+) -> Result<()> {
     // Grow the SELECTION first (before any invert) so an edit driven by this mask
     // leaves a margin around the subject's fringe rather than repainting it — the
     // fix for boundary artefacts (rope/halo where the inpaint meets the subject).
@@ -228,7 +265,6 @@ pub async fn segment(
     if feather > 0 {
         mask = image::imageops::blur(&mask, feather as f32);
     }
-
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -237,6 +273,20 @@ pub async fn segment(
     mask.save(out_path)
         .with_context(|| format!("writing mask {}", out_path.display()))?;
     Ok(())
+}
+
+/// Point-prompted segmentation → mask PNG (the original `plakat segment` path).
+pub async fn segment(
+    in_path: &Path,
+    out_path: &Path,
+    points: &[PointPrompt],
+    invert: bool,
+    grow: u32,
+    feather: u32,
+    device: &Device,
+) -> Result<()> {
+    let mask = build_selection_mask(in_path, points, device).await?;
+    finish_mask(mask, invert, grow, feather, out_path)
 }
 
 #[cfg(test)]
@@ -258,5 +308,37 @@ mod tests {
         assert_eq!(w, IMAGE_SIZE as u32, "longest side capped to 1024");
         assert_eq!(h, 512, "aspect ratio preserved");
         assert_eq!((r.width(), r.height()), (1024, 512));
+    }
+
+    #[test]
+    fn depth_band_selects_inclusive_range() {
+        // 2x2 depth: near .. far. Band [0.6,1.0] = the two nearest (≥0.6).
+        let depth = [0.9f32, 0.7, 0.4, 0.1];
+        let m = depth_band_to_mask(&depth, 2, 2, 0.6, 1.0);
+        assert_eq!(m.get_pixel(0, 0).0[0], 255, "0.9 in band");
+        assert_eq!(m.get_pixel(1, 0).0[0], 255, "0.7 in band");
+        assert_eq!(m.get_pixel(0, 1).0[0], 0, "0.4 below band");
+        assert_eq!(m.get_pixel(1, 1).0[0], 0, "0.1 below band");
+        // Boundaries are inclusive.
+        let edge = depth_band_to_mask(&[0.6f32, 1.0], 2, 1, 0.6, 1.0);
+        assert_eq!(edge.get_pixel(0, 0).0[0], 255, "lo inclusive");
+        assert_eq!(edge.get_pixel(1, 0).0[0], 255, "hi inclusive");
+        // A far band picks the background instead.
+        let bg = depth_band_to_mask(&depth, 2, 2, 0.0, 0.3);
+        assert_eq!(bg.get_pixel(1, 1).0[0], 255, "0.1 in far band");
+        assert_eq!(bg.get_pixel(0, 0).0[0], 0, "0.9 not in far band");
+    }
+
+    #[test]
+    fn intersect_is_per_pixel_min() {
+        let mut a = GrayImage::new(2, 1);
+        let mut b = GrayImage::new(2, 1);
+        a.put_pixel(0, 0, Luma([255]));
+        a.put_pixel(1, 0, Luma([255]));
+        b.put_pixel(0, 0, Luma([255]));
+        b.put_pixel(1, 0, Luma([0]));
+        let m = intersect_masks(&a, &b);
+        assert_eq!(m.get_pixel(0, 0).0[0], 255, "both selected → keep");
+        assert_eq!(m.get_pixel(1, 0).0[0], 0, "only one selected → drop");
     }
 }

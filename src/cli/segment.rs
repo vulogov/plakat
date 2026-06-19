@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use candle_core::Device;
 use clap::Args as ClapArgs;
 use console::style;
@@ -21,8 +21,18 @@ pub struct SegmentArgs {
     /// exclude a region. Coords are normalized `0..1` by default, or pixels if
     /// any value exceeds 1 (e.g. `--point 0.5,0.4` or `--point 512,400`). Click
     /// the object to select it; add `:bg` points to carve away over-selection.
-    #[arg(long = "point", value_name = "X,Y[:bg]", required = true)]
+    /// Optional when `--depth-band` is given.
+    #[arg(long = "point", value_name = "X,Y[:bg]")]
     pub points: Vec<String>,
+
+    /// Select by DEPTH band instead of (or together with) points: `LO,HI` in
+    /// normalized depth `0..1` where **1.0 = nearest, 0.0 = farthest**. So
+    /// `0.6,1.0` masks the foreground, `0.0,0.3` the far background. Uses
+    /// Depth-Anything-V2 (downloaded once). Combine with `--point` to intersect
+    /// (this object, but only where it's near). Pass at least one of
+    /// `--point` / `--depth-band`.
+    #[arg(long = "depth-band", value_name = "LO,HI")]
+    pub depth_band: Option<String>,
 
     /// Invert the mask — select everything EXCEPT the prompted object (handy
     /// for "change the background, keep the subject").
@@ -68,30 +78,81 @@ fn parse_point(s: &str) -> Result<PointPrompt> {
     Ok(PointPrompt { x, y, foreground })
 }
 
+/// Parse `LO,HI` into a normalized depth band, validating `0 ≤ lo < hi ≤ 1`.
+fn parse_band(s: &str) -> Result<(f32, f32)> {
+    let (ls, hs) = s
+        .split_once(',')
+        .ok_or_else(|| anyhow!("bad --depth-band '{s}': expected 'LO,HI'"))?;
+    let lo: f32 = ls
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("bad --depth-band '{s}': LO ('{ls}') is not a number"))?;
+    let hi: f32 = hs
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("bad --depth-band '{s}': HI ('{hs}') is not a number"))?;
+    if !(0.0..=1.0).contains(&lo) || !(0.0..=1.0).contains(&hi) {
+        anyhow::bail!("bad --depth-band '{s}': LO/HI must be in 0..1 (1.0 = nearest, 0.0 = farthest)");
+    }
+    if lo >= hi {
+        anyhow::bail!("bad --depth-band '{s}': need LO < HI (got {lo},{hi})");
+    }
+    Ok((lo, hi))
+}
+
 pub async fn run(args: SegmentArgs, device: Device) -> Result<()> {
     let points: Vec<PointPrompt> = args
         .points
         .iter()
         .map(|s| parse_point(s))
         .collect::<Result<_>>()?;
+    let band = args.depth_band.as_deref().map(parse_band).transpose()?;
 
-    crate::pipelines::sam::segment(
-        &args.input,
-        &args.out,
-        &points,
-        args.invert,
-        args.grow,
-        args.feather,
-        &device,
-    )
-    .await?;
+    if points.is_empty() && band.is_none() {
+        anyhow::bail!("no selection: pass --point X,Y and/or --depth-band LO,HI");
+    }
 
-    let n = points.len();
+    // Build whichever source mask(s) are requested (original resolution); when
+    // both are given, intersect them; then run the shared post-processing.
+    let point_mask = if points.is_empty() {
+        None
+    } else {
+        Some(crate::pipelines::sam::build_selection_mask(&args.input, &points, &device).await?)
+    };
+    let depth_mask = if let Some((lo, hi)) = band {
+        let (w, h) = image::image_dimensions(&args.input)
+            .with_context(|| format!("reading dimensions of {}", args.input.display()))?;
+        let depth = crate::pipelines::depth::DepthPipeline::load(device.clone())
+            .await?
+            .depth_map(&args.input, w, h)?;
+        Some(crate::pipelines::sam::depth_band_to_mask(&depth, w, h, lo, hi))
+    } else {
+        None
+    };
+
+    let mask = match (point_mask, depth_mask) {
+        (Some(p), Some(d)) => crate::pipelines::sam::intersect_masks(&p, &d),
+        (Some(p), None) => p,
+        (None, Some(d)) => d,
+        (None, None) => unreachable!("validated at least one source above"),
+    };
+    crate::pipelines::sam::finish_mask(mask, args.invert, args.grow, args.feather, &args.out)?;
+
+    let mut srcs = Vec::new();
+    if !points.is_empty() {
+        srcs.push(format!(
+            "{} point{}",
+            points.len(),
+            if points.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some((lo, hi)) = band {
+        srcs.push(format!("depth {lo}–{hi}"));
+    }
     println!(
-        "{}  segmented ({} point{}{})  •  {}",
+        "{}  segmented ({}{})  •  {}",
         style("✓").green(),
-        n,
-        if n == 1 { "" } else { "s" },
+        srcs.join(" ∩ "),
         if args.invert { ", inverted" } else { "" },
         args.out.display()
     );
@@ -124,5 +185,17 @@ mod tests {
         assert!(parse_point("0.5").is_err(), "missing comma");
         assert!(parse_point("a,b").is_err(), "non-numeric");
         assert!(parse_point("0.5,0.4:xy").is_err(), "bad suffix");
+    }
+
+    #[test]
+    fn parses_and_validates_depth_band() {
+        assert_eq!(parse_band("0.6,1.0").unwrap(), (0.6, 1.0));
+        assert_eq!(parse_band(" 0.0 , 0.3 ").unwrap(), (0.0, 0.3));
+        assert!(parse_band("0.6").is_err(), "missing comma");
+        assert!(parse_band("a,1").is_err(), "non-numeric");
+        assert!(parse_band("0.8,0.2").is_err(), "lo >= hi");
+        assert!(parse_band("0.5,0.5").is_err(), "lo == hi");
+        assert!(parse_band("-0.1,0.5").is_err(), "below 0");
+        assert!(parse_band("0.5,1.5").is_err(), "above 1");
     }
 }

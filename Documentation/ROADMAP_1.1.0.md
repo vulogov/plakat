@@ -37,8 +37,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [ ] **IC-Light relighting** — *(L, stretch)* relight composited artefacts so they
       sit in the scene's light, not just on it. SD 1.5-based; porting the model is
       the work.
-- [ ] **SAM depth-band selection** — *(S)* `depth.rs` exists; "select by depth band"
-      is a nearly-free extra mask source for `segment`.
+- [x] **SAM depth-band selection — DONE & VERIFIED.** `plakat segment --depth-band
+      LO,HI` (normalized depth, 1.0 = nearest) is a click-free extra mask source
+      via Depth-Anything-V2; combinable with `--point` (intersect). Refactored SAM
+      into `build_selection_mask` / `finish_mask` + pure `depth_band_to_mask` /
+      `intersect_masks` (unit-tested). Verified end-to-end on the astronaut + a
+      portrait (foreground vs far-background bands are depth-distinct) — light
+      enough to run on CPU, so no memory wall. Proof: `corpus/images/segment/
+      depth-foreground.png` (driver `segment.sh` stage 3).
 
 ## Verification debt (GPU)
 
