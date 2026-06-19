@@ -78,7 +78,9 @@ LLM calls.
 ## Example
 
 `series.tera` + `series.json` in [`corpus/compile/`](../corpus/compile/) render a
-two-character portrait series (mage + ranger, branched headers) — the committed
-`series.rendered.txt` is the byte-stable proof (`corpus/compile.sh`).
+two-character portrait series (mage + ranger, branched headers). `corpus/compile.sh`
+proves it end to end: the Tera render is byte-stable vs the committed
+`series.rendered.txt`, and `series.tera` (+ `series.json`) compiles to the committed
+**`series.hjson`** scenario (2 character tasks), which `scenario --dry-run` validates.
 
 Full compile reference: [`COMPILE.md`](COMPILE.md).
