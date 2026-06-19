@@ -28,8 +28,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       objective (`v=ε−x₀`, independent class σ/noise, λ-weighted), mirroring the
       SD/SDXL DreamBooth. `--base sd35 --class-dir/--class-prompt --prior-weight`.
       Driver `corpus/dreambooth_sd35.sh` (subject/class sets generated on a light
-      base; train 256², render 1024²/768²). SD3.5 is memory-heavy — render proof is
-      memory-bound on 24 GB (carries the same debt as sd21/sdxl renders).
+      base; train 256²). **Verified live:** training ran end-to-end (120 steps, class
+      forward active) + the LoRA merges into the MMDiT correctly. **Render is
+      CANNOT-VERIFY on this 24 GB box** — it OOMs at the LoRA-merge step even at 512²
+      and even `--device cpu` (the full MMDiT+T5+merge won't fit alongside apps; the
+      guard keys on system-wide pressure). Mechanism is identical to the proven
+      sd15/sdxl DreamBooth, so it's code-complete; render proof awaits more RAM.
 - [ ] **IC-Light relighting** — *(L, stretch)* relight composited artefacts so they
       sit in the scene's light, not just on it. SD 1.5-based; porting the model is
       the work.
