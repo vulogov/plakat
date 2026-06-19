@@ -21,6 +21,41 @@ pub mod emitter;
 pub mod cache;
 pub mod scenario_read;
 
+// COMPILE-2: the Tera template pre-pass is feature-gated. When `templates` is on,
+// `template` renders `.tera`/`.j2`/… inputs to a `prompts.txt` string before the
+// parser; when off, `template_stub` returns a "recompile with --features templates"
+// error. Both expose the same `render(input, input_path, opts)` signature.
+#[cfg(feature = "templates")]
+pub mod template;
+#[cfg(not(feature = "templates"))]
+pub mod template_stub;
+#[cfg(not(feature = "templates"))]
+pub use template_stub as template;
+
+/// Inputs for the Tera pre-pass (always compiled, so the CLI layer is
+/// feature-agnostic).
+#[derive(Debug, Default)]
+pub struct TemplateOpts {
+    /// `--var KEY=VALUE` pairs (highest precedence).
+    pub vars: Vec<(String, String)>,
+    /// `--vars <PATH>` JSON/TOML files (later files win).
+    pub vars_files: Vec<std::path::PathBuf>,
+    /// `--vars-env <PREFIX>` env-var imports (prefix stripped, key lowercased).
+    pub env_prefixes: Vec<String>,
+}
+
+/// Whether the input should go through the Tera pre-pass: `--template` forces it,
+/// else a `.tera`/`.j2`/`.jinja`/`.jinja2` extension triggers it.
+pub fn should_use_template(path: Option<&std::path::Path>, force: bool) -> bool {
+    if force {
+        return true;
+    }
+    matches!(
+        path.and_then(|p| p.extension()).and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("tera" | "j2" | "jinja" | "jinja2")
+    )
+}
+
 /// How repeated occurrences of a command within one block combine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Merge {

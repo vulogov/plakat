@@ -15,20 +15,22 @@ A Tera render pass that fires *before* the `prompts.txt` parser, gated behind th
 to a `prompts.txt` string, then flow through the existing compile pipeline
 unchanged.
 
-- [ ] **Feature gate** — `templates = ["dep:tera", "dep:serde_json"]`; a clear
-      "recompile with --features templates" error when absent (`template_stub.rs`).
-- [ ] **Render pass** (`src/compile/template.rs`) — Tera context from built-in
-      `plakat.*` vars + `--var KEY=VALUE` + `--vars <json|toml>` + `--vars-env PREFIX`
-      (priority: built-ins < vars-files < env < --var).
-- [ ] **Custom filters/functions** — `scene_name`, `prompt_join`, `prompt_clean`,
-      `zero_pad`, `sentence_case`; `include_raw` (verbatim, not re-rendered —
-      **OQ-TEMPLATE-1**), `scene_separator`, `model_family`.
-- [ ] **Diagnostics** — template errors cite file:line; parser errors on rendered
-      output suggest `--dump-rendered`. `--dump-rendered[-only]`.
-- **Corpus gate:** `corpus/compile/series.tera` + `--vars series.json` →
-      `--dump-rendered-only` **byte-stable** `prompts.txt` (committed) → piped into
-      `compile --no-enhance` → stable HJSON. The whitespace-trim (`{%- -%}`) pitfall
-      documented in `COMPILE_TEMPLATES.md`.
+- [x] **Feature gate** — `templates = ["dep:tera"]` (serde_json/toml already deps);
+      `template_stub.rs` errors clearly when absent. Default binary unchanged.
+- [x] **Render pass** (`src/compile/template.rs`) — Tera context: built-in `plakat.*`
+      < `--vars <json|toml>` < `--vars-env PREFIX` < `--var KEY=VALUE`. TOML datetimes
+      serialize to strings (**OQ-TEMPLATE-3**).
+- [x] **Custom filters/functions** — `scene_name`, `prompt_join`, `prompt_clean`,
+      `zero_pad`, `sentence_case`; `include_raw` (verbatim — **OQ-TEMPLATE-1** taken as
+      the explicit name), `scene_separator`, `model_family`. `{% include %}`/`{% import %}`
+      resolve sibling template files.
+- [x] **Diagnostics** — template parse/render errors surface the template name + the
+      Tera error/source chain. `--dump-rendered` / `--dump-rendered-only`.
+- [x] **Corpus gate MET:** `corpus/compile/series.tera` + `--vars series.json` →
+      **byte-stable** `series.rendered.txt` (committed) → `compile --no-enhance` →
+      validated via `scenario --dry-run` (`corpus/compile.sh`, conditional on the
+      feature). The whitespace-trim (`{%- -%}`) pitfall is in `COMPILE_TEMPLATES.md`.
+      4 template unit tests (run with `--features templates`).
 
 ## Then — Track M (`plakat map`) begins at 1.4.0
 

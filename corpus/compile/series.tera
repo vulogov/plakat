@@ -1,0 +1,21 @@
+{# series.tera — a character portrait series from a JSON data file.
+   Compile with:  plakat compile series.tera --vars series.json
+   Built with --features templates. Note the {%- -%} trim markers: without
+   them, for/if tags would emit spurious blank lines that split blocks. #}
+model: {{ model }}
+style: {{ style }}
+negative: {{ negative }}
+{%- for char in characters %}
+
+{{ scene_separator(title=char.name) }}
+name: {{ char.name | scene_name }}
+{%- if char.kind == "mage" %}
+header: arcane glow, magical atmosphere,
+{%- elif char.kind == "ranger" %}
+header: natural forest lighting,
+{%- else %}
+header: dramatic lighting,
+{%- endif %}
+footer: character portrait, full body
+{{ char.appearance }}, {{ char.setting }}.
+{%- endfor %}

@@ -103,4 +103,6 @@ plakat compile prompts.txt --diff scene.hjson   # what changed since last compil
 ```
 
 See [`Tutorials/COMPILE_TUTORIAL.md`](Tutorials/COMPILE_TUTORIAL.md) for a
-walkthrough. The Tera template pre-pass (`.tera` inputs) lands in COMPILE-2.
+walkthrough, and [`COMPILE_TEMPLATES.md`](COMPILE_TEMPLATES.md) for the optional
+**Tera template pre-pass** (`.tera` inputs, `--features templates`) — generate a
+scene series from a data file, with `--var`/`--vars` context and custom filters.

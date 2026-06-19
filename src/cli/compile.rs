@@ -69,6 +69,32 @@ pub struct CompileArgs {
     /// per-task add/change/remove diff instead of writing output.
     #[arg(long, value_name = "PATH")]
     pub diff: Option<PathBuf>,
+
+    // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
+    /// Force the Tera template pre-pass regardless of file extension.
+    #[arg(long, default_value_t = false)]
+    pub template: bool,
+
+    /// Inject a template variable `KEY=VALUE` (repeatable; highest precedence).
+    #[arg(long = "var", value_name = "KEY=VALUE")]
+    pub var: Vec<String>,
+
+    /// Load template variables from a JSON or TOML file (repeatable; later wins).
+    #[arg(long = "vars", value_name = "PATH")]
+    pub vars: Vec<PathBuf>,
+
+    /// Import env vars with PREFIX into the template context (prefix stripped, key
+    /// lowercased: `PLAKAT_MODEL` → `{{ model }}`). Repeatable.
+    #[arg(long = "vars-env", value_name = "PREFIX")]
+    pub vars_env: Vec<String>,
+
+    /// Write the rendered `prompts.txt` (before parsing) to PATH (`-` = stdout).
+    #[arg(long = "dump-rendered", value_name = "PATH")]
+    pub dump_rendered: Option<PathBuf>,
+
+    /// Render the template, write it, and exit — no parse, no LLM.
+    #[arg(long = "dump-rendered-only", default_value_t = false)]
+    pub dump_rendered_only: bool,
 }
 
 fn read_input(path: &std::path::Path) -> Result<String> {
@@ -115,6 +141,43 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         "<stdin>".to_string()
     } else {
         args.input.file_name().and_then(|n| n.to_str()).unwrap_or("prompts.txt").to_string()
+    };
+
+    // COMPILE-2: Tera template pre-pass (feature-gated). Fires BEFORE the parser —
+    // a `.tera`/`.j2`/… input (or --template) renders to a prompts.txt string that
+    // everything below then treats normally.
+    let path = if stdin_input { None } else { Some(args.input.as_path()) };
+    let input = if compile::should_use_template(path, args.template) {
+        let mut vars = Vec::with_capacity(args.var.len());
+        for s in &args.var {
+            match s.split_once('=') {
+                Some((k, v)) => vars.push((k.to_string(), v.to_string())),
+                None => bail!("--var must be KEY=VALUE, got `{s}`"),
+            }
+        }
+        let topts = compile::TemplateOpts {
+            vars,
+            vars_files: args.vars.clone(),
+            env_prefixes: args.vars_env.clone(),
+        };
+        let rendered = compile::template::render(&input, path, &topts)?;
+        if let Some(p) = &args.dump_rendered {
+            if p.as_os_str() == "-" {
+                print!("{rendered}");
+            } else {
+                std::fs::write(p, &rendered).with_context(|| format!("writing {}", p.display()))?;
+                println!("{}  rendered → {}", style("✓").green(), p.display());
+            }
+        }
+        if args.dump_rendered_only {
+            if args.dump_rendered.is_none() {
+                print!("{rendered}");
+            }
+            return Ok(());
+        }
+        rendered
+    } else {
+        input
     };
 
     // --lint: validate and exit (non-zero on issues, for CI).

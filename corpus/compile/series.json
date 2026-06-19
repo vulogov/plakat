@@ -1,0 +1,13 @@
+{
+  "model": "sdxl",
+  "style": "fantasy concept art, highly detailed",
+  "negative": "blurry, low quality, watermark, text",
+  "characters": [
+    { "name": "Lady Mireth", "kind": "mage",
+      "appearance": "an elven sorceress in deep blue robes holding a crystal staff",
+      "setting": "a moonlit library tower" },
+    { "name": "Bjorn Oakshield", "kind": "ranger",
+      "appearance": "a grizzled human ranger in green leathers with a longbow",
+      "setting": "a misty pine forest at dawn" }
+  ]
+}

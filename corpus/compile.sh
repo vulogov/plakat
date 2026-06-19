@@ -34,4 +34,19 @@ DIFF="$("$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-neg
   | "$PLAKAT" compile - --no-enhance --no-negative --out - \
   | "$PLAKAT" scenario - --dry-run >/dev/null
 
+# 6) COMPILE-2: the Tera pre-pass — only if this binary was built with
+#    `--features templates` (otherwise the stub errors and we skip gracefully).
+if "$PLAKAT" compile "$ROOT/corpus/compile/series.tera" --vars "$ROOT/corpus/compile/series.json" \
+     --dump-rendered-only >/tmp/plakat-series-rendered.txt 2>/dev/null; then
+  diff -q /tmp/plakat-series-rendered.txt "$ROOT/corpus/compile/series.rendered.txt" >/dev/null \
+    || { echo "✗ Tera render is not byte-stable vs the committed series.rendered.txt"; exit 1; }
+  "$PLAKAT" compile "$ROOT/corpus/compile/series.tera" --vars "$ROOT/corpus/compile/series.json" \
+    --no-enhance --no-negative --out - | "$PLAKAT" scenario - --dry-run >/dev/null
+  rm -f /tmp/plakat-series-rendered.txt
+  TERA="+ COMPILE-2: series.tera → byte-stable render → scenario validated"
+else
+  TERA="(COMPILE-2 skipped — binary built without --features templates)"
+fi
+
 echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"
+echo "  $TERA"
