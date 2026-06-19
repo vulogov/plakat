@@ -1,12 +1,46 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through v0.47. The current
+"What's new" sections for v0.13 through 1.0. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.0.0 — compose & edit scenes, train your own everything
+
+The **1.0 release**: SemVer-stable contracts, plus two capability themes on top of
+the v0.47 freeze.
+
+**Compose & edit scenes**
+
+- **Select** — `plakat segment --point X,Y` masks an object via **MobileSAM**
+  (`--grow`/`--feather` for clean edges); the mask feeds `img2img --mask`, so
+  *select → remove / replace / swap background* composes from owned pieces.
+- **Compose** — `plakat compose <scene.hjson>` stacks image layers (background +
+  cut-outs) by z-order, position, scale, and opacity. No GPU.
+- **Regional prompting** — `--region "x0,y0,x1,y1:prompt"` puts different prompts
+  in different canvas regions of one image (SD 1.5 / SDXL / SD3.5; also a scenario
+  `regions` key), feather-blended into one scene.
+
+**Train your own everything**
+
+- **Subject (DreamBooth) LoRAs** — `style train --class-dir … --class-prompt …
+  --prior-weight` learns a specific *subject* (not a style) with class
+  prior-preservation, so its token binds your subject without overrunning the class.
+- **Resumable training** — `style train --resume …-step<N>.safetensors --steps M`
+  continues an interrupted (or finished) run; all bases.
+
+**Rock-solid on Metal**
+
+- **OOM guard** — a background watchdog (macOS kernel memory-pressure aware) that
+  aborts plakat *cleanly* before a unified-memory exhaustion can crash the host.
+- Fixes: 9-channel inpaint models now honour `--strength`; tiled hi-res is
+  base-anchored (globally coherent) and per-tile memory-bounded.
+
+**Stable & honest** — SemVer from 1.0; CLI flags / scenario HJSON / Bund word-set
+frozen (`STABILITY.md`); Flux scoped CPU/CUDA-only (`FEATURE_TO_MODEL.md`).
 
 ## What's new in v0.47.0 — InstantStyle, smart cut-outs, and 1.0-ready
 

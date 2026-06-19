@@ -17,53 +17,50 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.0.0 — compose & edit scenes, train your own everything
+## What's new in 1.1.0 — train your own words, compose live, select by depth
 
-The **1.0 release**: SemVer-stable contracts, plus two capability themes on top of
-the v0.47 freeze. Every claim is proven by a committed render in the
-[proof corpus](corpus/).
+1.1.0 finishes the "train your own everything" and "compose & edit" threads from
+1.0 — all **SemVer-additive** on the frozen 1.0 contracts. Every verifiable claim
+is proven by a committed render in the [proof corpus](corpus/).
 
 ```bash
-# Different prompts in different regions of ONE image
-plakat generate "a vast landscape at golden hour" --model sd15 \
-  --region "0,0,0.5,1:snowy alpine peaks" --region "0.5,0,1,1:a tropical jungle"
+# Teach the model a new "word" from a few images (the model stays FROZEN)
+plakat embedding train --base sdxl --from-dir ./my-style \
+  --token sgwin --init-word glass --out glass.safetensors
+plakat generate "a sgwin cat" --model sdxl --embedding glass.safetensors:sgwin:0.6
 
-# Train a SUBJECT (your dog "sks") with class prior-preservation
-plakat style train --base sd15 --from-dir ./my-dog --trigger "a photo of sks dog" \
-  --class-dir ./dogs --class-prompt "a photo of a dog"
+# Build a scene from NOTHING on disk: a generated backdrop + a matted subject
+plakat compose scene.hjson   # layers: { generate: "a beach…" } + { matte: "photo.png" }
 ```
 
-**Compose & edit scenes**
+**Train your own words (Textual Inversion)**
 
-- **Select** — `plakat segment --point X,Y` masks an object via **MobileSAM**
-  (`--grow`/`--feather` for clean edges); the mask feeds `img2img --mask`, so
-  *select → remove / replace / swap background* composes from owned pieces.
-- **Compose** — `plakat compose <scene.hjson>` stacks image layers (background +
-  cut-outs) by z-order, position, scale, and opacity. No GPU.
-- **Regional prompting** — `--region "x0,y0,x1,y1:prompt"` puts different prompts
-  in different canvas regions of one image (SD 1.5 / SDXL / SD3.5; also a scenario
-  `regions` key), feather-blended into one scene.
+- **`plakat embedding train`** learns a new token embedding from a few images with
+  the whole model **frozen** — the inverse of plakat's existing `--embedding` load.
+  **SD 1.5 / 2.1** learn one CLIP-L vector; **SDXL** learns a CLIP-L 768d + CLIP-G
+  1280d pair (a dual-encoder TI, matching SDXL's inference conditioning exactly).
+  The output loads via `--embedding PATH:trigger[:scale]`.
 
-**Train your own everything**
+**Compose, live**
 
-- **Subject (DreamBooth) LoRAs** — `style train --class-dir … --class-prompt …
-  --prior-weight` learns a specific *subject* (not a style) with class
-  prior-preservation, so its token binds your subject without overrunning the class.
-- **Resumable training** — `style train --resume …-step<N>.safetensors --steps M`
-  continues an interrupted (or finished) run; all bases.
+- **`compose` `generate:` / `matte:` layers** — a scene layer's pixels can now be
+  rendered inline from a prompt (`generate:`) or matted from a raw photo on the fly
+  (`matte:`, a U2Net cutout), not just `load:`ed from disk — build a whole scene
+  with no pre-made assets.
 
-**Rock-solid on Metal**
+**Select by depth**
 
-- **OOM guard** — a background watchdog (macOS kernel memory-pressure aware) that
-  aborts plakat *cleanly* before a unified-memory exhaustion can crash the host.
-- Fixes: 9-channel inpaint models now honour `--strength`; tiled hi-res is
-  base-anchored (globally coherent) and per-tile memory-bounded.
+- **`segment --depth-band LO,HI`** — a click-free mask source: select pixels by
+  normalized depth (1.0 = nearest) via Depth-Anything-V2, combinable with `--point`
+  to intersect ("this object, but only where it's near").
 
-**Stable & honest** — SemVer from 1.0; CLI flags / scenario HJSON / Bund word-set
-frozen ([`STABILITY.md`](Documentation/STABILITY.md)); Flux scoped CPU/CUDA-only
-([`FEATURE_TO_MODEL.md`](Documentation/FEATURE_TO_MODEL.md)).
+**Train your own subject, on SD3.5**
 
-**Earlier releases** (v0.13 – v0.47):
+- **SD3.5 DreamBooth** — `style train --base sd35 --class-dir … --prior-weight`
+  ports class prior-preservation to the MMDiT rectified-flow trainer, completing
+  DreamBooth across sd15 / sdxl / sd35.
+
+**Earlier releases** (v0.13 – v1.0):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
