@@ -40,8 +40,10 @@ SD render is the memory-bound capstone. See the plan.
 
 ## Opportunistic / debt (off the critical path)
 
-- COMPILE-1 leftovers: per-provider rate-limit `--compile-parallel`, token/cost
-  estimate in `--dry-run`, `map:` block type (E-C4, after Track M lands).
+- [x] COMPILE-1 leftovers DONE: `--compile-parallel` (per-provider auto concurrency
+  via `buffered`, output order preserved) + `--dry-run` token estimate. Still open:
+  `map:` block type (E-C4, blocked on Track M); 429 exponential backoff (relies on
+  the enhance backoff, deferred).
 - 1.1.0 carryovers: Flux regional (Flux broken on Metal), IC-Light (L stretch).
 - Memory-bound render debt: SD3.5 DreamBooth render, `regional.sh sdxl/sd35`.
 

@@ -53,6 +53,11 @@ pub struct CompileArgs {
     #[arg(long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
 
+    /// Max concurrent scenes when calling the LLM. `0` = auto (per provider:
+    /// deepseek 3, gemini 5, local/auto 1).
+    #[arg(long = "compile-parallel", value_name = "N", default_value_t = 1)]
+    pub parallel: usize,
+
     /// Read/write the two-namespace LLM disk cache (`positive/` + `negative/`).
     #[arg(long = "compile-cache", default_value_t = false)]
     pub compile_cache: bool,
@@ -198,7 +203,7 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         let doc = compile::parser::parse(&input)?;
         let resolved = compile::resolver::resolve(&doc, &args.model)?;
         println!("{}  compile dry-run · {input_name} · provider {}", style("◆").cyan(), args.provider);
-        let mut calls = 0usize;
+        let (mut calls, mut tokens) = (0usize, 0usize);
         for s in &resolved.scenes {
             if s.skip {
                 println!("  - {} [skipped]", s.name);
@@ -207,14 +212,22 @@ pub async fn run(args: CompileArgs) -> Result<()> {
             let pos = if args.no_enhance { 0 } else { 1 };
             let neg = if args.no_negative { 0 } else { 1 };
             calls += pos + neg;
+            // Rough token estimate: ~1 token per 4 chars of input + a typical
+            // output budget per call (positive ~120, negative ~50).
+            let assembled = compile::assembler::assemble_input(s);
+            let est = assembled.len() / 4 + pos * 120 + neg * 50;
+            tokens += est;
             println!(
-                "  - {} · family {} · {} LLM call(s)",
+                "  - {} · family {} · {} LLM call(s) · ~{est} tok",
                 style(&s.name).bold(),
                 s.family.label(),
                 pos + neg
             );
         }
-        println!("  total: {} scene(s) · {calls} LLM call(s)", resolved.scenes.iter().filter(|s| !s.skip).count());
+        let n_scenes = resolved.scenes.iter().filter(|s| !s.skip).count();
+        println!(
+            "  total: {n_scenes} scene(s) · {calls} LLM call(s) · ~{tokens} tokens (rough; cost depends on provider)"
+        );
         return Ok(());
     }
 
@@ -232,6 +245,7 @@ pub async fn run(args: CompileArgs) -> Result<()> {
             no_negative: args.no_negative,
             system_override,
             cache: args.compile_cache,
+            parallel: args.parallel,
             input_name,
         },
     )
