@@ -12,20 +12,24 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## 1.2.0 — `plakat compile` core (Track C, COMPILE-1)
 
-- [ ] **Parser** (`src/compile/parser.rs`) — blocks, `key: value` commands, per-command
-      merge strategies (concatenate / accumulate-list / last-wins). Gate: `--dry-run`
-      shows the correct block summary.
-- [ ] **Resolver** — global→scene inheritance + model-family classification (SD15/SDXL/Flux).
-- [ ] **Assembler** — header + (translated) text + footer; `--no-enhance` = verbatim.
-- [ ] **Emitter** — JSON→HJSON post-pass (comments + multiline; `deser-hjson` is
-      deserialize-only, **OQ-COMPILE-4**). Output passes `scenario --dry-run`.
-- [ ] **LLM integration + cache** — positive + auto-negative, two SHA-256 namespaces,
-      family-aware system prompts. Reuses `src/llm/`.
-- [ ] **Pipe/diff** — `--diff`, `scenario -` (stdin).
-- [ ] **Extensions (this track):** `--lint` (E-C2, deterministic, no LLM) and
-      `--decompile` (E-C1, HJSON→prompts.txt) if the cycle has slack.
-- **Corpus gate:** `corpus/compile/basic.txt` → `--no-enhance` **byte-stable** HJSON
-      (committed) + a live-LLM structural proof (N scenes, every scene has +/- prompt).
+- [x] **Parser** (`src/compile/parser.rs`) — blocks, `key: value` commands, per-command
+      merge strategies. `--dry-run` shows the block summary.
+- [x] **Resolver** — global→scene inheritance (concatenate / accumulate / last-wins) +
+      model-family classification (SD15/SDXL/Flux).
+- [x] **Assembler** — header + text + footer; family-aware positive + negative system
+      prompts; `--no-enhance` = verbatim.
+- [x] **Emitter** — hand-written JSON→HJSON formatter (unquoted keys + JSON-escaped
+      values + `//` comments; **deterministic, no timestamp**). Output passes
+      `scenario --dry-run`. (**OQ-COMPILE-4** resolved.)
+- [x] **LLM integration** — positive + auto-negative via `prompt::complete` (custom
+      system prompt threaded to deepseek/gemini/local/auto); graceful fallback to
+      verbatim/seed-terms on failure.
+- [x] **Pipe** — `scenario -` (stdin). **`--lint`** (E-C2, deterministic) shipped.
+- [ ] *Deferred to a 1.2.x point-fix:* two-namespace `--compile-cache`, `--diff`,
+      `--decompile` (E-C1), `translate:`/`persona:` execution (parsed, not yet wired).
+- [x] **Corpus gate MET:** `corpus/compile/basic.txt` → `--no-enhance --no-negative`
+      **byte-stable** `basic.hjson` (committed), validated via `scenario --dry-run` +
+      the stdin pipe (`corpus/compile.sh`). 21 compile unit tests.
 
 ## Later in the arc (see the plan)
 

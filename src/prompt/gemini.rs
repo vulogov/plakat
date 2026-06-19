@@ -33,6 +33,12 @@ struct RespPart {
 }
 
 pub async fn enhance(prompt: &str) -> Result<String> {
+    enhance_with_system(super::SYSTEM, prompt).await
+}
+
+/// Like [`enhance`] but with a caller-supplied system prompt — used by
+/// `plakat compile`, which builds a family-aware system prompt per scene.
+pub async fn enhance_with_system(system: &str, prompt: &str) -> Result<String> {
     let key = crate::config::Config::load()?
         .gemini_api_key
         .ok_or_else(|| anyhow!("GEMINI_API_KEY not set"))?;
@@ -48,7 +54,7 @@ pub async fn enhance(prompt: &str) -> Result<String> {
         }],
         system: Content {
             parts: vec![Part {
-                text: super::SYSTEM.into(),
+                text: system.into(),
             }],
         },
     };
