@@ -33,8 +33,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## MAP-2 — layered geography engine (Layers 0–7)
 
-- [ ] **L0 canvas + L1 tectonic** (`spade` Voronoi + `noise` fBm heightmap). Gate:
-      `--map-dump-heightmap` → byte-stable PNG.
+- [x] **L0 canvas + L1 tectonic — DONE.** `GeoCanvas` (working res = 256/tile,
+      capped 2048²) + `HeightField`: `noise` fBm base + a smooth anisotropic-gaussian
+      ridge per mountain range at its resolved anchor (simple cardinal/canvas resolver).
+      `--map-dump-heightmap` + `--seed`. **Gate MET:** byte-stable
+      `corpus/images/map/island-heightmap.png` (the Emberspine spine over fBm terrain),
+      re-dump-and-`cmp` in `corpus/map.sh`. Pure fn of (spec, seed); 4 engine tests.
+      (Voronoi continental structure via `spade` deferred to an L1 refinement.)
 - [ ] **L2 hydraulics** (D8 flow + the **breach algorithm** — spike-first with a
       Tier-4 "river must reach the sea" test, the highest-risk component).
 - [ ] **L3 coastline** (marching squares + `rstar` index) + **L4 biome** + **L5

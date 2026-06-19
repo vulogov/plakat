@@ -28,4 +28,13 @@ diff -q /tmp/plakat-map-1.json /tmp/plakat-map-2.json >/dev/null \
   | grep -q '"cols": 4' || { echo "✗ --map-tiles override failed"; exit 1; }
 
 rm -f /tmp/plakat-map-1.json /tmp/plakat-map-2.json
+
+# 4) MAP-2 (L0+L1): the tectonic heightmap is a deterministic function of (spec,
+#    seed) — re-dump and compare byte-for-byte against the committed proof.
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-heightmap /tmp/plakat-map-hm.png >/dev/null
+cmp /tmp/plakat-map-hm.png "$ROOT/corpus/images/map/island-heightmap.png" \
+  || { echo "✗ heightmap PNG drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-map-hm.png
+
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
+echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"

@@ -3,6 +3,7 @@
 //! (MAP-3/linework, MAP-6/tiled-SD) follow. See `Documentation/RFC_MAP_COMPILE_PLAN.md`.
 
 pub mod cache;
+pub mod engine;
 pub mod parser;
 pub mod spec;
 

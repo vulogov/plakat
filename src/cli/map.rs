@@ -44,6 +44,14 @@ pub struct MapArgs {
     /// Write the parsed `MapSpec` JSON to PATH (`-` = stdout).
     #[arg(long = "map-dump-spec", value_name = "PATH")]
     pub dump_spec: Option<PathBuf>,
+
+    /// Seed for the geometry engine (deterministic: same spec + seed → same map).
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+
+    /// MAP-2: write the full-canvas tectonic heightmap PNG (L0+L1).
+    #[arg(long = "map-dump-heightmap", value_name = "PATH")]
+    pub dump_heightmap: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -85,6 +93,24 @@ pub async fn run(args: MapArgs) -> Result<()> {
         .await?
     };
 
+    let mut did_dump = false;
+
+    // MAP-2 (L0+L1): full-canvas tectonic heightmap.
+    if let Some(p) = &args.dump_heightmap {
+        let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
+        let hf = map::engine::HeightField::generate(&spec, &canvas);
+        hf.save_gray_png(p)?;
+        println!(
+            "{}  heightmap → {}  ({}x{}, seed {})",
+            style("✓").green(),
+            p.display(),
+            canvas.width,
+            canvas.height,
+            args.seed
+        );
+        did_dump = true;
+    }
+
     let json = serde_json::to_string_pretty(&spec)?;
     match &args.dump_spec {
         Some(p) if p.as_os_str() != "-" => {
@@ -103,17 +129,23 @@ pub async fn run(args: MapArgs) -> Result<()> {
                 spec.tile_grid.rows,
                 spec.scale_tier
             );
+            did_dump = true;
         }
-        _ => {
-            println!("{json}");
-            if args.dump_spec.is_none() {
-                eprintln!(
-                    "{}  MAP-1 ships the spec + parser; the geometry engine + renderer land in MAP-2+. \
-                     Save with --map-dump-spec, or feed it back via --map-spec.",
-                    style("note:").dim()
-                );
-            }
+        Some(_) => {
+            println!("{json}"); // --map-dump-spec -
+            did_dump = true;
         }
+        None => {}
+    }
+
+    // No explicit dump → print the spec (the MAP-1 deliverable) + a pointer.
+    if !did_dump {
+        println!("{json}");
+        eprintln!(
+            "{}  the geometry render (linework / tiled-SD) lands in MAP-3+. \
+             --map-dump-spec saves the spec; --map-dump-heightmap writes the L0+L1 heightmap.",
+            style("note:").dim()
+        );
     }
     Ok(())
 }
