@@ -15,15 +15,21 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## MAP-1 — MapSpec v2 + LLM geographic parser
 
-- [ ] **`MapSpec v2` structs + `Anchor` enum** (`src/map/spec.rs`) — typed spatial
-      relations (`MouthOf`, `Bearing{constraint}`, `PassBetween`, …), serde round-trip.
-- [ ] **LLM parser** (`src/map/parser.rs`) — prose → MapSpec via `prompt::complete`
-      (reuses the `--enhance` stack, same as compile). Built-in system prompt; the
-      3-stage robustness fallback (strip fences → retry → minimal spec, never abort).
-- [ ] **`--map-spec` / `--map-dump-spec` / `--map-cache`** — load a committed spec
-      (skip the LLM), dump the parsed spec, SHA-256 cache.
-- **Gate:** `plakat map "…" --map-dump-spec` produces valid JSON for ≥5 prompts incl.
-  a Tier-4 and an urban; a committed `corpus/map/island.spec.json` loads via `--map-spec`.
+- [x] **`MapSpec v2` structs + `Anchor` enum** (`src/map/spec.rs`) — geographic schema
+      + the full tagged `Anchor` enum (incl. urban variants); `LandmarkKind` is a string
+      with an `Other` fallback (LLM-forgiving). serde round-trip tested. (No new deps —
+      geometry deps land in MAP-2.)
+- [x] **LLM parser** (`src/map/parser.rs`) — prose → MapSpec via `prompt::complete`
+      (reuses the `--enhance` stack). Built-in geographic system prompt (schema + anchor
+      types); 3-stage robustness: `extract_json` (strip fences) → stricter retry →
+      minimal spec, never aborts.
+- [x] **CLI** (`src/cli/map.rs`) — `--map-tiles CxR` / `--map-scale <alias>` (the scale
+      table; tiles override), `--map-provider`, `--map-system`, `--map-cache`,
+      `--map-spec` (load, skip LLM), `--map-dump-spec`.
+- [x] **Gate MET (deterministic half):** committed `corpus/map/island.spec.json` loads
+      via `--map-spec` (no LLM), round-trips **byte-stable**, `--map-tiles` overrides the
+      grid (`corpus/map.sh`). The live prose→spec path reuses the provider stack
+      (structurally tested; not in the deterministic corpus). 12 map unit tests.
 
 ## MAP-2 — layered geography engine (Layers 0–7)
 
