@@ -11,19 +11,22 @@
 # LoRA, then renders the subject via its rare token. With a real subject you'd
 # use real photos of the ONE thing; the synthetic set demonstrates the mechanism.
 #
-#   Usage:  ./dreambooth_sd35.sh            (STEPS=250 default)
-#           STEPS=400 ./dreambooth_sd35.sh  (binds harder)
+#   Usage:  ./dreambooth_sd35.sh            (STEPS=120 default ≈ 3.5 h)
+#           STEPS=80  ./dreambooth_sd35.sh  (quicker, looser bind ≈ 2.3 h)
+#           STEPS=250 ./dreambooth_sd35.sh  (binds harder ≈ 7 h)
 #           SIZE=768x768 ./dreambooth_sd35.sh  (lighter renders if 1024² OOMs)
 #
-# ⚠️ SD3.5 is memory-heavy. Training runs at 256² (DreamBooth doubles per-step
-# cost: subject + class forward). The subject/class sets are generated with a
-# LIGHT base (sd15) — they're plain training data — so SD3.5 is only paid for the
-# training + final renders. Native render res is 1024² (heavy); drop to 768² if
-# the OOM guard trips. ⬜ until rendered.
+# ⚠️ SLOW. SD3.5 MMDiT training is ~100 s/step on Metal (DreamBooth runs a subject
+# + a class forward each step — ~2× a plain step), so even 120 steps is hours. This
+# is the model's inherent cost on this hardware, not a bug. Training runs at 256².
+# The subject/class sets are generated with a LIGHT base (sd15) — plain training
+# data — so SD3.5 is paid only for training + the final renders, which are cached
+# across restarts. Native render res is 1024² (heavy); drop to 768² if the OOM
+# guard trips. ⬜ until rendered.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
-STEPS="${STEPS:-250}"
+STEPS="${STEPS:-120}"
 SIZE="${SIZE:-1024x1024}"            # sd35 native; SIZE=768x768 is lighter
 WORK="${WORK:-/tmp/plakat-dreambooth-sd35}"
 # Subject/class sets are base-independent training data → generate them light.
