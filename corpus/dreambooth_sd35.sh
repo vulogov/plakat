@@ -49,7 +49,7 @@ for s in 11 12 13 14 15 16; do
 done
 # 3) Train the SD3.5 SUBJECT LoRA — binds `sks` to THIS dragon; the class loss
 #    regularizes "plush toy" so the token doesn't drag the whole class with it.
-"$PLAKAT" style train --base sd35 --from-dir "$SUBJ" \
+"$PLAKAT" style train --base sd35-medium --from-dir "$SUBJ" \
   --trigger "$TRIG" \
   --class-dir "$CLASS" --class-prompt "$CLASS_PROMPT" \
   --prior-weight 1.0 --steps "$STEPS" --rank 16 --lr 1e-4 --size 256 \
@@ -57,10 +57,10 @@ done
 # 4) Render the subject in NEW scenes — the teal-with-orange-wings dragon plush
 #    should reappear (proving the token binds the learned subject, not a random plush).
 "$PLAKAT" generate "$TRIG sitting on a mossy log in a sunlit forest, shallow depth of field" \
-  --model sd35 --lora "$LORA" --seed 42 --size "$SIZE" --steps 28 --out "$OUT"
+  --model sd35-medium --lora "$LORA" --seed 42 --size "$SIZE" --steps 28 --out "$OUT"
 mv -f "$OUT/plakat-42.png" "$OUT/forest.png";  mv -f "$OUT/plakat-42.json" "$OUT/forest.json"  2>/dev/null || true
 "$PLAKAT" generate "$TRIG on a beach towel under a striped umbrella, bright daylight" \
-  --model sd35 --lora "$LORA" --seed 7 --size "$SIZE" --steps 28 --out "$OUT"
+  --model sd35-medium --lora "$LORA" --seed 7 --size "$SIZE" --steps 28 --out "$OUT"
 mv -f "$OUT/plakat-7.png"  "$OUT/beach.png";   mv -f "$OUT/plakat-7.json"  "$OUT/beach.json"   2>/dev/null || true
 
 echo "✓ SD3.5 DreamBooth: learned '$TRIG' (subject + prior preservation) → forest + beach in corpus/images/dreambooth-sd35/"

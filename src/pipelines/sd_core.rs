@@ -234,6 +234,32 @@ impl SdCore {
                  SD-family HF repo. Flux routes through pipelines::flux."
             );
         }
+        // SdCore is the SD-UNet backbone (SD 1.5 / 2.1 / SDXL). The DiT/MMDiT and
+        // Cascade families are entirely different architectures with their own
+        // pipelines — without this guard their repos fall through `SdVariant::detect`
+        // to the SD 1.5 default and 404 on the non-existent `unet/` path (e.g. SD3.5
+        // ships a `transformer/`, not a `unet/`). Portrait / FaceID and the other
+        // SdCore-based features are therefore SD-UNet-only.
+        let model_lc = req.model.to_lowercase();
+        for (needle, fam) in [
+            ("sd3", "SD3 / SD3.5"),
+            ("stable-diffusion-3", "SD3 / SD3.5"),
+            ("pixart", "PixArt-Σ"),
+            ("cascade", "Stable Cascade"),
+            ("würstchen", "Stable Cascade"),
+            ("wuerstchen", "Stable Cascade"),
+        ] {
+            if lc.contains(needle) || model_lc.contains(needle) {
+                bail!(
+                    "SdCore (the SD 1.5 / 2.1 / SDXL UNet backbone) does not support \
+                     {fam} — it's a different architecture with its own pipeline, and \
+                     SdCore-based features (portrait / FaceID, etc.) are SD-UNet-only. \
+                     For plain generation, `plakat generate --model {}` routes {fam} to \
+                     the correct pipeline.",
+                    req.model
+                );
+            }
+        }
         let variant = SdVariant::detect(&base_repo);
         let is_inpaint = detect_inpaint(&base_repo);
         let cfg = variant.config(512, 512);
