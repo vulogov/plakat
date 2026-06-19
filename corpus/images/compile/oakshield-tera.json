@@ -1,0 +1,12 @@
+{
+  "prompt": "natural forest lighting, a grizzled human ranger in green leathers with a longbow, a misty pine forest at dawn., character portrait, full body",
+  "negative": "blurry, low quality, watermark, text",
+  "model": "sdxl",
+  "seed": 1,
+  "steps": 28,
+  "guidance": 7.5,
+  "scheduler": "default",
+  "width": 768,
+  "height": 768,
+  "generator": "plakat 1.3.0"
+}

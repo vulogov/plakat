@@ -17,39 +17,38 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.2.0 — write prose, get a render plan (`plakat compile`)
+## What's new in 1.3.0 — generate a scene series from data (`compile` + Tera)
 
-1.2.0 opens the two-track **`compile` + `map`** arc (see the
-[plan](Documentation/RFC_MAP_COMPILE_PLAN.md)). This release is **Track C**:
-`plakat compile` turns a natural-language `prompts.txt` into a ready-to-run
-`scenario` HJSON — write scenes as paragraphs, render the batch. SemVer-additive;
-no GPU, no API key required for the deterministic path.
+1.3.0 completes the **compile** track with an optional **Tera template pre-pass**.
+A `.tera`/`.j2` input renders to a `prompts.txt` first — so a whole scene *series*
+comes from one data file (loops, conditionals, shared macros), then compiles to a
+`scenario` and renders. SemVer-additive, behind the `templates` feature
+(`cargo install plakat --features templates`).
 
 ```bash
-# prompts.txt: blank-line scenes + optional `key: value` commands
-plakat compile prompts.txt --out - | plakat scenario -      # prose → batch render
+# series.tera + characters.json → a scenario, one task per character
+plakat compile series.tera --vars characters.json | plakat scenario -
 ```
 
-**Compile prose into a scenario**
+**Tera template pre-pass (COMPILE-2)**
 
-- **`plakat compile prompts.txt`** → one task per block. Blank-line scenes with
-  free-text descriptions plus `key: value` commands (`header:`/`footer:`/`style:`/
-  `seed:`/`count:`/`lora:`/`translate:`/…), global→scene inheritance, and
-  **model-family-aware** prompt rewriting (SD15 / SDXL / Flux) with an
-  auto-generated negative — all through the existing `--enhance` provider stack.
-- **Deterministic core** — `--no-enhance --no-negative` assembles verbatim (no
-  LLM), so the output is byte-stable and CI-friendly; `--lint` / `--dry-run`
-  validate without spending a call.
-- **Workflow glue** — `scenario -` reads stdin (pipe `compile | scenario`),
-  `--decompile` turns a scenario back into an editable `prompts.txt`, `--diff`
-  shows what changed, `--compile-cache` skips re-enhancing unchanged prompts.
+- **`.tera` / `.j2` inputs** render to a `prompts.txt` before the parser, with
+  context from `--var KEY=VALUE` / `--vars <json|toml>` / `--vars-env PREFIX` /
+  built-in `plakat.*`. Loop over a data file, branch with `{% if %}`, share macros
+  via `{% import %}`.
+- **Filters & functions** — `scene_name`, `prompt_join`, `zero_pad`, `model_family`,
+  `include_raw`, `scene_separator`, …; `--dump-rendered[-only]` to inspect the
+  rendered `prompts.txt` before spending any LLM calls.
+- **Compile polish** — `--compile-parallel N` (concurrent scenes, output order
+  preserved) and a `--dry-run` token estimate.
 
-Proven end to end: a two-scene `prompts.txt` compiles and renders the tundra rider
-and the cartographer ([`corpus/images/compile/`](corpus/images/compile/)), per-scene
-seed/count honoured. See [`Documentation/COMPILE.md`](Documentation/COMPILE.md).
-Next on the arc: COMPILE-2 (Tera template pre-pass), then `plakat map`.
+Proven end to end: `series.tera` (+ `series.json`) → a branched two-character
+scenario → rendered (Lady Mireth the mage, Bjorn the ranger —
+[`corpus/images/compile/`](corpus/images/compile/)). See
+[`Documentation/COMPILE_TEMPLATES.md`](Documentation/COMPILE_TEMPLATES.md). Next on
+the arc: `plakat map`.
 
-**Earlier releases** (v0.13 – v1.1):
+**Earlier releases** (v0.13 – v1.2):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
