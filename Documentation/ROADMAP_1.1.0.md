@@ -18,9 +18,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       (splice into both encoders, penultimate-L ⊕ penultimate-G + CLIP-G pooled —
       bit-identical to inference `embed_xl`); saved as a dual `clip_l`+`clip_g` TI,
       applied via the existing v0.31 dual-encoder load path. `--base sdxl`.
-- [ ] **Compose `generate:` / inline `matte:` layers** — *(M)* render a layer
-      inline, or U2Net-matte a layer on the fly, inside `plakat compose` (today's
-      layers are `load`-only; pre-render / pre-matte for now). GPU.
+- [x] **Compose `generate:` / inline `matte:` layers — DONE & VERIFIED.** A
+      `plakat compose` layer's pixels now come from one of `load:` (existing image),
+      `matte:` (U2Net cutout on the fly), or `generate:` (t2i render inline, with
+      optional `model`/`seed`/`steps`/`gen_size`). `matte`/`generate` render to a
+      tempfile and read back, reusing the file-based pipelines; added `Request::simple`
+      so callers don't hand-build the 45-field t2i Request. Verified end-to-end:
+      generated beach backdrop + matted astronaut composited with no pre-made assets
+      (`corpus/compose_generate_scene.hjson`, proof `images/compose/
+      beach-generate-matte.png`). Light (sd15 512² + U2Net) — runs on CPU.
 - [ ] **Flux regional prompting** — *(M)* `--region` for Flux (today it bails).
       Flux's flow-matching transformer needs its own per-region velocity blend.
 - [x] **sd35 DreamBooth — DONE (render verification pending).** Prior preservation

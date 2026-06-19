@@ -185,7 +185,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             upscale::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
-        Command::Compose(args) => compose::run(args).await,
+        Command::Compose(args) => {
+            let device = crate::device::select(&cli.device)?;
+            compose::run(args, device).await
+        }
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
