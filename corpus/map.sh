@@ -66,7 +66,14 @@ cmp /tmp/plakat-map.geojson "$ROOT/corpus/map/export/island.geojson" \
   || { echo "✗ GeoJSON export drifted from the committed proof"; exit 1; }
 cmp /tmp/plakat-map.svg "$ROOT/corpus/map/export/island.svg" \
   || { echo "✗ SVG export drifted from the committed proof"; exit 1; }
-rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg
+
+# 7) MAP-6 — the SD conditioning base (the deterministic half of the painted
+#    render: styled map, no labels — the img2img init + Canny source). The SD
+#    denoise itself is non-deterministic (driven by corpus/map_render.sh, not here).
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-conditioning /tmp/plakat-map-cond.png >/dev/null
+cmp /tmp/plakat-map-cond.png "$ROOT/corpus/images/map/island-conditioning.png" \
+  || { echo "✗ SD conditioning base drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg /tmp/plakat-map-cond.png
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
 echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"
@@ -78,3 +85,4 @@ echo "  + MAP-2 (L6): road network byte-stable vs corpus/images/map/island-roads
 echo "  + MAP-2 (L7): assembled feature overlay byte-stable vs corpus/images/map/island-features.png — geometry engine COMPLETE"
 echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/map/island-render.png — first complete user-facing map"
 echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"
+echo "  + MAP-6: SD conditioning base byte-stable vs corpus/images/map/island-conditioning.png (painted render via corpus/map_render.sh)"

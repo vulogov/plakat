@@ -16,31 +16,42 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## MAP-6 — tiled SDXL render
 
-- [ ] **Conditioning builder** — assemble the per-render ControlNet input from the
-      L7 feature overlay: the composited biome/coast/river/road image as the base,
-      plus an optional **Canny edge** pass (coast + linework) for a `canny`
-      ControlNet. Reuse the existing `imageproc` Canny annotator. Deterministic;
-      add it to `corpus/map.sh` (the conditioning is byte-stable even though the SD
-      output isn't).
-- [ ] **1×1 on-box render** — the single-tile path first: L7 overlay → SDXL img2img
-      + ControlNet (canny) at a modest size, a cartography prompt derived from the
-      spec (climate/era/biome words). `--map-render-sd PATH`, `--map-sd-model`
-      (default an SDXL checkpoint), `--map-sd-strength`, `--map-sd-steps`. Verify a
-      painted Isle of Vethûn renders on Metal at a size that fits 24 GB.
+- [x] **Conditioning builder — DONE.** `render_sd::build_conditioning` = the styled
+      **base map** (terrain/coast/rivers/roads, *no labels*) via the 1.5.0
+      `paint_base_map` (factored out of `render`), the img2img init **and** the Canny
+      ControlNet source. `--map-dump-conditioning PATH`. Deterministic → byte-stable
+      `corpus/images/map/island-conditioning.png`, byte-checked in `corpus/map.sh`.
+- [x] **1×1 on-box render — DONE.** `render_sd::render_sd`: base → **SDXL img2img +
+      Canny ControlNet** (reuses the `img2img` pipeline wholesale; Canny auto-
+      annotates the base) with a **cartography prompt derived from the spec**
+      (climate/era/elevation/biome words, leading with the "fantasy map" trigger).
+      `--map-render-sd PATH`, `--map-sd-model` (**any** plakat model — sdxl default,
+      sd15/sd21/turbo/HF-repo all work), `--map-sd-lora` (**optional**; SDXL-family
+      defaults to `Muapi/fantasy-map`, others none; `none` disables),
+      `--map-sd-strength`/`--map-sd-steps`/`--map-sd-guidance`/`--map-sd-raw`.
+      Verified end-to-end (Isle of Vethûn painted at 512²; `corpus/map_render.sh`).
+- [x] **Label/furniture re-composite — DONE.** `render::apply_labels_and_furniture`
+      (factored out of `render`) re-applies the 1.5.0 labels + furniture **over** the
+      SD output so the painted map stays legible; `--map-sd-raw` skips it.
+- [ ] **compvis-layout SDXL LoRA support (NEXT).** The fantasy-map LoRA — and a large
+      slice of community SDXL LoRAs — use the **compvis block layout**
+      (`lora_unet_input_blocks_*`/`middle_block`/`output_blocks`); plakat's loader only
+      matches the **diffusers layout** (`down_blocks`/`mid_block`/`up_blocks`), so such
+      a LoRA merges into the text encoders but **0/722 into the UNet**. Add a
+      compvis→diffusers SDXL-UNet key remap in `pipelines/lora.rs` (analogous to the
+      SD3 `remap_diffusers_mmdit`) so the UNet style actually applies. General win
+      (all kohya-format SDXL LoRAs), needs careful index-mapping tests.
 - [ ] **Tiled multi-tile render** — reuse the **`plakat.tiled.*`** SDXL hi-res
       machinery (base-anchored tiling) to cover larger tile grids tile-by-tile with
       overlap blending, so a 4×4 map renders without a single giant allocation.
       Memory-bound: gate tile size + document the safe envelope (the Metal
       single-buffer OOM ceiling), and self-limit like the 1.0 OOM watchdog.
-- [ ] **Label/furniture re-composite** — the painted output loses the crisp labels;
-      re-apply the 1.5.0 label + furniture pass (the `render.rs` compositor) **over**
-      the SD result so the final map is painted *and* legible. Optional
-      `--map-sd-raw` to skip the overlay.
-- [ ] **Gate:** the conditioning (L7 overlay + Canny) is byte-stable in
-      `corpus/map.sh`; the SD render itself is verified by a committed showcase image
-      + a structural test (right size, labels composited), **not** a byte-check (it's
-      the one non-deterministic map artifact — like every other SD pipeline in the
-      proof corpus). Document the memory envelope.
+- [x] **Gate (phase 1) MET.** The conditioning is byte-stable in `corpus/map.sh`; the
+      SD render is driven by `corpus/map_render.sh` (deterministic conditioning check +
+      the GPU paint, `MODEL=`/`LORA=` env, `NO_GPU=1` to skip) with a committed
+      showcase `corpus/images/map/island-painted.png` — **not** byte-checked (the one
+      non-deterministic map artifact). Structural tests: conditioning determinism +
+      label-free, prompt derivation, `round8`.
 
 ## New deps
 

@@ -195,7 +195,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
-        Command::Map(args) => map::run(args).await,
+        Command::Map(args) => map::run(args, &cli.device).await,
         Command::Compose(args) => {
             let device = crate::device::select(&cli.device)?;
             compose::run(args, device).await

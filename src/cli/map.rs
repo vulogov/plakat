@@ -95,9 +95,51 @@ pub struct MapArgs {
     /// MAP-3b: export the map as a standalone SVG (scalable linework + labels).
     #[arg(long = "map-export-svg", value_name = "PATH")]
     pub export_svg: Option<PathBuf>,
+
+    /// MAP-6: render a **painted** map via SD img2img + Canny ControlNet over the
+    /// styled base, then re-composite labels. Requires a GPU build (downloads the
+    /// model on first use). The styled-base conditioning is deterministic.
+    #[arg(long = "map-render-sd", value_name = "PATH")]
+    pub render_sd: Option<PathBuf>,
+
+    /// MAP-6: just write the deterministic SD conditioning base (no GPU) — the
+    /// styled map with no labels, the img2img init + Canny source.
+    #[arg(long = "map-dump-conditioning", value_name = "PATH")]
+    pub dump_conditioning: Option<PathBuf>,
+
+    /// MAP-6: SD backbone for `--map-render-sd` (any plakat model: sdxl, sd15,
+    /// sd21, sdxl-turbo, an HF repo, …).
+    #[arg(long = "map-sd-model", default_value = "sdxl")]
+    pub sd_model: String,
+
+    /// MAP-6: LoRA for the painted render (repeatable; HF `org/name[:scale]`,
+    /// `civitai:ID`, or a local path). `none` forces no LoRA. When unset, SDXL-
+    /// family models default to the fantasy-map style LoRA, others to none.
+    #[arg(long = "map-sd-lora", value_name = "SPEC")]
+    pub sd_lora: Vec<String>,
+
+    /// MAP-6: LoRA scale for `--map-sd-lora`.
+    #[arg(long = "map-sd-lora-scale", default_value_t = 0.9)]
+    pub sd_lora_scale: f32,
+
+    /// MAP-6: img2img strength (how far the paint moves from the base geometry).
+    #[arg(long = "map-sd-strength", default_value_t = 0.55)]
+    pub sd_strength: f32,
+
+    /// MAP-6: SD sampling steps.
+    #[arg(long = "map-sd-steps", default_value_t = 28)]
+    pub sd_steps: usize,
+
+    /// MAP-6: SD guidance scale.
+    #[arg(long = "map-sd-guidance", default_value_t = 6.5)]
+    pub sd_guidance: f64,
+
+    /// MAP-6: skip the label/furniture re-composite (raw painted output).
+    #[arg(long = "map-sd-raw", default_value_t = false)]
+    pub sd_raw: bool,
 }
 
-pub async fn run(args: MapArgs) -> Result<()> {
+pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
     let (grid, tier) = map::resolve_scale(args.tiles.as_deref(), args.scale.as_deref())?;
 
     // Source the spec: load (skip LLM) or parse the description.
@@ -276,6 +318,56 @@ pub async fn run(args: MapArgs) -> Result<()> {
         }
     }
 
+    // MAP-6: the deterministic SD conditioning base (no GPU).
+    if let Some(p) = &args.dump_conditioning {
+        let rstyle = map::render::Style::named(&args.style)?;
+        map::render_sd::save_conditioning(&spec, args.seed, rstyle, p)?;
+        println!("{}  conditioning → {}  (styled base, no labels, seed {})", style("✓").green(), p.display(), args.seed);
+        did_dump = true;
+    }
+
+    // MAP-6: the painted SD render (GPU). img2img + Canny ControlNet over the base.
+    if let Some(p) = &args.render_sd {
+        let rstyle = map::render::Style::named(&args.style)?;
+        // LoRA resolution: explicit --map-sd-lora wins (`none` → none); else the
+        // model's default (fantasy-map for SDXL-family, none otherwise).
+        let loras: Vec<String> = if args.sd_lora.is_empty() {
+            map::render_sd::default_loras_for_model(&args.sd_model)
+        } else if args.sd_lora.iter().any(|s| s.eq_ignore_ascii_case("none")) {
+            Vec::new()
+        } else {
+            args.sd_lora.clone()
+        };
+        let opts = map::render_sd::SdOptions {
+            model: args.sd_model.clone(),
+            loras,
+            lora_scale: args.sd_lora_scale,
+            strength: args.sd_strength,
+            steps: args.sd_steps,
+            guidance: args.sd_guidance,
+            control_strength: 0.9,
+            raw: args.sd_raw,
+        };
+        let device = crate::device::select(device_spec)?;
+        let lora_note = if opts.loras.is_empty() { "no LoRA".to_string() } else { opts.loras.join("+") };
+        println!(
+            "{}  painting map with {} ({})…",
+            style("→").cyan(),
+            args.sd_model,
+            lora_note
+        );
+        map::render_sd::render_sd(&spec, args.seed, rstyle, &opts, device, p).await?;
+        println!(
+            "{}  painted map → {}  ({}, {}, seed {})",
+            style("✓").green(),
+            p.display(),
+            args.sd_model,
+            lora_note,
+            args.seed
+        );
+        did_dump = true;
+    }
+
     let json = serde_json::to_string_pretty(&spec)?;
     match &args.dump_spec {
         Some(p) if p.as_os_str() != "-" => {
@@ -307,9 +399,10 @@ pub async fn run(args: MapArgs) -> Result<()> {
     if !did_dump {
         println!("{json}");
         eprintln!(
-            "{}  --map-render PATH writes the complete styled, labelled map \
-             (--map-style parchment|inked|blueprint); --map-dump-spec saves the spec. \
-             The tiled-SD painted render lands in 1.6.",
+            "{}  --map-render PATH writes the styled, labelled linework map \
+             (--map-style parchment|inked|blueprint); --map-render-sd PATH paints it \
+             with SD (img2img + Canny ControlNet, --map-sd-model/--map-sd-lora); \
+             --map-dump-spec saves the spec.",
             style("note:").dim()
         );
     }
