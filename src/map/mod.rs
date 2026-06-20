@@ -5,6 +5,7 @@
 pub mod biome;
 pub mod cache;
 pub mod coastline;
+pub mod composite;
 pub mod engine;
 pub mod hydrology;
 pub mod parser;

@@ -72,6 +72,11 @@ pub struct MapArgs {
     /// MAP-2: write the road network (+ rivers, landmarks) (L6).
     #[arg(long = "map-dump-roads", value_name = "PATH")]
     pub dump_roads: Option<PathBuf>,
+
+    /// MAP-2: write the assembled feature overlay — the complete composited map
+    /// (biome + coast + rivers + roads + landmarks) (L7).
+    #[arg(long = "map-dump-features", value_name = "PATH")]
+    pub dump_features: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -122,6 +127,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
         || args.dump_biome.is_some()
         || args.dump_landmarks.is_some()
         || args.dump_roads.is_some()
+        || args.dump_features.is_some()
     {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
@@ -154,6 +160,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
             || args.dump_biome.is_some()
             || args.dump_landmarks.is_some()
             || args.dump_roads.is_some()
+            || args.dump_features.is_some()
         {
             let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
             if let Some(p) = &args.dump_coast {
@@ -171,6 +178,23 @@ pub async fn run(args: MapArgs) -> Result<()> {
                 let bm = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
                 bm.save_png(p)?;
                 println!("{}  biome map → {}  (seed {})", style("✓").green(), p.display(), args.seed);
+                did_dump = true;
+            }
+            // L7: the assembled feature overlay (the complete composited map).
+            if let Some(p) = &args.dump_features {
+                let biome = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+                let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
+                let roads = map::roads::build_roads(&spec, &hf, &coast, &hydro, &lms);
+                map::composite::save_features(&hf, &coast, &biome, &hydro, &lms, &roads, p)?;
+                println!(
+                    "{}  feature overlay → {}  (full map: {} landmark(s), {} road(s), seed {})",
+                    style("✓").green(),
+                    p.display(),
+                    lms.len(),
+                    roads.len(),
+                    args.seed
+                );
                 did_dump = true;
             }
             // L5/L6 share the hydrology + resolved landmarks.

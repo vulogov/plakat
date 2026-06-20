@@ -83,8 +83,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       Emberhall through the lowland, on land; tests assert connect + no-sea + determinism.
       Hand-rolled grid Dijkstra (no `petgraph` dep yet — it lands with the MAP-5 urban
       street graph). Sea-lanes / walls deferred.
-- [ ] **L6 infrastructure** (`petgraph` Dijkstra roads) + **L7 conditioning assembly**
-      (heightmap/biome/feature-overlay full-canvas + per-tile crops).
+- [x] **L7 conditioning assembly — DONE. MAP-2 geometry engine COMPLETE.** The
+      `composite` module assembles every layer into one **feature overlay**: biome +
+      a darkened coastline + rivers + roads/bridges + landmark markers — the complete
+      composited map. `--map-dump-features`. **Gate MET:** byte-stable
+      `island-features.png` (sea, beach, forest, central volcanic massif crowned in
+      snow, river network, coast, cities, salt road). (Per-tile crops + Canny edges
+      pair with the MAP-6 tiled-SD render.) `corpus/map.sh` byte-checks all seven layer
+      dumps. **Next: the 1.5.0 linework render** (labels + cartographic styling → the
+      first complete, user-facing map = the release).
 - **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,
   features}` PNGs; anchor-resolution unit tests (`mouth_of`, `bearing+constraint`,
   `pass_between`). **Determinism invariant**: no unseeded map output (render twice,
