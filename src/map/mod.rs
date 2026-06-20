@@ -12,6 +12,7 @@ pub mod hydrology;
 pub mod labels;
 pub mod parser;
 pub mod render;
+pub mod render_sd;
 pub mod resolver;
 pub mod roads;
 pub mod spec;

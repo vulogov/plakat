@@ -81,42 +81,84 @@ impl Default for Style {
 
 // ── Public entry ─────────────────────────────────────────────────────────────
 
+/// The computed geometry layers for a `(spec, seed)` — shared by the linework
+/// render, the SD conditioning, and the label re-composite so each is built once.
+pub struct Geometry {
+    pub hf: HeightField,
+    pub coast: Coastline,
+    pub biome: BiomeMap,
+    pub hydro: Hydrology,
+    pub lms: Vec<ResolvedLandmark>,
+    pub roads: Vec<RoadGeom>,
+}
+
+impl Geometry {
+    pub fn compute(spec: &MapSpec, seed: u64) -> Result<Geometry> {
+        let canvas = GeoCanvas::from_spec(spec, seed);
+        let hf = HeightField::generate(spec, &canvas);
+        let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
+        let biome = BiomeMap::compute(spec, &hf, &coast, seed);
+        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
+        let lms = resolve_landmarks(spec, &hf, &hydro, &coast)?;
+        let roads = build_roads(spec, &hf, &coast, &hydro, &lms);
+        Ok(Geometry { hf, coast, biome, hydro, lms, roads })
+    }
+}
+
 /// Render the complete styled, labelled map for `(spec, seed)`.
 pub fn render(spec: &MapSpec, seed: u64, style: Style) -> Result<RgbImage> {
-    let canvas = GeoCanvas::from_spec(spec, seed);
-    let hf = HeightField::generate(spec, &canvas);
-    let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
-    let biome = BiomeMap::compute(spec, &hf, &coast, seed);
-    let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
-    let lms = resolve_landmarks(spec, &hf, &hydro, &coast)?;
-    let roads = build_roads(spec, &hf, &coast, &hydro, &lms);
+    let geo = Geometry::compute(spec, seed)?;
+    let mut img = paint_base_map(&geo, style);
+    apply_labels_and_furniture(&mut img, spec, &geo, style);
+    Ok(img)
+}
 
-    let (w, h) = (hf.width, hf.height);
+/// The styled base map — terrain/biome fill + hill-shading, coastline, rivers,
+/// roads. **No labels, no furniture.** This is the SD img2img init + Canny source
+/// (conditioning), and the substrate the labels/furniture pass draws over.
+pub fn paint_base_map(geo: &Geometry, style: Style) -> RgbImage {
+    let (w, h) = (geo.hf.width, geo.hf.height);
     let mut img = RgbImage::new(w, h);
+    paint_base(&mut img, &geo.hf, &geo.coast, &geo.biome, style);
+    draw_coastline(&mut img, &geo.coast, style);
+    draw_rivers(&mut img, &geo.hydro, style);
+    draw_roads(&mut img, &geo.roads, style);
+    img
+}
 
-    paint_base(&mut img, &hf, &coast, &biome, style);
-    draw_coastline(&mut img, &coast, style);
-    draw_rivers(&mut img, &hydro, style);
-    draw_roads(&mut img, &roads, style);
+/// Redraw the crisp cartographic **linework** — coastline, rivers, roads/bridges —
+/// over an existing image. The SD paint pass washes out these thin functional
+/// features; this restores them (a touch bolder so they read over painted terrain)
+/// so the painted map stays a usable map. Mutates `img` in place.
+pub fn apply_linework(img: &mut RgbImage, geo: &Geometry, style: Style) {
+    draw_coastline(img, &geo.coast, style);
+    // Rivers slightly bolder than the linework render so they survive over paint.
+    for &(x, y) in geo.hydro.rivers.iter().flatten() {
+        plot_thick(img, x as i32, y as i32, style.river);
+    }
+    draw_roads(img, &geo.roads, style);
+}
 
+/// Draw the labels + cartographic furniture over an existing base image (the
+/// linework base, or an SD-painted map). Mutates `img` in place.
+pub fn apply_labels_and_furniture(img: &mut RgbImage, spec: &MapSpec, geo: &Geometry, style: Style) {
+    let (w, h) = (img.width(), img.height());
     // Furniture reserves its footprint first so labels route around it; the boxes
     // themselves are drawn last (crisp, on top of everything).
     let mut taken: Vec<Rect> = Vec::new();
     let title_box = reserve_title(spec, w, &mut taken);
     let compass_box = reserve_box(w as i32 - 56, 9, 50, 56, &mut taken);
     let scale_box = reserve_box(10, h as i32 - 34, 132, 28, &mut taken);
-    let legend_box = reserve_legend(&lms, w, h, &mut taken);
+    let legend_box = reserve_legend(&geo.lms, w, h, &mut taken);
 
-    draw_features(&mut img, spec, &hf, &hydro, style, &mut taken);
-    draw_landmarks(&mut img, &lms, style, &mut taken);
+    draw_features(img, spec, &geo.hf, &geo.hydro, style, &mut taken);
+    draw_landmarks(img, &geo.lms, style, &mut taken);
 
-    draw_title(&mut img, spec, style, title_box);
-    draw_compass(&mut img, style, compass_box);
-    draw_scale_bar(&mut img, spec, style, scale_box);
-    draw_legend(&mut img, &lms, style, legend_box);
-    draw_frame(&mut img, style);
-
-    Ok(img)
+    draw_title(img, spec, style, title_box);
+    draw_compass(img, style, compass_box);
+    draw_scale_bar(img, spec, style, scale_box);
+    draw_legend(img, &geo.lms, style, legend_box);
+    draw_frame(img, style);
 }
 
 /// Render + write the map PNG.
