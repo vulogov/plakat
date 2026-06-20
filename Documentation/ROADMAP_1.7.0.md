@@ -21,10 +21,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       `--map-render-sd`) + the SD knobs, and emit the map. Mirror the existing word
       modules in `src/scripting/words/`. Gate the GPU paint behind the same device
       the rest of scripting uses.
-- [ ] **Scenario `map` task** — a scenario entry that produces a map artifact, so a
-      `plakat scenario` batch can interleave maps with renders/animations. Schema +
-      dispatch alongside the existing task kinds; the deterministic geometry path
-      needs no GPU, the painted path reuses the 1.6 `render_sd`.
+- [x] **Scenario `map` task — DONE.** `type: map` task kind in `cli/scenario.rs`
+      (schema fields `map-spec`/`map-style`/`map-paint`/`map-scale`/`map-tiles`/
+      `map-sd-model`/`map-sd-lora`/`map-provider` at scenario + task level, merged by
+      `effective_map_config`), dispatched to the focused delegate
+      `map::scenario_task::run_map_task` (source spec → linework or SD paint →
+      `<out>/<name>/map.png`). `DropAll` cache-evictor frees any t2i/animate pipeline
+      before a map task's own SD load. Scene/weather are now optional so a map task
+      needn't carry them (and the scene-ref + enhance pre-pass skip map tasks).
+      **Gate MET:** `corpus/map_scenario.hjson` (parchment + blueprint) — the
+      parchment task is **byte-identical to the direct `--map-render`** (proves the
+      integration shares the deterministic path), byte-checked in `corpus/map.sh`. 4
+      delegate unit tests (spec source, dry-run, linework write, LoRA resolution).
 - [ ] **`map:` compile block (COMPILE-1 E-C4)** — now unblocked. A `map:` directive
       in a `prompts.txt` / Tera template compiles to a scenario `map` task, so prose
       worldbuilding and scene rendering live in one compiled document. Deterministic

@@ -14,6 +14,7 @@ pub mod parser;
 pub mod render;
 pub mod render_sd;
 pub mod resolver;
+pub mod scenario_task;
 pub mod roads;
 pub mod spec;
 

@@ -73,6 +73,13 @@ cmp /tmp/plakat-map.svg "$ROOT/corpus/map/export/island.svg" \
 "$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-conditioning /tmp/plakat-map-cond.png >/dev/null
 cmp /tmp/plakat-map-cond.png "$ROOT/corpus/images/map/island-conditioning.png" \
   || { echo "✗ SD conditioning base drifted from the committed proof"; exit 1; }
+
+# 8) MAP-4 — the `map` scenario task. A `plakat scenario` batch emits a map via the
+#    SAME deterministic linework path: the parchment task must be byte-identical to
+#    the direct `--map-render` (proving the integration shares the path, no GPU).
+"$PLAKAT" scenario "$ROOT/corpus/map_scenario.hjson" >/dev/null 2>&1
+cmp "$ROOT/corpus/images/map/scenario/isle-parchment/map.png" "$ROOT/corpus/images/map/island-render.png" \
+  || { echo "✗ scenario map task drifted from the direct --map-render"; exit 1; }
 rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg /tmp/plakat-map-cond.png
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
@@ -86,3 +93,4 @@ echo "  + MAP-2 (L7): assembled feature overlay byte-stable vs corpus/images/map
 echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/map/island-render.png — first complete user-facing map"
 echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"
 echo "  + MAP-6: SD conditioning base byte-stable vs corpus/images/map/island-conditioning.png (painted render via corpus/map_render.sh)"
+echo "  + MAP-4: 'map' scenario task byte-identical to the direct --map-render (corpus/map_scenario.hjson)"
