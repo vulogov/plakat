@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.3. The current
+"What's new" sections for v0.13 through 1.4. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.4.0 — procedural fantasy maps, layer by layer (`plakat map`)
+
+1.4.0 opened **Track M — `plakat map`**: turn a prose world description into a
+fantasy map. This cut shipped the front half — the **spec** + an **eight-layer
+geometry engine** — with no SD render (the linework render arrived in 1.5.0). Pure
+function of (spec, seed), every layer a byte-stable on-box corpus image.
+
+- **MAP-1** — `MapSpec v2` geographic schema + a tagged `Anchor` type (`mouth_of`,
+  `natural_harbor`, `bearing`, `range_slope`, `pass_between`, …); landmarks placed
+  relative to features, not pixels. LLM parser (prose → spec, 3-stage robustness);
+  `--map-spec` loads a committed spec and skips the LLM.
+- **MAP-2** — the geometry engine, L0–L7: fBm terrain + range ridges, priority-flood/
+  D8 hydrology (rivers end at the coast), spec-driven coastline, biomes, a fixpoint
+  landmark resolver, Dijkstra roads + bridges, and a composited feature overlay. The
+  only new dependency for the whole engine is `noise`.
 
 ## What's new in 1.3.0 — generate a scene series from data (`compile` + Tera)
 

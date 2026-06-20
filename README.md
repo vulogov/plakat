@@ -17,53 +17,51 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.4.0 — procedural fantasy maps, layer by layer (`plakat map`)
+## What's new in 1.5.0 — a finished map you can read (`plakat map --map-render`)
 
-1.4.0 opens **Track M — `plakat map`**: turn a prose world description into a
-fantasy map. This cut ships the front half — the **spec** + an **eight-layer
-geometry engine** — with **no SD render yet** (linework styling is 1.5.0, the
-tiled-SD render is 1.6.0). The whole engine is a **pure function of (spec, seed)**,
-so every layer is proven by a byte-stable on-box corpus image (no GPU, no network).
+1.5.0 turns the 1.4.0 geometry engine into the **first complete, user-facing map**:
+a styled, labelled image with cartographic furniture — plus a scalable **vector
+export**. Still **no SD** (the tiled-SD painted render is the 1.6.0 capstone), so
+the whole render stays a **pure function of (spec, seed)** — byte-stable on-box, no
+GPU, no network.
 
 ```bash
-# prose → a structured MapSpec (LLM parse, reuses the --enhance stack)
-plakat map "a volcanic island kingdom ringed by salt marshes" --map-dump-spec island.json
+# prose → spec → a finished, labelled map (parchment | inked | blueprint)
+plakat map "a volcanic island kingdom ringed by salt marshes" --map-render isle.png
+plakat map --map-spec isle.json --map-render isle.png --map-style blueprint
 
-# a committed spec → each geometry layer, deterministic (same spec + seed → same bytes)
-plakat map --map-spec island.json --seed 42 --map-dump-features island-map.png
+# the same geometry as scalable vectors
+plakat map --map-spec isle.json --map-export-svg isle.svg --map-export-geojson isle.geojson
 ```
 
-**MAP-1 — spec + parser**
+**MAP-3 — the linework render**
 
-- **`MapSpec v2`** geographic schema + a tagged **`Anchor`** type (`mouth_of`,
-  `natural_harbor`, `bearing{from,dir,dist}`, `range_slope`, `pass_between`, …) —
-  landmarks are placed *relative to features*, not pinned to pixels.
-- **LLM parser** — prose → spec via the `--enhance` provider stack, with a 3-stage
-  robustness path (`extract_json` → stricter retry → minimal spec; never aborts).
-  `--map-spec` loads a committed spec and skips the LLM entirely.
+- **Labelled** — every landmark + named feature (ranges, rivers, regions, the sea)
+  gets a name, placed by a greedy collision-aware router around a reserved-box list.
+  Text is a hand-authored **5×7 bitmap font** (no font asset, no `ab_glyph`) so the
+  PNG is byte-identical across machines; accents fold (`Vethûn` → `VETHUN`).
+- **Styled** — paper-tinted biomes, ink coastline, NW **hill-shading** from the
+  heightfield, bathymetric sea, and a distinct **symbol per landmark kind** (city
+  block, fortress tower, lighthouse beacon, temple diamond, port, ruin ring). Three
+  palettes via `--map-style`: **parchment** (default), **inked**, **blueprint**.
+- **Furniture** — a title cartouche, a four-point **compass rose**, a 1/2/5-rounded
+  **scale bar** (from the spec's scale tier / extent), a **legend** of the kinds
+  present, and a double frame.
 
-**MAP-2 — the geometry engine (L0–L7)**
+**MAP-3b — vector export**
 
-- **L0/L1 terrain** — `noise` fBm + an anisotropic-gaussian ridge per mountain range.
-- **L2 hydraulics** — priority-flood depression fill (Barnes 2014) → D8 flow →
-  accumulation → river tracing; **rivers end at the coast**, never across open water.
-- **L3 coastline** — a spec-driven landmass falloff gives real coasts (and a sea for
-  rivers to reach) + a distance-to-sea field.
-- **L4 biomes** — region influence discs + noise-jittered boundaries, with elevation
-  (snow-capped peaks) and coast (beaches) overrides.
-- **L5 landmark resolver** — a fixpoint over the anchor dependency graph (cycle → error).
-- **L6 roads** — Dijkstra over a terrain cost grid (sea impassable, mountains costly,
-  river crossings → bridges).
-- **L7 feature overlay** — every layer composited into one map image.
+- **GeoJSON** (`--map-export-geojson`) — a `FeatureCollection`: the coastline
+  (Moore-neighbour contour trace → closed rings), river + road LineStrings, and
+  landmark Points (with `name`/`kind`), normalized `[0,1]` north-up.
+- **SVG** (`--map-export-svg`) — a standalone scalable map (filled coast, rivers,
+  dashed roads, labelled dots) for print or further editing.
 
-Proven end to end: the committed `corpus/map/island.spec.json` (The Isle of Vethûn)
-→ byte-stable `--map-dump-{heightmap,rivers,coast,biome,landmarks,roads,features}`
-([`corpus/images/map/`](corpus/images/map/), checked by `corpus/map.sh`). See
-[`Documentation/ROADMAP_1.4.0.md`](Documentation/ROADMAP_1.4.0.md). Next on the arc:
-the 1.5.0 **linework render** (labels + cartographic furniture → the first complete,
-user-facing map).
+Proven end to end: `corpus/map/island.spec.json` (The Isle of Vethûn) → byte-stable
+`--map-render` PNG + `island.{geojson,svg}`, checked by `corpus/map.sh` (now ten map
+artifacts). See [`Documentation/ROADMAP_1.5.0.md`](Documentation/ROADMAP_1.5.0.md).
+Next on the arc: the 1.6.0 **tiled-SD render** (a painted map — the only GPU step).
 
-**Earlier releases** (v0.13 – v1.3):
+**Earlier releases** (v0.13 – v1.4):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -328,7 +326,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
-| `map <DESCRIPTION>` | **v1.4**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). `--map-spec` (load, skip LLM), `--map-dump-{spec,heightmap,rivers,coast,biome,landmarks,roads,features}`, `--seed`, `--map-tiles`/`--map-scale`. Pure fn of (spec, seed) — byte-stable. Linework render lands in 1.5. See [`ROADMAP_1.4.0.md`](Documentation/ROADMAP_1.4.0.md). |
+| `map <DESCRIPTION>` | **v1.4 / render v1.5**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). **`--map-render PATH`** (+ `--map-style parchment\|inked\|blueprint`) writes the finished, labelled map; **`--map-export-svg`/`--map-export-geojson`** export scalable vectors. Also `--map-spec` (load, skip LLM), `--map-dump-{spec,heightmap,rivers,coast,biome,landmarks,roads,features}`, `--seed`, `--map-tiles`/`--map-scale`. Pure fn of (spec, seed) — byte-stable. Painted tiled-SD render lands in 1.6. See [`ROADMAP_1.5.0.md`](Documentation/ROADMAP_1.5.0.md). |
 | `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
