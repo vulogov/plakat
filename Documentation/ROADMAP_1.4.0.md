@@ -75,7 +75,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       lighthouse at the SW river-mouth/harbour, the city bearing-east, the fortress on
       the range; tests assert all resolve + the river-mouth port is coastal +
       determinism. (rstar / concavity for natural-harbor deferred.)
-- [ ] **L6 infrastructure (roads)** — `petgraph` Dijkstra between resolved landmarks.
+- [x] **L6 infrastructure (roads) — DONE.** Each spec road routes between its two
+      resolved landmarks via 8-connected Dijkstra on a terrain cost grid (sea
+      impassable, mountains expensive, river crossings taxed), with a bridge recorded
+      where a road crosses a river. `--map-dump-roads` (roads + rivers + landmarks).
+      **Gate MET:** byte-stable `island-roads.png` — the salt road routes Saltmere→
+      Emberhall through the lowland, on land; tests assert connect + no-sea + determinism.
+      Hand-rolled grid Dijkstra (no `petgraph` dep yet — it lands with the MAP-5 urban
+      street graph). Sea-lanes / walls deferred.
 - [ ] **L6 infrastructure** (`petgraph` Dijkstra roads) + **L7 conditioning assembly**
       (heightmap/biome/feature-overlay full-canvas + per-tile crops).
 - **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,

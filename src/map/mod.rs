@@ -9,6 +9,7 @@ pub mod engine;
 pub mod hydrology;
 pub mod parser;
 pub mod resolver;
+pub mod roads;
 pub mod spec;
 
 use anyhow::{Result, bail};

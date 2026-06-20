@@ -68,6 +68,10 @@ pub struct MapArgs {
     /// MAP-2: write resolved landmarks placed at their anchors (L5).
     #[arg(long = "map-dump-landmarks", value_name = "PATH")]
     pub dump_landmarks: Option<PathBuf>,
+
+    /// MAP-2: write the road network (+ rivers, landmarks) (L6).
+    #[arg(long = "map-dump-roads", value_name = "PATH")]
+    pub dump_roads: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -117,6 +121,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
         || args.dump_coast.is_some()
         || args.dump_biome.is_some()
         || args.dump_landmarks.is_some()
+        || args.dump_roads.is_some()
     {
         let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
         let hf = map::engine::HeightField::generate(&spec, &canvas);
@@ -144,8 +149,12 @@ pub async fn run(args: MapArgs) -> Result<()> {
             );
             did_dump = true;
         }
-        // L3/L4/L5 share the coastline (biome + the resolver read its fields).
-        if args.dump_coast.is_some() || args.dump_biome.is_some() || args.dump_landmarks.is_some() {
+        // L3/L4/L5/L6 share the coastline (biome + resolver + roads read its fields).
+        if args.dump_coast.is_some()
+            || args.dump_biome.is_some()
+            || args.dump_landmarks.is_some()
+            || args.dump_roads.is_some()
+        {
             let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
             if let Some(p) = &args.dump_coast {
                 coast.render_overlay(&hf, p)?;
@@ -164,18 +173,33 @@ pub async fn run(args: MapArgs) -> Result<()> {
                 println!("{}  biome map → {}  (seed {})", style("✓").green(), p.display(), args.seed);
                 did_dump = true;
             }
-            if let Some(p) = &args.dump_landmarks {
+            // L5/L6 share the hydrology + resolved landmarks.
+            if args.dump_landmarks.is_some() || args.dump_roads.is_some() {
                 let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
                 let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
-                map::resolver::render_overlay(&hf, &coast, &lms, p)?;
-                println!(
-                    "{}  landmarks → {}  ({} placed, seed {})",
-                    style("✓").green(),
-                    p.display(),
-                    lms.len(),
-                    args.seed
-                );
-                did_dump = true;
+                if let Some(p) = &args.dump_landmarks {
+                    map::resolver::render_overlay(&hf, &coast, &lms, p)?;
+                    println!(
+                        "{}  landmarks → {}  ({} placed, seed {})",
+                        style("✓").green(),
+                        p.display(),
+                        lms.len(),
+                        args.seed
+                    );
+                    did_dump = true;
+                }
+                if let Some(p) = &args.dump_roads {
+                    let roads = map::roads::build_roads(&spec, &hf, &coast, &hydro, &lms);
+                    map::roads::render_overlay(&hf, &coast, &hydro, &lms, &roads, p)?;
+                    println!(
+                        "{}  roads → {}  ({} road(s), seed {})",
+                        style("✓").green(),
+                        p.display(),
+                        roads.len(),
+                        args.seed
+                    );
+                    did_dump = true;
+                }
             }
         }
     }

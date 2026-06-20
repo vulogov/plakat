@@ -269,7 +269,7 @@ fn direction_vec(direction: &str) -> Pt {
 }
 
 /// Marker colour by kind.
-fn marker_rgb(kind: &LandmarkKind) -> [u8; 3] {
+pub fn marker_rgb(kind: &LandmarkKind) -> [u8; 3] {
     match kind {
         LandmarkKind::City => [0xd0, 0x30, 0x30],
         LandmarkKind::Town | LandmarkKind::Village => [0xe0, 0x80, 0x20],
@@ -315,7 +315,7 @@ pub fn render_overlay(
 }
 
 /// A filled disc (r=4) with a dark outline.
-fn draw_marker(img: &mut RgbImage, cx: i32, cy: i32, color: [u8; 3]) {
+pub fn draw_marker(img: &mut RgbImage, cx: i32, cy: i32, color: [u8; 3]) {
     let (w, h) = (img.width() as i32, img.height() as i32);
     for dy in -5..=5 {
         for dx in -5..=5 {
