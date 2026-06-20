@@ -105,7 +105,7 @@ mod tests {
             serde_json::from_str(include_str!("../../corpus/map/island.spec.json")).unwrap();
         let c = GeoCanvas::from_spec(&spec, 42);
         let hf = HeightField::generate(&spec, &c);
-        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD);
+        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
         let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
         let biome = BiomeMap::compute(&spec, &hf, &coast, 42);
         let lms = resolve_landmarks(&spec, &hf, &hydro, &coast).unwrap();

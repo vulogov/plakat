@@ -350,7 +350,7 @@ mod tests {
         let spec = island();
         let c = GeoCanvas::from_spec(&spec, 42);
         let hf = HeightField::generate(&spec, &c);
-        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD);
+        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
         let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
         let lms = resolve_landmarks(&spec, &hf, &hydro, &coast).unwrap();
         (spec, lms)

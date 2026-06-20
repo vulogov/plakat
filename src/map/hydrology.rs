@@ -39,13 +39,17 @@ pub struct Hydrology {
 }
 
 impl Hydrology {
-    pub fn compute(hf: &HeightField, threshold_frac: f32) -> Hydrology {
+    /// `sea_level` (on the normalized heightmap) clips river channels at the
+    /// coast: flow still routes off-grid through the sea (so every cell drains),
+    /// but a traced river ends at its mouth — no channels across open water.
+    pub fn compute(hf: &HeightField, threshold_frac: f32, sea_level: f32) -> Hydrology {
         let (w, h) = (hf.width, hf.height);
         let filled = priority_flood(&hf.data, w, h);
         let flow_dir = d8(&filled, w, h);
         let flow_accum = accumulate(&flow_dir, &filled, w, h);
+        let sea: Vec<bool> = hf.data.iter().map(|&e| e < sea_level).collect();
         let threshold = (threshold_frac * (w * h) as f32).max(8.0);
-        let rivers = trace_rivers(&flow_dir, &flow_accum, w, h, threshold);
+        let rivers = trace_rivers(&flow_dir, &flow_accum, &sea, w, h, threshold);
         Hydrology { width: w, height: h, filled, flow_dir, flow_accum, rivers }
     }
 
@@ -169,9 +173,10 @@ fn accumulate(flow_dir: &[i8], filled: &[f32], w: u32, h: u32) -> Vec<f32> {
 
 /// Trace each channel head (a river cell with no upstream river contributor)
 /// downstream along the flow field to the boundary.
-fn trace_rivers(flow_dir: &[i8], accum: &[f32], w: u32, h: u32, threshold: f32) -> Vec<Vec<(u32, u32)>> {
+fn trace_rivers(flow_dir: &[i8], accum: &[f32], sea: &[bool], w: u32, h: u32, threshold: f32) -> Vec<Vec<(u32, u32)>> {
     let n = (w * h) as usize;
-    let is_river = |i: usize| accum[i] >= threshold;
+    // A river cell carries enough drainage AND is on land (sea isn't a channel).
+    let is_river = |i: usize| accum[i] >= threshold && !sea[i];
     let mut rivers = Vec::new();
 
     for i in 0..n {
@@ -213,8 +218,8 @@ fn trace_rivers(flow_dir: &[i8], accum: &[f32], w: u32, h: u32, threshold: f32) 
             let nx = (cx as i32 + DX[d as usize]) as u32;
             let ny = (cy as i32 + DY[d as usize]) as u32;
             let nxt = idx(nx, ny, w);
-            if nxt == cur {
-                break;
+            if nxt == cur || sea[nxt] {
+                break; // reached the coast — `cur` is the river mouth
             }
             cur = nxt;
         }
@@ -228,6 +233,7 @@ fn trace_rivers(flow_dir: &[i8], accum: &[f32], w: u32, h: u32, threshold: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::coastline::DEFAULT_SEA_LEVEL;
     use crate::map::engine::GeoCanvas;
     use crate::map::spec::{Anchor, MapSpec, MountainRange};
 
@@ -248,7 +254,7 @@ mod tests {
         let spec = isle();
         let c = GeoCanvas::from_spec(&spec, 42);
         let hf = HeightField::generate(&spec, &c);
-        let hy = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD);
+        let hy = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
         (hf, hy)
     }
 
@@ -272,13 +278,29 @@ mod tests {
     }
 
     #[test]
-    fn at_least_one_river_reaches_the_boundary() {
-        let (_, hy) = hydro();
+    fn at_least_one_river_reaches_the_sea_or_boundary() {
+        let (hf, hy) = hydro();
         assert!(!hy.rivers.is_empty(), "no rivers extracted");
         let (w, h) = (hy.width, hy.height);
+        let sea: Vec<bool> = hf.data.iter().map(|&e| e < DEFAULT_SEA_LEVEL).collect();
         let on_boundary = |(x, y): (u32, u32)| x == 0 || y == 0 || x == w - 1 || y == h - 1;
+        // A mouth either drains off the canvas edge or sits one cell from the sea
+        // (the river stops at the coast — it never runs across open water).
+        let at_coast = |(x, y): (u32, u32)| {
+            DY.iter().zip(DX.iter()).any(|(&dy, &dx)| {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                nx >= 0 && ny >= 0 && nx < w as i32 && ny < h as i32 && sea[idx(nx as u32, ny as u32, w)]
+            })
+        };
         let longest = hy.rivers.iter().max_by_key(|r| r.len()).unwrap();
-        assert!(on_boundary(*longest.last().unwrap()), "main river must reach the boundary");
+        let mouth = *longest.last().unwrap();
+        assert!(on_boundary(mouth) || at_coast(mouth), "main river must reach the sea or the boundary");
+        // And no river cell is itself sea — channels are land-only.
+        for river in &hy.rivers {
+            for &(x, y) in river {
+                assert!(!sea[idx(x, y, w)], "river ran through open water at {x},{y}");
+            }
+        }
     }
 
     #[test]

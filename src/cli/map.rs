@@ -144,7 +144,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
             did_dump = true;
         }
         if let Some(p) = &args.dump_rivers {
-            let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+            let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
             hydro.render_overlay(&hf, p)?;
             println!(
                 "{}  rivers → {}  ({} channel(s), seed {})",
@@ -183,7 +183,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
             // L7: the assembled feature overlay (the complete composited map).
             if let Some(p) = &args.dump_features {
                 let biome = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
-                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
                 let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
                 let roads = map::roads::build_roads(&spec, &hf, &coast, &hydro, &lms);
                 map::composite::save_features(&hf, &coast, &biome, &hydro, &lms, &roads, p)?;
@@ -199,7 +199,7 @@ pub async fn run(args: MapArgs) -> Result<()> {
             }
             // L5/L6 share the hydrology + resolved landmarks.
             if args.dump_landmarks.is_some() || args.dump_roads.is_some() {
-                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD);
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
                 let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
                 if let Some(p) = &args.dump_landmarks {
                     map::resolver::render_overlay(&hf, &coast, &lms, p)?;
