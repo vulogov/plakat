@@ -1,12 +1,27 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.4. The current
+"What's new" sections for v0.13 through 1.5. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.5.0 — a finished map you can read (`plakat map --map-render`)
+
+1.5.0 turned the 1.4.0 geometry engine into the **first complete, user-facing map**:
+a styled, labelled image with cartographic furniture, plus a scalable vector export.
+Still no SD — a pure function of (spec, seed), byte-stable on-box.
+
+- **MAP-3 linework render** — `--map-render` (+ `--map-style parchment|inked|blueprint`):
+  paper-tinted biomes, ink coastline, NW hill-shading, per-kind landmark symbols,
+  collision-routed labels (a hand-authored 5×7 bitmap font — no font asset, so the PNG
+  is byte-identical across machines), and furniture (title cartouche, compass rose,
+  1/2/5-rounded scale bar, present-kinds legend, double frame).
+- **MAP-3b vector export** — `--map-export-geojson` (coastline via Moore-neighbour
+  contour rings + river/road LineStrings + landmark Points, normalized [0,1] north-up)
+  and `--map-export-svg` (a standalone scalable map).
 
 ## What's new in 1.4.0 — procedural fantasy maps, layer by layer (`plakat map`)
 
