@@ -45,11 +45,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       portrait / img2img / scenario / map). Verified: `Muapi/fantasy-map` went from
       **0/722 → 722/722** UNet targets merged; the painted Isle of Vethûn carries the
       full style. 2 remap unit tests + diffusers/TE-untouched guard.
-- [ ] **Tiled multi-tile render** — reuse the **`plakat.tiled.*`** SDXL hi-res
-      machinery (base-anchored tiling) to cover larger tile grids tile-by-tile with
-      overlap blending, so a 4×4 map renders without a single giant allocation.
-      Memory-bound: gate tile size + document the safe envelope (the Metal
-      single-buffer OOM ceiling), and self-limit like the 1.0 OOM watchdog.
+- [x] **Tiled multi-tile render — DONE.** A canvas wider/taller than `--map-sd-tile`
+      paints in **overlapping image-space tiles**, each a full img2img+Canny pass that
+      fits memory, **Hann-feathered** back into the canvas (`paint_tiled` / `tile_starts`
+      / `hann2d` in `render_sd.rs`). The SD pipeline + LoRA load **once** and every tile
+      reuses it. Chosen over latent-space tiling because plakat's tiled denoise doesn't
+      compose with ControlNet — and the deterministic conditioning base already supplies
+      global structure, so independent per-tile paints stay coherent. Memory-safe by
+      construction (each tile is a normal SDXL render; per-tile work completes before the
+      next). `--map-sd-tile`/`--map-sd-tile-stride`. Verified: 2×2 forced tiling on the
+      island (`corpus/map_render.sh` → `island-painted-tiled.png`). 3 pure-helper tests
+      (tile coverage + edge-snap + Hann window).
 - [x] **Gate (phase 1) MET.** The conditioning is byte-stable in `corpus/map.sh`; the
       SD render is driven by `corpus/map_render.sh` (deterministic conditioning check +
       the GPU paint, `MODEL=`/`LORA=` env, `NO_GPU=1` to skip) with a committed

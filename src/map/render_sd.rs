@@ -18,6 +18,7 @@ use super::render::{self, Geometry, Style};
 use super::spec::MapSpec;
 use crate::pipelines::controlnet::{ControlKind, ControlSpec};
 use crate::pipelines::lora::LoraSpec;
+use crate::pipelines::portrait::{self, LoadRequest};
 use crate::pipelines::scheduler::SchedulerKind;
 use std::str::FromStr;
 
@@ -60,6 +61,12 @@ pub struct SdOptions {
     pub control_strength: f32,
     /// Skip the label/furniture re-composite (raw painted output).
     pub raw: bool,
+    /// Tile size in px for the multi-tile path. A canvas wider/taller than this
+    /// paints in overlapping tiles (each a full img2img+Canny pass that fits
+    /// memory), feather-blended back — the memory-safe path for large maps.
+    pub tile_size: u32,
+    /// Tile origin stride in px (smaller = more overlap = smoother seams).
+    pub tile_stride: u32,
 }
 
 impl Default for SdOptions {
@@ -73,6 +80,8 @@ impl Default for SdOptions {
             guidance: 6.5,
             control_strength: 0.9,
             raw: false,
+            tile_size: 1024,
+            tile_stride: 768,
         }
     }
 }
@@ -146,8 +155,9 @@ pub fn save_conditioning(spec: &MapSpec, seed: u64, style: Style, path: &Path) -
     write_png(&img, path)
 }
 
-/// Render the painted map: base → SDXL img2img + Canny ControlNet → (re-composite
-/// labels) → `out`. Requires a GPU-capable build; the model downloads on first use.
+/// Render the painted map: base → SDXL img2img + Canny ControlNet → restore
+/// linework + labels → `out`. A canvas larger than `tile_size` paints in
+/// overlapping tiles (memory-safe). Requires a GPU build; model downloads on use.
 pub async fn render_sd(
     spec: &MapSpec,
     seed: u64,
@@ -157,62 +167,35 @@ pub async fn render_sd(
     out: &Path,
 ) -> Result<()> {
     let geo = Geometry::compute(spec, seed)?;
-    let (w, h) = (round8(geo.hf.width), round8(geo.hf.height));
-
-    // 1) Conditioning base (img2img init + Canny source) → a scratch PNG.
-    let base = render::paint_base_map(&geo, style);
+    let base = render::paint_base_map(&geo, style); // the conditioning (no labels)
+    let (w, h) = base.dimensions();
     let scratch = scratch_dir(seed)?;
-    let cond_path = scratch.join("conditioning.png");
-    write_png(&base, &cond_path)?;
 
-    // 2) SDXL img2img + Canny ControlNet over the base. Reuses the img2img
-    //    pipeline wholesale; the Canny annotator edges the conditioning image.
-    let (prompt, negative) = cartography_prompt(spec);
-    let req = crate::pipelines::img2img::Request {
-        prompt,
-        negative,
+    // Load the SD backbone once (model + LoRA) — reused across every tile.
+    let pipeline = portrait::Pipeline::load(LoadRequest {
         model: opts.model.clone(),
-        device,
+        device: device.clone(),
         loras: opts.lora_specs()?,
         lora_scale: opts.lora_scale,
-        input: cond_path.clone(),
-        mask: None,
-        mask_feather: 0,
-        mask_invert: false,
-        width: w,
-        height: h,
-        count: 1,
-        steps: opts.steps,
-        guidance: opts.guidance,
-        scheduler: SchedulerKind::Default,
-        strength: opts.strength,
-        seed: Some(seed),
-        out_dir: scratch.clone(),
-        controls: vec![ControlSpec {
-            kind: ControlKind::Canny,
-            image: None,
-            from: Some(cond_path.clone()),
-            video: None,
-            strength: opts.control_strength,
-            start: 0.0,
-            end: 1.0,
-        }],
+        identity: None,
+        shared_clip_h: None,
+    })
+    .await
+    .context("loading SD pipeline for map render")?;
+
+    let tile = round8(opts.tile_size);
+    let mut painted = if w > tile || h > tile {
+        let cols = tile_starts(w, tile.min(w), round8(opts.tile_stride)).len();
+        let rows = tile_starts(h, tile.min(h), round8(opts.tile_stride)).len();
+        tracing::info!(target: "plakat", "map: tiled paint {cols}x{rows} tiles ({tile}px) over {w}x{h}");
+        paint_tiled(&pipeline, spec, opts, seed, &base, &device, &scratch).await?
+    } else {
+        paint_one(&pipeline, spec, opts, seed, &base, &scratch).await?
     };
-    crate::pipelines::img2img::run(req).await.context("SDXL img2img+ControlNet map render")?;
 
-    // 3) Collect the single painted PNG the pipeline wrote.
-    let painted_path = newest_png(&scratch, &cond_path)?
-        .context("img2img produced no output image")?;
-    let mut painted = image::open(&painted_path)
-        .with_context(|| format!("reading SD output {}", painted_path.display()))?
-        .to_rgb8();
-
-    // 4) Restore the crisp linework (coast/rivers/roads — washed out by the paint)
-    //    then re-composite labels + furniture, so the painted map stays a usable
-    //    map (unless --map-sd-raw asks for the bare painting).
+    // Restore the crisp linework (coast/rivers/roads the paint washes out), then
+    // re-composite labels + furniture, unless --map-sd-raw wants the bare painting.
     if !opts.raw {
-        // Geometry is canvas-sized; the SD output is round8(canvas) — equal here,
-        // but guard so the overlay only runs when the dimensions match.
         if painted.dimensions() == (geo.hf.width, geo.hf.height) {
             render::apply_linework(&mut painted, &geo, style);
             render::apply_labels_and_furniture(&mut painted, spec, &geo, style);
@@ -227,6 +210,161 @@ pub async fn render_sd(
     write_png(&painted, out)?;
     let _ = std::fs::remove_dir_all(&scratch);
     Ok(())
+}
+
+/// One img2img + Canny pass over `src` using the already-loaded `pipeline`;
+/// returns the painted image (same size as `src`, dims rounded to /8).
+async fn paint_one(
+    pipeline: &portrait::Pipeline,
+    spec: &MapSpec,
+    opts: &SdOptions,
+    seed: u64,
+    src: &RgbImage,
+    scratch: &Path,
+) -> Result<RgbImage> {
+    let (w, h) = (round8(src.width()), round8(src.height()));
+    let in_path = scratch.join(format!("tile-in-{seed}.png"));
+    write_png(src, &in_path)?;
+    let out_dir = scratch.join(format!("tile-out-{seed}"));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir)?;
+
+    let (prompt, negative) = cartography_prompt(spec);
+    let req = crate::pipelines::img2img::Request {
+        prompt,
+        negative,
+        model: opts.model.clone(),
+        device: pipeline.core().device.clone(),
+        loras: Vec::new(), // already merged into the loaded pipeline
+        lora_scale: opts.lora_scale,
+        input: in_path.clone(),
+        mask: None,
+        mask_feather: 0,
+        mask_invert: false,
+        width: w,
+        height: h,
+        count: 1,
+        steps: opts.steps,
+        guidance: opts.guidance,
+        scheduler: SchedulerKind::Default,
+        strength: opts.strength,
+        seed: Some(seed),
+        out_dir: out_dir.clone(),
+        controls: vec![ControlSpec {
+            kind: ControlKind::Canny,
+            image: None,
+            from: Some(in_path.clone()),
+            video: None,
+            strength: opts.control_strength,
+            start: 0.0,
+            end: 1.0,
+        }],
+    };
+    crate::pipelines::img2img::run_with_pipeline(pipeline, &req)
+        .await
+        .context("SDXL img2img+Canny map tile")?;
+    let painted = newest_png(&out_dir, &in_path)?.context("img2img produced no output image")?;
+    Ok(image::open(&painted).with_context(|| format!("reading SD tile {}", painted.display()))?.to_rgb8())
+}
+
+/// Paint a large canvas in overlapping tiles, each a full img2img+Canny pass
+/// (memory-safe), feather-blended back. The conditioning base supplies the global
+/// structure, so independent per-tile denoise stays coherent.
+async fn paint_tiled(
+    pipeline: &portrait::Pipeline,
+    spec: &MapSpec,
+    opts: &SdOptions,
+    seed: u64,
+    base: &RgbImage,
+    _device: &Device,
+    scratch: &Path,
+) -> Result<RgbImage> {
+    let (w, h) = (base.width(), base.height());
+    let tile = round8(opts.tile_size);
+    let stride = round8(opts.tile_stride).max(8);
+    let (tw, th) = (tile.min(w), tile.min(h));
+    let xs = tile_starts(w, tw, stride);
+    let ys = tile_starts(h, th, stride);
+
+    // f32 accumulators (RGB) + per-pixel weight, for Hann-feathered blending.
+    let n = (w * h) as usize;
+    let mut acc = vec![0f32; n * 3];
+    let mut wsum = vec![0f32; n];
+    let win = hann2d(tw, th);
+
+    for &ty in &ys {
+        for &tx in &xs {
+            let crop = image::imageops::crop_imm(base, tx, ty, tw, th).to_image();
+            let painted = paint_one(pipeline, spec, opts, seed, &crop, scratch).await?;
+            // paint_one rounds dims to /8; tw/th are already /8 so they match.
+            for j in 0..th {
+                for i in 0..tw {
+                    let wv = win[(j * tw + i) as usize];
+                    let p = painted.get_pixel(i, j).0;
+                    let gi = ((ty + j) * w + (tx + i)) as usize;
+                    acc[gi * 3] += p[0] as f32 * wv;
+                    acc[gi * 3 + 1] += p[1] as f32 * wv;
+                    acc[gi * 3 + 2] += p[2] as f32 * wv;
+                    wsum[gi] += wv;
+                }
+            }
+        }
+    }
+
+    let mut out = RgbImage::new(w, h);
+    for gi in 0..n {
+        let wv = wsum[gi].max(1e-6);
+        let px = [
+            (acc[gi * 3] / wv).round().clamp(0.0, 255.0) as u8,
+            (acc[gi * 3 + 1] / wv).round().clamp(0.0, 255.0) as u8,
+            (acc[gi * 3 + 2] / wv).round().clamp(0.0, 255.0) as u8,
+        ];
+        out.put_pixel((gi as u32) % w, (gi as u32) / w, image::Rgb(px));
+    }
+    Ok(out)
+}
+
+/// Tile origin starts along one axis: step by `stride`, snap the final tile to the
+/// edge so the whole length is covered (mirrors `pipelines::tiled`).
+fn tile_starts(total: u32, tile: u32, stride: u32) -> Vec<u32> {
+    if total <= tile {
+        return vec![0];
+    }
+    let mut v = Vec::new();
+    let mut p = 0u32;
+    loop {
+        v.push(p);
+        if p + tile >= total {
+            break;
+        }
+        p += stride;
+        if p + tile > total {
+            v.push(total - tile);
+            break;
+        }
+    }
+    v
+}
+
+/// A 2D raised-cosine (Hann) window `tw×th`, peaking at the centre, ~0 at edges —
+/// the per-tile blend weight that feathers seams. Floored so edges still register.
+fn hann2d(tw: u32, th: u32) -> Vec<f32> {
+    let hann = |k: u32, n: u32| -> f32 {
+        if n <= 1 {
+            return 1.0;
+        }
+        let v = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * k as f32 / (n as f32 - 1.0)).cos());
+        v.max(1e-3)
+    };
+    let (cx, cy): (Vec<f32>, Vec<f32>) =
+        ((0..tw).map(|i| hann(i, tw)).collect(), (0..th).map(|j| hann(j, th)).collect());
+    let mut win = vec![0f32; (tw * th) as usize];
+    for j in 0..th {
+        for i in 0..tw {
+            win[(j * tw + i) as usize] = cx[i as usize] * cy[j as usize];
+        }
+    }
+    win
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -300,5 +438,34 @@ mod tests {
         assert_eq!(round8(512), 512);
         assert_eq!(round8(515), 512);
         assert_eq!(round8(7), 8);
+    }
+
+    #[test]
+    fn tile_starts_cover_the_axis_with_edge_snap() {
+        // Canvas fits in one tile → single tile at 0.
+        assert_eq!(tile_starts(512, 1024, 768), vec![0]);
+        // 512 canvas, 384 tile, 256 stride → [0, 128] (last snapped to 512-384).
+        assert_eq!(tile_starts(512, 384, 256), vec![0, 128]);
+        // The union of [start, start+tile) must cover [0, total).
+        let (total, tile, stride) = (2048u32, 1024u32, 768u32);
+        let starts = tile_starts(total, tile, stride);
+        assert_eq!(*starts.first().unwrap(), 0);
+        assert_eq!(starts.last().unwrap() + tile, total, "last tile reaches the edge");
+        // No gap between consecutive tiles.
+        for pair in starts.windows(2) {
+            assert!(pair[1] <= pair[0] + tile, "gap between tiles {pair:?}");
+        }
+    }
+
+    #[test]
+    fn hann2d_peaks_at_centre_and_floors_at_edges() {
+        let (tw, th) = (16u32, 16u32);
+        let win = hann2d(tw, th);
+        let centre = win[((th / 2) * tw + tw / 2) as usize];
+        let corner = win[0];
+        assert!(centre > corner, "window peaks in the middle");
+        assert!(corner > 0.0, "edges floored (product of per-axis floors) so they still register");
+        assert!(centre > 0.5, "centre weight is substantial");
+        assert_eq!(win.len(), (tw * th) as usize);
     }
 }

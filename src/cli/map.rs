@@ -137,6 +137,15 @@ pub struct MapArgs {
     /// MAP-6: skip the label/furniture re-composite (raw painted output).
     #[arg(long = "map-sd-raw", default_value_t = false)]
     pub sd_raw: bool,
+
+    /// MAP-6: tile size (px) for the multi-tile paint. A canvas larger than this
+    /// paints in overlapping, feather-blended tiles (memory-safe for big maps).
+    #[arg(long = "map-sd-tile", default_value_t = 1024)]
+    pub sd_tile: u32,
+
+    /// MAP-6: tile origin stride (px); smaller = more overlap = smoother seams.
+    #[arg(long = "map-sd-tile-stride", default_value_t = 768)]
+    pub sd_tile_stride: u32,
 }
 
 pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
@@ -347,6 +356,8 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
             guidance: args.sd_guidance,
             control_strength: 0.9,
             raw: args.sd_raw,
+            tile_size: args.sd_tile,
+            tile_stride: args.sd_tile_stride,
         };
         let device = crate::device::select(device_spec)?;
         let lora_note = if opts.loras.is_empty() { "no LoRA".to_string() } else { opts.loras.join("+") };

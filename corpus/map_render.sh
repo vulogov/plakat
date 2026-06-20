@@ -53,3 +53,14 @@ LORA_ARG=()
   --map-sd-model "$MODEL" "${LORA_ARG[@]}" \
   --map-render-sd "$OUT/island-painted.png"
 echo "  ✓ painted map → corpus/images/map/island-painted.png  (model $MODEL, lora ${LORA:-auto})"
+
+# 3) TILED — the multi-tile path (MAP-6). Forced on the 512² island with a small
+#    tile (384px, 256 stride → 2×2 overlapping tiles) so it proves the memory-safe
+#    tiled paint affordably; on a large map (8×8 grid) it's what keeps SDXL on-box.
+if [ "${TILED:-1}" = "1" ]; then
+  "$PLAKAT" map --map-spec "$SPEC" --seed 42 \
+    --map-sd-model "$MODEL" "${LORA_ARG[@]}" \
+    --map-sd-tile 384 --map-sd-tile-stride 256 \
+    --map-render-sd "$OUT/island-painted-tiled.png"
+  echo "  ✓ tiled painted map → corpus/images/map/island-painted-tiled.png  (2×2 tiles, feather-blended)"
+fi
