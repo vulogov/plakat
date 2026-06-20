@@ -207,16 +207,19 @@ pub async fn render_sd(
         .with_context(|| format!("reading SD output {}", painted_path.display()))?
         .to_rgb8();
 
-    // 4) Re-composite the labels + furniture over the painted map (unless raw).
+    // 4) Restore the crisp linework (coast/rivers/roads — washed out by the paint)
+    //    then re-composite labels + furniture, so the painted map stays a usable
+    //    map (unless --map-sd-raw asks for the bare painting).
     if !opts.raw {
         // Geometry is canvas-sized; the SD output is round8(canvas) — equal here,
         // but guard so the overlay only runs when the dimensions match.
         if painted.dimensions() == (geo.hf.width, geo.hf.height) {
+            render::apply_linework(&mut painted, &geo, style);
             render::apply_labels_and_furniture(&mut painted, spec, &geo, style);
         } else {
             tracing::warn!(
                 target: "plakat",
-                "map: SD output {:?} != geometry {:?}; skipping label overlay",
+                "map: SD output {:?} != geometry {:?}; skipping linework+label overlay",
                 painted.dimensions(), (geo.hf.width, geo.hf.height)
             );
         }

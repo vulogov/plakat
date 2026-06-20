@@ -126,6 +126,19 @@ pub fn paint_base_map(geo: &Geometry, style: Style) -> RgbImage {
     img
 }
 
+/// Redraw the crisp cartographic **linework** — coastline, rivers, roads/bridges —
+/// over an existing image. The SD paint pass washes out these thin functional
+/// features; this restores them (a touch bolder so they read over painted terrain)
+/// so the painted map stays a usable map. Mutates `img` in place.
+pub fn apply_linework(img: &mut RgbImage, geo: &Geometry, style: Style) {
+    draw_coastline(img, &geo.coast, style);
+    // Rivers slightly bolder than the linework render so they survive over paint.
+    for &(x, y) in geo.hydro.rivers.iter().flatten() {
+        plot_thick(img, x as i32, y as i32, style.river);
+    }
+    draw_roads(img, &geo.roads, style);
+}
+
 /// Draw the labels + cartographic furniture over an existing base image (the
 /// linework base, or an SD-painted map). Mutates `img` in place.
 pub fn apply_labels_and_furniture(img: &mut RgbImage, spec: &MapSpec, geo: &Geometry, style: Style) {
