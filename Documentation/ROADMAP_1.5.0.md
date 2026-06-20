@@ -15,27 +15,36 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## MAP-3 — linework render (labels + cartographic furniture)
 
-- [ ] **Label compositor** (`src/map/labels.rs`) — place a name at each resolved
-      landmark (L5) + each named feature (ranges, rivers, regions) without overlap.
-      `ab_glyph` for glyph rasterization; `unicode-bidi` + `-normalization` for
-      correct shaping of non-ASCII names. Greedy candidate-position placement
-      (offset ring around the anchor) with a collision grid; rivers/ranges get
-      curved or along-axis labels. Deterministic order (spec order, then id).
-- [ ] **Cartographic furniture** — a compass rose, a scale bar (from the spec's
-      `scale_tier` / tile grid), and a legend (the landmark-kind markers + biome
-      swatches actually present). Composited into a margin frame around the map.
-- [ ] **Parchment / ink styling** — a styling pass over the L7 overlay: parchment
-      paper base, ink coastline + linework, hill-shading from the L1 heightfield,
-      muted biome fills, a border. A small set of named styles (`parchment`,
-      `blueprint`, `inked`) selectable via `--map-style`.
-- [ ] **`--map-render PATH`** — the single user-facing output: the fully composited,
-      labelled, styled map PNG (the default `plakat map "<prose>"` artifact once the
-      spec is parsed). Replaces "dump a layer" as the headline command.
-- [ ] **Gate:** committed `island.spec.json` → byte-stable `--map-render` PNG
-      (the complete Isle of Vethûn map: coastline, biomes, rivers, roads, every
-      landmark labelled, compass + scale + legend), checked in `corpus/map.sh`.
-      Label-placement + furniture unit tests. **Determinism invariant**: render
-      twice, identical bytes.
+- [x] **Label compositor — DONE.** `src/map/labels.rs`: a hand-authored **5×7
+      all-caps bitmap font** (the classic small-caps cartographic look) rasterized
+      at integer scale with a paper halo — **no font asset, no `ab_glyph`** → the
+      render is byte-stable across machines + toolchains (the corpus invariant).
+      Upper-case + Latin-1 accent folding (`Vethûn` → `VETHUN`). Placement in
+      `render.rs::place_label`: greedy 4-candidate ring (right/left/below/above)
+      against a reserved-`Rect` collision list, in deterministic spec order.
+      (Non-Latin shaping — the `language` field's `ar`/`ru`/`zh` — still wants a
+      real shaped font + `ab_glyph`; noted under debt.)
+- [x] **Cartographic furniture — DONE.** A four-point **compass rose** (N marked),
+      a **scale bar** (1/2/5-rounded `nice_round` over `km_across(spec)` from
+      `world_extent_km` or the per-tier nominal), a **legend** (the landmark kinds
+      actually present, with their symbols), and a **title cartouche** (double rule
+      + drop shadow). Each reserves its footprint first so labels route around it;
+      a double **frame** borders the map.
+- [x] **Styling — DONE.** `Style` over the geometry: paper-tinted biome land,
+      ink coastline, NW **hill-shading** from the L1 gradient, bathymetric sea
+      shading, distinct **per-kind landmark symbols** (city block / fortress tower /
+      lighthouse beacon / temple diamond / port / ruin ring). Three named styles —
+      **`parchment`** (default), **`inked`**, **`blueprint`** — via `--map-style`.
+- [x] **`--map-render PATH` — DONE.** The headline output: the fully composited,
+      labelled, styled map PNG. `--map-style` selects the palette. The no-dump
+      footer note now points here.
+- [x] **Gate MET:** committed `island.spec.json` → byte-stable `--map-render`
+      `corpus/images/map/island-render.png` (the complete Isle of Vethûn: coast,
+      biomes, hill-shading, rivers, the salt road, four labelled landmarks, The
+      Grey Sound in open water, compass + scale + legend + title), byte-checked in
+      `corpus/map.sh`. 9 new label/render unit tests (determinism, style divergence,
+      glyph coverage, `nice_round`). **Determinism invariant held**: render twice,
+      identical bytes.
 
 ## MAP-3b — vector export (optional, same data)
 

@@ -77,6 +77,15 @@ pub struct MapArgs {
     /// (biome + coast + rivers + roads + landmarks) (L7).
     #[arg(long = "map-dump-features", value_name = "PATH")]
     pub dump_features: Option<PathBuf>,
+
+    /// MAP-3: render the complete styled, labelled map (the headline output:
+    /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
+    #[arg(long = "map-render", value_name = "PATH")]
+    pub render: Option<PathBuf>,
+
+    /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
+    #[arg(long = "map-style", default_value = "parchment")]
+    pub style: String,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -228,6 +237,21 @@ pub async fn run(args: MapArgs) -> Result<()> {
         }
     }
 
+    // MAP-3: the complete styled, labelled map — the headline render.
+    if let Some(p) = &args.render {
+        let rstyle = map::render::Style::named(&args.style)?;
+        map::render::save_render(&spec, args.seed, rstyle, p)?;
+        println!(
+            "{}  map → {}  ({} landmark(s), style {}, seed {})",
+            style("✓").green(),
+            p.display(),
+            spec.landmarks.len(),
+            args.style,
+            args.seed
+        );
+        did_dump = true;
+    }
+
     let json = serde_json::to_string_pretty(&spec)?;
     match &args.dump_spec {
         Some(p) if p.as_os_str() != "-" => {
@@ -255,12 +279,13 @@ pub async fn run(args: MapArgs) -> Result<()> {
         None => {}
     }
 
-    // No explicit dump → print the spec (the MAP-1 deliverable) + a pointer.
+    // No explicit dump → print the spec + a pointer to the headline render.
     if !did_dump {
         println!("{json}");
         eprintln!(
-            "{}  the geometry render (linework / tiled-SD) lands in MAP-3+. \
-             --map-dump-spec saves the spec; --map-dump-heightmap writes the L0+L1 heightmap.",
+            "{}  --map-render PATH writes the complete styled, labelled map \
+             (--map-style parchment|inked|blueprint); --map-dump-spec saves the spec. \
+             The tiled-SD painted render lands in 1.6.",
             style("note:").dim()
         );
     }
