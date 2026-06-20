@@ -33,14 +33,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [x] **Label/furniture re-composite — DONE.** `render::apply_labels_and_furniture`
       (factored out of `render`) re-applies the 1.5.0 labels + furniture **over** the
       SD output so the painted map stays legible; `--map-sd-raw` skips it.
-- [ ] **compvis-layout SDXL LoRA support (NEXT).** The fantasy-map LoRA — and a large
-      slice of community SDXL LoRAs — use the **compvis block layout**
-      (`lora_unet_input_blocks_*`/`middle_block`/`output_blocks`); plakat's loader only
-      matches the **diffusers layout** (`down_blocks`/`mid_block`/`up_blocks`), so such
-      a LoRA merges into the text encoders but **0/722 into the UNet**. Add a
-      compvis→diffusers SDXL-UNet key remap in `pipelines/lora.rs` (analogous to the
-      SD3 `remap_diffusers_mmdit`) so the UNet style actually applies. General win
-      (all kohya-format SDXL LoRAs), needs careful index-mapping tests.
+- [x] **compvis-layout SDXL LoRA support — DONE.** `pipelines/lora.rs`
+      `compvis_unet_kohya_to_diffusers` remaps compvis/SAI block keys
+      (`lora_unet_input_blocks_*`/`_middle_block_*`/`_output_blocks_*`) to the
+      diffusers layout (`down_blocks`/`mid_block`/`up_blocks`) the candle UNet uses,
+      hooked into `resolve_lora_base` as a fallback **after** the normal lookup and
+      **validated against the real base keys** (a wrong guess just doesn't match — no
+      regression). Standard `layers_per_block=2` stage arithmetic; the sub-module name
+      after the block is layout-invariant and passes through. Lives in the shared
+      `merge_loras_into_weights` (sd_core), so **every** LoRA path benefits (generate /
+      portrait / img2img / scenario / map). Verified: `Muapi/fantasy-map` went from
+      **0/722 → 722/722** UNet targets merged; the painted Isle of Vethûn carries the
+      full style. 2 remap unit tests + diffusers/TE-untouched guard.
 - [ ] **Tiled multi-tile render** — reuse the **`plakat.tiled.*`** SDXL hi-res
       machinery (base-anchored tiling) to cover larger tile grids tile-by-tile with
       overlap blending, so a 4×4 map renders without a single giant allocation.

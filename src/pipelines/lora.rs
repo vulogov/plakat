@@ -968,11 +968,84 @@ fn match_suffix<'a>(k: &'a str, suffixes: &[&str]) -> Option<&'a str> {
     None
 }
 
+/// Take a leading run of ASCII digits off `s`, returning `(value, rest)`.
+fn take_uint(s: &str) -> Option<(usize, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    if end == 0 {
+        return None;
+    }
+    Some((s[..end].parse().ok()?, &s[end..]))
+}
+
+/// Split `"intA_intB_rest"` into `(A, B, rest)`.
+fn take_two_uints(s: &str) -> Option<(usize, usize, &str)> {
+    let (a, r) = take_uint(s)?;
+    let (b, r) = take_uint(r.strip_prefix('_')?)?;
+    Some((a, b, r.strip_prefix('_')?))
+}
+
+/// Remap a **compvis/SAI-layout** kohya UNet key (`lora_unet_input_blocks_*` /
+/// `_middle_block_*` / `_output_blocks_*`) to the **diffusers-layout** kohya key
+/// (`lora_unet_down_blocks_*` / `_mid_block_*` / `_up_blocks_*`) that plakat's
+/// candle UNet uses. A large slice of community SDXL (and SD1.5) LoRAs are
+/// kohya-trained against the original checkpoint layout and would otherwise miss
+/// the UNet entirely (text encoders still merge).
+///
+/// Block arithmetic is the SD/SDXL standard `layers_per_block = 2` → a 3-slot
+/// stage spacing (2 resnets + 1 sampler). The sub-module name *after* the block
+/// (`transformer_blocks_…`, `proj_in`, `proj_out`, `to_out_0`, `ff_net_0_proj`, …)
+/// is identical in both layouts, so it passes through untouched. The result is
+/// validated by the caller against the real base keys — a wrong guess simply
+/// fails to match, so this never corrupts a merge.
+fn compvis_unet_kohya_to_diffusers(key: &str) -> Option<String> {
+    const P: &str = "lora_unet_";
+    let body = key.strip_prefix(P)?;
+
+    if let Some(s) = body.strip_prefix("input_blocks_") {
+        let (ib, sub, rest) = take_two_uints(s)?;
+        if ib == 0 {
+            return None; // conv_in — not a transformer/resnet block
+        }
+        let (i, j) = ((ib - 1) / 3, (ib - 1) % 3);
+        let mapped = match (sub, j) {
+            (1, _) => format!("down_blocks_{i}_attentions_{j}_{rest}"),
+            (0, 2) => format!("down_blocks_{i}_downsamplers_0_{rest}"),
+            (0, _) => format!("down_blocks_{i}_resnets_{j}_{rest}"),
+            _ => return None,
+        };
+        return Some(format!("{P}{mapped}"));
+    }
+    if let Some(s) = body.strip_prefix("middle_block_") {
+        let (sub, rest) = take_uint(s)?;
+        let rest = rest.strip_prefix('_')?;
+        let mapped = match sub {
+            0 => format!("mid_block_resnets_0_{rest}"),
+            1 => format!("mid_block_attentions_0_{rest}"),
+            2 => format!("mid_block_resnets_1_{rest}"),
+            _ => return None,
+        };
+        return Some(format!("{P}{mapped}"));
+    }
+    if let Some(s) = body.strip_prefix("output_blocks_") {
+        let (ob, sub, rest) = take_two_uints(s)?;
+        let (i, j) = (ob / 3, ob % 3);
+        let mapped = match sub {
+            1 => format!("up_blocks_{i}_attentions_{j}_{rest}"),
+            2 => format!("up_blocks_{i}_upsamplers_0_{rest}"),
+            0 => format!("up_blocks_{i}_resnets_{j}_{rest}"),
+            _ => return None,
+        };
+        return Some(format!("{P}{mapped}"));
+    }
+    None
+}
+
 /// Resolve a parsed LoRA base path to an actual key in this target's base
 /// safetensors. Tries (in order):
 ///   1. kohya map lookup
-///   2. PEFT prefix strip for each of this target's `peft_prefixes`
-///   3. no-prefix direct lookup
+///   2. compvis→diffusers UNet remap, then kohya map lookup
+///   3. PEFT prefix strip for each of this target's `peft_prefixes`
+///   4. no-prefix direct lookup
 fn resolve_lora_base(
     lora_base: &str,
     kohya_map: &HashMap<String, String>,
@@ -981,6 +1054,14 @@ fn resolve_lora_base(
 ) -> Option<String> {
     if let Some(k) = kohya_map.get(lora_base) {
         return Some(k.clone());
+    }
+    // Community SDXL/SD1.5 LoRAs often address the UNet with the original
+    // checkpoint's block layout (`input_blocks`/`middle_block`/`output_blocks`);
+    // remap to the diffusers layout the base uses, then retry.
+    if let Some(remapped) = compvis_unet_kohya_to_diffusers(lora_base) {
+        if let Some(k) = kohya_map.get(&remapped) {
+            return Some(k.clone());
+        }
     }
     for prefix in target.peft_prefixes {
         if let Some(rest) = lora_base.strip_prefix(prefix) {
@@ -1243,6 +1324,67 @@ mod tests {
 
     fn parse(s: &str) -> LoraSpec {
         LoraSpec::from_str(s).expect("parses")
+    }
+
+    #[test]
+    fn compvis_unet_keys_remap_to_diffusers() {
+        let m = |k: &str| compvis_unet_kohya_to_diffusers(k);
+        // The exact attention prefixes the Muapi/fantasy-map SDXL LoRA carries.
+        assert_eq!(
+            m("lora_unet_input_blocks_4_1_proj_in").as_deref(),
+            Some("lora_unet_down_blocks_1_attentions_0_proj_in")
+        );
+        assert_eq!(
+            m("lora_unet_input_blocks_5_1_transformer_blocks_0_attn1_to_q").as_deref(),
+            Some("lora_unet_down_blocks_1_attentions_1_transformer_blocks_0_attn1_to_q")
+        );
+        assert_eq!(
+            m("lora_unet_input_blocks_7_1_proj_out").as_deref(),
+            Some("lora_unet_down_blocks_2_attentions_0_proj_out")
+        );
+        assert_eq!(
+            m("lora_unet_input_blocks_8_1_transformer_blocks_3_ff_net_0_proj").as_deref(),
+            Some("lora_unet_down_blocks_2_attentions_1_transformer_blocks_3_ff_net_0_proj")
+        );
+        assert_eq!(
+            m("lora_unet_middle_block_1_transformer_blocks_0_attn2_to_out_0").as_deref(),
+            Some("lora_unet_mid_block_attentions_0_transformer_blocks_0_attn2_to_out_0")
+        );
+        assert_eq!(
+            m("lora_unet_output_blocks_0_1_proj_in").as_deref(),
+            Some("lora_unet_up_blocks_0_attentions_0_proj_in")
+        );
+        assert_eq!(
+            m("lora_unet_output_blocks_2_1_transformer_blocks_9_attn1_to_v").as_deref(),
+            Some("lora_unet_up_blocks_0_attentions_2_transformer_blocks_9_attn1_to_v")
+        );
+        assert_eq!(
+            m("lora_unet_output_blocks_5_1_proj_out").as_deref(),
+            Some("lora_unet_up_blocks_1_attentions_2_proj_out")
+        );
+        // Resnets + samplers map their block prefix too.
+        assert_eq!(
+            m("lora_unet_input_blocks_3_0_op").as_deref(),
+            Some("lora_unet_down_blocks_0_downsamplers_0_op")
+        );
+        assert_eq!(
+            m("lora_unet_output_blocks_2_2_conv").as_deref(),
+            Some("lora_unet_up_blocks_0_upsamplers_0_conv")
+        );
+        assert_eq!(
+            m("lora_unet_middle_block_0_in_layers_2").as_deref(),
+            Some("lora_unet_mid_block_resnets_0_in_layers_2")
+        );
+    }
+
+    #[test]
+    fn diffusers_and_te_keys_are_not_remapped() {
+        // Already-diffusers UNet keys + text-encoder keys must be left alone
+        // (return None so the normal lookup path handles them unchanged).
+        assert!(compvis_unet_kohya_to_diffusers("lora_unet_down_blocks_1_attentions_0_proj_in").is_none());
+        assert!(compvis_unet_kohya_to_diffusers("lora_te1_text_model_encoder_layers_0_self_attn_q_proj").is_none());
+        assert!(compvis_unet_kohya_to_diffusers("lora_unet_conv_in").is_none());
+        assert!(compvis_unet_kohya_to_diffusers("lora_unet_input_blocks_0_0_op").is_none()); // conv_in
     }
 
     #[test]
