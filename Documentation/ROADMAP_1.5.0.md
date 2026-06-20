@@ -46,13 +46,21 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       glyph coverage, `nice_round`). **Determinism invariant held**: render twice,
       identical bytes.
 
-## MAP-3b — vector export (optional, same data)
+## MAP-3b — vector export (same data) — DONE
 
-- [ ] **GeoJSON export** (`--map-export-geojson`) — coastline polygons, river
-      polylines, road polylines, landmark points, region polygons. The geometry
-      engine already holds all of it; this is a serialization pass.
-- [ ] **SVG export** (`--map-export-svg`) — the linework as scalable vectors
-      (labels as `<text>`), for print / further editing.
+- [x] **GeoJSON export — DONE** (`--map-export-geojson`) — a `FeatureCollection`
+      of the coastline (Moore-neighbour contour trace → closed LineString rings),
+      river + road LineStrings, and landmark Points (with `name`/`kind`/`id`
+      properties). Coordinates normalized to `[0,1]`, **y north** (pixel-y flipped);
+      `crs: "normalized-0to1-north-up"`. `src/map/export.rs`.
+- [x] **SVG export — DONE** (`--map-export-svg`) — a standalone scalable map:
+      filled coast polygon, blue rivers, dashed brown roads, landmark dots +
+      `<text>` labels (real font shaping → non-ASCII names like "Vethûn" render
+      natively), XML-escaped. Extension picks the format in `export::save`.
+- [x] **Gate MET:** both exports are deterministic text → byte-stable committed
+      proofs `corpus/map/export/island.{geojson,svg}`, byte-checked in
+      `corpus/map.sh`. 4 export unit tests (every feature class, closed coast rings,
+      well-formed+escaped SVG, determinism).
 
 ## New deps (pure Rust)
 

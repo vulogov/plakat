@@ -7,6 +7,7 @@ pub mod cache;
 pub mod coastline;
 pub mod composite;
 pub mod engine;
+pub mod export;
 pub mod hydrology;
 pub mod labels;
 pub mod parser;

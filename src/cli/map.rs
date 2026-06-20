@@ -86,6 +86,15 @@ pub struct MapArgs {
     /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
     #[arg(long = "map-style", default_value = "parchment")]
     pub style: String,
+
+    /// MAP-3b: export the map geometry as GeoJSON (coast/rivers/roads/landmarks,
+    /// normalized 0–1 north-up).
+    #[arg(long = "map-export-geojson", value_name = "PATH")]
+    pub export_geojson: Option<PathBuf>,
+
+    /// MAP-3b: export the map as a standalone SVG (scalable linework + labels).
+    #[arg(long = "map-export-svg", value_name = "PATH")]
+    pub export_svg: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -250,6 +259,21 @@ pub async fn run(args: MapArgs) -> Result<()> {
             args.seed
         );
         did_dump = true;
+    }
+
+    // MAP-3b: vector export (GeoJSON / SVG) — same geometry, scalable.
+    if args.export_geojson.is_some() || args.export_svg.is_some() {
+        let vm = map::export::VectorMap::build(&spec, args.seed)?;
+        if let Some(p) = &args.export_geojson {
+            map::export::save(&vm, &spec, p)?;
+            println!("{}  GeoJSON → {}  ({} landmark(s), seed {})", style("✓").green(), p.display(), vm.landmarks.len(), args.seed);
+            did_dump = true;
+        }
+        if let Some(p) = &args.export_svg {
+            map::export::save(&vm, &spec, p)?;
+            println!("{}  SVG → {}  ({} coast ring(s), seed {})", style("✓").green(), p.display(), vm.coast_rings.len(), args.seed);
+            did_dump = true;
+        }
     }
 
     let json = serde_json::to_string_pretty(&spec)?;
