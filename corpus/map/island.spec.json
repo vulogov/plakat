@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "name": "The Isle of Vethûn",
+  "scale_tier": 1,
+  "tile_grid": { "cols": 2, "rows": 2 },
+  "climate": "temperate maritime",
+  "era": "late medieval",
+  "language": "en",
+  "terrain": {
+    "dominant_elevation": "mountainous",
+    "mountain_ranges": [
+      { "id": "emberspine", "name": "The Emberspine",
+        "anchor": { "kind": "cardinal", "position": "center" },
+        "orientation": "north-south", "length_fraction": 0.5, "height": "high" }
+    ]
+  },
+  "water": {
+    "seas": [ { "id": "the_sound", "name": "The Grey Sound", "position": "west", "enclosed": false } ],
+    "rivers": [
+      { "id": "ash", "name": "The Ashflow",
+        "source": { "kind": "range_slope", "range": "emberspine", "facing": "west" },
+        "mouth": { "kind": "cardinal", "position": "southwest" }, "navigable": true }
+    ],
+    "lakes": [
+      { "id": "crater_lake", "name": "Mournmere",
+        "anchor": { "kind": "cardinal", "position": "center" }, "size": "small", "endorheic": true }
+    ]
+  },
+  "regions": [
+    { "id": "westvale", "name": "Westvale", "biome": "temperate_forest",
+      "anchor": { "kind": "cardinal", "position": "west" }, "coverage": 0.4 },
+    { "id": "the_burn", "name": "The Burnlands", "biome": "volcanic",
+      "anchor": { "kind": "cardinal", "position": "center" }, "coverage": 0.2 }
+  ],
+  "landmarks": [
+    { "id": "saltmere", "name": "Saltmere", "kind": "port",
+      "anchor": { "kind": "mouth_of", "river": "ash" } },
+    { "id": "highwatch", "name": "Highwatch", "kind": "fortress",
+      "anchor": { "kind": "range_slope", "range": "emberspine", "facing": "east" } },
+    { "id": "emberhall", "name": "Emberhall", "kind": "city",
+      "anchor": { "kind": "bearing", "from": "saltmere", "direction": "east", "distance": "moderate", "constraint": "river" } },
+    { "id": "pale_light", "name": "The Pale Light", "kind": "lighthouse",
+      "anchor": { "kind": "natural_harbor", "near": "saltmere" } }
+  ],
+  "infrastructure": {
+    "roads": [ { "id": "salt_road", "name": "The Salt Road", "from": "saltmere", "to": "emberhall", "kind": "highway" } ],
+    "walls": [],
+    "bridges": [ { "id": "ash_bridge", "name": "Ashbridge", "road": "salt_road", "river": "ash" } ]
+  }
+}

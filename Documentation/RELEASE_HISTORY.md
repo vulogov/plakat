@@ -1,12 +1,29 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.2. The current
+"What's new" sections for v0.13 through 1.3. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.3.0 — generate a scene series from data (`compile` + Tera)
+
+1.3.0 completed the **compile** track with an optional **Tera template pre-pass**.
+A `.tera`/`.j2` input renders to a `prompts.txt` first — so a whole scene *series*
+comes from one data file (loops, conditionals, shared macros), then compiles to a
+`scenario` and renders. SemVer-additive, behind the `templates` feature.
+
+- **`.tera` / `.j2` inputs** render to a `prompts.txt` before the parser, with
+  context from `--var KEY=VALUE` / `--vars <json|toml>` / `--vars-env PREFIX` /
+  built-in `plakat.*`. Loop over a data file, branch with `{% if %}`, share macros.
+- **Filters & functions** — `scene_name`, `prompt_join`, `zero_pad`, `model_family`,
+  `include_raw`, `scene_separator`, …; `--dump-rendered[-only]` to inspect the
+  rendered `prompts.txt` before spending any LLM calls.
+- **Compile polish** — `--compile-parallel N` (concurrent scenes, output order
+  preserved) and a `--dry-run` token estimate. Proven end to end: `series.tera`
+  (+ `series.json`) → a branched two-character scenario → rendered (mage + ranger).
 
 ## What's new in 1.2.0 — write prose, get a render plan (`plakat compile`)
 

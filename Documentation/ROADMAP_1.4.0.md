@@ -1,0 +1,115 @@
+# plakat 1.4.0 — roadmap
+
+The **compile** track is done (1.2.0 core + point-fixes + 1.3.0 Tera). 1.4.0 opens
+**Track M — `plakat map`** (procedural fantasy maps), per
+[`RFC_MAP_COMPILE_PLAN.md`](RFC_MAP_COMPILE_PLAN.md). 1.4.0 = **MAP-1 + MAP-2**:
+spec + LLM parser + the geometry engine — **no SD render yet** (that's 1.5.0
+linework / 1.6.0 tiled SD). All SemVer-additive.
+
+The through-line (the 1.1.0 memory-wall lesson): geometry is a **pure function of
+(spec, seed)** → byte-stable on-box corpus proofs. The non-deterministic LLM parse
+is decoupled via a committed `--map-spec`; the memory-bound tiled SD render is the
+1.6.0 capstone.
+
+Status: `[ ]` open · `[x]` done · `[~]` in progress.
+
+## MAP-1 — MapSpec v2 + LLM geographic parser
+
+- [x] **`MapSpec v2` structs + `Anchor` enum** (`src/map/spec.rs`) — geographic schema
+      + the full tagged `Anchor` enum (incl. urban variants); `LandmarkKind` is a string
+      with an `Other` fallback (LLM-forgiving). serde round-trip tested. (No new deps —
+      geometry deps land in MAP-2.)
+- [x] **LLM parser** (`src/map/parser.rs`) — prose → MapSpec via `prompt::complete`
+      (reuses the `--enhance` stack). Built-in geographic system prompt (schema + anchor
+      types); 3-stage robustness: `extract_json` (strip fences) → stricter retry →
+      minimal spec, never aborts.
+- [x] **CLI** (`src/cli/map.rs`) — `--map-tiles CxR` / `--map-scale <alias>` (the scale
+      table; tiles override), `--map-provider`, `--map-system`, `--map-cache`,
+      `--map-spec` (load, skip LLM), `--map-dump-spec`.
+- [x] **Gate MET (deterministic half):** committed `corpus/map/island.spec.json` loads
+      via `--map-spec` (no LLM), round-trips **byte-stable**, `--map-tiles` overrides the
+      grid (`corpus/map.sh`). The live prose→spec path reuses the provider stack
+      (structurally tested; not in the deterministic corpus). 12 map unit tests.
+
+## MAP-2 — layered geography engine (Layers 0–7)
+
+- [x] **L0 canvas + L1 tectonic — DONE.** `GeoCanvas` (working res = 256/tile,
+      capped 2048²) + `HeightField`: `noise` fBm base + a smooth anisotropic-gaussian
+      ridge per mountain range at its resolved anchor (simple cardinal/canvas resolver).
+      `--map-dump-heightmap` + `--seed`. **Gate MET:** byte-stable
+      `corpus/images/map/island-heightmap.png` (the Emberspine spine over fBm terrain),
+      re-dump-and-`cmp` in `corpus/map.sh`. Pure fn of (spec, seed); 4 engine tests.
+      (Voronoi continental structure via `spade` deferred to an L1 refinement.)
+- [x] **L2 hydraulics — DONE.** `Hydrology`: priority-flood depression filling
+      (Barnes 2014 — every cell drains to the boundary, the "river must reach the sea"
+      property) → D8 steepest-descent flow → flow accumulation → channel-head river
+      tracing. `--map-dump-rivers` (dendritic network over the terrain). **Gate MET:**
+      byte-stable `corpus/images/map/island-rivers.png`; tests assert drainage +
+      a river reaches the boundary + determinism. Pure `Vec<f32>` algorithms (no new
+      dep — `ndarray` wasn't needed). *Refinements deferred:* flat-resolution (a few
+      parallel threads remain in flats), the breach algorithm (carve vs fill), delta
+      detection, named-river ↔ traced-channel matching.
+- [x] **L3 coastline — DONE.** A spec-driven **landmass falloff** in L1 (island →
+      radial taper to sea; continental → sea-positioned edges lowered) gives the map
+      real coasts and makes rivers drain into the sea. `Coastline`: sea-level land/sea
+      mask + a multi-source-BFS distance-to-sea field (feeds L4) + coast-cell detection.
+      `--map-dump-coast` (tan land, depth-shaded blue sea, dark coastline). **Gate MET:**
+      byte-stable `corpus/images/map/island-coast.png` — a recognizable island; 3 tests
+      (sea+land, coast distance, determinism). *`rstar` nearest-coast index + marching-
+      squares polylines deferred to L5/render.*
+- [x] **L4 biome — DONE.** Per-pixel `Biome` (RFC Appendix B palette) from a base
+      (the spec's `regions`, coverage-limited influence discs + noise-jittered
+      boundaries, else a climate+latitude default) with elevation overrides
+      (peaks → mountain/snow) + coast overrides (shore → beach/coastal-plain), using
+      L3's distance-to-sea. `--map-dump-biome`. **Gate MET:** byte-stable
+      `corpus/images/map/island-biome.png` — a forested island with a central volcanic
+      massif crowned in snow, organic biome boundaries; 3 tests.
+- [x] **L5 landmark resolver — DONE.** Resolves each landmark's typed `Anchor` to a
+      pixel position against the now-existing layers: `mouth_of`/`source_of`/`delta`
+      (L2 rivers, mouth snapped to coast), `natural_harbor`/`coast_nearest`/
+      `shore_nearest` (L3 coast, nearest-point), `bearing{from,dir,dist,constraint}`
+      (offset from a resolved point + optional coast/river snap), `range_slope`/
+      `pass_between`/`region_interior`/`confluence`. Fixpoint over the dependency
+      graph; unresolved-with-no-progress → cycle error. `--map-dump-landmarks`
+      (markers by kind). **Gate MET:** byte-stable `island-landmarks.png` — the port +
+      lighthouse at the SW river-mouth/harbour, the city bearing-east, the fortress on
+      the range; tests assert all resolve + the river-mouth port is coastal +
+      determinism. (rstar / concavity for natural-harbor deferred.)
+- [x] **L6 infrastructure (roads) — DONE.** Each spec road routes between its two
+      resolved landmarks via 8-connected Dijkstra on a terrain cost grid (sea
+      impassable, mountains expensive, river crossings taxed), with a bridge recorded
+      where a road crosses a river. `--map-dump-roads` (roads + rivers + landmarks).
+      **Gate MET:** byte-stable `island-roads.png` — the salt road routes Saltmere→
+      Emberhall through the lowland, on land; tests assert connect + no-sea + determinism.
+      Hand-rolled grid Dijkstra (no `petgraph` dep yet — it lands with the MAP-5 urban
+      street graph). Sea-lanes / walls deferred.
+- [x] **L7 conditioning assembly — DONE. MAP-2 geometry engine COMPLETE.** The
+      `composite` module assembles every layer into one **feature overlay**: biome +
+      a darkened coastline + rivers + roads/bridges + landmark markers — the complete
+      composited map. `--map-dump-features`. **Gate MET:** byte-stable
+      `island-features.png` (sea, beach, forest, central volcanic massif crowned in
+      snow, river network, coast, cities, salt road). (Per-tile crops + Canny edges
+      pair with the MAP-6 tiled-SD render.) `corpus/map.sh` byte-checks all seven layer
+      dumps. **Next: the 1.5.0 linework render** (labels + cartographic styling → the
+      first complete, user-facing map = the release).
+- **Gate:** committed `island.spec.json` → byte-stable `--map-dump-{heightmap,biome,
+  features}` PNGs; anchor-resolution unit tests (`mouth_of`, `bearing+constraint`,
+  `pass_between`). **Determinism invariant**: no unseeded map output (render twice,
+  identical bytes).
+
+## New deps (pure Rust, gate behind a `map` feature if heavy)
+
+`spade`, `ndarray`, `geo`/`geo-types`, `rstar`, `petgraph`, `noise` (geometry);
+`ab_glyph`, `unicode-bidi`/`-normalization` come with the 1.5.0 label compositor.
+
+## Later in Track M (see the plan)
+
+1.5.0 **linework render** (labels + furniture on the feature overlay — a complete
+map, NO SD; memory-wall-free) + GeoJSON/SVG export. 1.6.0 tiled SD render (1×1
+on-box; multi-tile memory-bound). 1.7–1.8 Bund hooks + urban fabric.
+
+## Opportunistic / debt (off the critical path)
+
+- 1.1.0 carryovers: Flux regional (Flux broken on Metal → code-only), IC-Light (L).
+- COMPILE-1 `map:` block (E-C4) — unblocks once `plakat map` exists.
+- Memory-bound render debt: SD3.5 DreamBooth render, `regional.sh sdxl/sd35`.

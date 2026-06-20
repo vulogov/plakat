@@ -17,38 +17,53 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.3.0 — generate a scene series from data (`compile` + Tera)
+## What's new in 1.4.0 — procedural fantasy maps, layer by layer (`plakat map`)
 
-1.3.0 completes the **compile** track with an optional **Tera template pre-pass**.
-A `.tera`/`.j2` input renders to a `prompts.txt` first — so a whole scene *series*
-comes from one data file (loops, conditionals, shared macros), then compiles to a
-`scenario` and renders. SemVer-additive, behind the `templates` feature
-(`cargo install plakat --features templates`).
+1.4.0 opens **Track M — `plakat map`**: turn a prose world description into a
+fantasy map. This cut ships the front half — the **spec** + an **eight-layer
+geometry engine** — with **no SD render yet** (linework styling is 1.5.0, the
+tiled-SD render is 1.6.0). The whole engine is a **pure function of (spec, seed)**,
+so every layer is proven by a byte-stable on-box corpus image (no GPU, no network).
 
 ```bash
-# series.tera + characters.json → a scenario, one task per character
-plakat compile series.tera --vars characters.json | plakat scenario -
+# prose → a structured MapSpec (LLM parse, reuses the --enhance stack)
+plakat map "a volcanic island kingdom ringed by salt marshes" --map-dump-spec island.json
+
+# a committed spec → each geometry layer, deterministic (same spec + seed → same bytes)
+plakat map --map-spec island.json --seed 42 --map-dump-features island-map.png
 ```
 
-**Tera template pre-pass (COMPILE-2)**
+**MAP-1 — spec + parser**
 
-- **`.tera` / `.j2` inputs** render to a `prompts.txt` before the parser, with
-  context from `--var KEY=VALUE` / `--vars <json|toml>` / `--vars-env PREFIX` /
-  built-in `plakat.*`. Loop over a data file, branch with `{% if %}`, share macros
-  via `{% import %}`.
-- **Filters & functions** — `scene_name`, `prompt_join`, `zero_pad`, `model_family`,
-  `include_raw`, `scene_separator`, …; `--dump-rendered[-only]` to inspect the
-  rendered `prompts.txt` before spending any LLM calls.
-- **Compile polish** — `--compile-parallel N` (concurrent scenes, output order
-  preserved) and a `--dry-run` token estimate.
+- **`MapSpec v2`** geographic schema + a tagged **`Anchor`** type (`mouth_of`,
+  `natural_harbor`, `bearing{from,dir,dist}`, `range_slope`, `pass_between`, …) —
+  landmarks are placed *relative to features*, not pinned to pixels.
+- **LLM parser** — prose → spec via the `--enhance` provider stack, with a 3-stage
+  robustness path (`extract_json` → stricter retry → minimal spec; never aborts).
+  `--map-spec` loads a committed spec and skips the LLM entirely.
 
-Proven end to end: `series.tera` (+ `series.json`) → a branched two-character
-scenario → rendered (Lady Mireth the mage, Bjorn the ranger —
-[`corpus/images/compile/`](corpus/images/compile/)). See
-[`Documentation/COMPILE_TEMPLATES.md`](Documentation/COMPILE_TEMPLATES.md). Next on
-the arc: `plakat map`.
+**MAP-2 — the geometry engine (L0–L7)**
 
-**Earlier releases** (v0.13 – v1.2):
+- **L0/L1 terrain** — `noise` fBm + an anisotropic-gaussian ridge per mountain range.
+- **L2 hydraulics** — priority-flood depression fill (Barnes 2014) → D8 flow →
+  accumulation → river tracing; **rivers end at the coast**, never across open water.
+- **L3 coastline** — a spec-driven landmass falloff gives real coasts (and a sea for
+  rivers to reach) + a distance-to-sea field.
+- **L4 biomes** — region influence discs + noise-jittered boundaries, with elevation
+  (snow-capped peaks) and coast (beaches) overrides.
+- **L5 landmark resolver** — a fixpoint over the anchor dependency graph (cycle → error).
+- **L6 roads** — Dijkstra over a terrain cost grid (sea impassable, mountains costly,
+  river crossings → bridges).
+- **L7 feature overlay** — every layer composited into one map image.
+
+Proven end to end: the committed `corpus/map/island.spec.json` (The Isle of Vethûn)
+→ byte-stable `--map-dump-{heightmap,rivers,coast,biome,landmarks,roads,features}`
+([`corpus/images/map/`](corpus/images/map/), checked by `corpus/map.sh`). See
+[`Documentation/ROADMAP_1.4.0.md`](Documentation/ROADMAP_1.4.0.md). Next on the arc:
+the 1.5.0 **linework render** (labels + cartographic furniture → the first complete,
+user-facing map).
+
+**Earlier releases** (v0.13 – v1.3):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -313,6 +328,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
+| `map <DESCRIPTION>` | **v1.4**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). `--map-spec` (load, skip LLM), `--map-dump-{spec,heightmap,rivers,coast,biome,landmarks,roads,features}`, `--seed`, `--map-tiles`/`--map-scale`. Pure fn of (spec, seed) — byte-stable. Linework render lands in 1.5. See [`ROADMAP_1.4.0.md`](Documentation/ROADMAP_1.4.0.md). |
 | `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |

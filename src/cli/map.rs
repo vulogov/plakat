@@ -1,0 +1,268 @@
+//! `plakat map` — generate a fantasy map from a prose world description.
+//!
+//! MAP-1 ships the LLM **parse** stage: prose → `MapSpec v2` JSON. The geometry
+//! engine (MAP-2) and renderer (MAP-3+) follow; until then `--map-dump-spec`
+//! writes the parsed spec and the default output prints it.
+
+use anyhow::{Context, Result, bail};
+use clap::Args as ClapArgs;
+use console::style;
+use std::path::PathBuf;
+
+use crate::map::{self, parser::ParseOpts, spec::MapSpec};
+
+#[derive(ClapArgs, Debug)]
+pub struct MapArgs {
+    /// Prose world description (optional when `--map-spec` is given).
+    #[arg(value_name = "DESCRIPTION", default_value = "")]
+    pub description: String,
+
+    /// Tile grid `CxR` (1x1 … 8x8, non-square ok). Overrides `--map-scale`.
+    #[arg(long = "map-tiles", value_name = "CxR")]
+    pub tiles: Option<String>,
+
+    /// Named scale: block|district|settlement|city|vicinity|coast|region|inland-sea|hemisphere.
+    #[arg(long = "map-scale", value_name = "NAME")]
+    pub scale: Option<String>,
+
+    /// LLM provider for parsing (reuses the `--enhance` stack).
+    #[arg(long = "map-provider", default_value = "auto")]
+    pub provider: String,
+
+    /// Override the built-in geographic-parser system prompt (file).
+    #[arg(long = "map-system", value_name = "PATH")]
+    pub system: Option<PathBuf>,
+
+    /// SHA-256 disk cache of parsed specs (`~/.cache/plakat/map/`).
+    #[arg(long = "map-cache", default_value_t = false)]
+    pub cache: bool,
+
+    /// Load a pre-written `MapSpec` JSON and skip the LLM entirely.
+    #[arg(long = "map-spec", value_name = "PATH")]
+    pub spec: Option<PathBuf>,
+
+    /// Write the parsed `MapSpec` JSON to PATH (`-` = stdout).
+    #[arg(long = "map-dump-spec", value_name = "PATH")]
+    pub dump_spec: Option<PathBuf>,
+
+    /// Seed for the geometry engine (deterministic: same spec + seed → same map).
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+
+    /// MAP-2: write the full-canvas tectonic heightmap PNG (L0+L1).
+    #[arg(long = "map-dump-heightmap", value_name = "PATH")]
+    pub dump_heightmap: Option<PathBuf>,
+
+    /// MAP-2: write the river network over the terrain (L2 hydraulics).
+    #[arg(long = "map-dump-rivers", value_name = "PATH")]
+    pub dump_rivers: Option<PathBuf>,
+
+    /// MAP-2: write land/sea + coastline (L3).
+    #[arg(long = "map-dump-coast", value_name = "PATH")]
+    pub dump_coast: Option<PathBuf>,
+
+    /// MAP-2: write the biome map (L4).
+    #[arg(long = "map-dump-biome", value_name = "PATH")]
+    pub dump_biome: Option<PathBuf>,
+
+    /// MAP-2: write resolved landmarks placed at their anchors (L5).
+    #[arg(long = "map-dump-landmarks", value_name = "PATH")]
+    pub dump_landmarks: Option<PathBuf>,
+
+    /// MAP-2: write the road network (+ rivers, landmarks) (L6).
+    #[arg(long = "map-dump-roads", value_name = "PATH")]
+    pub dump_roads: Option<PathBuf>,
+
+    /// MAP-2: write the assembled feature overlay — the complete composited map
+    /// (biome + coast + rivers + roads + landmarks) (L7).
+    #[arg(long = "map-dump-features", value_name = "PATH")]
+    pub dump_features: Option<PathBuf>,
+}
+
+pub async fn run(args: MapArgs) -> Result<()> {
+    let (grid, tier) = map::resolve_scale(args.tiles.as_deref(), args.scale.as_deref())?;
+
+    // Source the spec: load (skip LLM) or parse the description.
+    let spec: MapSpec = if let Some(p) = &args.spec {
+        let text = std::fs::read_to_string(p).with_context(|| format!("reading --map-spec {}", p.display()))?;
+        let mut m: MapSpec = serde_json::from_str(&text)
+            .with_context(|| format!("parsing MapSpec {}", p.display()))?;
+        if m.version != map::spec::SPEC_VERSION {
+            tracing::warn!(target: "plakat", "map: spec version {} (expected {}) — loading best-effort", m.version, map::spec::SPEC_VERSION);
+        }
+        if let Some(g) = grid {
+            m.tile_grid = g;
+        }
+        if let Some(t) = tier {
+            m.scale_tier = t;
+        }
+        m
+    } else {
+        if args.description.trim().is_empty() {
+            bail!("provide a world description, or load one with --map-spec PATH");
+        }
+        let system_override = match &args.system {
+            Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --map-system {}", p.display()))?),
+            None => None,
+        };
+        map::parser::parse(
+            &args.description,
+            &ParseOpts {
+                provider: args.provider.clone(),
+                system_override,
+                tile_grid: grid,
+                scale_tier: tier,
+                cache: args.cache,
+            },
+        )
+        .await?
+    };
+
+    let mut did_dump = false;
+
+    // MAP-2 geometry dumps (share the canvas + heightfield).
+    if args.dump_heightmap.is_some()
+        || args.dump_rivers.is_some()
+        || args.dump_coast.is_some()
+        || args.dump_biome.is_some()
+        || args.dump_landmarks.is_some()
+        || args.dump_roads.is_some()
+        || args.dump_features.is_some()
+    {
+        let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
+        let hf = map::engine::HeightField::generate(&spec, &canvas);
+        if let Some(p) = &args.dump_heightmap {
+            hf.save_gray_png(p)?;
+            println!(
+                "{}  heightmap → {}  ({}x{}, seed {})",
+                style("✓").green(),
+                p.display(),
+                canvas.width,
+                canvas.height,
+                args.seed
+            );
+            did_dump = true;
+        }
+        if let Some(p) = &args.dump_rivers {
+            let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
+            hydro.render_overlay(&hf, p)?;
+            println!(
+                "{}  rivers → {}  ({} channel(s), seed {})",
+                style("✓").green(),
+                p.display(),
+                hydro.rivers.len(),
+                args.seed
+            );
+            did_dump = true;
+        }
+        // L3/L4/L5/L6 share the coastline (biome + resolver + roads read its fields).
+        if args.dump_coast.is_some()
+            || args.dump_biome.is_some()
+            || args.dump_landmarks.is_some()
+            || args.dump_roads.is_some()
+            || args.dump_features.is_some()
+        {
+            let coast = map::coastline::Coastline::compute(&hf, map::coastline::DEFAULT_SEA_LEVEL);
+            if let Some(p) = &args.dump_coast {
+                coast.render_overlay(&hf, p)?;
+                println!(
+                    "{}  coastline → {}  ({:.0}% land, seed {})",
+                    style("✓").green(),
+                    p.display(),
+                    coast.land_fraction() * 100.0,
+                    args.seed
+                );
+                did_dump = true;
+            }
+            if let Some(p) = &args.dump_biome {
+                let bm = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
+                bm.save_png(p)?;
+                println!("{}  biome map → {}  (seed {})", style("✓").green(), p.display(), args.seed);
+                did_dump = true;
+            }
+            // L7: the assembled feature overlay (the complete composited map).
+            if let Some(p) = &args.dump_features {
+                let biome = map::biome::BiomeMap::compute(&spec, &hf, &coast, args.seed);
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
+                let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
+                let roads = map::roads::build_roads(&spec, &hf, &coast, &hydro, &lms);
+                map::composite::save_features(&hf, &coast, &biome, &hydro, &lms, &roads, p)?;
+                println!(
+                    "{}  feature overlay → {}  (full map: {} landmark(s), {} road(s), seed {})",
+                    style("✓").green(),
+                    p.display(),
+                    lms.len(),
+                    roads.len(),
+                    args.seed
+                );
+                did_dump = true;
+            }
+            // L5/L6 share the hydrology + resolved landmarks.
+            if args.dump_landmarks.is_some() || args.dump_roads.is_some() {
+                let hydro = map::hydrology::Hydrology::compute(&hf, map::hydrology::DEFAULT_RIVER_THRESHOLD, map::coastline::DEFAULT_SEA_LEVEL);
+                let lms = map::resolver::resolve_landmarks(&spec, &hf, &hydro, &coast)?;
+                if let Some(p) = &args.dump_landmarks {
+                    map::resolver::render_overlay(&hf, &coast, &lms, p)?;
+                    println!(
+                        "{}  landmarks → {}  ({} placed, seed {})",
+                        style("✓").green(),
+                        p.display(),
+                        lms.len(),
+                        args.seed
+                    );
+                    did_dump = true;
+                }
+                if let Some(p) = &args.dump_roads {
+                    let roads = map::roads::build_roads(&spec, &hf, &coast, &hydro, &lms);
+                    map::roads::render_overlay(&hf, &coast, &hydro, &lms, &roads, p)?;
+                    println!(
+                        "{}  roads → {}  ({} road(s), seed {})",
+                        style("✓").green(),
+                        p.display(),
+                        roads.len(),
+                        args.seed
+                    );
+                    did_dump = true;
+                }
+            }
+        }
+    }
+
+    let json = serde_json::to_string_pretty(&spec)?;
+    match &args.dump_spec {
+        Some(p) if p.as_os_str() != "-" => {
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            std::fs::write(p, format!("{json}\n")).with_context(|| format!("writing {}", p.display()))?;
+            println!(
+                "{}  map spec → {}  ({} landmark(s), {}x{} tiles, tier {})",
+                style("✓").green(),
+                p.display(),
+                spec.landmarks.len(),
+                spec.tile_grid.cols,
+                spec.tile_grid.rows,
+                spec.scale_tier
+            );
+            did_dump = true;
+        }
+        Some(_) => {
+            println!("{json}"); // --map-dump-spec -
+            did_dump = true;
+        }
+        None => {}
+    }
+
+    // No explicit dump → print the spec (the MAP-1 deliverable) + a pointer.
+    if !did_dump {
+        println!("{json}");
+        eprintln!(
+            "{}  the geometry render (linework / tiled-SD) lands in MAP-3+. \
+             --map-dump-spec saves the spec; --map-dump-heightmap writes the L0+L1 heightmap.",
+            style("note:").dim()
+        );
+    }
+    Ok(())
+}

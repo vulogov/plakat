@@ -8,6 +8,7 @@ pub mod civitai;
 pub mod clone;
 pub mod compile;
 pub mod compose;
+pub mod map;
 pub mod doctor;
 pub mod embedding;
 pub mod gallery;
@@ -82,6 +83,9 @@ pub enum Command {
     /// a task, prompts are LLM-enhanced (family-aware) with auto-negatives.
     /// `--no-enhance --no-negative` is deterministic (no LLM).
     Compile(compile::CompileArgs),
+    /// Generate a fantasy map from a prose world description. MAP-1: prose →
+    /// `MapSpec v2` JSON via the LLM (`--map-dump-spec`); geometry + render follow.
+    Map(map::MapArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -191,6 +195,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
+        Command::Map(args) => map::run(args).await,
         Command::Compose(args) => {
             let device = crate::device::select(&cli.device)?;
             compose::run(args, device).await
