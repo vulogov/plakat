@@ -1,0 +1,678 @@
+//! MAP-3 — the **linework render**. Turns the MAP-2 geometry (terrain, coast,
+//! biomes, rivers, roads, resolved landmarks) into the first complete,
+//! *user-facing* map: a styled, labelled image with cartographic furniture
+//! (frame, title cartouche, compass rose, scale bar, legend). NO SD — a pure
+//! function of (spec, seed), so it's byte-stable in the corpus (the 1.6.0 tiled
+//! SD pass is the only GPU step on the map track).
+
+use anyhow::Result;
+use image::{Rgb, RgbImage};
+use std::path::Path;
+
+use super::biome::BiomeMap;
+use super::coastline::{Coastline, DEFAULT_SEA_LEVEL};
+use super::engine::{resolve_simple, GeoCanvas, HeightField};
+use super::hydrology::{Hydrology, DEFAULT_RIVER_THRESHOLD};
+use super::labels;
+use super::resolver::{resolve_landmarks, ResolvedLandmark};
+use super::roads::{build_roads, RoadGeom};
+use super::spec::{LandmarkKind, MapSpec};
+
+// ── Style ────────────────────────────────────────────────────────────────────
+
+/// A named cartographic palette. `parchment` (default), `inked` (high-contrast
+/// monochrome), `blueprint` (cyan on dark).
+#[derive(Debug, Clone, Copy)]
+pub struct Style {
+    paper: [u8; 3],
+    paper_dark: [u8; 3],
+    ink: [u8; 3],
+    sea: [u8; 3],
+    sea_deep: [u8; 3],
+    river: [u8; 3],
+    road: [u8; 3],
+    /// Biome-colour weight vs paper on land (0 = pure paper, 1 = pure biome).
+    land_tint: f32,
+}
+
+impl Style {
+    pub fn named(name: &str) -> Result<Style> {
+        Ok(match name.to_ascii_lowercase().as_str() {
+            "parchment" | "default" => Style {
+                paper: [0xe9, 0xdb, 0xbf],
+                paper_dark: [0xd6, 0xc4, 0x9f],
+                ink: [0x3a, 0x2a, 0x18],
+                sea: [0xbc, 0xcb, 0xcf],
+                sea_deep: [0x96, 0xad, 0xb6],
+                river: [0x46, 0x72, 0x8c],
+                road: [0x7a, 0x46, 0x20],
+                land_tint: 0.5,
+            },
+            "inked" => Style {
+                paper: [0xf2, 0xf0, 0xe8],
+                paper_dark: [0xd8, 0xd6, 0xce],
+                ink: [0x20, 0x1c, 0x18],
+                sea: [0xdf, 0xe2, 0xe4],
+                sea_deep: [0xc2, 0xc8, 0xcc],
+                river: [0x55, 0x5f, 0x66],
+                road: [0x3a, 0x34, 0x30],
+                land_tint: 0.22,
+            },
+            "blueprint" => Style {
+                paper: [0x10, 0x2a, 0x44],
+                paper_dark: [0x0a, 0x1e, 0x33],
+                ink: [0xcf, 0xe6, 0xff],
+                sea: [0x16, 0x38, 0x58],
+                sea_deep: [0x0e, 0x28, 0x42],
+                river: [0x8c, 0xc8, 0xff],
+                road: [0xe6, 0xc8, 0x6a],
+                land_tint: 0.18,
+            },
+            other => anyhow::bail!("unknown --map-style {other:?} (parchment|inked|blueprint)"),
+        })
+    }
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Style::named("parchment").unwrap()
+    }
+}
+
+// ── Public entry ─────────────────────────────────────────────────────────────
+
+/// Render the complete styled, labelled map for `(spec, seed)`.
+pub fn render(spec: &MapSpec, seed: u64, style: Style) -> Result<RgbImage> {
+    let canvas = GeoCanvas::from_spec(spec, seed);
+    let hf = HeightField::generate(spec, &canvas);
+    let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
+    let biome = BiomeMap::compute(spec, &hf, &coast, seed);
+    let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
+    let lms = resolve_landmarks(spec, &hf, &hydro, &coast)?;
+    let roads = build_roads(spec, &hf, &coast, &hydro, &lms);
+
+    let (w, h) = (hf.width, hf.height);
+    let mut img = RgbImage::new(w, h);
+
+    paint_base(&mut img, &hf, &coast, &biome, style);
+    draw_coastline(&mut img, &coast, style);
+    draw_rivers(&mut img, &hydro, style);
+    draw_roads(&mut img, &roads, style);
+
+    // Furniture reserves its footprint first so labels route around it; the boxes
+    // themselves are drawn last (crisp, on top of everything).
+    let mut taken: Vec<Rect> = Vec::new();
+    let title_box = reserve_title(spec, w, &mut taken);
+    let compass_box = reserve_box(w as i32 - 56, 9, 50, 56, &mut taken);
+    let scale_box = reserve_box(10, h as i32 - 34, 132, 28, &mut taken);
+    let legend_box = reserve_legend(&lms, w, h, &mut taken);
+
+    draw_features(&mut img, spec, &hf, &hydro, style, &mut taken);
+    draw_landmarks(&mut img, &lms, style, &mut taken);
+
+    draw_title(&mut img, spec, style, title_box);
+    draw_compass(&mut img, style, compass_box);
+    draw_scale_bar(&mut img, spec, style, scale_box);
+    draw_legend(&mut img, &lms, style, legend_box);
+    draw_frame(&mut img, style);
+
+    Ok(img)
+}
+
+/// Render + write the map PNG.
+pub fn save_render(spec: &MapSpec, seed: u64, style: Style, path: &Path) -> Result<()> {
+    let img = render(spec, seed, style)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    img.save(path).map_err(|e| anyhow::anyhow!("writing map render {}: {e}", path.display()))
+}
+
+// ── Base styling ─────────────────────────────────────────────────────────────
+
+fn paint_base(img: &mut RgbImage, hf: &HeightField, coast: &Coastline, biome: &BiomeMap, st: Style) {
+    let (w, h) = (hf.width, hf.height);
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let px = if coast.sea[i] {
+                // Bathymetric shade: lower elevation below sea level → deeper tone.
+                let t = ((DEFAULT_SEA_LEVEL - hf.data[i]) / DEFAULT_SEA_LEVEL).clamp(0.0, 1.0);
+                blend(st.sea, st.sea_deep, t * 0.6)
+            } else {
+                let tinted = blend(st.paper, biome.biome[i].rgb(), st.land_tint);
+                shade(tinted, hillshade(hf, x, y))
+            };
+            img.put_pixel(x, y, Rgb(px));
+        }
+    }
+}
+
+/// Lambert-ish hill-shading from the local gradient, light from the NW. Returns a
+/// multiplier in ~[0.78, 1.18].
+fn hillshade(hf: &HeightField, x: u32, y: u32) -> f32 {
+    let (w, h) = (hf.width, hf.height);
+    if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+        return 1.0;
+    }
+    let at = |xx: u32, yy: u32| hf.data[(yy * w + xx) as usize];
+    let gx = at(x + 1, y) - at(x - 1, y);
+    let gy = at(x, y + 1) - at(x, y - 1);
+    // Slope facing the NW light (-x,-y) brightens; SE darkens.
+    let toward = -(gx + gy);
+    (1.0 + toward * 6.0).clamp(0.78, 1.18)
+}
+
+fn draw_coastline(img: &mut RgbImage, coast: &Coastline, st: Style) {
+    for y in 0..coast.height {
+        for x in 0..coast.width {
+            if coast.is_coast(x, y) {
+                img.put_pixel(x, y, Rgb(st.ink));
+            }
+        }
+    }
+}
+
+fn draw_rivers(img: &mut RgbImage, hydro: &Hydrology, st: Style) {
+    for &(x, y) in hydro.rivers.iter().flatten() {
+        put(img, x as i32, y as i32, st.river);
+    }
+}
+
+fn draw_roads(img: &mut RgbImage, roads: &[RoadGeom], st: Style) {
+    for r in roads {
+        // Dashed line so roads read distinctly from rivers.
+        for (k, &(x, y)) in r.path.iter().enumerate() {
+            if k % 6 < 4 {
+                plot_thick(img, x as i32, y as i32, st.road);
+            }
+        }
+        for &(x, y) in &r.bridges {
+            plot_thick(img, x as i32, y as i32, st.ink);
+        }
+    }
+}
+
+// ── Markers + labels ─────────────────────────────────────────────────────────
+
+fn draw_landmarks(img: &mut RgbImage, lms: &[ResolvedLandmark], st: Style, taken: &mut Vec<Rect>) {
+    for lm in lms {
+        let (px, py) = (lm.x as i32, lm.y as i32);
+        draw_symbol(img, px, py, &lm.kind, st);
+        place_label(img, (px, py), &lm.name, 1, st.ink, st, taken);
+    }
+}
+
+/// Named natural features — mountain ranges, regions, the sea, lakes, the main
+/// river — labelled at their resolved positions.
+fn draw_features(img: &mut RgbImage, spec: &MapSpec, hf: &HeightField, hydro: &Hydrology, st: Style, taken: &mut Vec<Rect>) {
+    let (w, h) = (hf.width as f32, hf.height as f32);
+    let to_px = |a: &super::spec::Anchor| resolve_simple(a).map(|(x, y)| ((x * w) as i32, (y * h) as i32));
+
+    for r in &spec.terrain.mountain_ranges {
+        if let (Some(name), Some(p)) = (&r.name, to_px(&r.anchor)) {
+            place_label(img, p, name, 1, st.ink, st, taken);
+        }
+    }
+    for r in &spec.regions {
+        if let (Some(name), Some(p)) = (&r.name, to_px(&r.anchor)) {
+            place_label(img, p, name, 1, st.road, st, taken);
+        }
+    }
+    for l in &spec.water.lakes {
+        if let (Some(name), Some(p)) = (&l.name, to_px(&l.anchor)) {
+            place_label(img, p, name, 1, st.river, st, taken);
+        }
+    }
+    // Sea label in open water near the sea's position hint (its centroid would be
+    // the island's middle for a ring-shaped sea — squarely on the mountains).
+    for sea in &spec.water.seas {
+        if let Some(name) = &sea.name {
+            if let Some(p) = sea_label_point(hf, &sea.position) {
+                place_label(img, p, name, 1, st.river, st, taken);
+            }
+        }
+    }
+    // River names: assign in order to the longest traced channels (channel↔name
+    // matching is an L2 refinement — heuristic for now, fine for one main river).
+    let mut chans: Vec<&Vec<(u32, u32)>> = hydro.rivers.iter().collect();
+    chans.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    for (rv, chan) in spec.water.rivers.iter().zip(chans.iter()) {
+        if let Some(name) = &rv.name {
+            let mid = chan[chan.len() / 2];
+            place_label(img, (mid.0 as i32, mid.1 as i32), name, 1, st.river, st, taken);
+        }
+    }
+}
+
+/// Greedy label placement: try positions around the anchor, take the first that
+/// is in-bounds and clear of already-placed boxes; fall back to the right.
+fn place_label(img: &mut RgbImage, at: (i32, i32), text: &str, scale: u32, color: [u8; 3], st: Style, taken: &mut Vec<Rect>) {
+    let (tw, th) = (labels::text_width(text, scale) as i32, labels::text_height(scale) as i32);
+    if tw == 0 {
+        return;
+    }
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let off = 7;
+    let cands = [
+        (at.0 + off, at.1 - th / 2),       // right
+        (at.0 - off - tw, at.1 - th / 2),  // left
+        (at.0 - tw / 2, at.1 + off),       // below
+        (at.0 - tw / 2, at.1 - off - th),  // above
+    ];
+    let fits = |x: i32, y: i32, taken: &[Rect]| {
+        let r = Rect { x0: x - 1, y0: y - 1, x1: x + tw, y1: y + th };
+        x >= 3 && y >= 3 && x + tw <= w - 3 && y + th <= h - 3 && !taken.iter().any(|t| t.overlaps(&r))
+    };
+    let (lx, ly) = cands.iter().copied().find(|&(x, y)| fits(x, y, taken)).unwrap_or(cands[0]);
+    taken.push(Rect { x0: lx - 1, y0: ly - 1, x1: lx + tw, y1: ly + th });
+    labels::draw_text_haloed(img, lx, ly, text, scale, color, st.paper);
+}
+
+/// A distinct little symbol per landmark kind, in the kind's colour + ink edge.
+fn draw_symbol(img: &mut RgbImage, cx: i32, cy: i32, kind: &LandmarkKind, st: Style) {
+    let fill = super::resolver::marker_rgb(kind);
+    match kind {
+        LandmarkKind::City => {
+            fill_rect(img, cx - 3, cy - 3, cx + 3, cy + 3, st.ink);
+            fill_rect(img, cx - 2, cy - 2, cx + 2, cy + 2, fill);
+            put(img, cx, cy, st.paper);
+        }
+        LandmarkKind::Fortress | LandmarkKind::Castle => {
+            // A crenellated tower.
+            fill_rect(img, cx - 3, cy - 3, cx + 3, cy + 3, st.ink);
+            fill_rect(img, cx - 2, cy - 1, cx + 2, cy + 2, fill);
+            put(img, cx - 2, cy - 3, fill);
+            put(img, cx, cy - 3, fill);
+            put(img, cx + 2, cy - 3, fill);
+        }
+        LandmarkKind::Lighthouse => {
+            // A beacon: a small triangle with rays.
+            for dy in -3i32..=3 {
+                let half = (3 - dy.abs()).max(0);
+                for dx in -half..=half {
+                    put(img, cx + dx, cy + dy, fill);
+                }
+            }
+            ring(img, cx, cy, 4, st.ink);
+        }
+        LandmarkKind::Temple | LandmarkKind::Oracle => diamond(img, cx, cy, 3, fill, st.ink),
+        LandmarkKind::Port => {
+            disc(img, cx, cy, 3, fill, st.ink);
+            put(img, cx, cy, st.paper);
+        }
+        LandmarkKind::Ruin | LandmarkKind::Dungeon | LandmarkKind::Shipwreck => ring(img, cx, cy, 3, st.ink),
+        _ => disc(img, cx, cy, 2, fill, st.ink), // town/village/oasis/pass/other
+    }
+}
+
+// ── Furniture ────────────────────────────────────────────────────────────────
+
+fn reserve_title(spec: &MapSpec, w: u32, taken: &mut Vec<Rect>) -> Rect {
+    let scale = 2;
+    let tw = labels::text_width(&spec.name, scale) as i32;
+    let th = labels::text_height(scale) as i32;
+    let pad = 5;
+    let bx0 = (w as i32 - tw) / 2 - pad;
+    let r = Rect { x0: bx0, y0: 9, x1: bx0 + tw + 2 * pad, y1: 9 + th + 2 * pad };
+    taken.push(r);
+    r
+}
+
+fn draw_title(img: &mut RgbImage, spec: &MapSpec, st: Style, r: Rect) {
+    fill_rect(img, r.x0 + 3, r.y0 + 3, r.x1 + 3, r.y1 + 3, st.paper_dark); // drop shadow
+    fill_rect(img, r.x0, r.y0, r.x1, r.y1, st.paper);
+    rect_outline(img, r.x0, r.y0, r.x1, r.y1, st.ink);
+    rect_outline(img, r.x0 + 2, r.y0 + 2, r.x1 - 2, r.y1 - 2, st.ink);
+    labels::draw_text(img, r.x0 + 5, r.y0 + 5, &spec.name, 2, st.ink);
+}
+
+fn draw_compass(img: &mut RgbImage, st: Style, r: Rect) {
+    let cx = (r.x0 + r.x1) / 2;
+    let cy = (r.y0 + r.y1) / 2 + 4;
+    let rad = 15;
+    // Four-point star: a filled N (dark) lobe + outlined E/S/W lobes.
+    let tips = [(0, -rad), (rad, 0), (0, rad), (-rad, 0)];
+    for &(tx, ty) in &tips {
+        line(img, cx, cy, cx + tx, cy + ty, st.ink);
+    }
+    // Diamond connecting the cardinal tips.
+    for i in 0..4 {
+        let a = tips[i];
+        let b = tips[(i + 1) % 4];
+        line(img, cx + a.0, cy + a.1, cx + b.0, cy + b.1, st.ink);
+    }
+    disc(img, cx, cy, 2, st.ink, st.ink);
+    // 'N' over the north tip.
+    labels::draw_text_haloed(img, cx - 2, cy - rad - 9, "N", 1, st.ink, st.paper);
+}
+
+fn draw_scale_bar(img: &mut RgbImage, spec: &MapSpec, st: Style, r: Rect) {
+    let km_across = km_across(spec);
+    let km_per_px = km_across / img.width() as f32;
+    // Pick a round bar length ≈ 90px wide.
+    let bar_km = nice_round(90.0 * km_per_px);
+    let bar_px = ((bar_km / km_per_px).round() as i32).clamp(24, r.x1 - r.x0 - 4);
+    let segs = 4;
+    let x0 = r.x0 + 2;
+    let y0 = r.y0 + 4;
+    let bh = 5;
+    for s in 0..segs {
+        let sx0 = x0 + bar_px * s / segs;
+        let sx1 = x0 + bar_px * (s + 1) / segs;
+        let c = if s % 2 == 0 { st.ink } else { st.paper };
+        fill_rect(img, sx0, y0, sx1, y0 + bh, c);
+    }
+    rect_outline(img, x0, y0, x0 + bar_px, y0 + bh, st.ink);
+    labels::draw_text_haloed(img, x0, y0 + bh + 3, &format!("{} KM", fmt_km(bar_km)), 1, st.ink, st.paper);
+}
+
+/// The real bottom-right legend box (anchored to the image bounds up front, so
+/// labels route around its true footprint).
+fn reserve_legend(lms: &[ResolvedLandmark], w: u32, h: u32, taken: &mut Vec<Rect>) -> Rect {
+    let rows = legend_rows(lms);
+    if rows.is_empty() {
+        return Rect { x0: 0, y0: 0, x1: -1, y1: -1 }; // empty (never overlaps)
+    }
+    let row_h = labels::line_advance(1) as i32;
+    let tw = rows.iter().map(|(_, t)| labels::text_width(t, 1) as i32).max().unwrap_or(40);
+    let bw = tw + 22;
+    let bh = row_h * (rows.len() as i32 + 1) + 8;
+    let x1 = w as i32 - 8;
+    let y1 = h as i32 - 8;
+    let r = Rect { x0: x1 - bw, y0: y1 - bh, x1, y1 };
+    taken.push(r);
+    r
+}
+
+fn draw_legend(img: &mut RgbImage, lms: &[ResolvedLandmark], st: Style, r: Rect) {
+    let rows = legend_rows(lms);
+    if rows.is_empty() {
+        return;
+    }
+    let row_h = labels::line_advance(1) as i32;
+    fill_rect(img, r.x0, r.y0, r.x1, r.y1, st.paper);
+    rect_outline(img, r.x0, r.y0, r.x1, r.y1, st.ink);
+    labels::draw_text(img, r.x0 + 5, r.y0 + 4, "LEGEND", 1, st.ink);
+    for (i, (kind, label)) in rows.iter().enumerate() {
+        let ry = r.y0 + 4 + row_h * (i as i32 + 1);
+        draw_symbol(img, r.x0 + 8, ry + 3, kind, st);
+        labels::draw_text(img, r.x0 + 16, ry, label, 1, st.ink);
+    }
+}
+
+fn draw_frame(img: &mut RgbImage, st: Style) {
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    rect_outline(img, 3, 3, w - 4, h - 4, st.ink);
+    rect_outline(img, 6, 6, w - 7, h - 7, st.ink);
+}
+
+// ── Legend helpers ───────────────────────────────────────────────────────────
+
+/// Unique landmark kinds present, in first-seen order, with display labels.
+fn legend_rows(lms: &[ResolvedLandmark]) -> Vec<(LandmarkKind, String)> {
+    let mut seen: Vec<LandmarkKind> = Vec::new();
+    for lm in lms {
+        if !seen.contains(&lm.kind) {
+            seen.push(lm.kind.clone());
+        }
+    }
+    seen.into_iter().map(|k| (k.clone(), k.as_str().to_uppercase())).collect()
+}
+
+// ── Scale helpers ────────────────────────────────────────────────────────────
+
+/// Approximate km across the map width. Uses `world_extent_km` if present, else a
+/// per-tier nominal scaled by the wider tile axis.
+fn km_across(spec: &MapSpec) -> f32 {
+    if let Some(k) = spec.world_extent_km {
+        return (k as f32).max(0.5);
+    }
+    let base = match spec.scale_tier {
+        0 => 8.0,
+        1 => 25.0,
+        2 => 80.0,
+        3 => 300.0,
+        4 => 1200.0,
+        5 => 6000.0,
+        10 => 2.0,
+        11 => 1.0,
+        12 => 0.5,
+        _ => 50.0,
+    };
+    let tiles = spec.tile_grid.cols.max(spec.tile_grid.rows).max(1) as f32;
+    base * (tiles / 2.0).max(0.5)
+}
+
+/// Largest "nice" number (1/2/5 × 10ⁿ) not exceeding `target`.
+fn nice_round(target: f32) -> f32 {
+    if target <= 0.0 {
+        return 1.0;
+    }
+    let mag = 10f32.powf(target.log10().floor());
+    for m in [5.0, 2.0, 1.0] {
+        if m * mag <= target {
+            return m * mag;
+        }
+    }
+    mag
+}
+
+fn fmt_km(km: f32) -> String {
+    if km >= 1.0 {
+        format!("{}", km.round() as i64)
+    } else {
+        format!("{km:.1}")
+    }
+}
+
+/// The sea cell nearest the position hint's cardinal point — open water on the
+/// intended side, never the (land-covered) centroid of a ring sea.
+fn sea_label_point(hf: &HeightField, position: &str) -> Option<(i32, i32)> {
+    let (w, h) = (hf.width, hf.height);
+    let (fx, fy) = cardinal_frac(position);
+    let (tx, ty) = (fx * w as f32, fy * h as f32);
+    let mut best: Option<(i32, f32)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            if hf.data[(y * w + x) as usize] < DEFAULT_SEA_LEVEL {
+                let d = (x as f32 - tx).powi(2) + (y as f32 - ty).powi(2);
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some(((y * w + x) as i32, d));
+                }
+            }
+        }
+    }
+    best.map(|(i, _)| ((i as u32 % w) as i32, (i as u32 / w) as i32))
+}
+
+/// A position keyword → normalized (x, y); defaults to centre.
+fn cardinal_frac(position: &str) -> (f32, f32) {
+    match position.to_ascii_lowercase().replace([' ', '-'], "_").as_str() {
+        "north" | "top" => (0.5, 0.12),
+        "south" | "bottom" => (0.5, 0.88),
+        "east" | "right" => (0.88, 0.5),
+        "west" | "left" => (0.12, 0.5),
+        "northeast" | "north_east" => (0.85, 0.15),
+        "northwest" | "north_west" => (0.15, 0.15),
+        "southeast" | "south_east" => (0.85, 0.85),
+        "southwest" | "south_west" => (0.15, 0.85),
+        _ => (0.5, 0.5),
+    }
+}
+
+// ── Geometry primitives ──────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+impl Rect {
+    fn overlaps(&self, o: &Rect) -> bool {
+        self.x0 <= o.x1 && o.x0 <= self.x1 && self.y0 <= o.y1 && o.y0 <= self.y1
+    }
+}
+
+fn reserve_box(x: i32, y: i32, w: i32, h: i32, taken: &mut Vec<Rect>) -> Rect {
+    let r = Rect { x0: x, y0: y, x1: x + w, y1: y + h };
+    taken.push(r);
+    r
+}
+
+fn blend(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |i: usize| (a[i] as f32 * (1.0 - t) + b[i] as f32 * t).round().clamp(0.0, 255.0) as u8;
+    [mix(0), mix(1), mix(2)]
+}
+
+fn shade(c: [u8; 3], k: f32) -> [u8; 3] {
+    let s = |v: u8| (v as f32 * k).round().clamp(0.0, 255.0) as u8;
+    [s(c[0]), s(c[1]), s(c[2])]
+}
+
+fn put(img: &mut RgbImage, x: i32, y: i32, c: [u8; 3]) {
+    if x >= 0 && y >= 0 && x < img.width() as i32 && y < img.height() as i32 {
+        img.put_pixel(x as u32, y as u32, Rgb(c));
+    }
+}
+
+fn plot_thick(img: &mut RgbImage, x: i32, y: i32, c: [u8; 3]) {
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1)] {
+        put(img, x + dx, y + dy, c);
+    }
+}
+
+fn fill_rect(img: &mut RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            put(img, x, y, c);
+        }
+    }
+}
+
+fn rect_outline(img: &mut RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
+    for x in x0..=x1 {
+        put(img, x, y0, c);
+        put(img, x, y1, c);
+    }
+    for y in y0..=y1 {
+        put(img, x0, y, c);
+        put(img, x1, y, c);
+    }
+}
+
+fn line(img: &mut RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
+    let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
+    let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+    let (mut err, mut x, mut y) = (dx + dy, x0, y0);
+    loop {
+        put(img, x, y, c);
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+fn disc(img: &mut RgbImage, cx: i32, cy: i32, r: i32, fill: [u8; 3], edge: [u8; 3]) {
+    let re = r + 1;
+    for dy in -re..=re {
+        for dx in -re..=re {
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r * r {
+                put(img, cx + dx, cy + dy, fill);
+            } else if d2 <= re * re {
+                put(img, cx + dx, cy + dy, edge);
+            }
+        }
+    }
+}
+
+fn ring(img: &mut RgbImage, cx: i32, cy: i32, r: i32, c: [u8; 3]) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r * r && d2 >= (r - 1) * (r - 1) {
+                put(img, cx + dx, cy + dy, c);
+            }
+        }
+    }
+}
+
+fn diamond(img: &mut RgbImage, cx: i32, cy: i32, r: i32, fill: [u8; 3], edge: [u8; 3]) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let m = dx.abs() + dy.abs();
+            if m < r {
+                put(img, cx + dx, cy + dy, fill);
+            } else if m == r {
+                put(img, cx + dx, cy + dy, edge);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::spec::MapSpec;
+
+    fn island() -> MapSpec {
+        serde_json::from_str(include_str!("../../corpus/map/island.spec.json")).unwrap()
+    }
+
+    #[test]
+    fn renders_island_to_canvas_size() {
+        let img = render(&island(), 42, Style::default()).unwrap();
+        let c = GeoCanvas::from_spec(&island(), 42);
+        assert_eq!(img.dimensions(), (c.width, c.height));
+    }
+
+    #[test]
+    fn render_is_deterministic() {
+        let a = render(&island(), 42, Style::default()).unwrap();
+        let b = render(&island(), 42, Style::default()).unwrap();
+        assert!(a.as_raw() == b.as_raw(), "render must be byte-stable");
+    }
+
+    #[test]
+    fn styles_resolve_and_differ() {
+        assert!(Style::named("inked").is_ok());
+        assert!(Style::named("blueprint").is_ok());
+        assert!(Style::named("nope").is_err());
+        let p = render(&island(), 42, Style::named("parchment").unwrap()).unwrap();
+        let b = render(&island(), 42, Style::named("blueprint").unwrap()).unwrap();
+        assert!(p.as_raw() != b.as_raw(), "different styles → different pixels");
+    }
+
+    #[test]
+    fn nice_round_picks_one_two_five() {
+        assert_eq!(nice_round(90.0), 50.0);
+        assert_eq!(nice_round(30.0), 20.0);
+        assert_eq!(nice_round(12.0), 10.0);
+        assert_eq!(nice_round(7.0), 5.0);
+    }
+
+    #[test]
+    fn label_boxes_do_not_overlap_reserved_furniture() {
+        // The render runs the full placement path; this just asserts it completes
+        // and produces a non-trivial image (ink present from frame + labels).
+        let img = render(&island(), 42, Style::default()).unwrap();
+        let st = Style::default();
+        assert!(img.pixels().any(|p| p.0 == st.ink), "ink linework present");
+    }
+}

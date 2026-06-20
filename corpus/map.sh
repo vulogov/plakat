@@ -52,7 +52,21 @@ cmp /tmp/plakat-map-roads.png "$ROOT/corpus/images/map/island-roads.png" \
 "$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-features /tmp/plakat-map-feat.png >/dev/null
 cmp /tmp/plakat-map-feat.png "$ROOT/corpus/images/map/island-features.png" \
   || { echo "✗ feature overlay drifted from the committed proof"; exit 1; }
-rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png
+
+# 5) MAP-3 — the complete styled, labelled map (linework render). Same (spec, seed)
+#    → byte-identical PNG (terrain + coast + rivers + roads + labels + furniture).
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-render /tmp/plakat-map-render.png >/dev/null
+cmp /tmp/plakat-map-render.png "$ROOT/corpus/images/map/island-render.png" \
+  || { echo "✗ linework render drifted from the committed proof"; exit 1; }
+
+# 6) MAP-3b — vector export (GeoJSON + SVG). Deterministic text → byte-identical.
+"$PLAKAT" map --map-spec "$SPEC" --seed 42 \
+  --map-export-geojson /tmp/plakat-map.geojson --map-export-svg /tmp/plakat-map.svg >/dev/null
+cmp /tmp/plakat-map.geojson "$ROOT/corpus/map/export/island.geojson" \
+  || { echo "✗ GeoJSON export drifted from the committed proof"; exit 1; }
+cmp /tmp/plakat-map.svg "$ROOT/corpus/map/export/island.svg" \
+  || { echo "✗ SVG export drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
 echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"
@@ -62,3 +76,5 @@ echo "  + MAP-2 (L4): biome map byte-stable vs corpus/images/map/island-biome.pn
 echo "  + MAP-2 (L5): landmarks resolved + placed byte-stable vs corpus/images/map/island-landmarks.png"
 echo "  + MAP-2 (L6): road network byte-stable vs corpus/images/map/island-roads.png"
 echo "  + MAP-2 (L7): assembled feature overlay byte-stable vs corpus/images/map/island-features.png — geometry engine COMPLETE"
+echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/map/island-render.png — first complete user-facing map"
+echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"

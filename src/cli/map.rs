@@ -77,6 +77,24 @@ pub struct MapArgs {
     /// (biome + coast + rivers + roads + landmarks) (L7).
     #[arg(long = "map-dump-features", value_name = "PATH")]
     pub dump_features: Option<PathBuf>,
+
+    /// MAP-3: render the complete styled, labelled map (the headline output:
+    /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
+    #[arg(long = "map-render", value_name = "PATH")]
+    pub render: Option<PathBuf>,
+
+    /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
+    #[arg(long = "map-style", default_value = "parchment")]
+    pub style: String,
+
+    /// MAP-3b: export the map geometry as GeoJSON (coast/rivers/roads/landmarks,
+    /// normalized 0–1 north-up).
+    #[arg(long = "map-export-geojson", value_name = "PATH")]
+    pub export_geojson: Option<PathBuf>,
+
+    /// MAP-3b: export the map as a standalone SVG (scalable linework + labels).
+    #[arg(long = "map-export-svg", value_name = "PATH")]
+    pub export_svg: Option<PathBuf>,
 }
 
 pub async fn run(args: MapArgs) -> Result<()> {
@@ -228,6 +246,36 @@ pub async fn run(args: MapArgs) -> Result<()> {
         }
     }
 
+    // MAP-3: the complete styled, labelled map — the headline render.
+    if let Some(p) = &args.render {
+        let rstyle = map::render::Style::named(&args.style)?;
+        map::render::save_render(&spec, args.seed, rstyle, p)?;
+        println!(
+            "{}  map → {}  ({} landmark(s), style {}, seed {})",
+            style("✓").green(),
+            p.display(),
+            spec.landmarks.len(),
+            args.style,
+            args.seed
+        );
+        did_dump = true;
+    }
+
+    // MAP-3b: vector export (GeoJSON / SVG) — same geometry, scalable.
+    if args.export_geojson.is_some() || args.export_svg.is_some() {
+        let vm = map::export::VectorMap::build(&spec, args.seed)?;
+        if let Some(p) = &args.export_geojson {
+            map::export::save(&vm, &spec, p)?;
+            println!("{}  GeoJSON → {}  ({} landmark(s), seed {})", style("✓").green(), p.display(), vm.landmarks.len(), args.seed);
+            did_dump = true;
+        }
+        if let Some(p) = &args.export_svg {
+            map::export::save(&vm, &spec, p)?;
+            println!("{}  SVG → {}  ({} coast ring(s), seed {})", style("✓").green(), p.display(), vm.coast_rings.len(), args.seed);
+            did_dump = true;
+        }
+    }
+
     let json = serde_json::to_string_pretty(&spec)?;
     match &args.dump_spec {
         Some(p) if p.as_os_str() != "-" => {
@@ -255,12 +303,13 @@ pub async fn run(args: MapArgs) -> Result<()> {
         None => {}
     }
 
-    // No explicit dump → print the spec (the MAP-1 deliverable) + a pointer.
+    // No explicit dump → print the spec + a pointer to the headline render.
     if !did_dump {
         println!("{json}");
         eprintln!(
-            "{}  the geometry render (linework / tiled-SD) lands in MAP-3+. \
-             --map-dump-spec saves the spec; --map-dump-heightmap writes the L0+L1 heightmap.",
+            "{}  --map-render PATH writes the complete styled, labelled map \
+             (--map-style parchment|inked|blueprint); --map-dump-spec saves the spec. \
+             The tiled-SD painted render lands in 1.6.",
             style("note:").dim()
         );
     }
