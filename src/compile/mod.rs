@@ -107,6 +107,16 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { key: "tag",       kind: CommandKind::Scenario, merge: Merge::AccumulateList },
     CommandSpec { key: "weather",   kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "skip",      kind: CommandKind::Scenario, merge: Merge::LastWins },
+    // ---- MAP-4: a `type: map` block compiles to a scenario `map` task ----
+    CommandSpec { key: "type",          kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-spec",      kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-style",     kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-paint",     kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-scale",     kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-tiles",     kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-sd-model",  kind: CommandKind::Scenario, merge: Merge::LastWins },
+    CommandSpec { key: "map-sd-lora",   kind: CommandKind::Scenario, merge: Merge::AccumulateList },
+    CommandSpec { key: "map-provider",  kind: CommandKind::Scenario, merge: Merge::LastWins },
 ];
 
 /// Look up a command spec by key.

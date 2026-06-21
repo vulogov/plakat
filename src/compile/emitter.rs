@@ -113,6 +113,35 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         if let Some(r) = s.refine {
             o.push_str(&format!("      refine: {r}\n"));
         }
+        // MAP-4: emit the map directives so a `type: map` block becomes a map task.
+        if let Some(t) = &s.task_type {
+            o.push_str(&format!("      type: {}\n", q(t)));
+        }
+        if let Some(v) = &s.map_spec {
+            o.push_str(&format!("      map-spec: {}\n", q(v)));
+        }
+        if let Some(v) = &s.map_style {
+            o.push_str(&format!("      map-style: {}\n", q(v)));
+        }
+        if let Some(v) = &s.map_paint {
+            o.push_str(&format!("      map-paint: {v}\n")); // true|false (bool in HJSON)
+        }
+        if let Some(v) = &s.map_scale {
+            o.push_str(&format!("      map-scale: {}\n", q(v)));
+        }
+        if let Some(v) = &s.map_tiles {
+            o.push_str(&format!("      map-tiles: {}\n", q(v)));
+        }
+        if let Some(v) = &s.map_sd_model {
+            o.push_str(&format!("      map-sd-model: {}\n", q(v)));
+        }
+        if !s.map_sd_lora.is_empty() {
+            let items: Vec<String> = s.map_sd_lora.iter().map(|l| q(l)).collect();
+            o.push_str(&format!("      map-sd-lora: [{}]\n", items.join(", ")));
+        }
+        if let Some(v) = &s.map_provider {
+            o.push_str(&format!("      map-provider: {}\n", q(v)));
+        }
         o.push_str("    }\n");
     }
     o.push_str("  ]\n");

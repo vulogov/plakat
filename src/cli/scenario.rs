@@ -270,6 +270,30 @@ struct ScenarioFile {
     #[serde(rename = "gif-delay-ms", default)]
     animate_gif_delay_ms: Option<u16>,
 
+    // ---------- MAP-4: scenario-level `map` task defaults (per-task overrides) ----------
+    /// `--map-spec` path: a committed MapSpec to load (skips the LLM). Per-task wins.
+    #[serde(rename = "map-spec", default)]
+    map_spec: Option<String>,
+    /// `parchment` | `inked` | `blueprint`.
+    #[serde(rename = "map-style", default)]
+    map_style: Option<String>,
+    /// Paint the map with SD (img2img + Canny) instead of the deterministic linework.
+    #[serde(rename = "map-paint", default)]
+    map_paint: Option<bool>,
+    /// `--map-scale` alias / `--map-tiles` `CxR`.
+    #[serde(rename = "map-scale", default)]
+    map_scale: Option<String>,
+    #[serde(rename = "map-tiles", default)]
+    map_tiles: Option<String>,
+    /// SD backbone + LoRA(s) for the painted path.
+    #[serde(rename = "map-sd-model", default)]
+    map_sd_model: Option<String>,
+    #[serde(rename = "map-sd-lora", default)]
+    map_sd_lora: Vec<String>,
+    /// LLM provider for the prose→spec parse.
+    #[serde(rename = "map-provider", default)]
+    map_provider: Option<String>,
+
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
     ///   * `flux-canny-dev` — canny edge map (channel-concat 128ch img_in)
@@ -532,8 +556,14 @@ struct NamedPrompt {
 #[derive(Debug, Deserialize)]
 struct TaskDef {
     name: String,
+    // `scene`/`weather` style a generate task; `prompt` is its text (or, for a
+    // `type: map` task, the world description). All default-empty so a map task —
+    // which sources from `map-spec` or `prompt` — needn't carry scene/weather.
+    #[serde(default)]
     scene: String,
+    #[serde(default)]
     weather: String,
+    #[serde(default)]
     prompt: String,
 
     /// Regional prompting: per-region prompts `"x0,y0,x1,y1:prompt"` (canvas
@@ -843,6 +873,24 @@ struct TaskDef {
     /// scenario-level `gif-delay-ms:`.
     #[serde(rename = "gif-delay-ms", default)]
     animate_gif_delay_ms: Option<u16>,
+
+    // ---------- MAP-4: per-task `map` overrides (the task `prompt` is the description) ----------
+    #[serde(rename = "map-spec", default)]
+    map_spec: Option<String>,
+    #[serde(rename = "map-style", default)]
+    map_style: Option<String>,
+    #[serde(rename = "map-paint", default)]
+    map_paint: Option<bool>,
+    #[serde(rename = "map-scale", default)]
+    map_scale: Option<String>,
+    #[serde(rename = "map-tiles", default)]
+    map_tiles: Option<String>,
+    #[serde(rename = "map-sd-model", default)]
+    map_sd_model: Option<String>,
+    #[serde(rename = "map-sd-lora", default)]
+    map_sd_lora: Vec<String>,
+    #[serde(rename = "map-provider", default)]
+    map_provider: Option<String>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -906,6 +954,7 @@ impl EffectiveAnimateCfg {
 enum TaskKind {
     Generate,
     Animate,
+    Map,
 }
 
 impl TaskKind {
@@ -917,9 +966,10 @@ impl TaskKind {
         match raw.to_ascii_lowercase().as_str() {
             "generate" | "gen" | "t2i" => Ok(Self::Generate),
             "animatediff" | "animate" => Ok(Self::Animate),
+            "map" => Ok(Self::Map),
             other => bail!(
                 "scenario task type {other:?} not recognised \
-                 (expected: generate, animatediff)"
+                 (expected: generate, animatediff, map)"
             ),
         }
     }
@@ -940,6 +990,9 @@ enum CacheEviction {
     /// Just switched FROM animate TO generate — drop the
     /// `animate_sd15` / `animate_sdxl` carriers.
     DropAnimate,
+    /// Switching TO a `map` task — its painted render loads its own SD pipeline
+    /// internally, so free whatever t2i / animate pipeline was cached first.
+    DropAll,
 }
 
 /// v0.32 phase 2: pure VAE cache decision. Returns `Some(value.clone())`
@@ -959,6 +1012,8 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
     match (last, current) {
         (Some(TaskKind::Generate), TaskKind::Animate) => CacheEviction::DropT2i,
         (Some(TaskKind::Animate), TaskKind::Generate) => CacheEviction::DropAnimate,
+        // A map task loads its own SD pipeline — free any cached one first.
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map) => CacheEviction::DropAll,
         // First task (last == None) or same-kind continuation —
         // no eviction needed.
         _ => CacheEviction::None,
@@ -969,6 +1024,31 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
 /// by merging scenario-level defaults with per-task overrides.
 /// Scenario `motion-lora` list is the BASE; task `motion-lora` list
 /// is APPENDED (same pattern as `loras:`).
+/// MAP-4: merge scenario-level + per-task `map` fields into a `MapTaskCfg`. The
+/// task `prompt` is the world description; per-task fields override scenario ones.
+fn effective_map_config(scenario: &ScenarioFile, task: &TaskDef) -> crate::map::scenario_task::MapTaskCfg {
+    let pick = |t: Option<&String>, s: Option<&String>, d: &str| t.or(s).cloned().unwrap_or_else(|| d.to_string());
+    let spec = task.map_spec.clone().or_else(|| scenario.map_spec.clone());
+    // Per-task LoRAs replace scenario ones when present (mirrors --map-sd-lora).
+    let sd_loras = if !task.map_sd_lora.is_empty() {
+        task.map_sd_lora.clone()
+    } else {
+        scenario.map_sd_lora.clone()
+    };
+    crate::map::scenario_task::MapTaskCfg {
+        description: task.prompt.clone(),
+        spec_path: spec.map(std::path::PathBuf::from),
+        style: pick(task.map_style.as_ref(), scenario.map_style.as_ref(), "parchment"),
+        paint: task.map_paint.or(scenario.map_paint).unwrap_or(false),
+        provider: pick(task.map_provider.as_ref(), scenario.map_provider.as_ref(), "auto"),
+        scale: task.map_scale.clone().or_else(|| scenario.map_scale.clone()),
+        tiles: task.map_tiles.clone().or_else(|| scenario.map_tiles.clone()),
+        sd_model: pick(task.map_sd_model.as_ref(), scenario.map_sd_model.as_ref(), "sdxl"),
+        sd_loras,
+        cache: false,
+    }
+}
+
 fn effective_animate_config(
     scenario: &ScenarioFile,
     task: &TaskDef,
@@ -1287,6 +1367,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             TaskKind::Generate => {
                 has_generate_tasks = true;
             }
+            TaskKind::Map => {
+                // Validate the style up front; spec sourcing happens at run time.
+                let cfg = effective_map_config(&s, t);
+                crate::map::render::Style::named(&cfg.style)?;
+            }
         }
     }
 
@@ -1301,6 +1386,10 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .map(|p| (p.name.as_str(), p.prompt.as_str()))
         .collect();
     for t in &s.tasks {
+        // Map tasks don't use scene/weather styling — skip the cross-reference check.
+        if matches!(TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()), Ok(TaskKind::Map)) {
+            continue;
+        }
         if !scenes.contains_key(t.scene.as_str()) {
             bail!("task {:?} references unknown scene {:?}", t.name, t.scene);
         }
@@ -2133,9 +2222,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .tasks
             .iter()
             .filter(|t| !matches!(t.enhance, Some(EnhanceCfg::Toggle(false))))
+            // Map tasks don't run prompt enhancement (and carry no scene/weather).
+            .filter(|t| !matches!(TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()), Ok(TaskKind::Map)))
             .map(|t| {
-                let scene = scenes[t.scene.as_str()];
-                let weather = weathers[t.weather.as_str()];
+                let scene = scenes.get(t.scene.as_str()).copied().unwrap_or("");
+                let weather = weathers.get(t.weather.as_str()).copied().unwrap_or("");
                 join_parts(&[
                     &s.prompt_header,
                     scene,
@@ -2391,8 +2482,11 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         }
         ran_count += 1;
 
-        let scene_prompt = scenes[task.scene.as_str()];
-        let weather_prompt = weathers[task.weather.as_str()];
+        // Tolerant lookups: generate/animate tasks are scene-validated up front, so
+        // these always hit; a `type: map` task carries no scene/weather and falls
+        // through to the map dispatch arm below (which ignores these).
+        let scene_prompt = scenes.get(task.scene.as_str()).copied().unwrap_or("");
+        let weather_prompt = weathers.get(task.weather.as_str()).copied().unwrap_or("");
 
         let pre_refine = join_parts(&[
             &s.prompt_header,
@@ -2439,6 +2533,20 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         "scenario kind switch: dropping cached animate pipeline(s) before generate task {:?}",
                         task.name,
                     );
+                    animate_sd15 = None;
+                    animate_sd15_key = None;
+                    animate_sdxl = None;
+                    animate_sdxl_key = None;
+                }
+            }
+            CacheEviction::DropAll => {
+                if pipeline.is_some() || animate_sd15.is_some() || animate_sdxl.is_some() {
+                    tracing::info!(
+                        target: "plakat",
+                        "scenario kind switch: dropping cached pipeline(s) before map task {:?}",
+                        task.name,
+                    );
+                    pipeline = None;
                     animate_sd15 = None;
                     animate_sd15_key = None;
                     animate_sdxl = None;
@@ -2500,6 +2608,49 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     task_records.push(TaskRunRecord {
                         name: task.name.clone(),
                         kind: "animatediff".to_string(),
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
+            seed_offset += count as u64;
+            continue;
+        }
+
+        // MAP-4: map-task dispatch. Sources the spec (load or LLM-parse) and renders
+        // linework (deterministic, no GPU) or paints with SD, to `<out>/<name>/map.png`.
+        if matches!(task_kind, TaskKind::Map) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset);
+            let task_out = out_root.join(safe_name(&task.name));
+            let map_result: Result<()> = async {
+                let cfg = effective_map_config(&s, task);
+                crate::map::scenario_task::run_map_task(&cfg, task_seed, device.clone(), &task_out, args.dry_run)
+                    .await
+                    .map(|_| ())
+            }
+            .await;
+            match map_result {
+                Ok(()) => task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: "map".to_string(),
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed),
+                    note: None,
+                    error: None,
+                }),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} task {:?}: {}",
+                        style("✗ failed").red().bold(),
+                        task.name,
+                        e
+                    ));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: "map".to_string(),
                         status: "failed".to_string(),
                         seed: Some(task_seed),
                         note: None,

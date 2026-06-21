@@ -34,6 +34,15 @@ DIFF="$("$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-neg
   | "$PLAKAT" compile - --no-enhance --no-negative --out - \
   | "$PLAKAT" scenario - --dry-run >/dev/null
 
+# 5b) MAP-4: a `map:` block compiles to a `type: map` scenario task. Deterministic
+#     → byte-stable committed maps.hjson; the compiled scenario dry-runs (2 map tasks).
+"$PLAKAT" compile "$ROOT/corpus/compile/maps.txt" \
+  --no-enhance --no-negative --out "$ROOT/corpus/compile/maps.hjson"
+"$PLAKAT" scenario "$ROOT/corpus/compile/maps.hjson" --dry-run >/dev/null
+MDIFF="$("$PLAKAT" compile "$ROOT/corpus/compile/maps.txt" --no-enhance --no-negative \
+  --diff "$ROOT/corpus/compile/maps.hjson")"
+[ "$MDIFF" = "(no changes)" ] || { echo "✗ compile map block not byte-stable: $MDIFF"; exit 1; }
+
 # 6) COMPILE-2: end-to-end Tera → scenario — only if this binary was built with
 #    `--features templates` (otherwise the stub errors and we skip gracefully).
 TERA_VARS=("--vars" "$ROOT/corpus/compile/series.json")
@@ -54,4 +63,5 @@ else
 fi
 
 echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"
+echo "  + MAP-4: maps.txt -> maps.hjson (2 map tasks (type: map), byte-stable, scenario-validated)"
 echo "  $TERA"

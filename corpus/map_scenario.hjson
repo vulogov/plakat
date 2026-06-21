@@ -1,0 +1,35 @@
+{
+    // ===================================================================
+    // plakat proof corpus — `map` scenario task (MAP-4)
+    // ===================================================================
+    // A `plakat scenario` batch can now emit a map alongside renders. The
+    // `type: map` task sources a spec (here a committed one, no LLM) and renders
+    // the deterministic linework map — no GPU. Each task writes `<out>/<name>/map.png`.
+    //
+    //   plakat scenario corpus/map_scenario.hjson            (renders)
+    //   plakat scenario corpus/map_scenario.hjson --dry-run  (validate only)
+    //
+    // The painted path is opt-in per task (`map-paint: true` + an SDXL model);
+    // it's exercised by corpus/map_render.sh, not here (this stays GPU-free).
+    // ===================================================================
+    out: ./corpus/images/map/scenario
+    seed: 42
+
+    tasks:
+    [
+        {
+            name: isle-parchment
+            type: map
+            seed: 42
+            map-spec: corpus/map/island.spec.json
+            map-style: parchment
+        }
+        {
+            name: isle-blueprint
+            type: map
+            seed: 42
+            map-spec: corpus/map/island.spec.json
+            map-style: blueprint
+        }
+    ]
+}

@@ -27,6 +27,7 @@ pub mod inpaint;
 pub mod load;
 pub mod look;
 pub mod lora;
+pub mod map;
 pub mod metadata;
 pub mod outpaint;
 pub mod pixart;
@@ -47,6 +48,8 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.load: {e}"))?;
     vm.register_inline("plakat.generate".to_string(), generate::plakat_generate)
         .map_err(|e| anyhow!("registering plakat.generate: {e}"))?;
+    vm.register_inline("plakat.map.render".to_string(), map::plakat_map_render)
+        .map_err(|e| anyhow!("registering plakat.map.render: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)
         .map_err(|e| anyhow!("registering plakat.img2img: {e}"))?;
     vm.register_inline("plakat.portrait".to_string(), portrait::plakat_portrait)

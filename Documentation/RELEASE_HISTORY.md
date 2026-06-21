@@ -1,12 +1,29 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.5. The current
+"What's new" sections for v0.13 through 1.6. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.6.0 — a *painted* map (`plakat map --map-render-sd`)
+
+1.6.0 was the map track's render capstone: run the 1.5.0 geometry through SD
+img2img + a Canny ControlNet so the map looks hand-painted, then re-composite the
+crisp linework + labels on top. The only GPU step on the track — the styled-base
+conditioning stays a pure fn of (spec, seed); only the paint is non-deterministic.
+
+- **`--map-render-sd`** — the styled base is the img2img init + Canny source;
+  coastline/rivers/roads/labels re-composite over the paint (`--map-sd-raw` for the
+  bare painting). Any model (`--map-sd-model`) with optional LoRA (`--map-sd-lora`;
+  SDXL-family defaults to `Muapi/fantasy-map`, `none` disables).
+- **Tiled multi-tile** (`--map-sd-tile`) — large canvases paint in overlapping
+  Hann-feathered tiles, each a memory-safe full pass; pipeline + LoRA load once.
+- **Broad SDXL LoRA compatibility** — a compvis→diffusers UNet key remap so
+  kohya-format `lora_unet_input_blocks_*` LoRAs merge into the UNet across every
+  LoRA path (generate / portrait / img2img / scenario / map), not just maps.
 
 ## What's new in 1.5.0 — a finished map you can read (`plakat map --map-render`)
 
