@@ -58,6 +58,21 @@ Layered like the geographic engine (L0–L7), but at the street scale (scale tie
 `petgraph` (street graph; the one heavy add). A DCEL/half-edge crate **only if** the
 block-face walk needs it — try a hand-rolled face walk first to avoid the dep.
 
+## Realism + configurability (done)
+
+- [x] **Eroded natural features — DONE.** The island coastline is multi-scale
+      noise-warped (bays, peninsulas, headlands) and mountain ridgelines wander with
+      varying crest height — no more smooth-potato islands or oval ranges.
+- [x] **Configurable town layouts — DONE.** Rebuilt the urban plan as medieval
+      radio-concentric (curved rings + radials), with `LayoutStyle { Radial | Grid |
+      Organic }` picked via `urban.layout` / `--map-urban-layout` or inferred
+      (mountain→organic, walled→radial, plains→grid). A straight grid only when chosen.
+- [x] **Controllable erosion — DONE.** `terrain.erosion` (0 smooth … 1 natural …
+      >1 rugged) scales the coast + ridge irregularity, exposed via `--map-erosion`
+      and the scenario `map-erosion` field (+ `map-layout`); the LLM schema documents
+      it. `erosion=1.0` is the natural default; the value flows through every render
+      surface (CLI / scenario / scripting).
+
 ## Opportunistic polish (small, fits this cycle)
 
 - [ ] **L2 named-river ↔ traced-channel matching** — wire the spec's river ids

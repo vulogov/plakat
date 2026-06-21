@@ -241,6 +241,11 @@ pub struct TerrainSpec {
     pub plateaus: Vec<NamedRegion>,
     #[serde(default)]
     pub rift_valleys: Vec<NamedRegion>,
+    /// Erosion / irregularity strength for natural features: `0.0` = smooth/idealized
+    /// (circular coasts, oval ranges), `1.0` = natural (default), `>1.0` = rugged
+    /// (ragged coasts, wandering ridgelines). `None` = the 1.0 default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erosion: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

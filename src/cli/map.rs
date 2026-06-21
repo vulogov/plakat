@@ -88,6 +88,11 @@ pub struct MapArgs {
     #[arg(long = "map-urban-layout", value_name = "STYLE")]
     pub urban_layout: Option<String>,
 
+    /// MAP-2: erosion / irregularity of natural features (coasts, mountain ridges):
+    /// 0 = smooth/idealized, 1 = natural (default), >1 = rugged. Overrides the spec.
+    #[arg(long = "map-erosion", value_name = "AMOUNT")]
+    pub erosion: Option<f32>,
+
     /// MAP-3: render the complete styled, labelled map (the headline output:
     /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
     #[arg(long = "map-render", value_name = "PATH")]
@@ -201,6 +206,10 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
     // for a town-scale spec that lacks one, so the flag works on bare specs too).
     if let Some(l) = &args.urban_layout {
         spec.urban.get_or_insert_with(Default::default).layout = Some(l.clone());
+    }
+    // MAP-2: `--map-erosion` overrides the natural-feature irregularity.
+    if let Some(e) = args.erosion {
+        spec.terrain.erosion = Some(e);
     }
 
     let mut did_dump = false;

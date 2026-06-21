@@ -146,6 +146,7 @@ Top-level shape:
   "tile_grid": { "cols": <1-8>, "rows": <1-8> },
   "climate": "<optional>", "era": "<optional>", "language": "<optional BCP-47>",
   "terrain": { "dominant_elevation": "flat|hilly|mountainous|...",
+               "erosion": <0=smooth..1=natural..2=rugged, optional>,
                "mountain_ranges": [ { "id","name","anchor","orientation","height" } ] },
   "water": { "seas": [ { "id","name","position","enclosed" } ],
              "rivers": [ { "id","name","source":<anchor>,"mouth":<anchor>,"navigable" } ],

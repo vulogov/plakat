@@ -66,6 +66,9 @@ impl HeightField {
             }
         }
 
+        // Erosion / irregularity strength (0 = smooth, 1 = natural default, >1 rugged).
+        let erosion = spec.terrain.erosion.unwrap_or(1.0).clamp(0.0, 4.0);
+
         // Mountain ranges: oriented gaussian ridges at their resolved anchor.
         for (i, range) in spec.terrain.mountain_ranges.iter().enumerate() {
             if let Some((cx, cy)) = resolve_simple(&range.anchor) {
@@ -79,13 +82,14 @@ impl HeightField {
                     range.length_fraction.max(0.25),
                     height_amp(&range.height),
                     canvas.seed as u32 ^ (i as u32).wrapping_mul(0x9e37),
+                    erosion,
                 );
             }
         }
 
         // Shape the landmass so the map actually has coasts (island radial taper /
         // sea-positioned edges) — this also makes rivers drain into the sea.
-        apply_landmass_shape(&mut data, spec, w, h, canvas.seed as u32);
+        apply_landmass_shape(&mut data, spec, w, h, canvas.seed as u32, erosion);
 
         normalize(&mut data);
         HeightField { width: w, height: h, data }
@@ -164,7 +168,7 @@ fn height_amp(height: &str) -> f32 {
 /// displaces it perpendicular along its length) and the **crest height varies**
 /// (noise-modulated amplitude), so a real eroded range, not a smooth oval.
 #[allow(clippy::too_many_arguments)]
-fn add_ridge(data: &mut [f32], w: u32, h: u32, cx: f32, cy: f32, orientation: &str, length_frac: f32, amp: f32, seed: u32) {
+fn add_ridge(data: &mut [f32], w: u32, h: u32, cx: f32, cy: f32, orientation: &str, length_frac: f32, amp: f32, seed: u32, erosion: f32) {
     let (dx, dy) = orient_dir(orientation);
     let cxp = cx * w as f32;
     let cyp = cy * h as f32;
@@ -175,9 +179,10 @@ fn add_ridge(data: &mut [f32], w: u32, h: u32, cx: f32, cy: f32, orientation: &s
     let reach_perp = 3.5 * sigma_perp + sigma_perp * 2.0; // extra room for the wander
     let reach_along = 3.5 * sigma_along;
     let perlin = Perlin::new(seed);
-    // Ridgeline offset + crest modulation as a function of position along the axis.
-    let wander = |t: f32| perlin.get([(t * 0.012) as f64, 4.0]) as f32 * sigma_perp * 1.6;
-    let crest = |t: f32| 0.65 + 0.35 * (perlin.get([(t * 0.02) as f64, 11.0]) as f32 * 0.5 + 0.5);
+    // Ridgeline offset + crest modulation along the axis, both scaled by `erosion`
+    // (0 → a smooth straight oval, 1 → the natural default).
+    let wander = |t: f32| perlin.get([(t * 0.012) as f64, 4.0]) as f32 * sigma_perp * 1.6 * erosion;
+    let crest = |t: f32| 1.0 - erosion * (0.35 - 0.35 * (perlin.get([(t * 0.02) as f64, 11.0]) as f32 * 0.5 + 0.5));
     for y in 0..h {
         for x in 0..w {
             let ox = x as f32 - cxp;
@@ -216,14 +221,15 @@ fn is_island(spec: &MapSpec) -> bool {
 /// taper radially to sea; otherwise the sea-positioned edges are lowered. The
 /// coastline is **multi-scale noise-warped** — big lobes (bays + peninsulas),
 /// headlands, and a ragged edge — so a real, eroded shore rather than a circle.
-fn apply_landmass_shape(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32) {
+fn apply_landmass_shape(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, erosion: f32) {
     let perlin = Perlin::new(seed.wrapping_add(0x5417));
     // Periodic-around-the-circle coastal radius modulation at screen-angle θ:
-    // multiple octaves so the shore is irregular at several scales.
+    // multiple octaves so the shore is irregular at several scales. `erosion` scales
+    // the noise terms (0 → a perfect circle, 1 → the natural default).
     let coast_mod = |theta: f32| -> f32 {
         let (c, s) = (theta.cos() as f64, theta.sin() as f64);
         let n = |fx: f64, dx: f64, dy: f64| perlin.get([c * fx + dx, s * fx + dy]) as f32;
-        1.0 + 0.30 * n(1.2, 2.0, 2.0) + 0.15 * n(3.1, 7.0, 1.0) + 0.06 * n(7.3, 4.0, 9.0)
+        1.0 + erosion * (0.30 * n(1.2, 2.0, 2.0) + 0.15 * n(3.1, 7.0, 1.0) + 0.06 * n(7.3, 4.0, 9.0))
     };
     if is_island(spec) {
         let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
@@ -314,6 +320,24 @@ mod tests {
         assert_eq!(a.data, b.data, "pure fn of (spec, seed)");
         let (lo, hi) = a.data.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
         assert!(lo <= 1e-4 && (hi - 1.0).abs() <= 1e-4, "normalized to [0,1]: {lo}..{hi}");
+    }
+
+    #[test]
+    fn erosion_controls_coastline_irregularity() {
+        // Smooth (0) vs natural (default/1) vs rugged (2.5) give different terrain,
+        // and each is still deterministic.
+        let mut smooth = isle();
+        smooth.terrain.erosion = Some(0.0);
+        let mut rugged = isle();
+        rugged.terrain.erosion = Some(2.5);
+        let c = GeoCanvas::from_spec(&isle(), 42);
+        let hs = HeightField::generate(&smooth, &c).data;
+        let hn = HeightField::generate(&isle(), &c).data; // None → default 1.0
+        let hr = HeightField::generate(&rugged, &c).data;
+        assert!(hs != hn, "erosion 0 differs from the natural default");
+        assert!(hr != hn, "erosion 2.5 differs from the natural default");
+        // Determinism per level.
+        assert_eq!(hr, HeightField::generate(&rugged, &c).data);
     }
 
     #[test]
