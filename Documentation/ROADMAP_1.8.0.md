@@ -31,21 +31,27 @@ Layered like the geographic engine (L0–L7), but at the street scale (scale tie
       inside the wall) becomes a **block** parcel, inset from the street centrelines,
       rendered as built-up infill. Deterministic raster order. (Lot subdivision within a
       block is a later refinement; `block_face`/`in_district` resolve against these.)
-- [ ] **U2 walls + gates + waterfront** — city walls as a closed polyline with
-      **gates** on the arterials (`at_gate`, `on_wall`), a **waterfront** + **piers**
-      where the city meets water (`along_waterfront`, `pier_tip`), a **station**
-      (`at_station`). 
-- [ ] **Urban anchor resolver** — extend the L5 fixpoint resolver to the urban
-      variants against U0–U2 (street position interpolation, block-face offset,
-      gate/pier/station lookup, district interior, `city_center`).
-- [ ] **Urban render + integration** — the 1.5 linework compositor draws streets /
-      blocks / walls / gates / labels; `--map-scale district|settlement|city` selects
-      the urban tiers. Reuses `--map-render` / `--map-render-sd` / the scenario+compile+
-      scripting surfaces from 1.7 unchanged.
-- [ ] **Gate:** a committed urban spec (a walled port town) → byte-stable
-      `--map-dump-streets` + `--map-render` PNGs (`corpus/map.sh` or `corpus/map_urban.sh`);
-      urban-anchor resolution unit tests (`along_street`, `block_face`, `at_gate`).
-      **Determinism invariant**: render twice, identical bytes.
+- [x] **U2 walls + gates + waterfront — DONE.** The wall ring + gates ship in U0; U2
+      adds the **waterfront** (a half-plane of open water on the named edge) and
+      **piers** running out into it at their positions. `on_wall` / `pier_tip` /
+      `along_waterfront` resolve against these. (A dedicated station node is folded
+      into the resolver's fallback for now.)
+- [x] **Urban anchor resolver — DONE.** `StreetGraph::resolve_landmarks` /
+      `resolve_anchor` place the spec's landmarks against U0–U2: `city_center`,
+      `at_gate`, `in_district`, `pier_tip`, `along_street` (bearing-matched arterial,
+      position interpolation), `on_wall`, plus the cardinal/canvas fallbacks.
+      Unresolvable anchors drop (no abort).
+- [x] **Urban render + integration — DONE.** `StreetGraph::render_town` draws water +
+      block parcels + streets + wall + gates + piers + landmark markers + labels
+      (gates / districts / piers / landmark names) + a title cartouche + frame.
+      `--map-render` **routes urban specs (a `urban` block) to the town renderer**,
+      geographic specs to the linework map — so the 1.7 scenario/compile/scripting
+      surfaces render towns unchanged.
+- [x] **Gate MET:** committed `corpus/map/town.spec.json` (Saltmere Town) →
+      byte-stable `--map-dump-streets` `town-streets.png` + `--map-render`
+      `town-map.png`, checked in `corpus/map_urban.sh`. 6 urban unit tests
+      (connected graph, gates-on-wall, blocks-inside, anchor resolution, both renders
+      deterministic). **Determinism invariant held.**
 
 ## New deps
 

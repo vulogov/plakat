@@ -10,6 +10,12 @@
   "water": {
     "seas": [ { "id": "the_sound", "name": "The Grey Sound", "position": "south", "enclosed": false } ]
   },
+  "landmarks": [
+    { "id": "town_hall", "name": "Town Hall", "kind": "city", "anchor": { "kind": "city_center" } },
+    { "id": "keep", "name": "The Keep", "kind": "fortress", "anchor": { "kind": "at_gate", "gate": "north_gate" } },
+    { "id": "temple", "name": "Sea Temple", "kind": "temple", "anchor": { "kind": "in_district", "district": "docks" } },
+    { "id": "lighthouse", "name": "The Pharos", "kind": "lighthouse", "anchor": { "kind": "pier_tip", "pier": "long_pier" } }
+  ],
   "urban": {
     "wall": { "name": "The Old Wall", "shape": "round", "radius": 0.74 },
     "gates": [
