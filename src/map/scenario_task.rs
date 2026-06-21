@@ -9,7 +9,7 @@ use candle_core::Device;
 use std::path::{Path, PathBuf};
 
 use super::parser::{self, ParseOpts};
-use super::render::{self, Style};
+use super::render::Style;
 use super::render_sd::{self, SdOptions};
 use super::spec::{MapSpec, SPEC_VERSION};
 
@@ -134,7 +134,7 @@ pub async fn run_map_task(
             .await
             .context("map task: SD painted render")?;
     } else {
-        render::save_render(&spec, seed, style, &out).context("map task: linework render")?;
+        super::save_map_image(&spec, seed, style, &out).context("map task: linework render")?;
     }
     Ok(out)
 }

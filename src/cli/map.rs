@@ -320,41 +320,21 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         did_dump = true;
     }
 
-    // MAP-3/MAP-5: the complete labelled map. Urban specs (a `urban` block, scale
-    // tiers 10–12) route to the town renderer; geographic specs to the linework map.
+    // MAP-3/MAP-5: the complete labelled map. `render_map_image` routes urban specs
+    // (a `urban` block) to the town renderer, geographic specs to the linework map.
     if let Some(p) = &args.render {
-        if spec.urban.is_some() {
-            let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
-            let sg = map::urban::StreetGraph::generate(&spec, &canvas);
-            let img = sg.render_town(&spec);
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-            img.save(p).with_context(|| format!("writing town map {}", p.display()))?;
-            let (nodes, edges) = sg.stats();
-            println!(
-                "{}  town map → {}  ({} junction(s), {} segment(s), {} landmark(s), seed {})",
-                style("✓").green(),
-                p.display(),
-                nodes,
-                edges,
-                sg.resolve_landmarks(&spec).len(),
-                args.seed
-            );
-        } else {
-            let rstyle = map::render::Style::named(&args.style)?;
-            map::render::save_render(&spec, args.seed, rstyle, p)?;
-            println!(
-                "{}  map → {}  ({} landmark(s), style {}, seed {})",
-                style("✓").green(),
-                p.display(),
-                spec.landmarks.len(),
-                args.style,
-                args.seed
-            );
-        }
+        let rstyle = map::render::Style::named(&args.style)?;
+        map::save_map_image(&spec, args.seed, rstyle, p)?;
+        let kind = if spec.urban.is_some() { "town map" } else { "map" };
+        println!(
+            "{}  {} → {}  ({} landmark(s), style {}, seed {})",
+            style("✓").green(),
+            kind,
+            p.display(),
+            spec.landmarks.len(),
+            args.style,
+            args.seed
+        );
         did_dump = true;
     }
 

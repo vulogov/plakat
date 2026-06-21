@@ -37,7 +37,8 @@ fn do_plakat_map_render(vm: &mut VM) -> anyhow::Result<&mut VM> {
 
     let handle = with_ctx_mut(|ctx| -> anyhow::Result<i64> {
         let seed = ctx.config.seed.unwrap_or(42);
-        let img = crate::map::render::render(&spec, seed, style)?;
+        // Kind-routed: a `urban` spec renders the town map, else the geographic map.
+        let img = crate::map::render_map_image(&spec, seed, style)?;
         Ok(ctx.push_image(image::DynamicImage::ImageRgb8(img)))
     })??;
 

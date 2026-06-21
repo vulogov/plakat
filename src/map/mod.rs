@@ -19,8 +19,33 @@ pub mod roads;
 pub mod spec;
 pub mod urban;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use spec::TileGrid;
+
+/// Render the linework map image for `(spec, seed)`, routing by kind: a spec with
+/// an `urban` block renders the **town map** (streets/blocks/wall/gates/piers), any
+/// other spec the **geographic** linework map. The single entry every surface uses
+/// (CLI `--map-render`, the scenario `map` task, `plakat.map.render`) so all render
+/// the same image. Deterministic, no GPU.
+pub fn render_map_image(spec: &spec::MapSpec, seed: u64, style: render::Style) -> Result<image::RgbImage> {
+    if spec.urban.is_some() {
+        let canvas = engine::GeoCanvas::from_spec(spec, seed);
+        Ok(urban::StreetGraph::generate(spec, &canvas).render_town(spec))
+    } else {
+        render::render(spec, seed, style)
+    }
+}
+
+/// Render + write the map PNG (kind-routed, see [`render_map_image`]).
+pub fn save_map_image(spec: &spec::MapSpec, seed: u64, style: render::Style, path: &std::path::Path) -> Result<()> {
+    let img = render_map_image(spec, seed, style)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    img.save(path).with_context(|| format!("writing map {}", path.display()))
+}
 
 /// Resolve a `--map-scale` alias → (scale_tier, default tile grid).
 pub fn scale_alias(name: &str) -> Option<(u8, TileGrid)> {
