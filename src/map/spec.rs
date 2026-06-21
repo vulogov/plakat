@@ -75,6 +75,13 @@ impl MapSpec {
 /// `(spec, seed)`; named streets/gates/districts label the generated geometry.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct UrbanSpec {
+    /// Street-plan style: `"radial"` (medieval radio-concentric — rings + radials),
+    /// `"grid"` (planned orthogonal — Roman/colonial), or `"organic"` (irregular
+    /// winding lanes). When omitted, inferred from context (walled → radial,
+    /// mountainous → organic, plains → grid). Aliases: `concentric`/`medieval`,
+    /// `orthogonal`/`planned`, `irregular`/`maze`.
+    #[serde(default)]
+    pub layout: Option<String>,
     /// A city wall enclosing the built-up area. `None` = an open (unwalled) town.
     #[serde(default)]
     pub wall: Option<WallRing>,
