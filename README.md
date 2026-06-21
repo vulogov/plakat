@@ -17,45 +17,49 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.7.0 — maps everywhere (`map` in scenarios, compile & scripts)
+## What's new in 1.8.0 — town maps + believable, tunable geography (`plakat map`)
 
-1.7.0 wires `plakat map` into the rest of plakat, so a map is a **first-class step
-in any batch** — not just a one-off command. The three host systems — scenarios,
-compile, and Bund scripting — can each emit a map, and all three converge on the
-**same deterministic render** (each produces a byte-identical map to `--map-render`).
-Geometry stays GPU-free and corpus-proven; the SD paint stays opt-in.
+1.8.0 closes the map track with **MAP-5, the urban fabric** — a city/town-scale
+map from a street graph — and makes the geography **look real and be tunable**:
+eroded coasts, irregular mountain ranges, and town plans that fit their setting.
+All still a **pure function of (spec, seed)** — byte-stable on-box, no GPU (the SD
+paint stays opt-in).
 
 ```bash
-# a scenario batch can interleave maps with renders/animations
-plakat scenario maps.hjson           # tasks: [ { type: map, map-spec: isle.json, map-style: parchment } ]
+# a walled town: street graph (wall, gates, blocks) → a labelled town map
+plakat map --map-spec town.json --map-render town.png --map-urban-layout radial
 
-# prose worldbuilding + maps in one compiled document
-plakat compile worlds.txt | plakat scenario -   # a `type: map` block → a map task
-
-# a Bund script renders a map into an image handle, then saves it
-#   "isle.json" "blueprint" plakat.map.render   "isle.png" plakat.save
-plakat run map.bund
+# tune the realism of natural features (0 smooth … 1 natural … >1 rugged)
+plakat map "a wind-carved fjord coast under jagged peaks" --map-render isle.png --map-erosion 2.5
 ```
 
-**MAP-4 — the integration**
+**MAP-5 — the urban fabric** (the last planned map phase; +`petgraph`)
 
-- **Scenario `map` task** — `type: map` in a `plakat scenario` (fields `map-spec`,
-  `map-style`, `map-paint`, `map-scale`/`map-tiles`, `map-sd-model`, `map-sd-lora`,
-  `map-provider`, merged scenario⊕task). Renders the deterministic linework (no GPU)
-  or paints with SD; each task writes `<out>/<name>/map.png`.
-- **`map:` compile block** — a `type: map` block in a `prompts.txt` compiles to a
-  scenario map task (global→scene inheritance, deterministic — no LLM for the
-  directive), so prose and maps live in one document.
-- **`plakat.map.render`** — a Bund word `( spec-path style -- handle )` renders a map
-  into an in-memory image handle alongside the generate→upscale→save chain.
+- **Town maps** — a city/town spec (`scale_tier` 10–12 with an `urban` block) renders
+  a street graph: a wall + gates, arterials, ring/grid streets, **block parcels**, a
+  **waterfront** with piers, and labels (gates / districts / landmarks at urban
+  anchors — `at_gate`, `in_district`, `pier_tip`, `along_street`, …).
+- **Configurable street plans** — `radial` (medieval radio-concentric), `grid`
+  (planned/Roman), or `organic` (winding old town), via `urban.layout` /
+  `--map-urban-layout`, or **inferred** from context (mountain→organic, walled→radial,
+  plains→grid). A straight grid only when you ask for it.
 
-Proven end to end: `corpus/map_scenario.hjson`, `corpus/compile/maps.txt`, and
-`corpus/map_script.bund` each render a map **byte-identical to the direct
-`--map-render`** (checked in `corpus/{map,compile,map_script}.sh`). See
-[`Documentation/ROADMAP_1.7.0.md`](Documentation/ROADMAP_1.7.0.md). Next on the arc:
-1.8 urban fabric (MAP-5 — street graphs, the urban anchors).
+**Believable, tunable natural features**
 
-**Earlier releases** (v0.13 – v1.6):
+- **Eroded geography** — coastlines are multi-scale noise-warped (bays, peninsulas,
+  headlands) and mountain ridgelines wander with varying crest height — no more
+  smooth-potato islands or oval ranges.
+- **One erosion knob** — `terrain.erosion` (0 = idealized, 1 = natural default, >1 =
+  rugged fjords), reachable from **every surface**: `--map-erosion`, the scenario
+  `map-erosion` field, and the `plakat.map.erosion` scripting word — each proven
+  byte-identical to the others. (Likewise `--map-urban-layout` / `map-layout` /
+  `plakat.map.layout`.)
+
+Proven on-box: committed `town.spec.json` → byte-stable street graph + town map
+(`corpus/map_urban.sh`); every geographic + urban + scenario artifact byte-checked.
+See [`Documentation/ROADMAP_1.8.0.md`](Documentation/ROADMAP_1.8.0.md).
+
+**Earlier releases** (v0.13 – v1.7):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -320,7 +324,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
-| `map <DESCRIPTION>` | **v1.4–1.7**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). **`--map-render PATH`** writes the finished labelled linework map (`--map-style parchment\|inked\|blueprint`); **`--map-render-sd PATH`** paints it with SD img2img + Canny ControlNet (`--map-sd-model`/`--map-sd-lora` any model + optional LoRA, `--map-sd-tile` for memory-safe tiled large maps); **`--map-export-svg`/`--map-export-geojson`** export scalable vectors. Also `--map-spec` (load, skip LLM), `--map-dump-{spec,…,features,conditioning}`, `--seed`, `--map-tiles`/`--map-scale`. Geometry is a pure fn of (spec, seed) — byte-stable. **v1.7** makes `map` a first-class step in `scenario` (`type: map`), `compile` (a `map:` block), and `run` scripting (`plakat.map.render`). See [`ROADMAP_1.7.0.md`](Documentation/ROADMAP_1.7.0.md). |
+| `map <DESCRIPTION>` | **v1.4–1.8**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then a geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite) — or, for a city/town spec (`urban` block), an **urban street graph** (wall, gates, blocks, waterfront). **`--map-render PATH`** writes the finished labelled map (`--map-style`, **`--map-urban-layout radial\|grid\|organic`**, **`--map-erosion <0..>1>`**); **`--map-render-sd PATH`** paints it with SD (`--map-sd-model`/`--map-sd-lora`/`--map-sd-tile`); **`--map-export-svg`/`--map-export-geojson`** export vectors. Also `--map-spec`, `--map-dump-{spec,…,features,conditioning,streets}`, `--seed`, `--map-tiles`/`--map-scale`. Geometry is a pure fn of (spec, seed) — byte-stable. A first-class step in `scenario` (`type: map`), `compile` (`map:` block), and `run` scripting (`plakat.map.*`). See [`ROADMAP_1.8.0.md`](Documentation/ROADMAP_1.8.0.md). |
 | `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |

@@ -1,12 +1,27 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.6. The current
+"What's new" sections for v0.13 through 1.7. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.7.0 — maps everywhere (`map` in scenarios, compile & scripts)
+
+1.7.0 wired `plakat map` into the rest of plakat, so a map is a first-class step in
+any batch — not just a one-off command. The three host systems — scenarios, compile,
+and Bund scripting — can each emit a map, all converging on the same deterministic
+render (each byte-identical to the direct `--map-render`).
+
+- **Scenario `map` task** — `type: map` (fields `map-spec`/`map-style`/`map-paint`/
+  `map-scale`/`map-sd-model`/`map-sd-lora`/…, merged scenario⊕task) → linework (no GPU)
+  or SD paint, to `<out>/<name>/map.png`.
+- **`map:` compile block** — a `type: map` block in a `prompts.txt` compiles to a
+  scenario map task (deterministic; no LLM for the directive).
+- **`plakat.map.render`** — a Bund word `( spec-path style -- handle )` renders a map
+  into an in-memory image handle.
 
 ## What's new in 1.6.0 — a *painted* map (`plakat map --map-render-sd`)
 
