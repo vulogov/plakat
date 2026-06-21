@@ -51,6 +51,17 @@ pub struct ResolvedScene {
     pub refine: Option<usize>,
     pub tags: Vec<String>,
     pub skip: bool,
+    // MAP-4: a `type: map` block compiles to a scenario `map` task. These mirror
+    // the scenario `map-*` fields; all on the deterministic path (no LLM).
+    pub task_type: Option<String>,
+    pub map_spec: Option<String>,
+    pub map_style: Option<String>,
+    pub map_paint: Option<String>,
+    pub map_scale: Option<String>,
+    pub map_tiles: Option<String>,
+    pub map_sd_model: Option<String>,
+    pub map_sd_lora: Vec<String>,
+    pub map_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -169,6 +180,16 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             refine: parse_opt(last_wins(&[], &vals(Some(s), "refine")), "refine")?,
             tags: list(&[], &vals(Some(s), "tag")),
             skip,
+            // MAP-4: global→scene inheritance for the map directives.
+            task_type: last_wins(&vals(g, "type"), &vals(Some(s), "type")).map(str::to_string),
+            map_spec: last_wins(&vals(g, "map-spec"), &vals(Some(s), "map-spec")).map(str::to_string),
+            map_style: last_wins(&vals(g, "map-style"), &vals(Some(s), "map-style")).map(str::to_string),
+            map_paint: last_wins(&vals(g, "map-paint"), &vals(Some(s), "map-paint")).map(str::to_string),
+            map_scale: last_wins(&vals(g, "map-scale"), &vals(Some(s), "map-scale")).map(str::to_string),
+            map_tiles: last_wins(&vals(g, "map-tiles"), &vals(Some(s), "map-tiles")).map(str::to_string),
+            map_sd_model: last_wins(&vals(g, "map-sd-model"), &vals(Some(s), "map-sd-model")).map(str::to_string),
+            map_sd_lora: list(&vals(g, "map-sd-lora"), &vals(Some(s), "map-sd-lora")),
+            map_provider: last_wins(&vals(g, "map-provider"), &vals(Some(s), "map-provider")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

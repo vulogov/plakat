@@ -116,8 +116,11 @@ pub fn parse(input: &str) -> Result<Document> {
     }
     // A scene block must carry some free text — a commands-only block past the
     // global slot is almost always a misplaced global / a missing blank line.
+    // Exception (MAP-4): a `type: map` task renders from its spec, not a prompt, so
+    // a map block (or any block when the global declares `type: map`) needs none.
+    let global_is_map = doc.global.as_ref().is_some_and(declares_map_task);
     for (i, s) in doc.scenes.iter().enumerate() {
-        if !s.has_free_text() {
+        if !s.has_free_text() && !global_is_map && !declares_map_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -127,6 +130,13 @@ pub fn parse(input: &str) -> Result<Document> {
         }
     }
     Ok(doc)
+}
+
+/// Does this block declare a `map` task (so it may omit a prose description)?
+fn declares_map_task(b: &Block) -> bool {
+    b.commands.iter().any(|(k, v)| {
+        (k == "type" && v.eq_ignore_ascii_case("map")) || k.starts_with("map-")
+    })
 }
 
 #[cfg(test)]

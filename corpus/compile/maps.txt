@@ -1,0 +1,19 @@
+# MAP-4: a `map:` block compiles to a scenario `type: map` task. Prose
+# worldbuilding + map directives live in one document; `plakat compile` turns it
+# into a scenario, `plakat scenario` renders the maps. Deterministic (no LLM).
+#
+#   plakat compile corpus/compile/maps.txt --no-enhance --no-negative --out maps.hjson
+#   plakat scenario maps.hjson
+
+# Global: every block here is a map task, loading the committed island spec.
+type: map
+map-spec: corpus/map/island.spec.json
+seed: 42
+
+# A parchment map of the isle.
+name: isle-parchment
+map-style: parchment
+
+# The same isle, inked.
+name: isle-inked
+map-style: inked

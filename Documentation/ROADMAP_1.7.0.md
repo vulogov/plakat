@@ -33,10 +33,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       parchment task is **byte-identical to the direct `--map-render`** (proves the
       integration shares the deterministic path), byte-checked in `corpus/map.sh`. 4
       delegate unit tests (spec source, dry-run, linework write, LoRA resolution).
-- [ ] **`map:` compile block (COMPILE-1 E-C4)** — now unblocked. A `map:` directive
-      in a `prompts.txt` / Tera template compiles to a scenario `map` task, so prose
-      worldbuilding and scene rendering live in one compiled document. Deterministic
-      core (no LLM needed for the directive itself).
+- [x] **`map:` compile block (COMPILE-1 E-C4) — DONE.** A `type: map` block (with
+      `map-spec`/`map-style`/`map-paint`/`map-scale`/`map-tiles`/`map-sd-model`/
+      `map-sd-lora`/`map-provider`) in a `prompts.txt` compiles to a scenario `map`
+      task — prose worldbuilding + scene rendering in one document. Deterministic (no
+      LLM): 9 new `CommandSpec` keys (`mod.rs`), fields on `ResolvedScene` with
+      global→scene inheritance (`resolver.rs`), conditional emit (`emitter.rs`); the
+      parser now allows a description-less block when it (or the global) declares a map
+      task. **Gate MET:** `corpus/compile/maps.txt` → byte-stable `maps.hjson` (no-op
+      `--diff`), scenario-validated, and the rendered map is byte-identical to the
+      direct `--map-render` — checked in `corpus/compile.sh`.
 - [ ] **Gate:** a committed scenario (and a compile `prompts.txt`) that emits the
       Isle of Vethûn map; the deterministic geometry/linework artifact is byte-checked
       in the corpus (extend `corpus/map.sh` or a new `corpus/map_script.sh`), the
