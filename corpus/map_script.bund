@@ -7,11 +7,16 @@
 // generate -> upscale -> save chain. Deterministic linework (no GPU).
 //
 // Stack effects:
-//   plakat.map.render ( spec-path style -- handle )
-//   plakat.save       ( handle path     -- )
+//   plakat.map.layout  ( style  -- )   set town plan: radial|grid|organic|none
+//   plakat.map.erosion ( amount -- )   set natural-feature erosion: 0..>1
+//   plakat.map.render  ( spec-path style -- handle )
+//   plakat.save        ( handle path     -- )
 
 // Same seed the canonical render uses.
 "42" "seed" plakat.config.set
+
+// Defaults (natural erosion, inferred layout) → byte-identical to --map-render.
+// Override per script with e.g.  2.5 plakat.map.erosion   "grid" plakat.map.layout
 
 // Render the committed island spec, parchment style -> image handle 1.
 "corpus/map/island.spec.json" "parchment" plakat.map.render

@@ -72,6 +72,10 @@ block-face walk needs it — try a hand-rolled face walk first to avoid the dep.
       and the scenario `map-erosion` field (+ `map-layout`); the LLM schema documents
       it. `erosion=1.0` is the natural default; the value flows through every render
       surface (CLI / scenario / scripting).
+- [x] **Scripting setters — DONE.** `plakat.map.layout ( style -- )` and
+      `plakat.map.erosion ( amount -- )` Bund words stash overrides on `ScriptCtx`,
+      applied by `plakat.map.render` — so a script tunes the plan + erosion. Verified
+      byte-identical to `--map-urban-layout` / `--map-erosion`.
 
 ## Opportunistic polish (small, fits this cycle)
 

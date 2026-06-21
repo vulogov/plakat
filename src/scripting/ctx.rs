@@ -290,6 +290,14 @@ pub struct ScriptCtx {
     /// `plakat.genre.apply`). Independent axis from `look_name`;
     /// composes additively. Mirrors `--genre NAME`.
     pub genre_name: Option<String>,
+    /// MAP-5: town street-plan override (`radial`/`grid`/`organic`), set by
+    /// `plakat.map.layout`. Applied to the spec by `plakat.map.render`. Mirrors
+    /// `--map-urban-layout`.
+    pub map_layout: Option<String>,
+    /// MAP-2: natural-feature erosion override (0 smooth … 1 natural … >1 rugged),
+    /// set by `plakat.map.erosion`. Applied by `plakat.map.render`. Mirrors
+    /// `--map-erosion`.
+    pub map_erosion: Option<f32>,
 }
 
 /// v0.24 phase 8: per-loaded-pipeline annotation cache. The
@@ -336,6 +344,8 @@ impl ScriptCtx {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            map_layout: None,
+            map_erosion: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
@@ -1543,6 +1553,8 @@ mod tests {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            map_layout: None,
+            map_erosion: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
