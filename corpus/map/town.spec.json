@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "name": "Saltmere Town",
+  "scale_tier": 11,
+  "tile_grid": { "cols": 2, "rows": 2 },
+  "climate": "temperate maritime",
+  "era": "late medieval",
+  "language": "en",
+  "terrain": { "dominant_elevation": "lowland" },
+  "water": {
+    "seas": [ { "id": "the_sound", "name": "The Grey Sound", "position": "south", "enclosed": false } ]
+  },
+  "urban": {
+    "wall": { "name": "The Old Wall", "shape": "round", "radius": 0.74 },
+    "gates": [
+      { "id": "north_gate", "name": "Kingsgate", "bearing": "north" },
+      { "id": "east_gate", "name": "Eastgate", "bearing": "east" },
+      { "id": "west_gate", "name": "Westgate", "bearing": "west" },
+      { "id": "harbor_gate", "name": "Harbourgate", "bearing": "south" }
+    ],
+    "streets": [
+      { "id": "high_st", "name": "High Street", "kind": "arterial", "bearing": "north" },
+      { "id": "harbor_way", "name": "Harbour Way", "kind": "arterial", "bearing": "south" }
+    ],
+    "districts": [
+      { "id": "market", "name": "Market Square", "anchor": { "kind": "cardinal", "position": "center" }, "character": "commercial" },
+      { "id": "docks", "name": "The Docks", "anchor": { "kind": "cardinal", "position": "south" }, "character": "maritime" },
+      { "id": "hightown", "name": "Hightown", "anchor": { "kind": "cardinal", "position": "north" }, "character": "wealthy" }
+    ],
+    "waterfront": "south",
+    "piers": [
+      { "id": "long_pier", "name": "The Long Pier", "position": 0.45 },
+      { "id": "fish_pier", "name": "Fishmonger's Pier", "position": 0.62 }
+    ]
+  }
+}

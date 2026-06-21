@@ -20,12 +20,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 Layered like the geographic engine (L0–L7), but at the street scale (scale tiers
 10–12, the urban U0–U2 the spec already defines):
 
-- [ ] **U0 street graph** — a road network as a `petgraph` graph: arterials from the
-      district/gate/center anchors, a grid or organic minor-street fill, intersections
-      as nodes. Pure fn of (spec, seed). `--map-dump-streets`.
-- [ ] **U1 blocks + lots** — the faces of the street graph become **blocks**;
-      subdivide each into **lots** (a simple OBB/strip split first; DCEL half-edge
-      structure if the face walk needs it). `block_face` / `in_district` resolve here.
+- [x] **U0 street graph — DONE.** `src/map/urban.rs` `StreetGraph::generate` — a
+      `petgraph` `UnGraph` of junctions + street segments: a centre, a wall ring with
+      **gates** (spec bearings, else four cardinals), **arterials** radiating
+      centre→gate, a **ring road** just inside the wall, and a **minor-street grid**
+      clipped to the wall. Structured `UrbanSpec` schema (wall/gates/streets/districts/
+      waterfront/piers/station) added to `MapSpec`. Pure fn of (spec, seed) — fixed
+      insert order → byte-stable. `--map-dump-streets`. Only new dep: `petgraph`.
+- [x] **U1 blocks — DONE.** `StreetGraph::blocks` — each interior grid cell (4 corners
+      inside the wall) becomes a **block** parcel, inset from the street centrelines,
+      rendered as built-up infill. Deterministic raster order. (Lot subdivision within a
+      block is a later refinement; `block_face`/`in_district` resolve against these.)
 - [ ] **U2 walls + gates + waterfront** — city walls as a closed polyline with
       **gates** on the arterials (`at_gate`, `on_wall`), a **waterfront** + **piers**
       where the city meets water (`along_waterfront`, `pier_tip`), a **station**

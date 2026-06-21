@@ -17,6 +17,7 @@ pub mod resolver;
 pub mod scenario_task;
 pub mod roads;
 pub mod spec;
+pub mod urban;
 
 use anyhow::{Result, bail};
 use spec::TileGrid;

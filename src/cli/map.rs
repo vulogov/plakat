@@ -78,6 +78,11 @@ pub struct MapArgs {
     #[arg(long = "map-dump-features", value_name = "PATH")]
     pub dump_features: Option<PathBuf>,
 
+    /// MAP-5: write the urban street graph (U0) — wall, gates, arterials, ring
+    /// road, minor grid — for a city/town-scale spec.
+    #[arg(long = "map-dump-streets", value_name = "PATH")]
+    pub dump_streets: Option<PathBuf>,
+
     /// MAP-3: render the complete styled, labelled map (the headline output:
     /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
     #[arg(long = "map-render", value_name = "PATH")]
@@ -295,6 +300,24 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
                 }
             }
         }
+    }
+
+    // MAP-5: the urban street graph (U0).
+    if let Some(p) = &args.dump_streets {
+        let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
+        let sg = map::urban::StreetGraph::generate(&spec, &canvas);
+        sg.render_overlay(p)?;
+        let (nodes, edges) = sg.stats();
+        println!(
+            "{}  streets → {}  ({} junction(s), {} segment(s), {} gate(s), seed {})",
+            style("✓").green(),
+            p.display(),
+            nodes,
+            edges,
+            sg.gates.len(),
+            args.seed
+        );
+        did_dump = true;
     }
 
     // MAP-3: the complete styled, labelled map — the headline render.
