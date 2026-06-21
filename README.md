@@ -17,50 +17,45 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.6.0 — a *painted* map (`plakat map --map-render-sd`)
+## What's new in 1.7.0 — maps everywhere (`map` in scenarios, compile & scripts)
 
-1.6.0 is the map track's capstone: run the 1.5.0 geometry through **SD img2img +
-a Canny ControlNet** so the map looks **hand-painted**, then re-composite the crisp
-linework + labels on top so it stays a usable map. This is the **only GPU step** on
-the track — the deterministic styled base (the conditioning) is still a pure
-function of (spec, seed); only the paint is non-deterministic.
+1.7.0 wires `plakat map` into the rest of plakat, so a map is a **first-class step
+in any batch** — not just a one-off command. The three host systems — scenarios,
+compile, and Bund scripting — can each emit a map, and all three converge on the
+**same deterministic render** (each produces a byte-identical map to `--map-render`).
+Geometry stays GPU-free and corpus-proven; the SD paint stays opt-in.
 
 ```bash
-# prose → spec → a painted fantasy map (SDXL + the fantasy-map style LoRA by default)
-plakat map "a volcanic island kingdom ringed by salt marshes" --map-render-sd isle.png
+# a scenario batch can interleave maps with renders/animations
+plakat scenario maps.hjson           # tasks: [ { type: map, map-spec: isle.json, map-style: parchment } ]
 
-# any model, optional LoRA; large maps paint in memory-safe overlapping tiles
-plakat map --map-spec isle.json --map-render-sd isle.png \
-    --map-sd-model sdxl --map-sd-lora Muapi/fantasy-map --map-sd-tile 1024
+# prose worldbuilding + maps in one compiled document
+plakat compile worlds.txt | plakat scenario -   # a `type: map` block → a map task
+
+# a Bund script renders a map into an image handle, then saves it
+#   "isle.json" "blueprint" plakat.map.render   "isle.png" plakat.save
+plakat run map.bund
 ```
 
-**The painted render (MAP-6)**
+**MAP-4 — the integration**
 
-- **`--map-render-sd`** — the styled base map (no labels) is the img2img init **and**
-  the Canny ControlNet source; the prompt is derived from the spec
-  (climate/era/biome, leading with the *fantasy map* trigger). The SD paints the
-  terrain; the **coastline, rivers, roads, labels + furniture re-composite on top**
-  so nothing functional is lost (`--map-sd-raw` for the bare painting).
-- **Any model, optional LoRA** — `--map-sd-model` (sdxl default, or sd15/sd21/turbo/
-  an HF repo); `--map-sd-lora` is optional and repeatable (SDXL-family defaults to
-  `Muapi/fantasy-map`, `none` disables). Plus `--map-sd-strength`/`-steps`/`-guidance`.
-- **Tiled multi-tile** — a canvas larger than `--map-sd-tile` paints in **overlapping,
-  Hann-feathered tiles**, each a full img2img+Canny pass that fits memory — the
-  memory-safe path for large maps (the SD pipeline + LoRA load once and every tile
-  reuses them).
+- **Scenario `map` task** — `type: map` in a `plakat scenario` (fields `map-spec`,
+  `map-style`, `map-paint`, `map-scale`/`map-tiles`, `map-sd-model`, `map-sd-lora`,
+  `map-provider`, merged scenario⊕task). Renders the deterministic linework (no GPU)
+  or paints with SD; each task writes `<out>/<name>/map.png`.
+- **`map:` compile block** — a `type: map` block in a `prompts.txt` compiles to a
+  scenario map task (global→scene inheritance, deterministic — no LLM for the
+  directive), so prose and maps live in one document.
+- **`plakat.map.render`** — a Bund word `( spec-path style -- handle )` renders a map
+  into an in-memory image handle alongside the generate→upscale→save chain.
 
-**Bonus: broad SDXL LoRA compatibility.** A new compvis→diffusers UNet key remap
-means **kohya-format SDXL LoRAs** (the `lora_unet_input_blocks_*` layout that a large
-slice of community LoRAs use, e.g. `Muapi/fantasy-map`) now merge into the UNet —
-previously they only reached the text encoders. This lives in the shared LoRA path,
-so **every** LoRA-using command benefits (generate / portrait / img2img / scenario / map).
+Proven end to end: `corpus/map_scenario.hjson`, `corpus/compile/maps.txt`, and
+`corpus/map_script.bund` each render a map **byte-identical to the direct
+`--map-render`** (checked in `corpus/{map,compile,map_script}.sh`). See
+[`Documentation/ROADMAP_1.7.0.md`](Documentation/ROADMAP_1.7.0.md). Next on the arc:
+1.8 urban fabric (MAP-5 — street graphs, the urban anchors).
 
-Verified end-to-end on Metal (the Isle of Vethûn, painted, 722/722 LoRA targets
-merged, single-tile and 2×2 tiled). See
-[`Documentation/ROADMAP_1.6.0.md`](Documentation/ROADMAP_1.6.0.md). Next on the arc:
-1.7–1.8 Bund hooks (`plakat.map.*` scripting) + urban fabric.
-
-**Earlier releases** (v0.13 – v1.5):
+**Earlier releases** (v0.13 – v1.6):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -325,7 +320,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
-| `map <DESCRIPTION>` | **v1.4–1.6**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). **`--map-render PATH`** writes the finished labelled linework map (`--map-style parchment\|inked\|blueprint`); **`--map-render-sd PATH`** paints it with SD img2img + Canny ControlNet (`--map-sd-model`/`--map-sd-lora` any model + optional LoRA, `--map-sd-tile` for memory-safe tiled large maps); **`--map-export-svg`/`--map-export-geojson`** export scalable vectors. Also `--map-spec` (load, skip LLM), `--map-dump-{spec,…,features,conditioning}`, `--seed`, `--map-tiles`/`--map-scale`. Geometry is a pure fn of (spec, seed) — byte-stable. See [`ROADMAP_1.6.0.md`](Documentation/ROADMAP_1.6.0.md). |
+| `map <DESCRIPTION>` | **v1.4–1.7**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then an eight-layer geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite). **`--map-render PATH`** writes the finished labelled linework map (`--map-style parchment\|inked\|blueprint`); **`--map-render-sd PATH`** paints it with SD img2img + Canny ControlNet (`--map-sd-model`/`--map-sd-lora` any model + optional LoRA, `--map-sd-tile` for memory-safe tiled large maps); **`--map-export-svg`/`--map-export-geojson`** export scalable vectors. Also `--map-spec` (load, skip LLM), `--map-dump-{spec,…,features,conditioning}`, `--seed`, `--map-tiles`/`--map-scale`. Geometry is a pure fn of (spec, seed) — byte-stable. **v1.7** makes `map` a first-class step in `scenario` (`type: map`), `compile` (a `map:` block), and `run` scripting (`plakat.map.render`). See [`ROADMAP_1.7.0.md`](Documentation/ROADMAP_1.7.0.md). |
 | `style {detect,list,show,init,probe,train}` | Inspect, detect, and bootstrap art-style catalogs; **`train`** (v0.45) learns a style LoRA from a folder of images (SD 3.5). |
 | `artefact {list,show}` | Inspect the artefact library (PNG cutouts placeable into named zones of generated images). |
 | `civitai {search,info,download}` | Browse + download Civitai community assets (LoRAs, checkpoints, embeddings, ControlNet variants). |
