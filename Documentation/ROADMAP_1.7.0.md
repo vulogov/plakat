@@ -15,12 +15,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## MAP-4 — scripting + scenario + compile integration
 
-- [ ] **`plakat.map.*` Bund words** — drive a map from a Bund script the way
-      `plakat.tiled.*` / `plakat.animate` already do: set the description / spec
-      path / scale / seed / style, choose linework vs painted (`--map-render` vs
-      `--map-render-sd`) + the SD knobs, and emit the map. Mirror the existing word
-      modules in `src/scripting/words/`. Gate the GPU paint behind the same device
-      the rest of scripting uses.
+- [x] **`plakat.map.*` Bund words — DONE.** `plakat.map.render ( spec-path style --
+      handle )` (`src/scripting/words/map.rs`, registered in `words/mod.rs`) renders a
+      committed spec to an in-memory image handle (the deterministic linework path,
+      seed from `ctx.config.seed`), so a Bund script produces maps alongside the
+      generate→upscale→save handle chain — then `plakat.save` writes it. **Gate MET:**
+      `corpus/map_script.bund` + `corpus/map_script.sh` — the saved map is
+      byte-identical to the direct `--map-render`. (The GPU paint stays behind the
+      CLI/scenario; scripting keeps the GPU-free render to match the handle model.)
 - [x] **Scenario `map` task — DONE.** `type: map` task kind in `cli/scenario.rs`
       (schema fields `map-spec`/`map-style`/`map-paint`/`map-scale`/`map-tiles`/
       `map-sd-model`/`map-sd-lora`/`map-provider` at scenario + task level, merged by

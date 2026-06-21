@@ -1,0 +1,20 @@
+// ===================================================================
+// plakat proof corpus — `plakat.map.*` scripting (MAP-4)
+// ===================================================================
+//   plakat run corpus/map_script.bund
+//
+// A Bund script can now render a map into an image handle, alongside the
+// generate -> upscale -> save chain. Deterministic linework (no GPU).
+//
+// Stack effects:
+//   plakat.map.render ( spec-path style -- handle )
+//   plakat.save       ( handle path     -- )
+
+// Same seed the canonical render uses.
+"42" "seed" plakat.config.set
+
+// Render the committed island spec, parchment style -> image handle 1.
+"corpus/map/island.spec.json" "parchment" plakat.map.render
+
+// Save it (lands under the run's output dir ./out).
+"island-map.png" plakat.save
