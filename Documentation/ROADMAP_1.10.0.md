@@ -25,10 +25,27 @@ In the recommended sequence from the plan:
       watercolour set → 128 attention adapters, v-pred loss trended down, a kohya LoRA
       that loads **128/128 merged** into sd21 inference and renders. 2 unit tests
       (config + v-pred math). *(Full showcase = run `style_train.sh sd21` ~120 steps.)*
-- [ ] **PixArt-Σ — style/subject LoRA**. Retrofit the DiT attention/MLP projections to
-      `LoraLinear` + a PixArt `install_train_adapters`; training forward (VAE encode,
-      BF16 T5, IDDPM-ε through the frozen DiT). The reusable transformer-adapter
-      groundwork.
+- [x] **PixArt-Σ — style/subject LoRA — DONE (code), NOT on-box-verified.** Retrofitted
+      the DiT attention projections (`attn1`/`attn2` `to_q/k/v/out`) + FeedForward to
+      `LoraLinear` via a shared `LoraRegistry` threaded through `PixArtBlock::new` →
+      `PixArtSigmaXL::new` (public ctor unchanged), plus `install_train_adapters`
+      (attention-only filter). `pixart::train_style_lora` runs the **DDPM ε-prediction**
+      loop (linear betas 1e-4→2e-2, first-4-channel ε, Σ res/aspect conditioning, AdamW +
+      grad-clip, numbered checkpoints, `--resume`, DreamBooth `--class-dir`) and saves
+      diffusers-PEFT keys the existing `pixart_lora` merge path loads. CLI: `style train
+      --base pixart`; `corpus/style_train.sh pixart`. Builds clean (`--features metal`),
+      43 pixart DiT tests green. **NOT verified on this 24 GB box: memory-bound.** T5-XXL
+      (4.7 B) drives Phase-A peak past 32 GB → swap-thrash on 24 GB unified (host stayed up;
+      see below). Showcase wants ≥ 36 GB unified or CUDA. Same memory class as SD3.5
+      DreamBooth (carried debt).
+  - **OOM-guard gap found + closed (this cycle):** the watchdog
+    ([`memwatch::MemoryGuard`]) was wired only into `generate` / `scenario`, never the
+    training paths — so the run above was unguarded. Now installed in `style train`
+    (covers every base). Note the guard's contract is *host-crash* prevention on
+    sustained **CRITICAL** kernel pressure; it deliberately does NOT fire on low free-RAM
+    or slow swap-thrash (which never crossed the kernel's Critical cliff here — the box
+    kept swapping, just uselessly slowly). So it would not have aborted this run; the real
+    fix is sizing the box to the base.
 - [ ] **SD 3.5 — Textual Inversion**. A placeholder token learned in CLIP-L + CLIP-G
       **and** T5; rectified-flow loss through the frozen MMDiT; save a triple embedding
       file. Completes SD3.5's training trio.

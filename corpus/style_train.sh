@@ -26,7 +26,10 @@ case "$BASE" in
   sd21) SIZE=512; LR=1.5e-4; STEPS=120; RANK=32; OUT=watercolour-sd21.safetensors ;;
   sdxl) SIZE=512; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour-sdxl.safetensors ;;
   sd35) SIZE=256; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour.safetensors ;;
-  *) echo "base must be sd15 | sd21 | sdxl | sd35"; exit 1 ;;
+  # PixArt-Σ: memory-bound — T5-XXL (4.7B) makes Phase-A peak >32GB; wants
+  # >=36GB unified or CUDA. On 24GB it swap-thrashes (see pixart.rs doc).
+  pixart) SIZE=256; LR=1.5e-4; STEPS=90; RANK=16; OUT=watercolour-pixart.safetensors ;;
+  *) echo "base must be sd15 | sd21 | sdxl | sd35 | pixart"; exit 1 ;;
 esac
 
 "$PLAKAT" style train \

@@ -55,7 +55,8 @@ pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
     #[arg(long, value_name = "DIR")]
     pub from_dir: PathBuf,
-    /// Base model: `sd15`, `sd21`, `sdxl`, or `sd35` (SD3.5 Medium).
+    /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium), or
+    /// `pixart` (PixArt-Σ).
     #[arg(long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -275,6 +276,17 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
         args.out.display()
     );
 
+    // Training back-props through the full base (UNet / MMDiT / DiT) plus its
+    // text encoders — the heaviest unified-memory footprint plakat reaches.
+    // Install the same self-abort watchdog `generate` / `scenario` use, so a
+    // genuine host-crash cliff on a memory-constrained box exits cleanly
+    // instead of taking the desktop down. (Guards host *crash* on sustained
+    // CRITICAL kernel pressure; it does not police slow swap-thrash — for that,
+    // size the box to the base. PixArt-Σ + SD3.5 carry a T5-XXL and are
+    // memory-bound on 24 GB.)
+    let _mem_guard =
+        crate::memwatch::MemoryGuard::start(&device, &format!("style train {}", args.base));
+
     match args.base.as_str() {
         "sd15" | "sd1.5" | "stable-diffusion-v1-5" => {
             use crate::pipelines::sd_train::trainer;
@@ -339,6 +351,28 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             })
             .await
         }
+        "pixart" | "pixart-sigma" | "pixart-σ" | "pixart_sigma" => {
+            use crate::pipelines::pixart;
+            let repo = crate::hf::resolve_alias("pixart").to_string();
+            pixart::train_style_lora(pixart::StyleTrainRequest {
+                repo,
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+                checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
+                resume_from: args.resume,
+                class_images: class_images.clone(),
+                class_prompt: args.class_prompt.clone(),
+                prior_weight: args.prior_weight,
+            })
+            .await
+        }
         "sd35" | "sd35-medium" | "sd3.5-medium" => {
             use crate::pipelines::sd3;
             sd3::train_style_lora(sd3::StyleTrainRequest {
@@ -362,7 +396,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             .await
         }
         other => anyhow::bail!(
-            "style train: base '{other}' not supported — use sd15, sd21, sdxl, or sd35"
+            "style train: base '{other}' not supported — use sd15, sd21, sdxl, sd35, or pixart"
         ),
     }
 }
