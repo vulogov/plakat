@@ -29,9 +29,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       in tracing). `lake_radius` maps `size` → extent fraction. Verified: the island's
       Mournmere (crater lake, endorheic, centre) now renders as a blue tarn in the
       volcanic massif. Lake unit test; geographic proofs regenerated.
-- [ ] **`plakat.map.paint` scripting word** — `( spec-path style -- handle )` SD-
-      painted counterpart to `plakat.map.render`; reuse `render_sd::render_sd` to a
-      temp file → load into an image handle. Honours `plakat.map.layout`/`.erosion`.
+- [x] **`plakat.map.paint` scripting word — DONE.** `( spec-path style -- handle )`
+      SD-painted counterpart to `plakat.map.render`: `render_sd::render_sd` (img2img +
+      Canny) → temp PNG → image handle, bridged to async via `block_in_place` like the
+      cascade words. Honours `plakat.map.layout`/`.erosion` (shared `load_spec_with_overrides`).
+      Verified on Metal (island painted, 722/722 LoRA → handle → `plakat.save`).
 - [ ] **Urban lot subdivision** — split each U1 block quad into 2–4 building lots
       (strip split along the longer edge, noise-jittered), drawn as finer parcels so
       town maps read at the building scale. Deterministic; pure geometry on the quads.

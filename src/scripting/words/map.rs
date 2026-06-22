@@ -4,18 +4,17 @@
 //!
 //!   `plakat.map.layout  ( style  -- )`   set the town plan (radial|grid|organic|none)
 //!   `plakat.map.erosion ( amount -- )`   set natural-feature erosion (0..>1)
-//!   `plakat.map.render  ( spec-path style -- handle )`   render → image handle
+//!   `plakat.map.render  ( spec-path style -- handle )`   linework map (no GPU)
+//!   `plakat.map.paint   ( spec-path style -- handle )`   SD-painted map (GPU)
 //!
-//! These mirror `--map-urban-layout` / `--map-erosion`. The painted SD path lives
-//! behind the `--map-render-sd` CLI / the `type: map` scenario task; scripting
-//! stays on the GPU-free render to match the image-handle model.
+//! These mirror `--map-urban-layout` / `--map-erosion` / `--map-render(-sd)`.
 
 use rust_dynamic::value::Value;
 use rust_multistackvm::multistackvm::VM;
 
 use anyhow::Context;
 
-use crate::scripting::ctx::with_ctx_mut;
+use crate::scripting::ctx::{with_ctx, with_ctx_mut};
 use crate::scripting::helpers::{BundResult, pull, push, require_depth, to_bund_err, value_to_float, value_to_string};
 
 const TAG: &str = "plakat.map.render";
@@ -55,6 +54,56 @@ fn do_plakat_map_erosion(vm: &mut VM) -> anyhow::Result<&mut VM> {
     Ok(vm)
 }
 
+/// Load a `MapSpec` and apply the script's layout/erosion overrides.
+fn load_spec_with_overrides(path: &str) -> anyhow::Result<crate::map::spec::MapSpec> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading map spec {path}"))?;
+    let mut spec: crate::map::spec::MapSpec =
+        serde_json::from_str(&text).with_context(|| format!("parsing MapSpec {path}"))?;
+    with_ctx(|ctx| {
+        if let Some(l) = &ctx.map_layout {
+            spec.urban.get_or_insert_with(Default::default).layout = Some(l.clone());
+        }
+        if let Some(e) = ctx.map_erosion {
+            spec.terrain.erosion = Some(e);
+        }
+    })?;
+    Ok(spec)
+}
+
+/// `plakat.map.paint ( spec-path style -- handle )` — SD-painted map (img2img +
+/// Canny, the `render_sd` path) → image handle. Requires a GPU build.
+pub fn plakat_map_paint(vm: &mut VM) -> BundResult<'_> {
+    do_plakat_map_paint(vm).map_err(to_bund_err)
+}
+
+fn do_plakat_map_paint(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    const PTAG: &str = "plakat.map.paint";
+    require_depth(vm, 2, PTAG)?;
+    let style_s = value_to_string(pull(vm, PTAG)?, "style", PTAG)?;
+    let path_s = value_to_string(pull(vm, PTAG)?, "spec-path", PTAG)?;
+    let style = crate::map::render::Style::named(&style_s)?;
+    let spec = load_spec_with_overrides(&path_s)?;
+
+    let (device, seed) = with_ctx(|ctx| (ctx.device.clone(), ctx.config.seed.unwrap_or(42)))?;
+    let opts = crate::map::render_sd::SdOptions::default();
+    let out = std::env::temp_dir().join(format!("plakat-map-paint-{seed}.png"));
+
+    // render_sd is async; bridge it the same way the cascade/control words do.
+    let rt = tokio::runtime::Handle::try_current()
+        .map_err(|e| anyhow::anyhow!("{PTAG}: no tokio runtime: {e}"))?;
+    tokio::task::block_in_place(|| {
+        rt.block_on(crate::map::render_sd::render_sd(&spec, seed, style, &opts, device, &out))
+    })
+    .context("plakat.map.paint: SD render")?;
+
+    let img = image::open(&out).with_context(|| format!("{PTAG}: reading {}", out.display()))?.to_rgb8();
+    let _ = std::fs::remove_file(&out);
+    let handle = with_ctx_mut(|ctx| ctx.push_image(image::DynamicImage::ImageRgb8(img)))?;
+    tracing::info!(target: "plakat", "{PTAG}: painted {path_s} ({style_s}) → handle {handle}");
+    push(vm, Value::from_int(handle));
+    Ok(vm)
+}
+
 pub fn plakat_map_render(vm: &mut VM) -> BundResult<'_> {
     do_plakat_map_render(vm).map_err(to_bund_err)
 }
@@ -68,19 +117,9 @@ fn do_plakat_map_render(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let path_s = value_to_string(path_v, "spec-path", TAG)?;
 
     let style = crate::map::render::Style::named(&style_s)?;
-    let text = std::fs::read_to_string(&path_s)
-        .with_context(|| format!("{TAG}: reading map spec {path_s}"))?;
-    let mut spec: crate::map::spec::MapSpec =
-        serde_json::from_str(&text).with_context(|| format!("{TAG}: parsing MapSpec {path_s}"))?;
+    let spec = load_spec_with_overrides(&path_s)?;
 
     let handle = with_ctx_mut(|ctx| -> anyhow::Result<i64> {
-        // Apply the script's map overrides (set via plakat.map.layout / .erosion).
-        if let Some(l) = &ctx.map_layout {
-            spec.urban.get_or_insert_with(Default::default).layout = Some(l.clone());
-        }
-        if let Some(e) = ctx.map_erosion {
-            spec.terrain.erosion = Some(e);
-        }
         let seed = ctx.config.seed.unwrap_or(42);
         // Kind-routed: a `urban` spec renders the town map, else the geographic map.
         let img = crate::map::render_map_image(&spec, seed, style)?;

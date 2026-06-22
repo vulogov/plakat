@@ -9,7 +9,8 @@
 // Stack effects:
 //   plakat.map.layout  ( style  -- )   set town plan: radial|grid|organic|none
 //   plakat.map.erosion ( amount -- )   set natural-feature erosion: 0..>1
-//   plakat.map.render  ( spec-path style -- handle )
+//   plakat.map.render  ( spec-path style -- handle )   linework (no GPU)
+//   plakat.map.paint   ( spec-path style -- handle )   SD-painted (GPU)
 //   plakat.save        ( handle path     -- )
 
 // Same seed the canonical render uses.
