@@ -34,9 +34,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       Canny) → temp PNG → image handle, bridged to async via `block_in_place` like the
       cascade words. Honours `plakat.map.layout`/`.erosion` (shared `load_spec_with_overrides`).
       Verified on Metal (island painted, 722/722 LoRA → handle → `plakat.save`).
-- [ ] **Urban lot subdivision** — split each U1 block quad into 2–4 building lots
-      (strip split along the longer edge, noise-jittered), drawn as finer parcels so
-      town maps read at the building scale. Deterministic; pure geometry on the quads.
+- [x] **Urban lot subdivision — DONE.** `subdivide_block` splits each block quad into
+      a small bilinear grid of **building lots** (split count from edge length 1–3 per
+      axis, noise-jittered split lines), each lot inset for a thin lane, with per-lot
+      tone wobble — so towns read at the building scale, not big colored blocks. Works
+      across radial/grid/organic. Deterministic; lot subdivision unit test; town proofs
+      regenerated.
 - [ ] **Non-Latin label shaping** — the 1.5 bitmap font is Latin-only; `language` =
       `ar`/`ru`/`zh` wants a real shaped font + `ab_glyph` (the one map feature that
       adds an asset/dep — gate it behind a `shaped-labels` feature flag; bitmap stays
