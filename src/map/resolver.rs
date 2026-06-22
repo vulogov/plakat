@@ -43,16 +43,12 @@ struct Context {
     river_source: HashMap<String, Pt>,
 }
 
-/// Resolve all the spec's landmarks to pixel positions.
-pub fn resolve_landmarks(
-    spec: &MapSpec,
-    hf: &HeightField,
-    hydro: &Hydrology,
-    coast: &Coastline,
-) -> Result<Vec<ResolvedLandmark>> {
+/// Build the feature-reference context: coast/river cells, range/region centers, and
+/// each river's resolved source + mouth (mouth snapped to the coast). Shared by the
+/// landmark resolver and the named-river matcher.
+fn build_context(spec: &MapSpec, hf: &HeightField, hydro: &Hydrology, coast: &Coastline) -> Context {
     let (w, h) = (hf.width as f32, hf.height as f32);
 
-    // Coast cells (for nearest-coast queries) + river cells (for snapping).
     let mut coast_points = Vec::new();
     for y in 0..coast.height {
         for x in 0..coast.width {
@@ -63,11 +59,7 @@ pub fn resolve_landmarks(
     }
     let river_cells: Vec<Pt> = hydro.rivers.iter().flatten().map(|&(x, y)| (x as f32, y as f32)).collect();
 
-    let base = |a: &Anchor| -> Option<Pt> {
-        resolve_simple(a).map(|(x, y)| (x * w, y * h))
-    };
-
-    // Ranges + regions resolve from cardinal/canvas anchors.
+    let base = |a: &Anchor| -> Option<Pt> { resolve_simple(a).map(|(x, y)| (x * w, y * h)) };
     let mut ranges = HashMap::new();
     for r in &spec.terrain.mountain_ranges {
         if let Some(p) = base(&r.anchor) {
@@ -91,9 +83,6 @@ pub fn resolve_landmarks(
         river_mouth: HashMap::new(),
         river_source: HashMap::new(),
     };
-
-    // River endpoints: resolve the river's own source/mouth anchors (cardinal or
-    // range_slope), then snap the mouth to the coast and the source to high terrain.
     for r in &spec.water.rivers {
         if let Some(p) = ctx.resolve_simple_or_feature(&r.mouth) {
             ctx.river_mouth.insert(r.id.clone(), ctx.nearest_coast(p).unwrap_or(p));
@@ -102,6 +91,57 @@ pub fn resolve_landmarks(
             ctx.river_source.insert(r.id.clone(), p);
         }
     }
+    ctx
+}
+
+/// L2 — match each **named** spec river to the traced channel whose mouth is nearest
+/// the river's resolved mouth, so labels + GeoJSON ids follow the *intended*
+/// watercourse (not just the longest channel). Greedy + unique (a channel is claimed
+/// by at most one river). Returns `river_id → channel index` into `hydro.rivers`.
+pub fn match_rivers_to_channels(
+    spec: &MapSpec,
+    hf: &HeightField,
+    hydro: &Hydrology,
+    coast: &Coastline,
+) -> std::collections::HashMap<String, usize> {
+    let ctx = build_context(spec, hf, hydro, coast);
+    // A channel's mouth is its last (downstream-most) cell.
+    let chan_mouths: Vec<Pt> = hydro
+        .rivers
+        .iter()
+        .map(|c| c.last().map(|&(x, y)| (x as f32, y as f32)).unwrap_or((0.0, 0.0)))
+        .collect();
+    let mut used = vec![false; chan_mouths.len()];
+    let mut out = std::collections::HashMap::new();
+    // Assign in spec order; each river takes its nearest still-free channel.
+    for r in &spec.water.rivers {
+        let Some(&mouth) = ctx.river_mouth.get(&r.id) else { continue };
+        let best = chan_mouths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !used[*i])
+            .min_by(|(_, a), (_, b)| {
+                let da = (a.0 - mouth.0).powi(2) + (a.1 - mouth.1).powi(2);
+                let db = (b.0 - mouth.0).powi(2) + (b.1 - mouth.1).powi(2);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i);
+        if let Some(i) = best {
+            used[i] = true;
+            out.insert(r.id.clone(), i);
+        }
+    }
+    out
+}
+
+/// Resolve all the spec's landmarks to pixel positions.
+pub fn resolve_landmarks(
+    spec: &MapSpec,
+    hf: &HeightField,
+    hydro: &Hydrology,
+    coast: &Coastline,
+) -> Result<Vec<ResolvedLandmark>> {
+    let ctx = build_context(spec, hf, hydro, coast);
 
     // Fixpoint over landmarks.
     let mut resolved: HashMap<String, Pt> = HashMap::new();
@@ -385,5 +425,26 @@ mod tests {
         let pa: Vec<_> = a.iter().map(|l| (l.id.clone(), l.x, l.y)).collect();
         let pb: Vec<_> = b.iter().map(|l| (l.id.clone(), l.x, l.y)).collect();
         assert_eq!(pa, pb);
+    }
+
+    #[test]
+    fn named_river_matches_the_channel_at_its_mouth() {
+        let spec = island();
+        let c = GeoCanvas::from_spec(&spec, 42);
+        let hf = HeightField::generate(&spec, &c);
+        let hydro = Hydrology::compute(&hf, DEFAULT_RIVER_THRESHOLD, DEFAULT_SEA_LEVEL);
+        let coast = Coastline::compute(&hf, DEFAULT_SEA_LEVEL);
+        let m = match_rivers_to_channels(&spec, &hf, &hydro, &coast);
+        // The Ashflow (mouth: cardinal southwest) is matched to a channel.
+        let &ci = m.get("ash").expect("ash matched to a channel");
+        let chan = &hydro.rivers[ci];
+        let &(mx, my) = chan.last().unwrap();
+        // Its mouth sits in the south-west quadrant (x small, y large).
+        assert!(
+            (mx as f32) < hf.width as f32 * 0.6 && (my as f32) > hf.height as f32 * 0.4,
+            "ash channel mouth is toward the SW ({mx},{my})"
+        );
+        // Deterministic + unique.
+        assert_eq!(match_rivers_to_channels(&spec, &hf, &hydro, &coast).get("ash"), Some(&ci));
     }
 }

@@ -371,9 +371,15 @@ impl StreetGraph {
                 }
             }
         }
-        // Block parcels (built-up infill).
-        for b in self.blocks() {
-            fill_quad(&mut img, &b.corners, [0xd8, 0xc6, 0xa2]);
+        // Built-up infill: each block subdivided into building lots — small parcels
+        // with thin gaps + slight tone variation, so the town reads at the lot scale.
+        for (bi, b) in self.blocks().iter().enumerate() {
+            for (li, lot) in subdivide_block(&b.corners, &curve, bi).into_iter().enumerate() {
+                // Per-lot tone wobble: a few buildings darker/lighter than the block.
+                let dv = (curve(bi as f32 * 0.7 + li as f32 * 1.9 + 30.0, li as f32 * 0.6) * 13.0) as i32;
+                let v = |c: i32| (c + dv).clamp(0, 255) as u8;
+                fill_quad(&mut img, &lot, [v(0xd8), v(0xc6), v(0xa2)]);
+            }
         }
         // Streets — each segment bent by the noise field so nothing runs straight.
         for e in self.g.edge_indices() {
@@ -580,12 +586,60 @@ fn draw_line(img: &mut RgbImage, x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3],
     }
 }
 
-/// Shrink a quad toward its centroid (so streets show between block parcels).
-fn inset_quad(quad: [(f32, f32); 4]) -> Block {
+/// Subdivide a block quad into **building lots** — a small bilinear grid (split
+/// count from the block's edge lengths, noise-jittered split lines), each lot inset
+/// for a thin gap. `seed_i` varies the jitter per block. Deterministic.
+fn subdivide_block(q: &[(f32, f32); 4], noise: &dyn Fn(f32, f32) -> f32, seed_i: usize) -> Vec<[(f32, f32); 4]> {
+    let [a, b, c, d] = *q;
+    // Edge lengths: a→b (u axis) vs a→d (v axis) → more lots along the longer one.
+    let len = |p: (f32, f32), r: (f32, f32)| ((p.0 - r.0).powi(2) + (p.1 - r.1).powi(2)).sqrt();
+    let split = |l: f32| (l / 16.0).round().clamp(1.0, 3.0) as usize;
+    let (nu, nv) = (split(len(a, b)), split(len(a, d)));
+    // Bilinear sample of the quad at (u, v) ∈ [0,1]².
+    let p = |u: f32, v: f32| -> (f32, f32) {
+        let x = a.0 * (1.0 - u) * (1.0 - v) + b.0 * u * (1.0 - v) + c.0 * u * v + d.0 * (1.0 - u) * v;
+        let y = a.1 * (1.0 - u) * (1.0 - v) + b.1 * u * (1.0 - v) + c.1 * u * v + d.1 * (1.0 - u) * v;
+        (x, y)
+    };
+    // Jittered split lines (a touch uneven, like real lots) — sorted, in [0,1].
+    let lines = |n: usize, salt: f32| -> Vec<f32> {
+        let mut v: Vec<f32> = (0..=n)
+            .map(|k| {
+                let t = k as f32 / n as f32;
+                if k == 0 || k == n {
+                    t
+                } else {
+                    (t + noise(seed_i as f32 * 0.5 + k as f32 + salt, salt) * 0.12 / n as f32).clamp(0.05, 0.95)
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    };
+    let us = lines(nu, 1.0);
+    let vs = lines(nv, 7.0);
+    let mut lots = Vec::with_capacity(nu * nv);
+    for iv in 0..nv {
+        for iu in 0..nu {
+            let (u0, u1, v0, v1) = (us[iu], us[iu + 1], vs[iv], vs[iv + 1]);
+            let raw = [p(u0, v0), p(u1, v0), p(u1, v1), p(u0, v1)];
+            lots.push(inset_quad_by(raw, 0.12)); // a thin lane between lots
+        }
+    }
+    lots
+}
+
+/// Shrink a quad toward its centroid by `f` (so streets/lanes show between parcels).
+fn inset_quad_by(quad: [(f32, f32); 4], f: f32) -> [(f32, f32); 4] {
     let cx = quad.iter().map(|p| p.0).sum::<f32>() / 4.0;
     let cy = quad.iter().map(|p| p.1).sum::<f32>() / 4.0;
-    let f = |p: (f32, f32)| (p.0 + (cx - p.0) * 0.22, p.1 + (cy - p.1) * 0.22);
-    Block { corners: [f(quad[0]), f(quad[1]), f(quad[2]), f(quad[3])] }
+    let g = |p: (f32, f32)| (p.0 + (cx - p.0) * f, p.1 + (cy - p.1) * f);
+    [g(quad[0]), g(quad[1]), g(quad[2]), g(quad[3])]
+}
+
+/// Shrink a block quad toward its centroid (so streets show between blocks).
+fn inset_quad(quad: [(f32, f32); 4]) -> Block {
+    Block { corners: inset_quad_by(quad, 0.22) }
 }
 
 /// Scanline-fill a convex quad (the 4 corners in order).
@@ -723,6 +777,21 @@ mod tests {
             .collect();
         let (min, max) = (rs.iter().cloned().fold(f32::INFINITY, f32::min), rs.iter().cloned().fold(0.0, f32::max));
         assert!(max - min > sg.radius * 0.08, "wall radius varies (organic), got spread {}", max - min);
+    }
+
+    #[test]
+    fn blocks_subdivide_into_lots_deterministically() {
+        let sg = graph();
+        let perlin = Perlin::new(sg.seed);
+        let noise = |a: f32, b: f32| perlin.get([a as f64, b as f64]) as f32;
+        let count = |bi: usize| subdivide_block(&sg.blocks()[bi].corners, &noise, bi).len();
+        // Every block yields ≥1 lot; the bigger ones split into several.
+        let total: usize = (0..sg.blocks().len()).map(count).sum();
+        assert!(total > sg.blocks().len(), "blocks subdivide into more lots ({total} > {})", sg.blocks().len());
+        // Deterministic: same block → same lots.
+        let a = subdivide_block(&sg.blocks()[0].corners, &noise, 0);
+        let b = subdivide_block(&sg.blocks()[0].corners, &noise, 0);
+        assert_eq!(a, b);
     }
 
     #[test]

@@ -17,49 +17,46 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.8.0 — town maps + believable, tunable geography (`plakat map`)
+## What's new in 1.9.0 — map polish (lakes, lots, painted scripts, shaped labels)
 
-1.8.0 closes the map track with **MAP-5, the urban fabric** — a city/town-scale
-map from a street graph — and makes the geography **look real and be tunable**:
-eroded coasts, irregular mountain ranges, and town plans that fit their setting.
-All still a **pure function of (spec, seed)** — byte-stable on-box, no GPU (the SD
-paint stays opt-in).
+1.9.0 polishes `plakat map` after the track went feature-complete in 1.8: real
+lakes, river labels that follow the right channel, towns drawn at the building
+scale, SD-painted maps from scripts, and non-Latin labels. The geometry stays a
+**pure function of (spec, seed)** — byte-stable, no GPU for the linework path. New
+this cycle: a full **[map tutorial](Documentation/Tutorials/MAP_TUTORIAL.md)**.
 
 ```bash
-# a walled town: street graph (wall, gates, blocks) → a labelled town map
-plakat map --map-spec town.json --map-render town.png --map-urban-layout radial
+# lakes now render as water; rivers label the channel at their mouth
+plakat map --map-spec isle.json --map-render isle.png
 
-# tune the realism of natural features (0 smooth … 1 natural … >1 rugged)
-plakat map "a wind-carved fjord coast under jagged peaks" --map-render isle.png --map-erosion 2.5
+# Cyrillic / CJK labels via a supplied font (build: --features shaped-labels)
+plakat map --map-spec town.json --map-render town.png --map-font /path/to/font.ttf
 ```
 
-**MAP-5 — the urban fabric** (the last planned map phase; +`petgraph`)
+**Map polish**
 
-- **Town maps** — a city/town spec (`scale_tier` 10–12 with an `urban` block) renders
-  a street graph: a wall + gates, arterials, ring/grid streets, **block parcels**, a
-  **waterfront** with piers, and labels (gates / districts / landmarks at urban
-  anchors — `at_gate`, `in_district`, `pier_tip`, `along_street`, …).
-- **Configurable street plans** — `radial` (medieval radio-concentric), `grid`
-  (planned/Roman), or `organic` (winding old town), via `urban.layout` /
-  `--map-urban-layout`, or **inferred** from context (mountain→organic, walled→radial,
-  plains→grid). A straight grid only when you ask for it.
+- **Lakes are real water** — a spec lake was labelled but never drawn; now it carves
+  a sub-sea-level basin so the coast/biome/hydrology pipeline renders it as a blue
+  tarn with a shoreline, and rivers drain into it. (Swamps were already the Wetland
+  biome.)
+- **Named-river ↔ channel matching** — each named river labels the traced channel
+  whose mouth is nearest its resolved mouth (not just the longest), and GeoJSON
+  exports it with its real id + name.
+- **Town lot subdivision** — each block splits into building lots with thin lanes +
+  tone variation, so towns read at the building scale, not as flat blocks.
+- **`plakat.map.paint`** — a Bund word `( spec-path style -- handle )` paints a map
+  via SD into an image handle, completing the `plakat.map.*` scripting surface
+  (`render` / `paint` / `layout` / `erosion`).
+- **Non-Latin labels** — a `shaped-labels` feature + `--map-font <PATH.ttf>`
+  rasterizes labels with a real font (Cyrillic, CJK) via `ab_glyph`. The Latin bitmap
+  font stays the default, so the corpus stays asset-free and byte-stable.
 
-**Believable, tunable natural features**
+Every deterministic artifact is byte-checked (`corpus/map*.sh`); the SD paths are
+verified by committed showcases. See
+[`Documentation/ROADMAP_1.9.0.md`](Documentation/ROADMAP_1.9.0.md) (it also carries
+the model-training-expansion plan — SD2.1 / PixArt-Σ / Cascade LoRA, SD3.5 TI).
 
-- **Eroded geography** — coastlines are multi-scale noise-warped (bays, peninsulas,
-  headlands) and mountain ridgelines wander with varying crest height — no more
-  smooth-potato islands or oval ranges.
-- **One erosion knob** — `terrain.erosion` (0 = idealized, 1 = natural default, >1 =
-  rugged fjords), reachable from **every surface**: `--map-erosion`, the scenario
-  `map-erosion` field, and the `plakat.map.erosion` scripting word — each proven
-  byte-identical to the others. (Likewise `--map-urban-layout` / `map-layout` /
-  `plakat.map.layout`.)
-
-Proven on-box: committed `town.spec.json` → byte-stable street graph + town map
-(`corpus/map_urban.sh`); every geographic + urban + scenario artifact byte-checked.
-See [`Documentation/ROADMAP_1.8.0.md`](Documentation/ROADMAP_1.8.0.md).
-
-**Earlier releases** (v0.13 – v1.7):
+**Earlier releases** (v0.13 – v1.8):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

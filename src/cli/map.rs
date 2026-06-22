@@ -93,6 +93,12 @@ pub struct MapArgs {
     #[arg(long = "map-erosion", value_name = "AMOUNT")]
     pub erosion: Option<f32>,
 
+    /// MAP-3: a TrueType/OpenType font for labels (non-Latin scripts — Cyrillic,
+    /// CJK). Requires a build with `--features shaped-labels`; without it the flag
+    /// warns and the built-in Latin bitmap font is used.
+    #[arg(long = "map-font", value_name = "PATH")]
+    pub font: Option<PathBuf>,
+
     /// MAP-3: render the complete styled, labelled map (the headline output:
     /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
     #[arg(long = "map-render", value_name = "PATH")]
@@ -210,6 +216,13 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
     // MAP-2: `--map-erosion` overrides the natural-feature irregularity.
     if let Some(e) = args.erosion {
         spec.terrain.erosion = Some(e);
+    }
+    // MAP-3: `--map-font` activates shaped labels (feature-gated).
+    if let Some(p) = &args.font {
+        #[cfg(feature = "shaped-labels")]
+        map::labels::shaped::load_font(p)?;
+        #[cfg(not(feature = "shaped-labels"))]
+        tracing::warn!(target: "plakat", "--map-font {} ignored: rebuild with `--features shaped-labels`", p.display());
     }
 
     let mut did_dump = false;
