@@ -206,6 +206,14 @@ If you're new to plakat, work through these in order:
     images. The power-user feature that turns plakat from a
     one-shot CLI into a job runner.
 
+15a. [`COMPILE_TUTORIAL.md`](COMPILE_TUTORIAL.md) — **`plakat compile`.**
+    Write a batch as prose paragraphs (a `prompts.txt`) and compile it into a
+    scenario HJSON: one task per blank-line block, global→scene inheritance,
+    model-family-aware prompt rewriting + auto-negatives. `--no-enhance` for a
+    deterministic core, `--lint` / `--dry-run` / `--diff` / `--decompile`, an
+    optional Tera template pre-pass, and a `type: map` block (worldbuilding +
+    maps in one document). The prose front-end to `SCENARIOS_TUTORIAL.md`.
+
 16. [`OUTPAINT_TUTORIAL.md`](OUTPAINT_TUTORIAL.md) — `plakat
     outpaint INPUT.png` grows the canvas of an existing image.
     Per-side flag grammar (`--left` / `--right` / `--top` /
