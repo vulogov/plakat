@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.7. The current
+"What's new" sections for v0.13 through 1.8. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.8.0 — town maps + believable, tunable geography (`plakat map`)
+
+1.8.0 closed the planned map track with **MAP-5, the urban fabric** — a city/town
+map from a `petgraph` street graph — and made the geography realistic + tunable.
+
+- **Town maps** — a city/town spec (`urban` block) renders a street graph: wall +
+  gates, arterials, ring/grid streets, block parcels, a waterfront with piers, and
+  labels at urban anchors (`at_gate`, `in_district`, `pier_tip`, `along_street`, …).
+- **Configurable street plans** — `radial` (medieval), `grid` (planned), or `organic`
+  (winding), via `urban.layout` / `--map-urban-layout`, or inferred from context.
+- **Eroded geography** — coastlines noise-warped into bays + peninsulas, mountain
+  ridgelines that wander — no more smooth-potato islands or oval ranges.
+- **One erosion knob** — `terrain.erosion` (0 idealized … 1 natural … >1 rugged),
+  reachable from `--map-erosion`, the scenario `map-erosion` field, and the
+  `plakat.map.erosion` scripting word, each byte-identical.
 
 ## What's new in 1.7.0 — maps everywhere (`map` in scenarios, compile & scripts)
 
