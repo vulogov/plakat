@@ -293,6 +293,12 @@ struct ScenarioFile {
     /// LLM provider for the prose→spec parse.
     #[serde(rename = "map-provider", default)]
     map_provider: Option<String>,
+    /// MAP-5 town street plan (`radial`/`grid`/`organic`) + MAP-2 natural-feature
+    /// erosion (0 smooth … 1 natural … >1 rugged).
+    #[serde(rename = "map-layout", default)]
+    map_layout: Option<String>,
+    #[serde(rename = "map-erosion", default)]
+    map_erosion: Option<f32>,
 
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
@@ -891,6 +897,10 @@ struct TaskDef {
     map_sd_lora: Vec<String>,
     #[serde(rename = "map-provider", default)]
     map_provider: Option<String>,
+    #[serde(rename = "map-layout", default)]
+    map_layout: Option<String>,
+    #[serde(rename = "map-erosion", default)]
+    map_erosion: Option<f32>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -1045,6 +1055,8 @@ fn effective_map_config(scenario: &ScenarioFile, task: &TaskDef) -> crate::map::
         tiles: task.map_tiles.clone().or_else(|| scenario.map_tiles.clone()),
         sd_model: pick(task.map_sd_model.as_ref(), scenario.map_sd_model.as_ref(), "sdxl"),
         sd_loras,
+        urban_layout: task.map_layout.clone().or_else(|| scenario.map_layout.clone()),
+        erosion: task.map_erosion.or(scenario.map_erosion),
         cache: false,
     }
 }

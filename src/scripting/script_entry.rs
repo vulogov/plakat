@@ -1827,6 +1827,8 @@ mod tests {
             cn_annotation_cache: None,
             look_name: None,
             genre_name: None,
+            map_layout: None,
+            map_erosion: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,

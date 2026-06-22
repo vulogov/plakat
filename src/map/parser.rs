@@ -146,6 +146,7 @@ Top-level shape:
   "tile_grid": { "cols": <1-8>, "rows": <1-8> },
   "climate": "<optional>", "era": "<optional>", "language": "<optional BCP-47>",
   "terrain": { "dominant_elevation": "flat|hilly|mountainous|...",
+               "erosion": <0=smooth..1=natural..2=rugged, optional>,
                "mountain_ranges": [ { "id","name","anchor","orientation","height" } ] },
   "water": { "seas": [ { "id","name","position","enclosed" } ],
              "rivers": [ { "id","name","source":<anchor>,"mouth":<anchor>,"navigable" } ],
@@ -156,6 +157,20 @@ Top-level shape:
   "infrastructure": { "roads": [ { "id","from":<landmark id>,"to":<landmark id>,"kind" } ],
                       "walls": [], "bridges": [] }
 }
+
+For a CITY/TOWN map (scale_tier 10-12), also add an "urban" block:
+  "urban": {
+    "layout": "radial|grid|organic",   // radial=medieval walled, grid=planned, organic=hill town
+    "wall": { "name","shape":"round|square","radius":<0.3-0.95> },   // omit for an open town
+    "gates": [ { "id","name","bearing":"north|east|south|west|..." } ],
+    "streets": [ { "id","name","kind":"arterial|minor","bearing":"<cardinal>" } ],
+    "districts": [ { "id","name","anchor":<anchor>,"character" } ],
+    "waterfront": "<edge, e.g. south>",   // omit if inland
+    "piers": [ { "id","name","position":<0-1 along the waterfront> } ]
+  }
+Landmarks may use urban anchors: {"kind":"city_center"}, {"kind":"at_gate","gate":"<id>"},
+  {"kind":"in_district","district":"<id>"}, {"kind":"pier_tip","pier":"<id>"},
+  {"kind":"along_street","street":"<id>","position":<0-1>}, {"kind":"on_wall","position":<0-1>}.
 
 POSITIONS ARE ANCHORS, never pixel coordinates. An anchor is one of:
   { "kind":"cardinal", "position":"north|south|east|west|center|northeast|..." }
@@ -173,6 +188,8 @@ const RULES: &str = r#"Rules:
 - A river's source is usually high terrain; its mouth is a coast/sea/lake.
 - Place cities plausibly: ports on coasts/river-mouths, fortresses on passes/headlands.
 - Prefer relational anchors (mouth_of, bearing, natural_harbor) over raw cardinals.
+- For a town map, pick a layout that fits: medieval/walled → radial, planned/colonial/
+  plains → grid, hill/mountain/old → organic. Omit "layout" to auto-infer from context.
 - Keep it consistent: don't reference an id you didn't define.
 - Output strictly valid JSON for the schema above and nothing else."#;
 

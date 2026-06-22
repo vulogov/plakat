@@ -9,7 +9,7 @@ use candle_core::Device;
 use std::path::{Path, PathBuf};
 
 use super::parser::{self, ParseOpts};
-use super::render::{self, Style};
+use super::render::Style;
 use super::render_sd::{self, SdOptions};
 use super::spec::{MapSpec, SPEC_VERSION};
 
@@ -34,6 +34,10 @@ pub struct MapTaskCfg {
     pub sd_model: String,
     /// LoRA specs for `paint`; empty = the model's default (fantasy-map for SDXL).
     pub sd_loras: Vec<String>,
+    /// Override the town street plan (`radial`/`grid`/`organic`).
+    pub urban_layout: Option<String>,
+    /// Override natural-feature erosion (0 smooth … 1 natural … >1 rugged).
+    pub erosion: Option<f32>,
     /// SHA-256 cache the parsed spec.
     pub cache: bool,
 }
@@ -50,6 +54,8 @@ impl Default for MapTaskCfg {
             tiles: None,
             sd_model: "sdxl".into(),
             sd_loras: Vec::new(),
+            urban_layout: None,
+            erosion: None,
             cache: false,
         }
     }
@@ -115,7 +121,13 @@ pub async fn run_map_task(
     out_dir: &Path,
     dry_run: bool,
 ) -> Result<PathBuf> {
-    let spec = source_spec(cfg).await?;
+    let mut spec = source_spec(cfg).await?;
+    if let Some(l) = &cfg.urban_layout {
+        spec.urban.get_or_insert_with(Default::default).layout = Some(l.clone());
+    }
+    if let Some(e) = cfg.erosion {
+        spec.terrain.erosion = Some(e);
+    }
     let style = Style::named(&cfg.style)?;
     let out = out_dir.join("map.png");
     if dry_run {
@@ -134,7 +146,7 @@ pub async fn run_map_task(
             .await
             .context("map task: SD painted render")?;
     } else {
-        render::save_render(&spec, seed, style, &out).context("map task: linework render")?;
+        super::save_map_image(&spec, seed, style, &out).context("map task: linework render")?;
     }
     Ok(out)
 }

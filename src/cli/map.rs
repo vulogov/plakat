@@ -78,6 +78,21 @@ pub struct MapArgs {
     #[arg(long = "map-dump-features", value_name = "PATH")]
     pub dump_features: Option<PathBuf>,
 
+    /// MAP-5: write the urban street graph (U0) — wall, gates, arterials, streets,
+    /// blocks — for a city/town-scale spec.
+    #[arg(long = "map-dump-streets", value_name = "PATH")]
+    pub dump_streets: Option<PathBuf>,
+
+    /// MAP-5: override the town street plan: radial (medieval) | grid (planned) |
+    /// organic (winding). When unset, taken from the spec or inferred from context.
+    #[arg(long = "map-urban-layout", value_name = "STYLE")]
+    pub urban_layout: Option<String>,
+
+    /// MAP-2: erosion / irregularity of natural features (coasts, mountain ridges):
+    /// 0 = smooth/idealized, 1 = natural (default), >1 = rugged. Overrides the spec.
+    #[arg(long = "map-erosion", value_name = "AMOUNT")]
+    pub erosion: Option<f32>,
+
     /// MAP-3: render the complete styled, labelled map (the headline output:
     /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
     #[arg(long = "map-render", value_name = "PATH")]
@@ -152,7 +167,7 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
     let (grid, tier) = map::resolve_scale(args.tiles.as_deref(), args.scale.as_deref())?;
 
     // Source the spec: load (skip LLM) or parse the description.
-    let spec: MapSpec = if let Some(p) = &args.spec {
+    let mut spec: MapSpec = if let Some(p) = &args.spec {
         let text = std::fs::read_to_string(p).with_context(|| format!("reading --map-spec {}", p.display()))?;
         let mut m: MapSpec = serde_json::from_str(&text)
             .with_context(|| format!("parsing MapSpec {}", p.display()))?;
@@ -186,6 +201,16 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         )
         .await?
     };
+
+    // MAP-5: `--map-urban-layout` overrides the town plan (creating an urban block
+    // for a town-scale spec that lacks one, so the flag works on bare specs too).
+    if let Some(l) = &args.urban_layout {
+        spec.urban.get_or_insert_with(Default::default).layout = Some(l.clone());
+    }
+    // MAP-2: `--map-erosion` overrides the natural-feature irregularity.
+    if let Some(e) = args.erosion {
+        spec.terrain.erosion = Some(e);
+    }
 
     let mut did_dump = false;
 
@@ -297,13 +322,34 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         }
     }
 
-    // MAP-3: the complete styled, labelled map — the headline render.
+    // MAP-5: the urban street graph (U0).
+    if let Some(p) = &args.dump_streets {
+        let canvas = map::engine::GeoCanvas::from_spec(&spec, args.seed);
+        let sg = map::urban::StreetGraph::generate(&spec, &canvas);
+        sg.render_overlay(p)?;
+        let (nodes, edges) = sg.stats();
+        println!(
+            "{}  streets → {}  ({} junction(s), {} segment(s), {} gate(s), seed {})",
+            style("✓").green(),
+            p.display(),
+            nodes,
+            edges,
+            sg.gates.len(),
+            args.seed
+        );
+        did_dump = true;
+    }
+
+    // MAP-3/MAP-5: the complete labelled map. `render_map_image` routes urban specs
+    // (a `urban` block) to the town renderer, geographic specs to the linework map.
     if let Some(p) = &args.render {
         let rstyle = map::render::Style::named(&args.style)?;
-        map::render::save_render(&spec, args.seed, rstyle, p)?;
+        map::save_map_image(&spec, args.seed, rstyle, p)?;
+        let kind = if spec.urban.is_some() { "town map" } else { "map" };
         println!(
-            "{}  map → {}  ({} landmark(s), style {}, seed {})",
+            "{}  {} → {}  ({} landmark(s), style {}, seed {})",
             style("✓").green(),
+            kind,
             p.display(),
             spec.landmarks.len(),
             args.style,

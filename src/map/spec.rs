@@ -37,6 +37,10 @@ pub struct MapSpec {
     pub landmarks: Vec<LandmarkSpec>,
     #[serde(default)]
     pub infrastructure: InfrastructureSpec,
+    /// MAP-5: the urban fabric (streets, districts, wall, gates, waterfront). Present
+    /// for city/town-scale maps (scale tiers 10–12); `None` for geographic maps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urban: Option<UrbanSpec>,
     #[serde(default)]
     pub bund_hooks: Option<Vec<String>>,
 }
@@ -58,9 +62,115 @@ impl MapSpec {
             regions: Vec::new(),
             landmarks: Vec::new(),
             infrastructure: InfrastructureSpec::default(),
+            urban: None,
             bund_hooks: None,
         }
     }
+}
+
+// ── Urban fabric (MAP-5) ─────────────────────────────────────────────────────
+
+/// A city/town plan: a wall ring + gates, named streets + districts, an optional
+/// waterfront with piers, and a station. The urban engine (U0–U2) is a pure fn of
+/// `(spec, seed)`; named streets/gates/districts label the generated geometry.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct UrbanSpec {
+    /// Street-plan style: `"radial"` (medieval radio-concentric — rings + radials),
+    /// `"grid"` (planned orthogonal — Roman/colonial), or `"organic"` (irregular
+    /// winding lanes). When omitted, inferred from context (walled → radial,
+    /// mountainous → organic, plains → grid). Aliases: `concentric`/`medieval`,
+    /// `orthogonal`/`planned`, `irregular`/`maze`.
+    #[serde(default)]
+    pub layout: Option<String>,
+    /// A city wall enclosing the built-up area. `None` = an open (unwalled) town.
+    #[serde(default)]
+    pub wall: Option<WallRing>,
+    #[serde(default)]
+    pub gates: Vec<GateSpec>,
+    #[serde(default)]
+    pub streets: Vec<StreetSpec>,
+    #[serde(default)]
+    pub districts: Vec<UrbanDistrict>,
+    /// The edge the city meets water on (`"south"`, `"west"`, …). `None` = inland.
+    #[serde(default)]
+    pub waterfront: Option<String>,
+    #[serde(default)]
+    pub piers: Vec<PierSpec>,
+    #[serde(default)]
+    pub station: Option<NamedPoint>,
+}
+
+/// The city wall: a ring at `radius` (fraction of the canvas half-extent) around
+/// the centre. `shape` is `"round"` (default) or `"square"`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WallRing {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_wall_shape")]
+    pub shape: String,
+    #[serde(default = "default_wall_radius")]
+    pub radius: f32,
+}
+
+fn default_wall_shape() -> String {
+    "round".into()
+}
+fn default_wall_radius() -> f32 {
+    0.7
+}
+
+/// A gate piercing the wall at a cardinal `bearing` (an arterial runs centre→gate).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GateSpec {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `"north"`, `"southeast"`, … — where the gate sits on the wall.
+    #[serde(default)]
+    pub bearing: String,
+}
+
+/// A named street. `kind` (`"arterial"` / `"minor"`) + `bearing` match it onto the
+/// generated graph (an arterial radiates centre→gate at its bearing).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StreetSpec {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub bearing: String,
+}
+
+/// A named district, placed at a cardinal/canvas `anchor` with optional `character`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UrbanDistrict {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub anchor: Anchor,
+    #[serde(default)]
+    pub character: String,
+}
+
+/// A pier extending from the waterfront at `position` (0..1 along the water edge).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PierSpec {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub position: f32,
+}
+
+/// A named point anchored like a landmark (used for the station).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NamedPoint {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub anchor: Anchor,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +241,11 @@ pub struct TerrainSpec {
     pub plateaus: Vec<NamedRegion>,
     #[serde(default)]
     pub rift_valleys: Vec<NamedRegion>,
+    /// Erosion / irregularity strength for natural features: `0.0` = smooth/idealized
+    /// (circular coasts, oval ranges), `1.0` = natural (default), `>1.0` = rugged
+    /// (ragged coasts, wandering ridgelines). `None` = the 1.0 default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erosion: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
