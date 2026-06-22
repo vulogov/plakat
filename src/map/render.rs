@@ -151,7 +151,8 @@ pub fn apply_labels_and_furniture(img: &mut RgbImage, spec: &MapSpec, geo: &Geom
     let scale_box = reserve_box(10, h as i32 - 34, 132, 28, &mut taken);
     let legend_box = reserve_legend(&geo.lms, w, h, &mut taken);
 
-    draw_features(img, spec, &geo.hf, &geo.hydro, style, &mut taken);
+    let river_match = super::resolver::match_rivers_to_channels(spec, &geo.hf, &geo.hydro, &geo.coast);
+    draw_features(img, spec, &geo.hf, &geo.hydro, &river_match, style, &mut taken);
     draw_landmarks(img, &geo.lms, style, &mut taken);
 
     draw_title(img, spec, style, title_box);
@@ -248,8 +249,17 @@ fn draw_landmarks(img: &mut RgbImage, lms: &[ResolvedLandmark], st: Style, taken
 }
 
 /// Named natural features — mountain ranges, regions, the sea, lakes, the main
-/// river — labelled at their resolved positions.
-fn draw_features(img: &mut RgbImage, spec: &MapSpec, hf: &HeightField, hydro: &Hydrology, st: Style, taken: &mut Vec<Rect>) {
+/// river — labelled at their resolved positions. `river_match` maps each named
+/// river id → its traced-channel index (L2 matching).
+fn draw_features(
+    img: &mut RgbImage,
+    spec: &MapSpec,
+    hf: &HeightField,
+    hydro: &Hydrology,
+    river_match: &std::collections::HashMap<String, usize>,
+    st: Style,
+    taken: &mut Vec<Rect>,
+) {
     let (w, h) = (hf.width as f32, hf.height as f32);
     let to_px = |a: &super::spec::Anchor| resolve_simple(a).map(|(x, y)| ((x * w) as i32, (y * h) as i32));
 
@@ -277,14 +287,16 @@ fn draw_features(img: &mut RgbImage, spec: &MapSpec, hf: &HeightField, hydro: &H
             }
         }
     }
-    // River names: assign in order to the longest traced channels (channel↔name
-    // matching is an L2 refinement — heuristic for now, fine for one main river).
-    let mut chans: Vec<&Vec<(u32, u32)>> = hydro.rivers.iter().collect();
-    chans.sort_by_key(|c| std::cmp::Reverse(c.len()));
-    for (rv, chan) in spec.water.rivers.iter().zip(chans.iter()) {
-        if let Some(name) = &rv.name {
-            let mid = chan[chan.len() / 2];
-            place_label(img, (mid.0 as i32, mid.1 as i32), name, 1, st.river, st, taken);
+    // River names: label each named river at the midpoint of its MATCHED channel
+    // (L2 — the channel whose mouth is nearest the river's resolved mouth).
+    for rv in &spec.water.rivers {
+        if let (Some(name), Some(&ci)) = (&rv.name, river_match.get(&rv.id)) {
+            if let Some(chan) = hydro.rivers.get(ci) {
+                if !chan.is_empty() {
+                    let mid = chan[chan.len() / 2];
+                    place_label(img, (mid.0 as i32, mid.1 as i32), name, 1, st.river, st, taken);
+                }
+            }
         }
     }
 }

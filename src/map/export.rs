@@ -25,6 +25,8 @@ pub struct VectorMap {
     pub rivers: Vec<Vec<(u32, u32)>>,
     pub roads: Vec<RoadGeom>,
     pub landmarks: Vec<ResolvedLandmark>,
+    /// L2 — traced-channel index → the named spec river `(id, name)` matched to it.
+    pub river_names: std::collections::HashMap<usize, (String, Option<String>)>,
 }
 
 impl VectorMap {
@@ -37,6 +39,12 @@ impl VectorMap {
         let landmarks = resolve_landmarks(spec, &hf, &hydro, &coast)?;
         let roads = build_roads(spec, &hf, &coast, &hydro, &landmarks);
         let coast_rings = trace_coast_rings(&coast);
+        // L2 — channel index → matched spec river (id, name).
+        let mut river_names = std::collections::HashMap::new();
+        for (id, ci) in super::resolver::match_rivers_to_channels(spec, &hf, &hydro, &coast) {
+            let name = spec.water.rivers.iter().find(|r| r.id == id).and_then(|r| r.name.clone());
+            river_names.insert(ci, (id, name));
+        }
         Ok(VectorMap {
             width: hf.width,
             height: hf.height,
@@ -44,6 +52,7 @@ impl VectorMap {
             rivers: hydro.rivers,
             roads,
             landmarks,
+            river_names,
         })
     }
 
@@ -76,18 +85,16 @@ pub fn to_geojson(vm: &VectorMap, spec: &MapSpec) -> String {
             "geometry": { "type": "LineString", "coordinates": line(ring) }
         }));
     }
-    for (rv, chan) in spec.water.rivers.iter().zip(vm.rivers.iter()) {
+    // Every traced channel exports; the ones matched to a named spec river carry its
+    // id + name (L2), the rest are anonymous `channel_<i>` tributaries.
+    for (i, chan) in vm.rivers.iter().enumerate() {
+        let (id, name) = match vm.river_names.get(&i) {
+            Some((id, name)) => (id.clone(), name.clone()),
+            None => (format!("channel_{i}"), None),
+        };
         features.push(json!({
             "type": "Feature",
-            "properties": { "class": "river", "id": rv.id, "name": rv.name },
-            "geometry": { "type": "LineString", "coordinates": line(chan) }
-        }));
-    }
-    // Any unnamed extra channels still export (no spec row).
-    for (i, chan) in vm.rivers.iter().enumerate().skip(spec.water.rivers.len()) {
-        features.push(json!({
-            "type": "Feature",
-            "properties": { "class": "river", "id": format!("channel_{i}") },
+            "properties": { "class": "river", "id": id, "name": name },
             "geometry": { "type": "LineString", "coordinates": line(chan) }
         }));
     }

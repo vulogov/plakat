@@ -6036,8 +6036,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "ash",
-        "name": "The Ashflow"
+        "id": "channel_0",
+        "name": null
       },
       "type": "Feature"
     },
@@ -6737,7 +6737,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_1"
+        "id": "channel_1",
+        "name": null
       },
       "type": "Feature"
     },
@@ -6921,7 +6922,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_2"
+        "id": "channel_2",
+        "name": null
       },
       "type": "Feature"
     },
@@ -7465,7 +7467,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_3"
+        "id": "channel_3",
+        "name": null
       },
       "type": "Feature"
     },
@@ -7929,7 +7932,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_4"
+        "id": "channel_4",
+        "name": null
       },
       "type": "Feature"
     },
@@ -8209,7 +8213,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_5"
+        "id": "channel_5",
+        "name": null
       },
       "type": "Feature"
     },
@@ -8765,7 +8770,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_6"
+        "id": "channel_6",
+        "name": null
       },
       "type": "Feature"
     },
@@ -9217,7 +9223,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_7"
+        "id": "channel_7",
+        "name": null
       },
       "type": "Feature"
     },
@@ -9689,7 +9696,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_8"
+        "id": "channel_8",
+        "name": null
       },
       "type": "Feature"
     },
@@ -10205,7 +10213,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_9"
+        "id": "channel_9",
+        "name": null
       },
       "type": "Feature"
     },
@@ -10825,7 +10834,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_10"
+        "id": "channel_10",
+        "name": null
       },
       "type": "Feature"
     },
@@ -11485,7 +11495,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_11"
+        "id": "channel_11",
+        "name": null
       },
       "type": "Feature"
     },
@@ -11701,7 +11712,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_12"
+        "id": "channel_12",
+        "name": null
       },
       "type": "Feature"
     },
@@ -12049,7 +12061,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_13"
+        "id": "channel_13",
+        "name": null
       },
       "type": "Feature"
     },
@@ -12365,7 +12378,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_14"
+        "id": "channel_14",
+        "name": null
       },
       "type": "Feature"
     },
@@ -12745,7 +12759,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_15"
+        "id": "ash",
+        "name": "The Ashflow"
       },
       "type": "Feature"
     },
@@ -13137,7 +13152,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_16"
+        "id": "channel_16",
+        "name": null
       },
       "type": "Feature"
     },
@@ -13505,7 +13521,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_17"
+        "id": "channel_17",
+        "name": null
       },
       "type": "Feature"
     },
@@ -13881,7 +13898,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_18"
+        "id": "channel_18",
+        "name": null
       },
       "type": "Feature"
     },
@@ -14041,7 +14059,8 @@
       },
       "properties": {
         "class": "river",
-        "id": "channel_19"
+        "id": "channel_19",
+        "name": null
       },
       "type": "Feature"
     },

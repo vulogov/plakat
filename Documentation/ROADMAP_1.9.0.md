@@ -14,9 +14,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## A — map polish (small, high-leverage)
 
-- [ ] **L2 named-river ↔ traced-channel matching** — assign the spec's river ids to
-      the longest traced channels so labels + GeoJSON `id`s follow the intended
-      watercourse (today it's a length heuristic). Deterministic; cheap.
+- [x] **L2 named-river ↔ traced-channel matching — DONE.** `resolver::match_rivers_to_channels`
+      pairs each named spec river to the traced channel whose mouth is nearest the
+      river's resolved mouth (greedy + unique), so labels + GeoJSON `id`/`name` follow
+      the *intended* watercourse, not the longest channel. The render labels the
+      matched channel; the GeoJSON exports every channel with the matched one carrying
+      its real id + name (`The Ashflow`), the rest as `channel_<i>`. Refactored the
+      mouth resolution into a shared `build_context`. Deterministic; matcher unit test.
 - [ ] **`plakat.map.paint` scripting word** — the SD-painted counterpart to
       `plakat.map.render` (scripting currently stays on the GPU-free linework path).
 - [ ] **Urban lot subdivision** — split each U1 block into building lots (a strip /
