@@ -16,10 +16,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 In the recommended sequence from the plan:
 
-- [ ] **SD 2.1 — style LoRA + DreamBooth** *(start here)*. Reuse the SD 1.5 UNet
-      trainer with sd21's 1024-dim CLIP + the **v-prediction** loss target. Route
-      `sd21` into `train_style_lora_sd`; extend `style train --base` / `dreambooth`.
-      On-box verifiable → `corpus/style_train.sh sd21` + a committed showcase.
+- [x] **SD 2.1 — style LoRA + DreamBooth — DONE.** `train_style_lora_sd` now branches
+      on `is_sd21`: a dedicated `sd21_unet_config` (cross-attn 1024, linear projection,
+      `[5,10,20,20]` heads) and a **v-prediction** loss target (`v_target` = √ᾱ·ε −
+      √(1−ᾱ)·x0; ε for SD 1.5). The 1024-dim CLIP conditioning comes from SdCore for
+      free; DreamBooth (`--class-dir`) rides the same loop. CLI: `style train --base
+      sd21`; `corpus/style_train.sh sd21`. **Verified on-box (Metal):** trained the
+      watercolour set → 128 attention adapters, v-pred loss trended down, a kohya LoRA
+      that loads **128/128 merged** into sd21 inference and renders. 2 unit tests
+      (config + v-pred math). *(Full showcase = run `style_train.sh sd21` ~120 steps.)*
 - [ ] **PixArt-Σ — style/subject LoRA**. Retrofit the DiT attention/MLP projections to
       `LoraLinear` + a PixArt `install_train_adapters`; training forward (VAE encode,
       BF16 T5, IDDPM-ε through the frozen DiT). The reusable transformer-adapter

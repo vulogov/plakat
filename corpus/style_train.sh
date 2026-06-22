@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Train a watercolour style LoRA from corpus/style/watercolour/ on a chosen
-# base. Usage: ./style_train.sh [sd15|sdxl|sd35]   (default: sd15).
+# base. Usage: ./style_train.sh [sd15|sd21|sdxl|sd35]   (default: sd15).
 #
 # SLOW — full back-prop through the base UNet/MMDiT. Run ONCE; the output is
 # reused by style_gen.sh (training and generation are separated). Checkpoints
@@ -23,9 +23,10 @@ BASE="${1:-sd15}"
 
 case "$BASE" in
   sd15) SIZE=512; LR=2e-4;   STEPS=120; RANK=32; OUT=watercolour-sd15.safetensors ;;
+  sd21) SIZE=512; LR=1.5e-4; STEPS=120; RANK=32; OUT=watercolour-sd21.safetensors ;;
   sdxl) SIZE=512; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour-sdxl.safetensors ;;
   sd35) SIZE=256; LR=1.5e-4; STEPS=90;  RANK=16; OUT=watercolour.safetensors ;;
-  *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
+  *) echo "base must be sd15 | sd21 | sdxl | sd35"; exit 1 ;;
 esac
 
 "$PLAKAT" style train \

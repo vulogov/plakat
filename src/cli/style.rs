@@ -55,7 +55,7 @@ pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
     #[arg(long, value_name = "DIR")]
     pub from_dir: PathBuf,
-    /// Base model: `sd15`, `sdxl`, or `sd35` (SD3.5 Medium).
+    /// Base model: `sd15`, `sd21`, `sdxl`, or `sd35` (SD3.5 Medium).
     #[arg(long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -89,14 +89,14 @@ pub struct TrainArgs {
     pub lr: f64,
     /// Resume from a checkpoint (a `…-step<N>.safetensors` written by an earlier
     /// run). Continues from that step up to `--steps`, so bump `--steps` to train
-    /// further. Omit to train from scratch. Works on all bases (sd15/sdxl/sd35).
+    /// further. Omit to train from scratch. Works on all bases (sd15/sd21/sdxl/sd35).
     #[arg(long, value_name = "CKPT")]
     pub resume: Option<PathBuf>,
     /// DreamBooth prior preservation — a folder of generic CLASS images (e.g.
     /// other dogs) trained alongside your subject so its token doesn't overfit
     /// or drag the whole class. Makes this a **subject** LoRA: set `--trigger`
     /// to an instance prompt like "a photo of sks dog". Omit for plain style
-    /// training. (sd15 / sdxl / sd35.)
+    /// training. (sd15 / sd21 / sdxl / sd35.)
     #[arg(long = "class-dir", value_name = "DIR")]
     pub class_dir: Option<PathBuf>,
     /// Class prompt for `--class-dir` (e.g. "a photo of a dog"). Required with
@@ -297,6 +297,27 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             })
             .await
         }
+        "sd21" | "sd2.1" | "sd2-1" | "stable-diffusion-2-1" => {
+            use crate::pipelines::sd_train::trainer;
+            trainer::train_style_lora_sd(trainer::SdStyleTrainRequest {
+                model: "sd21".to_string(),
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+                checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
+                resume_from: args.resume,
+                class_images: class_images.clone(),
+                class_prompt: args.class_prompt.clone(),
+                prior_weight: args.prior_weight,
+            })
+            .await
+        }
         "sdxl" | "stable-diffusion-xl" | "sdxl-base" => {
             use crate::pipelines::sd_train::trainer;
             trainer::train_style_lora_sd(trainer::SdStyleTrainRequest {
@@ -341,8 +362,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             .await
         }
         other => anyhow::bail!(
-            "style train: base '{other}' not supported — use sd15 or sd35 \
-             (sdxl in progress)"
+            "style train: base '{other}' not supported — use sd15, sd21, sdxl, or sd35"
         ),
     }
 }
