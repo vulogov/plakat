@@ -21,15 +21,53 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       matched channel; the GeoJSON exports every channel with the matched one carrying
       its real id + name (`The Ashflow`), the rest as `channel_<i>`. Refactored the
       mouth resolution into a shared `build_context`. Deterministic; matcher unit test.
-- [ ] **`plakat.map.paint` scripting word** — the SD-painted counterpart to
-      `plakat.map.render` (scripting currently stays on the GPU-free linework path).
-- [ ] **Urban lot subdivision** — split each U1 block into building lots (a strip /
-      OBB split), so town maps read at the parcel scale. Deterministic.
+- [ ] **Realize lakes (close the "label-only" gap)** — `WaterSpec.lakes` is in the
+      spec + labelled, but no water body is drawn. Place an endorheic depression at
+      the lake's anchor and fill it to a level (a small radial basin in L1 + a sea-
+      style mask in L3 so biome/coast treat it as water), then the render draws blue.
+      Deterministic; ~the falloff machinery already exists. *Approach: a `lake_mask`
+      alongside the sea mask; render lakes before rivers.*
+- [ ] **`plakat.map.paint` scripting word** — `( spec-path style -- handle )` SD-
+      painted counterpart to `plakat.map.render`; reuse `render_sd::render_sd` to a
+      temp file → load into an image handle. Honours `plakat.map.layout`/`.erosion`.
+- [ ] **Urban lot subdivision** — split each U1 block quad into 2–4 building lots
+      (strip split along the longer edge, noise-jittered), drawn as finer parcels so
+      town maps read at the building scale. Deterministic; pure geometry on the quads.
 - [ ] **Non-Latin label shaping** — the 1.5 bitmap font is Latin-only; `language` =
       `ar`/`ru`/`zh` wants a real shaped font + `ab_glyph` (the one map feature that
-      adds an asset/dep — gate it behind a feature flag).
+      adds an asset/dep — gate it behind a `shaped-labels` feature flag; bitmap stays
+      the default so the corpus stays asset-free + byte-stable).
 
-## B — carried product debt
+## B — proposed optional map features (bigger, opt-in)
+
+- [ ] **River + dry canyons** — carve relief along high-accumulation channels (a
+      negative-elevation gorge with steep walls + hill-shading) and realize the
+      schema's `terrain.rift_valleys` as **dry canyons**. Opt-in via a `canyons` spec
+      flag / `--map-canyons`; deterministic. *Med.*
+- [ ] **Lakes + marshland as real water** — beyond the polish "realize lakes": lake
+      polygons with a reflection tint, marsh hatching for `Wetland` biome regions, and
+      river **deltas** at navigable mouths. *Med.*
+- [ ] **Plateaus / mesas** — realize `terrain.plateaus` (a schema stub today) as
+      flat-topped raised terrain with a scarp edge. *S–M.*
+- [ ] **Political layer** — draw region borders + polity fills/labels from the unused
+      `RegionSpec.political` (`PoliticalSpec`/`BorderSpec` already in the schema). *Med.*
+- [ ] **Seasonal / biome palette variants** — `--map-season winter|arid|autumn`
+      reshades the biome fills (snow line, dry browns). *S.*
+- [ ] **Game-grid overlay** — optional hex/square grid + coordinate labels for TTRPG
+      use (`--map-grid hex|square`). *S.*
+- [ ] **Multi-tile world maps** — the geographic engine caps at 2048²; stitch it
+      across a larger tile grid for continent-scale maps (memory-bound; tile + blend
+      like the SD path). *Med.*
+
+## C — model-training expansion
+
+- [ ] **See [`PLAN_TRAINING_EXPANSION.md`](PLAN_TRAINING_EXPANSION.md)** — concrete
+      per-family plans for **SD 2.1 LoRA + DreamBooth** (start here, on-box), **PixArt-Σ
+      LoRA**, **SD 3.5 Textual Inversion**, **Stable Cascade Stage-C LoRA**; **Flux
+      back-burnered** (unverifiable on Metal). Each lands as its own increment with a
+      `*_train.sh` driver + committed showcase.
+
+## D — carried product debt
 
 - [ ] **Flux regional prompting** — code-only on Metal (Flux is broken on Metal); the
       regional path exists for SD1.5/SDXL/SD3.5. Land the Flux code path + CPU/CI proof.
@@ -37,14 +75,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [ ] **Memory-bound render debt** — SD3.5 DreamBooth render + `regional.sh sdxl/sd35`
       OOM on 24 GB. Document the envelope; verify on a bigger box or shrink the demo.
 
-## C — corpus / verification
+## E — corpus / verification
 
 - [ ] **Fill `corpus/images/train/`** — run `resume_train.sh` (the one ungenerated
       corpus proof that's *not* memory-blocked — a few GPU-minutes).
 - [ ] **Map showcase in the gallery** — the town + eroded-island renders aren't in
       `GALLERY.md`; add a curated map section.
 
-## D — new direction
+## F — new direction
 
 - Open. (Past cycles: a new model family, a new editing primitive, a new track.)
 
