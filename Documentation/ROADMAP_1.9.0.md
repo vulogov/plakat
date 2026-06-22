@@ -21,12 +21,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       matched channel; the GeoJSON exports every channel with the matched one carrying
       its real id + name (`The Ashflow`), the rest as `channel_<i>`. Refactored the
       mouth resolution into a shared `build_context`. Deterministic; matcher unit test.
-- [ ] **Realize lakes (close the "label-only" gap)** — `WaterSpec.lakes` is in the
-      spec + labelled, but no water body is drawn. Place an endorheic depression at
-      the lake's anchor and fill it to a level (a small radial basin in L1 + a sea-
-      style mask in L3 so biome/coast treat it as water), then the render draws blue.
-      Deterministic; ~the falloff machinery already exists. *Approach: a `lake_mask`
-      alongside the sea mask; render lakes before rivers.*
+- [x] **Realize lakes — DONE.** `engine::apply_lakes` carves a smooth sub-sea-level
+      basin (`smoothstep` shore, floor below `DEFAULT_SEA_LEVEL`) at each spec lake's
+      anchor *after* normalize, so the **existing** coast/biome/hydrology/render
+      pipeline realizes it as water for free: blue fill + a shoreline ring, marked as
+      Sea biome with a beach edge, and rivers drain into it (lake cells count as sea
+      in tracing). `lake_radius` maps `size` → extent fraction. Verified: the island's
+      Mournmere (crater lake, endorheic, centre) now renders as a blue tarn in the
+      volcanic massif. Lake unit test; geographic proofs regenerated.
 - [ ] **`plakat.map.paint` scripting word** — `( spec-path style -- handle )` SD-
       painted counterpart to `plakat.map.render`; reuse `render_sd::render_sd` to a
       temp file → load into an image handle. Honours `plakat.map.layout`/`.erosion`.

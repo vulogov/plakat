@@ -92,6 +92,13 @@ impl HeightField {
         apply_landmass_shape(&mut data, spec, w, h, canvas.seed as u32, erosion);
 
         normalize(&mut data);
+
+        // Lakes: carve a smooth basin below sea level at each lake's anchor, so the
+        // existing coast/biome/hydrology/render pipeline realizes it as water (blue
+        // fill + a shoreline ring; rivers drain into it). Done after `normalize` so
+        // the basin floor sits at a known absolute depth under the sea level.
+        apply_lakes(&mut data, spec, w, h);
+
         HeightField { width: w, height: h, data }
     }
 
@@ -251,6 +258,41 @@ fn apply_landmass_shape(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: 
     }
 }
 
+/// Carve a smooth lake basin (below sea level) at each spec lake's anchor. The
+/// floor sits at `LAKE_FLOOR` (< `coastline::DEFAULT_SEA_LEVEL`) so the lake reads as
+/// water everywhere downstream; a smooth `smoothstep` edge gives it a shoreline.
+fn apply_lakes(data: &mut [f32], spec: &MapSpec, w: u32, h: u32) {
+    /// Lake floor depth (must be below `coastline::DEFAULT_SEA_LEVEL` = 0.22).
+    const LAKE_FLOOR: f32 = 0.10;
+    let extent = w.min(h) as f32;
+    for lake in &spec.water.lakes {
+        let Some((fx, fy)) = resolve_simple(&lake.anchor) else { continue };
+        let (cx, cy) = (fx * w as f32, fy * h as f32);
+        let r = lake_radius(&lake.size) * extent;
+        let reach = r * 1.35;
+        let (x0, y0) = ((cx - reach).max(0.0) as u32, (cy - reach).max(0.0) as u32);
+        let (x1, y1) = ((cx + reach).min(w as f32) as u32, (cy + reach).min(h as f32) as u32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() / r;
+                // 0 in the deep centre → 1 at/outside the shore (land untouched).
+                let m = smoothstep(0.72, 1.0, d);
+                let i = idx(x, y, w);
+                data[i] = LAKE_FLOOR * (1.0 - m) + data[i] * m;
+            }
+        }
+    }
+}
+
+/// Lake `size` word → radius as a fraction of the canvas's shorter extent.
+fn lake_radius(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "large" | "great" => 0.11,
+        "small" | "tarn" | "pond" => 0.05,
+        _ => 0.075, // medium / unspecified
+    }
+}
+
 /// Lower the named edge toward sea (a smooth ramp from the edge inward).
 fn lower_sea_edge(data: &mut [f32], w: u32, h: u32, position: &str) {
     let p = position.to_ascii_lowercase();
@@ -320,6 +362,27 @@ mod tests {
         assert_eq!(a.data, b.data, "pure fn of (spec, seed)");
         let (lo, hi) = a.data.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
         assert!(lo <= 1e-4 && (hi - 1.0).abs() <= 1e-4, "normalized to [0,1]: {lo}..{hi}");
+    }
+
+    #[test]
+    fn a_spec_lake_becomes_water_at_its_anchor() {
+        use crate::map::spec::LakeSpec;
+        let mut spec = isle();
+        spec.water.lakes.push(LakeSpec {
+            id: "tarn".into(),
+            name: Some("Blue Tarn".into()),
+            anchor: Anchor::Cardinal { position: "center".into() },
+            size: "large".into(),
+            endorheic: true,
+        });
+        let c = GeoCanvas::from_spec(&spec, 42);
+        let hf = HeightField::generate(&spec, &c);
+        // The lake centre (canvas centre) is below sea level (water)…
+        let (lx, ly) = (hf.width / 2, hf.height / 2);
+        assert!(hf.data[(ly * hf.width + lx) as usize] < 0.22, "lake centre is sub-sea-level (water)");
+        // …whereas without the lake that cell is the mountain massif (land).
+        let dry = HeightField::generate(&isle(), &c);
+        assert!(dry.data[(ly * dry.width + lx) as usize] >= 0.22, "no lake → centre is land");
     }
 
     #[test]
