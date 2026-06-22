@@ -232,6 +232,14 @@ If you're new to plakat, work through these in order:
     (PNG → re-runnable command), `init` (scaffold a project), and
     `motion-adapter` (AnimateDiff inspection).
 
+19. [`MAP_TUTORIAL.md`](MAP_TUTORIAL.md) — **`plakat map`.** Turn prose into a
+    fantasy map: a coastline, mountains, rivers, biomes, towns, roads, and
+    labelled landmarks, all a pure function of (spec, seed). Linework styles
+    (`--map-style`), SD-painted maps (`--map-render-sd`), tunable erosion
+    (`--map-erosion`) + town street plans (`--map-urban-layout`), vector export
+    (GeoJSON/SVG), non-Latin labels (`--map-font`), and the `scenario` / `compile`
+    / scripting integration. No GPU for the linework path.
+
 ## Specialized portrait techniques
 
 After the foundational portrait tutorial, these dive into specific
