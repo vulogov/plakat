@@ -56,6 +56,10 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 # Optional Tera template pre-pass for `plakat compile` (COMPILE-2). Pure Rust;
 # off by default to keep the base binary lean. `cargo build --features templates`.
 templates = ["dep:tera"]
+# Shaped map labels via a real TrueType/OpenType font (`plakat map --map-font PATH`)
+# for non-Latin scripts (Cyrillic, CJK). Off by default — the built-in 5x7 bitmap
+# font (Latin) stays the default so the map corpus is asset-free + byte-stable.
+shaped-labels = ["dep:ab_glyph"]
 
 [dependencies]
 # Hardware probe (doctor --capability): system RAM detection.
@@ -104,6 +108,9 @@ tera = { version = "1", optional = true }
 # (MAP-2); `petgraph` for the MAP-5 urban street graph (deterministic insert order).
 noise = "0.9"
 petgraph = "0.6"
+# Shaped non-Latin map labels (the `shaped-labels` feature). Pure-Rust glyph
+# rasterizer; no font asset is vendored — the user supplies one via `--map-font`.
+ab_glyph = { version = "0.2", optional = true }
 
 # Image
 image = { version = "0.25", default-features = false, features = [

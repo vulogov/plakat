@@ -40,10 +40,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       tone wobble — so towns read at the building scale, not big colored blocks. Works
       across radial/grid/organic. Deterministic; lot subdivision unit test; town proofs
       regenerated.
-- [ ] **Non-Latin label shaping** — the 1.5 bitmap font is Latin-only; `language` =
-      `ar`/`ru`/`zh` wants a real shaped font + `ab_glyph` (the one map feature that
-      adds an asset/dep — gate it behind a `shaped-labels` feature flag; bitmap stays
-      the default so the corpus stays asset-free + byte-stable).
+- [x] **Non-Latin label shaping — DONE.** A `shaped-labels` Cargo feature pulls
+      `ab_glyph` (optional dep) and adds `plakat map --map-font <PATH.ttf>`: a real
+      TrueType/OpenType font rasterizes every label (per-glyph, kerned, LTR) via a
+      thread-local active font that the bitmap functions defer to. **Bitmap stays the
+      default** — no feature → byte-stable, asset-free corpus; and even with the
+      feature compiled in, no `--map-font` → byte-identical bitmap output (verified).
+      No font vendored (user supplies). Cyrillic + CJK render; complex shaping
+      (Arabic RTL/contextual) is glyphs-only, pending a full shaper. Verified: a
+      Cyrillic town (`Соль-Мере`, `Северные Врата`, `Рынок`) renders correctly.
 
 ## B — proposed optional map features (bigger, opt-in)
 
