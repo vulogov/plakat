@@ -194,6 +194,39 @@ These are the bulk of the ~1,500 LOC estimate and they're accurate. The estimate
 
 ---
 
+## 6a. Placement input model (clarified: the user supplies a relative location per persona)
+
+The author needs to **provide a relative location for each persona** — i.e. placement is a
+*per-persona input*, expressed in words, not pixel coordinates and not (only) LLM inference.
+This is the RFC's §8 named-position vocabulary, **promoted to the primary interface**:
+
+```hjson
+people: [ { name: alice, at: left }
+          { name: bob,   at: center }
+          { name: carol, at: right } ]
+```
+```sh
+plakat multiperson "three friends having tea" \
+  --person "alice:./alice.jpg" --at "alice:left" \
+  --person "bob:./bob.jpg"     --at "bob:center" \
+  --person "carol:./carol.jpg" --at "carol:right"
+```
+
+Two grades of "relative", both already supported by existing infra:
+
+- **Frame-relative zones (primary)** — `left | center_left | center | center_right | right |
+  back_left | back_center | back_right | foreground | foreground_left | foreground_right`.
+  Each maps to a centroid + spread (the RFC §8 tables) → a soft `region_mask` / bbox. Direct,
+  deterministic, no LLM. This is the RFC's `hint`, used as the main input.
+- **Persona-relative (relational, optional extension)** — `left of bob`, `behind alice`,
+  `between alice and carol`. Resolve in dependency order: place anchored personas first, then
+  offset. A small grammar on top of the zone table; defer to a follow-up if not needed now.
+
+Consequence: with explicit `at:` per persona, **the LLM scene analyser is optional** — it only
+fills in personas left unpinned (or is skipped entirely). The placement decision is the user's;
+plakat converts each relative location → region → renders the persona there. This is the whole
+goal, with no LLM dependency and no new attention plumbing.
+
 ## 7. Recommendation (revised for the clarified goal: *placement*)
 
 The goal is placing specific personas into the scene. The existing Form-2 inpaint already
@@ -207,14 +240,14 @@ an optional upgrade — not a blocker.
    is unsound and unnecessary for placement).
 
 2. **Milestones** (each on-box verifiable; SD1.5/SDXL fit 24 GB):
-   - **M1 — the goal, delivered (low risk, mostly reuse).** LLM **scene analyser**
-     (`Enhancer::enhance` → `SceneLayout` JSON: who/where/scale/mood, with fallback) →
-     resolve each figure to a **bbox** (the `region_mask`/centroid tables) → drive the
-     **existing Form-2 inpaint** (`generate_latents_one` + `inpaint_latents_one` per persona
-     bbox). This *is* "place specific personas from prose, no manual bboxes." Ships the whole
-     UX (prose-in/photos-in, three prompt layers, scenario `pipeline: multiperson`, dry-run,
-     sidecar, validation). **No new attention plumbing.** The bboxes/hints/assign escape
-     hatches override the LLM. This alone satisfies the stated goal.
+   - **M1 — the goal, delivered (low risk, mostly reuse).** Per-persona **relative location**
+     (`at: left|center|right|foreground|back_left|…`, §6a) → centroid + spread (§8 tables) →
+     soft `region_mask` / bbox → drive the **existing Form-2 inpaint** (`generate_latents_one`
+     + `inpaint_latents_one` per persona region). This *is* "provide a relative location and
+     place that persona there." The **LLM scene analyser is optional** here — it only auto-places
+     personas with no `at:`. Ships the whole UX (prose-in/photos-in, three prompt layers,
+     scenario `pipeline: multiperson`, dry-run, sidecar, validation). **No new attention
+     plumbing.** Explicit `bbox` overrides `at:` for pixel control.
    - **M2 — integration quality (optional, low risk).** Replace the *sequential* inpaint with
      a **MultiDiffusion regional eps-blend** (Option B): per step, denoise each region with its
      persona's identity, blend by the soft masks. Removes Form-2's "committed base" seams +
