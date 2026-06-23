@@ -1,6 +1,6 @@
 # plakat gallery
 
-127 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+128 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -156,64 +156,65 @@
   <tr>
     <td width="33%"><img src="images/segment/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
-    <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
+    <td width="33%"><img src="images/multiperson/plakat-multiperson-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
     <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
     <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
-    <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
-    <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
     <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
-    <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
-    <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
     <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → cool watercolour 'snow-village' via InstantStyle on the SDXL style block (up_blocks.0.attentions.1)"></td>
-    <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)"></td>
     <td width="33%"><img src="images/stylize/portrait-variation.png" alt="stylize (concat ref-variation): SD 1.5 portrait restyled toward the watercolour 'figures' reference — palette shifts, stays photoreal"></td>
     <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
-    <td width="33%"><img src="images/map/realms-heightmap.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-heightmap.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-render.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-autumn.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-blueprint.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-blueprint.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-grid.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-inked.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-parchment.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-parchment.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-winter.png" alt=""></td>
     <td width="33%"><img src="images/realms/rivers.png" alt=""></td>
-    <td width="33%"><img src="images/realms/roads.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/roads.png" alt=""></td>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
     <td width="33%"><img src="images/relight/sunset.png" alt=""></td>
-    <td width="33%"><img src="images/script/tiled-valley.png" alt="a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/script/tiled-valley.png" alt="a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus"></td>
     <td width="33%"><img src="images/map/town-map.png" alt=""></td>
     <td width="33%"><img src="images/map/town-streets.png" alt=""></td>
-    <td width="33%"><img src="images/compile/tundra.png" alt="wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/compile/tundra.png" alt="wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography"></td>
     <td width="33%"><img src="images/compose/valley-scene.png" alt=""></td>
   </tr>
 </table>
@@ -905,6 +906,12 @@ _(no embedded metadata)_
 ### plakat-inpaint-42.png
 
 ![plakat-inpaint-42.png](images/inpaint/plakat-inpaint-42.png)
+
+_(no embedded metadata)_
+
+### plakat-multiperson-42.png
+
+![plakat-multiperson-42.png](images/multiperson/plakat-multiperson-42.png)
 
 _(no embedded metadata)_
 

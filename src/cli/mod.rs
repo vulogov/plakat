@@ -21,6 +21,7 @@ pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
 pub mod portrait;
+pub mod multiperson;
 pub mod relight;
 pub mod run;
 pub mod scenario;
@@ -77,6 +78,10 @@ pub enum Command {
     /// prompt describing the lighting. SD 1.5-based (widened 8-channel
     /// UNet + IC-Light offset weights).
     Relight(relight::RelightArgs),
+    /// Place 2+ specific personas into one generated scene, each at a relative
+    /// location (`--at "alice:left closer front"`); un-pinned personas are
+    /// placed by a scene-aware LLM. Reference photos give each their identity.
+    Multiperson(multiperson::MultipersonArgs),
     /// Make pixels matching the upper-left corner color transparent.
     Transparent(transparent::TransparentArgs),
     /// Segment an object by clicking it (Segment-Anything / MobileSAM):
@@ -185,6 +190,7 @@ impl Command {
                 | Command::Outpaint(_)
                 | Command::Stylize(_)
                 | Command::Relight(_)
+                | Command::Multiperson(_)
                 | Command::Segment(_)
                 | Command::Upscale(_)
                 | Command::Scenario(_)
@@ -228,6 +234,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             stylize::run(args, device).await
         }
         Command::Relight(a) => relight::run(a, crate::device::select(&cli.device)?).await,
+        Command::Multiperson(a) => multiperson::run(a, crate::device::select(&cli.device)?).await,
         Command::Transparent(args) => {
             let device = crate::device::select(&cli.device)?;
             transparent::run(args, device).await

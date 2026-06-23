@@ -5,6 +5,7 @@ pub(crate) mod train_progress;
 pub mod matting;
 pub mod ic_light;
 pub mod instantstyle;
+pub mod multiperson;
 pub mod controlnet_annotator;
 pub mod depth;
 pub mod embedding;
