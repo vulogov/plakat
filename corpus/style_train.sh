@@ -29,7 +29,12 @@ case "$BASE" in
   # PixArt-Σ: memory-bound — T5-XXL (4.7B) makes Phase-A peak >32GB; wants
   # >=36GB unified or CUDA. On 24GB it swap-thrashes (see pixart.rs doc).
   pixart) SIZE=256; LR=1.5e-4; STEPS=90; RANK=16; OUT=watercolour-pixart.safetensors ;;
-  *) echo "base must be sd15 | sd21 | sdxl | sd35 | pixart"; exit 1 ;;
+  # Stable Cascade Stage-C: trains in the Würstchen semantic space. x0 = the
+  # image's effnet latent (16×24×24, fixed — SIZE is ignored). Memory-bound:
+  # Stage C (~3.6B) + CLIP-G + effnet resident with autograd → >24GB; recipe
+  # for >=36GB / CUDA. Writes a diffusers-PEFT prior.* LoRA (loads via --lora).
+  cascade) SIZE=768; LR=1e-4; STEPS=90; RANK=16; OUT=watercolour-cascade.safetensors ;;
+  *) echo "base must be sd15 | sd21 | sdxl | sd35 | pixart | cascade"; exit 1 ;;
 esac
 
 "$PLAKAT" style train \

@@ -66,8 +66,26 @@ In the recommended sequence from the plan:
       - Memory wall: CLIP-L + CLIP-G + T5-XXL + MMDiT resident (training adds autograd) →
         >24 GB on the canonical checkpoint. `corpus/embedding_train.sh sd35` is a recipe
         for ≥36 GB / CUDA, not a committed proof.
-- [ ] **Stable Cascade — Stage-C LoRA**. Train in the Würstchen semantic space;
-      Stage-C attention adapters (the merge path already loads the result).
+- [x] **Stable Cascade — Stage-C LoRA — DONE (code), NOT on-box-verified (memory-bound).**
+      Trains LoRA adapters on Stage C's attention in the Würstchen semantic space.
+      - **Missing-infra discovery + fix:** unlike PixArt/SD3.5, Stage-C training needs an
+        **effnet encoder** (image → 16×24×24 latent) for x0, which plakat lacked (img2img
+        only encodes to Stage B). Built `EffNetEncoder` in `cascade_cn.rs` reusing the
+        reference-verified EfficientNetV2-S backbone (`Config::effnet_v2_s` = canny_upstream
+        with `c_in=3`, no projections) + the SC mapper (Conv 1280→16 no-bias + affine-free
+        BN). **Verified on real `effnet_encoder.safetensors`** → (1,16,24,24); + ImageNet
+        `imagenet_image_tensor` preprocess (768²).
+      - **Retrofit:** Stage-C `AttnBlock` to_q/k/v/out → `LoraLinear` via a registry threaded
+        through `build_block_levels` → `StableCascadePrior::new`; `install_train_adapters`
+        filters `.attention.to_`.
+      - **Trainer** (`cascade::train_style_lora`): effnet x0 + CLIP-G `forward_for_cascade`
+        → `build_clip_conditioning` + Cascade cosine `CascadeScheduler` noising
+        (**ε-prediction**, sca/crp = zero-input sinusoidal embeds) + AdamW/grad-clip. Saves
+        diffusers-PEFT `prior.<key>.lora_down/up.weight` + `.alpha` — keys the existing
+        `cascade_lora` merge path resolves directly (round-trip test). Stage A/B/VAE not
+        loaded. `style train --base cascade`; `corpus/style_train.sh cascade`.
+      - Memory wall: Stage C (~3.6B) + CLIP-G + effnet resident with autograd → >24 GB.
+        119 cascade tests green. **This completes the 1.10.0 training-expansion headline.**
 - [ ] **Flux — BACK-BURNER**. Implementable but unverifiable on Metal (Flux inference
       is broken on Metal); park until a CUDA/CI verify path exists.
 

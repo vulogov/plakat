@@ -55,8 +55,8 @@ pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
     #[arg(long, value_name = "DIR")]
     pub from_dir: PathBuf,
-    /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium), or
-    /// `pixart` (PixArt-Σ).
+    /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium),
+    /// `pixart` (PixArt-Σ), or `cascade` (Stable Cascade Stage-C).
     #[arg(long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -351,6 +351,25 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             })
             .await
         }
+        "cascade" | "stable-cascade" | "stage-c" => {
+            use crate::pipelines::cascade;
+            let repo = crate::hf::resolve_alias("cascade").to_string();
+            cascade::train_style_lora(cascade::StyleTrainRequest {
+                repo,
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+                checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
+                resume_from: args.resume,
+            })
+            .await
+        }
         "pixart" | "pixart-sigma" | "pixart-σ" | "pixart_sigma" => {
             use crate::pipelines::pixart;
             let repo = crate::hf::resolve_alias("pixart").to_string();
@@ -396,7 +415,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             .await
         }
         other => anyhow::bail!(
-            "style train: base '{other}' not supported — use sd15, sd21, sdxl, sd35, or pixart"
+            "style train: base '{other}' not supported — use sd15, sd21, sdxl, sd35, pixart, or cascade"
         ),
     }
 }
