@@ -99,6 +99,15 @@ impl HeightField {
         // the basin floor sits at a known absolute depth under the sea level.
         apply_lakes(&mut data, spec, w, h);
 
+        // Plateaus / mesas: flat-topped tablelands with steep scarp edges.
+        // Before canyons, so a rift can cut into a plateau. Empty → no-op.
+        apply_plateaus(&mut data, spec, w, h, canvas.seed as u32, erosion);
+
+        // Dry canyons (rift valleys): narrow oriented trenches carved into the
+        // terrain, floor kept ABOVE sea level so they read as deep gorges, not
+        // water. Empty `rift_valleys` → no-op (byte-identical to pre-canyon).
+        apply_canyons(&mut data, spec, w, h, canvas.seed as u32, erosion);
+
         HeightField { width: w, height: h, data }
     }
 
@@ -284,6 +293,118 @@ fn apply_lakes(data: &mut [f32], spec: &MapSpec, w: u32, h: u32) {
     }
 }
 
+/// Carve **dry canyons** (rift valleys): narrow oriented trenches whose floor
+/// stays ABOVE `coastline::DEFAULT_SEA_LEVEL` (0.22) so they read as deep dry
+/// gorges, not water. Mirrors `add_ridge`'s oriented, erosion-wandered profile
+/// but SUBTRACTS toward a floor — and only ever lowers terrain (a canyon over a
+/// valley doesn't fill it). Done after `normalize` so the floor is absolute.
+fn apply_canyons(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, erosion: f32) {
+    for (i, rift) in spec.terrain.rift_valleys.iter().enumerate() {
+        let Some((fx, fy)) = resolve_simple(&rift.anchor) else { continue };
+        let (cx, cy) = (fx * w as f32, fy * h as f32);
+        let (dx, dy) = orient_dir(&rift.orientation);
+        let len = if rift.length_fraction > 0.0 { rift.length_fraction } else { 0.45 };
+        let floor = canyon_floor(&rift.size);
+        let sigma_perp = (w.min(h) as f32 * 0.018).max(1.0); // narrow (a gorge)
+        let sigma_along = (len * 0.5 * w.max(h) as f32).max(sigma_perp);
+        let two_sp2 = 2.0 * sigma_perp * sigma_perp;
+        let two_sa2 = 2.0 * sigma_along * sigma_along;
+        let reach_perp = 3.5 * sigma_perp + sigma_perp * 2.0;
+        let reach_along = 3.5 * sigma_along;
+        let perlin = Perlin::new(seed ^ (i as u32).wrapping_mul(0x85eb));
+        // Wander the canyon line so it isn't a straight slot (scaled by erosion).
+        let wander = |t: f32| perlin.get([(t * 0.012) as f64, 7.0]) as f32 * sigma_perp * 1.8 * erosion;
+        for y in 0..h {
+            for x in 0..w {
+                let ox = x as f32 - cx;
+                let oy = y as f32 - cy;
+                let along = ox * dx + oy * dy;
+                let perp = ox * -dy + oy * dx - wander(along);
+                if along.abs() > reach_along || perp.abs() > reach_perp {
+                    continue;
+                }
+                let g = (-(perp * perp) / two_sp2 - (along * along) / two_sa2).exp();
+                let id = idx(x, y, w);
+                // Carve toward the floor, but never raise terrain (gorge, not fill).
+                let target = floor.min(data[id]);
+                data[id] = data[id] * (1.0 - g) + target * g;
+            }
+        }
+    }
+}
+
+/// Realize **plateaus / mesas**: flat-topped tablelands with steep scarp edges.
+/// The core is forced to a flat `top` elevation; a `smoothstep` scarp ramps down
+/// to the surrounding terrain; outside the reach the terrain is untouched. The
+/// rim is erosion-wandered so the mesa isn't a perfect disc. Done after
+/// `normalize` (absolute elevations). Empty `plateaus` → no-op.
+fn apply_plateaus(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, erosion: f32) {
+    let extent = w.min(h) as f32;
+    for (i, plat) in spec.terrain.plateaus.iter().enumerate() {
+        let Some((fx, fy)) = resolve_simple(&plat.anchor) else { continue };
+        let (cx, cy) = (fx * w as f32, fy * h as f32);
+        let r = plateau_radius(&plat.size, plat.length_fraction) * extent;
+        let top = plateau_top(&plat.size);
+        let reach = r * 1.6;
+        let perlin = Perlin::new(seed ^ (i as u32).wrapping_mul(0xc2b2));
+        let (x0, y0) = ((cx - reach).max(0.0) as u32, (cy - reach).max(0.0) as u32);
+        let (x1, y1) = ((cx + reach).min(w as f32) as u32, (cy + reach).min(h as f32) as u32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let ox = x as f32 - cx;
+                let oy = y as f32 - cy;
+                // Wander the rim radius by direction (scaled by erosion).
+                let ang = oy.atan2(ox);
+                let wob = perlin.get([ang.cos() as f64 * 1.7, ang.sin() as f64 * 1.7]) as f32
+                    * 0.22
+                    * erosion;
+                let d = (ox * ox + oy * oy).sqrt() / r + wob;
+                // 0 across the flat core → 1 past the scarp (land untouched).
+                let m = smoothstep(0.70, 1.0, d);
+                let id = idx(x, y, w);
+                // Flat top across the core, scarp ramp to terrain at the rim.
+                let blended = top * (1.0 - m) + data[id] * m;
+                // A mesa rises above its surroundings — never lower a higher peak.
+                data[id] = blended.max(data[id]);
+            }
+        }
+    }
+}
+
+/// Plateau `size` word → flat-top elevation (absolute, above sea 0.22, below
+/// mountain peaks ~1.0).
+fn plateau_top(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "small" => 0.55,
+        "large" | "great" => 0.68,
+        _ => 0.60, // moderate / unspecified
+    }
+}
+
+/// Plateau radius as a fraction of the shorter extent (explicit
+/// `length_fraction` wins, else a per-size default).
+fn plateau_radius(size: &str, length_fraction: f32) -> f32 {
+    if length_fraction > 0.0 {
+        return (length_fraction * 0.5).clamp(0.03, 0.4);
+    }
+    match size.to_ascii_lowercase().as_str() {
+        "small" => 0.08,
+        "large" | "great" => 0.16,
+        _ => 0.12,
+    }
+}
+
+/// Rift-valley / canyon `size` word → absolute floor depth. All stay above
+/// `DEFAULT_SEA_LEVEL` (0.22) so the canyon is dry; deeper words cut closer.
+fn canyon_floor(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "shallow" => 0.40,
+        "deep" => 0.28,
+        "chasm" | "abyss" | "great" => 0.24, // just above sea → dry but dramatic
+        _ => 0.33, // moderate / unspecified
+    }
+}
+
 /// Lake `size` word → radius as a fraction of the canvas's shorter extent.
 fn lake_radius(size: &str) -> f32 {
     match size.to_ascii_lowercase().as_str() {
@@ -383,6 +504,53 @@ mod tests {
         // …whereas without the lake that cell is the mountain massif (land).
         let dry = HeightField::generate(&isle(), &c);
         assert!(dry.data[(ly * dry.width + lx) as usize] >= 0.22, "no lake → centre is land");
+    }
+
+    #[test]
+    fn a_rift_valley_carves_a_dry_canyon() {
+        use crate::map::spec::NamedRegion;
+        let mut spec = isle();
+        spec.terrain.rift_valleys.push(NamedRegion {
+            id: "gorge".into(),
+            name: Some("Deep Gorge".into()),
+            anchor: Anchor::Cardinal { position: "center".into() },
+            orientation: "north-south".into(),
+            length_fraction: 0.5,
+            size: "deep".into(),
+        });
+        let c = GeoCanvas::from_spec(&spec, 42);
+        let hf = HeightField::generate(&spec, &c);
+        let dry = HeightField::generate(&isle(), &c);
+        let i = ((hf.height / 2) * hf.width + hf.width / 2) as usize;
+        // The canyon carves the central massif down…
+        assert!(hf.data[i] < dry.data[i] - 0.05, "canyon lowers the centre ({} vs {})", hf.data[i], dry.data[i]);
+        // …but its floor stays ABOVE sea level — a DRY gorge, not a lake.
+        assert!(hf.data[i] >= 0.22, "dry canyon floor above sea level: {}", hf.data[i]);
+        // Determinism holds.
+        assert_eq!(hf.data, HeightField::generate(&spec, &c).data);
+    }
+
+    #[test]
+    fn a_plateau_raises_a_flat_tableland() {
+        use crate::map::spec::NamedRegion;
+        let mut spec = MapSpec::minimal("Plains", 2, 2, 3); // no mountain ranges
+        spec.terrain.plateaus.push(NamedRegion {
+            id: "mesa".into(),
+            name: Some("High Mesa".into()),
+            anchor: Anchor::Cardinal { position: "center".into() },
+            orientation: String::new(),
+            length_fraction: 0.0,
+            size: "large".into(),
+        });
+        let c = GeoCanvas::from_spec(&spec, 7);
+        let hf = HeightField::generate(&spec, &c);
+        let i = ((hf.height / 2) * hf.width + hf.width / 2) as usize;
+        // Core sits at the flat plateau top (≈0.68 "large"); never below it.
+        assert!(hf.data[i] >= 0.66, "plateau core at the flat top: {}", hf.data[i]);
+        // And it never lowers the underlying plain.
+        let plain = MapSpec::minimal("Plains", 2, 2, 3);
+        let dry = HeightField::generate(&plain, &GeoCanvas::from_spec(&plain, 7));
+        assert!(hf.data[i] >= dry.data[i], "plateau never lowers terrain");
     }
 
     #[test]

@@ -271,6 +271,18 @@ pub struct NamedRegion {
     #[serde(default)]
     pub name: Option<String>,
     pub anchor: Anchor,
+    /// Orientation the feature runs along (rift valleys / canyons), e.g.
+    /// `"north-south"`, `"east-west"`, `"northeast"`. Empty → north-south.
+    #[serde(default)]
+    pub orientation: String,
+    /// Length as a fraction of the canvas (rift valleys / canyons / plateaus).
+    /// `0` (default) → a sensible per-feature default.
+    #[serde(default)]
+    pub length_fraction: f32,
+    /// Size / depth word. Rift valleys: `"shallow"|"moderate"|"deep"|"chasm"`.
+    /// Plateaus: `"small"|"moderate"|"large"`. Empty → moderate.
+    #[serde(default)]
+    pub size: String,
 }
 
 // ── Water ────────────────────────────────────────────────────────────────────
