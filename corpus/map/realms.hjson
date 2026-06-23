@@ -1,0 +1,302 @@
+{
+    // ===================================================================
+    // plakat map — the all-features showcase ("The Sundered Realms")
+    // ===================================================================
+    // One continental spec exercising EVERY geographical feature the
+    // `plakat map` engine realizes, authored in idiomatic HJSON: comments,
+    // no commas, ONE FIELD PER LINE (HJSON quoteless strings run to the end
+    // of the line, so inline `{ a: 1 b: 2 }` is NOT valid — expand it).
+    //
+    //   plakat map --map-spec corpus/map/realms.hjson --map-render out.png
+    //   plakat map --map-spec corpus/map/realms.hjson --map-dump-heightmap hm.png
+    //   plakat map --map-spec corpus/map/realms.hjson --map-season autumn --map-grid 8 --map-render out.png
+    //
+    // Geometry is a pure function of (spec, seed) — byte-stable, no GPU.
+    // ===================================================================
+    version: 2
+    name: The Sundered Realms
+    scale_tier: 3
+    tile_grid:
+    {
+        cols: 2
+        rows: 2
+    }
+    climate: continental
+    era: iron age
+    language: en
+
+    terrain:
+    {
+        dominant_elevation: varied
+
+        // Two mountain ranges → oriented, erosion-wandered ridges.
+        mountain_ranges:
+        [
+            {
+                id: thornwall
+                name: The Thornwall
+                anchor:
+                {
+                    kind: cardinal
+                    position: north
+                }
+                orientation: east-west
+                length_fraction: 0.6
+                height: high
+            }
+            {
+                id: emberfells
+                name: The Emberfells
+                anchor:
+                {
+                    kind: cardinal
+                    position: southwest
+                }
+                orientation: northeast
+                length_fraction: 0.35
+                height: moderate
+            }
+        ]
+
+        // Plateaus / mesas → flat-topped tablelands with steep scarp rims.
+        plateaus:
+        [
+            {
+                id: highreach
+                name: The Highreach
+                anchor:
+                {
+                    kind: cardinal
+                    position: east
+                }
+                size: large
+            }
+        ]
+
+        // Rift valleys → DRY canyons: narrow oriented gorges (floor above sea).
+        rift_valleys:
+        [
+            {
+                id: the_cleft
+                name: The Cleft
+                anchor:
+                {
+                    kind: cardinal
+                    position: center
+                }
+                orientation: north-south
+                length_fraction: 0.6
+                size: deep
+            }
+        ]
+    }
+
+    water:
+    {
+        // Sea + coastline (the south edge opens to water).
+        seas:
+        [
+            {
+                id: south_sea
+                name: The South Sea
+                position: south
+                enclosed: false
+            }
+        ]
+
+        // Rivers drain the ranges to the sea; one is navigable.
+        rivers:
+        [
+            {
+                id: rift_river
+                name: The Riftwater
+                source:
+                {
+                    kind: range_slope
+                    range: thornwall
+                    facing: south
+                }
+                mouth:
+                {
+                    kind: cardinal
+                    position: south
+                }
+                navigable: true
+            }
+        ]
+
+        // Lakes carve sub-sea-level basins → water + shorelines.
+        lakes:
+        [
+            {
+                id: miremere
+                name: Miremere
+                anchor:
+                {
+                    kind: cardinal
+                    position: southwest
+                }
+                size: large
+                endorheic: false
+            }
+            {
+                id: skytarn
+                name: Sky Tarn
+                anchor:
+                {
+                    kind: cardinal
+                    position: northeast
+                }
+                size: medium
+                endorheic: true
+            }
+        ]
+    }
+
+    // Regions set the biome wash AND (optionally) the political layer.
+    regions:
+    [
+        {
+            id: westmark
+            name: Westmark
+            biome: temperate_grassland
+            anchor:
+            {
+                kind: cardinal
+                position: west
+            }
+            coverage: 0.3
+            // Political layer: a polity ring + a river border with Eastreach.
+            political:
+            {
+                polity_name: The Westmark League
+                polity_kind: confederation
+                borders:
+                [
+                    {
+                        with_region: eastreach
+                        kind: river
+                    }
+                ]
+            }
+        }
+        {
+            id: eastreach
+            name: Eastreach
+            biome: highland
+            anchor:
+            {
+                kind: cardinal
+                position: east
+            }
+            coverage: 0.3
+            political:
+            {
+                polity_name: Eastreach Dominion
+                polity_kind: kingdom
+                borders:
+                [
+                    {
+                        with_region: westmark
+                        kind: disputed
+                    }
+                ]
+            }
+        }
+        // A wetland / marsh region (swamp biome) by the southern lake.
+        {
+            id: the_mires
+            name: The Mires
+            biome: wetland
+            anchor:
+            {
+                kind: cardinal
+                position: south
+            }
+            coverage: 0.22
+        }
+        // A northern boreal forest under the Thornwall.
+        {
+            id: thornwood
+            name: The Thornwood
+            biome: boreal_forest
+            anchor:
+            {
+                kind: cardinal
+                position: north
+            }
+            coverage: 0.2
+        }
+    ]
+
+    // Landmarks — varied kinds, resolved against rivers / ranges / harbours.
+    landmarks:
+    [
+        {
+            id: rifthold
+            name: Rifthold
+            kind: fortress
+            anchor:
+            {
+                kind: cardinal
+                position: center
+            }
+        }
+        {
+            id: southhaven
+            name: Southhaven
+            kind: port
+            anchor:
+            {
+                kind: mouth_of
+                river: rift_river
+            }
+        }
+        {
+            id: eastwatch
+            name: Eastwatch
+            kind: city
+            anchor:
+            {
+                kind: range_slope
+                range: thornwall
+                facing: south
+            }
+        }
+        {
+            id: old_keep
+            name: The Old Keep
+            kind: ruin
+            anchor:
+            {
+                kind: cardinal
+                position: northwest
+            }
+        }
+    ]
+
+    // Infrastructure — a road links landmarks; a bridge crosses the river.
+    infrastructure:
+    {
+        roads:
+        [
+            {
+                id: kingsroad
+                name: The Kingsroad
+                from: southhaven
+                to: eastwatch
+                kind: highway
+            }
+        ]
+        walls: []
+        bridges:
+        [
+            {
+                id: rift_bridge
+                name: Riftbridge
+                road: kingsroad
+                river: rift_river
+            }
+        ]
+    }
+}

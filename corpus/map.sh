@@ -81,11 +81,13 @@ cmp /tmp/plakat-map-cond.png "$ROOT/corpus/images/map/island-conditioning.png" \
 cmp "$ROOT/corpus/images/map/scenario/isle-parchment/map.png" "$ROOT/corpus/images/map/island-render.png" \
   || { echo "✗ scenario map task drifted from the direct --map-render"; exit 1; }
 
-# ── B (1.11.0): realms showcase — canyons + plateaus + the political layer ──
-#    A continental spec exercising the realized terrain.rift_valleys (a dry
-#    canyon), terrain.plateaus (a scarped tableland), and RegionSpec.political
-#    (polity rings + an inter-region border + polity labels). Byte-stable.
-REALMS="$ROOT/corpus/map/realms.spec.json"
+# ── B (1.11.0): realms showcase — the ALL-FEATURES map (HJSON) ──
+#    A continental spec (authored in HJSON) exercising every geographical
+#    feature: mountain ranges, plateaus/mesas (terrain.plateaus), dry canyons
+#    (terrain.rift_valleys), lakes, a wetland/swamp region, rivers + coast,
+#    multiple biomes, the political layer (polity rings + a disputed border +
+#    polity labels), landmarks, a road + bridge. Byte-stable (pure fn of seed).
+REALMS="$ROOT/corpus/map/realms.hjson"
 "$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-dump-heightmap /tmp/plakat-realms-hm.png >/dev/null
 cmp /tmp/plakat-realms-hm.png "$ROOT/corpus/images/map/realms-heightmap.png" \
   || { echo "✗ realms heightmap (canyon + plateau) drifted from the committed proof"; exit 1; }
@@ -107,4 +109,4 @@ echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/m
 echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"
 echo "  + MAP-6: SD conditioning base byte-stable vs corpus/images/map/island-conditioning.png (painted render via corpus/map_render.sh)"
 echo "  + MAP-4: 'map' scenario task byte-identical to the direct --map-render (corpus/map_scenario.hjson)"
-echo "  + 1.11.0 B: realms showcase byte-stable — dry canyons (rift_valleys) + plateaus/mesas + political layer (polity rings, borders, labels)"
+echo "  + 1.11.0 B: realms.hjson all-features showcase byte-stable — mountains + plateaus/mesas + dry canyons + lakes + wetland/swamp + political layer + landmarks/roads (corpus/realms.sh)"
