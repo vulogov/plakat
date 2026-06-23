@@ -17,46 +17,55 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.9.0 — map polish (lakes, lots, painted scripts, shaped labels)
+## What's new in 1.10.0 — train your own style on every model family
 
-1.9.0 polishes `plakat map` after the track went feature-complete in 1.8: real
-lakes, river labels that follow the right channel, towns drawn at the building
-scale, SD-painted maps from scripts, and non-Latin labels. The geometry stays a
-**pure function of (spec, seed)** — byte-stable, no GPU for the linework path. New
-this cycle: a full **[map tutorial](Documentation/Tutorials/MAP_TUTORIAL.md)**.
+1.10.0 is the **model-training expansion**: `plakat` now learns a style (or
+subject) on **four** model families, closing the LoRA / Textual-Inversion gaps so
+every architecture can be fine-tuned, not just used. Each trainer freezes the base
+and learns only the adapter / embedding, then saves a file the matching `--lora` /
+`--embedding` loader already reads.
 
 ```bash
-# lakes now render as water; rivers label the channel at their mouth
-plakat map --map-spec isle.json --map-render isle.png
+# SD 2.1 — style LoRA (verified end-to-end) or a subject (--class-dir → DreamBooth)
+plakat style train --from-dir ./my-style --base sd21 --out style.safetensors
 
-# Cyrillic / CJK labels via a supplied font (build: --features shaped-labels)
-plakat map --map-spec town.json --map-render town.png --map-font /path/to/font.ttf
+# PixArt-Σ — style LoRA on the DiT
+plakat style train --from-dir ./my-style --base pixart --out style.safetensors
+
+# SD 3.5 — Textual Inversion (a token in CLIP-L + CLIP-G + T5)
+plakat embedding train --from-dir ./my-style --base sd35 --token mystyle --out emb.safetensors
+
+# Stable Cascade — Stage-C LoRA (Würstchen semantic space)
+plakat style train --from-dir ./my-style --base cascade --out style.safetensors
 ```
 
-**Map polish**
+**The trainers**
 
-- **Lakes are real water** — a spec lake was labelled but never drawn; now it carves
-  a sub-sea-level basin so the coast/biome/hydrology pipeline renders it as a blue
-  tarn with a shoreline, and rivers drain into it. (Swamps were already the Wetland
-  biome.)
-- **Named-river ↔ channel matching** — each named river labels the traced channel
-  whose mouth is nearest its resolved mouth (not just the longest), and GeoJSON
-  exports it with its real id + name.
-- **Town lot subdivision** — each block splits into building lots with thin lanes +
-  tone variation, so towns read at the building scale, not as flat blocks.
-- **`plakat.map.paint`** — a Bund word `( spec-path style -- handle )` paints a map
-  via SD into an image handle, completing the `plakat.map.*` scripting surface
-  (`render` / `paint` / `layout` / `erosion`).
-- **Non-Latin labels** — a `shaped-labels` feature + `--map-font <PATH.ttf>`
-  rasterizes labels with a real font (Cyrillic, CJK) via `ab_glyph`. The Latin bitmap
-  font stays the default, so the corpus stays asset-free and byte-stable.
+- **SD 2.1 — style LoRA + DreamBooth** *(verified on-box).* A dedicated 1024-dim
+  CLIP UNet config + a **v-prediction** loss bring SD 2.1 to parity with SD 1.5 / SDXL.
+- **PixArt-Σ — style/subject LoRA.** The DiT attention projections now host trainable
+  `LoraLinear` adapters; the trainer runs DDPM-ε through the frozen DiT (BF16 T5).
+- **SD 3.5 — Textual Inversion.** A placeholder token learned in **all three**
+  encoders (CLIP-L + CLIP-G + T5) via a differentiable splice, rectified-flow loss
+  through the frozen MMDiT, saved as a triple embedding. Loading runtime-splices the
+  token in (no weight rewrite). Required a faithful vendored T5 — proven byte-identical
+  to candle's by a guard test, so existing SD3.5 inference / LoRA / DreamBooth are
+  untouched. Completes SD3.5's training trio.
+- **Stable Cascade — Stage-C LoRA.** Trains in the Würstchen semantic space. Shipped
+  the missing **effnet encoder** (image → 16×24×24 latent, verified on real weights) as
+  the supervised target, retrofitted Stage-C attention to `LoraLinear`, and saves a
+  `prior.*` PEFT LoRA the merge path loads.
 
-Every deterministic artifact is byte-checked (`corpus/map*.sh`); the SD paths are
-verified by committed showcases. See
-[`Documentation/ROADMAP_1.9.0.md`](Documentation/ROADMAP_1.9.0.md) (it also carries
-the model-training-expansion plan — SD2.1 / PixArt-Σ / Cascade LoRA, SD3.5 TI).
+The reusable transformer-adapter spine (`LoraLinear` + `install_train_adapters`) now
+covers the MMDiT, the PixArt DiT, and Cascade Stage-C. **Note:** the three transformer
+trainers (PixArt / SD3.5 / Cascade) keep their giant encoders resident with autograd,
+so they are **memory-bound** — a full run wants ≥ 36 GB unified memory or a CUDA box;
+each ships with a `corpus/*_train.sh` recipe. SD 2.1 runs comfortably on 24 GB.
 
-**Earlier releases** (v0.13 – v1.8):
+See [`Documentation/ROADMAP_1.10.0.md`](Documentation/ROADMAP_1.10.0.md) and
+[`PLAN_TRAINING_EXPANSION.md`](Documentation/PLAN_TRAINING_EXPANSION.md).
+
+**Earlier releases** (v0.13 – v1.9):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
