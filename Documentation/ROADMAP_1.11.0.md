@@ -28,13 +28,19 @@ the trainers are code-complete + memory-bound.
       or a CUDA/≥36 GB verify path appears. Frozen-conditioning caching + CPU-offload were the
       cheaper ideas but don't dent the per-step autograd spike that is the actual wall.
 
-## B — carried map optional features (off-track, opt-in)
+## B — carried map optional features (DONE — canyons + plateaus + political)
 
-- [ ] **River + dry canyons** — carve gorges along high-flow channels + realize
-      `terrain.rift_valleys` (`--map-canyons`). The remaining terrain-realism gap.
-- [ ] **Plateaus / mesas** — realize `terrain.plateaus` as flat-topped scarped terrain.
-- [ ] **Political layer** — borders + polity fills/labels from `RegionSpec.political`.
-- [ ] **Seasonal palettes** (`--map-season`), **game-grid overlay** (`--map-grid`).
+- [x] **Dry canyons (rift valleys)** — `apply_canyons` carves narrow oriented gorges
+      (floor above sea level → dry, only-lowers, erosion-wandered) realizing
+      `terrain.rift_valleys`. `NamedRegion` gained optional orientation/length/size.
+- [x] **Plateaus / mesas** — `apply_plateaus` raises flat-topped tablelands with steep
+      scarp rims (preserves higher peaks) from `terrain.plateaus`.
+- [x] **Political layer** — `draw_political` realizes `RegionSpec.political`: dashed
+      territorial rings (name-hashed colour), inter-region borders styled by kind
+      (disputed/river/mountain), polity labels.
+- All three are pure fns of (spec, seed/style), gated so empty data → byte-identical;
+      `corpus/map/realms.spec.json` showcase + heightmap/render proofs + byte-checks.
+- [ ] **Seasonal palettes** (`--map-season`), **game-grid overlay** (`--map-grid`) — still open.
 
 ## C — carried product debt
 
