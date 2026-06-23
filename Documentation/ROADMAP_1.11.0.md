@@ -9,21 +9,24 @@ pick up carried debt.
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
-## A — make the memory-bound trainers verifiable (headline candidate)
+## A — make the memory-bound trainers verifiable (INVESTIGATED → blocked on 24 GB)
 
-The blocker is peak unified memory during the autograd forward, not correctness. Options,
-cheapest first:
+**Outcome (2026-06-22):** measured all three transformer trainers on-box. **Every one OOMs
+at the first backward pass** — load + encode succeed; the autograd graph for the first
+training step is the wall. Root cause: **candle has no gradient checkpointing**, so the
+activation graph can't be shrunk, and this 24 GB box shares ~7 GB with other apps (~16 GB
+free). Even PixArt's small 0.6 B DiT (trained F32) spikes past that. True verification needs
+**≥ 32 GB unified / CUDA**, or a *fully* freed 24 GB box. The honest 1.10.0 state stands:
+the trainers are code-complete + memory-bound.
 
-- [ ] **Gradient checkpointing** on the transformer denoisers (recompute block activations
-      in the backward pass instead of storing them) — the standard fix; should bring PixArt /
-      SD3.5 / Cascade Stage-C training under 24 GB so they can be **verified on-box**.
-- [ ] **8-bit / paged optimizer state** + keep frozen encoders in BF16, adapters F32 (already
-      done) — trims optimizer + activation memory further.
-- [ ] **CPU-offload the frozen text encoders** during the training loop (T5-XXL is the hog;
-      it only encodes the trigger once — cache its output and drop it before the loop).
-      Caching the (frozen) conditioning is the biggest single win and is trainer-local.
-- [ ] **Verify each trainer end-to-end** once it fits: a `corpus/*_train.sh` run + a committed
-      showcase, same convention as SD 2.1.
+- [x] **OOM guard validated under real training load** — it fired + aborted cleanly every
+      time, no host crash. (The 1.10.0 fix that installed it on the training path works.)
+- [x] **Encoder-drop (Cascade)** — precompute x0 + text, then drop CLIP-G + effnet before
+      Stage C loads/trains (~1.7 GB). Correct footprint reduction; helps on a ≥ 32 GB box.
+- [~] **Gradient checkpointing** — the real fix, but candle's autograd has no native support
+      (would need manual detach + recompute / a custom op). Parked; revisit if candle gains it
+      or a CUDA/≥36 GB verify path appears. Frozen-conditioning caching + CPU-offload were the
+      cheaper ideas but don't dent the per-step autograd spike that is the actual wall.
 
 ## B — carried map optional features (off-track, opt-in)
 
