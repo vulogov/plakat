@@ -67,7 +67,16 @@ pub async fn run(cmd: ModelsCmd) -> Result<()> {
             limit,
         } => crate::hf::search::print_recommend(query.as_deref(), &sort, limit).await,
         ModelsCmd::Size { repo } => crate::hf::info::print_size(&repo).await,
-        ModelsCmd::Pull { repo } => crate::hf::download::pull_all(&repo).await,
+        ModelsCmd::Pull { repo } => {
+            // Civitai refs (`civitai:N`, `civitai-version:N`, a civitai.com URL)
+            // route to the Civitai resolver — NOT the HF diffusers-layout puller,
+            // which would try `civitai:N` as a HuggingFace repo id and 404.
+            if is_civitai_ref(&repo) {
+                pull_civitai(&repo).await
+            } else {
+                crate::hf::download::pull_all(&repo).await
+            }
+        }
         ModelsCmd::Ls => crate::hf::cache::list(),
         ModelsCmd::Rm { repos, yes } => crate::hf::cache::remove_many(&repos, yes),
         ModelsCmd::Aliases {
@@ -76,6 +85,54 @@ pub async fn run(cmd: ModelsCmd) -> Result<()> {
             gated,
         } => print_aliases(family.as_deref(), repo, gated),
     }
+}
+
+/// Is `s` a Civitai reference (`civitai:N`, `civitai-version:N`, or a
+/// civitai.com URL) rather than a HuggingFace repo id?
+fn is_civitai_ref(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("civitai:")
+        || t.starts_with("civitai-version:")
+        || t.contains("civitai.com")
+}
+
+/// `plakat models pull civitai:N` — resolve via the Civitai API + download the
+/// version's primary file into the Civitai cache. Reports the path + asset type
+/// with an accurate usage hint (LoRAs load via `--lora`; single-file checkpoints
+/// are not yet directly loadable as `--model`, which wants a diffusers layout).
+async fn pull_civitai(spec: &str) -> Result<()> {
+    use crate::civitai;
+    let (model_id, version_id) = civitai::api::parse_ref(spec)?;
+    // Best-effort: learn the asset type/name for the hint (don't fail the pull on it).
+    let model = match model_id {
+        Some(id) => civitai::api::get_model(id).await.ok(),
+        None => None,
+    };
+    // Surface the asset name + type FIRST — so even a gated/401 download still
+    // tells the user what they were reaching for + whether plakat can use it.
+    if let Some(m) = &model {
+        println!("civitai:{}  {} — {}", m.id, m.name, m.asset_type);
+        let t = m.asset_type.to_ascii_lowercase();
+        if t.contains("checkpoint") {
+            println!(
+                "  NOTE: a single-file checkpoint — plakat loads diffusers-LAYOUT models\n  \
+                 (separate unet/ vae/ text_encoder/), so it is not directly usable as --model\n  \
+                 yet. LoRAs / embeddings from civitai DO work (--lora / --embedding civitai:N)."
+            );
+        }
+    }
+    let res = civitai::download::download_version(model_id, version_id, None).await?;
+    let verb = if res.cache_hit { "already cached" } else { "pulled" };
+    println!("✓ {verb} → {}", res.path.display());
+    if let Some(m) = &model {
+        let t = m.asset_type.to_ascii_lowercase();
+        if t.contains("lora") || t.contains("lycoris") {
+            println!("  use it with:  --lora {spec}");
+        } else if t.contains("textualinversion") || t.contains("embedding") {
+            println!("  use it with:  --embedding {}", res.path.display());
+        }
+    }
+    Ok(())
 }
 
 /// v0.20 #4: render the alias table to stdout. Two layouts:
@@ -143,6 +200,17 @@ fn print_aliases(family: Option<&str>, repo_only: bool, gated_only: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn civitai_refs_are_detected_not_treated_as_hf_repos() {
+        assert!(is_civitai_ref("civitai:1714675"));
+        assert!(is_civitai_ref("civitai-version:1940393"));
+        assert!(is_civitai_ref("https://civitai.com/models/1714675/landscape-watercolor-pro"));
+        // HF repo ids + aliases must NOT route to civitai.
+        assert!(!is_civitai_ref("stabilityai/stable-diffusion-3.5-medium"));
+        assert!(!is_civitai_ref("sd15"));
+        assert!(!is_civitai_ref("runwayml/stable-diffusion-v1-5"));
+    }
 
     #[test]
     fn print_aliases_runs_without_filter() {
