@@ -10,6 +10,17 @@ map / debt items.
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
+## 0 — multiperson scene placement (landed)
+
+- [x] **`plakat multiperson` — M1 (place specific personas into a generated scene).**
+      Each persona gets a relative location in words — position (left/center/right) ·
+      distance (closer/farther) · facing (front/side/back); omit it and a scene-aware LLM
+      auto-places them. Renders via the portrait pipeline (scene base → per-persona inpaint,
+      farther→closer). Reuses `region_mask` + IP-Adapter + portrait inpaint; no new attention
+      plumbing. `corpus/multiperson.sh` + showcase; verified on-box (the chess scene).
+      Design/critique in `RFC_MULTIPERSON_REVIEW.md`. M2 (regional eps-blend, seam-free) and
+      M3 (masked decoupled IP, single-pass + fidelity) remain optional upgrades.
+
 ## A — memory & stability (headline)
 
 - [ ] **Cap render size on Metal** — the default `generate` size spikes Metal's
