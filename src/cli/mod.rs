@@ -21,6 +21,7 @@ pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
 pub mod portrait;
+pub mod relight;
 pub mod run;
 pub mod scenario;
 pub mod segment;
@@ -64,6 +65,11 @@ pub enum Command {
     Outpaint(outpaint::OutpaintArgs),
     /// Apply the style of REF to IN, producing OUT.
     Stylize(stylize::StylizeArgs),
+    /// Relight a foreground subject with IC-Light: matte the subject,
+    /// composite it onto neutral grey, and re-illuminate it from a text
+    /// prompt describing the lighting. SD 1.5-based (widened 8-channel
+    /// UNet + IC-Light offset weights).
+    Relight(relight::RelightArgs),
     /// Make pixels matching the upper-left corner color transparent.
     Transparent(transparent::TransparentArgs),
     /// Segment an object by clicking it (Segment-Anything / MobileSAM):
@@ -181,6 +187,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             stylize::run(args, device).await
         }
+        Command::Relight(a) => relight::run(a, crate::device::select(&cli.device)?).await,
         Command::Transparent(args) => {
             let device = crate::device::select(&cli.device)?;
             transparent::run(args, device).await
