@@ -40,15 +40,17 @@ the trainers are code-complete + memory-bound.
       (disputed/river/mountain), polity labels.
 - All three are pure fns of (spec, seed/style), gated so empty data → byte-identical;
       `corpus/map/realms.spec.json` showcase + heightmap/render proofs + byte-checks.
-- [ ] **Seasonal palettes** (`--map-season`), **game-grid overlay** (`--map-grid`) — still open.
+- [x] **Seasonal palettes** (`--map-season` spring/summer/autumn/winter) + **game-grid overlay**
+      (`--map-grid N`, A1/B2 cells). On `Style`, gated → defaults byte-identical. **B COMPLETE.**
 
-## C — carried product debt
+## C — carried product debt (Flux items skipped — broken on this hardware)
 
-- [ ] **IC-Light relighting** (carried since 1.1).
-- [ ] **Flux regional prompting** (Metal-blocked → code + CI).
-- [ ] **Flux training** — implementable (rectified-flow, mirrors SD3) but unverifiable on
-      Metal; unblock once a CUDA/CI verify path exists.
+- [~] **IC-Light relighting** (carried since 1.1) — IN PROGRESS. SD1.5-based relighting:
+      the UNet input conv is widened to take the subject latent as extra channels; reuse
+      SdCore (SD1.5 UNet + VAE) + the U2Net matte for foreground extraction.
 - [ ] Fill `corpus/images/train/`; map gallery section in `GALLERY.md`.
+- ~~Flux regional prompting / Flux training~~ — **skipped**: Flux is broken on this
+      hardware (Metal), so unverifiable. Parked until a CUDA/CI path exists.
 
 ## Notes
 
