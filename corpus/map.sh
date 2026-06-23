@@ -80,6 +80,21 @@ cmp /tmp/plakat-map-cond.png "$ROOT/corpus/images/map/island-conditioning.png" \
 "$PLAKAT" scenario "$ROOT/corpus/map_scenario.hjson" >/dev/null 2>&1
 cmp "$ROOT/corpus/images/map/scenario/isle-parchment/map.png" "$ROOT/corpus/images/map/island-render.png" \
   || { echo "✗ scenario map task drifted from the direct --map-render"; exit 1; }
+
+# ── B (1.11.0): realms showcase — the ALL-FEATURES map (HJSON) ──
+#    A continental spec (authored in HJSON) exercising every geographical
+#    feature: mountain ranges, plateaus/mesas (terrain.plateaus), dry canyons
+#    (terrain.rift_valleys), lakes, a wetland/swamp region, rivers + coast,
+#    multiple biomes, the political layer (polity rings + a disputed border +
+#    polity labels), landmarks, a road + bridge. Byte-stable (pure fn of seed).
+REALMS="$ROOT/corpus/map/realms.hjson"
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-dump-heightmap /tmp/plakat-realms-hm.png >/dev/null
+cmp /tmp/plakat-realms-hm.png "$ROOT/corpus/images/map/realms-heightmap.png" \
+  || { echo "✗ realms heightmap (canyon + plateau) drifted from the committed proof"; exit 1; }
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-render /tmp/plakat-realms-render.png >/dev/null
+cmp /tmp/plakat-realms-render.png "$ROOT/corpus/images/map/realms-render.png" \
+  || { echo "✗ realms render (political overlay) drifted from the committed proof"; exit 1; }
+rm -f /tmp/plakat-realms-hm.png /tmp/plakat-realms-render.png
 rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg /tmp/plakat-map-cond.png
 
 echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
@@ -94,3 +109,4 @@ echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/m
 echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"
 echo "  + MAP-6: SD conditioning base byte-stable vs corpus/images/map/island-conditioning.png (painted render via corpus/map_render.sh)"
 echo "  + MAP-4: 'map' scenario task byte-identical to the direct --map-render (corpus/map_scenario.hjson)"
+echo "  + 1.11.0 B: realms.hjson all-features showcase byte-stable — mountains + plateaus/mesas + dry canyons + lakes + wetland/swamp + political layer + landmarks/roads (corpus/realms.sh)"

@@ -34,6 +34,27 @@ plakat map --map-spec isle.json --map-render isle.png      # no LLM, determinist
 `--seed N` (default 42) picks the world; the same spec with a different seed is a
 different island with the same *features*.
 
+### Specs can be HJSON
+
+`--map-spec` accepts **HJSON** as well as JSON — comments, no commas, the same
+relaxed syntax as scenarios and `compile`. Existing `.json` specs still parse
+unchanged (HJSON is a strict superset).
+
+> **Gotcha — one field per line.** HJSON quoteless strings run to the *end of the
+> line*, so inline objects like `{ cols: 2 rows: 2 }` are **invalid**. Expand
+> every object so each field is on its own line:
+>
+> ```hjson
+> tile_grid:
+> {
+>   cols: 2
+>   rows: 2
+> }
+> ```
+
+The canonical, all-features example is
+[`corpus/map/realms.hjson`](../../corpus/map/realms.hjson) — see §10 below.
+
 ## 2. Styling the linework map
 
 `--map-style` selects the palette:
@@ -48,6 +69,33 @@ The render gives you hill-shaded terrain, an ink coastline, biome fills, rivers,
 roads, per-kind landmark symbols (cities, fortresses, ports, lighthouses, …),
 collision-routed labels, and cartographic furniture — a title cartouche, a compass
 rose, a scale bar, and a legend.
+
+### Seasonal palettes
+
+`--map-season` tints the land palette by season — handy for showing the same
+world in different moods:
+
+```bash
+plakat map --map-spec isle.json --map-render isle.png --map-season autumn
+plakat map --map-spec isle.json --map-render isle.png --map-season winter
+```
+
+`spring | summer | autumn | winter`. **`summer` is the neutral default** — it's
+byte-identical to passing no season at all, so existing renders don't change.
+
+### Tabletop coordinate grid
+
+`--map-grid N` overlays an `N×N` reference grid with `A1` / `B2` cell labels
+(column letters across the top, row numbers down the left) — for hex/RPG-style
+"the party is in C4":
+
+```bash
+plakat map --map-spec isle.json --map-render isle.png --map-grid 8
+```
+
+`0` (the default) draws no grid; `N` is capped at 26 (A–Z). The lines are faint
+so they don't fight the map underneath. Composes with `--map-season` and
+`--map-style`.
 
 ## 3. Tuning the geography
 
@@ -66,8 +114,71 @@ At `0` the coast is near-circular and ranges are smooth ovals; at `1` you get ba
 peninsulas, and wandering ridgelines; above `1` it becomes dramatically rugged.
 
 You can also set it in the spec (`"terrain": { "erosion": 1.5 }`) so it round-trips.
+Erosion governs the irregularity of coastlines, mountain ridges, canyons, mesas,
+and lake shores alike.
 
-## 4. Town maps (urban scale)
+## 4. More terrain: canyons, mesas, and borders
+
+Beyond mountains and water, the spec realizes a few more landforms (all under
+`terrain`, all eroded by the `--map-erosion` knob).
+
+**Dry canyons** — `terrain.rift_valleys` carves narrow, oriented gorges whose
+floor stays *above* sea level (so they read as dry rifts, not flooded channels).
+Each is a named region with an `orientation`, a `length_fraction`, and a `size` of
+`shallow | moderate | deep | chasm` (deeper = cut closer to the sea):
+
+```hjson
+rift_valleys:
+[
+  {
+    id: the_cleft
+    name: The Cleft
+    anchor: { kind: cardinal position: center }
+    orientation: north-south
+    length_fraction: 0.6
+    size: deep
+  }
+]
+```
+
+**Plateaus / mesas** — `terrain.plateaus` raises flat-topped tablelands ringed by
+a steep scarp. Same `NamedRegion` shape; `size` is `small | moderate | large`:
+
+```hjson
+plateaus:
+[
+  { id: highreach name: The Highreach
+    anchor: { kind: cardinal position: east }
+    size: large }
+]
+```
+
+**Political layer** — any `region` can carry a `political` block, drawing a
+territorial ring, kind-styled borders to neighbouring regions, and a polity label.
+`borders[].kind` is `river | mountain | disputed`:
+
+```hjson
+regions:
+[
+  {
+    id: westmark name: Westmark biome: temperate_grassland
+    anchor: { kind: cardinal position: west }
+    coverage: 0.3
+    political:
+    {
+      polity_name: The Westmark League
+      polity_kind: confederation
+      borders: [ { with_region: eastreach kind: river } ]
+    }
+  }
+]
+```
+
+`with_region` references another region by `id`; the border is drawn between the
+two regions' anchors and styled by `kind`. Each polity gets a deterministic muted
+colour from its name, so it reads on any palette.
+
+## 5. Town maps (urban scale)
 
 A city or town spec (`scale_tier` 10–12, with an `urban` block) renders a **street
 map** instead of a regional map: a wall with gates, arterials, ring/grid streets,
@@ -119,7 +230,7 @@ A minimal urban spec:
 Landmarks place themselves against the town: `city_center`, `at_gate`,
 `in_district`, `pier_tip`, `along_street`, `on_wall`.
 
-## 5. Painting the map with Stable Diffusion
+## 6. Painting the map with Stable Diffusion
 
 `--map-render-sd` runs the styled base through SD img2img + a Canny ControlNet so it
 looks **hand-painted**, then re-composites the crisp linework + labels on top. This
@@ -141,7 +252,7 @@ plakat map --map-spec isle.json --map-render-sd isle.png \
 The painted output is not deterministic (it's SD); the *conditioning* base is. Use
 `--map-dump-conditioning` to see the exact image the paint starts from.
 
-## 6. Vector export
+## 7. Vector export
 
 Export the same geometry as scalable vectors for print or further editing:
 
@@ -154,7 +265,7 @@ GeoJSON gives you the coastline (closed rings), rivers + roads (LineStrings), an
 landmarks (Points) with `name`/`kind`/`id` properties, normalized to `[0,1]`,
 north-up.
 
-## 7. Maps in batches: scenario, compile, scripting
+## 8. Maps in batches: scenario, compile, scripting
 
 A map is a first-class step everywhere, all rendering identically to `--map-render`.
 
@@ -191,7 +302,7 @@ name: my-isle
 "isle.png" plakat.save
 ```
 
-## 8. Inspecting the geometry layers
+## 9. Inspecting the geometry layers
 
 Each layer of the engine can be dumped — useful for debugging a spec:
 
@@ -202,7 +313,7 @@ plakat map --map-spec isle.json \
   --map-dump-features fe.png --map-dump-streets st.png       # streets = urban specs
 ```
 
-## 9. Non-Latin labels
+## 10. Non-Latin labels
 
 The built-in label font is a Latin bitmap face (so the default render is asset-free
 and byte-stable). For Cyrillic, CJK, and other scripts, build with the
@@ -216,6 +327,35 @@ plakat map --map-spec ru_town.json --map-render town.png --map-font /path/to/fon
 The font you provide must cover the script you're using; nothing is bundled. (Cyrillic
 and CJK render directly; complex scripts that need contextual shaping/RTL — Arabic —
 render glyphs but unshaped, for now.)
+
+## 11. A worked all-features example
+
+[`corpus/map/realms.hjson`](../../corpus/map/realms.hjson) — "The Sundered Realms"
+— is one continental spec that exercises **every** geographical feature the engine
+realizes: two mountain ranges, a large plateau, a dry canyon, two lakes, a wetland
+region, rivers + coast, several biomes, the political layer (polity rings + a
+disputed border), landmarks, and a road with a bridge. It's authored in idiomatic
+HJSON (comments, no commas, one field per line).
+
+[`corpus/realms.sh`](../../corpus/realms.sh) compiles it into its full artifact
+set — every geometry layer, the styled map in all three styles, the seasonal +
+tabletop-grid variants, and the GeoJSON/SVG export:
+
+```bash
+./corpus/realms.sh
+# styled + autumn/winter + 8×8-grid renders, all layers, vector export →
+#   corpus/images/realms/  and  corpus/map/export/
+```
+
+Because the geometry is a pure function of (spec, seed), the whole thing runs with
+**no GPU, no network, no API key**. Read `realms.hjson` as a copy-paste template
+for your own world, then run individual lines:
+
+```bash
+plakat map --map-spec corpus/map/realms.hjson --map-render realms.png
+plakat map --map-spec corpus/map/realms.hjson --map-season autumn --map-grid 8 \
+    --map-render realms-autumn.png
+```
 
 ## What's next
 

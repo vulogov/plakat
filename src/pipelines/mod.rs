@@ -3,6 +3,7 @@ pub mod artefact_blend;
 pub mod controlnet;
 pub(crate) mod train_progress;
 pub mod matting;
+pub mod ic_light;
 pub mod instantstyle;
 pub mod controlnet_annotator;
 pub mod depth;
