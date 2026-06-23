@@ -131,52 +131,108 @@ pub async fn get_file(repo: &str, file: &str) -> Result<PathBuf> {
     get_file_at(repo, file, "main").await
 }
 
-/// Fetch the canonical SD layout for a repo, reporting how many files landed.
-/// Files that 404 are skipped silently; other errors are reported.
+/// Pull every model file in a repo, reporting how many landed. Enumerates the
+/// repo's ACTUAL files (any layout) rather than guessing a fixed SD-diffusers
+/// filename list — which 404s on PixArt / SD3 (`transformer/`, sharded T5),
+/// Cascade, and single-file checkpoints. Gated / missing repos surface one
+/// clear message instead of a wall of per-file 404s.
 pub async fn pull_all(repo: &str) -> Result<()> {
-    let candidates: &[&str] = &[
-        "model_index.json",
-        "tokenizer/tokenizer.json",
-        "tokenizer/vocab.json",
-        "tokenizer/merges.txt",
-        "tokenizer_2/tokenizer.json",
-        "text_encoder/model.fp16.safetensors",
-        "text_encoder/model.safetensors",
-        "text_encoder_2/model.fp16.safetensors",
-        "text_encoder_2/model.safetensors",
-        "vae/diffusion_pytorch_model.fp16.safetensors",
-        "vae/diffusion_pytorch_model.safetensors",
-        "unet/diffusion_pytorch_model.fp16.safetensors",
-        "unet/diffusion_pytorch_model.safetensors",
-        "scheduler/scheduler_config.json",
-    ];
+    let resolved = crate::hf::resolve_alias(repo).to_string();
+    let files = crate::hf::info::repo_files(&resolved)
+        .await
+        .with_context(|| format!("pull {repo}"))?;
+    let wanted = select_pull_files(&files);
+    if wanted.is_empty() {
+        return Err(anyhow!("repo {resolved} lists no model files to pull"));
+    }
     let mut ok = 0usize;
-    let mut first_err: Option<anyhow::Error> = None;
-    let mut other_files: Vec<String> = Vec::new();
-    for f in candidates {
-        match get_file(repo, f).await {
+    let mut failed = 0usize;
+    for f in &wanted {
+        match get_file(&resolved, f).await {
             Ok(_) => ok += 1,
             Err(e) => {
-                if first_err.is_none() {
-                    first_err = Some(e);
-                } else {
-                    other_files.push(f.to_string());
-                }
+                tracing::warn!(target: "plakat", "pull {resolved}: skip {f}: {e}");
+                failed += 1;
             }
         }
     }
     if ok == 0 {
-        let e = first_err.unwrap();
-        let total_failed = 1 + other_files.len();
         return Err(anyhow!(
-            "no files fetched from {repo} ({total_failed} attempts, same kind of error).\n\
-             First failure:\n{e}"
+            "no files fetched from {resolved} ({} attempted)",
+            wanted.len()
         ))
         .with_context(|| format!("pull {repo}"));
     }
-    tracing::info!(target: "plakat", "pulled {ok}/{total} files from {repo}", total = candidates.len());
-    if let Some(e) = first_err {
-        tracing::debug!(target: "plakat", "{} files skipped/missing; first: {e}", 1 + other_files.len());
-    }
+    tracing::info!(
+        target: "plakat",
+        "pulled {ok}/{} files from {resolved}{}",
+        wanted.len(),
+        if failed == 0 { String::new() } else { format!(" ({failed} skipped)") }
+    );
     Ok(())
+}
+
+/// From the repo's full file list, pick what's worth pulling: drop preview
+/// images + docs, and when both `X.fp16.safetensors` and `X.safetensors` exist
+/// for one component keep only the fp16 (what plakat loads on GPU).
+pub(crate) fn select_pull_files(files: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+    let set: HashSet<&str> = files.iter().map(String::as_str).collect();
+    files
+        .iter()
+        .filter(|f| {
+            let l = f.to_ascii_lowercase();
+            let is_doc = l.ends_with(".png")
+                || l.ends_with(".jpg")
+                || l.ends_with(".jpeg")
+                || l.ends_with(".webp")
+                || l.ends_with(".gif")
+                || l.ends_with(".md")
+                || l.ends_with(".gitattributes");
+            if is_doc {
+                return false;
+            }
+            // Drop the full-precision twin when an fp16 sibling exists.
+            if let Some(stem) = f.strip_suffix(".safetensors") {
+                if !stem.ends_with(".fp16") {
+                    let fp16 = format!("{stem}.fp16.safetensors");
+                    if set.contains(fp16.as_str()) {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_pull_files_prefers_fp16_and_drops_previews() {
+        let files: Vec<String> = [
+            "model_index.json",
+            "unet/diffusion_pytorch_model.fp16.safetensors",
+            "unet/diffusion_pytorch_model.safetensors", // dropped: fp16 twin exists
+            "vae/diffusion_pytorch_model.safetensors",   // kept: no fp16 twin
+            "transformer/diffusion_pytorch_model.safetensors", // PixArt/SD3 layout
+            "preview.png",                               // dropped: image
+            "README.md",                                 // dropped: doc
+            ".gitattributes",                            // dropped
+            "tokenizer/merges.txt",                      // kept
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let got = select_pull_files(&files);
+        assert!(got.contains(&"unet/diffusion_pytorch_model.fp16.safetensors".to_string()));
+        assert!(!got.contains(&"unet/diffusion_pytorch_model.safetensors".to_string()));
+        assert!(got.contains(&"vae/diffusion_pytorch_model.safetensors".to_string()));
+        assert!(got.contains(&"transformer/diffusion_pytorch_model.safetensors".to_string()));
+        assert!(got.contains(&"tokenizer/merges.txt".to_string()));
+        assert!(!got.iter().any(|f| f.ends_with(".png") || f.ends_with(".md") || f == ".gitattributes"));
+    }
 }

@@ -1,7 +1,7 @@
 //! Repository introspection: query the HF tree API to report what's there
 //! without downloading it.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use console::style;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -31,6 +31,50 @@ async fn list_tree(repo: &str) -> Result<Vec<TreeEntry>> {
         .map_err(|e| anyhow!("HF tree API for {resolved}: {e}"))?;
     let entries: Vec<TreeEntry> = resp.json().await?;
     Ok(entries)
+}
+
+/// List every FILE path in a repo (recursive) via the HF tree API. Used by
+/// `pull_all` so a pull works for ANY repo layout (SD/SDXL diffusers, PixArt /
+/// SD3 `transformer/`, Cascade, single-file, sharded) instead of guessing a
+/// fixed SD-filename list. Surfaces gated/missing repos with an actionable
+/// message rather than a bare per-file 404.
+pub(crate) async fn repo_files(repo: &str) -> Result<Vec<String>> {
+    let resolved = crate::hf::resolve_alias(repo);
+    let url = reqwest::Url::parse_with_params(
+        &format!("https://huggingface.co/api/models/{resolved}/tree/main"),
+        &[("recursive", "true")],
+    )?;
+    let resp = reqwest::Client::builder()
+        .user_agent("plakat/0.1")
+        .build()?
+        .get(url)
+        .send()
+        .await?;
+    let status = resp.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        bail!(
+            "{resolved} is GATED — accept its terms at https://huggingface.co/{resolved} \
+             and set HF_TOKEN (https://huggingface.co/settings/tokens), then retry."
+        );
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "{resolved} was not found on HuggingFace (moved, renamed, or removed). \
+             Check https://huggingface.co/{resolved}"
+        );
+    }
+    let resp = resp
+        .error_for_status()
+        .map_err(|e| anyhow!("HF tree API for {resolved}: {e}"))?;
+    let entries: Vec<TreeEntry> = resp.json().await?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.kind == "file")
+        .map(|e| e.path)
+        .collect())
 }
 
 /// Mirror of the pipelines' fp16-preferred fetch logic. One slot per

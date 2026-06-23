@@ -104,7 +104,9 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
     },
     AliasEntry {
         aliases: &["pony", "pony-v6", "pony-diffusion-v6"],
-        repo: "AstraliteHeart/pony-diffusion-v6-xl",
+        // The original `AstraliteHeart/pony-diffusion-v6-xl` was removed from HF
+        // (404). Repointed to a complete, non-gated diffusers-layout mirror.
+        repo: "stablediffusionapi/pony-diffusion-v6-xl",
         family: "SDXL",
         kind: "base",
         gated: false,
@@ -443,8 +445,8 @@ mod tests {
         for alias in ["pony", "pony-v6", "pony-diffusion-v6"] {
             assert_eq!(
                 resolve_alias(alias),
-                "AstraliteHeart/pony-diffusion-v6-xl",
-                "alias {alias} should resolve to Pony Diffusion v6 XL",
+                "stablediffusionapi/pony-diffusion-v6-xl",
+                "alias {alias} should resolve to a working Pony Diffusion v6 XL mirror",
             );
         }
     }
