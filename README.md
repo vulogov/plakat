@@ -17,55 +17,56 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.10.0 — train your own style on every model family
+## What's new in 1.11.0 — relighting, richer maps, and a steadier host
 
-1.10.0 is the **model-training expansion**: `plakat` now learns a style (or
-subject) on **four** model families, closing the LoRA / Textual-Inversion gaps so
-every architecture can be fine-tuned, not just used. Each trainer freezes the base
-and learns only the adapter / embedding, then saves a file the matching `--lora` /
-`--embedding` loader already reads.
+1.11.0 adds **IC-Light relighting**, fills out the **`plakat map`** generator with the
+terrain + cartography features it was missing, and hardens the CLI against the two
+things that actually bite on a single workstation: concurrent runs and broken `pull`s.
 
 ```bash
-# SD 2.1 — style LoRA (verified end-to-end) or a subject (--class-dir → DreamBooth)
-plakat style train --from-dir ./my-style --base sd21 --out style.safetensors
+# Relight a subject under any lighting (identity preserved)
+plakat relight portrait.png --prompt "warm golden sunset, rim light from the left"
 
-# PixArt-Σ — style LoRA on the DiT
-plakat style train --from-dir ./my-style --base pixart --out style.safetensors
+# A whole continent in one HJSON spec — canyons, mesas, lakes, swamps, polities
+plakat map --map-spec corpus/map/realms.hjson --map-render realm.png
 
-# SD 3.5 — Textual Inversion (a token in CLIP-L + CLIP-G + T5)
-plakat embedding train --from-dir ./my-style --base sd35 --token mystyle --out emb.safetensors
-
-# Stable Cascade — Stage-C LoRA (Würstchen semantic space)
-plakat style train --from-dir ./my-style --base cascade --out style.safetensors
+# Seasonal palette + a tabletop coordinate grid
+plakat map --map-spec realm.hjson --map-season autumn --map-grid 8 --map-render realm.png
 ```
 
-**The trainers**
+**IC-Light relighting** — `plakat relight <subject> --prompt "<lighting>"` re-illuminates
+a foreground subject from a text description while preserving its identity. SD 1.5-based:
+the UNet input conv is widened 4→8 channels and the `lllyasviel/ic-light` offset is merged
+over a base SD 1.5 UNet; the U2Net-matted subject latent conditions every denoise step.
+Wants **low guidance** (1.5–3). Verified on-box; fits 24 GB. See the new
+[RELIGHT tutorial](Documentation/Tutorials/RELIGHT_TUTORIAL.md).
 
-- **SD 2.1 — style LoRA + DreamBooth** *(verified on-box).* A dedicated 1024-dim
-  CLIP UNet config + a **v-prediction** loss bring SD 2.1 to parity with SD 1.5 / SDXL.
-- **PixArt-Σ — style/subject LoRA.** The DiT attention projections now host trainable
-  `LoraLinear` adapters; the trainer runs DDPM-ε through the frozen DiT (BF16 T5).
-- **SD 3.5 — Textual Inversion.** A placeholder token learned in **all three**
-  encoders (CLIP-L + CLIP-G + T5) via a differentiable splice, rectified-flow loss
-  through the frozen MMDiT, saved as a triple embedding. Loading runtime-splices the
-  token in (no weight rewrite). Required a faithful vendored T5 — proven byte-identical
-  to candle's by a guard test, so existing SD3.5 inference / LoRA / DreamBooth are
-  untouched. Completes SD3.5's training trio.
-- **Stable Cascade — Stage-C LoRA.** Trains in the Würstchen semantic space. Shipped
-  the missing **effnet encoder** (image → 16×24×24 latent, verified on real weights) as
-  the supervised target, retrofitted Stage-C attention to `LoraLinear`, and saves a
-  `prior.*` PEFT LoRA the merge path loads.
+**`plakat map` — the missing geography.** All deterministic, byte-stable, no GPU:
 
-The reusable transformer-adapter spine (`LoraLinear` + `install_train_adapters`) now
-covers the MMDiT, the PixArt DiT, and Cascade Stage-C. **Note:** the three transformer
-trainers (PixArt / SD3.5 / Cascade) keep their giant encoders resident with autograd,
-so they are **memory-bound** — a full run wants ≥ 36 GB unified memory or a CUDA box;
-each ships with a `corpus/*_train.sh` recipe. SD 2.1 runs comfortably on 24 GB.
+- **Dry canyons** (`terrain.rift_valleys`), **plateaus / mesas** (`terrain.plateaus`) —
+  oriented gorges + flat-topped scarped tablelands.
+- **Political layer** (`RegionSpec.political`) — polity rings, kind-styled borders
+  (river / mountain / disputed), polity labels.
+- **Seasonal palettes** (`--map-season`) + a **tabletop coordinate grid** (`--map-grid N`).
+- **HJSON specs** — `--map-spec` now accepts commented, comma-free HJSON.
+- **Natural irregularity** — lakes get wandering shorelines (no more perfect circles);
+  `terrain.erosion` scales coast / ridge / canyon / mesa / lake raggedness.
+- `corpus/map/realms.hjson` exercises every feature; `corpus/realms.sh` compiles it.
 
-See [`Documentation/ROADMAP_1.10.0.md`](Documentation/ROADMAP_1.10.0.md) and
-[`PLAN_TRAINING_EXPANSION.md`](Documentation/PLAN_TRAINING_EXPANSION.md).
+**CLI robustness**
 
-**Earlier releases** (v0.13 – v1.9):
+- **Single-instance guard** — a second heavy run refuses to start while another `plakat`
+  is busy on the host (they share unified memory and thrash), reporting the offending
+  pid / user / command. Override with `--enable-multiple-instances`. Introspection
+  (doctor / models / gallery) is never blocked.
+- **`models pull` fixed** — it now enumerates a repo's actual files instead of guessing
+  an SD filename list, so PixArt / SD3 (`transformer/`), Cascade, and single-file
+  checkpoints all pull; `civitai:N` routes to Civitai; gated / missing repos give one
+  clear message; the dead `pony` alias was repointed to a working mirror.
+
+See [`Documentation/ROADMAP_1.11.0.md`](Documentation/ROADMAP_1.11.0.md).
+
+**Earlier releases** (v0.13 – v1.10):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

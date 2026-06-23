@@ -1,12 +1,35 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.9. The current
+"What's new" sections for v0.13 through 1.10. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.10.0 — train your own style on every model family
+
+1.10.0 is the **model-training expansion**: `plakat` learns a style (or subject) on
+**four** model families, closing the LoRA / Textual-Inversion gaps. Each trainer freezes
+the base and learns only the adapter / embedding, saving a file the matching `--lora` /
+`--embedding` loader reads.
+
+- **SD 2.1 — style LoRA + DreamBooth** *(verified on-box)* — 1024-dim CLIP UNet config +
+  **v-prediction** loss. `style train --base sd21`.
+- **PixArt-Σ — style/subject LoRA** — DiT attention → trainable `LoraLinear`; DDPM-ε
+  through the frozen DiT (BF16 T5). `style train --base pixart`.
+- **SD 3.5 — Textual Inversion** — a token learned in **all three** encoders (CLIP-L +
+  CLIP-G + T5) via differentiable splice; rectified-flow loss through the frozen MMDiT;
+  triple embedding. Required a faithful vendored T5 (proven byte-identical by a guard
+  test). `embedding train --base sd35`.
+- **Stable Cascade — Stage-C LoRA** — trains in the Würstchen semantic space; shipped the
+  missing **effnet encoder** (image → 16×24×24 latent, verified on real weights).
+  `style train --base cascade`.
+
+The reusable `LoraLinear` + `install_train_adapters` spine now spans the MMDiT, PixArt
+DiT, and Cascade Stage-C. The three transformer trainers are **memory-bound** (≥ 36 GB
+unified / CUDA); SD 2.1 runs on 24 GB.
 
 ## What's new in 1.9.0 — map polish (lakes, lots, painted scripts, shaped labels)
 

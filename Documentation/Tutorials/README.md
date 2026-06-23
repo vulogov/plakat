@@ -246,7 +246,16 @@ If you're new to plakat, work through these in order:
     (`--map-style`), SD-painted maps (`--map-render-sd`), tunable erosion
     (`--map-erosion`) + town street plans (`--map-urban-layout`), vector export
     (GeoJSON/SVG), non-Latin labels (`--map-font`), and the `scenario` / `compile`
-    / scripting integration. No GPU for the linework path.
+    / scripting integration. No GPU for the linework path. **v1.11.0** adds
+    HJSON specs, dry canyons + plateaus/mesas, the political layer (polity rings
+    + borders), seasonal palettes (`--map-season`), and a tabletop grid
+    (`--map-grid`).
+
+20. [`RELIGHT_TUTORIAL.md`](RELIGHT_TUTORIAL.md) — **v1.11.0. `plakat relight`.**
+    IC-Light re-illuminates a foreground subject under a lighting you describe in
+    text, keeping the subject's identity while changing the light + scene. SD
+    1.5-based (4→8-channel UNet, `lllyasviel/ic-light` offset). Wants LOW guidance
+    (1.5–3). No reference photo of the light, no training.
 
 ## Specialized portrait techniques
 
