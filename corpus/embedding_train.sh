@@ -33,7 +33,13 @@ case "$BASE" in
   # At full token strength (1.0) the learned "stained-glass-window" motif tiles the
   # subject into panels on SDXL's strong prior; 0.6 renders one clean subject.
   sdxl) SIZE="${SIZE:-768x768}"; LR="${LR:-5e-4}"; EMB_SCALE="${EMB_SCALE:-0.6}" ;;   # dual CLIP-L+CLIP-G; native 1024² (heavy), 768² safer
-  *) echo "base must be sd15 | sd21 | sdxl"; exit 1 ;;
+  # SD 3.5 TI learns a TRIPLE vector (CLIP-L 768 + CLIP-G 1280 + T5 4096) — the
+  # T5 half makes both training (autograd through T5-XXL) and the render
+  # MEMORY-BOUND: needs >24 GB unified or CUDA. Recipe only; not verified on a
+  # 24 GB Mac. LR mirrors SDXL's dual-encoder rate (the single-vector 5e-3
+  # over-cooks the multi-encoder case); tune EMB_SCALE down if the motif tiles.
+  sd35) SIZE="${SIZE:-512x512}"; LR="${LR:-5e-4}"; EMB_SCALE="${EMB_SCALE:-0.6}" ;;   # triple CLIP-L+CLIP-G+T5
+  *) echo "base must be sd15 | sd21 | sdxl | sd35"; exit 1 ;;
 esac
 # Concept (training-exemplar) generation can use a LIGHTER base than the TI base:
 # the stained-glass set is plain training data (downscaled to 256² to train), so
@@ -42,8 +48,10 @@ esac
 # with CONCEPT_BASE / CONCEPT_SIZE. This isolates the *new* SDXL-TI training code
 # from the (pre-existing, memory-heavy) SDXL inference path.
 case "$BASE" in
-  sdxl) CONCEPT_BASE="${CONCEPT_BASE:-sd15}"; CONCEPT_SIZE="${CONCEPT_SIZE:-512x512}" ;;
-  *)    CONCEPT_BASE="${CONCEPT_BASE:-$BASE}"; CONCEPT_SIZE="${CONCEPT_SIZE:-$SIZE}" ;;
+  # sdxl + sd35 generate their exemplars with a LIGHT base (sd15/512²) — the
+  # set is plain training data, and SDXL/SD3.5 inference OOMs a 24 GB Mac.
+  sdxl|sd35) CONCEPT_BASE="${CONCEPT_BASE:-sd15}"; CONCEPT_SIZE="${CONCEPT_SIZE:-512x512}" ;;
+  *)         CONCEPT_BASE="${CONCEPT_BASE:-$BASE}"; CONCEPT_SIZE="${CONCEPT_SIZE:-$SIZE}" ;;
 esac
 CONCEPT="$WORK/concept-$CONCEPT_BASE"
 mkdir -p "$CONCEPT" "$OUT"

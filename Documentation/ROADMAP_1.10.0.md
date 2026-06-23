@@ -46,23 +46,26 @@ In the recommended sequence from the plan:
     or slow swap-thrash (which never crossed the kernel's Critical cliff here — the box
     kept swapping, just uselessly slowly). So it would not have aborted this run; the real
     fix is sizing the box to the base.
-- [~] **SD 3.5 — Textual Inversion**. **Training half DONE** (not on-box-verifiable —
-      memory-bound). A placeholder token is learned in CLIP-L + CLIP-G **and** T5 via a
-      differentiable splice into each encoder's init-word slot, rectified-flow loss
-      through the frozen MMDiT, saved as a triple file (`clip_l`+`clip_g`+`t5`).
-      Required vendoring candle's T5 (`vendored_t5.rs`) to expose `embed_tokens` +
-      `forward_from_input_embeds` — proven byte-faithful to candle's T5 by a guard test
-      (so SD3.5 inference / LoRA / DreamBooth are unaffected). `embedding train --base
-      sd35`. **Remaining half: inference-side `--embedding` loading for SD3.5** (SD3 has
-      none today). Two candidate designs:
-      - **(A) embedding-table merge** — extend each encoder's `token_embedding`/`shared`
-        weight + register the token in 3 tokenizers (mirrors the SDXL TI loader, but the
-        T5 embedding is sharded → a ~5 GB shard rewrite).
-      - **(B) runtime splice (recommended)** — register the trigger as an added token in
-        each tokenizer, clamp its OOB id at lookup, and splice the learned vector into
-        that position inside `encode_prompt` (the from-embeds paths already exist). No
-        weight files touched; lower-risk; gated so empty-embedding loads are byte-identical.
-      Both modify the verified SD3 conditioning path and are unverifiable on 24 GB.
+- [x] **SD 3.5 — Textual Inversion — DONE (code), NOT on-box-verified (memory-bound).**
+      Both halves landed; completes SD3.5's training trio (LoRA + DreamBooth + TI).
+      - **Training** — a placeholder token learned in CLIP-L + CLIP-G **and** T5 via a
+        differentiable splice into each encoder's init-word slot, rectified-flow loss
+        through the frozen MMDiT, saved as a triple file (`clip_l`+`clip_g`+`t5`).
+        Required vendoring candle's T5 (`vendored_t5.rs`) to expose `embed_tokens` +
+        `forward_from_input_embeds`; a guard test proves the copy is byte-faithful to
+        candle's T5 on random weights (so SD3.5 inference / LoRA / DreamBooth are
+        unaffected). `embedding train --base sd35`.
+      - **Inference loading (runtime splice)** — SD3 `LoadRequest`/`Request` gained an
+        `embeddings` field; on load each triple TI is read and its trigger registered as
+        an added token in all three tokenizers. `encode_prompt` early-branches to
+        `encode_prompt_ti` **only when a TI is loaded** (the verified path is otherwise
+        untouched): it clamps the trigger's OOB id for the embedding lookup, splices the
+        learned vector·scale into that row via `slice_assign`, and runs each encoder
+        from-embeds — including the clamped-ids argmax fix so CLIP-G pooling stays
+        correct. No weight files rewritten. `--embedding PATH:trigger:scale`.
+      - Memory wall: CLIP-L + CLIP-G + T5-XXL + MMDiT resident (training adds autograd) →
+        >24 GB on the canonical checkpoint. `corpus/embedding_train.sh sd35` is a recipe
+        for ≥36 GB / CUDA, not a committed proof.
 - [ ] **Stable Cascade — Stage-C LoRA**. Train in the Würstchen semantic space;
       Stage-C attention adapters (the merge path already loads the result).
 - [ ] **Flux — BACK-BURNER**. Implementable but unverifiable on Metal (Flux inference
