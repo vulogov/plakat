@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "name": "The Sundered Realms",
+  "scale_tier": 3,
+  "tile_grid": { "cols": 2, "rows": 2 },
+  "climate": "continental",
+  "era": "iron age",
+  "language": "en",
+  "terrain": {
+    "dominant_elevation": "varied",
+    "mountain_ranges": [
+      { "id": "thornwall", "name": "The Thornwall",
+        "anchor": { "kind": "cardinal", "position": "north" },
+        "orientation": "east-west", "length_fraction": 0.6, "height": "high" }
+    ],
+    "plateaus": [
+      { "id": "highreach", "name": "The Highreach",
+        "anchor": { "kind": "cardinal", "position": "east" }, "size": "large" }
+    ],
+    "rift_valleys": [
+      { "id": "the_cleft", "name": "The Cleft",
+        "anchor": { "kind": "cardinal", "position": "center" },
+        "orientation": "north-south", "length_fraction": 0.6, "size": "deep" }
+    ]
+  },
+  "water": {
+    "seas": [ { "id": "south_sea", "name": "The South Sea", "position": "south", "enclosed": false } ],
+    "rivers": [
+      { "id": "rift_river", "name": "The Riftwater",
+        "source": { "kind": "range_slope", "range": "thornwall", "facing": "south" },
+        "mouth": { "kind": "cardinal", "position": "south" }, "navigable": true }
+    ],
+    "lakes": []
+  },
+  "regions": [
+    { "id": "westmark", "name": "Westmark", "biome": "temperate_grassland",
+      "anchor": { "kind": "cardinal", "position": "west" }, "coverage": 0.35,
+      "political": { "polity_name": "The Westmark League", "polity_kind": "confederation",
+        "borders": [ { "with_region": "eastreach", "kind": "river" } ] } },
+    { "id": "eastreach", "name": "Eastreach", "biome": "highland",
+      "anchor": { "kind": "cardinal", "position": "east" }, "coverage": 0.35,
+      "political": { "polity_name": "Eastreach Dominion", "polity_kind": "kingdom",
+        "borders": [ { "with_region": "westmark", "kind": "disputed" } ] } }
+  ],
+  "landmarks": [
+    { "id": "rifthold", "name": "Rifthold", "kind": "fortress",
+      "anchor": { "kind": "cardinal", "position": "center" } },
+    { "id": "south_haven", "name": "Southhaven", "kind": "port",
+      "anchor": { "kind": "mouth_of", "river": "rift_river" } }
+  ],
+  "infrastructure": { "roads": [], "walls": [], "bridges": [] }
+}

@@ -151,6 +151,11 @@ pub fn apply_labels_and_furniture(img: &mut RgbImage, spec: &MapSpec, geo: &Geom
     let scale_box = reserve_box(10, h as i32 - 34, 132, 28, &mut taken);
     let legend_box = reserve_legend(&geo.lms, w, h, &mut taken);
 
+    // Political overlay first: territorial rings + inter-region borders sit
+    // under the labels, and polity names get placement priority. No-op (and
+    // byte-identical) when no region carries a `political` spec.
+    draw_political(img, spec, geo, style, &mut taken);
+
     let river_match = super::resolver::match_rivers_to_channels(spec, &geo.hf, &geo.hydro, &geo.coast);
     draw_features(img, spec, &geo.hf, &geo.hydro, &river_match, style, &mut taken);
     draw_landmarks(img, &geo.lms, style, &mut taken);
@@ -299,6 +304,89 @@ fn draw_features(
             }
         }
     }
+}
+
+/// Political overlay (v1.11.0): realize `RegionSpec.political`. For each region
+/// with a polity, draw a dashed territorial ring around its anchor, the borders
+/// to other regions (styled by `kind`), and the polity name. Gated — no
+/// political data anywhere → early return, byte-identical to a plain map. Pure
+/// fn of (spec, geo, style).
+fn draw_political(img: &mut RgbImage, spec: &MapSpec, geo: &Geometry, st: Style, taken: &mut Vec<Rect>) {
+    if !spec.regions.iter().any(|r| r.political.is_some()) {
+        return;
+    }
+    let (w, h) = (geo.hf.width as f32, geo.hf.height as f32);
+    let extent = w.min(h);
+    let to_px = |a: &super::spec::Anchor| resolve_simple(a).map(|(x, y)| ((x * w) as i32, (y * h) as i32));
+    // Resolve every region's anchor once (borders reference other regions by id).
+    let region_px: std::collections::HashMap<&str, (i32, i32)> = spec
+        .regions
+        .iter()
+        .filter_map(|r| to_px(&r.anchor).map(|p| (r.id.as_str(), p)))
+        .collect();
+
+    for r in &spec.regions {
+        let Some(pol) = &r.political else { continue };
+        let Some(&(cx, cy)) = region_px.get(r.id.as_str()) else { continue };
+        let col = polity_color(&pol.polity_name, st);
+        let rad = ((r.coverage.max(0.12) * 0.5 * extent) as i32).max(8);
+        dashed_ring(img, cx, cy, rad, col);
+        for b in &pol.borders {
+            if let Some(&(bx, by)) = region_px.get(b.with_region.as_str()) {
+                draw_border(img, cx, cy, bx, by, &b.kind, st);
+            }
+        }
+        place_label(img, (cx, cy - rad - 6), &pol.polity_name, 1, col, st, taken);
+    }
+}
+
+/// Deterministic muted polity colour from the name, blended toward ink so it
+/// reads on any palette.
+fn polity_color(name: &str, st: Style) -> [u8; 3] {
+    let mut hsh = 0u32;
+    for b in name.bytes() {
+        hsh = hsh.wrapping_mul(31).wrapping_add(b as u32);
+    }
+    const PALETTE: [[u8; 3]; 6] = [
+        [0x8a, 0x3b, 0x3b], // crimson
+        [0x3b, 0x5a, 0x8a], // indigo
+        [0x4a, 0x7a, 0x3b], // green
+        [0x7a, 0x5a, 0x2a], // ochre
+        [0x6a, 0x3b, 0x7a], // violet
+        [0x2a, 0x6a, 0x6a], // teal
+    ];
+    blend(PALETTE[(hsh as usize) % PALETTE.len()], st.ink, 0.3)
+}
+
+/// A dashed circle outline (a polity's territorial extent).
+fn dashed_ring(img: &mut RgbImage, cx: i32, cy: i32, r: i32, c: [u8; 3]) {
+    if r < 2 {
+        return;
+    }
+    let steps = ((std::f32::consts::TAU * r as f32) as i32).max(1);
+    for s in 0..steps {
+        if (s / 6) % 2 == 1 {
+            continue; // dash gap
+        }
+        let a = s as f32 / steps as f32 * std::f32::consts::TAU;
+        put(img, cx + (r as f32 * a.cos()) as i32, cy + (r as f32 * a.sin()) as i32, c);
+    }
+}
+
+/// An inter-region border, coloured by `kind` (disputed → crimson, river →
+/// blue, mountain → road-brown, else ink).
+fn draw_border(img: &mut RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, kind: &str, st: Style) {
+    let k = kind.to_ascii_lowercase();
+    let col = if k.contains("disput") {
+        [0xb0, 0x2a, 0x2a]
+    } else if k.contains("river") {
+        st.river
+    } else if k.contains("mountain") {
+        st.road
+    } else {
+        st.ink
+    };
+    line(img, x0, y0, x1, y1, col);
 }
 
 /// Greedy label placement: try positions around the anchor, take the first that
@@ -711,6 +799,26 @@ mod tests {
         let p = render(&island(), 42, Style::named("parchment").unwrap()).unwrap();
         let b = render(&island(), 42, Style::named("blueprint").unwrap()).unwrap();
         assert!(p.as_raw() != b.as_raw(), "different styles → different pixels");
+    }
+
+    #[test]
+    fn political_overlay_draws_when_present() {
+        use crate::map::spec::{Anchor, PoliticalSpec};
+        let plain = render(&island(), 42, Style::default()).unwrap();
+        let mut pol = island();
+        assert!(!pol.regions.is_empty(), "island has regions to politicize");
+        pol.regions[0].anchor = Anchor::Cardinal { position: "center".into() };
+        pol.regions[0].coverage = 0.3;
+        pol.regions[0].political = Some(PoliticalSpec {
+            polity_name: "Aldermark".into(),
+            polity_kind: "kingdom".into(),
+            borders: vec![],
+        });
+        let drawn = render(&pol, 42, Style::default()).unwrap();
+        assert!(drawn.as_raw() != plain.as_raw(), "political overlay must change pixels");
+        // Still deterministic with the overlay on.
+        let drawn2 = render(&pol, 42, Style::default()).unwrap();
+        assert!(drawn.as_raw() == drawn2.as_raw(), "political render byte-stable");
     }
 
     #[test]
