@@ -24,9 +24,13 @@ WORK="${WORK:-/tmp/plakat-resume-demo}"; mkdir -p "$WORK"
 LORA="$WORK/resume-demo.safetensors"
 
 case "$BASE" in
-  sd15) SIZE=512; LR=2e-4;   RANK=32 ;;
-  sdxl) SIZE=512; LR=1.5e-4; RANK=16 ;;
-  sd35) SIZE=256; LR=1.5e-4; RANK=16 ;;
+  # 256² (not 512²): this proof verifies the --resume MECHANISM, not max style
+  # quality — and full SD-UNet back-prop at 512² rank 32 spikes ~20 GB (the
+  # autograd graph), which thrashes/aborts on a 24 GB box. 256² rank 16 trains
+  # comfortably + is reproducible anywhere. Override with SIZE=512 on a big box.
+  sd15) SIZE="${SIZE:-256}"; LR=2e-4;   RANK="${RANK:-16}" ;;
+  sdxl) SIZE="${SIZE:-512}"; LR=1.5e-4; RANK="${RANK:-16}" ;;
+  sd35) SIZE="${SIZE:-256}"; LR=1.5e-4; RANK="${RANK:-16}" ;;
   *) echo "base must be sd15 | sdxl | sd35"; exit 1 ;;
 esac
 COMMON=(--from-dir "$STYLE" --base "$BASE" --trigger "$TRIG" \
@@ -41,9 +45,11 @@ COMMON=(--from-dir "$STYLE" --base "$BASE" --trigger "$TRIG" \
   --resume "$WORK/resume-demo-step10.safetensors"
 
 # 3) Render with the resumed LoRA — proves the continued training produced a
-#    usable LoRA (the watercolour style should be visible).
+#    usable LoRA (the watercolour style should be visible). Explicit 512² — the
+#    default render size spikes Metal's single-buffer allocation on SD 1.5 and
+#    can OOM a 24 GB box (the known large-SD1.5-on-Metal gotcha); 512² is modest.
 "$PLAKAT" generate "$TRIG, a quiet mountain village beside a lake at dawn" \
-  --model "$BASE" --lora "$LORA" --seed 42 --steps 28 \
+  --model "$BASE" --lora "$LORA" --seed 42 --steps 28 --size "${RENDER_SIZE:-512x512}" \
   --out "$ROOT/corpus/images/train"
 
 echo "✓ resume verified ($BASE): trained 0→20, resumed 10→30, rendered → corpus/images/train/"
