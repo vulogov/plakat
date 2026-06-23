@@ -46,6 +46,13 @@ pub struct Cli {
     #[arg(long, global = true, env = "PLAKAT_CACHE_DIR", value_name = "PATH")]
     pub cache_dir: Option<PathBuf>,
 
+    /// Allow this run even when another plakat instance is already running on
+    /// the host. By default a second heavy (model / training) run is refused —
+    /// concurrent runs share unified memory and thrash. (env
+    /// `PLAKAT_ALLOW_MULTIPLE_INSTANCES=1` does the same.)
+    #[arg(long, global = true)]
+    pub enable_multiple_instances: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -162,9 +169,42 @@ pub enum Command {
     Gallery(gallery::GalleryArgs),
 }
 
+impl Command {
+    /// Does this command load image models / do real GPU work — and thus risk
+    /// thrashing a concurrent run on a shared (unified-memory) host? Pure
+    /// introspection + deterministic utilities (models, doctor, inspect,
+    /// metadata, init, gallery, compile, civitai, map, transparent, artefact,
+    /// clone) return false so they can always run alongside a busy host; the
+    /// single-instance guard only applies to the heavy ones.
+    fn is_heavy(&self) -> bool {
+        matches!(
+            self,
+            Command::Generate(_)
+                | Command::Portrait(_)
+                | Command::Img2img(_)
+                | Command::Outpaint(_)
+                | Command::Stylize(_)
+                | Command::Relight(_)
+                | Command::Segment(_)
+                | Command::Upscale(_)
+                | Command::Scenario(_)
+                | Command::Compose(_)
+                | Command::Animate(_)
+                | Command::Run(_)
+                | Command::Style(_)
+                | Command::Embedding(_)
+        )
+    }
+}
+
 pub async fn dispatch(cli: Cli) -> Result<()> {
     if let Some(p) = cli.cache_dir.clone() {
         crate::hf::cache::set_override(p);
+    }
+    // Single-instance guard: refuse a second heavy run on the host (they share
+    // unified memory and thrash). `--enable-multiple-instances` overrides.
+    if cli.command.is_heavy() {
+        crate::instance_guard::enforce_single_instance(cli.enable_multiple_instances)?;
     }
     match cli.command {
         Command::Generate(args) => {
