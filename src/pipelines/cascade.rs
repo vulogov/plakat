@@ -1602,12 +1602,42 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
     };
     let effnet = EffNetEncoder::new(effnet_vb).context("building effnet encoder")?;
 
+    // ---- precompute the FROZEN conditioning, then DROP the encoders ----
+    // Stage C is the heaviest stage (~7.5 GB BF16); CLIP-G + effnet are only
+    // needed to precompute (x0 latents, raw text). Encode everything first,
+    // then drop both encoders so they don't co-reside with Stage C + the
+    // autograd graph during training. (candle has no gradient checkpointing,
+    // so trimming resident weight memory is the main 24 GB lever.)
+    tracing::info!("{tag}: encoding {} image(s) + trigger \"{}\"", req.images.len(), req.trigger);
+    let mut latents = Vec::with_capacity(req.images.len());
+    for img in &req.images {
+        let px = crate::imaging::preprocess::imagenet_image_tensor(img.as_path(), 768, &device, DType::F32)?;
+        let z = effnet.encode(&px)?; // (1,16,24,24) F32
+        latents.push(z.to_dtype(dtype)?);
+    }
+    let n = latents.len().max(1);
+    let mut ids = clip_g_tok
+        .encode(req.trigger.as_str(), true)
+        .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids.resize(77, CLIP_EOT);
+    let ids_t = Tensor::new(ids.as_slice(), &device)?.unsqueeze(0)?;
+    // Raw CLIP-G outputs (tiny: (1,77,1280)+(1,1280)); the Stage-C mapper that
+    // turns them into the 85-token KV conditioning is applied after the load.
+    let (txt_hidden, txt_pooled) = clip_g_enc.forward_for_cascade(&ids_t)?;
+    let txt_hidden = txt_hidden.to_dtype(dtype)?;
+    let txt_pooled = txt_pooled.to_dtype(dtype)?;
+    drop(clip_g_enc); // free CLIP-G (~1.4 GB) before Stage C loads
+    drop(effnet); // free effnet (~0.3 GB)
+
     // ---- Stage C prior (BF16 base; F32 LoRA adapters) ----
     let prior_repo =
         stage_c_prior_repo(&req.repo).unwrap_or_else(|| "stabilityai/stable-cascade-prior".to_string());
     let stage_c_w = crate::hf::download::get_first_of(&[
-        (prior_repo.as_str(), "prior/diffusion_pytorch_model.safetensors"),
+        (prior_repo.as_str(), "prior/diffusion_pytorch_model.bf16.safetensors"),
         (prior_repo.as_str(), "prior/diffusion_pytorch_model.fp16.safetensors"),
+        (prior_repo.as_str(), "prior/diffusion_pytorch_model.safetensors"),
     ])
     .await
     .context("downloading Stage-C prior for training")?;
@@ -1617,27 +1647,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
     let stage_c = StableCascadePrior::new_stage_c(PriorConfig::stage_c_full(), stage_c_vb)
         .context("building Stage-C prior for training")?;
 
-    // ---- encode images → Stage-C latents via effnet (768² ImageNet) ----
-    tracing::info!("{tag}: encoding {} image(s) + trigger \"{}\"", req.images.len(), req.trigger);
-    let mut latents = Vec::with_capacity(req.images.len());
-    for img in &req.images {
-        let px = crate::imaging::preprocess::imagenet_image_tensor(img.as_path(), 768, &device, DType::F32)?;
-        let z = effnet.encode(&px)?; // (1,16,24,24) F32
-        latents.push(z.to_dtype(dtype)?);
-    }
-    let n = latents.len().max(1);
-
-    // ---- frozen text conditioning for the trigger (constant across steps) ----
-    let mut ids = clip_g_tok
-        .encode(req.trigger.as_str(), true)
-        .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
-        .get_ids()
-        .to_vec();
-    ids.resize(77, CLIP_EOT);
-    let ids_t = Tensor::new(ids.as_slice(), &device)?.unsqueeze(0)?;
-    let (txt_hidden, txt_pooled) = clip_g_enc.forward_for_cascade(&ids_t)?;
-    let clip_cond = stage_c
-        .build_clip_conditioning(&txt_hidden.to_dtype(dtype)?, &txt_pooled.to_dtype(dtype)?, None)?;
+    let clip_cond = stage_c.build_clip_conditioning(&txt_hidden, &txt_pooled, None)?;
     // sca/crp: the zero-input sinusoidal embedding inference uses, batch 1.
     let zero_in = Tensor::zeros(1, DType::F32, &device)?;
     let zero_emb = sinusoidal_time_embedding(&zero_in, 64, 10000.0)?.to_dtype(dtype)?;
