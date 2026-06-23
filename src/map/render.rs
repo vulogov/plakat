@@ -33,6 +33,47 @@ pub struct Style {
     road: [u8; 3],
     /// Biome-colour weight vs paper on land (0 = pure paper, 1 = pure biome).
     land_tint: f32,
+    /// v1.11.0: seasonal land-palette shift. `Summer` = neutral (default,
+    /// byte-identical to pre-season). Applied to land pixels only.
+    season: Season,
+    /// v1.11.0: tabletop coordinate grid — `0` = off (default), else the number
+    /// of cells per axis. Drawn over the composite with A1/B2 labels.
+    grid: u32,
+}
+
+/// Seasonal land palette for `--map-season`. `Summer` is the neutral default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Season {
+    Spring,
+    #[default]
+    Summer,
+    Autumn,
+    Winter,
+}
+
+impl Season {
+    pub fn parse(s: &str) -> Result<Season> {
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "" | "summer" | "none" => Season::Summer,
+            "spring" => Season::Spring,
+            "autumn" | "fall" => Season::Autumn,
+            "winter" => Season::Winter,
+            other => anyhow::bail!("unknown --map-season {other:?} (spring|summer|autumn|winter)"),
+        })
+    }
+
+    /// Shift a land pixel toward the season. Summer → identity (no-op).
+    fn shift(self, px: [u8; 3]) -> [u8; 3] {
+        match self {
+            Season::Summer => px,
+            // Spring: brighten + nudge green for fresh growth.
+            Season::Spring => blend(px, [0x7e, 0xb8, 0x4a], 0.16),
+            // Autumn: warm amber/russet wash.
+            Season::Autumn => blend(px, [0xc2, 0x7a, 0x2e], 0.22),
+            // Winter: desaturate toward a cold snow-white.
+            Season::Winter => blend(px, [0xe6, 0xea, 0xf0], 0.42),
+        }
+    }
 }
 
 impl Style {
@@ -47,6 +88,8 @@ impl Style {
                 river: [0x46, 0x72, 0x8c],
                 road: [0x7a, 0x46, 0x20],
                 land_tint: 0.5,
+                season: Season::Summer,
+                grid: 0,
             },
             "inked" => Style {
                 paper: [0xf2, 0xf0, 0xe8],
@@ -57,6 +100,8 @@ impl Style {
                 river: [0x55, 0x5f, 0x66],
                 road: [0x3a, 0x34, 0x30],
                 land_tint: 0.22,
+                season: Season::Summer,
+                grid: 0,
             },
             "blueprint" => Style {
                 paper: [0x10, 0x2a, 0x44],
@@ -67,9 +112,23 @@ impl Style {
                 river: [0x8c, 0xc8, 0xff],
                 road: [0xe6, 0xc8, 0x6a],
                 land_tint: 0.18,
+                season: Season::Summer,
+                grid: 0,
             },
             other => anyhow::bail!("unknown --map-style {other:?} (parchment|inked|blueprint)"),
         })
+    }
+
+    /// v1.11.0: seasonal land palette (`--map-season`). Summer = neutral.
+    pub fn with_season(mut self, season: Season) -> Self {
+        self.season = season;
+        self
+    }
+
+    /// v1.11.0: tabletop coordinate grid (`--map-grid N`); `0` = off.
+    pub fn with_grid(mut self, cells: u32) -> Self {
+        self.grid = cells;
+        self
     }
 }
 
@@ -160,6 +219,12 @@ pub fn apply_labels_and_furniture(img: &mut RgbImage, spec: &MapSpec, geo: &Geom
     draw_features(img, spec, &geo.hf, &geo.hydro, &river_match, style, &mut taken);
     draw_landmarks(img, &geo.lms, style, &mut taken);
 
+    // v1.11.0: tabletop coordinate grid over the map body (under the furniture
+    // boxes). `grid == 0` (default) → no-op, byte-identical.
+    if style.grid > 0 {
+        draw_grid(img, style.grid, style);
+    }
+
     draw_title(img, spec, style, title_box);
     draw_compass(img, style, compass_box);
     draw_scale_bar(img, spec, style, scale_box);
@@ -191,7 +256,8 @@ fn paint_base(img: &mut RgbImage, hf: &HeightField, coast: &Coastline, biome: &B
                 blend(st.sea, st.sea_deep, t * 0.6)
             } else {
                 let tinted = blend(st.paper, biome.biome[i].rgb(), st.land_tint);
-                shade(tinted, hillshade(hf, x, y))
+                // v1.11.0: seasonal wash on land (Summer = identity → byte-stable).
+                shade(st.season.shift(tinted), hillshade(hf, x, y))
             };
             img.put_pixel(x, y, Rgb(px));
         }
@@ -337,6 +403,40 @@ fn draw_political(img: &mut RgbImage, spec: &MapSpec, geo: &Geometry, st: Style,
             }
         }
         place_label(img, (cx, cy - rad - 6), &pol.polity_name, 1, col, st, taken);
+    }
+}
+
+/// v1.11.0: a tabletop coordinate grid — `cells`×`cells` faint lines with
+/// A/B/C column + 1/2/3 row labels (for hex/RPG referencing). `cells` is capped
+/// at 26 (A–Z). Pure fn of (img dims, cells, style).
+fn draw_grid(img: &mut RgbImage, cells: u32, st: Style) {
+    let (w, h) = (img.width(), img.height());
+    let cells = cells.clamp(1, 26);
+    let cw = w as f32 / cells as f32;
+    let ch = h as f32 / cells as f32;
+    let gridcol = blend(st.ink, st.paper, 0.55); // faint, doesn't dominate
+    for c in 1..cells {
+        let x = (c as f32 * cw) as i32;
+        for y in 0..h as i32 {
+            put(img, x, y, gridcol);
+        }
+    }
+    for r in 1..cells {
+        let y = (r as f32 * ch) as i32;
+        for x in 0..w as i32 {
+            put(img, x, y, gridcol);
+        }
+    }
+    // Column letters along the top of each cell; row numbers down the left.
+    for c in 0..cells {
+        let label = ((b'A' + c as u8) as char).to_string();
+        let lx = (c as f32 * cw + cw * 0.5) as i32 - 2;
+        labels::draw_text_haloed(img, lx, 2, &label, 1, st.ink, st.paper);
+    }
+    for r in 0..cells {
+        let label = (r + 1).to_string();
+        let ly = (r as f32 * ch + ch * 0.5) as i32 - 3;
+        labels::draw_text_haloed(img, 2, ly, &label, 1, st.ink, st.paper);
     }
 }
 
@@ -819,6 +919,31 @@ mod tests {
         // Still deterministic with the overlay on.
         let drawn2 = render(&pol, 42, Style::default()).unwrap();
         assert!(drawn.as_raw() == drawn2.as_raw(), "political render byte-stable");
+    }
+
+    #[test]
+    fn season_and_grid_change_pixels_but_default_is_neutral() {
+        let summer = render(&island(), 42, Style::default()).unwrap();
+        let autumn = render(&island(), 42, Style::default().with_season(Season::Autumn)).unwrap();
+        let winter = render(&island(), 42, Style::default().with_season(Season::Winter)).unwrap();
+        let gridded = render(&island(), 42, Style::default().with_grid(8)).unwrap();
+        assert!(autumn.as_raw() != summer.as_raw(), "autumn shifts the land palette");
+        assert!(winter.as_raw() != summer.as_raw(), "winter shifts the land palette");
+        assert!(winter.as_raw() != autumn.as_raw(), "seasons differ from each other");
+        assert!(gridded.as_raw() != summer.as_raw(), "grid overlay draws");
+        // Default (Summer + no grid) is the neutral baseline.
+        let neutral =
+            render(&island(), 42, Style::default().with_season(Season::Summer).with_grid(0)).unwrap();
+        assert!(neutral.as_raw() == summer.as_raw(), "summer + no grid = byte-identical default");
+    }
+
+    #[test]
+    fn season_parse_roundtrips() {
+        assert_eq!(Season::parse("autumn").unwrap(), Season::Autumn);
+        assert_eq!(Season::parse("fall").unwrap(), Season::Autumn);
+        assert_eq!(Season::parse("").unwrap(), Season::Summer);
+        assert_eq!(Season::parse("winter").unwrap(), Season::Winter);
+        assert!(Season::parse("monsoon").is_err());
     }
 
     #[test]

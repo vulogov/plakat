@@ -108,6 +108,16 @@ pub struct MapArgs {
     #[arg(long = "map-style", default_value = "parchment")]
     pub style: String,
 
+    /// 1.11.0: seasonal land palette for `--map-render`:
+    /// spring|summer|autumn|winter (default summer = neutral).
+    #[arg(long = "map-season", default_value = "summer")]
+    pub season: String,
+
+    /// 1.11.0: overlay a tabletop coordinate grid (A1/B2…) of N×N cells on
+    /// `--map-render`. `0` (default) = no grid. Capped at 26 (A–Z).
+    #[arg(long = "map-grid", default_value_t = 0)]
+    pub grid: u32,
+
     /// MAP-3b: export the map geometry as GeoJSON (coast/rivers/roads/landmarks,
     /// normalized 0–1 north-up).
     #[arg(long = "map-export-geojson", value_name = "PATH")]
@@ -356,7 +366,9 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
     // MAP-3/MAP-5: the complete labelled map. `render_map_image` routes urban specs
     // (a `urban` block) to the town renderer, geographic specs to the linework map.
     if let Some(p) = &args.render {
-        let rstyle = map::render::Style::named(&args.style)?;
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?)
+            .with_grid(args.grid);
         map::save_map_image(&spec, args.seed, rstyle, p)?;
         let kind = if spec.urban.is_some() { "town map" } else { "map" };
         println!(
