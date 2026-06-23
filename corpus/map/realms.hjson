@@ -29,6 +29,10 @@
     {
         dominant_elevation: varied
 
+        // Crank up natural irregularity: ragged coasts, wandering ridgelines,
+        // gnarled canyon + mesa edges. 1.0 = natural default, >1 = rugged (≤4).
+        erosion: 2.2
+
         // Two mountain ranges → oriented, erosion-wandered ridges.
         mountain_ranges:
         [

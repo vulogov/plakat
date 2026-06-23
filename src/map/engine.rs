@@ -97,7 +97,7 @@ impl HeightField {
         // existing coast/biome/hydrology/render pipeline realizes it as water (blue
         // fill + a shoreline ring; rivers drain into it). Done after `normalize` so
         // the basin floor sits at a known absolute depth under the sea level.
-        apply_lakes(&mut data, spec, w, h);
+        apply_lakes(&mut data, spec, w, h, canvas.seed as u32, erosion);
 
         // Plateaus / mesas: flat-topped tablelands with steep scarp edges.
         // Before canyons, so a rift can cut into a plateau. Empty → no-op.
@@ -270,24 +270,34 @@ fn apply_landmass_shape(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: 
 /// Carve a smooth lake basin (below sea level) at each spec lake's anchor. The
 /// floor sits at `LAKE_FLOOR` (< `coastline::DEFAULT_SEA_LEVEL`) so the lake reads as
 /// water everywhere downstream; a smooth `smoothstep` edge gives it a shoreline.
-fn apply_lakes(data: &mut [f32], spec: &MapSpec, w: u32, h: u32) {
+fn apply_lakes(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, erosion: f32) {
     /// Lake floor depth (must be below `coastline::DEFAULT_SEA_LEVEL` = 0.22).
     const LAKE_FLOOR: f32 = 0.10;
     let extent = w.min(h) as f32;
-    for lake in &spec.water.lakes {
+    for (i, lake) in spec.water.lakes.iter().enumerate() {
         let Some((fx, fy)) = resolve_simple(&lake.anchor) else { continue };
         let (cx, cy) = (fx * w as f32, fy * h as f32);
         let r = lake_radius(&lake.size) * extent;
-        let reach = r * 1.35;
+        let reach = r * 1.6;
+        // Wander the shore by direction (scaled by erosion) so the lake is a
+        // natural, lobed basin — not a perfect disc. Two octaves: big bays +
+        // a finer ragged edge. `erosion = 0` → the old circular lake.
+        let perlin = Perlin::new(seed ^ (i as u32).wrapping_mul(0x68e3));
         let (x0, y0) = ((cx - reach).max(0.0) as u32, (cy - reach).max(0.0) as u32);
         let (x1, y1) = ((cx + reach).min(w as f32) as u32, (cy + reach).min(h as f32) as u32);
         for y in y0..y1 {
             for x in x0..x1 {
-                let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() / r;
+                let (ox, oy) = (x as f32 - cx, y as f32 - cy);
+                let ang = oy.atan2(ox);
+                let (ca, sa) = (ang.cos() as f64, ang.sin() as f64);
+                let wob = (perlin.get([ca * 1.6, sa * 1.6]) as f32 * 0.26
+                    + perlin.get([ca * 4.3, sa * 4.3]) as f32 * 0.12)
+                    * erosion;
+                let d = (ox * ox + oy * oy).sqrt() / r + wob;
                 // 0 in the deep centre → 1 at/outside the shore (land untouched).
                 let m = smoothstep(0.72, 1.0, d);
-                let i = idx(x, y, w);
-                data[i] = LAKE_FLOOR * (1.0 - m) + data[i] * m;
+                let id = idx(x, y, w);
+                data[id] = LAKE_FLOOR * (1.0 - m) + data[id] * m;
             }
         }
     }

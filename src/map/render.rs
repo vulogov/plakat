@@ -87,7 +87,10 @@ impl Style {
                 sea_deep: [0x96, 0xad, 0xb6],
                 river: [0x46, 0x72, 0x8c],
                 road: [0x7a, 0x46, 0x20],
-                land_tint: 0.5,
+                // Warm parchment: biomes are a SUBTLE accent over the aged paper,
+                // not a saturated fill — so a green-biome continent still reads as
+                // an old map, not a satellite photo. (Lowered from 0.5.)
+                land_tint: 0.36,
                 season: Season::Summer,
                 grid: 0,
             },

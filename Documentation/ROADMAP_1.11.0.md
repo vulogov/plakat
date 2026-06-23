@@ -45,9 +45,15 @@ the trainers are code-complete + memory-bound.
 
 ## C — carried product debt (Flux items skipped — broken on this hardware)
 
-- [~] **IC-Light relighting** (carried since 1.1) — IN PROGRESS. SD1.5-based relighting:
-      the UNet input conv is widened to take the subject latent as extra channels; reuse
-      SdCore (SD1.5 UNet + VAE) + the U2Net matte for foreground extraction.
+- [x] **IC-Light relighting — DONE, verified on-box.** `plakat relight <subject> --prompt
+      <lighting>`: widens the SD1.5 UNet conv_in 4→8ch, adds the lllyasviel/ic-light offset
+      over a base SD1.5 UNet, concats the matted subject latent each denoise step. Reuses
+      SdCore (SD1.5 UNet/VAE/CLIP-L) + U2Net matte. 686/686 UNet tensors matched the
+      offset; the sage-captain relit to sunset/blue-hour/hearth with identity preserved.
+      `corpus/relight.sh` (3 committed showcases).
+- [x] **HJSON map specs + all-features showcase** (from B): `--map-spec` accepts HJSON;
+      `corpus/map/realms.hjson` exercises every geographical feature (incl lakes, mesas,
+      wetland/swamp); `corpus/realms.sh` compiles it to layers + styled/seasonal/grid renders.
 - [ ] Fill `corpus/images/train/`; map gallery section in `GALLERY.md`.
 - ~~Flux regional prompting / Flux training~~ — **skipped**: Flux is broken on this
       hardware (Metal), so unverifiable. Parked until a CUDA/CI path exists.
