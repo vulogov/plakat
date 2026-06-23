@@ -44,12 +44,14 @@
 //! + `pixels_mapper` paths, drops `clip_img_mapper`).
 
 use anyhow::{Result, anyhow};
-use candle_core::{D, DType, Device, Module, Tensor};
+use candle_core::{D, DType, Device, Module, Tensor, Var};
 use candle_nn::{self as nn, VarBuilder};
+use std::sync::{Arc, RwLock};
 
 use crate::pipelines::cascade_blocks::{
     AttnBlock, LayerNorm2d, ResBlock, TimestepBlock,
 };
+use crate::pipelines::lora_linear::LoraRegistry;
 
 /// Architectural config for a Stable Cascade prior UNet (Stage B
 /// or Stage C variant).
@@ -468,6 +470,12 @@ pub struct StableCascadePrior {
     pub cfg: Config,
     pub dtype: DType,
     pub device: Device,
+    /// v1.10.0: path-keyed LoRA registry over every Stage-C attention
+    /// projection (`*.attention.to_{q,k,v,out.0}.weight`). Populated
+    /// during construction by `wrap_linear` in `cascade_blocks.rs`;
+    /// consumed by `install_train_adapters` (`plakat style train`).
+    /// Stage B builds + carries one too (it just never trains it).
+    lora_registry: LoraRegistry,
 }
 
 impl StableCascadePrior {
@@ -500,6 +508,10 @@ impl StableCascadePrior {
     fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
         let dtype = vb.dtype();
         let device = vb.device().clone();
+        // v1.10.0: shared LoRA registry — every wrapped Stage-C
+        // attention Linear registers its slots/train handles here
+        // (mirrors `PixArtSigmaXL::new`).
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
         let c_first = cfg.c_hidden_first();
         let num_levels = cfg.blocks_per_level.len();
         anyhow::ensure!(
@@ -606,6 +618,7 @@ impl StableCascadePrior {
             cfg.has_crp,
             None,
             vb.pp("down_blocks"),
+            &registry,
         )?;
 
         // ---- Down downscalers (one per boundary; index .{level}.1) ----
@@ -659,6 +672,7 @@ impl StableCascadePrior {
             cfg.has_crp,
             Some(&up_skip_dims),
             vb.pp("up_blocks"),
+            &registry,
         )?;
 
         // ---- Up upscalers (one per boundary, index .{level}.1) ----
@@ -717,6 +731,16 @@ impl StableCascadePrior {
         )
         .map_err(|e| anyhow!("clf.1: {e}"))?;
 
+        // Unwrap the shared registry into the owned struct field
+        // (construction is done — no outstanding `Arc` clones remain
+        // beyond the ones the wrapped Linears hold internally, which
+        // are separate `Arc`s on the slot handles, not on the registry
+        // map itself). Mirrors `PixArtSigmaXL::new`.
+        let lora_registry = Arc::try_unwrap(registry)
+            .map_err(|_| anyhow!("Cascade LoRA registry still has outstanding refs after construction"))?
+            .into_inner()
+            .map_err(|_| anyhow!("Cascade LoRA registry RwLock poisoned at construction"))?;
+
         Ok(Self {
             embedding_conv,
             embedding_norm,
@@ -735,7 +759,53 @@ impl StableCascadePrior {
             cfg,
             dtype,
             device,
+            lora_registry,
         })
+    }
+
+    /// `plakat style train` / DreamBooth: install a fresh **trainable**
+    /// LoRA adapter on every Stage-C attention projection (registry keys
+    /// containing `.attention.to_` — self/cross q/k/v/out; the
+    /// conditioning `kv_mapper` is excluded). Returns `(registry_key, A,
+    /// B)` for each, so the caller drives AdamW and writes the save.
+    /// Standard init: `A ~ N(0, 0.02)`, `B = 0`, so the adapter starts as
+    /// a no-op on the frozen base and learns the style delta. Vars are
+    /// F32 (training dtype). Mirrors `PixArtSigmaXL::install_train_adapters`.
+    pub fn install_train_adapters(
+        &self,
+        rank: usize,
+        scale: f64,
+        device: &Device,
+    ) -> Result<Vec<(String, Var, Var)>> {
+        let mut keys: Vec<&String> = self
+            .lora_registry
+            .keys()
+            .filter(|k| {
+                k.contains(".attention.to_q")
+                    || k.contains(".attention.to_k")
+                    || k.contains(".attention.to_v")
+                    || k.contains(".attention.to_out")
+            })
+            .collect();
+        keys.sort();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let entry = &self.lora_registry[key];
+            let a = Var::from_tensor(&Tensor::randn(
+                0f32,
+                0.02f32,
+                (rank, entry.in_dim),
+                device,
+            )?)?;
+            let b = Var::from_tensor(&Tensor::zeros((entry.out_dim, rank), DType::F32, device)?)?;
+            *entry
+                .train
+                .write()
+                .map_err(|_| anyhow!("Cascade train slot poisoned"))? =
+                Some((a.clone(), b.clone(), scale));
+            out.push((key.clone(), a, b));
+        }
+        Ok(out)
     }
 
     /// Build the AttnBlock KV conditioning sequence.
@@ -1188,6 +1258,7 @@ fn build_block_levels(
     // → the first ResBlock at that level has `c_skip == skip_dims[level]`.
     skip_dims_per_level: Option<&[usize]>,
     vb: VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
 ) -> Result<Vec<Vec<Block>>> {
     let mut out = Vec::with_capacity(blocks_per_level.len());
     for (level, n_triples) in blocks_per_level.iter().enumerate() {
@@ -1224,6 +1295,7 @@ fn build_block_levels(
                     num_heads,
                     true,
                     level_vb.pp(&(pos_base + 2).to_string()),
+                    registry,
                 )?));
             }
         }

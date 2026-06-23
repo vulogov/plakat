@@ -45,6 +45,46 @@ pub(crate) fn sd15_unet_config() -> UNet2DConditionModelConfig {
     }
 }
 
+/// SD 2.1 UNet config: same block layout as SD 1.5 but `cross_attention_dim = 1024`
+/// (OpenCLIP-H), `use_linear_projection = true`, and 64-dim attention heads
+/// (`num_heads = channels/64` → `[5, 10, 20, 20]`). SD 2.1 also trains under the
+/// **v-prediction** objective (handled in the loss, not here).
+pub(crate) fn sd21_unet_config() -> UNet2DConditionModelConfig {
+    let bc = |out_channels, use_cross_attn, attention_head_dim| BlockConfig {
+        out_channels,
+        use_cross_attn,
+        attention_head_dim,
+    };
+    UNet2DConditionModelConfig {
+        blocks: vec![
+            bc(320, Some(1), 5),
+            bc(640, Some(1), 10),
+            bc(1280, Some(1), 20),
+            bc(1280, None, 20),
+        ],
+        center_input_sample: false,
+        cross_attention_dim: 1024,
+        downsample_padding: 1,
+        flip_sin_to_cos: true,
+        freq_shift: 0.,
+        layers_per_block: 2,
+        mid_block_scale_factor: 1.,
+        norm_eps: 1e-5,
+        norm_num_groups: 32,
+        sliced_attention_size: None,
+        use_linear_projection: true,
+    }
+}
+
+/// The training target at noise level `abar`: ε-prediction returns the noise
+/// directly; v-prediction (SD 2.1) returns the velocity `v = √ᾱ·ε − √(1−ᾱ)·x0`.
+fn v_target(noise: &Tensor, x0: &Tensor, abar: f64, v_pred: bool) -> Result<Tensor> {
+    if !v_pred {
+        return Ok(noise.clone());
+    }
+    Ok(((noise * abar.sqrt())? - (x0 * (1.0 - abar).sqrt())?)?)
+}
+
 /// Inputs for [`train_style_lora_sd`].
 pub struct SdStyleTrainRequest {
     pub model: String,
@@ -121,6 +161,13 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     if req.model.contains("sdxl") {
         return train_sdxl(req).await;
     }
+    // SD 2.1 shares the SD 1.5 trainer (same VAE-latent + UNet attention LoRA), but
+    // with a 1024-dim CLIP UNet config and the v-prediction objective.
+    let is_sd21 = {
+        let m = req.model.to_ascii_lowercase();
+        m.contains("sd21") || m.contains("2-1") || m.contains("2.1") || m.contains("2_1")
+    };
+    let tag = if is_sd21 { "sd21-style-train" } else { "sd-style-train" };
     let device = req.device.clone();
     let dtype = DType::BF16; // training base dtype; LoRA Vars stay F32
 
@@ -197,7 +244,8 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     .await?;
     let paths = [unet_path];
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, &device)? };
-    let unet = UNet2DConditionModel::new(vb, 4, 4, false, sd15_unet_config(), None)?;
+    let unet_cfg = if is_sd21 { sd21_unet_config() } else { sd15_unet_config() };
+    let unet = UNet2DConditionModel::new(vb, 4, 4, false, unet_cfg, None)?;
     let adapters = unet.install_train_adapters(req.rank, 1.0, &device)?;
     tracing::info!(
         "sd-style-train: {} trainable attention adapters (rank {})",
@@ -214,7 +262,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     let abar = alphas_cumprod();
     let n = latents.len().max(1);
     let start_step =
-        resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sd-style-train")?;
+        resume_start_step(&req.resume_from, &adapters, &device, req.steps, tag)?;
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
@@ -227,7 +275,10 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let pred = unet.forward(&x_t, t as f64, &text_emb)?;
-        let mut loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        // SD 1.5 predicts the noise ε; SD 2.1 predicts the velocity
+        // v = √ᾱ·ε − √(1−ᾱ)·x0. The schedule (ᾱ) is shared.
+        let target = v_target(&noise, x0, a, is_sd21)?;
+        let mut loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
         // DreamBooth prior preservation: add the class-image loss (an independent
         // class sample / timestep) so the subject token doesn't overfit or drag
         // the whole class. No class data → this is plain training.
@@ -240,7 +291,8 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
             let ca = abar[ct];
             let cx_t = ((cx0 * ca.sqrt())? + (&cnoise * (1.0 - ca).sqrt())?)?;
             let cpred = unet.forward(&cx_t, ct as f64, class_emb)?;
-            let closs = (&cpred - &cnoise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+            let ctarget = v_target(&cnoise, cx0, ca, is_sd21)?;
+            let closs = (&cpred - &ctarget)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
             loss = (&loss + (closs * req.prior_weight as f64)?)?;
         }
         let mut grads = loss.backward()?;
@@ -249,7 +301,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
         if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
             tracing::info!(
                 "{}",
-                progress.line("sd-style-train", step + 1, loss.to_scalar::<f32>()?)
+                progress.line(tag, step + 1, loss.to_scalar::<f32>()?)
             );
         }
         if (step + 1) % checkpoint_interval(req.checkpoint_every, req.steps) == 0
@@ -262,7 +314,7 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     }
     save_kohya_lora(&adapters, req.rank, &req.out)?;
     tracing::info!("sd-style-train: wrote {}", req.out.display());
-    tracing::info!("{}", progress.finish("sd-style-train", &req.out));
+    tracing::info!("{}", progress.finish(tag, &req.out));
     Ok(())
 }
 
@@ -524,6 +576,40 @@ fn resume_start_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sd21_unet_config_matches_the_architecture() {
+        let c = sd21_unet_config();
+        assert_eq!(c.cross_attention_dim, 1024, "SD 2.1 uses OpenCLIP-H (1024)");
+        assert!(c.use_linear_projection, "SD 2.1 uses linear projection");
+        // 64-dim heads → num_heads = channels/64 = [5, 10, 20, 20].
+        let heads: Vec<usize> = c.blocks.iter().map(|b| b.attention_head_dim).collect();
+        assert_eq!(heads, vec![5, 10, 20, 20]);
+        // SD 1.5 differs (768 / no linear projection / 8 heads).
+        assert_eq!(sd15_unet_config().cross_attention_dim, 768);
+        assert!(!sd15_unet_config().use_linear_projection);
+    }
+
+    #[test]
+    fn v_target_is_velocity_for_sd21_else_noise() {
+        let dev = Device::Cpu;
+        let noise = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), &dev).unwrap();
+        let x0 = Tensor::randn(0f32, 1f32, (1, 4, 8, 8), &dev).unwrap();
+        // ε-prediction (SD 1.5): target == noise.
+        let eps = v_target(&noise, &x0, 0.6, false).unwrap();
+        assert_eq!(
+            eps.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            noise.flatten_all().unwrap().to_vec1::<f32>().unwrap()
+        );
+        // v-prediction (SD 2.1): target == √ᾱ·ε − √(1−ᾱ)·x0.
+        let a = 0.6f64;
+        let want = ((&noise * a.sqrt()).unwrap() - (&x0 * (1.0 - a).sqrt()).unwrap()).unwrap();
+        let v = v_target(&noise, &x0, a, true).unwrap();
+        let (vv, wv) = (v.flatten_all().unwrap().to_vec1::<f32>().unwrap(), want.flatten_all().unwrap().to_vec1::<f32>().unwrap());
+        for (g, e) in vv.iter().zip(wv.iter()) {
+            assert!((g - e).abs() < 1e-5, "v mismatch {g} vs {e}");
+        }
+    }
 
     #[test]
     fn parses_checkpoint_step_from_filename() {

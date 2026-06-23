@@ -65,8 +65,8 @@
 //! `pipelines::vendored_clip::Config::sdxl2()` configuration —
 //! zero new text-encoder code needed.
 
-use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Device, Tensor};
+use anyhow::{Context, Result, anyhow, bail};
+use candle_core::{DType, Device, Tensor, Var};
 use candle_nn::VarBuilder;
 use tokenizers::Tokenizer;
 
@@ -1486,9 +1486,266 @@ pub struct RunRequest {
     pub image_prompt: Option<std::path::PathBuf>,
 }
 
+// =====================================================================
+// Stage-C style LoRA training (v1.10.0).
+//
+// Trains LoRA adapters on Stage C's attention in the Würstchen semantic
+// space. x0 = the image's effnet latent (16×24×24) via `EffNetEncoder`;
+// text conditioning = CLIP-G `forward_for_cascade` → `build_clip_conditioning`;
+// the noising is Cascade's cosine `CascadeScheduler` (ε-prediction, NOT
+// velocity); sca/crp are the zero-input sinusoidal embeddings inference uses.
+// Saves a diffusers-PEFT `prior.*` LoRA the existing `cascade_lora` merge
+// path loads. Stage A/B/VAE are NOT loaded (Stage C trains independently).
+//
+// Memory-bound: Stage C (~3.6B) + CLIP-G + effnet resident with autograd →
+// >24 GB. Code-complete; on-box verification needs ≥36 GB / CUDA.
+// =====================================================================
+
+/// PixArt/SD3-style request for Stage-C LoRA training.
+pub struct StyleTrainRequest {
+    /// Base repo for CLIP-G + effnet (default `stabilityai/stable-cascade`);
+    /// the Stage-C prior is resolved from the `-prior` repo.
+    pub repo: String,
+    pub device: Device,
+    pub images: Vec<std::path::PathBuf>,
+    pub trigger: String,
+    pub rank: usize,
+    pub steps: usize,
+    pub lr: f64,
+    pub size: u32,
+    pub out: std::path::PathBuf,
+    pub checkpoint_every: Option<usize>,
+    pub log_every: usize,
+    pub resume_from: Option<std::path::PathBuf>,
+}
+
+/// Write trained Stage-C attention adapters as a diffusers-PEFT LoRA. The
+/// registry key (`down_blocks.0.2.attention.to_q.weight`) maps directly to
+/// the `prior.`-prefixed logical name `cascade_lora::resolve_target` accepts —
+/// no leaf remapping. kohya `lora_down`/`lora_up`/`alpha` tensor names.
+fn save_cascade_c_lora(
+    adapters: &[(String, Var, Var)],
+    rank: usize,
+    out: &std::path::Path,
+) -> Result<()> {
+    use std::collections::HashMap;
+    let mut tensors: HashMap<String, Tensor> = HashMap::new();
+    let alpha = Tensor::new(rank as f32, &Device::Cpu)?;
+    for (key, a, b) in adapters {
+        let logical = key.strip_suffix(".weight").unwrap_or(key);
+        let base = format!("prior.{logical}");
+        let a_t = a.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        let b_t = b.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        tensors.insert(format!("{base}.lora_down.weight"), a_t);
+        tensors.insert(format!("{base}.lora_up.weight"), b_t);
+        tensors.insert(format!("{base}.alpha"), alpha.clone());
+    }
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).ok();
+        }
+    }
+    candle_core::safetensors::save(&tensors, out)
+        .with_context(|| format!("writing Cascade Stage-C LoRA {}", out.display()))?;
+    Ok(())
+}
+
+fn cascade_ckpt_path(out: &std::path::Path, step: usize) -> std::path::PathBuf {
+    if std::env::var_os("PLAKAT_TRAIN_SINGLE_FILE").is_some() {
+        return out.to_path_buf();
+    }
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("lora");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("safetensors");
+    out.with_file_name(format!("{stem}-step{step}.{ext}"))
+}
+
+fn cascade_ckpt_interval(every: Option<usize>, total: usize) -> usize {
+    every.filter(|&n| n > 0).unwrap_or_else(|| (total / 10).max(30))
+}
+
+/// `plakat style train --base cascade`: train a Stage-C style LoRA.
+pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
+    use crate::pipelines::cascade_cn::{download_effnet_encoder, EffNetEncoder};
+    use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
+    use crate::pipelines::cascade_scheduler::CascadeScheduler;
+    use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
+
+    let device = req.device.clone();
+    let dtype = if matches!(device, Device::Cpu) { DType::F32 } else { DType::BF16 };
+    let tag = "cascade-style-train";
+
+    // ---- CLIP-G (frozen) ----
+    tracing::info!("{tag}: loading CLIP-G + effnet + Stage-C prior (frozen base)");
+    let clip_g_w = crate::hf::download::get_first_of(&[
+        (req.repo.as_str(), "text_encoder/model.safetensors"),
+        (req.repo.as_str(), "text_encoder/model.fp16.safetensors"),
+    ])
+    .await
+    .context("downloading CLIP-G for Cascade training")?;
+    let clip_g_tok_path = crate::hf::download::get_first_of(&[
+        (req.repo.as_str(), "tokenizer/tokenizer.json"),
+        ("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json"),
+    ])
+    .await?;
+    let clip_g_cfg = vendored_clip::Config::sdxl2();
+    let clip_g_vs = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&clip_g_w], dtype, &device)?
+    };
+    let clip_g_enc = SdxlClipGTextTransformer::new(clip_g_vs, &clip_g_cfg, 1280)?;
+    let clip_g_tok =
+        Tokenizer::from_file(&clip_g_tok_path).map_err(|e| anyhow!("CLIP-G tokenizer: {e}"))?;
+
+    // ---- effnet encoder (F32 — clean image latents) ----
+    let effnet_w = download_effnet_encoder().await?;
+    let effnet_vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[effnet_w.as_path()], DType::F32, &device)?
+    };
+    let effnet = EffNetEncoder::new(effnet_vb).context("building effnet encoder")?;
+
+    // ---- Stage C prior (BF16 base; F32 LoRA adapters) ----
+    let prior_repo =
+        stage_c_prior_repo(&req.repo).unwrap_or_else(|| "stabilityai/stable-cascade-prior".to_string());
+    let stage_c_w = crate::hf::download::get_first_of(&[
+        (prior_repo.as_str(), "prior/diffusion_pytorch_model.safetensors"),
+        (prior_repo.as_str(), "prior/diffusion_pytorch_model.fp16.safetensors"),
+    ])
+    .await
+    .context("downloading Stage-C prior for training")?;
+    let stage_c_vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[stage_c_w.as_path()], dtype, &device)?
+    };
+    let stage_c = StableCascadePrior::new_stage_c(PriorConfig::stage_c_full(), stage_c_vb)
+        .context("building Stage-C prior for training")?;
+
+    // ---- encode images → Stage-C latents via effnet (768² ImageNet) ----
+    tracing::info!("{tag}: encoding {} image(s) + trigger \"{}\"", req.images.len(), req.trigger);
+    let mut latents = Vec::with_capacity(req.images.len());
+    for img in &req.images {
+        let px = crate::imaging::preprocess::imagenet_image_tensor(img.as_path(), 768, &device, DType::F32)?;
+        let z = effnet.encode(&px)?; // (1,16,24,24) F32
+        latents.push(z.to_dtype(dtype)?);
+    }
+    let n = latents.len().max(1);
+
+    // ---- frozen text conditioning for the trigger (constant across steps) ----
+    let mut ids = clip_g_tok
+        .encode(req.trigger.as_str(), true)
+        .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    ids.resize(77, CLIP_EOT);
+    let ids_t = Tensor::new(ids.as_slice(), &device)?.unsqueeze(0)?;
+    let (txt_hidden, txt_pooled) = clip_g_enc.forward_for_cascade(&ids_t)?;
+    let clip_cond = stage_c
+        .build_clip_conditioning(&txt_hidden.to_dtype(dtype)?, &txt_pooled.to_dtype(dtype)?, None)?;
+    // sca/crp: the zero-input sinusoidal embedding inference uses, batch 1.
+    let zero_in = Tensor::zeros(1, DType::F32, &device)?;
+    let zero_emb = sinusoidal_time_embedding(&zero_in, 64, 10000.0)?.to_dtype(dtype)?;
+
+    // ---- trainable adapters ----
+    let adapters = stage_c.install_train_adapters(req.rank, 1.0, &device)?;
+    tracing::info!("{tag}: {} trainable attention adapters (rank {})", adapters.len(), req.rank);
+    let vars: Vec<Var> = adapters.iter().flat_map(|(_, a, b)| [a.clone(), b.clone()]).collect();
+    let mut opt = AdamW::new(vars.clone(), ParamsAdamW { lr: req.lr, ..Default::default() })?;
+
+    // ---- Würstchen cosine-noise ε-loss loop ----
+    let sched = CascadeScheduler::new(req.steps.max(1));
+    let interval = cascade_ckpt_interval(req.checkpoint_every, req.steps);
+    let start_step = match &req.resume_from {
+        Some(ckpt) => {
+            // PEFT prior.* checkpoint → adapters (inverse of save).
+            let loaded = candle_core::safetensors::load(ckpt, &device)
+                .with_context(|| format!("loading resume checkpoint {}", ckpt.display()))?;
+            for (key, a, b) in &adapters {
+                let logical = key.strip_suffix(".weight").unwrap_or(key);
+                let base = format!("prior.{logical}");
+                if let (Some(la), Some(lb)) = (
+                    loaded.get(&format!("{base}.lora_down.weight")),
+                    loaded.get(&format!("{base}.lora_up.weight")),
+                ) {
+                    a.set(&la.to_dtype(a.as_tensor().dtype())?)?;
+                    b.set(&lb.to_dtype(b.as_tensor().dtype())?)?;
+                }
+            }
+            let s = crate::pipelines::sd_train::trainer::parse_resume_step(ckpt)
+                .unwrap_or(0)
+                .min(req.steps);
+            if s >= req.steps {
+                bail!("{tag}: --resume checkpoint at step {s} ≥ --steps {}", req.steps);
+            }
+            s
+        }
+        None => 0,
+    };
+    let mut progress =
+        crate::pipelines::train_progress::TrainProgress::new(req.steps, req.lr, interval);
+
+    for step in start_step..req.steps {
+        let x0 = &latents[step % n];
+        let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
+        // t ∈ (0.02, 0.98) ratio; cosine ᾱ(t); x_t = √ᾱ·x0 + √(1-ᾱ)·ε.
+        let t = 0.02 + 0.96 * Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] as f64;
+        let x_t = sched.add_noise(x0, &noise, t)?;
+        let t_scalar = Tensor::new(&[t as f32], &device)?.to_dtype(dtype)?;
+        let t_emb = sinusoidal_time_embedding(&t_scalar, 64, 10000.0)?.to_dtype(dtype)?;
+        let pred = stage_c.forward(
+            &x_t,
+            &t_emb,
+            Some(&zero_emb),
+            Some(&zero_emb),
+            &clip_cond,
+            None,
+            None,
+        )?;
+        let loss = (&pred - &noise)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let mut grads = loss.backward()?;
+        crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
+        opt.step(&grads)?;
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
+            tracing::info!("{}", progress.line(tag, step + 1, loss.to_scalar::<f32>()?));
+        }
+        if (step + 1) % interval == 0 && step + 1 != req.steps {
+            let ckpt = cascade_ckpt_path(&req.out, step + 1);
+            save_cascade_c_lora(&adapters, req.rank, &ckpt)?;
+            tracing::info!("{tag}: checkpoint @ step {} → {}", step + 1, ckpt.display());
+        }
+    }
+
+    save_cascade_c_lora(&adapters, req.rank, &req.out)?;
+    tracing::info!("{tag}: wrote {}", req.out.display());
+    tracing::info!("{}", progress.finish(tag, &req.out));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Stage-C LoRA save must produce keys the `cascade_lora` merge path
+    /// resolves: `prior.<dotted-attn-key>.lora_down/up.weight` + `.alpha`.
+    #[test]
+    fn cascade_c_lora_save_uses_prior_peft_keys() {
+        let dev = Device::Cpu;
+        let key = "down_blocks.0.2.attention.to_q.weight".to_string();
+        let a = Var::from_tensor(&Tensor::zeros((8, 320), DType::F32, &dev).unwrap()).unwrap();
+        let b = Var::from_tensor(&Tensor::zeros((320, 8), DType::F32, &dev).unwrap()).unwrap();
+        let tmp = std::env::temp_dir().join(format!("plakat-cascade-lora-test-{}.safetensors", std::process::id()));
+        save_cascade_c_lora(&[(key, a, b)], 8, &tmp).unwrap();
+        let loaded = candle_core::safetensors::load(&tmp, &dev).unwrap();
+        assert!(loaded.contains_key("prior.down_blocks.0.2.attention.to_q.lora_down.weight"));
+        assert!(loaded.contains_key("prior.down_blocks.0.2.attention.to_q.lora_up.weight"));
+        assert!(loaded.contains_key("prior.down_blocks.0.2.attention.to_q.alpha"));
+        // down = A (rank, in), up = B (out, rank).
+        assert_eq!(
+            loaded["prior.down_blocks.0.2.attention.to_q.lora_down.weight"].dims(),
+            &[8, 320]
+        );
+        assert_eq!(
+            loaded["prior.down_blocks.0.2.attention.to_q.lora_up.weight"].dims(),
+            &[320, 8]
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
 
     /// v0.37 phase 4: RunRequest carries every field
     /// `t2i::run` needs to dispatch into `cascade::run`.

@@ -41,6 +41,43 @@
 use anyhow::{Result, anyhow};
 use candle_core::{D, Module, Tensor};
 use candle_nn::{self as nn, VarBuilder};
+// v1.10.0: Stage-C attention projections become `LoraLinear` so the
+// prior can host a trainable LoRA adapter (`plakat style train` /
+// DreamBooth). Mirrors `pixart_dit.rs` exactly. Inference path stays
+// byte-identical to `nn::Linear` (empty runtime stack + no train
+// adapter).
+use crate::pipelines::lora_linear::{LoraLinear, LoraRegistry, LoraRegistryEntry};
+use std::sync::{Arc, RwLock};
+
+/// Wrap a candle Linear, register the slots/train handles in
+/// `<vb.prefix()>.weight` of the shared LoRA registry, return the
+/// `LoraLinear` ready to plug into a struct field. Same pattern as the
+/// helper in `pixart_dit.rs`.
+fn wrap_linear(
+    in_dim: usize,
+    out_dim: usize,
+    vb: VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = nn::linear(in_dim, out_dim, vb.clone())
+        .map_err(|e| anyhow!("Cascade wrap_linear at {}: {e}", vb.prefix()))?;
+    let ll = LoraLinear::from_linear(base)
+        .map_err(|e| anyhow!("Cascade wrap_linear from_linear at {}: {e}", vb.prefix()))?;
+    let key = format!("{}.weight", vb.prefix());
+    registry
+        .write()
+        .map_err(|_| anyhow!("Cascade LoRA registry poisoned during construction"))?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim,
+                in_dim,
+                train: ll.train_handle(),
+            },
+        );
+    Ok(ll)
+}
 
 // ---------------------------------------------------------------------
 // LayerNorm2d
@@ -395,10 +432,10 @@ impl TimestepBlock {
 /// `kv_mapper.1.weight`).
 pub struct AttnBlock {
     norm: LayerNorm2d,
-    to_q: nn::Linear,
-    to_k: nn::Linear,
-    to_v: nn::Linear,
-    to_out: nn::Linear,
+    to_q: LoraLinear,
+    to_k: LoraLinear,
+    to_v: LoraLinear,
+    to_out: LoraLinear,
     kv_mapper: nn::Linear,
     num_heads: usize,
     head_dim: usize,
@@ -412,6 +449,7 @@ impl AttnBlock {
         num_heads: usize,
         self_attn: bool,
         vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         anyhow::ensure!(
             channels % num_heads == 0,
@@ -420,13 +458,13 @@ impl AttnBlock {
         let head_dim = channels / num_heads;
         let norm = LayerNorm2d::new(channels, 1e-6);
         let attn_vb = vb.pp("attention");
-        let to_q = nn::linear(channels, channels, attn_vb.pp("to_q"))
+        let to_q = wrap_linear(channels, channels, attn_vb.pp("to_q"), registry)
             .map_err(|e| anyhow!("AttnBlock to_q: {e}"))?;
-        let to_k = nn::linear(channels, channels, attn_vb.pp("to_k"))
+        let to_k = wrap_linear(channels, channels, attn_vb.pp("to_k"), registry)
             .map_err(|e| anyhow!("AttnBlock to_k: {e}"))?;
-        let to_v = nn::linear(channels, channels, attn_vb.pp("to_v"))
+        let to_v = wrap_linear(channels, channels, attn_vb.pp("to_v"), registry)
             .map_err(|e| anyhow!("AttnBlock to_v: {e}"))?;
-        let to_out = nn::linear(channels, channels, attn_vb.pp("to_out").pp("0"))
+        let to_out = wrap_linear(channels, channels, attn_vb.pp("to_out").pp("0"), registry)
             .map_err(|e| anyhow!("AttnBlock to_out.0: {e}"))?;
         // kv_mapper is Sequential(SiLU, Linear); Linear lives at .1.
         let kv_mapper = nn::linear(cond_dim, channels, vb.pp("kv_mapper").pp("1"))
@@ -703,7 +741,8 @@ mod tests {
     fn random_attn_block(c: usize, cond: usize, nh: usize, self_attn: bool) -> (AttnBlock, VarMap) {
         let (varmap, device) = vb_random();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let attn = AttnBlock::new(c, cond, nh, self_attn, vb).unwrap();
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
+        let attn = AttnBlock::new(c, cond, nh, self_attn, vb, &registry).unwrap();
         (attn, varmap)
     }
 
@@ -750,7 +789,8 @@ mod tests {
     fn attn_block_rejects_indivisible_head_count() {
         let (varmap, device) = vb_random();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        match AttnBlock::new(17, 24, 4, true, vb) {
+        let registry = Arc::new(RwLock::new(LoraRegistry::new()));
+        match AttnBlock::new(17, 24, 4, true, vb, &registry) {
             Ok(_) => panic!("expected indivisible-head-count rejection"),
             Err(e) => assert!(format!("{e}").contains("not divisible")),
         }

@@ -941,6 +941,7 @@ async fn run_sd3(
         loras: Vec::new(),
         lora_scale: 1.0,
         controlnets: Vec::new(),
+        embeddings: Vec::new(),
     })
     .await?;
     load_spin.finish_with_message("✓ SD3 backbone ready");

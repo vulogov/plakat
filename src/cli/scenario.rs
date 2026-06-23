@@ -1930,6 +1930,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     // does (max_flux_controls + scenario-wide
                     // preload).
                     controlnets: Vec::new(),
+                    embeddings: Vec::new(),
                 })
                 .await?,
             )

@@ -44,14 +44,20 @@ pub async fn train_textual_inversion(req: TiTrainRequest) -> Result<()> {
     if m.contains("sdxl") {
         return train_ti_sdxl(req).await;
     }
+    // SD 3.5 — triple-encoder TI (CLIP-L + CLIP-G + T5). Lives in `sd3.rs`
+    // for private access to the three frozen encoders + MMDiT.
+    if m.contains("sd35") || m.contains("sd3.5") || m.contains("sd3-5") || m.contains("sd3_5") {
+        return crate::pipelines::sd3::train_textual_inversion(req).await;
+    }
     if m.contains("sd3")
         || m.contains("flux")
         || m.contains("cascade")
         || m.contains("pixart")
     {
         bail!(
-            "textual-inversion training supports SD 1.5 / 2.1 (single CLIP-L) and \
-             SDXL (dual encoder); {} is not a TI-trainable base",
+            "textual-inversion training supports SD 1.5 / 2.1 (single CLIP-L), \
+             SDXL (dual encoder), and SD 3.5 (triple encoder); {} is not a \
+             TI-trainable base",
             req.model
         );
     }
@@ -200,7 +206,7 @@ pub async fn train_textual_inversion(req: TiTrainRequest) -> Result<()> {
 /// Tokenize the training template and return `(ids, slot)` where `slot` is the
 /// content token to learn (the last token before EOS). Shared by both SDXL
 /// encoders (and structurally mirrors the inline SD 1.5 path above).
-fn template_and_slot(
+pub(crate) fn template_and_slot(
     tokenizer: &tokenizers::Tokenizer,
     cfg: &candle_transformers::models::stable_diffusion::clip::Config,
     prompt: &str,
@@ -227,7 +233,7 @@ fn template_and_slot(
 
 /// One-hot slot mask `(1, max_pos, 1)` and its complement, in `dtype` — the
 /// differentiable splice operands.
-fn slot_masks(slot: usize, max_pos: usize, device: &Device, dtype: DType) -> Result<(Tensor, Tensor)> {
+pub(crate) fn slot_masks(slot: usize, max_pos: usize, device: &Device, dtype: DType) -> Result<(Tensor, Tensor)> {
     let mut mask_data = vec![0f32; max_pos];
     mask_data[slot] = 1.0;
     let slot_mask = Tensor::from_vec(mask_data, (1, max_pos, 1), device)?.to_dtype(dtype)?;
@@ -237,7 +243,7 @@ fn slot_masks(slot: usize, max_pos: usize, device: &Device, dtype: DType) -> Res
 
 /// Differentiable masked combine: `base·(1−mask) + placeholder·mask`. The
 /// gradient reaches only the placeholder vector.
-fn splice(base: &Tensor, placeholder: &Var, slot_mask: &Tensor, inv_mask: &Tensor, dtype: DType) -> Result<Tensor> {
+pub(crate) fn splice(base: &Tensor, placeholder: &Var, slot_mask: &Tensor, inv_mask: &Tensor, dtype: DType) -> Result<Tensor> {
     let ph_field = placeholder
         .as_tensor()
         .to_dtype(dtype)?

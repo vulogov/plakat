@@ -95,3 +95,44 @@ pub fn sd_image_tensor(
     let t = Tensor::from_vec(data, (1, 3, h as usize, w as usize), device)?.to_dtype(dtype)?;
     Ok(t)
 }
+
+// ImageNet normalization (RGB) — used by torchvision-derived backbones
+// (e.g. EfficientNetV2, the Stable Cascade effnet encoder).
+const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// Load an image, resize exactly to `size`x`size`, scale to [0,1], then
+/// apply ImageNet per-channel normalization. Returns (1, 3, size, size)
+/// in `dtype` on `device`. This is the input format expected by the
+/// torchvision EfficientNetV2-S backbone (Stable Cascade effnet encoder).
+pub fn imagenet_image_tensor(
+    path: &Path,
+    size: u32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let img = image::open(path)?.to_rgb8();
+    let resized = image::imageops::resize(&img, size, size, PREPROCESS_FILTER);
+
+    let total = (size as usize) * (size as usize);
+    let mut data: Vec<f32> = vec![0.0f32; 3 * total];
+    let raw = resized.as_raw();
+    let (r_dst, rest) = data.split_at_mut(total);
+    let (g_dst, b_dst) = rest.split_at_mut(total);
+    // Fold (x/255 - mean)/std into scale*x - offset per channel.
+    let inv_r = 1.0 / (255.0 * IMAGENET_STD[0]);
+    let inv_g = 1.0 / (255.0 * IMAGENET_STD[1]);
+    let inv_b = 1.0 / (255.0 * IMAGENET_STD[2]);
+    let off_r = IMAGENET_MEAN[0] / IMAGENET_STD[0];
+    let off_g = IMAGENET_MEAN[1] / IMAGENET_STD[1];
+    let off_b = IMAGENET_MEAN[2] / IMAGENET_STD[2];
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        r_dst[i] = chunk[0] as f32 * inv_r - off_r;
+        g_dst[i] = chunk[1] as f32 * inv_g - off_g;
+        b_dst[i] = chunk[2] as f32 * inv_b - off_b;
+    }
+
+    let t = Tensor::from_vec(data, (1, 3, size as usize, size as usize), device)?
+        .to_dtype(dtype)?;
+    Ok(t)
+}

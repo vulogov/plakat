@@ -1290,6 +1290,8 @@ async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // dispatch only. The img2img CLI doesn't surface --control*,
         // so an empty Vec here is the only valid value.
         controlnets: Vec::new(),
+        // v1.10.0: img2img CLI doesn't surface --embedding for SD3 yet.
+        embeddings: Vec::new(),
         // v0.20: WebP isn't surfaced at the img2img CLI yet — SD3
         // outputs default to PNG. The pipeline layer honours this
         // when set.

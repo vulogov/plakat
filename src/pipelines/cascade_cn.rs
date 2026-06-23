@@ -208,6 +208,21 @@ impl Config {
             controlnet_blocks: vec![0, 4, 8, 12, 51, 55, 59, 63],
         }
     }
+
+    /// Stable Cascade `effnet_encoder.safetensors` config — the SAME
+    /// reference-verified EfficientNetV2-S backbone as
+    /// [`Config::canny_upstream`], but with `c_in: 3` (RGB input rather
+    /// than the canny edge map) and `n_projections: 0` (the effnet
+    /// encoder has no projection heads — it ends at the backbone's
+    /// 1280-channel feature map, then a small mapper produces the
+    /// 16-channel Stage-C latent). Built by copying `canny_upstream`'s
+    /// body with those two changes, leaving `canny_upstream` untouched.
+    pub fn effnet_v2_s() -> Self {
+        let mut cfg = Self::canny_upstream();
+        cfg.c_in = 3;
+        cfg.n_projections = 0;
+        cfg
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -582,6 +597,151 @@ impl CascadeControlNet {
 }
 
 // =====================================================================
+// EffNetEncoder — Stable Cascade `effnet_encoder.safetensors`.
+// =====================================================================
+//
+// Architecture (upstream `EfficientNetEncoder`):
+//
+//   backbone = torchvision efficientnet_v2_s.features  → (B, 1280, 24, 24)
+//   mapper   = Sequential(
+//                Conv2d(1280, 16, kernel=1, bias=False),   # mapper.0
+//                BatchNorm2d(16, affine=False),            # mapper.1
+//              )
+//
+// Input: RGB, ImageNet-normalized, 768×768 → backbone /32 → 24×24 →
+// mapper → (B, 16, 24, 24). That 16×24×24 tensor is the Stage-C latent
+// (the x0 source for Stage-C LoRA training).
+//
+// The backbone is byte-for-byte the same EfficientNetV2-S we already
+// build for the ControlNet (`CascadeControlNet::new`), reusing the
+// reference-verified `ConvBn` / `InvertedResidual` blocks and the same
+// `backbone.{0..7}` tensor-key layout. The only new pieces are the
+// `mapper` conv (no bias) and the affine-free BatchNorm running stats.
+
+pub struct EffNetEncoder {
+    stem: ConvBn,
+    stages: Vec<Vec<InvertedResidual>>,
+    final_proj: ConvBn,
+    /// mapper.0 — Conv2d(1280 → 16, kernel=1, bias=False).
+    mapper_conv: nn::Conv2d,
+    /// mapper.1 — BatchNorm2d(16, affine=False) running stats. Because
+    /// affine=False there is NO weight/bias, only running_mean/var.
+    bn_mean: Tensor,
+    bn_var: Tensor,
+    pub dtype: DType,
+    pub device: Device,
+}
+
+impl EffNetEncoder {
+    pub fn new(vb: VarBuilder) -> Result<Self> {
+        let cfg = Config::effnet_v2_s();
+        let dtype = vb.dtype();
+        let device = vb.device().clone();
+
+        // --- backbone (identical construction to CascadeControlNet::new) ---
+        let stem = ConvBn::new(
+            cfg.c_in,
+            cfg.stem.c_out,
+            cfg.stem.kernel,
+            cfg.stem.stride,
+            1,
+            true,
+            vb.pp("backbone").pp("0"),
+        )?;
+
+        let mut stages = Vec::with_capacity(cfg.stages.len());
+        for (stage_idx, blocks) in cfg.stages.iter().enumerate() {
+            let stage_pp = stage_idx + 1;
+            let stage_vb = vb.pp("backbone").pp(&stage_pp.to_string());
+            let mut built = Vec::with_capacity(blocks.len());
+            for (b, bc) in blocks.iter().enumerate() {
+                built.push(InvertedResidual::new(bc, stage_vb.pp(&b.to_string()))?);
+            }
+            stages.push(built);
+        }
+
+        let final_idx = cfg.stages.len() + 1;
+        let final_proj = ConvBn::new(
+            cfg.final_proj.c_in,
+            cfg.final_proj.c_out,
+            1,
+            1,
+            1,
+            true,
+            vb.pp("backbone").pp(&final_idx.to_string()),
+        )?;
+
+        // --- mapper ---
+        let mapper_conv = nn::conv2d_no_bias(
+            1280,
+            16,
+            1,
+            Default::default(),
+            vb.pp("mapper").pp("0"),
+        )
+        .map_err(|e| anyhow!("EffNetEncoder mapper.0: {e}"))?;
+        // affine=False BatchNorm2d → only running_mean / running_var.
+        let bn_vb = vb.pp("mapper").pp("1");
+        let bn_mean = bn_vb
+            .get(16, "running_mean")
+            .map_err(|e| anyhow!("EffNetEncoder mapper.1.running_mean: {e}"))?;
+        let bn_var = bn_vb
+            .get(16, "running_var")
+            .map_err(|e| anyhow!("EffNetEncoder mapper.1.running_var: {e}"))?;
+
+        Ok(Self {
+            stem,
+            stages,
+            final_proj,
+            mapper_conv,
+            bn_mean,
+            bn_var,
+            dtype,
+            device,
+        })
+    }
+
+    /// Run the EfficientNetV2-S backbone over a preprocessed image.
+    /// `image` is already ImageNet-normalized (1, 3, 768, 768).
+    fn backbone_features(&self, image: &Tensor) -> Result<Tensor> {
+        let mut h = self.stem.forward(image)?;
+        for stage in &self.stages {
+            for blk in stage {
+                h = blk.forward(&h)?;
+            }
+        }
+        self.final_proj.forward(&h)
+    }
+
+    /// Encode a preprocessed RGB image (1, 3, 768, 768) into the
+    /// Stage-C latent (B, 16, 24, 24). Applies the backbone, the
+    /// mapper conv, then the affine-free BatchNorm (eps=1e-5).
+    pub fn encode(&self, image: &Tensor) -> Result<Tensor> {
+        let features = self.backbone_features(image)?; // (B, 1280, 24, 24)
+        let h = self.mapper_conv.forward(&features)?; // (B, 16, 24, 24)
+        // Manual affine-free BatchNorm in inference mode:
+        //   y = (h - running_mean) / sqrt(running_var + eps)
+        let mean = self.bn_mean.reshape((1, 16, 1, 1))?;
+        let var = self.bn_var.reshape((1, 16, 1, 1))?;
+        let denom = (var + 1e-5)?.sqrt()?;
+        let y = h
+            .broadcast_sub(&mean)?
+            .broadcast_div(&denom)?;
+        Ok(y)
+    }
+}
+
+/// Fetch the Stable Cascade effnet encoder weights, preferring the
+/// full-precision file and falling back to the bf16 variant.
+pub async fn download_effnet_encoder() -> Result<std::path::PathBuf> {
+    crate::hf::download::get_first_of(&[
+        ("stabilityai/stable-cascade", "effnet_encoder.safetensors"),
+        ("stabilityai/stable-cascade", "effnet_encoder.bf16.safetensors"),
+    ])
+    .await
+}
+
+// =====================================================================
 // Tests
 // =====================================================================
 
@@ -736,6 +896,87 @@ mod tests {
         let x = Tensor::randn(0f32, 1f32, (1, 8, 8, 8), &device).unwrap();
         let y = blk.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 16, 4, 4]);
+    }
+
+    /// Real-weight smoke for the Stable Cascade effnet encoder.
+    /// Builds [`EffNetEncoder`] from the cached
+    /// `effnet_encoder.safetensors` and pushes a random
+    /// (1, 3, 768, 768) F32 input through `encode`, asserting the
+    /// output is the (1, 16, 24, 24) Stage-C latent. The test SKIPS
+    /// (early-returns) if the checkpoint isn't already in the HF cache
+    /// — it never downloads. To run: ensure
+    /// `stabilityai/stable-cascade/effnet_encoder.safetensors` is
+    /// cached, then `cargo test --release --lib effnet`.
+    #[test]
+    fn effnet_encoder_loads_and_shapes() {
+        // Locate effnet_encoder.safetensors in the HF cache (or via
+        // STABLE_CASCADE_WEIGHTS_DIR), skipping if not present.
+        let weights = match effnet_cached_weights() {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "Skipping effnet_encoder_loads_and_shapes: \
+                     effnet_encoder.safetensors not found in HF cache \
+                     (~/.cache/huggingface) or STABLE_CASCADE_WEIGHTS_DIR."
+                );
+                return;
+            }
+        };
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[&weights], dtype, &device)
+                .expect("mmap effnet_encoder.safetensors")
+        };
+        let enc = EffNetEncoder::new(vb).expect("build EffNetEncoder from real weights");
+
+        let image = Tensor::randn(0f32, 1f32, (1, 3, 768, 768), &device).unwrap();
+        let latent = enc.encode(&image).expect("encode");
+        assert_eq!(
+            latent.dims(),
+            &[1, 16, 24, 24],
+            "Stage-C latent must be (1, 16, 24, 24)"
+        );
+        let mean = latent.mean_all().unwrap().to_scalar::<f32>().unwrap();
+        let std = {
+            let m = latent.broadcast_sub(&latent.mean_all().unwrap()).unwrap();
+            (m.sqr().unwrap().mean_all().unwrap().to_scalar::<f32>().unwrap()).sqrt()
+        };
+        eprintln!(
+            "[effnet] latent dims={:?} mean={mean:.5} std={std:.5}",
+            latent.dims()
+        );
+    }
+
+    /// Find a cached `effnet_encoder.safetensors`. Checks
+    /// `STABLE_CASCADE_WEIGHTS_DIR` first, then the standard HF hub
+    /// snapshot layout under `~/.cache/huggingface`. Returns `None`
+    /// (→ test skips) when absent. Never downloads.
+    fn effnet_cached_weights() -> Option<std::path::PathBuf> {
+        if let Ok(dir) = std::env::var("STABLE_CASCADE_WEIGHTS_DIR") {
+            for f in ["effnet_encoder.safetensors", "effnet_encoder.bf16.safetensors"] {
+                let p = std::path::PathBuf::from(&dir).join(f);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        let home = std::env::var("HOME").ok()?;
+        let base = std::path::PathBuf::from(format!(
+            "{home}/.cache/huggingface/hub/models--stabilityai--stable-cascade/snapshots"
+        ));
+        let snaps = std::fs::read_dir(&base).ok()?;
+        for entry in snaps.filter_map(|e| e.ok()) {
+            let snap = entry.path();
+            for f in ["effnet_encoder.safetensors", "effnet_encoder.bf16.safetensors"] {
+                let p = snap.join(f);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        None
     }
 
     /// v0.40 phase 3: real-weight smoke for the Stable Cascade

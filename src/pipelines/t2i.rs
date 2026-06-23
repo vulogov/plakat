@@ -2646,6 +2646,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             // conditioning path + gating window. Empty Vec = no CN
             // (byte-identical to phase 1a path).
             controlnets: sd3_controlnets,
+            // v1.10.0: forward TI specs to the SD3 loader (runtime splice).
+            embeddings: req.embeddings,
             // v0.20: SD3 now honours --format webp end-to-end.
             output_format: req.output_format,
         })

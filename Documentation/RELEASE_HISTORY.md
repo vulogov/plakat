@@ -1,12 +1,34 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.8. The current
+"What's new" sections for v0.13 through 1.9. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.9.0 — map polish (lakes, lots, painted scripts, shaped labels)
+
+1.9.0 polishes `plakat map` after the track went feature-complete in 1.8: real
+lakes, river labels that follow the right channel, towns drawn at the building
+scale, SD-painted maps from scripts, and non-Latin labels. The geometry stays a
+**pure function of (spec, seed)** — byte-stable, no GPU for the linework path. New
+this cycle: a full **[map tutorial](Tutorials/MAP_TUTORIAL.md)**.
+
+- **Lakes are real water** — a spec lake was labelled but never drawn; now it carves
+  a sub-sea-level basin so the coast/biome/hydrology pipeline renders it as a blue
+  tarn with a shoreline, and rivers drain into it.
+- **Named-river ↔ channel matching** — each named river labels the traced channel
+  whose mouth is nearest its resolved mouth (not just the longest); GeoJSON exports
+  its real id + name.
+- **Town lot subdivision** — each block splits into building lots with thin lanes +
+  tone variation, so towns read at the building scale.
+- **`plakat.map.paint`** — a Bund word `( spec-path style -- handle )` paints a map
+  via SD into an image handle, completing the `plakat.map.*` scripting surface.
+- **Non-Latin labels** — a `shaped-labels` feature + `--map-font <PATH.ttf>`
+  rasterizes Cyrillic / CJK labels via `ab_glyph`; the Latin bitmap font stays the
+  byte-stable default.
 
 ## What's new in 1.8.0 — town maps + believable, tunable geography (`plakat map`)
 

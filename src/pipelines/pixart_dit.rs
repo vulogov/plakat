@@ -40,8 +40,45 @@
 //! when inference end-to-end runs.
 
 use anyhow::{Result, anyhow};
-use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
+use candle_core::{D, DType, Device, IndexOp, Module, Tensor, Var};
 use candle_nn::{self as nn, VarBuilder};
+// v1.10.0: every attention/FF Linear becomes a `LoraLinear` so the
+// DiT can host a trainable LoRA adapter on its attention projections
+// (`plakat style train` / DreamBooth). Mirrors `mmdit_inner.rs`
+// (SD3) exactly. Inference path stays byte-identical to `nn::Linear`
+// (empty runtime stack + no train adapter).
+use crate::pipelines::lora_linear::{LoraLinear, LoraRegistry, LoraRegistryEntry};
+use std::sync::{Arc, RwLock};
+
+/// Wrap a candle Linear, register the slots/train handles in
+/// `<vb.prefix()>.weight` of the shared LoRA registry, return the
+/// `LoraLinear` ready to plug into a struct field. Same pattern as the
+/// helper in `mmdit_inner.rs`.
+fn wrap_linear(
+    in_dim: usize,
+    out_dim: usize,
+    vb: VarBuilder,
+    registry: &Arc<RwLock<LoraRegistry>>,
+) -> Result<LoraLinear> {
+    let base = nn::linear(in_dim, out_dim, vb.clone())
+        .map_err(|e| anyhow!("PixArt wrap_linear at {}: {e}", vb.prefix()))?;
+    let ll = LoraLinear::from_linear(base)
+        .map_err(|e| anyhow!("PixArt wrap_linear from_linear at {}: {e}", vb.prefix()))?;
+    let key = format!("{}.weight", vb.prefix());
+    registry
+        .write()
+        .map_err(|_| anyhow!("PixArt LoRA registry poisoned during construction"))?
+        .insert(
+            key,
+            LoraRegistryEntry {
+                handle: ll.slots_handle(),
+                out_dim,
+                in_dim,
+                train: ll.train_handle(),
+            },
+        );
+    Ok(ll)
+}
 
 /// v0.36 phase 3: KV-compression in self-attention. PixArt-Σ's
 /// Σ-specific addition — downsamples the image-token K/V sequence
@@ -445,10 +482,10 @@ impl CaptionProjection {
 /// computed from the full input. This is the Σ paper's mechanism
 /// for scaling self-attention to long token sequences.
 pub struct Attention {
-    to_q: nn::Linear,
-    to_k: nn::Linear,
-    to_v: nn::Linear,
-    to_out: nn::Linear,
+    to_q: LoraLinear,
+    to_k: LoraLinear,
+    to_v: LoraLinear,
+    to_out: LoraLinear,
     num_heads: usize,
     head_dim: usize,
     /// v0.36 phase 3: depthwise Conv2d that downsamples the K/V
@@ -473,8 +510,9 @@ impl Attention {
         kv_dim: usize,
         num_heads: usize,
         vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
-        Self::new_with_compression(query_dim, kv_dim, num_heads, vb, None)
+        Self::new_with_compression(query_dim, kv_dim, num_heads, vb, None, registry)
     }
 
     /// v0.36 phase 3: variant constructor that registers an optional
@@ -490,17 +528,13 @@ impl Attention {
         num_heads: usize,
         vb: VarBuilder,
         kv_compression: Option<KvCompressionConfig>,
+        registry: &Arc<RwLock<LoraRegistry>>,
     ) -> Result<Self> {
         let head_dim = query_dim / num_heads;
-        let to_q = nn::linear(query_dim, query_dim, vb.pp("to_q"))
-            .map_err(|e| anyhow!("Attention to_q: {e}"))?;
-        let to_k = nn::linear(kv_dim, query_dim, vb.pp("to_k"))
-            .map_err(|e| anyhow!("Attention to_k: {e}"))?;
-        let to_v = nn::linear(kv_dim, query_dim, vb.pp("to_v"))
-            .map_err(|e| anyhow!("Attention to_v: {e}"))?;
-        let to_out =
-            nn::linear(query_dim, query_dim, vb.pp("to_out").pp("0"))
-                .map_err(|e| anyhow!("Attention to_out.0: {e}"))?;
+        let to_q = wrap_linear(query_dim, query_dim, vb.pp("to_q"), registry)?;
+        let to_k = wrap_linear(kv_dim, query_dim, vb.pp("to_k"), registry)?;
+        let to_v = wrap_linear(kv_dim, query_dim, vb.pp("to_v"), registry)?;
+        let to_out = wrap_linear(query_dim, query_dim, vb.pp("to_out").pp("0"), registry)?;
         // Σ-only: depthwise Conv2d for KV downsampling. Skipped
         // when kv_compression is None (1024-MS / 512-MS path).
         let kv_compress = match kv_compression {
@@ -622,17 +656,20 @@ impl Attention {
 
 /// FeedForward — `ff.net.0.proj` + `ff.net.2`. GELU-tanh approx.
 pub struct FeedForward {
-    fc1: nn::Linear,
-    fc2: nn::Linear,
+    fc1: LoraLinear,
+    fc2: LoraLinear,
 }
 
 impl FeedForward {
-    pub fn new(hidden_size: usize, mlp_ratio: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        hidden_size: usize,
+        mlp_ratio: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let inner = hidden_size * mlp_ratio;
-        let fc1 = nn::linear(hidden_size, inner, vb.pp("net").pp("0").pp("proj"))
-            .map_err(|e| anyhow!("FeedForward fc1: {e}"))?;
-        let fc2 = nn::linear(inner, hidden_size, vb.pp("net").pp("2"))
-            .map_err(|e| anyhow!("FeedForward fc2: {e}"))?;
+        let fc1 = wrap_linear(hidden_size, inner, vb.pp("net").pp("0").pp("proj"), registry)?;
+        let fc2 = wrap_linear(inner, hidden_size, vb.pp("net").pp("2"), registry)?;
         Ok(Self { fc1, fc2 })
     }
 
@@ -656,7 +693,12 @@ pub struct PixArtBlock {
 }
 
 impl PixArtBlock {
-    pub fn new(cfg: &Config, t5_hidden_after_proj: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(
+        cfg: &Config,
+        t5_hidden_after_proj: usize,
+        vb: VarBuilder,
+        registry: &Arc<RwLock<LoraRegistry>>,
+    ) -> Result<Self> {
         let scale_shift_table = vb
             .get((6, cfg.hidden_size), "scale_shift_table")
             .map_err(|e| anyhow!("PixArtBlock scale_shift_table: {e}"))?;
@@ -669,14 +711,16 @@ impl PixArtBlock {
             cfg.num_heads,
             vb.pp("attn1"),
             cfg.kv_compression,
+            registry,
         )?;
         let attn2 = Attention::new(
             cfg.hidden_size,
             t5_hidden_after_proj,
             cfg.num_heads,
             vb.pp("attn2"),
+            registry,
         )?;
-        let ff = FeedForward::new(cfg.hidden_size, cfg.mlp_ratio, vb.pp("ff"))?;
+        let ff = FeedForward::new(cfg.hidden_size, cfg.mlp_ratio, vb.pp("ff"), registry)?;
         Ok(Self {
             scale_shift_table,
             attn1,
@@ -756,6 +800,12 @@ pub struct PixArtSigmaXL {
     pub final_scale_shift: Tensor,
     pub dtype: DType,
     pub device: Device,
+    /// v1.10.0: path → LoRA-registry-entry for every attention/FF
+    /// projection, keyed by full safetensors key. Populated during
+    /// construction; consumed by `install_train_adapters`. Stored as
+    /// the unwrapped `HashMap` (the `Arc<RwLock<…>>` used during build
+    /// is dropped at the end of `new`), mirroring `mmdit_inner.rs`.
+    lora_registry: LoraRegistry,
 }
 
 impl PixArtSigmaXL {
@@ -771,12 +821,18 @@ impl PixArtSigmaXL {
         let adaln_single = AdaLnSingle::new(cfg.hidden_size, vb.pp("adaln_single"))?;
         let caption_projection =
             CaptionProjection::new(cfg.caption_channels, cfg.hidden_size, vb.pp("caption_projection"))?;
+        // v1.10.0: shared LoRA registry — every constructed LoraLinear
+        // writes its slot/train handles into this map. After all blocks
+        // are built (and the sub-loaders go out of scope), we unwrap the
+        // Arc and move the inner HashMap into the struct field.
+        let registry_arc = Arc::new(RwLock::new(LoraRegistry::new()));
         let mut blocks = Vec::with_capacity(cfg.num_layers);
         for i in 0..cfg.num_layers {
             blocks.push(PixArtBlock::new(
                 &cfg,
                 cfg.hidden_size,
                 vb.pp("transformer_blocks").pp(&i.to_string()),
+                &registry_arc,
             )?);
         }
         let proj_out = nn::linear(
@@ -788,6 +844,12 @@ impl PixArtSigmaXL {
         let final_scale_shift = vb
             .get((2, cfg.hidden_size), "scale_shift_table")
             .map_err(|e| anyhow!("final scale_shift_table: {e}"))?;
+        // Move the registry out of the Arc — every block + sub-loader is
+        // dropped by now, so the ref count is 1. (Mirrors MMDiT.)
+        let lora_registry = Arc::try_unwrap(registry_arc)
+            .map_err(|_| anyhow!("PixArt LoRA registry still has outstanding refs after construction"))?
+            .into_inner()
+            .map_err(|_| anyhow!("PixArt LoRA registry RwLock poisoned at construction"))?;
         Ok(Self {
             cfg,
             patch_embed,
@@ -798,7 +860,48 @@ impl PixArtSigmaXL {
             final_scale_shift,
             dtype,
             device,
+            lora_registry,
         })
+    }
+
+    /// `plakat style train` / DreamBooth: install a fresh **trainable**
+    /// LoRA adapter on every attention projection (registry keys
+    /// containing `.attn1.` or `.attn2.` — self- and cross-attention
+    /// q/k/v/out; feed-forward is excluded). Returns `(registry_key, A,
+    /// B)` for each, so the caller drives AdamW and writes the save.
+    /// Standard init: `A ~ N(0, 0.02)`, `B = 0`, so the adapter starts as
+    /// a no-op on the frozen base and learns the style delta. Vars are
+    /// F32 (training dtype). Mirrors `MMDiT::install_train_adapters`.
+    pub fn install_train_adapters(
+        &self,
+        rank: usize,
+        scale: f64,
+        device: &Device,
+    ) -> Result<Vec<(String, Var, Var)>> {
+        let mut keys: Vec<&String> = self
+            .lora_registry
+            .keys()
+            .filter(|k| k.contains(".attn1.") || k.contains(".attn2."))
+            .collect();
+        keys.sort();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let entry = &self.lora_registry[key];
+            let a = Var::from_tensor(&Tensor::randn(
+                0f32,
+                0.02f32,
+                (rank, entry.in_dim),
+                device,
+            )?)?;
+            let b = Var::from_tensor(&Tensor::zeros((entry.out_dim, rank), DType::F32, device)?)?;
+            *entry
+                .train
+                .write()
+                .map_err(|_| anyhow!("PixArt train slot poisoned"))? =
+                Some((a.clone(), b.clone(), scale));
+            out.push((key.clone(), a, b));
+        }
+        Ok(out)
     }
 
     pub fn forward(
@@ -1043,7 +1146,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let attn = Attention::new(64, 64, 4, vb).unwrap();
+        let attn = Attention::new(64, 64, 4, vb, &Arc::new(RwLock::new(LoraRegistry::new()))).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 16, 64), &device).unwrap();
         let out = attn.forward(&x, &x).unwrap();
         assert_eq!(out.dims(), &[1, 16, 64]);
@@ -1054,7 +1157,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let attn = Attention::new(64, 64, 4, vb).unwrap();
+        let attn = Attention::new(64, 64, 4, vb, &Arc::new(RwLock::new(LoraRegistry::new()))).unwrap();
         let q = Tensor::randn(0f32, 1f32, (1, 16, 64), &device).unwrap();
         let kv = Tensor::randn(0f32, 1f32, (1, 12, 64), &device).unwrap();
         let out = attn.forward(&q, &kv).unwrap();
@@ -1066,7 +1169,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let ff = FeedForward::new(64, 2, vb).unwrap();
+        let ff = FeedForward::new(64, 2, vb, &Arc::new(RwLock::new(LoraRegistry::new()))).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 16, 64), &device).unwrap();
         let out = ff.forward(&x).unwrap();
         assert_eq!(out.dims(), &[1, 16, 64]);
@@ -1185,6 +1288,7 @@ mod tests {
             4,  // num_heads
             vb,
             Some(KvCompressionConfig { scale_factor: 2 }),
+            &Arc::new(RwLock::new(LoraRegistry::new())),
         )
         .unwrap();
         // Image tokens: 4×4 grid = 16 tokens, 64 hidden each.
@@ -1201,7 +1305,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = candle_nn::VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let attn = Attention::new_with_compression(64, 64, 4, vb, None).unwrap();
+        let attn = Attention::new_with_compression(64, 64, 4, vb, None, &Arc::new(RwLock::new(LoraRegistry::new()))).unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 16, 64), &device).unwrap();
         let out = attn.forward_self_attn(&x, Some((4, 4))).unwrap();
         assert_eq!(out.dims(), &[1, 16, 64]);
@@ -1224,6 +1328,7 @@ mod tests {
             4,
             vb,
             Some(KvCompressionConfig { scale_factor: 2 }),
+            &Arc::new(RwLock::new(LoraRegistry::new())),
         )
         .unwrap();
         // 12 tokens claimed as 4×4 grid → mismatch (16 expected).
@@ -1246,6 +1351,7 @@ mod tests {
             4,
             vb,
             Some(KvCompressionConfig { scale_factor: 2 }),
+            &Arc::new(RwLock::new(LoraRegistry::new())),
         )
         .unwrap();
         let x = Tensor::randn(0f32, 1f32, (1, 16, 64), &device).unwrap();

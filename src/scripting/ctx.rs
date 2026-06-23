@@ -1242,6 +1242,7 @@ impl ScriptCtx {
                     loras,
                     lora_scale,
                     controlnets: sd3_cn_loads,
+                    embeddings: Vec::new(),
                 }))
             })?;
             self.loaded = Some((alias.to_string(), LoadedPipeline::Sd3(pipeline)));

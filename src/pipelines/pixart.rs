@@ -58,8 +58,8 @@
 //!   The early bail in `Pipeline::load` (below) surfaces this
 //!   clearly when a user passes an α repo path.
 
-use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Device, IndexOp, Tensor};
+use anyhow::{Context, Result, anyhow, bail};
+use candle_core::{DType, Device, IndexOp, Tensor, Var};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{StableDiffusionConfig, vae::AutoEncoderKL};
 use candle_transformers::models::t5;
@@ -609,6 +609,307 @@ pub async fn run(req: RunRequest) -> Result<()> {
         ));
     }
 
+    Ok(())
+}
+
+// =====================================================================
+// Style / subject LoRA training (v1.10.0).
+//
+// Mirrors `sd3::train_style_lora` (also a DiT) but with the PixArt-Σ
+// objective: **DDPM ε-prediction** (NOT rectified-flow velocity), the
+// Σ resolution/aspect conditioning, BF16 T5 (done in Phase A's encode),
+// and the SDXL VAE's 0.13025 latent scale. The trained adapters are
+// the same per-block attention projections the `pixart_lora` merge path
+// already loads, so the output `.safetensors` is a plain diffusers-PEFT
+// file usable via `--lora`.
+// =====================================================================
+
+/// PixArt-Σ style/subject LoRA training request. Field-parallel with
+/// `sd3::StyleTrainRequest` so the CLI dispatch is uniform.
+pub struct StyleTrainRequest {
+    /// HF repo (resolved). The Σ checkpoint whose DiT is fine-tuned.
+    pub repo: String,
+    pub device: Device,
+    pub images: Vec<std::path::PathBuf>,
+    pub trigger: String,
+    pub rank: usize,
+    pub steps: usize,
+    pub lr: f64,
+    pub size: u32,
+    pub out: std::path::PathBuf,
+    pub checkpoint_every: Option<usize>,
+    pub log_every: usize,
+    pub resume_from: Option<std::path::PathBuf>,
+    /// DreamBooth prior preservation (optional).
+    pub class_images: Vec<std::path::PathBuf>,
+    pub class_prompt: Option<String>,
+    pub prior_weight: f32,
+}
+
+/// PixArt-Σ's β-schedule → cumulative ᾱ (length 1000). Σ uses the
+/// diffusers default **linear** betas (β_start 1e-4 → β_end 2e-2),
+/// matching the inference scheduler — not SD's scaled-linear.
+fn pixart_alphas_cumprod() -> Vec<f64> {
+    let (n, bs, be) = (1000usize, 0.0001f64, 0.02f64);
+    let mut acc = 1.0;
+    (0..n)
+        .map(|i| {
+            let beta = bs + (be - bs) * (i as f64 / (n - 1) as f64);
+            acc *= 1.0 - beta;
+            acc
+        })
+        .collect()
+}
+
+/// Numbered checkpoint path (`<stem>-step<N>.<ext>`), mirroring the SD /
+/// SD3 trainers. `PLAKAT_TRAIN_SINGLE_FILE=1` overwrites `--out` instead.
+fn ckpt_path(out: &std::path::Path, step: usize) -> std::path::PathBuf {
+    if std::env::var_os("PLAKAT_TRAIN_SINGLE_FILE").is_some() {
+        return out.to_path_buf();
+    }
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("lora");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("safetensors");
+    out.with_file_name(format!("{stem}-step{step}.{ext}"))
+}
+
+/// ~10 evenly-spaced checkpoints (min every 30) unless `--checkpoint-every`.
+fn ckpt_interval(every: Option<usize>, total_steps: usize) -> usize {
+    every.filter(|&n| n > 0).unwrap_or_else(|| (total_steps / 10).max(30))
+}
+
+/// SDXL-VAE latent scale used at both encode (train) and decode (infer).
+const PIXART_VAE_SCALE: f64 = 0.13025;
+
+/// Write trained DiT attention adapters as a diffusers-PEFT LoRA. PixArt
+/// has no fused QKV, so each registry key (`transformer_blocks.{i}.
+/// attn{1,2}.{to_q,to_k,to_v,to_out.0}.weight`) maps directly to a
+/// `transformer.<leaf>.lora_A/lora_B/alpha` triple — exactly the logical
+/// names `pixart_lora::resolve_target` accepts.
+fn save_pixart_peft_lora(
+    adapters: &[(String, Var, Var)],
+    rank: usize,
+    out: &std::path::Path,
+) -> Result<()> {
+    use std::collections::HashMap;
+    let mut tensors: HashMap<String, Tensor> = HashMap::new();
+    let alpha = Tensor::new(rank as f32, &Device::Cpu)?;
+    for (key, a, b) in adapters {
+        let leaf = key.strip_suffix(".weight").unwrap_or(key);
+        let base = format!("transformer.{leaf}");
+        let a_t = a.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        let b_t = b.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?;
+        tensors.insert(format!("{base}.lora_A.weight"), a_t);
+        tensors.insert(format!("{base}.lora_B.weight"), b_t);
+        tensors.insert(format!("{base}.alpha"), alpha.clone());
+    }
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).ok();
+        }
+    }
+    candle_core::safetensors::save(&tensors, out)
+        .with_context(|| format!("writing PixArt LoRA {}", out.display()))?;
+    Ok(())
+}
+
+/// Load a PixArt-PEFT checkpoint back into the live adapter Vars (resume).
+/// Inverse of `save_pixart_peft_lora` — direct per-leaf key match.
+fn load_pixart_peft_into_adapters(
+    adapters: &[(String, Var, Var)],
+    path: &std::path::Path,
+    device: &Device,
+) -> Result<()> {
+    let loaded = candle_core::safetensors::load(path, device)
+        .with_context(|| format!("loading resume checkpoint {}", path.display()))?;
+    let get = |name: &str| -> Result<Tensor> {
+        loaded
+            .get(name)
+            .ok_or_else(|| anyhow!("resume: checkpoint missing {name} (rank/base mismatch?)"))
+            .cloned()
+    };
+    for (key, a, b) in adapters {
+        let leaf = key.strip_suffix(".weight").unwrap_or(key);
+        let base = format!("transformer.{leaf}");
+        let a_loaded = get(&format!("{base}.lora_A.weight"))?;
+        let b_loaded = get(&format!("{base}.lora_B.weight"))?;
+        a.set(&a_loaded.to_dtype(a.as_tensor().dtype())?)?;
+        b.set(&b_loaded.to_dtype(b.as_tensor().dtype())?)?;
+    }
+    Ok(())
+}
+
+/// `plakat style train --base pixart`: fine-tune a PixArt-Σ style (or,
+/// with `--class-dir`, subject) LoRA. Phase A encodes the images +
+/// trigger with the full pipeline (T5 BF16 + VAE) then drops it; Phase B
+/// reloads only the DiT in F32 with trainable adapters; Phase C runs the
+/// DDPM-ε loop; Phase D writes diffusers-PEFT safetensors.
+///
+/// **Memory-bound on 24 GB.** Phase A's peak is dominated by T5-XXL
+/// (4.7 B): loading it transiently holds the mmap'd source *and* the
+/// in-memory copy, and on Metal a unified-memory duplicate too — pushing
+/// the footprint past 32 GB on the canonical Σ checkpoint. On a 24 GB box
+/// this swap-thrashes rather than cleanly OOM-ing (the kernel keeps
+/// swapping, so [`crate::memwatch::MemoryGuard`]'s sustained-CRITICAL
+/// signal never trips). The code path is correct and the same family as
+/// the verified SD3.5 trainer; the showcase run wants ≥ 36 GB unified or a
+/// CUDA box. Same memory class as SD3.5 DreamBooth (carried debt).
+pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
+    use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
+
+    let device = req.device.clone();
+    let tag = "pixart-style-train";
+
+    // --- Phase A: encode images + caption(s) with the full pipeline, drop it.
+    tracing::info!(
+        "{tag}: encoding {} image(s) + caption \"{}\"",
+        req.images.len(),
+        req.trigger
+    );
+    let (latents, caption, class_data) = {
+        let mut pipe = Pipeline::load(LoadRequest {
+            repo: req.repo.clone(),
+            device: device.clone(),
+            vae_cache: None,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+        })
+        .await?;
+        let pdtype = pipe.dtype;
+        let encode_imgs = |pipe: &mut Pipeline,
+                           imgs: &[std::path::PathBuf]|
+         -> Result<Vec<Tensor>> {
+            let mut v = Vec::with_capacity(imgs.len());
+            for img in imgs {
+                let px = crate::imaging::preprocess::sd_image_tensor(
+                    img.as_path(),
+                    req.size,
+                    req.size,
+                    &device,
+                    pdtype,
+                )?;
+                // SDXL VAE has no shift; scale by 0.13025 into DiT latent
+                // space, then up to F32 (the DiT trains in F32).
+                let z = pipe.vae.encode(&px)?.sample()?;
+                v.push((z * PIXART_VAE_SCALE)?.to_dtype(DType::F32)?);
+            }
+            Ok(v)
+        };
+        let caption = pipe.encode_prompt(&req.trigger)?; // (1, max_tokens, 4096) F32
+        let latents = encode_imgs(&mut pipe, &req.images)?;
+        let class_data = if req.class_images.is_empty() {
+            None
+        } else {
+            let cp = req.class_prompt.as_deref().ok_or_else(|| {
+                anyhow!("prior preservation: --class-prompt is required when class images are given")
+            })?;
+            let ccap = pipe.encode_prompt(cp)?;
+            let clats = encode_imgs(&mut pipe, &req.class_images)?;
+            Some((clats, ccap))
+        };
+        (latents, caption, class_data)
+    }; // T5 (BF16) + DiT + VAE dropped here → freed
+
+    // --- Phase B: reload the DiT in F32, install trainable adapters.
+    tracing::info!("{tag}: loading DiT (F32) for training");
+    let dit_path = crate::hf::download::get_file(
+        &req.repo,
+        "transformer/diffusion_pytorch_model.safetensors",
+    )
+    .await
+    .context("downloading DiT transformer weights for PixArt training")?;
+    let dit_cfg = DitConfig::for_pixart_repo(&req.repo);
+    let dit_vb = unsafe {
+        candle_nn::VarBuilder::from_mmaped_safetensors(
+            &[dit_path.as_path()],
+            DType::F32,
+            &device,
+        )?
+    };
+    let dit = PixArtSigmaXL::new(dit_cfg, dit_vb).context("building DiT for training")?;
+    let adapters = dit.install_train_adapters(req.rank, 1.0, &device)?;
+    tracing::info!(
+        "{tag}: {} trainable attention adapters (rank {})",
+        adapters.len(),
+        req.rank
+    );
+    let vars: Vec<Var> = adapters
+        .iter()
+        .flat_map(|(_, a, b)| [a.clone(), b.clone()])
+        .collect();
+    let mut opt = AdamW::new(vars.clone(), ParamsAdamW { lr: req.lr, ..Default::default() })?;
+
+    // Σ resolution + aspect conditioning. Square training → asp (1, h/w=1).
+    let res = Tensor::new(&[req.size as f32, req.size as f32], &device)?
+        .reshape((1, 2))?;
+    let asp = Tensor::new(&[1.0_f32, 1.0_f32], &device)?.reshape((1, 2))?;
+
+    // --- Phase C: DDPM-ε loop. x_t = √ᾱ·x0 + √(1-ᾱ)·ε; predict ε (first 4 ch).
+    let abar = pixart_alphas_cumprod();
+    let n = latents.len().max(1);
+    let interval = ckpt_interval(req.checkpoint_every, req.steps);
+    let start_step = match &req.resume_from {
+        Some(ckpt) => {
+            load_pixart_peft_into_adapters(&adapters, ckpt, &device)?;
+            let s = crate::pipelines::sd_train::trainer::parse_resume_step(ckpt)
+                .unwrap_or(0)
+                .min(req.steps);
+            if s >= req.steps {
+                bail!(
+                    "{tag}: --resume checkpoint at step {s} ≥ --steps {}; \
+                     raise --steps to continue training",
+                    req.steps
+                );
+            }
+            tracing::info!("{tag}: resuming from {} at step {s}/{}", ckpt.display(), req.steps);
+            s
+        }
+        None => 0,
+    };
+    let mut progress =
+        crate::pipelines::train_progress::TrainProgress::new(req.steps, req.lr, interval);
+
+    let eps_loss = |dit: &PixArtSigmaXL,
+                    x0: &Tensor,
+                    cap: &Tensor|
+     -> Result<Tensor> {
+        let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?;
+        let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0)
+            as usize;
+        let a = abar[t];
+        let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
+        let t_vec = Tensor::full(t as f32, (1usize,), &device)?;
+        let pred = dit.forward(&x_t, &t_vec, cap, &res, &asp)?;
+        // learn_sigma=True → first 4 channels are the ε prediction.
+        let eps = pred.narrow(1, 0, 4)?;
+        Ok((&eps - &noise)?.sqr()?.mean_all()?)
+    };
+
+    for step in start_step..req.steps {
+        let x0 = &latents[step % n];
+        let mut loss = eps_loss(&dit, x0, &caption)?;
+        // DreamBooth prior preservation on an independent class sample.
+        if let Some((class_lat, ccap)) = &class_data {
+            let cn = class_lat.len().max(1);
+            let closs = eps_loss(&dit, &class_lat[step % cn], ccap)?;
+            loss = (&loss + (closs * req.prior_weight as f64)?)?;
+        }
+        let mut grads = loss.backward()?;
+        crate::pipelines::lora_linear::clip_grad_norm(&mut grads, &vars, 1.0)?;
+        opt.step(&grads)?;
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
+            tracing::info!("{}", progress.line(tag, step + 1, loss.to_scalar::<f32>()?));
+        }
+        if (step + 1) % interval == 0 && step + 1 != req.steps {
+            let ckpt = ckpt_path(&req.out, step + 1);
+            save_pixart_peft_lora(&adapters, req.rank, &ckpt)?;
+            tracing::info!("{tag}: checkpoint @ step {} → {}", step + 1, ckpt.display());
+        }
+    }
+
+    // --- Phase D: save diffusers-PEFT safetensors.
+    save_pixart_peft_lora(&adapters, req.rank, &req.out)?;
+    tracing::info!("{tag}: wrote {}", req.out.display());
+    tracing::info!("{}", progress.finish(tag, &req.out));
     Ok(())
 }
 
