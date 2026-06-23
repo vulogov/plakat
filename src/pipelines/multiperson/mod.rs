@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::pipelines::ip_adapter::{IdentityKind, WeightedPhoto};
 use crate::pipelines::portrait;
+use crate::pipelines::scrfd::{Face, SCRFDConfig, SCRFDDetector};
 
 /// One persona to place into the scene.
 pub struct Person {
@@ -57,6 +58,14 @@ pub struct MultipersonRequest {
     pub scheduler: crate::pipelines::scheduler::SchedulerKind,
     pub device: Device,
     pub dry_run: bool,
+    /// Run the identity face-refinement pass after the body inpaint (detect each
+    /// face with SCRFD, re-inpaint the face crop at high identity strength). This
+    /// is what actually makes the personas *look like* their reference photos —
+    /// identity injected over a whole body region is too diluted. Off → body-only.
+    pub refine_faces: bool,
+    /// Identity strength for the face-refinement pass (IP-Adapter scale). High by
+    /// default — the face crop is plus-face's sweet spot.
+    pub refine_face_strength: f32,
 }
 
 /// A persona resolved to a concrete screen region + how it's conditioned.
@@ -188,6 +197,34 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
     std::fs::create_dir_all(&req.out_dir).ok();
     let base_seed = req.seed.unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
 
+    // Optional SCRFD detector for the identity-refinement pass. The refinement
+    // itself ALWAYS runs when enabled (it's the identity fix) — by default it
+    // locates each face geometrically from the persona's placement region (which
+    // is exact), needing no extra weights. If the user has configured SCRFD we use
+    // its detected boxes instead for tighter alignment with the rendered face.
+    let detector = if req.refine_faces {
+        match crate::pipelines::scrfd::resolve_scrfd_weights().await {
+            Ok(Some(path)) => match SCRFDDetector::load(
+                &path,
+                SCRFDConfig::default(),
+                &req.device,
+                candle_core::DType::F32,
+            ) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} SCRFD load failed ({e}); face-refine will use geometric boxes",
+                        console::style("!").yellow().bold()
+                    ));
+                    None
+                }
+            },
+            _ => None, // no env config → geometric face boxes (still refines).
+        }
+    } else {
+        None
+    };
+
     for n in 0..req.count.max(1) {
         let seed = base_seed.wrapping_add(n as u64);
         let mk_req = |prompt: String, photos: Vec<WeightedPhoto>, face_strength: f32,
@@ -216,11 +253,13 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
             .generate_latents_one(&base_req, seed, &[])
             .context("multiperson: scene base generation")?;
 
-        // 2) inpaint each persona into their region, farther → closer.
+        // 2) inpaint each persona into their region, farther → closer. The region
+        //    prompt is SINGLE-person (not the whole-scene "three people" clause),
+        //    so the identity isn't diluted across the crowd.
         for r in &resolved {
             let p = &req.people[r.idx];
             let mask = crate::pipelines::tiled::region_mask(r.bbox, lh, lw, &req.device, dtype)?;
-            let region_prompt = mp.region_prompt(&base_prompt, p.prompt.as_deref(), r.facing_phrase);
+            let region_prompt = mp.single_region_prompt(p.prompt.as_deref(), r.facing_phrase);
             let preq = mk_req(
                 region_prompt,
                 p.photos.clone(),
@@ -233,12 +272,177 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
                 .with_context(|| format!("multiperson: inpaint persona '{}'", p.label))?;
         }
 
+        // 3) identity face-refinement: identity injected over a whole body region
+        //    is weak (the face is small in a tall mask). Re-inpaint just each
+        //    persona's face crop at high identity strength with a portrait framing
+        //    — plus-face's sweet spot. Face boxes come from SCRFD when configured,
+        //    else geometrically from the (exact) placement region. This is what
+        //    makes the outputs actually resemble the source photos.
+        if req.refine_faces {
+            latents = refine_persona_faces(
+                &pipe, detector.as_ref(), latents, &resolved, &req, &mp, seed, lh, lw, dtype,
+                &mk_req,
+            )
+            .with_context(|| format!("multiperson: face-refinement pass (seed {seed})"))?;
+        }
+
         let out = req.out_dir.join(format!("plakat-multiperson-{seed}.png"));
         pipe.save_image(&latents, &out)?;
         write_sidecar(&req, &resolved, &mp, &base_prompt, seed, &out)?;
         crate::ui::progress::println(&format!("  {} {}", console::style("✓").green().bold(), out.display()));
     }
     Ok(())
+}
+
+/// A documented, plakat-compatible SCRFD (converted `scrfd_10g_bnkps`). Used as
+/// the default for the multiperson face-refine pass when neither
+/// `PLAKAT_SCRFD_WEIGHTS` nor `PLAKAT_SCRFD_HF` is configured.
+/// Identity face-refinement: re-inpaint just each persona's face crop with their
+/// reference photos at high identity strength and a portrait framing. Face-focused
+/// conditioning is where plus-face transfers identity well; the whole-body inpaint
+/// can't. Face boxes come from SCRFD when a detector is supplied (tighter alignment
+/// with the rendered face), else geometrically from the persona's placement region.
+#[allow(clippy::too_many_arguments)]
+fn refine_persona_faces<F>(
+    pipe: &portrait::Pipeline,
+    detector: Option<&SCRFDDetector>,
+    mut latents: candle_core::Tensor,
+    resolved: &[Resolved],
+    req: &MultipersonRequest,
+    mp: &MultipersonPrompt,
+    seed: u64,
+    lh: usize,
+    lw: usize,
+    dtype: candle_core::DType,
+    mk_req: &F,
+) -> Result<candle_core::Tensor>
+where
+    F: Fn(String, Vec<WeightedPhoto>, f32, Option<[f32; 4]>, Option<[[f32; 2]; 5]>) -> portrait::GenRequest,
+{
+    let (w, h) = (req.width as f32, req.height as f32);
+
+    // Determine each persona's face box. SCRFD (if present) detects the actual
+    // rendered faces; otherwise we derive a box from the exact placement region.
+    let assignments: Vec<(usize, [f32; 4])> = match detector {
+        Some(det) => {
+            // Decode the current latents to a temp PNG so SCRFD can detect faces.
+            let tmp = tempfile::Builder::new()
+                .prefix("plakat-mp-faces-")
+                .suffix(".png")
+                .tempfile()
+                .context("creating face-refine tempfile")?;
+            pipe.save_image(&latents, tmp.path()).context("decoding render for face detection")?;
+            let detected = det.detect(tmp.path()).context("SCRFD detect on render")?;
+            let faces: Vec<&Face> = detected.iter().filter(|f| f.score >= 0.3).collect();
+            if faces.is_empty() {
+                crate::ui::progress::println(&format!(
+                    "  {} SCRFD found no faces — falling back to geometric face boxes",
+                    console::style("!").yellow().bold()
+                ));
+                resolved.iter().enumerate().map(|(ri, r)| (ri, geometric_face_box(&r.bbox))).collect()
+            } else {
+                assign_faces_to_personas(&faces, resolved, w, h)
+            }
+        }
+        None => resolved
+            .iter()
+            .enumerate()
+            .map(|(ri, r)| (ri, geometric_face_box(&r.bbox)))
+            .collect(),
+    };
+
+    for (ri, face_bbox) in assignments {
+        let r = &resolved[ri];
+        let p = &req.people[r.idx];
+        let mask = crate::pipelines::tiled::region_mask(face_bbox, lh, lw, &req.device, dtype)?;
+        let prompt = mp.face_region_prompt(r.facing_phrase);
+        let preq = mk_req(
+            prompt,
+            p.photos.clone(),
+            req.refine_face_strength,
+            p.face_bbox,
+            p.face_landmarks,
+        );
+        // Decorrelate the refine seed from the body pass so the face isn't a
+        // re-roll of the same noise.
+        latents = pipe
+            .inpaint_latents_one(&latents, &mask, &preq, seed.wrapping_add(0x9e37_79b9), &[], None)
+            .with_context(|| format!("multiperson: face-refine persona '{}'", p.label))?;
+        crate::ui::progress::println(&format!(
+            "  {} face-refined {}",
+            console::style("·").cyan(),
+            p.label
+        ));
+    }
+    Ok(latents)
+}
+
+/// Greedily match each detected face to the persona whose region best explains it.
+/// For every persona (in render order) we take its expected face point — the
+/// horizontal centre of its body region, near the top — and claim the nearest
+/// still-unused detected face. Returns `(index into `resolved`, padded normalised
+/// face bbox)` pairs. Robust to extra/spurious detections (they go unclaimed).
+fn assign_faces_to_personas(
+    faces: &[&Face],
+    resolved: &[Resolved],
+    w: f32,
+    h: f32,
+) -> Vec<(usize, [f32; 4])> {
+    let mut used = vec![false; faces.len()];
+    let mut out = Vec::with_capacity(resolved.len());
+    for (ri, r) in resolved.iter().enumerate() {
+        let ex = (r.bbox[0] + r.bbox[2]) * 0.5;
+        let ey = r.bbox[1] + 0.18 * (r.bbox[3] - r.bbox[1]);
+        let mut best: Option<usize> = None;
+        let mut best_d = f32::MAX;
+        for (fi, f) in faces.iter().enumerate() {
+            if used[fi] {
+                continue;
+            }
+            let fcx = (f.bbox[0] + f.bbox[2]) * 0.5 / w;
+            let fcy = (f.bbox[1] + f.bbox[3]) * 0.5 / h;
+            let d = (fcx - ex).powi(2) + (fcy - ey).powi(2);
+            if d < best_d {
+                best_d = d;
+                best = Some(fi);
+            }
+        }
+        if let Some(fi) = best {
+            used[fi] = true;
+            out.push((ri, pad_norm_bbox(faces[fi], w, h, 0.35)));
+        }
+    }
+    out
+}
+
+/// A face box derived geometrically from a persona's body region — the top-centre
+/// slab where a standing/seated figure's head sits. Used when SCRFD isn't
+/// configured: placement is exact, so the head is reliably at the top-centre of
+/// the region. Width ≈ half the body width, height ≈ the top ~26%.
+fn geometric_face_box(body: &[f32; 4]) -> [f32; 4] {
+    let (bw, bh) = (body[2] - body[0], body[3] - body[1]);
+    let cx = (body[0] + body[2]) * 0.5;
+    let half_w = bw * 0.27; // ~54% of body width
+    let y0 = body[1] + bh * 0.03;
+    let y1 = body[1] + bh * 0.29;
+    [
+        (cx - half_w).clamp(0.0, 1.0),
+        y0.clamp(0.0, 1.0),
+        (cx + half_w).clamp(0.0, 1.0),
+        y1.clamp(0.0, 1.0),
+    ]
+}
+
+/// Pixel face bbox → normalised, padded by `pad` of its size each side, clamped.
+fn pad_norm_bbox(f: &Face, w: f32, h: f32, pad: f32) -> [f32; 4] {
+    let (x0, y0, x1, y1) = (f.bbox[0] / w, f.bbox[1] / h, f.bbox[2] / w, f.bbox[3] / h);
+    let (dx, dy) = ((x1 - x0) * pad, (y1 - y0) * pad);
+    [
+        (x0 - dx).clamp(0.0, 1.0),
+        (y0 - dy).clamp(0.0, 1.0),
+        (x1 + dx).clamp(0.0, 1.0),
+        (y1 + dy).clamp(0.0, 1.0),
+    ]
 }
 
 fn write_sidecar(
@@ -275,8 +479,83 @@ fn write_sidecar(
         "size": format!("{}x{}", req.width, req.height),
         "steps": req.steps,
         "guidance": req.guidance,
+        "face_refine": req.refine_faces,
+        "refine_face_strength": req.refine_face_strength,
         "persons": persons,
     });
     std::fs::write(out.with_extension("json"), serde_json::to_string_pretty(&v)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn face(x0: f32, y0: f32, x1: f32, y1: f32) -> Face {
+        Face { bbox: [x0, y0, x1, y1], landmarks: [[0.0; 2]; 5], score: 0.9 }
+    }
+
+    fn resolved_at(bbox: [f32; 4]) -> Resolved {
+        Resolved { idx: 0, bbox, facing_phrase: None, order_y: 0.0, source: "at" }
+    }
+
+    #[test]
+    fn pad_norm_bbox_normalises_and_pads() {
+        // 100×100 px image; a 20px face at (40,30)-(60,50).
+        let b = pad_norm_bbox(&face(40.0, 30.0, 60.0, 50.0), 100.0, 100.0, 0.5);
+        // centre preserved; padded by 0.5×0.2 = 0.1 each side.
+        assert!((b[0] - 0.30).abs() < 1e-5);
+        assert!((b[2] - 0.70).abs() < 1e-5);
+        assert!(b.iter().all(|&v| (0.0..=1.0).contains(&v)));
+    }
+
+    #[test]
+    fn assign_matches_faces_to_nearest_persona_by_region() {
+        // Two personas: one on the left, one on the right.
+        let resolved = vec![
+            resolved_at([0.05, 0.30, 0.45, 0.95]), // left
+            resolved_at([0.55, 0.30, 0.95, 0.95]), // right
+        ];
+        // Two detected faces near the top of each band (1000×1000 px).
+        let left_face = face(200.0, 350.0, 300.0, 450.0); // cx 0.25
+        let right_face = face(700.0, 350.0, 800.0, 450.0); // cx 0.75
+        // Pass them out of order to prove matching is by position, not index.
+        let faces = vec![&right_face, &left_face];
+        let pairs = assign_faces_to_personas(&faces, &resolved, 1000.0, 1000.0);
+        assert_eq!(pairs.len(), 2);
+        // persona 0 (left) should get the left face → cx ≈ 0.25.
+        let p0 = pairs.iter().find(|(ri, _)| *ri == 0).unwrap();
+        let cx0 = (p0.1[0] + p0.1[2]) * 0.5;
+        assert!((cx0 - 0.25).abs() < 0.06, "left persona matched cx {cx0}");
+        // persona 1 (right) should get the right face → cx ≈ 0.75.
+        let p1 = pairs.iter().find(|(ri, _)| *ri == 1).unwrap();
+        let cx1 = (p1.1[0] + p1.1[2]) * 0.5;
+        assert!((cx1 - 0.75).abs() < 0.06, "right persona matched cx {cx1}");
+    }
+
+    #[test]
+    fn geometric_face_box_sits_top_centre_of_region() {
+        // A tall body region on the left half.
+        let fb = geometric_face_box(&[0.10, 0.20, 0.50, 0.95]);
+        // horizontally centred on the body (cx 0.30).
+        let cx = (fb[0] + fb[2]) * 0.5;
+        assert!((cx - 0.30).abs() < 1e-5, "cx {cx}");
+        // top of the box near the top of the region, well above its vertical mid.
+        assert!(fb[1] >= 0.20 && fb[1] < 0.30);
+        assert!(fb[3] < (0.20 + 0.95) * 0.5, "face box stays in upper region");
+        assert!(fb.iter().all(|&v| (0.0..=1.0).contains(&v)));
+    }
+
+    #[test]
+    fn assign_never_reuses_a_face() {
+        let resolved = vec![
+            resolved_at([0.05, 0.30, 0.45, 0.95]),
+            resolved_at([0.10, 0.30, 0.50, 0.95]), // overlapping; both want same face
+        ];
+        let only = face(200.0, 350.0, 300.0, 450.0);
+        let faces = vec![&only];
+        let pairs = assign_faces_to_personas(&faces, &resolved, 1000.0, 1000.0);
+        // Only one face exists → only one persona is matched.
+        assert_eq!(pairs.len(), 1);
+    }
 }

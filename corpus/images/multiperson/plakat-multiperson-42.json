@@ -1,6 +1,7 @@
 {
   "base_prompt": "three people sitting at a table playing chess, warm interior light, detailed digital painting",
   "command": "multiperson",
+  "face_refine": true,
   "guidance": 7.0,
   "identity": "PlusFaceSdxl",
   "layout_provider": "none",
@@ -46,6 +47,7 @@
       "placement_source": "at"
     }
   ],
+  "refine_face_strength": 0.8999999761581421,
   "scene_clause": "three people sitting at a table playing chess, warm interior light",
   "seed": 42,
   "size": "1024x768",
