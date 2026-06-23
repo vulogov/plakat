@@ -446,6 +446,8 @@ pub struct Pipeline {
 /// added-token id used to locate the trigger in a tokenized prompt. Vectors are
 /// in the pipeline dtype/device. See [`Pipeline::encode_prompt_ti`].
 struct LoadedSd3Ti {
+    /// Kept for diagnostics/logging at load time; lookup uses the per-encoder ids.
+    #[allow(dead_code)]
     trigger: String,
     /// Added-token id in clip_l_tok / clip_g_tok / t5_tok respectively (each
     /// tokenizer has its own vocab, so the same trigger gets three ids).
@@ -610,7 +612,7 @@ impl Pipeline {
             let trigger = spec.trigger.clone().unwrap_or_else(|| {
                 crate::pipelines::embedding::derive_trigger_from_path(&path)
             });
-            let mut reg = |tok: &mut Tokenizer, trig: &str| -> u32 {
+            let reg = |tok: &mut Tokenizer, trig: &str| -> u32 {
                 tok.add_tokens(&[tokenizers::AddedToken::from(trig.to_string(), false)]);
                 tok.token_to_id(trig).unwrap_or(0)
             };
