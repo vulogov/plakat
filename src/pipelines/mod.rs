@@ -16,6 +16,7 @@ pub mod sdxl_clip;
 pub mod sd_train;
 pub mod sdxl_unet;
 pub mod vendored_clip;
+pub mod vendored_t5;
 pub mod tiled;
 pub mod extra_schedulers;
 pub mod hires_fix;

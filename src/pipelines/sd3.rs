@@ -63,7 +63,14 @@ use candle_nn::VarBuilder;
 // Pre-phase-6 callers see identical behaviour — the vendor's
 // `forward(...)` delegates to `forward_with_residuals(... None)`.
 use crate::pipelines::mmdit_inner as mmdit;
-use candle_transformers::models::{stable_diffusion::vae as sdvae, t5};
+use candle_transformers::models::stable_diffusion::vae as sdvae;
+// v1.10.0: SD3.5 Textual-Inversion training needs a differentiable
+// forward-from-input-embeds + token-embedding access on T5, which candle's
+// `t5::T5EncoderModel` doesn't expose. We use a faithful vendored copy
+// (byte-equivalent encoder math + `embed_tokens` / `forward_from_input_embeds`)
+// aliased as `t5` so every existing call site (`t5::Config`,
+// `T5EncoderModel::load`, `.forward`) is unchanged — inference is identical.
+use crate::pipelines::vendored_t5 as t5;
 
 /// Build the MMDiT VarBuilder, transparently remapping a **diffusers**-format
 /// transformer checkpoint to plakat's SAI/mmdit naming.
@@ -2070,6 +2077,218 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
     save_peft_lora(&adapters, req.rank, hidden, &req.out)?;
     tracing::info!("style-train: wrote {}", req.out.display());
     tracing::info!("{}", progress.finish("style-train", &req.out));
+    Ok(())
+}
+
+/// SD 3.5 Textual Inversion: learn a placeholder token vector in EACH of the
+/// three text encoders (CLIP-L 768 + CLIP-G 1280 + T5 4096) with the whole
+/// model **frozen**. Reproduces SD3's exact triple-encoder conditioning with
+/// the trainable vectors spliced into each encoder's init-word slot (a
+/// differentiable masked combine → the gradient reaches only those vectors),
+/// and backprops the **rectified-flow velocity** loss through the frozen MMDiT.
+/// Saves a triple embedding file (`clip_l` + `clip_g` + `t5`), loadable via
+/// `--embedding PATH:trigger`.
+///
+/// **Memory-bound** like the SD3.5 LoRA trainer: CLIP-L + CLIP-G + T5-XXL +
+/// MMDiT must all stay resident in one autograd forward — past 24 GB on the
+/// canonical checkpoint. The training itself is light (three vectors); the wall
+/// is the resident encoders. Keep `--size` modest.
+pub async fn train_textual_inversion(
+    req: crate::pipelines::ti_train::TiTrainRequest,
+) -> Result<()> {
+    use crate::pipelines::ti_train::{slot_masks, splice};
+    use candle_core::Var;
+    use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
+
+    let device = req.device.clone();
+    // SD3.5-medium is the only published SD3 checkpoint plakat verifies.
+    let pipe = Pipeline::load(LoadRequest {
+        variant: Variant::Sd35Medium,
+        repo: "stabilityai/stable-diffusion-3.5-medium".to_string(),
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        controlnets: Vec::new(),
+    })
+    .await?;
+    let dtype = pipe.dtype;
+    tracing::info!(
+        "ti-train(sd35): frozen MMDiT + triple encoders loaded; encoding {} image(s)",
+        req.images.len()
+    );
+
+    // --- encode images → latents (frozen VAE, SD3 normalization) ---
+    let mut latents = Vec::with_capacity(req.images.len());
+    for img in &req.images {
+        let px = crate::imaging::preprocess::sd_image_tensor(
+            img.as_path(),
+            req.size,
+            req.size,
+            &device,
+            dtype,
+        )?;
+        let z = pipe.vae.encode(&px)?.sample()?;
+        latents.push(((z - VAE_SHIFT)? * VAE_SCALE)?.to_dtype(dtype)?);
+    }
+    let n = latents.len().max(1);
+
+    // --- template "a photo of <init>"; per-encoder token slot ---
+    let prompt = format!("a photo of {}", req.init_word.trim());
+
+    // CLIP-L ids + slot + EOT position (the pooled row).
+    let mut l_ids: Vec<u32> = pipe
+        .clip_l_tok
+        .encode(prompt.as_str(), true)
+        .map_err(|e| anyhow!("CLIP-L encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    let l_max = pipe.clip_l_cfg.max_position_embeddings;
+    l_ids.resize(l_max, CLIP_EOT);
+    let l_eot = l_ids.iter().position(|&t| t == CLIP_EOT).unwrap_or(0);
+    if l_eot < 2 {
+        bail!(
+            "init word {:?} tokenized oddly — pick a simple class word (e.g. 'art', 'toy')",
+            req.init_word
+        );
+    }
+    let slot_l = l_eot - 1;
+    let ids_l = Tensor::new(l_ids.as_slice(), &device)?.unsqueeze(0)?;
+
+    // CLIP-G ids + slot.
+    let mut g_ids: Vec<u32> = pipe
+        .clip_g_tok
+        .encode(prompt.as_str(), true)
+        .map_err(|e| anyhow!("CLIP-G encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    g_ids.resize(77, CLIP_EOT);
+    let g_eot = g_ids.iter().position(|&t| t == CLIP_EOT).unwrap_or(0);
+    let slot_g = g_eot.saturating_sub(1);
+    let ids_g = Tensor::new(g_ids.as_slice(), &device)?.unsqueeze(0)?;
+
+    // T5 ids + slot (</s>-terminated, pad 0 to the T5 budget).
+    let t5_seq = pipe.variant.t5_seq_len();
+    let t5_eos = pipe
+        .t5_tok
+        .token_to_id("</s>")
+        .ok_or_else(|| anyhow!("T5 tokenizer missing </s>"))?;
+    let mut t_ids: Vec<u32> = pipe
+        .t5_tok
+        .encode(prompt.as_str(), true)
+        .map_err(|e| anyhow!("T5 encode: {e}"))?
+        .get_ids()
+        .to_vec();
+    let t5_eos_pos = t_ids
+        .iter()
+        .position(|&t| t == t5_eos)
+        .unwrap_or(t_ids.len().saturating_sub(1));
+    let slot_t5 = t5_eos_pos.saturating_sub(1);
+    t_ids.truncate(t5_seq);
+    t_ids.resize(t5_seq, 0);
+    let ids_t5 = Tensor::new(t_ids.as_slice(), &device)?.unsqueeze(0)?;
+
+    // --- init each placeholder from its encoder's init-word embedding ---
+    let ph_l = Var::from_tensor(
+        &pipe.clip_l.embed_tokens(&ids_l)?.i((0, slot_l))?.to_dtype(DType::F32)?.unsqueeze(0)?,
+    )?;
+    let ph_g = Var::from_tensor(
+        &pipe.clip_g.embed_tokens(&ids_g)?.i((0, slot_g))?.to_dtype(DType::F32)?.unsqueeze(0)?,
+    )?;
+    let ph_t5 = Var::from_tensor(
+        &pipe.t5_enc.embed_tokens(&ids_t5)?.i((0, slot_t5))?.to_dtype(DType::F32)?.unsqueeze(0)?,
+    )?;
+
+    let (mask_l, inv_l) = slot_masks(slot_l, l_max, &device, dtype)?;
+    let (mask_g, inv_g) = slot_masks(slot_g, 77, &device, dtype)?;
+    let (mask_t5, inv_t5) = slot_masks(slot_t5, t5_seq, &device, dtype)?;
+
+    let mut opt = AdamW::new(
+        vec![ph_l.clone(), ph_g.clone(), ph_t5.clone()],
+        ParamsAdamW { lr: req.lr, ..Default::default() },
+    )?;
+
+    let mut progress =
+        crate::pipelines::train_progress::TrainProgress::new(req.steps, req.lr, req.steps + 1);
+    tracing::info!(
+        "ti-train(sd35): token {:?} init from {:?} (slots L{slot_l}/G{slot_g}/T5{slot_t5}), {} steps",
+        req.token,
+        req.init_word,
+        req.steps
+    );
+
+    for step in 0..req.steps {
+        // Splice each trainable vector into its encoder, then reproduce SD3's
+        // exact triple-encoder conditioning.
+        let spliced_l = splice(&pipe.clip_l.embed_tokens(&ids_l)?, &ph_l, &mask_l, &inv_l, dtype)?;
+        let (l_final, l_penult) =
+            pipe.clip_l.forward_until_encoder_layer_from_embeds(&spliced_l, usize::MAX, -2)?;
+        let l_pooled = l_final.i((.., l_eot, ..))?.to_dtype(dtype)?;
+        let l_penult = l_penult.to_dtype(dtype)?;
+
+        let spliced_g = splice(&pipe.clip_g.embed_tokens(&ids_g)?, &ph_g, &mask_g, &inv_g, dtype)?;
+        let (g_penult, g_pooled) = pipe.clip_g.forward_for_sdxl_from_embeds(&spliced_g, &ids_g)?;
+        let g_penult = g_penult.to_dtype(dtype)?;
+        let g_pooled = g_pooled.to_dtype(dtype)?;
+
+        let spliced_t5 = splice(&pipe.t5_enc.embed_tokens(&ids_t5)?, &ph_t5, &mask_t5, &inv_t5, dtype)?;
+        let t5_hidden = pipe.t5_enc.forward_from_input_embeds(&spliced_t5)?.to_dtype(dtype)?;
+
+        // y = [CLIP-L pooled, CLIP-G pooled] (768+1280=2048) — the SD3 order.
+        let y = Tensor::cat(&[&l_pooled, &g_pooled], candle_core::D::Minus1)?;
+        // context = [CLIP-L⊕CLIP-G penult → 2048, zero-pad → 4096] ⧺seq T5.
+        let clip_concat = Tensor::cat(&[&l_penult, &g_penult], candle_core::D::Minus1)?;
+        let (b, seq, _ch) = clip_concat.dims3()?;
+        let pad = Tensor::zeros((b, seq, 4096 - 2048), dtype, &device)?;
+        let clip_padded = Tensor::cat(&[&clip_concat, &pad], candle_core::D::Minus1)?;
+        let context = Tensor::cat(&[&clip_padded, &t5_hidden], 1)?;
+
+        // rectified-flow velocity loss through the frozen MMDiT.
+        let x0 = &latents[step % n];
+        let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
+        let sigma = 0.05
+            + 0.90 * Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] as f64;
+        let x_t = ((x0 * (1.0 - sigma))? + (&noise * sigma)?)?;
+        let target = (&noise - x0)?;
+        let t_vec = Tensor::full((sigma * 1000.0) as f32, (1usize,), &device)?;
+        let pred = pipe.mmdit_model.forward(&x_t, &t_vec, &y, &context, None)?;
+        let loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
+        let grads = loss.backward()?;
+        opt.step(&grads)?;
+        if step % req.log_every.max(1) == 0 || step + 1 == req.steps {
+            tracing::info!(
+                "{}",
+                progress.line("ti-train(sd35)", step + 1, loss.to_scalar::<f32>()?)
+            );
+        }
+    }
+
+    // --- save the triple embedding: clip_l (1,768) + clip_g (1,1280) + t5 (1,4096) ---
+    if let Some(parent) = req.out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut tensors: std::collections::HashMap<String, Tensor> = std::collections::HashMap::new();
+    tensors.insert(
+        "clip_l".into(),
+        ph_l.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?,
+    );
+    tensors.insert(
+        "clip_g".into(),
+        ph_g.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?,
+    );
+    tensors.insert(
+        "t5".into(),
+        ph_t5.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?,
+    );
+    candle_core::safetensors::save(&tensors, &req.out)?;
+    tracing::info!(
+        "ti-train(sd35): wrote {} (clip_l+clip_g+t5) — use it with  --embedding {}:{}",
+        req.out.display(),
+        req.out.display(),
+        req.token
+    );
+    tracing::info!("{}", progress.finish("ti-train(sd35)", &req.out));
     Ok(())
 }
 
