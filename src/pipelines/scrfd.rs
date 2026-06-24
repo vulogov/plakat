@@ -712,11 +712,19 @@ pub fn preflight_scrfd() -> Result<bool> {
     Ok(true)
 }
 
+/// Default plakat-hosted SCRFD-500MF weights (a `plakat convert-onnx` of
+/// InsightFace's `det_500m.onnx`). Used when neither `PLAKAT_SCRFD_WEIGHTS` nor
+/// `PLAKAT_SCRFD_HF` is set, so face detection works out of the box. Override
+/// either env var to point elsewhere.
+pub const DEFAULT_SCRFD_REPO: &str = "vulogov/plakat-scrfd-500m";
+pub const DEFAULT_SCRFD_FILE: &str = "scrfd_500m.safetensors";
+
 /// Async resolver — turns env-var config into a local safetensors path.
-/// Returns `Ok(None)` if neither `PLAKAT_SCRFD_WEIGHTS` nor `PLAKAT_SCRFD_HF`
-/// is set (SCRFD is opt-in, so unset is fine).
 ///
-/// Priority: local path wins over HF spec.
+/// Priority: `PLAKAT_SCRFD_WEIGHTS` (local) > `PLAKAT_SCRFD_HF` (HF spec) >
+/// the bundled default repo. The default download degrades gracefully: if it
+/// fails (e.g. repo not yet published), this returns `Ok(None)` so callers fall
+/// back (FaceID → centre-crop, multiperson → geometric boxes) instead of erroring.
 pub async fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
     if let Ok(env) = std::env::var("PLAKAT_SCRFD_WEIGHTS") {
         let path = std::path::PathBuf::from(&env);
@@ -742,5 +750,21 @@ pub async fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
         s.finish_with_message(format!("✓ SCRFD cached at {}", path.display()));
         return Ok(Some(path));
     }
-    Ok(None)
+    // No explicit config → try the bundled default, but never hard-fail on it.
+    let s = crate::ui::progress::spinner("Downloading SCRFD-500MF face detector (default)");
+    match crate::hf::download::get_file(DEFAULT_SCRFD_REPO, DEFAULT_SCRFD_FILE).await {
+        Ok(path) => {
+            s.finish_with_message(format!("✓ SCRFD cached at {}", path.display()));
+            Ok(Some(path))
+        }
+        Err(e) => {
+            s.finish_and_clear();
+            tracing::debug!(
+                target: "plakat",
+                "default SCRFD ({DEFAULT_SCRFD_REPO}/{DEFAULT_SCRFD_FILE}) unavailable: {e:#}; \
+                 set PLAKAT_SCRFD_WEIGHTS / PLAKAT_SCRFD_HF to enable face detection"
+            );
+            Ok(None)
+        }
+    }
 }
