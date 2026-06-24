@@ -39,65 +39,111 @@ pub enum Arch {
     /// InsightFace SCRFD-500MF face detector (`det_500m.onnx`).
     #[value(name = "scrfd-500mf")]
     Scrfd500mf,
+    /// InsightFace `inswapper_128.onnx` face-swap generator.
+    #[value(name = "inswapper-128")]
+    Inswapper128,
+}
+
+impl Arch {
+    /// plakat tensor-name prefix per node, keyed by ONNX op_type, each list in
+    /// graph order. Every listed node contributes `<name>.weight` (+ `.bias`).
+    fn name_map(self) -> Vec<(&'static str, Vec<String>)> {
+        match self {
+            Arch::Scrfd500mf => vec![("Conv", scrfd_500mf_conv_names())],
+            Arch::Inswapper128 => vec![
+                ("Conv", inswapper_conv_names()),
+                ("Gemm", inswapper_gemm_names()),
+            ],
+        }
+    }
 }
 
 pub async fn run(args: ConvertOnnxArgs) -> Result<()> {
     if !args.input.exists() {
         bail!("input ONNX not found: {}", args.input.display());
     }
-    let names = match args.arch {
-        Arch::Scrfd500mf => scrfd_500mf_conv_names(),
-    };
-
     let model = candle_onnx::read_file(&args.input)
         .with_context(|| format!("parsing ONNX {}", args.input.display()))?;
     let graph = model.graph.context("ONNX model has no graph")?;
     let inits: HashMap<&str, &candle_onnx::onnx::TensorProto> =
         graph.initializer.iter().map(|t| (t.name.as_str(), t)).collect();
 
-    // Convolutions in topological (graph) order. SCRFD's weights carry their BN
-    // folded in, so every conv has a weight + bias and there are no separate
-    // norm tensors to map.
-    let convs: Vec<&candle_onnx::onnx::NodeProto> =
-        graph.node.iter().filter(|n| n.op_type == "Conv").collect();
-    if convs.len() != names.len() {
-        bail!(
-            "{:?}: expected {} Conv nodes, ONNX has {} — wrong model or arch?",
-            args.arch,
-            names.len(),
-            convs.len()
-        );
-    }
-
     let mut out: HashMap<String, Tensor> = HashMap::new();
-    for (plakat_name, node) in names.iter().zip(&convs) {
-        let w_name = node.input.get(1).context("Conv node has no weight input")?;
-        let w = inits
-            .get(w_name.as_str())
-            .with_context(|| format!("weight initializer {w_name:?} not found in graph"))?;
-        let weight = candle_onnx::eval::get_tensor(w, w_name)
-            .with_context(|| format!("reading weight {w_name:?}"))?;
-        out.insert(format!("{plakat_name}.weight"), weight);
+    let mut total_nodes = 0usize;
+    for (op_type, names) in args.arch.name_map() {
+        // Nodes of this op type in topological (graph) order. SCRFD/inswapper
+        // weights fold their norm into each conv's bias, so the per-node weight
+        // (+ optional bias) is all that needs mapping.
+        let nodes: Vec<&candle_onnx::onnx::NodeProto> =
+            graph.node.iter().filter(|n| n.op_type == op_type).collect();
+        if nodes.len() != names.len() {
+            bail!(
+                "{:?}: expected {} {op_type} nodes, ONNX has {} — wrong model or arch?",
+                args.arch,
+                names.len(),
+                nodes.len()
+            );
+        }
+        for (plakat_name, node) in names.iter().zip(&nodes) {
+            let w_name = node.input.get(1).context("node has no weight input")?;
+            let w = inits
+                .get(w_name.as_str())
+                .with_context(|| format!("weight initializer {w_name:?} not found in graph"))?;
+            let weight = candle_onnx::eval::get_tensor(w, w_name)
+                .with_context(|| format!("reading weight {w_name:?}"))?;
+            out.insert(format!("{plakat_name}.weight"), weight);
 
-        if let Some(b_name) = node.input.get(2) {
-            if let Some(b) = inits.get(b_name.as_str()) {
-                let bias = candle_onnx::eval::get_tensor(b, b_name)
-                    .with_context(|| format!("reading bias {b_name:?}"))?;
-                out.insert(format!("{plakat_name}.bias"), bias);
+            if let Some(b_name) = node.input.get(2) {
+                if let Some(b) = inits.get(b_name.as_str()) {
+                    let bias = candle_onnx::eval::get_tensor(b, b_name)
+                        .with_context(|| format!("reading bias {b_name:?}"))?;
+                    out.insert(format!("{plakat_name}.bias"), bias);
+                }
             }
         }
+        total_nodes += nodes.len();
     }
 
     candle_core::safetensors::save(&out, &args.output)
         .with_context(|| format!("writing {}", args.output.display()))?;
     println!(
-        "✓ {:?}: {} conv layers → {} tensors → {}",
+        "✓ {:?}: {} layers → {} tensors → {}",
         args.arch,
-        convs.len(),
+        total_nodes,
         out.len(),
         args.output.display()
     );
     Ok(())
+}
+
+/// Conv-node plakat names for `inswapper_128`, in graph order (20 convs):
+/// 4 encoder, 6 residual AdaIN blocks × 2 convs, 3 decoder + final.
+fn inswapper_conv_names() -> Vec<String> {
+    let mut n: Vec<String> = Vec::with_capacity(20);
+    for i in 0..4 {
+        n.push(format!("enc{i}"));
+    }
+    for b in 0..6 {
+        n.push(format!("block{b}.conv0"));
+        n.push(format!("block{b}.conv1"));
+    }
+    for i in 0..3 {
+        n.push(format!("dec{i}"));
+    }
+    n.push("out_conv".into());
+    debug_assert_eq!(n.len(), 20);
+    n
+}
+
+/// Gemm-node plakat names for `inswapper_128`, in graph order (12 styles):
+/// each AdaIN block's two style projections (source 512 → 2048 = scale+bias).
+fn inswapper_gemm_names() -> Vec<String> {
+    let mut n = Vec::with_capacity(12);
+    for b in 0..6 {
+        n.push(format!("block{b}.style0"));
+        n.push(format!("block{b}.style1"));
+    }
+    n
 }
 
 /// plakat tensor-name prefix for each Conv node of SCRFD-500MF, in graph order.
