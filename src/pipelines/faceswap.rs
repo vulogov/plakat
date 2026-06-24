@@ -137,11 +137,25 @@ impl FaceSwapper {
         target_landmarks: [[f32; 2]; 5],
         latent: &Tensor,
     ) -> Result<RgbImage> {
+        let (result, _, _) = self.swap_into_debug(scene, target_landmarks, latent)?;
+        Ok(result)
+    }
+
+    /// Like `swap_into` but also returns the 128² aligned **target** crop and the
+    /// 128² **swapped** crop — for diagnosing whether the swap transferred at the
+    /// crop level (vs. a paste-back / scale issue).
+    pub fn swap_into_debug(
+        &self,
+        scene: &RgbImage,
+        target_landmarks: [[f32; 2]; 5],
+        latent: &Tensor,
+    ) -> Result<(RgbImage, RgbImage, RgbImage)> {
         let (target128, forward) = face_models::norm_crop(scene, target_landmarks, 128);
         let t = img_to_tensor(&target128, 0.0, 255.0, &self.device)?; // inswapper: /255, no mean
         let swapped = self.inswapper.forward(&t, latent)?; // (1,3,128,128) in [0,1]
         let swapped_img = tensor_to_img(&swapped)?;
-        Ok(paste_back(scene, &swapped_img, forward))
+        let result = paste_back(scene, &swapped_img, forward);
+        Ok((result, target128, swapped_img))
     }
 }
 

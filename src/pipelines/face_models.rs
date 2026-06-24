@@ -143,70 +143,26 @@ fn similarity_transform_2d(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 6] {
     let (sx_m, sy_m) = (sx / n, sy / n);
     let (dx_m, dy_m) = (dx / n, dy / n);
 
-    // Centered points + cross-covariance H (2×2).
-    let mut h = [[0.0f32; 2]; 2];
-    let mut var_src = 0.0f32;
+    // Direct least-squares 2D similarity (rotation + uniform scale + translation,
+    // NO reflection — face alignment must never mirror). For centred src `p` and
+    // dst `q`:
+    //   a = Σ(pₓqₓ + p_yq_y),  b = Σ(pₓq_y − p_yqₓ),  d = Σ|p|²
+    //   s·cosθ = a/d,  s·sinθ = b/d
+    // This is closed-form and unambiguous — unlike the 2×2-SVD reconstruction it
+    // replaces, which produced a spurious ~180° rotation for some landmark sets
+    // (upside-down crops). Matches skimage's `SimilarityTransform`.
+    let (mut a, mut b, mut var_src) = (0.0f32, 0.0f32, 0.0f32);
     for i in 0..src.len() {
-        let sxi = src[i][0] - sx_m;
-        let syi = src[i][1] - sy_m;
-        let dxi = dst[i][0] - dx_m;
-        let dyi = dst[i][1] - dy_m;
-        // H = sum( src_centered_i^T @ dst_centered_i )
-        h[0][0] += sxi * dxi;
-        h[0][1] += sxi * dyi;
-        h[1][0] += syi * dxi;
-        h[1][1] += syi * dyi;
-        var_src += sxi * sxi + syi * syi;
+        let (px, py) = (src[i][0] - sx_m, src[i][1] - sy_m);
+        let (qx, qy) = (dst[i][0] - dx_m, dst[i][1] - dy_m);
+        a += px * qx + py * qy;
+        b += px * qy - py * qx;
+        var_src += px * px + py * py;
     }
-
-    // 2×2 SVD via direct formulas (closed form). H = U Σ Vᵀ.
-    // Reference: https://scicomp.stackexchange.com/a/14710
-    let (a, b, c, d) = (h[0][0], h[0][1], h[1][0], h[1][1]);
-    let e = (a + d) * 0.5;
-    let f = (a - d) * 0.5;
-    let g = (c + b) * 0.5;
-    let q = (c - b) * 0.5;
-    let r1 = (e * e + q * q).sqrt();
-    let r2 = (f * f + g * g).sqrt();
-    let sx_sv = r1 + r2;
-    let sy_sv = (r1 - r2).max(0.0);
-    let a1 = q.atan2(e);
-    let a2 = g.atan2(f);
-    let theta = (a1 - a2) * 0.5;
-    let phi = (a1 + a2) * 0.5;
-    // U = R(phi) reflected by sign(d_det), V = R(theta).
-    let det_h = a * d - b * c;
-    let sign = if det_h < 0.0 { -1.0 } else { 1.0 };
-    let (cp, sp) = (phi.cos(), phi.sin());
-    let (ct, st) = (theta.cos(), theta.sin());
-    let u = [[cp, -sp * sign], [sp, cp * sign]]; // 2×2 U with reflection fix
-    let v = [[ct, -st], [st, ct]]; // 2×2 V
-    let s_diag = [sx_sv, sy_sv * sign];
-
-    // Rotation R = U @ Vᵀ.
-    let r = [
-        [
-            u[0][0] * v[0][0] + u[0][1] * v[0][1],
-            u[0][0] * v[1][0] + u[0][1] * v[1][1],
-        ],
-        [
-            u[1][0] * v[0][0] + u[1][1] * v[0][1],
-            u[1][0] * v[1][0] + u[1][1] * v[1][1],
-        ],
-    ];
-
-    // Scale c = sum(Σ) / var_src.
-    let scale = if var_src > 0.0 {
-        (s_diag[0] + s_diag[1]) / var_src
-    } else {
-        1.0
-    };
-
-    // Final 2×3: [scale*R | dst_mean - scale*R @ src_mean].
-    let m00 = scale * r[0][0];
-    let m01 = scale * r[0][1];
-    let m10 = scale * r[1][0];
-    let m11 = scale * r[1][1];
+    let inv = if var_src > 0.0 { 1.0 / var_src } else { 0.0 };
+    let (s_cos, s_sin) = (a * inv, b * inv);
+    // R·s = [[s_cos, -s_sin], [s_sin, s_cos]].
+    let (m00, m01, m10, m11) = (s_cos, -s_sin, s_sin, s_cos);
     let tx = dx_m - (m00 * sx_m + m01 * sy_m);
     let ty = dy_m - (m10 * sx_m + m11 * sy_m);
     [m00, m01, tx, m10, m11, ty]
