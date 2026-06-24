@@ -123,6 +123,12 @@ pub struct MultipersonArgs {
     #[arg(long = "composite")]
     pub composite: bool,
 
+    /// With `--composite`: **relight each person** to the scene's lighting
+    /// (IC-Light) before placing them — matches light direction/colour so they
+    /// belong in the scene instead of looking pasted. The real integration step.
+    #[arg(long = "relight")]
+    pub relight: bool,
+
     /// With `--composite`: run a light img2img pass over the finished composite so
     /// the placed people share the scene's lighting/style (less collage-like).
     /// Strength 0..1 (low keeps identity; ~0.3 is a good blend).
@@ -263,6 +269,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         device,
         dry_run: args.dry_run,
         composite: args.composite,
+        relight: args.relight,
         harmonize: args.harmonize,
         swap: args.swap,
         refine_faces: args.face_refine,

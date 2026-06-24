@@ -61,6 +61,9 @@ pub struct MultipersonRequest {
     /// Composite identity path: generate the scene background with any model, then
     /// matte + place each persona's actual photo. Exact identity, model-agnostic.
     pub composite: bool,
+    /// With composite: relight each persona to the scene lighting (IC-Light) before
+    /// placing — the real integration step.
+    pub relight: bool,
     /// With composite: optional img2img harmonize strength over the final image.
     pub harmonize: Option<f32>,
     /// Face-swap identity path: generate one coherent scene, then swap each
@@ -333,6 +336,18 @@ async fn run_composite(
     std::fs::create_dir_all(&req.out_dir).ok();
     let base_seed = req.seed.unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
 
+    // IC-Light relighter (optional) — relights each person to the scene lighting
+    // before compositing, so they belong in the scene instead of looking pasted.
+    let relighter = if req.relight {
+        Some(
+            crate::pipelines::ic_light::Pipeline::load(req.device.clone())
+                .await
+                .context("loading IC-Light for --relight")?,
+        )
+    } else {
+        None
+    };
+
     for n in 0..req.count.max(1) {
         let seed = base_seed.wrapping_add(n as u64);
 
@@ -362,8 +377,32 @@ async fn run_composite(
         for r in resolved {
             let p = &req.people[r.idx];
             let photo = &p.photos.first().context("persona has no photo")?.path;
+
+            // Relight the person to the scene's lighting first (IC-Light), then
+            // re-matte the relit subject. Otherwise matte the raw photo. The
+            // `_relit` holder keeps the temp file alive until matting reads it.
+            let _relit: Option<tempfile::NamedTempFile>;
+            let matte_src: std::path::PathBuf = if let Some(ic) = &relighter {
+                let (buf, w, h) = ic
+                    .relight(photo, &base_prompt, &req.negative, 512, 640, req.steps, 2.0, seed)
+                    .with_context(|| format!("relighting persona '{}'", p.label))?;
+                let rt = tempfile::Builder::new().prefix("plakat-mp-relit-").suffix(".png").tempfile()?;
+                crate::imaging::io::save_rgb_u8(&buf, w, h, rt.path())?;
+                let path = rt.path().to_path_buf();
+                _relit = Some(rt);
+                crate::ui::progress::println(&format!(
+                    "  {} relit {}",
+                    console::style("·").cyan(),
+                    p.label
+                ));
+                path
+            } else {
+                _relit = None;
+                photo.clone()
+            };
+
             let tmp = tempfile::Builder::new().prefix("plakat-mp-cut-").suffix(".png").tempfile()?;
-            matting::cutout(photo, tmp.path(), true, &req.device)
+            matting::cutout(&matte_src, tmp.path(), true, &req.device)
                 .await
                 .with_context(|| format!("matting persona '{}'", p.label))?;
             let cut = image::open(tmp.path())?.to_rgba8();
