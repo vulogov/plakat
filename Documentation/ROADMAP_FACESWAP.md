@@ -59,18 +59,15 @@ Source latent = `normalize(arcface_embedding) @ emap(buff2fs)`, renormalised.
       bottleneck → decoder → Tanh). Verify output vs onnxruntime on a fixed
       (target,embedding) pair to <1e-3.
 
-## Phase 3 — recognition (arcface w600k_r50) embedding
+## Phase 3 — recognition (arcface w600k_r50) embedding — DONE ✓
 
-GOOD NEWS: plakat already has an IR-ResNet50 ArcFace module (`face_models.rs`)
-built for `buffalo_l`, and `w600k_r50.onnx` is a stock IR-ResNet50 (53 conv, 26
-BN, 25 PReLU, 112²→512). Likely just convert + verify, not a fresh port.
-
-- [ ] `convert-onnx --arch arcface-w600k` (Conv+BN+PReLU+Gemm → existing module's
-      key layout). Reuse the existing module if the arch matches.
-- [ ] Verify the 512-d embedding matches insightface (cosine > 0.999) on an
-      aligned crop. Capture an embedding reference like the inswapper one.
-- [ ] Extract `emap` (buff2fs, 512×512) from inswapper_128.onnx → host/bundle;
-      `latent = normalize(normalize(emb) @ emap)` is the inswapper `source`.
+Reused plakat's IR-ResNet50 (`face_models.rs`) after **fixing a real bug**: it
+omitted the stem PReLU (claimed it folded into conv1.bias — impossible, PReLU is
+nonlinear). Added it → embedding matches InsightFace **cosine 1.000000**.
+`convert-onnx --arch arcface-w600k` maps numbered convs/prelus positionally +
+passes through the pytorch-named BN/fc (byte-identical to a graph-traced ref).
+`emap` (buff2fs) now emitted by `convert-onnx --arch inswapper-128`; source latent
+`normalize(emb @ emap)` matches reference **diff 0.0**.
 
 ## Phase 4 — alignment + paste-back (pure geometry, no GPU)
 
