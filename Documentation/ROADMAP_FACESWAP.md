@@ -27,7 +27,14 @@ Key facts learned:
   space — plakat's existing faceid ArcFace must be checked for compatibility;
   likely needs a dedicated `w600k_r50` port.
 
-## Phase 2 — inswapper_128 generator port
+## Phase 2 — inswapper_128 generator port — DONE ✓
+
+Ported `pipelines::inswapper` + `convert-onnx --arch inswapper-128`. Verified vs
+the onnxruntime reference (real aligned face + emap-projected embedding): **max abs
+diff 1e-5**. emap (`buff2fs`) is applied externally to the embedding, not in-graph.
+Converted weights: 528 MB f32 (→ host as f16 ~264 MB).
+
+### original trace (kept for reference)
 
 Full graph trace (DONE — 20 Conv + 12 Gemm, in order):
 ```
@@ -54,10 +61,16 @@ Source latent = `normalize(arcface_embedding) @ emap(buff2fs)`, renormalised.
 
 ## Phase 3 — recognition (arcface w600k_r50) embedding
 
-- [ ] Decide: reuse plakat's ArcFace vs port `w600k_r50`. Verify the 512-d
-      embedding matches insightface for the same aligned crop (cosine > 0.999).
-- [ ] `convert-onnx --arch arcface-w600k` if a port is needed.
-- [ ] Apply `emap` (buff2fs) + renormalise to get the `source` latent.
+GOOD NEWS: plakat already has an IR-ResNet50 ArcFace module (`face_models.rs`)
+built for `buffalo_l`, and `w600k_r50.onnx` is a stock IR-ResNet50 (53 conv, 26
+BN, 25 PReLU, 112²→512). Likely just convert + verify, not a fresh port.
+
+- [ ] `convert-onnx --arch arcface-w600k` (Conv+BN+PReLU+Gemm → existing module's
+      key layout). Reuse the existing module if the arch matches.
+- [ ] Verify the 512-d embedding matches insightface (cosine > 0.999) on an
+      aligned crop. Capture an embedding reference like the inswapper one.
+- [ ] Extract `emap` (buff2fs, 512×512) from inswapper_128.onnx → host/bundle;
+      `latent = normalize(normalize(emb) @ emap)` is the inswapper `source`.
 
 ## Phase 4 — alignment + paste-back (pure geometry, no GPU)
 
