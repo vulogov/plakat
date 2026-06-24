@@ -216,7 +216,7 @@ fn similarity_transform_2d(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 6] {
 /// `src` at `inv_affine([dst_x, dst_y])`. `inv_affine` is the inverse
 /// of the forward transform — we typically build forward dst-from-src
 /// then invert before calling this.
-fn bilinear_warp(
+pub(crate) fn bilinear_warp(
     src: &image::RgbImage,
     inv_affine: [f32; 6],
     out_w: u32,
@@ -259,7 +259,7 @@ fn bilinear_warp(
 }
 
 /// Invert a 2×3 affine `[a, b, tx, c, d, ty]`.
-fn invert_affine_2x3(a: [f32; 6]) -> [f32; 6] {
+pub(crate) fn invert_affine_2x3(a: [f32; 6]) -> [f32; 6] {
     let det = a[0] * a[4] - a[1] * a[3];
     debug_assert!(det.abs() > 1e-12, "near-singular similarity transform");
     let inv_det = 1.0 / det;
@@ -287,6 +287,22 @@ fn align_to_arcface_template(
     // For backward sampling (dst → src), invert.
     let inverse = invert_affine_2x3(forward);
     bilinear_warp(src, inverse, ARCFACE_INPUT, ARCFACE_INPUT)
+}
+
+/// Align a face to the ArcFace 5-point template scaled to `size`×`size`, the
+/// InsightFace `norm_crop`. Returns the aligned crop **and** the forward
+/// (source→crop) 2×3 affine, so a caller that modifies the crop (e.g. face-swap)
+/// can invert it to paste the result back. `landmarks_px` are source pixels.
+pub fn norm_crop(
+    src: &image::RgbImage,
+    landmarks_px: [[f32; 2]; 5],
+    size: u32,
+) -> (image::RgbImage, [f32; 6]) {
+    let scale = size as f32 / ARCFACE_INPUT as f32;
+    let dst: Vec<[f32; 2]> = ARCFACE_5PT_REF.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+    let forward = similarity_transform_2d(&landmarks_px.to_vec(), &dst);
+    let inverse = invert_affine_2x3(forward);
+    (bilinear_warp(src, inverse, size, size), forward)
 }
 
 /// Load a photo and produce the 112×112 RGB tensor ArcFace's IR-ResNet50

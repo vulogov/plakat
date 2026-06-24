@@ -61,6 +61,7 @@ pub mod scheduler;
 pub mod seeds;
 pub mod scrfd;
 pub mod inswapper;
+pub mod faceswap;
 pub mod mmdit_inner;
 pub mod sd3;
 pub mod sd3_controlnet;
