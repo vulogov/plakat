@@ -1,4 +1,11 @@
-# plakat face-swap — build plan
+# plakat face-swap — build plan — COMPLETE ✓
+
+All 5 phases shipped on the 1.12.0 branch. `multiperson --swap` generates a
+coherent scene and face-swaps each persona in by placement region. Identity engine
+verified component-by-component vs InsightFace (SCRFD, ArcFace cosine 1.0,
+inswapper 1e-5, emap 0.0). Weights hosted: SCRFD + inswapper + ArcFace on HF.
+NO standalone `faceswap` command — it's the engine multiperson calls.
+
 
 Goal: place a *specific person* into a generated scene with **strong, reliable
 identity** by face-swapping (InsightFace `inswapper_128`), not IP-Adapter region
