@@ -105,11 +105,13 @@ impl MultipersonPrompt {
         .join(", ")
     }
 
-    /// A face-focused prompt for the identity-refinement pass: a portrait framing
-    /// (plus-face's sweet spot) plus the persona's facing and the shared style.
+    /// A face prompt for the low-strength identity-refinement pass. Deliberately
+    /// scale-NEUTRAL — "detailed face, sharp focus" nudges detail/identity without
+    /// the "portrait / head and shoulders" framing words that pull the repaint
+    /// toward a close-up and enlarge the face.
     pub fn face_region_prompt(&self, facing_phrase: Option<&str>) -> String {
         [
-            Some("a detailed face portrait, head and shoulders, sharp focus"),
+            Some("detailed face, sharp focus, natural proportions"),
             facing_phrase,
             self.style_clause.as_deref(),
         ]
@@ -178,7 +180,10 @@ mod tests {
     fn face_region_prompt_is_portrait_framed() {
         let p = MultipersonPrompt::parse("three people // oil painting");
         let fp = p.face_region_prompt(Some("front view"));
-        assert!(fp.starts_with("a detailed face portrait"));
+        assert!(fp.starts_with("detailed face"));
+        // scale-neutral: no framing words that pull toward a close-up portrait
+        assert!(!fp.contains("portrait"));
+        assert!(!fp.contains("head and shoulders"));
         assert!(!fp.contains("three people"));
         assert!(fp.ends_with("oil painting"));
     }

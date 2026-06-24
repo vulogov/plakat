@@ -63,9 +63,13 @@ pub struct MultipersonRequest {
     /// is what actually makes the personas *look like* their reference photos —
     /// identity injected over a whole body region is too diluted. Off → body-only.
     pub refine_faces: bool,
-    /// Identity strength for the face-refinement pass (IP-Adapter scale). High by
-    /// default — the face crop is plus-face's sweet spot.
+    /// IP-Adapter identity scale for the face-refinement pass. High — the face
+    /// crop is plus-face's sweet spot.
     pub refine_face_strength: f32,
+    /// Denoise strength of the face-refinement repaint (0..1). LOW keeps the
+    /// existing face's scale/framing and just nudges identity + detail (the
+    /// ADetailer-style light touch); high regenerates it (and can distort).
+    pub refine_denoise: f32,
 }
 
 /// A persona resolved to a concrete screen region + how it's conditioned.
@@ -375,10 +379,22 @@ where
             p.face_bbox,
             p.face_landmarks,
         );
-        // Decorrelate the refine seed from the body pass so the face isn't a
-        // re-roll of the same noise.
+        // LOW-strength masked repaint (ADetailer-style): re-noise the face region
+        // only partway and denoise from there, so the existing face's scale and
+        // framing are preserved while the persona's identity is pushed in. Full
+        // strength (inpaint_latents_one) would redraw it free-form and could blow
+        // the face up — that was the earlier "nightmare". Seed decorrelated from
+        // the body pass.
         latents = pipe
-            .inpaint_latents_one(&latents, &mask, &preq, seed.wrapping_add(0x9e37_79b9), &[], None)
+            .blend_latents_one(
+                &latents,
+                &mask,
+                &preq,
+                req.refine_denoise,
+                seed.wrapping_add(0x9e37_79b9),
+                &[],
+                None,
+            )
             .with_context(|| format!("multiperson: face-refine persona '{}'", p.label))?;
         crate::ui::progress::println(&format!(
             "  {} face-refined {}",

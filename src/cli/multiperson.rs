@@ -95,19 +95,24 @@ pub struct MultipersonArgs {
     #[arg(long, default_value = "./")]
     pub out: PathBuf,
 
-    /// Opt into the experimental identity face-refinement pass: detect each
-    /// rendered face (SCRFD) and re-inpaint the crop conditioned on that persona's
-    /// photos. OFF by default — at high strength it can enlarge/distort faces
-    /// (a dominant face gets repainted frame-filling). Tune with
-    /// `--refine-face-strength` (try 0.35–0.5) if you enable it.
+    /// Enable the identity face-refinement pass: detect each rendered face (SCRFD)
+    /// and lightly repaint the crop conditioned on that persona's photos. Uses a
+    /// LOW-strength masked repaint that preserves the face's scale/framing, so it
+    /// nudges likeness without distorting. Face boxes are clamped to each
+    /// persona's region. OFF by default while it's validated.
     #[arg(long = "face-refine")]
     pub face_refine: bool,
 
-    /// Identity strength (img2img denoise) for the optional face-refinement pass.
-    /// Low keeps the existing face's framing; high regenerates it (and can blow
-    /// the face up). Only used with `--face-refine`.
-    #[arg(long = "refine-face-strength", default_value_t = 0.4)]
+    /// IP-Adapter identity scale for the face-refinement pass (how hard to push
+    /// the reference likeness). Only used with `--face-refine`.
+    #[arg(long = "refine-identity", default_value_t = 0.85)]
     pub refine_face_strength: f32,
+
+    /// Denoise strength of the face-refinement repaint, 0..1. Low (~0.3) keeps the
+    /// existing face's framing and just nudges identity/detail; higher redraws it.
+    /// Only used with `--face-refine`.
+    #[arg(long = "refine-strength", default_value_t = 0.35)]
+    pub refine_denoise: f32,
 
     /// Resolve placement (+ print the plan) without loading models or generating.
     #[arg(long = "dry-run")]
@@ -236,6 +241,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         dry_run: args.dry_run,
         refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,
+        refine_denoise: args.refine_denoise,
     })
     .await
 }
