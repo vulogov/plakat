@@ -32,18 +32,24 @@ STEPS="${STEPS:-30}"
 SEED="${SEED:-42}"
 mkdir -p "$OUT"
 
-# Three people at a chess table: 1 left, 2 right, 3 at the back facing us.
+# Three people in a FRONTAL group portrait — 1 left, 2 right, 3 centre.
 # `--swap` is the identity path: generate ONE coherent scene, then face-swap each
 # detected face with the persona matched to its placement region (SCRFD + ArcFace
 # + inswapper, all auto-downloaded). `--at` regions disambiguate which face is who.
+#
+# IMPORTANT for face-swap: it needs roughly FRONTAL, reasonably-LARGE faces. A
+# scene where people look down / away (e.g. studying a chess board) or have tiny
+# faces will swap weakly — the alignment + inswapper assume near-frontal faces.
+# This prompt keeps everyone facing the camera in a tight group shot.
 "$PLAKAT" multiperson \
-  "three people sitting at a table playing chess, warm interior light // detailed digital painting" \
+  "three people posing for a group portrait, facing the camera, head and shoulders, warm indoor lighting // detailed digital painting" \
   --person "p1:$PEOPLE/1.png" --at "p1:left closer front" \
   --person "p2:$PEOPLE/2.png" --at "p2:right closer front" \
-  --person "p3:$PEOPLE/3.png" --at "p3:center farther front" \
+  --person "p3:$PEOPLE/3.png" --at "p3:center closer front" \
   --model "$MODEL" --swap \
   --size "$SIZE" --steps "$STEPS" --guidance 7.0 --seed "$SEED" \
   --out "$OUT"
 
-echo "✓ multiperson --swap: 3 personas face-swapped into a chess scene → corpus/images/multiperson/"
+echo "✓ multiperson --swap: 3 personas face-swapped into a frontal group portrait → corpus/images/multiperson/"
+echo "  face-swap needs frontal, sizable faces — looking-down / tiny-face scenes swap weakly"
 echo "  inspect placement only:  add --dry-run to the command above"
