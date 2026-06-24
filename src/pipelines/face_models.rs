@@ -528,6 +528,9 @@ impl IBasicBlock {
 /// a 112×112 RGB face crop. See `IBasicBlock` for the fusion model.
 pub struct IResnet50 {
     conv1: Conv2d,
+    /// Stem PReLU (after `conv1`). The stem's `bn1` folds into `conv1.bias`,
+    /// but the PReLU is nonlinear and cannot be folded — it must be applied.
+    prelu: PRelu,
     layer1: Vec<IBasicBlock>,
     layer2: Vec<IBasicBlock>,
     layer3: Vec<IBasicBlock>,
@@ -561,6 +564,9 @@ impl IResnet50 {
         // were either fused into this bias or dropped during export —
         // either way, no top-level activations.
         let conv1 = candle_nn::conv2d(3, 64, 3, conv1_cfg, vs.pp("conv1"))?;
+        // Stem PReLU — the bn1 that preceded it folded into conv1.bias, but the
+        // PReLU stays (nonlinear). InsightFace iresnet50: conv1 → bn1 → prelu.
+        let prelu = PRelu::new(vs.pp("prelu"), 64)?;
 
         // All four layers downsample (stride 2 on the first block);
         // channel widths double each stage: 64 → 128 → 256 → 512.
@@ -577,6 +583,7 @@ impl IResnet50 {
 
         Ok(Self {
             conv1,
+            prelu,
             layer1,
             layer2,
             layer3,
@@ -589,9 +596,9 @@ impl IResnet50 {
 
     /// Forward pass. `x: (B, 3, 112, 112)` → `(B, 512)` unit-norm.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Stem: just the biased conv1 — no bn / prelu at this level
-        // (they got folded out during export).
+        // Stem: biased conv1 (bn folded in) then the stem PReLU.
         let mut x = self.conv1.forward(x)?;
+        x = self.prelu.forward(&x)?;
 
         for block in &self.layer1 {
             x = block.forward(&x)?;
