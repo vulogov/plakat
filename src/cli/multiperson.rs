@@ -95,17 +95,18 @@ pub struct MultipersonArgs {
     #[arg(long, default_value = "./")]
     pub out: PathBuf,
 
-    /// Skip the identity face-refinement pass (detect each rendered face and
-    /// re-inpaint the crop at high identity strength). Refinement is ON by default
-    /// — it's what makes the personas actually resemble their reference photos;
-    /// identity injected over a whole body region is too diluted. Needs SCRFD
-    /// weights (`PLAKAT_SCRFD_WEIGHTS`/`PLAKAT_SCRFD_HF`); skipped with a notice
-    /// if unset. `--no-face-refine` gives the faster body-only render.
-    #[arg(long = "no-face-refine")]
-    pub no_face_refine: bool,
+    /// Opt into the experimental identity face-refinement pass: detect each
+    /// rendered face (SCRFD) and re-inpaint the crop conditioned on that persona's
+    /// photos. OFF by default — at high strength it can enlarge/distort faces
+    /// (a dominant face gets repainted frame-filling). Tune with
+    /// `--refine-face-strength` (try 0.35–0.5) if you enable it.
+    #[arg(long = "face-refine")]
+    pub face_refine: bool,
 
-    /// Identity strength (IP-Adapter scale) for the face-refinement pass.
-    #[arg(long = "refine-face-strength", default_value_t = 0.9)]
+    /// Identity strength (img2img denoise) for the optional face-refinement pass.
+    /// Low keeps the existing face's framing; high regenerates it (and can blow
+    /// the face up). Only used with `--face-refine`.
+    #[arg(long = "refine-face-strength", default_value_t = 0.4)]
     pub refine_face_strength: f32,
 
     /// Resolve placement (+ print the plan) without loading models or generating.
@@ -233,7 +234,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         scheduler,
         device,
         dry_run: args.dry_run,
-        refine_faces: !args.no_face_refine,
+        refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,
     })
     .await

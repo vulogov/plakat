@@ -354,6 +354,18 @@ where
     for (ri, face_bbox) in assignments {
         let r = &resolved[ri];
         let p = &req.people[r.idx];
+        // SAFETY: clamp the face box to this persona's placement region. The
+        // refine inpaint fully regenerates the masked area, so an over-large or
+        // mis-detected box would otherwise repaint a frame-filling face. Bounding
+        // it to the region the persona already occupies makes that impossible.
+        let Some(face_bbox) = intersect_bbox(&face_bbox, &r.bbox) else {
+            crate::ui::progress::println(&format!(
+                "  {} face-refine skipped {} (no face inside its region)",
+                console::style("!").yellow().bold(),
+                p.label
+            ));
+            continue;
+        };
         let mask = crate::pipelines::tiled::region_mask(face_bbox, lh, lw, &req.device, dtype)?;
         let prompt = mp.face_region_prompt(r.facing_phrase);
         let preq = mk_req(
@@ -409,7 +421,7 @@ fn assign_faces_to_personas(
         }
         if let Some(fi) = best {
             used[fi] = true;
-            out.push((ri, pad_norm_bbox(faces[fi], w, h, 0.35)));
+            out.push((ri, pad_norm_bbox(faces[fi], w, h, 0.15)));
         }
     }
     out
@@ -431,6 +443,20 @@ fn geometric_face_box(body: &[f32; 4]) -> [f32; 4] {
         (cx + half_w).clamp(0.0, 1.0),
         y1.clamp(0.0, 1.0),
     ]
+}
+
+/// Intersection of two normalised `[x0,y0,x1,y1]` boxes, or `None` if they don't
+/// overlap in a usable region (degenerate / vanishingly small).
+fn intersect_bbox(a: &[f32; 4], b: &[f32; 4]) -> Option<[f32; 4]> {
+    let x0 = a[0].max(b[0]);
+    let y0 = a[1].max(b[1]);
+    let x1 = a[2].min(b[2]);
+    let y1 = a[3].min(b[3]);
+    if x1 - x0 > 0.02 && y1 - y0 > 0.02 {
+        Some([x0, y0, x1, y1])
+    } else {
+        None
+    }
 }
 
 /// Pixel face bbox → normalised, padded by `pad` of its size each side, clamped.
@@ -544,6 +570,18 @@ mod tests {
         assert!(fb[1] >= 0.20 && fb[1] < 0.30);
         assert!(fb[3] < (0.20 + 0.95) * 0.5, "face box stays in upper region");
         assert!(fb.iter().all(|&v| (0.0..=1.0).contains(&v)));
+    }
+
+    #[test]
+    fn intersect_clamps_face_to_region_and_rejects_disjoint() {
+        // A face box that spills well outside a small centre region is clamped
+        // back inside it — the anti-frame-fill safety.
+        let region = [0.38, 0.09, 0.62, 0.59];
+        let huge = [0.05, 0.02, 0.95, 0.95];
+        let clamped = intersect_bbox(&huge, &region).unwrap();
+        assert_eq!(clamped, region);
+        // Disjoint boxes → None (skip refine).
+        assert!(intersect_bbox(&[0.0, 0.0, 0.1, 0.1], &[0.8, 0.8, 0.9, 0.9]).is_none());
     }
 
     #[test]
