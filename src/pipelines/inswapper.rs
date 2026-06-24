@@ -253,11 +253,11 @@ mod tests {
     #[test]
     fn reflect_pad_mirrors_without_edge_repeat() {
         let dev = Device::Cpu;
-        // 1×1×1×4 row [0,1,2,3], pad 2 → [2,1, 0,1,2,3, 2,1]
+        // row [0,1,2,3], reflect-pad width by 2 → [2,1, 0,1,2,3, 2,1]
+        // (reflect requires pad < dim size, as in PyTorch — exercise width only).
         let x = Tensor::from_vec(vec![0f32, 1., 2., 3.], (1, 1, 1, 4), &dev).unwrap();
-        let p = reflect_pad2d(&x, 2).unwrap();
+        let p = reflect_pad_dim(&x, 3, 4, 2).unwrap();
         let row: Vec<f32> = p.i((0, 0, 0)).unwrap().to_vec1().unwrap();
-        // height padded too (size 1 reflect stays 0s); just check width row centre
         assert_eq!(row, vec![2., 1., 0., 1., 2., 3., 2., 1.]);
     }
 
