@@ -112,7 +112,7 @@ fn parse_at(s: &str) -> Result<(f32, f32)> {
 
 /// Over-blend `overlay` onto `canvas` at top-left `(ox, oy)` with `opacity`
 /// (`out = ov·a + base·(1-a)`, `a = overlay_alpha · opacity`).
-fn composite(canvas: &mut RgbaImage, overlay: &RgbaImage, ox: i64, oy: i64, opacity: f32) {
+pub(crate) fn composite(canvas: &mut RgbaImage, overlay: &RgbaImage, ox: i64, oy: i64, opacity: f32) {
     let (cw, ch) = (canvas.width() as i64, canvas.height() as i64);
     let (ow, oh) = (overlay.width() as i64, overlay.height() as i64);
     let (x0, y0) = (ox.max(0), oy.max(0));

@@ -58,6 +58,11 @@ pub struct MultipersonRequest {
     pub scheduler: crate::pipelines::scheduler::SchedulerKind,
     pub device: Device,
     pub dry_run: bool,
+    /// Composite identity path: generate the scene background with any model, then
+    /// matte + place each persona's actual photo. Exact identity, model-agnostic.
+    pub composite: bool,
+    /// With composite: optional img2img harmonize strength over the final image.
+    pub harmonize: Option<f32>,
     /// Face-swap identity path: generate one coherent scene, then swap each
     /// detected face with the persona matched to its placement region.
     pub swap: bool,
@@ -165,6 +170,11 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
             );
         }
         return Ok(());
+    }
+
+    // ---- composite identity path: any-model background + matted real photos ----
+    if req.composite {
+        return run_composite(&req, &resolved, &mp).await;
     }
 
     // ---- face-swap identity path: one coherent scene, then swap each face ----
@@ -302,6 +312,129 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
         pipe.save_image(&latents, &out)?;
         write_sidecar(&req, &resolved, &mp, &base_prompt, seed, &out)?;
         crate::ui::progress::println(&format!("  {} {}", console::style("✓").green().bold(), out.display()));
+    }
+    Ok(())
+}
+
+/// Composite identity path — the model-agnostic, exact-identity route. Generate
+/// the scene background with ANY text-to-image model, then matte each persona's
+/// actual photo (U2Net, no face model) and place it at its `--at` region (scaled
+/// to the region, farther personas behind closer ones). Optionally img2img the
+/// finished composite to harmonise lighting/style. No IP-Adapter / face encoder,
+/// so it works on every model `generate` supports.
+async fn run_composite(
+    req: &MultipersonRequest,
+    resolved: &[Resolved],
+    mp: &MultipersonPrompt,
+) -> Result<()> {
+    use crate::pipelines::{matting, t2i};
+
+    let base_prompt = mp.enhancer_base(None, req.style.as_deref(), None);
+    std::fs::create_dir_all(&req.out_dir).ok();
+    let base_seed = req.seed.unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
+
+    for n in 0..req.count.max(1) {
+        let seed = base_seed.wrapping_add(n as u64);
+
+        // 1) Scene background — any model (no people needed; they're composited).
+        let bg_dir = tempfile::Builder::new().prefix("plakat-mp-bg-").tempdir()?;
+        t2i::run(t2i::Request::simple(
+            base_prompt.clone(),
+            req.model.clone(),
+            req.width,
+            req.height,
+            req.steps,
+            Some(seed),
+            req.device.clone(),
+            bg_dir.path().to_path_buf(),
+        ))
+        .await
+        .context("multiperson --composite: background generation")?;
+        let bg_path = std::fs::read_dir(bg_dir.path())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("png"))
+            .context("background render produced no PNG")?;
+        let mut canvas = image::open(&bg_path)?.to_rgba8();
+
+        // 2) Matte + place each persona (resolved is sorted farther → closer, so
+        //    compositing in order puts nearer people in front).
+        for r in resolved {
+            let p = &req.people[r.idx];
+            let photo = &p.photos.first().context("persona has no photo")?.path;
+            let tmp = tempfile::Builder::new().prefix("plakat-mp-cut-").suffix(".png").tempfile()?;
+            matting::cutout(photo, tmp.path(), true, &req.device)
+                .await
+                .with_context(|| format!("matting persona '{}'", p.label))?;
+            let cut = image::open(tmp.path())?.to_rgba8();
+
+            // Fit the cut-out inside the placement region, preserving aspect.
+            let (bw, bh) = (
+                (r.bbox[2] - r.bbox[0]) * req.width as f32,
+                (r.bbox[3] - r.bbox[1]) * req.height as f32,
+            );
+            let (cw, ch) = (cut.width() as f32, cut.height() as f32);
+            let scale = (bw / cw).min(bh / ch);
+            let (nw, nh) = ((cw * scale).round().max(1.0) as u32, (ch * scale).round().max(1.0) as u32);
+            let resized = image::imageops::resize(&cut, nw, nh, image::imageops::FilterType::Lanczos3);
+            // Centre horizontally in the region; anchor to the region top.
+            let px = (r.bbox[0] * req.width as f32 + (bw - nw as f32) * 0.5).round() as i64;
+            let py = (r.bbox[1] * req.height as f32).round() as i64;
+            crate::cli::compose::composite(&mut canvas, &resized, px, py, 1.0);
+            crate::ui::progress::println(&format!(
+                "  {} placed {}",
+                console::style("·").cyan(),
+                p.label
+            ));
+        }
+
+        let out = req.out_dir.join(format!("plakat-multiperson-{seed}.png"));
+        image::DynamicImage::ImageRgba8(canvas).to_rgb8().save(&out)?;
+
+        // 3) Optional harmonisation: a light img2img over the whole composite so
+        //    the placed people share the scene's lighting/style.
+        if let Some(strength) = req.harmonize {
+            let h_dir = tempfile::Builder::new().prefix("plakat-mp-harm-").tempdir()?;
+            let hreq = crate::pipelines::img2img::Request {
+                prompt: base_prompt.clone(),
+                negative: req.negative.clone(),
+                model: req.model.clone(),
+                device: req.device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                input: out.clone(),
+                mask: None,
+                mask_feather: 0,
+                mask_invert: false,
+                width: req.width,
+                height: req.height,
+                count: 1,
+                steps: req.steps,
+                guidance: req.guidance,
+                scheduler: req.scheduler,
+                strength: strength.clamp(0.05, 0.95),
+                seed: Some(seed),
+                out_dir: h_dir.path().to_path_buf(),
+                controls: Vec::new(),
+            };
+            crate::pipelines::img2img::run(hreq)
+                .await
+                .context("multiperson --composite: harmonize pass")?;
+            if let Some(h) = std::fs::read_dir(h_dir.path())?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.extension().and_then(|x| x.to_str()) == Some("png"))
+            {
+                std::fs::copy(&h, &out)?;
+            }
+        }
+
+        write_sidecar(req, resolved, mp, &base_prompt, seed, &out)?;
+        crate::ui::progress::println(&format!(
+            "  {} {}",
+            console::style("✓").green().bold(),
+            out.display()
+        ));
     }
     Ok(())
 }

@@ -114,7 +114,22 @@ pub struct MultipersonArgs {
     #[arg(long = "refine-strength", default_value_t = 0.35)]
     pub refine_denoise: f32,
 
-    /// Use **face-swap** for identity (recommended): generate one coherent scene,
+    /// **Composite** mode (recommended for true identity, widest model coverage):
+    /// generate the scene background with ANY text-to-image model, matte each
+    /// persona's photo (U2Net — no face model), and place them at their `--at`
+    /// positions. Identity is the actual photo, so it's exact and model-agnostic.
+    /// Use a photo (or any portrait) on a plain/light background for the cleanest
+    /// cut-out. Add `--harmonize` to img2img-blend the composite into the scene.
+    #[arg(long = "composite")]
+    pub composite: bool,
+
+    /// With `--composite`: run a light img2img pass over the finished composite so
+    /// the placed people share the scene's lighting/style (less collage-like).
+    /// Strength 0..1 (low keeps identity; ~0.3 is a good blend).
+    #[arg(long = "harmonize", value_name = "STRENGTH", num_args = 0..=1, default_missing_value = "0.3")]
+    pub harmonize: Option<f32>,
+
+    /// Use **face-swap** for identity (secondary): generate one coherent scene,
     /// then swap each detected face with that persona's source identity (SCRFD +
     /// ArcFace + inswapper). Far stronger likeness than the IP-Adapter region
     /// path. Needs the inswapper / ArcFace weights (auto-resolved or via
@@ -247,6 +262,8 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         scheduler,
         device,
         dry_run: args.dry_run,
+        composite: args.composite,
+        harmonize: args.harmonize,
         swap: args.swap,
         refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,

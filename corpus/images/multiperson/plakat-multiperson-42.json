@@ -1,8 +1,8 @@
 {
-  "base_prompt": "three people posing for a group portrait, facing the camera, head and shoulders, warm indoor lighting, detailed digital painting",
+  "base_prompt": "a cozy living room interior, warm afternoon light, fireplace and bookshelves, detailed digital painting",
   "command": "multiperson",
   "face_refine": false,
-  "guidance": 7.0,
+  "guidance": 7.5,
   "identity": "PlusFace",
   "layout_provider": "none",
   "model": "sdxl",
@@ -22,9 +22,9 @@
     },
     {
       "bbox": [
-        0.5900000333786011,
+        0.2900000214576721,
         0.3100000023841858,
-        1.0,
+        0.7099999785423279,
         1.0
       ],
       "behavioral_prompt": null,
@@ -35,9 +35,9 @@
     },
     {
       "bbox": [
-        0.2900000214576721,
+        0.5900000333786011,
         0.3100000023841858,
-        0.7099999785423279,
+        1.0,
         1.0
       ],
       "behavioral_prompt": null,
@@ -48,7 +48,7 @@
     }
   ],
   "refine_face_strength": 0.8500000238418579,
-  "scene_clause": "three people posing for a group portrait, facing the camera, head and shoulders, warm indoor lighting",
+  "scene_clause": "a cozy living room interior, warm afternoon light, fireplace and bookshelves",
   "seed": 42,
   "size": "1024x768",
   "steps": 30,
