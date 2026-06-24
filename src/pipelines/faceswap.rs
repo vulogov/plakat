@@ -23,6 +23,39 @@ use crate::pipelines::scrfd::{Face, SCRFDConfig, SCRFDDetector};
 /// Edge feather (in 128² crop pixels) for blending the swapped face back.
 const FEATHER: f32 = 16.0;
 
+/// Default plakat-hosted converted weights (`plakat convert-onnx` of InsightFace
+/// `w600k_r50.onnx` / `inswapper_128.onnx`). Override with
+/// `PLAKAT_ARCFACE_WEIGHTS`/`_HF` and `PLAKAT_INSWAPPER_WEIGHTS`/`_HF`.
+pub const DEFAULT_ARCFACE_REPO: &str = "vulogov98/plakat-arcface-w600k";
+pub const DEFAULT_ARCFACE_FILE: &str = "arcface_w600k.safetensors";
+pub const DEFAULT_INSWAPPER_REPO: &str = "vulogov98/plakat-inswapper-128";
+pub const DEFAULT_INSWAPPER_FILE: &str = "inswapper_128.safetensors";
+
+/// Resolve a weight file from `PLAKAT_<KEY>_WEIGHTS` (local) /
+/// `PLAKAT_<KEY>_HF` (`repo#file`) / a bundled default repo.
+async fn resolve_weight(
+    key: &str,
+    default_repo: &str,
+    default_file: &str,
+) -> Result<std::path::PathBuf> {
+    if let Ok(p) = std::env::var(format!("PLAKAT_{key}_WEIGHTS")) {
+        let path = std::path::PathBuf::from(&p);
+        anyhow::ensure!(path.exists(), "PLAKAT_{key}_WEIGHTS {p} does not exist");
+        return Ok(path);
+    }
+    let (repo, file) = if let Ok(spec) = std::env::var(format!("PLAKAT_{key}_HF")) {
+        crate::pipelines::ip_adapter::parse_hf_spec(&spec, &format!("PLAKAT_{key}_HF"))?
+    } else {
+        (default_repo.to_string(), default_file.to_string())
+    };
+    let s = crate::ui::progress::spinner(&format!("Downloading {key} weights ({repo}/{file})"));
+    let path = crate::hf::download::get_file(&repo, &file)
+        .await
+        .with_context(|| format!("downloading {key} weights from {repo}/{file}"))?;
+    s.finish_with_message(format!("✓ {key} weights cached"));
+    Ok(path)
+}
+
 pub struct FaceSwapper {
     detector: SCRFDDetector,
     arcface: IResnet50,
@@ -57,6 +90,18 @@ impl FaceSwapper {
         let inswapper = Inswapper::load(inswapper, device, DType::F32)
             .context("loading inswapper for face-swap")?;
         Ok(Self { detector, arcface, emap, inswapper, device: device.clone(), dtype })
+    }
+
+    /// Load with weights auto-resolved: SCRFD (its own default), ArcFace, and
+    /// inswapper (env overrides or the bundled default repos).
+    pub async fn load_resolved(device: &Device, dtype: DType) -> Result<Self> {
+        let scrfd = crate::pipelines::scrfd::resolve_scrfd_weights()
+            .await?
+            .context("face-swap needs SCRFD weights (none resolved)")?;
+        let arcface = resolve_weight("ARCFACE", DEFAULT_ARCFACE_REPO, DEFAULT_ARCFACE_FILE).await?;
+        let inswapper =
+            resolve_weight("INSWAPPER", DEFAULT_INSWAPPER_REPO, DEFAULT_INSWAPPER_FILE).await?;
+        Self::load_from(&scrfd, &arcface, &inswapper, device, dtype)
     }
 
     /// Detect faces in an image file (largest first), with 5-point landmarks.

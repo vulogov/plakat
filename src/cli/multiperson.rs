@@ -114,6 +114,14 @@ pub struct MultipersonArgs {
     #[arg(long = "refine-strength", default_value_t = 0.35)]
     pub refine_denoise: f32,
 
+    /// Use **face-swap** for identity (recommended): generate one coherent scene,
+    /// then swap each detected face with that persona's source identity (SCRFD +
+    /// ArcFace + inswapper). Far stronger likeness than the IP-Adapter region
+    /// path. Needs the inswapper / ArcFace weights (auto-resolved or via
+    /// `PLAKAT_INSWAPPER_WEIGHTS` / `PLAKAT_ARCFACE_WEIGHTS`).
+    #[arg(long = "swap")]
+    pub swap: bool,
+
     /// Resolve placement (+ print the plan) without loading models or generating.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
@@ -145,8 +153,8 @@ fn parse_bbox(s: &str) -> Result<[f32; 4]> {
 
 pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
     // ── people ──
-    if args.person.len() < 2 {
-        bail!("multiperson needs at least 2 --person entries; got {}", args.person.len());
+    if args.person.is_empty() {
+        bail!("multiperson needs at least one --person entry");
     }
     let mut people: Vec<Person> = Vec::with_capacity(args.person.len());
     for spec in &args.person {
@@ -239,6 +247,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         scheduler,
         device,
         dry_run: args.dry_run,
+        swap: args.swap,
         refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,
         refine_denoise: args.refine_denoise,

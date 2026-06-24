@@ -58,6 +58,9 @@ pub struct MultipersonRequest {
     pub scheduler: crate::pipelines::scheduler::SchedulerKind,
     pub device: Device,
     pub dry_run: bool,
+    /// Face-swap identity path: generate one coherent scene, then swap each
+    /// detected face with the persona matched to its placement region.
+    pub swap: bool,
     /// Run the identity face-refinement pass after the body inpaint (detect each
     /// face with SCRFD, re-inpaint the face crop at high identity strength). This
     /// is what actually makes the personas *look like* their reference photos —
@@ -140,7 +143,7 @@ impl MultipersonRequest {
 /// Run a multiperson generation (Form B). M1: placement → scene base →
 /// per-persona inpaint (reusing the portrait pipeline).
 pub async fn run(req: MultipersonRequest) -> Result<()> {
-    anyhow::ensure!(req.people.len() >= 2, "multiperson needs at least 2 people; got {}", req.people.len());
+    anyhow::ensure!(!req.people.is_empty(), "multiperson needs at least one person");
 
     let resolved = req.resolve().await;
     let mp = MultipersonPrompt::parse(&req.scene);
@@ -162,6 +165,11 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
             );
         }
         return Ok(());
+    }
+
+    // ---- face-swap identity path: one coherent scene, then swap each face ----
+    if req.swap {
+        return run_swap(&req, &resolved, &mp).await;
     }
 
     // ---- load the portrait pipeline (SD backbone + identity encoder) ----
@@ -296,6 +304,159 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
         crate::ui::progress::println(&format!("  {} {}", console::style("✓").green().bold(), out.display()));
     }
     Ok(())
+}
+
+/// Face-swap identity path: generate ONE coherent scene (plain text-to-image,
+/// which composes properly), detect every face, match each persona to the face in
+/// its placement region, and swap that face with the persona's source identity.
+/// Personas with no face in their region are reported, not silently dropped.
+async fn run_swap(
+    req: &MultipersonRequest,
+    resolved: &[Resolved],
+    mp: &MultipersonPrompt,
+) -> Result<()> {
+    use crate::pipelines::faceswap::FaceSwapper;
+
+    let base_prompt = mp.enhancer_base(None, req.style.as_deref(), None);
+
+    // Scene generator (plain SD/SDXL — no identity encoder needed; identity comes
+    // from the swap).
+    let pipe = portrait::Pipeline::load(portrait::LoadRequest {
+        model: req.model.clone(),
+        device: req.device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        identity: None,
+        shared_clip_h: None,
+    })
+    .await
+    .context("loading scene generator for multiperson --swap")?;
+
+    let swapper = FaceSwapper::load_resolved(&req.device, candle_core::DType::F32)
+        .await
+        .context("loading face-swap models")?;
+
+    // Source identity latent per persona (from their first reference photo).
+    let mut latents: Vec<candle_core::Tensor> = Vec::with_capacity(req.people.len());
+    for p in &req.people {
+        let path = &p.photos.first().context("persona has no photo")?.path;
+        latents.push(
+            swapper
+                .source_latent(path)
+                .with_context(|| format!("embedding source identity for '{}'", p.label))?,
+        );
+    }
+
+    std::fs::create_dir_all(&req.out_dir).ok();
+    let base_seed = req.seed.unwrap_or_else(|| rand::random::<u64>() & (u32::MAX as u64));
+    let (w, h) = (req.width as f32, req.height as f32);
+
+    for n in 0..req.count.max(1) {
+        let seed = base_seed.wrapping_add(n as u64);
+        let gen_req = portrait::GenRequest {
+            prompt: base_prompt.clone(),
+            negative: req.negative.clone(),
+            photos: Vec::new(),
+            width: req.width,
+            height: req.height,
+            count: 1,
+            steps: req.steps,
+            guidance: req.guidance,
+            seed: Some(seed),
+            out_dir: req.out_dir.clone(),
+            scheduler: req.scheduler,
+            refine: None,
+            refine_strength: 0.0,
+            face_strength: 0.0,
+            face_bbox: None,
+            face_landmarks: None,
+        };
+        let scene_latents = pipe
+            .generate_latents_one(&gen_req, seed, &[])
+            .context("multiperson --swap: scene generation")?;
+
+        // Decode to a file so SCRFD can detect the generated faces.
+        let scene_path = req.out_dir.join(format!("plakat-multiperson-{seed}.png"));
+        pipe.save_image(&scene_latents, &scene_path)?;
+        let faces = swapper.detect(&scene_path)?;
+        crate::ui::progress::println(&format!(
+            "  scene has {} detected face(s); {} persona(s) to place",
+            faces.len(),
+            req.people.len()
+        ));
+
+        let pairs = match_personas_to_faces(&faces, resolved, w, h);
+        let mut scene_img = image::open(&scene_path)?.to_rgb8();
+        let mut swapped_labels = Vec::new();
+        for (ri, fi) in &pairs {
+            let p = &req.people[resolved[*ri].idx];
+            scene_img = swapper
+                .swap_into(&scene_img, faces[*fi].landmarks, &latents[resolved[*ri].idx])
+                .with_context(|| format!("swapping persona '{}'", p.label))?;
+            swapped_labels.push(p.label.clone());
+            crate::ui::progress::println(&format!(
+                "  {} swapped {}",
+                console::style("·").cyan(),
+                p.label
+            ));
+        }
+        // Report personas with no matching face.
+        for r in resolved {
+            let label = &req.people[r.idx].label;
+            if !swapped_labels.contains(label) {
+                crate::ui::progress::println(&format!(
+                    "  {} no face in {}'s region — left unswapped",
+                    console::style("!").yellow().bold(),
+                    label
+                ));
+            }
+        }
+
+        scene_img.save(&scene_path)?;
+        write_sidecar(req, resolved, mp, &base_prompt, seed, &scene_path)?;
+        crate::ui::progress::println(&format!(
+            "  {} {}",
+            console::style("✓").green().bold(),
+            scene_path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Greedily match each persona to the detected face nearest its expected face
+/// point (placement-region centre, near the top). Returns `(resolved index, face
+/// index)` pairs; personas beyond the available faces are simply not matched.
+fn match_personas_to_faces(
+    faces: &[Face],
+    resolved: &[Resolved],
+    w: f32,
+    h: f32,
+) -> Vec<(usize, usize)> {
+    let mut used = vec![false; faces.len()];
+    let mut out = Vec::new();
+    for (ri, r) in resolved.iter().enumerate() {
+        let ex = (r.bbox[0] + r.bbox[2]) * 0.5;
+        let ey = r.bbox[1] + 0.18 * (r.bbox[3] - r.bbox[1]);
+        let mut best: Option<usize> = None;
+        let mut best_d = f32::MAX;
+        for (fi, f) in faces.iter().enumerate() {
+            if used[fi] {
+                continue;
+            }
+            let fcx = (f.bbox[0] + f.bbox[2]) * 0.5 / w;
+            let fcy = (f.bbox[1] + f.bbox[3]) * 0.5 / h;
+            let d = (fcx - ex).powi(2) + (fcy - ey).powi(2);
+            if d < best_d {
+                best_d = d;
+                best = Some(fi);
+            }
+        }
+        if let Some(fi) = best {
+            used[fi] = true;
+            out.push((ri, fi));
+        }
+    }
+    out
 }
 
 /// A documented, plakat-compatible SCRFD (converted `scrfd_10g_bnkps`). Used as

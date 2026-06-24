@@ -1,9 +1,9 @@
 {
   "base_prompt": "three people sitting at a table playing chess, warm interior light, detailed digital painting",
   "command": "multiperson",
-  "face_refine": true,
+  "face_refine": false,
   "guidance": 7.0,
-  "identity": "PlusFaceSdxl",
+  "identity": "PlusFace",
   "layout_provider": "none",
   "model": "sdxl",
   "persons": [
@@ -14,7 +14,7 @@
         0.6200000047683716,
         0.5900000333786011
       ],
-      "behavioral_prompt": "watching the game, smiling",
+      "behavioral_prompt": null,
       "face_strength": 0.800000011920929,
       "facing": "facing the viewer, front view",
       "label": "p3",
@@ -27,7 +27,7 @@
         0.4099999964237213,
         1.0
       ],
-      "behavioral_prompt": "studying the board, hand on chin",
+      "behavioral_prompt": null,
       "face_strength": 0.800000011920929,
       "facing": "facing the viewer, front view",
       "label": "p1",
@@ -40,14 +40,14 @@
         1.0,
         1.0
       ],
-      "behavioral_prompt": "reaching to move a piece",
+      "behavioral_prompt": null,
       "face_strength": 0.800000011920929,
       "facing": "facing the viewer, front view",
       "label": "p2",
       "placement_source": "at"
     }
   ],
-  "refine_face_strength": 0.8999999761581421,
+  "refine_face_strength": 0.8500000238418579,
   "scene_clause": "three people sitting at a table playing chess, warm interior light",
   "seed": 42,
   "size": "1024x768",

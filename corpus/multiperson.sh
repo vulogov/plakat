@@ -33,18 +33,17 @@ SEED="${SEED:-42}"
 mkdir -p "$OUT"
 
 # Three people at a chess table: 1 left, 2 right, 3 at the back facing us.
-# `--at` axes: position (left/center/right) · distance (closer/farther) · facing.
+# `--swap` is the identity path: generate ONE coherent scene, then face-swap each
+# detected face with the persona matched to its placement region (SCRFD + ArcFace
+# + inswapper, all auto-downloaded). `--at` regions disambiguate which face is who.
 "$PLAKAT" multiperson \
   "three people sitting at a table playing chess, warm interior light // detailed digital painting" \
   --person "p1:$PEOPLE/1.png" --at "p1:left closer front" \
   --person "p2:$PEOPLE/2.png" --at "p2:right closer front" \
   --person "p3:$PEOPLE/3.png" --at "p3:center farther front" \
-  --person-prompt "p1:studying the board, hand on chin" \
-  --person-prompt "p2:reaching to move a piece" \
-  --person-prompt "p3:watching the game, smiling" \
-  --model "$MODEL" --identity "$IDENTITY" \
+  --model "$MODEL" --swap \
   --size "$SIZE" --steps "$STEPS" --guidance 7.0 --seed "$SEED" \
   --out "$OUT"
 
-echo "✓ multiperson: 3 placed personas (1 left, 2 right, 3 back) → corpus/images/multiperson/"
+echo "✓ multiperson --swap: 3 personas face-swapped into a chess scene → corpus/images/multiperson/"
 echo "  inspect placement only:  add --dry-run to the command above"
