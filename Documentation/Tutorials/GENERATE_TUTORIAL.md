@@ -606,19 +606,18 @@ plakat generate "..." --model sdxl --size 1280x1920 \
 ```
 
 **Required setup**: ADetailer needs SCRFD weights. Same env vars
-the FaceID portrait flow uses — either a local path:
+the FaceID portrait flow uses. Convert InsightFace's `det_500m.onnx`
+(inside `buffalo_sc.zip`) with plakat's own command — no Python:
 
 ```bash
-export PLAKAT_SCRFD_WEIGHTS=/path/to/scrfd_10g_bnkps.safetensors
+plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
+export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 ```
 
-…or an HF spec:
-
-```bash
-export PLAKAT_SCRFD_HF="immich-app/SCRFD#scrfd_10g_bnkps.safetensors"
-```
-
-Without one of these, `--adetailer` bails loud.
+…or point `PLAKAT_SCRFD_HF` at a converted file hosted on HuggingFace
+(`<user>/<repo>#scrfd_500m.safetensors`). A raw `onnx2torch` dump will
+**not** load — the keys must match plakat's loader, which `convert-onnx`
+guarantees. Without one of these, `--adetailer` bails loud.
 
 **Knobs**:
 

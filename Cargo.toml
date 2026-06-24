@@ -145,6 +145,8 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 candle-core = "0.10"
 candle-nn = "0.10"
 candle-transformers = "0.10"
+# ONNX reading — `plakat convert-onnx` (SCRFD weight conversion).
+candle-onnx = "0.10"
 
 # Paths / tempfiles
 directories = "5"

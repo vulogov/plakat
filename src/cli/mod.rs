@@ -7,6 +7,7 @@ pub mod artefact;
 pub mod civitai;
 pub mod clone;
 pub mod compile;
+pub mod convert_onnx;
 pub mod compose;
 pub mod map;
 pub mod doctor;
@@ -118,6 +119,13 @@ pub enum Command {
     /// and shape. Useful when a weight load fails and you want to see
     /// what's actually in the file vs what the model expected.
     Inspect(inspect::InspectArgs),
+    /// Convert an ONNX model into the plakat `.safetensors` layout. ONNX names
+    /// weights by graph node, not by the module tree a pipeline loads; this
+    /// renames them so plakat can consume the file. Currently supports
+    /// `--arch scrfd-500mf` (InsightFace `det_500m.onnx` → the SCRFD face
+    /// detector behind `--identity faceid` / `--adetailer` / `multiperson`).
+    #[command(name = "convert-onnx")]
+    ConvertOnnx(convert_onnx::ConvertOnnxArgs),
     /// Art-style detection from a reference photo.
     #[command(subcommand_value_name = "OP")]
     Style(style::StyleArgs),
@@ -257,6 +265,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
+        Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         Command::Style(args) => {
             let device = crate::device::select(&cli.device)?;
             style::run(args, device).await
