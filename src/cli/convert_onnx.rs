@@ -42,6 +42,9 @@ pub enum Arch {
     /// InsightFace `inswapper_128.onnx` face-swap generator.
     #[value(name = "inswapper-128")]
     Inswapper128,
+    /// InsightFace `w600k_r50.onnx` ArcFace recognition (IR-ResNet50).
+    #[value(name = "arcface-w600k")]
+    ArcfaceW600k,
 }
 
 impl Arch {
@@ -54,6 +57,30 @@ impl Arch {
                 ("Conv", inswapper_conv_names()),
                 ("Gemm", inswapper_gemm_names()),
             ],
+            Arch::ArcfaceW600k => vec![
+                ("Conv", arcface_conv_names()),
+                ("PRelu", arcface_prelu_names()),
+            ],
+        }
+    }
+
+    /// For an initializer copied through verbatim (not tied to a mapped node),
+    /// return its output name. ArcFace's BatchNorm + fc tensors already carry the
+    /// pytorch names plakat's loader expects (`layer1.0.bn1.*`, `bn2.*`, `fc.*`,
+    /// `features.*`). inswapper's `buff2fs` (the 512×512 embedding-projection
+    /// `emap`) is unused by the graph but needed at runtime → emit it as `emap`.
+    fn passthrough(self, name: &str) -> Option<String> {
+        match self {
+            Arch::ArcfaceW600k
+                if name.contains(".bn1.")
+                    || name.starts_with("bn2.")
+                    || name.starts_with("fc.")
+                    || name.starts_with("features.") =>
+            {
+                Some(name.to_string())
+            }
+            Arch::Inswapper128 if name == "buff2fs" => Some("emap".to_string()),
+            _ => None,
         }
     }
 }
@@ -89,8 +116,12 @@ pub async fn run(args: ConvertOnnxArgs) -> Result<()> {
             let w = inits
                 .get(w_name.as_str())
                 .with_context(|| format!("weight initializer {w_name:?} not found in graph"))?;
-            let weight = candle_onnx::eval::get_tensor(w, w_name)
+            let mut weight = candle_onnx::eval::get_tensor(w, w_name)
                 .with_context(|| format!("reading weight {w_name:?}"))?;
+            // PRelu slopes export as (C,1,1); plakat's loader wants a flat (C,).
+            if op_type == "PRelu" {
+                weight = weight.flatten_all()?;
+            }
             out.insert(format!("{plakat_name}.weight"), weight);
 
             if let Some(b_name) = node.input.get(2) {
@@ -102,6 +133,15 @@ pub async fn run(args: ConvertOnnxArgs) -> Result<()> {
             }
         }
         total_nodes += nodes.len();
+    }
+
+    // Pass-through initializers (already correctly named, or renamed for runtime).
+    for t in &graph.initializer {
+        if let Some(out_name) = args.arch.passthrough(&t.name) {
+            let tensor = candle_onnx::eval::get_tensor(t, &t.name)
+                .with_context(|| format!("reading passthrough {:?}", t.name))?;
+            out.insert(out_name, tensor);
+        }
     }
 
     candle_core::safetensors::save(&out, &args.output)
@@ -146,6 +186,39 @@ fn inswapper_gemm_names() -> Vec<String> {
     n
 }
 
+/// IR-ResNet50 block counts per stage (InsightFace `w600k_r50`).
+const ARCFACE_STAGES: [(usize, usize); 4] = [(1, 3), (2, 4), (3, 14), (4, 3)];
+
+/// Conv-node plakat names for `w600k_r50`, in graph order (53 convs): stem, then
+/// per block `conv1, conv2` (+ `downsample` after block 0 of each stage).
+fn arcface_conv_names() -> Vec<String> {
+    let mut n = vec!["conv1".to_string()]; // stem
+    for (layer, blocks) in ARCFACE_STAGES {
+        for j in 0..blocks {
+            n.push(format!("layer{layer}.{j}.conv1"));
+            n.push(format!("layer{layer}.{j}.conv2"));
+            if j == 0 {
+                n.push(format!("layer{layer}.{j}.downsample"));
+            }
+        }
+    }
+    debug_assert_eq!(n.len(), 53);
+    n
+}
+
+/// PRelu-node plakat names for `w600k_r50`, in graph order (25): stem + one per
+/// residual block.
+fn arcface_prelu_names() -> Vec<String> {
+    let mut n = vec!["prelu".to_string()]; // stem
+    for (layer, blocks) in ARCFACE_STAGES {
+        for j in 0..blocks {
+            n.push(format!("layer{layer}.{j}.prelu"));
+        }
+    }
+    debug_assert_eq!(n.len(), 25);
+    n
+}
+
 /// plakat tensor-name prefix for each Conv node of SCRFD-500MF, in graph order.
 /// Mirrors `pipelines::scrfd`'s module tree (backbone DW-sep blocks, PAFPN neck,
 /// per-stride head). Verified positionally against `det_500m.onnx` (60 convs).
@@ -182,6 +255,21 @@ fn scrfd_500mf_conv_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arcface_names_cover_53_convs_25_prelus() {
+        let c = arcface_conv_names();
+        assert_eq!(c.len(), 53);
+        assert_eq!(c[0], "conv1");
+        assert_eq!(c[1], "layer1.0.conv1");
+        assert_eq!(c[3], "layer1.0.downsample"); // after conv1, conv2 of block 0
+        assert_eq!(c[52], "layer4.2.conv2");
+        let p = arcface_prelu_names();
+        assert_eq!(p.len(), 25);
+        assert_eq!(p[0], "prelu"); // stem
+        assert_eq!(p[1], "layer1.0.prelu");
+        assert!(arcface_conv_names().iter().all(|n| !n.is_empty()));
+    }
 
     #[test]
     fn scrfd_names_cover_all_60_convs_uniquely() {
