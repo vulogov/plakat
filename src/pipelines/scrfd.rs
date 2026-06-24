@@ -716,7 +716,7 @@ pub fn preflight_scrfd() -> Result<bool> {
 /// InsightFace's `det_500m.onnx`). Used when neither `PLAKAT_SCRFD_WEIGHTS` nor
 /// `PLAKAT_SCRFD_HF` is set, so face detection works out of the box. Override
 /// either env var to point elsewhere.
-pub const DEFAULT_SCRFD_REPO: &str = "vulogov/plakat-scrfd-500m";
+pub const DEFAULT_SCRFD_REPO: &str = "vulogov98/plakat-scrfd-500m";
 pub const DEFAULT_SCRFD_FILE: &str = "scrfd_500m.safetensors";
 
 /// Async resolver — turns env-var config into a local safetensors path.
