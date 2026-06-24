@@ -33,7 +33,7 @@ const NUM_LIMBS: usize = 19;
 
 /// Each limb connects two keypoints (0-indexed). Mirrors lllyasviel's
 /// `limbSeq` with 1-indexing dropped.
-const LIMB_SEQ: [[usize; 2]; NUM_LIMBS] = [
+pub(crate) const LIMB_SEQ: [[usize; 2]; NUM_LIMBS] = [
     [1, 2],   [1, 5],   [2, 3],   [3, 4],   [5, 6],
     [6, 7],   [1, 8],   [8, 9],   [9, 10],  [1, 11],
     [11, 12], [12, 13], [1, 0],   [0, 14],  [14, 16],
@@ -52,7 +52,7 @@ const PAF_IDX: [[usize; 2]; NUM_LIMBS] = [
 ];
 
 /// Distinct colours for each limb. Matches lllyasviel's `colors`.
-const LIMB_COLORS: [[u8; 3]; NUM_LIMBS] = [
+pub(crate) const LIMB_COLORS: [[u8; 3]; NUM_LIMBS] = [
     [255, 0, 0],     [255, 85, 0],   [255, 170, 0],  [255, 255, 0],  [170, 255, 0],
     [85, 255, 0],    [0, 255, 0],    [0, 255, 85],   [0, 255, 170],  [0, 255, 255],
     [0, 170, 255],   [0, 85, 255],   [0, 0, 255],    [85, 0, 255],   [170, 0, 255],

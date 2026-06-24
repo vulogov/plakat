@@ -10,6 +10,7 @@
 
 pub mod analyser;
 pub mod placement;
+pub mod pose;
 pub mod prompt;
 
 pub use placement::{Distance, Facing, Placement, Position};
@@ -66,6 +67,10 @@ pub struct MultipersonRequest {
     pub relight: bool,
     /// With composite: optional img2img harmonize strength over the final image.
     pub harmonize: Option<f32>,
+    /// Pin each figure's position/pose with a synthetic OpenPose ControlNet (one
+    /// skeleton per persona region) during scene generation, so persona↔figure
+    /// binding holds. Applies to the `--swap` path.
+    pub pose: bool,
     /// Face-swap identity path: generate one coherent scene, then swap each
     /// detected face with the persona matched to its placement region.
     pub swap: bool,
@@ -88,6 +93,8 @@ struct Resolved {
     idx: usize,
     bbox: [f32; 4],
     facing_phrase: Option<&'static str>,
+    /// Facing enum (for synthetic OpenPose skeletons). `Front` for explicit bbox.
+    facing: Facing,
     /// Sort key: render farther personas first, closer ones last (occlusion).
     order_y: f32,
     source: &'static str, // "at" | "bbox" | "auto"
@@ -126,19 +133,20 @@ impl MultipersonRequest {
 
         let mut out = Vec::with_capacity(self.people.len());
         for (i, p) in self.people.iter().enumerate() {
-            let (bbox, facing, source) = if let Some(b) = p.bbox {
-                (b, None, "bbox")
+            let (bbox, facing_phrase, facing, source) = if let Some(b) = p.bbox {
+                (b, None, Facing::Front, "bbox")
             } else if let Some(pl) = p.placement {
-                (pl.bbox(), Some(pl.facing_phrase()), "at")
+                (pl.bbox(), Some(pl.facing_phrase()), pl.facing, "at")
             } else {
                 let pl = auto_map.get(&i).copied().unwrap_or_default();
-                (pl.bbox(), Some(pl.facing_phrase()), "auto")
+                (pl.bbox(), Some(pl.facing_phrase()), pl.facing, "auto")
             };
             out.push(Resolved {
                 idx: i,
                 order_y: (bbox[1] + bbox[3]) * 0.5,
                 bbox,
-                facing_phrase: facing,
+                facing_phrase,
+                facing,
                 source,
             });
         }
@@ -488,21 +496,32 @@ async fn run_swap(
     mp: &MultipersonPrompt,
 ) -> Result<()> {
     use crate::pipelines::faceswap::FaceSwapper;
+    use crate::pipelines::{controlnet::ControlSpec, t2i};
 
     let base_prompt = mp.enhancer_base(None, req.style.as_deref(), None);
 
-    // Scene generator (plain SD/SDXL — no identity encoder needed; identity comes
-    // from the swap).
-    let pipe = portrait::Pipeline::load(portrait::LoadRequest {
-        model: req.model.clone(),
-        device: req.device.clone(),
-        loras: Vec::new(),
-        lora_scale: 1.0,
-        identity: None,
-        shared_clip_h: None,
-    })
-    .await
-    .context("loading scene generator for multiperson --swap")?;
+    // Optional OpenPose composition: one synthetic skeleton per persona region,
+    // pinned so the model places a figure exactly where each persona goes — fixing
+    // the persona↔figure binding. Rendered once, reused each generation.
+    let _pose_tmp; // keep the pose-map file alive for the whole run
+    let pose_map_path: Option<std::path::PathBuf> = if req.pose {
+        let regions: Vec<([f32; 4], Facing)> =
+            resolved.iter().map(|r| (r.bbox, r.facing)).collect();
+        let map = pose::render_pose_map(&regions, req.width, req.height);
+        let t = tempfile::Builder::new().prefix("plakat-mp-pose-").suffix(".png").tempfile()?;
+        map.save(t.path())?;
+        let path = t.path().to_path_buf();
+        _pose_tmp = Some(t);
+        crate::ui::progress::println(&format!(
+            "  {} OpenPose composition: {} skeleton(s) pinned",
+            console::style("·").cyan(),
+            regions.len()
+        ));
+        Some(path)
+    } else {
+        _pose_tmp = None;
+        None
+    };
 
     let swapper = FaceSwapper::load_resolved(&req.device, candle_core::DType::F32)
         .await
@@ -525,31 +544,43 @@ async fn run_swap(
 
     for n in 0..req.count.max(1) {
         let seed = base_seed.wrapping_add(n as u64);
-        let gen_req = portrait::GenRequest {
-            prompt: base_prompt.clone(),
-            negative: req.negative.clone(),
-            photos: Vec::new(),
-            width: req.width,
-            height: req.height,
-            count: 1,
-            steps: req.steps,
-            guidance: req.guidance,
-            seed: Some(seed),
-            out_dir: req.out_dir.clone(),
-            scheduler: req.scheduler,
-            refine: None,
-            refine_strength: 0.0,
-            face_strength: 0.0,
-            face_bbox: None,
-            face_landmarks: None,
-        };
-        let scene_latents = pipe
-            .generate_latents_one(&gen_req, seed, &[])
-            .context("multiperson --swap: scene generation")?;
 
-        // Decode to a file so SCRFD can detect the generated faces.
+        // Generate the scene via the model-agnostic t2i path so any model works
+        // and the OpenPose ControlNet (if --pose) can pin the figures.
+        let gen_dir = tempfile::Builder::new().prefix("plakat-mp-scene-").tempdir()?;
+        let mut treq = t2i::Request::simple(
+            base_prompt.clone(),
+            req.model.clone(),
+            req.width,
+            req.height,
+            req.steps,
+            Some(seed),
+            req.device.clone(),
+            gen_dir.path().to_path_buf(),
+        );
+        treq.negative = req.negative.clone();
+        treq.guidance = req.guidance;
+        treq.scheduler = req.scheduler;
+        if let Some(pp) = &pose_map_path {
+            treq.controls = vec![ControlSpec {
+                kind: crate::pipelines::controlnet::ControlKind::OpenPose,
+                image: Some(pp.clone()),
+                from: None,
+                video: None,
+                strength: 1.0,
+                start: 0.0,
+                end: 1.0,
+            }];
+        }
+        t2i::run(treq).await.context("multiperson --swap: scene generation")?;
         let scene_path = req.out_dir.join(format!("plakat-multiperson-{seed}.png"));
-        pipe.save_image(&scene_latents, &scene_path)?;
+        let gen_png = std::fs::read_dir(gen_dir.path())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("png"))
+            .context("scene generation produced no PNG")?;
+        std::fs::copy(&gen_png, &scene_path)?;
+
         let faces = swapper.detect(&scene_path)?;
         crate::ui::progress::println(&format!(
             "  scene has {} detected face(s); {} persona(s) to place",
@@ -871,7 +902,7 @@ mod tests {
     }
 
     fn resolved_at(bbox: [f32; 4]) -> Resolved {
-        Resolved { idx: 0, bbox, facing_phrase: None, order_y: 0.0, source: "at" }
+        Resolved { idx: 0, bbox, facing_phrase: None, facing: Facing::Front, order_y: 0.0, source: "at" }
     }
 
     #[test]

@@ -135,6 +135,13 @@ pub struct MultipersonArgs {
     #[arg(long = "harmonize", value_name = "STRENGTH", num_args = 0..=1, default_missing_value = "0.3")]
     pub harmonize: Option<f32>,
 
+    /// Pin each figure's position + pose with a synthetic **OpenPose ControlNet**
+    /// (one skeleton per persona region) during scene generation. Fixes the
+    /// persona↔figure binding so the right identity lands on the right figure.
+    /// Use with `--swap`.
+    #[arg(long = "pose")]
+    pub pose: bool,
+
     /// Use **face-swap** for identity (secondary): generate one coherent scene,
     /// then swap each detected face with that persona's source identity (SCRFD +
     /// ArcFace + inswapper). Far stronger likeness than the IP-Adapter region
@@ -271,6 +278,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         composite: args.composite,
         relight: args.relight,
         harmonize: args.harmonize,
+        pose: args.pose,
         swap: args.swap,
         refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,
