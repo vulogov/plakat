@@ -31,7 +31,7 @@ The honest 1.12.0 ceiling: face-swap identity is strong only on **few, prominent
 roughly-frontal faces from photos**; crowds read faintly; hair/build come from the
 generated figure. These items push that ceiling:
 
-- [ ] **Face-restore / detail pass after swap** — small scene faces lose detail when the
+- [x] **Face-restore / detail pass after swap** — DONE (1.14.0, --restore-faces opt-in). — small scene faces lose detail when the
       128² swap is composited back down. An ADetailer-style high-res face refine (the
       pieces exist) would make crowd faces read more clearly.
 - [x] **Child / body-scale skeletons for `--pose`** — DONE (`--scale LABEL:0.7`). Original: — the synthetic skeleton is
