@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.10. The current
+"What's new" sections for v0.13 through 1.11. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.11.0 — relighting, richer maps, and a steadier host
+
+1.11.0 adds **IC-Light relighting**, fills out the **`plakat map`** generator with the
+terrain + cartography features it was missing, and hardens the CLI against concurrent
+runs and broken `pull`s.
+
+- **IC-Light relighting** — `plakat relight <subject> --prompt "<lighting>"` re-illuminates
+  a foreground subject from a text description while preserving identity (SD 1.5: widened
+  4→8-channel input conv + `lllyasviel/ic-light` offset; low guidance 1.5–3).
+- **`plakat map` geography** — dry canyons, plateaus/mesas, a political layer, seasonal
+  palettes (`--map-season`), a tabletop grid (`--map-grid N`), comment-friendly HJSON specs,
+  natural lake/coast irregularity (`terrain.erosion`).
+- **CLI robustness** — single-instance guard (a second heavy run refuses while one is busy;
+  `--enable-multiple-instances` overrides); `models pull` rewritten to enumerate a repo's
+  actual files (PixArt / SD3 / Cascade / single-file / `civitai:N` all pull).
 
 ## What's new in 1.10.0 — train your own style on every model family
 

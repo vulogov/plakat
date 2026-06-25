@@ -7,6 +7,7 @@ pub mod artefact;
 pub mod civitai;
 pub mod clone;
 pub mod compile;
+pub mod convert_onnx;
 pub mod compose;
 pub mod map;
 pub mod doctor;
@@ -21,6 +22,7 @@ pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
 pub mod portrait;
+pub mod multiperson;
 pub mod relight;
 pub mod run;
 pub mod scenario;
@@ -77,6 +79,10 @@ pub enum Command {
     /// prompt describing the lighting. SD 1.5-based (widened 8-channel
     /// UNet + IC-Light offset weights).
     Relight(relight::RelightArgs),
+    /// Place 2+ specific personas into one generated scene, each at a relative
+    /// location (`--at "alice:left closer front"`); un-pinned personas are
+    /// placed by a scene-aware LLM. Reference photos give each their identity.
+    Multiperson(multiperson::MultipersonArgs),
     /// Make pixels matching the upper-left corner color transparent.
     Transparent(transparent::TransparentArgs),
     /// Segment an object by clicking it (Segment-Anything / MobileSAM):
@@ -113,6 +119,13 @@ pub enum Command {
     /// and shape. Useful when a weight load fails and you want to see
     /// what's actually in the file vs what the model expected.
     Inspect(inspect::InspectArgs),
+    /// Convert an ONNX model into the plakat `.safetensors` layout. ONNX names
+    /// weights by graph node, not by the module tree a pipeline loads; this
+    /// renames them so plakat can consume the file. Currently supports
+    /// `--arch scrfd-500mf` (InsightFace `det_500m.onnx` → the SCRFD face
+    /// detector behind `--identity faceid` / `--adetailer` / `multiperson`).
+    #[command(name = "convert-onnx")]
+    ConvertOnnx(convert_onnx::ConvertOnnxArgs),
     /// Art-style detection from a reference photo.
     #[command(subcommand_value_name = "OP")]
     Style(style::StyleArgs),
@@ -185,6 +198,7 @@ impl Command {
                 | Command::Outpaint(_)
                 | Command::Stylize(_)
                 | Command::Relight(_)
+                | Command::Multiperson(_)
                 | Command::Segment(_)
                 | Command::Upscale(_)
                 | Command::Scenario(_)
@@ -228,6 +242,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             stylize::run(args, device).await
         }
         Command::Relight(a) => relight::run(a, crate::device::select(&cli.device)?).await,
+        Command::Multiperson(a) => multiperson::run(a, crate::device::select(&cli.device)?).await,
         Command::Transparent(args) => {
             let device = crate::device::select(&cli.device)?;
             transparent::run(args, device).await
@@ -250,6 +265,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
+        Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         Command::Style(args) => {
             let device = crate::device::select(&cli.device)?;
             style::run(args, device).await

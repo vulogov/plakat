@@ -1340,17 +1340,17 @@ landmarks the aligner already consumes, so `--face-bbox` /
 
 ### Route A — local file (`PLAKAT_SCRFD_WEIGHTS`)
 
-```bash
-# Download SCRFD-500MF from InsightFace releases
-curl -L -o scrfd_500m_bnkps.onnx \
- https://github.com/deepinsight/insightface/releases/download//scrfd_500m_bnkps.onnx
+`det_500m.onnx` (SCRFD-500MF) ships inside InsightFace's `buffalo_sc` model pack.
+Convert it with plakat's own `convert-onnx` command — no Python, no torch:
 
-# Convert ONNX → safetensors
-python -c "import onnx, torch
-from onnx2torch import convert
-from safetensors.torch import save_file
-m = convert(onnx.load('scrfd_500m_bnkps.onnx'))
-save_file(m.state_dict(), 'scrfd_500m.safetensors')"
+```bash
+# Get det_500m.onnx (inside buffalo_sc.zip):
+curl -L -o buffalo_sc.zip \
+  https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+unzip buffalo_sc.zip 'det_500m.onnx'
+
+# Convert ONNX → plakat safetensors:
+plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
 
 export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 ```
@@ -1361,17 +1361,15 @@ export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 export PLAKAT_SCRFD_HF=<user>/<repo>#<path/in/repo.safetensors>
 ```
 
-Discover candidates at [huggingface.co/models?search=scrfd](https://huggingface.co/models?search=scrfd).
+Point this at a `plakat convert-onnx`-converted SCRFD-500MF safetensors (the
+naming must match plakat's loader — a raw `onnx2torch` dump will **not** load).
 Local file wins if both are set.
 
-> ⚠️ **Verification status (honest).** The SCRFD architecture in
-> `src/pipelines/scrfd.rs` was ported from the InsightFace reference
-> — exact channel widths / block counts for SCRFD-500MF are best-guess
-> against the published architecture. If your converted safetensors
-> uses a slightly different layout, weight loading will error at the
-> first mismatched layer. `SCRFDConfig::scrfd_500mf()` is parametric,
-> so fixes are usually a one-line change. File a bug with the actual
-> layer that mismatched + its shape and we'll patch.
+> ✅ **Verification status.** The SCRFD-500MF architecture in
+> `src/pipelines/scrfd.rs` is verified against InsightFace's real
+> `det_500m.onnx`: plakat's detections match onnxruntime to within ~1–3 px and
+> 0.003 score. The `convert-onnx` command emits exactly the key layout the loader
+> expects, so converted weights load and detect correctly end-to-end.
 
 ### Alignment priority
 

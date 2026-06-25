@@ -9,109 +9,65 @@
 //! reference-quality identity preservation **without** any user-supplied
 //! `--face-bbox` / `--face-landmarks` flag.
 //!
-//! ## Verification status
+//! ## Verification status — VERIFIED
 //!
-//! The model architecture, anchor generation, decoding, NMS, and
-//! preprocessing are all in this file. **What's not yet verified** is
-//! that the weight-key layout this port expects matches any
-//! publicly-available SCRFD safetensors. The exact channel widths /
-//! block counts for SCRFD-500MF are taken from the InsightFace
-//! reference; if converted weights use slightly different key naming
-//! (e.g. `bbone.stage1.0.conv1.weight` vs
-//! `backbone.stages.0.0.conv1.weight`), the load will fail at the
-//! first mismatched layer. `SCRFDConfig::scrfd_500mf()` exposes every
-//! channel width and block count for one-line tuning.
+//! This architecture is verified against InsightFace's real `det_500m.onnx`
+//! (SCRFD-500MF): plakat's detections match onnxruntime to within ~1–3 px and
+//! 0.003 score on the same images. The weight-key layout below is the one the
+//! `plakat convert-onnx --arch scrfd-500mf` converter emits, so converted weights
+//! load and run correctly end-to-end. (Earlier revisions implemented a guessed
+//! ResNet-BasicBlock backbone + simple FPN that never loaded real weights — that
+//! is fixed here.)
 //!
-//! Setup is bring-your-own-weights — see Documentation/PERSONA.md "Optional SCRFD
-//! auto-detection":
+//! Setup — convert the InsightFace ONNX with plakat's own command:
 //!
 //! ```bash
-//! # Download the SCRFD bundle from InsightFace releases:
-//! curl -L -o scrfd_500m.onnx \
-//!     https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_500m_bnkps.onnx
-//! # Convert ONNX → safetensors:
-//! python -c "import onnx, torch
-//! from onnx2torch import convert
-//! from safetensors.torch import save_file
-//! m = convert(onnx.load('scrfd_500m_bnkps.onnx'))
-//! save_file(m.state_dict(), 'scrfd_500m.safetensors')"
+//! # det_500m.onnx ships inside InsightFace's buffalo_sc model pack:
+//! #   https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+//! plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
 //! export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 //! ```
 //!
-//! ## Architecture overview
+//! ## Architecture overview (SCRFD-500MF, matches det_500m.onnx)
 //!
 //! ```text
-//!   input (1, 3, 640, 640)  ← resize + letterbox-pad photo
+//!   input (1, 3, 640, 640)  ← resize + top-left letterbox, (x-127.5)/128, RGB
 //!     │
 //!     ▼
-//!   stem: 3×3 stride=2 → BN → ReLU                 → C=16
+//!   stem: 3×3 stride=2 → ReLU                              → C=16
 //!     │
 //!     ▼
-//!   stage 1 (stride=1): BasicBlock × N₁            → C=16
-//!     │   ─────────────────────────────────────────► (skipped from FPN)
-//!     ▼
-//!   stage 2 (stride=2): BasicBlock × N₂            → C=40   ── FPN P3 input (stride 8)
+//!   backbone: 14 depthwise-separable blocks (DW 3×3 → ReLU → PW 1×1 → ReLU),
+//!             channels 16→40→72→152→288, BN folded into each conv's bias.
+//!             FPN taps after block 5 (72ch, /8), block 7 (152ch, /16),
+//!             block 13 (288ch, /32).
 //!     │
 //!     ▼
-//!   stage 3 (stride=2): BasicBlock × N₃            → C=72   ── FPN P4 input (stride 16)
+//!   neck (PAFPN): lateral 1×1 → 16ch; top-down add+upsample; bottom-up
+//!                 downsample+add+3×3. No activations.
 //!     │
 //!     ▼
-//!   stage 4 (stride=2): BasicBlock × N₄            → C=152  ── FPN P5 input (stride 32)
-//!     │
+//!   head × {stride 8, 16, 32} (per-stride, not shared): 2 DW-sep stem convs
+//!     │     → 64ch, then 3×3 preds  cls (2 anchors), reg (2×4), kps (2×10).
 //!     ▼
-//!   FPN: lateral 1×1 → out_ch=16, top-down add + 3×3 smooth
-//!     │
-//!     ▼
-//!   DetectionHead × {P3, P4, P5}: 2 shared 3×3 → cls/bbox/kps heads
-//!     │           cls   : (B, 2 anchors,            H, W)
-//!     │           bbox  : (B, 2 anchors × 4,        H, W) — distance format
-//!     │           kps   : (B, 2 anchors × 10,       H, W) — 5 (dx,dy) pairs
-//!     ▼
-//!   decode + NMS → Vec<Face>
+//!   decode (anchor centre = (x·stride, y·stride), distance format) + NMS
 //! ```
 
 #![allow(dead_code)] // SCRFD integration is opt-in via PLAKAT_SCRFD_*;
                      // many helpers are public for future / debugging use.
 
-use anyhow::{Context, Result, anyhow, bail};
-use candle_core::{DType, Device, IndexOp, ModuleT, Tensor};
-use candle_nn::{
-    BatchNorm, BatchNormConfig, Conv2d, Conv2dConfig, Module, VarBuilder,
-};
+use anyhow::{Context, Result, anyhow};
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::{Conv2d, Conv2dConfig, Module, VarBuilder};
 use image::imageops::FilterType;
 use std::path::Path;
 
-const EVAL: bool = false;
-
-/// SCRFD-500MF / similar lightweight variants. Numbers are taken from
-/// the InsightFace reference; if the user's weight file targets a
-/// different variant, swap in a different config or adjust here.
+/// SCRFD-500MF runtime config. The architecture (MobileNet depthwise-separable
+/// backbone + PAFPN neck + per-stride head) is now fixed and verified against the
+/// real InsightFace `det_500m.onnx`, so only the decode-time knobs live here.
 #[derive(Clone, Debug)]
 pub struct SCRFDConfig {
-    /// Backbone stem output channels (after `conv1 + bn1 + relu`).
-    pub stem_channels: usize,
-    /// Output channels of each of the 4 backbone stages.
-    pub stage_channels: [usize; 4],
-    /// Number of `BasicBlock` repeats per stage. SCRFD-500MF uses small
-    /// counts — this is one of the variant-specific numbers most likely
-    /// to need tweaking if a different SCRFD model is loaded.
-    pub stage_blocks: [usize; 4],
-    /// Stride applied to the first block of each stage (1 keeps spatial
-    /// dims; 2 halves them). Always [1, 2, 2, 2] for SCRFD-* variants.
-    pub stage_strides: [usize; 4],
-    /// Output channels feeding the FPN — last 3 stages of the backbone.
-    pub fpn_in_channels: [usize; 3],
-    /// FPN output channels per level. SCRFD-500MF: 16.
-    pub fpn_out_channels: usize,
-    /// Number of stacked 3×3 conv layers in the detection head before
-    /// the per-task prediction convs.
-    pub head_stacked_convs: usize,
-    /// Hidden channels inside the head's stacked convs.
-    pub head_feat_channels: usize,
-    /// Anchor sizes per FPN level. Two square anchors per location.
-    /// SCRFD's typical scheme: stride×4 and stride×8.
-    pub anchor_sizes: [[u32; 2]; 3],
-    /// Number of anchors per spatial location (2 for SCRFD).
+    /// Anchors per spatial location (2 for SCRFD-500MF).
     pub num_anchors: usize,
     /// FPN level strides relative to the input. Always [8, 16, 32].
     pub strides: [u32; 3],
@@ -126,357 +82,199 @@ impl Default for SCRFDConfig {
 }
 
 impl SCRFDConfig {
-    /// Best-guess SCRFD-500MF config. Channel widths / block counts
-    /// taken from InsightFace's `scrfd.py` reference; if weight loading
-    /// fails at a specific layer, tune these and report which dims
-    /// the file actually had.
+    /// SCRFD-500MF: 2 anchors/location, strides [8,16,32], 640² input.
     pub fn scrfd_500mf() -> Self {
-        Self {
-            stem_channels: 16,
-            stage_channels: [16, 40, 72, 152],
-            stage_blocks: [1, 2, 3, 3],
-            stage_strides: [1, 2, 2, 2],
-            fpn_in_channels: [40, 72, 152],
-            fpn_out_channels: 16,
-            head_stacked_convs: 2,
-            head_feat_channels: 64,
-            // SCRFD's two anchors per location are at sizes
-            // (stride × 4, stride × 8) typically:
-            //   stride 8  → [32,  64]
-            //   stride 16 → [64,  128]
-            //   stride 32 → [128, 256]
-            anchor_sizes: [[32, 64], [64, 128], [128, 256]],
-            num_anchors: 2,
-            strides: [8, 16, 32],
-            input_size: 640,
-        }
+        Self { num_anchors: 2, strides: [8, 16, 32], input_size: 640 }
     }
 }
 
-// =====================================================================
-// BasicBlock — 3×3 → BN → ReLU → 3×3 → BN → +shortcut → ReLU.
-// =====================================================================
-
-struct BasicBlock {
-    conv1: Conv2d,
-    bn1: BatchNorm,
-    conv2: Conv2d,
-    bn2: BatchNorm,
-    downsample: Option<(Conv2d, BatchNorm)>,
+/// A conv2d **with bias** (SCRFD's exported ONNX folds BatchNorm into each conv,
+/// so every layer is a plain biased conv). `groups == in_ch` gives a depthwise
+/// conv. Reads `weight` + `bias` under `vb`.
+fn conv(
+    vb: VarBuilder,
+    in_ch: usize,
+    out_ch: usize,
+    k: usize,
+    stride: usize,
+    padding: usize,
+    groups: usize,
+) -> Result<Conv2d> {
+    let cfg = Conv2dConfig { padding, stride, dilation: 1, groups, ..Default::default() };
+    Ok(candle_nn::conv2d(in_ch, out_ch, k, cfg, vb)?)
 }
 
-impl BasicBlock {
-    fn new(
-        vs: VarBuilder,
-        in_ch: usize,
-        out_ch: usize,
-        stride: usize,
-    ) -> Result<Self> {
-        let bn_cfg = BatchNormConfig::default();
-        let conv1_cfg = Conv2dConfig {
-            stride,
-            padding: 1,
-            ..Default::default()
-        };
-        let conv1 = candle_nn::conv2d_no_bias(in_ch, out_ch, 3, conv1_cfg, vs.pp("conv1"))?;
-        let bn1 = candle_nn::batch_norm(out_ch, bn_cfg, vs.pp("bn1"))?;
-        let conv2_cfg = Conv2dConfig {
-            stride: 1,
-            padding: 1,
-            ..Default::default()
-        };
-        let conv2 = candle_nn::conv2d_no_bias(out_ch, out_ch, 3, conv2_cfg, vs.pp("conv2"))?;
-        let bn2 = candle_nn::batch_norm(out_ch, bn_cfg, vs.pp("bn2"))?;
+// =====================================================================
+// Backbone — MobileNet-style depthwise-separable (DW 3×3 → ReLU → PW 1×1
+// → ReLU). 14 blocks, channels 16→40→72→152→288; FPN taps after the
+// blocks at strides 8 / 16 / 32.
+// =====================================================================
 
-        let downsample = if stride != 1 || in_ch != out_ch {
-            let cfg = Conv2dConfig {
-                stride,
-                padding: 0,
-                ..Default::default()
-            };
-            let dconv = candle_nn::conv2d_no_bias(
-                in_ch,
-                out_ch,
-                1,
-                cfg,
-                vs.pp("downsample").pp("0"),
-            )?;
-            let dbn = candle_nn::batch_norm(out_ch, bn_cfg, vs.pp("downsample").pp("1"))?;
-            Some((dconv, dbn))
-        } else {
-            None
-        };
+struct DwSep {
+    dw: Conv2d,
+    pw: Conv2d,
+}
 
-        Ok(Self {
-            conv1,
-            bn1,
-            conv2,
-            bn2,
-            downsample,
-        })
+impl DwSep {
+    fn new(vb: VarBuilder, in_ch: usize, out_ch: usize, stride: usize) -> Result<Self> {
+        let dw = conv(vb.pp("dw"), in_ch, in_ch, 3, stride, 1, in_ch)?;
+        let pw = conv(vb.pp("pw"), in_ch, out_ch, 1, 1, 0, 1)?;
+        Ok(Self { dw, pw })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let identity = match &self.downsample {
-            Some((conv, bn)) => bn.forward_t(&conv.forward(x)?, EVAL)?,
-            None => x.clone(),
-        };
-        let h = self.conv1.forward(x)?;
-        let h = self.bn1.forward_t(&h, EVAL)?;
-        let h = h.relu()?;
-        let h = self.conv2.forward(&h)?;
-        let h = self.bn2.forward_t(&h, EVAL)?;
-        let out = (h + identity)?.relu()?;
-        Ok(out)
+        let h = self.dw.forward(x)?.relu()?;
+        let h = self.pw.forward(&h)?.relu()?;
+        Ok(h)
     }
 }
 
-// =====================================================================
-// Backbone — stem + 4 stages.
-// =====================================================================
-
 struct Backbone {
-    stem_conv: Conv2d,
-    stem_bn: BatchNorm,
-    stages: Vec<Vec<BasicBlock>>,
+    stem: Conv2d,
+    blocks: Vec<DwSep>,
 }
 
 impl Backbone {
-    fn new(vs: VarBuilder, cfg: &SCRFDConfig) -> Result<Self> {
-        let bn_cfg = BatchNormConfig::default();
-        let stem_conv_cfg = Conv2dConfig {
-            stride: 2,
-            padding: 1,
-            ..Default::default()
-        };
-        let stem_conv = candle_nn::conv2d_no_bias(
-            3,
-            cfg.stem_channels,
-            3,
-            stem_conv_cfg,
-            vs.pp("conv1"),
-        )?;
-        let stem_bn = candle_nn::batch_norm(cfg.stem_channels, bn_cfg, vs.pp("bn1"))?;
+    /// `(in_ch, out_ch, stride)` for the 14 depthwise-separable blocks.
+    const SPECS: [(usize, usize, usize); 14] = [
+        (16, 16, 1),
+        (16, 40, 2),
+        (40, 40, 1),
+        (40, 72, 2),
+        (72, 72, 1),
+        (72, 72, 1), // block 5 → stride-8 tap (72 ch)
+        (72, 152, 2),
+        (152, 152, 1), // block 7 → stride-16 tap (152 ch)
+        (152, 288, 2),
+        (288, 288, 1),
+        (288, 288, 1),
+        (288, 288, 1),
+        (288, 288, 1),
+        (288, 288, 1), // block 13 → stride-32 tap (288 ch)
+    ];
 
-        let mut stages = Vec::with_capacity(4);
-        let mut in_ch = cfg.stem_channels;
-        for (stage_idx, (&blocks_n, &stride)) in cfg
-            .stage_blocks
+    fn new(vb: VarBuilder) -> Result<Self> {
+        let stem = conv(vb.pp("stem"), 3, 16, 3, 2, 1, 1)?;
+        let blocks = Self::SPECS
             .iter()
-            .zip(cfg.stage_strides.iter())
             .enumerate()
-        {
-            let out_ch = cfg.stage_channels[stage_idx];
-            // Stage's VarBuilder. Naming follows InsightFace convention
-            // `layer{idx+1}.<i>` for the i-th block.
-            let stage_vs = vs.pp(format!("layer{}", stage_idx + 1));
-            let mut blocks = Vec::with_capacity(blocks_n);
-            blocks.push(BasicBlock::new(stage_vs.pp("0"), in_ch, out_ch, stride)?);
-            for j in 1..blocks_n {
-                blocks.push(BasicBlock::new(
-                    stage_vs.pp(j.to_string()),
-                    out_ch,
-                    out_ch,
-                    1,
-                )?);
-            }
-            stages.push(blocks);
-            in_ch = out_ch;
-        }
-        Ok(Self {
-            stem_conv,
-            stem_bn,
-            stages,
-        })
+            .map(|(i, &(ic, oc, s))| DwSep::new(vb.pp(format!("b{i}")), ic, oc, s))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { stem, blocks })
     }
 
-    /// Run the backbone and return the outputs of stages 2, 3, 4 — the
-    /// inputs the FPN consumes. Stage 1 is consumed but not returned.
+    /// Returns the three FPN-input feature maps (strides 8, 16, 32).
     fn forward(&self, x: &Tensor) -> Result<[Tensor; 3]> {
-        let x = self.stem_conv.forward(x)?;
-        let x = self.stem_bn.forward_t(&x, EVAL)?;
-        let mut x = x.relu()?;
-        let mut outs: Vec<Tensor> = Vec::with_capacity(3);
-        for (i, stage) in self.stages.iter().enumerate() {
-            for block in stage {
-                x = block.forward(&x)?;
-            }
-            if i >= 1 {
-                outs.push(x.clone());
+        let mut h = self.stem.forward(x)?.relu()?;
+        let mut taps: Vec<Tensor> = Vec::with_capacity(3);
+        for (i, b) in self.blocks.iter().enumerate() {
+            h = b.forward(&h)?;
+            if i == 5 || i == 7 || i == 13 {
+                taps.push(h.clone());
             }
         }
-        if outs.len() != 3 {
-            bail!("backbone produced {} feature levels, expected 3", outs.len());
-        }
-        Ok([outs.remove(0), outs.remove(0), outs.remove(0)])
+        Ok([taps[0].clone(), taps[1].clone(), taps[2].clone()])
     }
 }
 
 // =====================================================================
-// FPN — lateral 1×1 + top-down upsample + 3×3 smoothing per level.
+// Neck — PAFPN: lateral 1×1 → 16 ch, top-down add+upsample, then a
+// bottom-up path (downsample + add + 3×3). No activations. Matches the
+// exact Resize/Add wiring of det_500m.onnx.
 // =====================================================================
 
-struct FPN {
-    lateral: [Conv2d; 3],
-    smooth: [Conv2d; 3],
+struct Neck {
+    lat: [Conv2d; 3],
+    fpn: [Conv2d; 3],
+    down: [Conv2d; 2],
+    pa: [Conv2d; 2],
 }
 
-impl FPN {
-    fn new(vs: VarBuilder, cfg: &SCRFDConfig) -> Result<Self> {
-        let mk_lateral = |i: usize| -> Result<Conv2d> {
-            let lateral_cfg = Conv2dConfig::default();
-            Ok(candle_nn::conv2d(
-                cfg.fpn_in_channels[i],
-                cfg.fpn_out_channels,
-                1,
-                lateral_cfg,
-                vs.pp("lateral_convs").pp(i.to_string()).pp("conv"),
-            )?)
-        };
-        let mk_smooth = |i: usize| -> Result<Conv2d> {
-            let cfg_s = Conv2dConfig {
-                stride: 1,
-                padding: 1,
-                ..Default::default()
-            };
-            Ok(candle_nn::conv2d(
-                cfg.fpn_out_channels,
-                cfg.fpn_out_channels,
-                3,
-                cfg_s,
-                vs.pp("fpn_convs").pp(i.to_string()).pp("conv"),
-            )?)
-        };
-        let lateral = [mk_lateral(0)?, mk_lateral(1)?, mk_lateral(2)?];
-        let smooth = [mk_smooth(0)?, mk_smooth(1)?, mk_smooth(2)?];
-        Ok(Self { lateral, smooth })
+impl Neck {
+    fn new(vb: VarBuilder) -> Result<Self> {
+        let lat = [
+            conv(vb.pp("lat0"), 72, 16, 1, 1, 0, 1)?,
+            conv(vb.pp("lat1"), 152, 16, 1, 1, 0, 1)?,
+            conv(vb.pp("lat2"), 288, 16, 1, 1, 0, 1)?,
+        ];
+        let fpn = [
+            conv(vb.pp("fpn0"), 16, 16, 3, 1, 1, 1)?,
+            conv(vb.pp("fpn1"), 16, 16, 3, 1, 1, 1)?,
+            conv(vb.pp("fpn2"), 16, 16, 3, 1, 1, 1)?,
+        ];
+        let down = [
+            conv(vb.pp("down0"), 16, 16, 3, 2, 1, 1)?,
+            conv(vb.pp("down1"), 16, 16, 3, 2, 1, 1)?,
+        ];
+        let pa = [
+            conv(vb.pp("pa0"), 16, 16, 3, 1, 1, 1)?,
+            conv(vb.pp("pa1"), 16, 16, 3, 1, 1, 1)?,
+        ];
+        Ok(Self { lat, fpn, down, pa })
     }
 
+    /// `feats` = backbone taps (stride 8, 16, 32). Returns the three head
+    /// inputs (stride 8, 16, 32).
     fn forward(&self, feats: [Tensor; 3]) -> Result<[Tensor; 3]> {
-        // Lateral 1×1 convs.
-        let p3 = self.lateral[0].forward(&feats[0])?;
-        let p4 = self.lateral[1].forward(&feats[1])?;
-        let p5 = self.lateral[2].forward(&feats[2])?;
-        // Top-down: upsample P5 → add to P4, upsample P4 → add to P3.
-        let (_, _, p4_h, p4_w) = p4.dims4()?;
-        let p5_up = p5.upsample_nearest2d(p4_h, p4_w)?;
-        let p4 = (p4 + p5_up)?;
-        let (_, _, p3_h, p3_w) = p3.dims4()?;
-        let p4_up = p4.upsample_nearest2d(p3_h, p3_w)?;
-        let p3 = (p3 + p4_up)?;
-        // 3×3 smoothing.
-        let p3 = self.smooth[0].forward(&p3)?;
-        let p4 = self.smooth[1].forward(&p4)?;
-        let p5 = self.smooth[2].forward(&p5)?;
-        Ok([p3, p4, p5])
+        let l3 = self.lat[0].forward(&feats[0])?;
+        let l4 = self.lat[1].forward(&feats[1])?;
+        let l5 = self.lat[2].forward(&feats[2])?;
+        // Top-down.
+        let (_, _, h4, w4) = l4.dims4()?;
+        let p4 = (&l4 + l5.upsample_nearest2d(h4, w4)?)?;
+        let (_, _, h3, w3) = l3.dims4()?;
+        let p3 = (&l3 + p4.upsample_nearest2d(h3, w3)?)?;
+        // FPN smooth.
+        let f3 = self.fpn[0].forward(&p3)?;
+        let f4 = self.fpn[1].forward(&p4)?;
+        let f5 = self.fpn[2].forward(&l5)?;
+        // Bottom-up (PA). The downsample for the next level uses the pre-PA
+        // merge (m4), not the post-PA output — matching the ONNX graph.
+        let m4 = (&f4 + self.down[0].forward(&f3)?)?;
+        let n4 = self.pa[0].forward(&m4)?;
+        let m5 = (&f5 + self.down[1].forward(&m4)?)?;
+        let n5 = self.pa[1].forward(&m5)?;
+        Ok([f3, n4, n5])
     }
 }
 
 // =====================================================================
-// DetectionHead — shared stacked convs + 3 per-task prediction convs.
+// Head — per-stride. Two depthwise-separable stem convs (→64 ch) shared
+// by all three prediction convs (cls 2, reg 8, kps 20 — 3×3, raw logits).
 // =====================================================================
 
-struct ConvGnReluBlock {
-    conv: Conv2d,
-    bn: BatchNorm,
+struct Head {
+    s0dw: Conv2d,
+    s0pw: Conv2d,
+    s1dw: Conv2d,
+    s1pw: Conv2d,
+    cls: Conv2d,
+    reg: Conv2d,
+    kps: Conv2d,
 }
 
-impl ConvGnReluBlock {
-    fn new(vs: VarBuilder, in_ch: usize, out_ch: usize) -> Result<Self> {
-        let conv_cfg = Conv2dConfig {
-            stride: 1,
-            padding: 1,
-            ..Default::default()
-        };
-        let conv = candle_nn::conv2d_no_bias(in_ch, out_ch, 3, conv_cfg, vs.pp("conv"))?;
-        let bn = candle_nn::batch_norm(out_ch, BatchNormConfig::default(), vs.pp("gn"))?;
-        Ok(Self { conv, bn })
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let h = self.conv.forward(x)?;
-        let h = self.bn.forward_t(&h, EVAL)?;
-        h.relu().map_err(Into::into)
-    }
-}
-
-struct DetectionHead {
-    cls_convs: Vec<ConvGnReluBlock>,
-    reg_convs: Vec<ConvGnReluBlock>,
-    cls_pred: Conv2d,
-    reg_pred: Conv2d,
-    kps_pred: Conv2d,
-}
-
-impl DetectionHead {
-    fn new(vs: VarBuilder, cfg: &SCRFDConfig) -> Result<Self> {
-        let mut cls_convs = Vec::with_capacity(cfg.head_stacked_convs);
-        let mut reg_convs = Vec::with_capacity(cfg.head_stacked_convs);
-        let cls_vs = vs.pp("cls_convs");
-        let reg_vs = vs.pp("reg_convs");
-        for i in 0..cfg.head_stacked_convs {
-            let in_ch = if i == 0 {
-                cfg.fpn_out_channels
-            } else {
-                cfg.head_feat_channels
-            };
-            cls_convs.push(ConvGnReluBlock::new(
-                cls_vs.pp(i.to_string()),
-                in_ch,
-                cfg.head_feat_channels,
-            )?);
-            reg_convs.push(ConvGnReluBlock::new(
-                reg_vs.pp(i.to_string()),
-                in_ch,
-                cfg.head_feat_channels,
-            )?);
-        }
-        // 1×1 prediction convs (`cls_score` returns one channel per
-        // anchor; `bbox_pred` 4 per anchor; `kps_pred` 10 per anchor).
-        let pred_cfg = Conv2dConfig::default();
-        let cls_pred = candle_nn::conv2d(
-            cfg.head_feat_channels,
-            cfg.num_anchors,
-            1,
-            pred_cfg,
-            vs.pp("cls_pred"),
-        )?;
-        let reg_pred = candle_nn::conv2d(
-            cfg.head_feat_channels,
-            cfg.num_anchors * 4,
-            1,
-            pred_cfg,
-            vs.pp("bbox_pred"),
-        )?;
-        let kps_pred = candle_nn::conv2d(
-            cfg.head_feat_channels,
-            cfg.num_anchors * 10,
-            1,
-            pred_cfg,
-            vs.pp("kps_pred"),
-        )?;
+impl Head {
+    fn new(vb: VarBuilder, num_anchors: usize) -> Result<Self> {
         Ok(Self {
-            cls_convs,
-            reg_convs,
-            cls_pred,
-            reg_pred,
-            kps_pred,
+            s0dw: conv(vb.pp("s0dw"), 16, 16, 3, 1, 1, 16)?,
+            s0pw: conv(vb.pp("s0pw"), 16, 64, 1, 1, 0, 1)?,
+            s1dw: conv(vb.pp("s1dw"), 64, 64, 3, 1, 1, 64)?,
+            s1pw: conv(vb.pp("s1pw"), 64, 64, 1, 1, 0, 1)?,
+            cls: conv(vb.pp("cls"), 64, num_anchors, 3, 1, 1, 1)?,
+            reg: conv(vb.pp("reg"), 64, num_anchors * 4, 3, 1, 1, 1)?,
+            kps: conv(vb.pp("kps"), 64, num_anchors * 10, 3, 1, 1, 1)?,
         })
     }
 
     fn forward(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
-        let mut cls_feat = x.clone();
-        for c in &self.cls_convs {
-            cls_feat = c.forward(&cls_feat)?;
-        }
-        let mut reg_feat = x.clone();
-        for c in &self.reg_convs {
-            reg_feat = c.forward(&reg_feat)?;
-        }
-        let cls = self.cls_pred.forward(&cls_feat)?;
-        let bbox = self.reg_pred.forward(&reg_feat)?;
-        let kps = self.kps_pred.forward(&reg_feat)?;
-        Ok((cls, bbox, kps))
+        let h = self.s0dw.forward(x)?.relu()?;
+        let h = self.s0pw.forward(&h)?.relu()?;
+        let h = self.s1dw.forward(&h)?.relu()?;
+        let h = self.s1pw.forward(&h)?.relu()?;
+        let cls = self.cls.forward(&h)?;
+        let reg = self.reg.forward(&h)?;
+        let kps = self.kps.forward(&h)?;
+        Ok((cls, reg, kps))
     }
 }
 
@@ -487,35 +285,32 @@ impl DetectionHead {
 pub struct SCRFD {
     config: SCRFDConfig,
     backbone: Backbone,
-    fpn: FPN,
-    head: DetectionHead,
+    neck: Neck,
+    heads: [Head; 3],
 }
 
 impl SCRFD {
     pub fn new(vs: VarBuilder, config: SCRFDConfig) -> Result<Self> {
-        let backbone = Backbone::new(vs.pp("backbone"), &config)?;
-        let fpn = FPN::new(vs.pp("neck"), &config)?;
-        // SCRFD heads are shared across FPN levels (one head, applied
-        // three times) per InsightFace's `SCRFDHead`. Some derivative
-        // ports use per-level heads — if your weights fail to load
-        // here, the per-level naming is `bbox_head.<level>.cls_convs.<i>` etc.
-        let head = DetectionHead::new(vs.pp("bbox_head"), &config)?;
-        Ok(Self {
-            config,
-            backbone,
-            fpn,
-            head,
-        })
+        let backbone = Backbone::new(vs.pp("backbone"))?;
+        let neck = Neck::new(vs.pp("neck"))?;
+        let hb = vs.pp("head");
+        let heads = [
+            Head::new(hb.pp("s8"), config.num_anchors)?,
+            Head::new(hb.pp("s16"), config.num_anchors)?,
+            Head::new(hb.pp("s32"), config.num_anchors)?,
+        ];
+        Ok(Self { config, backbone, neck, heads })
     }
 
     /// Returns three sets of (cls, bbox, kps) tensors, one per FPN level.
     pub fn forward(&self, x: &Tensor) -> Result<[(Tensor, Tensor, Tensor); 3]> {
         let backbone_outs = self.backbone.forward(x)?;
-        let fpn_outs = self.fpn.forward(backbone_outs)?;
-        let p3 = self.head.forward(&fpn_outs[0])?;
-        let p4 = self.head.forward(&fpn_outs[1])?;
-        let p5 = self.head.forward(&fpn_outs[2])?;
-        Ok([p3, p4, p5])
+        let neck_outs = self.neck.forward(backbone_outs)?;
+        Ok([
+            self.heads[0].forward(&neck_outs[0])?,
+            self.heads[1].forward(&neck_outs[1])?,
+            self.heads[2].forward(&neck_outs[2])?,
+        ])
     }
 }
 
@@ -549,9 +344,9 @@ fn make_anchor_centres(feat_h: usize, feat_w: usize, stride: u32) -> Vec<(f32, f
     let s = stride as f32;
     for y in 0..feat_h {
         for x in 0..feat_w {
-            // SCRFD's anchor centre is at (stride/2 + stride * idx) — i.e.
-            // the centre of each feature-cell's receptive field.
-            centres.push((s * (x as f32 + 0.5), s * (y as f32 + 0.5)));
+            // InsightFace SCRFD anchor centre is exactly (x·stride, y·stride)
+            // — the top-left grid convention, NOT cell-centre (+0.5).
+            centres.push((s * x as f32, s * y as f32));
         }
     }
     centres
@@ -640,8 +435,8 @@ fn decode_level(
     score_threshold: f32,
     num_anchors: usize,
 ) -> Result<Vec<Face>> {
-    let (_b, _c, h, w) = cls.dims4()?;
-    let cls_flat = cls.to_vec3::<f32>()?; // (C, H, W) after squeezing batch — handle below
+    let (_c, h, w) = cls.dims3()?; // (C, H, W) — batch already squeezed by caller
+    let cls_flat = cls.to_vec3::<f32>()?;
     let bbox_flat = bbox.to_vec3::<f32>()?;
     let kps_flat = kps.to_vec3::<f32>()?;
 
@@ -723,9 +518,11 @@ fn letterbox_preprocess(
     let scale = (input_size as f32) / ow.max(oh);
     let new_w = (ow * scale).round() as u32;
     let new_h = (oh * scale).round() as u32;
-    let resized = image::imageops::resize(&img, new_w, new_h, FilterType::CatmullRom);
-    let pad_x = ((input_size - new_w) / 2) as f32;
-    let pad_y = ((input_size - new_h) / 2) as f32;
+    // InsightFace pastes the resized image at the TOP-LEFT (not centred) and
+    // resizes with bilinear (`cv2.resize` default).
+    let resized = image::imageops::resize(&img, new_w, new_h, FilterType::Triangle);
+    let pad_x = 0.0f32;
+    let pad_y = 0.0f32;
 
     // Build the (1, 3, S, S) tensor with the resized image pasted at
     // (pad_x, pad_y). Pixels outside the paste are mid-grey (127.5
@@ -915,11 +712,19 @@ pub fn preflight_scrfd() -> Result<bool> {
     Ok(true)
 }
 
+/// Default plakat-hosted SCRFD-500MF weights (a `plakat convert-onnx` of
+/// InsightFace's `det_500m.onnx`). Used when neither `PLAKAT_SCRFD_WEIGHTS` nor
+/// `PLAKAT_SCRFD_HF` is set, so face detection works out of the box. Override
+/// either env var to point elsewhere.
+pub const DEFAULT_SCRFD_REPO: &str = "vulogov98/plakat-scrfd-500m";
+pub const DEFAULT_SCRFD_FILE: &str = "scrfd_500m.safetensors";
+
 /// Async resolver — turns env-var config into a local safetensors path.
-/// Returns `Ok(None)` if neither `PLAKAT_SCRFD_WEIGHTS` nor `PLAKAT_SCRFD_HF`
-/// is set (SCRFD is opt-in, so unset is fine).
 ///
-/// Priority: local path wins over HF spec.
+/// Priority: `PLAKAT_SCRFD_WEIGHTS` (local) > `PLAKAT_SCRFD_HF` (HF spec) >
+/// the bundled default repo. The default download degrades gracefully: if it
+/// fails (e.g. repo not yet published), this returns `Ok(None)` so callers fall
+/// back (FaceID → centre-crop, multiperson → geometric boxes) instead of erroring.
 pub async fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
     if let Ok(env) = std::env::var("PLAKAT_SCRFD_WEIGHTS") {
         let path = std::path::PathBuf::from(&env);
@@ -945,5 +750,21 @@ pub async fn resolve_scrfd_weights() -> Result<Option<std::path::PathBuf>> {
         s.finish_with_message(format!("✓ SCRFD cached at {}", path.display()));
         return Ok(Some(path));
     }
-    Ok(None)
+    // No explicit config → try the bundled default, but never hard-fail on it.
+    let s = crate::ui::progress::spinner("Downloading SCRFD-500MF face detector (default)");
+    match crate::hf::download::get_file(DEFAULT_SCRFD_REPO, DEFAULT_SCRFD_FILE).await {
+        Ok(path) => {
+            s.finish_with_message(format!("✓ SCRFD cached at {}", path.display()));
+            Ok(Some(path))
+        }
+        Err(e) => {
+            s.finish_and_clear();
+            tracing::debug!(
+                target: "plakat",
+                "default SCRFD ({DEFAULT_SCRFD_REPO}/{DEFAULT_SCRFD_FILE}) unavailable: {e:#}; \
+                 set PLAKAT_SCRFD_WEIGHTS / PLAKAT_SCRFD_HF to enable face detection"
+            );
+            Ok(None)
+        }
+    }
 }

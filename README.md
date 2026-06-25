@@ -17,56 +17,59 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.11.0 — relighting, richer maps, and a steadier host
+## What's new in 1.12.0 — put specific people into a scene (`plakat multiperson`)
 
-1.11.0 adds **IC-Light relighting**, fills out the **`plakat map`** generator with the
-terrain + cartography features it was missing, and hardens the CLI against the two
-things that actually bite on a single workstation: concurrent runs and broken `pull`s.
+1.12.0 is about **placing specific people into a generated scene**, and the face
+infrastructure it took to get there — a complete, **numerically-verified face-swap stack**
+ported to candle from the InsightFace ONNX models, plus a `convert-onnx` command to build
+the weights yourself.
 
 ```bash
-# Relight a subject under any lighting (identity preserved)
-plakat relight portrait.png --prompt "warm golden sunset, rim light from the left"
+# Put people from photos into a scene. Face-swap identity onto a coherent render,
+# with one OpenPose skeleton pinned per person so the right face lands on the right figure:
+plakat multiperson \
+  "two people at a cafe table by a window, watercolor, upper body, facing the viewer" \
+  --person "alice:alice.png" --at "alice:left closer front" \
+  --person "bob:bob.png"     --at "bob:right closer front" \
+  --swap --pose
 
-# A whole continent in one HJSON spec — canyons, mesas, lakes, swamps, polities
-plakat map --map-spec corpus/map/realms.hjson --map-render realm.png
+# Exact-identity, model-agnostic alternative: matte the real photos and place them.
+plakat multiperson "a cozy library // oil painting" \
+  --person "a:a.png" --at "a:left" --person "b:b.png" --at "b:right" --composite
 
-# Seasonal palette + a tabletop coordinate grid
-plakat map --map-spec realm.hjson --map-season autumn --map-grid 8 --map-render realm.png
+# Convert an InsightFace ONNX to plakat's .safetensors layout yourself:
+plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
 ```
 
-**IC-Light relighting** — `plakat relight <subject> --prompt "<lighting>"` re-illuminates
-a foreground subject from a text description while preserving its identity. SD 1.5-based:
-the UNet input conv is widened 4→8 channels and the `lllyasviel/ic-light` offset is merged
-over a base SD 1.5 UNet; the U2Net-matted subject latent conditions every denoise step.
-Wants **low guidance** (1.5–3). Verified on-box; fits 24 GB. See the new
-[RELIGHT tutorial](Documentation/Tutorials/RELIGHT_TUTORIAL.md).
+**`plakat multiperson`** — give each person a photo and a relative location
+(`--at "alice:left closer front"` — position · distance · facing; omit it for scene-aware
+LLM auto-placement). Three identity paths:
 
-**`plakat map` — the missing geography.** All deterministic, byte-stable, no GPU:
+- **`--swap`** — generate one coherent scene, then **face-swap** each figure with that
+  person's identity. **`--pose`** pins one synthetic OpenPose skeleton per region so the
+  model places a figure exactly where each person goes (fixes which-face-is-who binding).
+- **`--composite`** — generate the scene **background with any model**, matte each person's
+  actual photo (U2Net — no face model), and place them. Identity is **exact** and
+  **model-agnostic**; `--harmonize` blends them in.
 
-- **Dry canyons** (`terrain.rift_valleys`), **plateaus / mesas** (`terrain.plateaus`) —
-  oriented gorges + flat-topped scarped tablelands.
-- **Political layer** (`RegionSpec.political`) — polity rings, kind-styled borders
-  (river / mountain / disputed), polity labels.
-- **Seasonal palettes** (`--map-season`) + a **tabletop coordinate grid** (`--map-grid N`).
-- **HJSON specs** — `--map-spec` now accepts commented, comma-free HJSON.
-- **Natural irregularity** — lakes get wandering shorelines (no more perfect circles);
-  `terrain.erosion` scales coast / ridge / canyon / mesa / lake raggedness.
-- `corpus/map/realms.hjson` exercises every feature; `corpus/realms.sh` compiles it.
+Honest scope: identity is strongest on **few, prominent, roughly-frontal faces** from
+**photos** (a crowded scene's small faces read faintly; hair/build come from the generated
+figure, not the swap). See the [MULTIPERSON tutorial](Documentation/Tutorials/MULTIPERSON_TUTORIAL.md).
 
-**CLI robustness**
+**A verified face-swap stack (new in candle).** All three InsightFace models ported and
+checked against onnxruntime: **SCRFD-500MF** detector (~1–3 px), **ArcFace `w600k_r50`**
+recognition (cosine 1.0), **`inswapper_128`** generator (max diff 1e-5). **`plakat
+convert-onnx`** converts each (`--arch scrfd-500mf | arcface-w600k | inswapper-128`) to the
+`.safetensors` layout plakat loads; the converted weights are auto-downloaded on first use.
 
-- **Single-instance guard** — a second heavy run refuses to start while another `plakat`
-  is busy on the host (they share unified memory and thrash), reporting the offending
-  pid / user / command. Override with `--enable-multiple-instances`. Introspection
-  (doctor / models / gallery) is never blocked.
-- **`models pull` fixed** — it now enumerates a repo's actual files instead of guessing
-  an SD filename list, so PixArt / SD3 (`transformer/`), Cascade, and single-file
-  checkpoints all pull; `civitai:N` routes to Civitai; gated / missing repos give one
-  clear message; the dead `pony` alias was repointed to a working mirror.
+**Three never-verified plakat components fixed along the way** — the SCRFD architecture
+(was a wrong best-guess), ArcFace's missing stem PReLU, and a **180°-rotation bug in the
+face-alignment transform**. The last one also lifts **`--identity faceid`** quality
+everywhere.
 
-See [`Documentation/ROADMAP_1.11.0.md`](Documentation/ROADMAP_1.11.0.md).
+See [`Documentation/ROADMAP_FACESWAP.md`](Documentation/ROADMAP_FACESWAP.md).
 
-**Earlier releases** (v0.13 – v1.10):
+**Earlier releases** (v0.13 – v1.11):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

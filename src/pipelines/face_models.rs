@@ -143,70 +143,26 @@ fn similarity_transform_2d(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 6] {
     let (sx_m, sy_m) = (sx / n, sy / n);
     let (dx_m, dy_m) = (dx / n, dy / n);
 
-    // Centered points + cross-covariance H (2×2).
-    let mut h = [[0.0f32; 2]; 2];
-    let mut var_src = 0.0f32;
+    // Direct least-squares 2D similarity (rotation + uniform scale + translation,
+    // NO reflection — face alignment must never mirror). For centred src `p` and
+    // dst `q`:
+    //   a = Σ(pₓqₓ + p_yq_y),  b = Σ(pₓq_y − p_yqₓ),  d = Σ|p|²
+    //   s·cosθ = a/d,  s·sinθ = b/d
+    // This is closed-form and unambiguous — unlike the 2×2-SVD reconstruction it
+    // replaces, which produced a spurious ~180° rotation for some landmark sets
+    // (upside-down crops). Matches skimage's `SimilarityTransform`.
+    let (mut a, mut b, mut var_src) = (0.0f32, 0.0f32, 0.0f32);
     for i in 0..src.len() {
-        let sxi = src[i][0] - sx_m;
-        let syi = src[i][1] - sy_m;
-        let dxi = dst[i][0] - dx_m;
-        let dyi = dst[i][1] - dy_m;
-        // H = sum( src_centered_i^T @ dst_centered_i )
-        h[0][0] += sxi * dxi;
-        h[0][1] += sxi * dyi;
-        h[1][0] += syi * dxi;
-        h[1][1] += syi * dyi;
-        var_src += sxi * sxi + syi * syi;
+        let (px, py) = (src[i][0] - sx_m, src[i][1] - sy_m);
+        let (qx, qy) = (dst[i][0] - dx_m, dst[i][1] - dy_m);
+        a += px * qx + py * qy;
+        b += px * qy - py * qx;
+        var_src += px * px + py * py;
     }
-
-    // 2×2 SVD via direct formulas (closed form). H = U Σ Vᵀ.
-    // Reference: https://scicomp.stackexchange.com/a/14710
-    let (a, b, c, d) = (h[0][0], h[0][1], h[1][0], h[1][1]);
-    let e = (a + d) * 0.5;
-    let f = (a - d) * 0.5;
-    let g = (c + b) * 0.5;
-    let q = (c - b) * 0.5;
-    let r1 = (e * e + q * q).sqrt();
-    let r2 = (f * f + g * g).sqrt();
-    let sx_sv = r1 + r2;
-    let sy_sv = (r1 - r2).max(0.0);
-    let a1 = q.atan2(e);
-    let a2 = g.atan2(f);
-    let theta = (a1 - a2) * 0.5;
-    let phi = (a1 + a2) * 0.5;
-    // U = R(phi) reflected by sign(d_det), V = R(theta).
-    let det_h = a * d - b * c;
-    let sign = if det_h < 0.0 { -1.0 } else { 1.0 };
-    let (cp, sp) = (phi.cos(), phi.sin());
-    let (ct, st) = (theta.cos(), theta.sin());
-    let u = [[cp, -sp * sign], [sp, cp * sign]]; // 2×2 U with reflection fix
-    let v = [[ct, -st], [st, ct]]; // 2×2 V
-    let s_diag = [sx_sv, sy_sv * sign];
-
-    // Rotation R = U @ Vᵀ.
-    let r = [
-        [
-            u[0][0] * v[0][0] + u[0][1] * v[0][1],
-            u[0][0] * v[1][0] + u[0][1] * v[1][1],
-        ],
-        [
-            u[1][0] * v[0][0] + u[1][1] * v[0][1],
-            u[1][0] * v[1][0] + u[1][1] * v[1][1],
-        ],
-    ];
-
-    // Scale c = sum(Σ) / var_src.
-    let scale = if var_src > 0.0 {
-        (s_diag[0] + s_diag[1]) / var_src
-    } else {
-        1.0
-    };
-
-    // Final 2×3: [scale*R | dst_mean - scale*R @ src_mean].
-    let m00 = scale * r[0][0];
-    let m01 = scale * r[0][1];
-    let m10 = scale * r[1][0];
-    let m11 = scale * r[1][1];
+    let inv = if var_src > 0.0 { 1.0 / var_src } else { 0.0 };
+    let (s_cos, s_sin) = (a * inv, b * inv);
+    // R·s = [[s_cos, -s_sin], [s_sin, s_cos]].
+    let (m00, m01, m10, m11) = (s_cos, -s_sin, s_sin, s_cos);
     let tx = dx_m - (m00 * sx_m + m01 * sy_m);
     let ty = dy_m - (m10 * sx_m + m11 * sy_m);
     [m00, m01, tx, m10, m11, ty]
@@ -216,7 +172,7 @@ fn similarity_transform_2d(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 6] {
 /// `src` at `inv_affine([dst_x, dst_y])`. `inv_affine` is the inverse
 /// of the forward transform — we typically build forward dst-from-src
 /// then invert before calling this.
-fn bilinear_warp(
+pub(crate) fn bilinear_warp(
     src: &image::RgbImage,
     inv_affine: [f32; 6],
     out_w: u32,
@@ -259,7 +215,7 @@ fn bilinear_warp(
 }
 
 /// Invert a 2×3 affine `[a, b, tx, c, d, ty]`.
-fn invert_affine_2x3(a: [f32; 6]) -> [f32; 6] {
+pub(crate) fn invert_affine_2x3(a: [f32; 6]) -> [f32; 6] {
     let det = a[0] * a[4] - a[1] * a[3];
     debug_assert!(det.abs() > 1e-12, "near-singular similarity transform");
     let inv_det = 1.0 / det;
@@ -287,6 +243,22 @@ fn align_to_arcface_template(
     // For backward sampling (dst → src), invert.
     let inverse = invert_affine_2x3(forward);
     bilinear_warp(src, inverse, ARCFACE_INPUT, ARCFACE_INPUT)
+}
+
+/// Align a face to the ArcFace 5-point template scaled to `size`×`size`, the
+/// InsightFace `norm_crop`. Returns the aligned crop **and** the forward
+/// (source→crop) 2×3 affine, so a caller that modifies the crop (e.g. face-swap)
+/// can invert it to paste the result back. `landmarks_px` are source pixels.
+pub fn norm_crop(
+    src: &image::RgbImage,
+    landmarks_px: [[f32; 2]; 5],
+    size: u32,
+) -> (image::RgbImage, [f32; 6]) {
+    let scale = size as f32 / ARCFACE_INPUT as f32;
+    let dst: Vec<[f32; 2]> = ARCFACE_5PT_REF.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+    let forward = similarity_transform_2d(&landmarks_px.to_vec(), &dst);
+    let inverse = invert_affine_2x3(forward);
+    (bilinear_warp(src, inverse, size, size), forward)
 }
 
 /// Load a photo and produce the 112×112 RGB tensor ArcFace's IR-ResNet50
@@ -528,6 +500,9 @@ impl IBasicBlock {
 /// a 112×112 RGB face crop. See `IBasicBlock` for the fusion model.
 pub struct IResnet50 {
     conv1: Conv2d,
+    /// Stem PReLU (after `conv1`). The stem's `bn1` folds into `conv1.bias`,
+    /// but the PReLU is nonlinear and cannot be folded — it must be applied.
+    prelu: PRelu,
     layer1: Vec<IBasicBlock>,
     layer2: Vec<IBasicBlock>,
     layer3: Vec<IBasicBlock>,
@@ -561,6 +536,9 @@ impl IResnet50 {
         // were either fused into this bias or dropped during export —
         // either way, no top-level activations.
         let conv1 = candle_nn::conv2d(3, 64, 3, conv1_cfg, vs.pp("conv1"))?;
+        // Stem PReLU — the bn1 that preceded it folded into conv1.bias, but the
+        // PReLU stays (nonlinear). InsightFace iresnet50: conv1 → bn1 → prelu.
+        let prelu = PRelu::new(vs.pp("prelu"), 64)?;
 
         // All four layers downsample (stride 2 on the first block);
         // channel widths double each stage: 64 → 128 → 256 → 512.
@@ -577,6 +555,7 @@ impl IResnet50 {
 
         Ok(Self {
             conv1,
+            prelu,
             layer1,
             layer2,
             layer3,
@@ -589,9 +568,9 @@ impl IResnet50 {
 
     /// Forward pass. `x: (B, 3, 112, 112)` → `(B, 512)` unit-norm.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Stem: just the biased conv1 — no bn / prelu at this level
-        // (they got folded out during export).
+        // Stem: biased conv1 (bn folded in) then the stem PReLU.
         let mut x = self.conv1.forward(x)?;
+        x = self.prelu.forward(&x)?;
 
         for block in &self.layer1 {
             x = block.forward(&x)?;
