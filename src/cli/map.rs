@@ -104,6 +104,13 @@ pub struct MapArgs {
     #[arg(long = "map-render", value_name = "PATH")]
     pub render: Option<PathBuf>,
 
+    /// 1.13.0: render the world and slice it into the `--map-tiles CxR` grid of
+    /// seamless tile images (`tile_r{R}_c{C}.png`) in DIR, plus the full `world.png`.
+    /// The geometry is one continuous world, so the tiles stitch back together
+    /// exactly. Uses the `--map-style`/`--map-season` of `--map-render`.
+    #[arg(long = "map-render-tiles", value_name = "DIR")]
+    pub render_tiles: Option<PathBuf>,
+
     /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
     #[arg(long = "map-style", default_value = "parchment")]
     pub style: String,
@@ -386,6 +393,33 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         did_dump = true;
     }
 
+    // 1.13.0: slice the continuous world into a grid of seamless tiles.
+    if let Some(dir) = &args.render_tiles {
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?)
+            .with_grid(args.grid);
+        let world = map::render::render(&spec, args.seed, rstyle)?;
+        let (cols, rows) = (spec.tile_grid.cols.max(1), spec.tile_grid.rows.max(1));
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating tile output dir {}", dir.display()))?;
+        let (tw, th) = (world.width() / cols, world.height() / rows);
+        world.save(dir.join("world.png")).context("saving full world.png")?;
+        for r in 0..rows {
+            for c in 0..cols {
+                let tile = image::imageops::crop_imm(&world, c * tw, r * th, tw, th).to_image();
+                tile.save(dir.join(format!("tile_r{r}_c{c}.png")))
+                    .with_context(|| format!("saving tile r{r} c{c}"))?;
+            }
+        }
+        println!(
+            "{}  world map → {} tile(s) ({cols}×{rows}, {tw}×{th} each) + world.png → {}",
+            style("✓").green(),
+            cols * rows,
+            dir.display()
+        );
+        did_dump = true;
+    }
+
     // MAP-3b: vector export (GeoJSON / SVG) — same geometry, scalable.
     if args.export_geojson.is_some() || args.export_svg.is_some() {
         let vm = map::export::VectorMap::build(&spec, args.seed)?;
@@ -403,7 +437,8 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
 
     // MAP-6: the deterministic SD conditioning base (no GPU).
     if let Some(p) = &args.dump_conditioning {
-        let rstyle = map::render::Style::named(&args.style)?;
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?);
         map::render_sd::save_conditioning(&spec, args.seed, rstyle, p)?;
         println!("{}  conditioning → {}  (styled base, no labels, seed {})", style("✓").green(), p.display(), args.seed);
         did_dump = true;
@@ -411,7 +446,8 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
 
     // MAP-6: the painted SD render (GPU). img2img + Canny ControlNet over the base.
     if let Some(p) = &args.render_sd {
-        let rstyle = map::render::Style::named(&args.style)?;
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?);
         // LoRA resolution: explicit --map-sd-lora wins (`none` → none); else the
         // model's default (fantasy-map for SDXL-family, none otherwise).
         let loras: Vec<String> = if args.sd_lora.is_empty() {

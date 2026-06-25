@@ -9,7 +9,7 @@ use anyhow::Result;
 use image::{Rgb, RgbImage};
 use std::path::Path;
 
-use super::biome::BiomeMap;
+use super::biome::{Biome, BiomeMap};
 use super::coastline::{Coastline, DEFAULT_SEA_LEVEL};
 use super::engine::{resolve_simple, GeoCanvas, HeightField};
 use super::hydrology::{Hydrology, DEFAULT_RIVER_THRESHOLD};
@@ -182,7 +182,9 @@ pub fn paint_base_map(geo: &Geometry, style: Style) -> RgbImage {
     let (w, h) = (geo.hf.width, geo.hf.height);
     let mut img = RgbImage::new(w, h);
     paint_base(&mut img, &geo.hf, &geo.coast, &geo.biome, style);
+    draw_marsh_hatching(&mut img, &geo.biome, &geo.coast, style);
     draw_coastline(&mut img, &geo.coast, style);
+    draw_deltas(&mut img, &geo.hydro, &geo.coast, style);
     draw_rivers(&mut img, &geo.hydro, style);
     draw_roads(&mut img, &geo.roads, style);
     img
@@ -267,6 +269,30 @@ fn paint_base(img: &mut RgbImage, hf: &HeightField, coast: &Coastline, biome: &B
     }
 }
 
+/// Cartographic marsh symbol over Wetland regions: staggered rows of short
+/// horizontal dashes in a bluish marsh tint. Deterministic (fixed grid) so it
+/// stays byte-stable, and only touches land cells whose biome is `Wetland`, so
+/// maps with no wetlands render exactly as before.
+fn draw_marsh_hatching(img: &mut RgbImage, biome: &BiomeMap, coast: &Coastline, st: Style) {
+    let (w, h) = (biome.width, biome.height);
+    let marsh = blend(st.river, st.ink, 0.35);
+    let mut y = 2u32;
+    while y < h {
+        let ox = if (y / 5) % 2 == 0 { 0 } else { 4 }; // stagger alternate rows
+        let mut x = 2 + ox;
+        while x + 3 < w {
+            let i = (y * w + x) as usize;
+            if !coast.sea[i] && biome.biome[i] == Biome::Wetland {
+                for dx in 0..3u32 {
+                    img.put_pixel(x + dx, y, Rgb(marsh));
+                }
+            }
+            x += 8;
+        }
+        y += 5;
+    }
+}
+
 /// Lambert-ish hill-shading from the local gradient, light from the NW. Returns a
 /// multiplier in ~[0.78, 1.18].
 fn hillshade(hf: &HeightField, x: u32, y: u32) -> f32 {
@@ -295,6 +321,46 @@ fn draw_coastline(img: &mut RgbImage, coast: &Coastline, st: Style) {
 fn draw_rivers(img: &mut RgbImage, hydro: &Hydrology, st: Style) {
     for &(x, y) in hydro.rivers.iter().flatten() {
         put(img, x as i32, y as i32, st.river);
+    }
+}
+
+/// Only river paths at least this long get a delta — a proxy for "navigable /
+/// sizeable", so small creeks don't sprout fans.
+const DELTA_MIN_LEN: usize = 36;
+/// How far the distributary channels fan out into the sea (pixels).
+const DELTA_REACH: i32 = 7;
+
+/// Draw a small distributary fan into the shallow sea at each navigable river
+/// mouth — the cartographic delta. Deterministic (a fixed three-branch fan in the
+/// flow direction, clipped to sea cells) → byte-stable.
+fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Style) {
+    let (w, h) = (coast.width, coast.height);
+    for river in &hydro.rivers {
+        let n = river.len();
+        if n < DELTA_MIN_LEN {
+            continue;
+        }
+        let (mx, my) = (river[n - 1].0 as f32, river[n - 1].1 as f32);
+        let (px, py) = (river[n - 2].0 as f32, river[n - 2].1 as f32);
+        let (mut dx, mut dy) = (mx - px, my - py);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        dx /= len;
+        dy /= len;
+        for &ang in &[-0.6f32, 0.0, 0.6] {
+            let (c, s) = (ang.cos(), ang.sin());
+            let (bx, by) = (dx * c - dy * s, dx * s + dy * c);
+            for step in 1..=DELTA_REACH {
+                let x = (mx + bx * step as f32).round() as i32;
+                let y = (my + by * step as f32).round() as i32;
+                if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                    break;
+                }
+                if !coast.sea[(y as u32 * w + x as u32) as usize] {
+                    break; // fan only over open water
+                }
+                put(img, x, y, st.river);
+            }
+        }
     }
 }
 

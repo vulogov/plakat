@@ -843,6 +843,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
 
     let (width, height) =
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
+    crate::imaging::sizes::warn_large_for_metal(width, height, &device);
     std::fs::create_dir_all(&args.out)?;
 
     // v0.14 phase 6: apply the `--fast` preset before LoRA / steps /

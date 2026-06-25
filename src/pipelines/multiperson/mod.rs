@@ -37,6 +37,9 @@ pub struct Person {
     pub face_strength: Option<f32>,
     pub face_bbox: Option<[f32; 4]>,
     pub face_landmarks: Option<[[f32; 2]; 5]>,
+    /// Figure height relative to a full-grown adult, for the `--pose` skeleton.
+    /// `1.0` = adult; `~0.7` = a child/teen so they render shorter. `None` → 1.0.
+    pub scale: Option<f32>,
 }
 
 /// A `plakat multiperson` request (Form B — inline prose + people).
@@ -95,6 +98,8 @@ struct Resolved {
     facing_phrase: Option<&'static str>,
     /// Facing enum (for synthetic OpenPose skeletons). `Front` for explicit bbox.
     facing: Facing,
+    /// Figure height scale for the `--pose` skeleton (child < 1.0).
+    scale: f32,
     /// Sort key: render farther personas first, closer ones last (occlusion).
     order_y: f32,
     source: &'static str, // "at" | "bbox" | "auto"
@@ -147,6 +152,7 @@ impl MultipersonRequest {
                 bbox,
                 facing_phrase,
                 facing,
+                scale: p.scale.unwrap_or(1.0).clamp(0.4, 1.0),
                 source,
             });
         }
@@ -505,8 +511,8 @@ async fn run_swap(
     // the persona↔figure binding. Rendered once, reused each generation.
     let _pose_tmp; // keep the pose-map file alive for the whole run
     let pose_map_path: Option<std::path::PathBuf> = if req.pose {
-        let regions: Vec<([f32; 4], Facing)> =
-            resolved.iter().map(|r| (r.bbox, r.facing)).collect();
+        let regions: Vec<([f32; 4], Facing, f32)> =
+            resolved.iter().map(|r| (r.bbox, r.facing, r.scale)).collect();
         let map = pose::render_pose_map(&regions, req.width, req.height);
         let t = tempfile::Builder::new().prefix("plakat-mp-pose-").suffix(".png").tempfile()?;
         map.save(t.path())?;
@@ -902,7 +908,7 @@ mod tests {
     }
 
     fn resolved_at(bbox: [f32; 4]) -> Resolved {
-        Resolved { idx: 0, bbox, facing_phrase: None, facing: Facing::Front, order_y: 0.0, source: "at" }
+        Resolved { idx: 0, bbox, facing_phrase: None, facing: Facing::Front, scale: 1.0, order_y: 0.0, source: "at" }
     }
 
     #[test]

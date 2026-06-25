@@ -108,6 +108,14 @@ impl HeightField {
         // water. Empty `rift_valleys` → no-op (byte-identical to pre-canyon).
         apply_canyons(&mut data, spec, w, h, canvas.seed as u32, erosion);
 
+        // Coastal features: peninsulas (raise land into the sea), inlets + fjords
+        // (cut narrow sea arms into the land; fjords narrower + deeper → steep
+        // walls). After canyons; empty vecs → no-op (byte-identical to before).
+        let seed32 = canvas.seed as u32;
+        apply_peninsulas(&mut data, spec, w, h, seed32, erosion);
+        apply_sea_arms(&mut data, &spec.terrain.inlets, w, h, seed32, erosion, 0x71f3, 0.016, 0.14, inlet_floor);
+        apply_sea_arms(&mut data, &spec.terrain.fjords, w, h, seed32, erosion, 0xb5d7, 0.009, 0.08, fjord_floor);
+
         HeightField { width: w, height: h, data }
     }
 
@@ -343,6 +351,98 @@ fn apply_canyons(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, er
     }
 }
 
+/// Land target elevation for a raised peninsula (comfortably above sea 0.22).
+const PENINSULA_LAND: f32 = 0.34;
+
+/// Realize **peninsulas**: narrow land spits jutting from the coast into the sea.
+/// A tapering Gaussian ridge runs from the anchor along the orientation, RAISED
+/// to land elevation (only ever raises terrain), so the sea becomes a spit of
+/// land that narrows to a point at the tip. Erosion wanders the spine. Empty → no-op.
+fn apply_peninsulas(data: &mut [f32], spec: &MapSpec, w: u32, h: u32, seed: u32, erosion: f32) {
+    for (i, pen) in spec.terrain.peninsulas.iter().enumerate() {
+        let Some((fx, fy)) = resolve_simple(&pen.anchor) else { continue };
+        let (cx, cy) = (fx * w as f32, fy * h as f32);
+        let (dx, dy) = orient_dir(&pen.orientation);
+        let len = if pen.length_fraction > 0.0 { pen.length_fraction } else { 0.25 };
+        let sigma_perp = (w.min(h) as f32 * peninsula_half_width(&pen.size)).max(1.0);
+        let along_len = (len * w.max(h) as f32).max(sigma_perp);
+        let two_sp2 = 2.0 * sigma_perp * sigma_perp;
+        let reach_perp = 3.5 * sigma_perp;
+        let perlin = Perlin::new(seed ^ (i as u32).wrapping_mul(0x9e37));
+        let wander = |t: f32| perlin.get([(t * 0.012) as f64, 11.0]) as f32 * sigma_perp * 1.6 * erosion;
+        for y in 0..h {
+            for x in 0..w {
+                let (ox, oy) = (x as f32 - cx, y as f32 - cy);
+                let along = ox * dx + oy * dy;
+                if along < -reach_perp || along > along_len + reach_perp {
+                    continue;
+                }
+                let perp = ox * -dy + oy * dx - wander(along);
+                if perp.abs() > reach_perp {
+                    continue;
+                }
+                // Taper: full width at the base (on land), narrowing to the tip.
+                let taper = if along <= 0.0 { 1.0 } else { (1.0 - along / along_len).max(0.0) };
+                let g = (-(perp * perp) / two_sp2).exp() * taper;
+                let id = idx(x, y, w);
+                let raised = data[id] * (1.0 - g) + PENINSULA_LAND * g;
+                data[id] = raised.max(data[id]); // a spit only adds land
+            }
+        }
+    }
+}
+
+/// Realize **inlets** and **fjords**: narrow arms of sea cutting into the land.
+/// A Gaussian channel from the anchor along the orientation is LOWERED below sea
+/// level (only ever lowers terrain), so a fjord/inlet bites into the coast. Fjords
+/// are narrower and deeper than inlets, and because only the channel is lowered
+/// the surrounding land stays high → steep fjord walls. Empty → no-op.
+fn apply_sea_arms(
+    data: &mut [f32],
+    regions: &[crate::map::spec::NamedRegion],
+    w: u32,
+    h: u32,
+    seed: u32,
+    erosion: f32,
+    salt: u32,
+    half_width_frac: f32,
+    default_floor: f32,
+    floor_of: fn(&str) -> f32,
+) {
+    for (i, reg) in regions.iter().enumerate() {
+        let Some((fx, fy)) = resolve_simple(&reg.anchor) else { continue };
+        let (cx, cy) = (fx * w as f32, fy * h as f32);
+        let (dx, dy) = orient_dir(&reg.orientation);
+        let len = if reg.length_fraction > 0.0 { reg.length_fraction } else { 0.22 };
+        let floor = if reg.size.is_empty() { default_floor } else { floor_of(&reg.size) };
+        let sigma_perp = (w.min(h) as f32 * half_width_frac).max(1.0);
+        let along_len = (len * w.max(h) as f32).max(sigma_perp);
+        let two_sp2 = 2.0 * sigma_perp * sigma_perp;
+        let reach_perp = 3.5 * sigma_perp;
+        let perlin = Perlin::new(seed ^ (i as u32).wrapping_mul(salt));
+        let wander = |t: f32| perlin.get([(t * 0.012) as f64, 19.0]) as f32 * sigma_perp * 1.4 * erosion;
+        for y in 0..h {
+            for x in 0..w {
+                let (ox, oy) = (x as f32 - cx, y as f32 - cy);
+                let along = ox * dx + oy * dy;
+                if along < -reach_perp || along > along_len + reach_perp {
+                    continue;
+                }
+                let perp = ox * -dy + oy * dx - wander(along);
+                if perp.abs() > reach_perp {
+                    continue;
+                }
+                let taper = if along <= 0.0 { 1.0 } else { (1.0 - along / along_len).max(0.0) };
+                let g = (-(perp * perp) / two_sp2).exp() * taper;
+                let id = idx(x, y, w);
+                let target = floor.min(data[id]);
+                let lowered = data[id] * (1.0 - g) + target * g;
+                data[id] = lowered.min(data[id]); // a sea arm only cuts down
+            }
+        }
+    }
+}
+
 /// Realize **plateaus / mesas**: flat-topped tablelands with steep scarp edges.
 /// The core is forced to a flat `top` elevation; a `smoothstep` scarp ramps down
 /// to the surrounding terrain; outside the reach the terrain is untouched. The
@@ -412,6 +512,33 @@ fn canyon_floor(size: &str) -> f32 {
         "deep" => 0.28,
         "chasm" | "abyss" | "great" => 0.24, // just above sea → dry but dramatic
         _ => 0.33, // moderate / unspecified
+    }
+}
+
+/// Peninsula `size` word → half-width as a fraction of the shorter canvas extent.
+fn peninsula_half_width(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "narrow" | "thin" => 0.010,
+        "broad" | "wide" | "large" => 0.030,
+        _ => 0.018, // moderate
+    }
+}
+
+/// Inlet `size` word → channel floor (below `DEFAULT_SEA_LEVEL` = 0.22 so it's sea).
+fn inlet_floor(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "shallow" => 0.18,
+        "deep" => 0.10,
+        _ => 0.14, // moderate
+    }
+}
+
+/// Fjord `size` word → floor; deeper than an inlet (a drowned glacial valley).
+fn fjord_floor(size: &str) -> f32 {
+    match size.to_ascii_lowercase().as_str() {
+        "shallow" => 0.12,
+        "deep" => 0.04,
+        _ => 0.08, // moderate
     }
 }
 
@@ -538,6 +665,39 @@ mod tests {
         assert!(hf.data[i] >= 0.22, "dry canyon floor above sea level: {}", hf.data[i]);
         // Determinism holds.
         assert_eq!(hf.data, HeightField::generate(&spec, &c).data);
+    }
+
+    #[test]
+    fn coastal_features_cut_sea_and_raise_land() {
+        use crate::map::spec::NamedRegion;
+        let mk = |id: &str, pos: &str, orient: &str, size: &str| NamedRegion {
+            id: id.into(),
+            name: None,
+            anchor: Anchor::Cardinal { position: pos.into() },
+            orientation: orient.into(),
+            length_fraction: 0.4,
+            size: size.into(),
+        };
+        // An inlet through the centre lowers the massif toward the sea.
+        let mut spec = isle();
+        spec.terrain.inlets.push(mk("bay", "center", "north-south", "deep"));
+        let c = GeoCanvas::from_spec(&spec, 42);
+        let hf = HeightField::generate(&spec, &c);
+        let base = HeightField::generate(&isle(), &c);
+        let i = ((hf.height / 2) * hf.width + hf.width / 2) as usize;
+        assert!(hf.data[i] < base.data[i] - 0.05, "inlet lowers terrain ({} vs {})", hf.data[i], base.data[i]);
+        assert_eq!(hf.data, HeightField::generate(&spec, &c).data, "deterministic");
+
+        // A peninsula only ever raises terrain (a land spit, never a cut).
+        let mut spec2 = isle();
+        spec2.terrain.peninsulas.push(mk("cape", "east", "east-west", "broad"));
+        let c2 = GeoCanvas::from_spec(&spec2, 42);
+        let hf2 = HeightField::generate(&spec2, &c2);
+        let base2 = HeightField::generate(&isle(), &c2);
+        assert!(
+            hf2.data.iter().zip(base2.data.iter()).all(|(a, b)| *a >= *b - 1e-5),
+            "peninsula only adds land, never lowers"
+        );
     }
 
     #[test]

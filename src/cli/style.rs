@@ -285,7 +285,7 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
     // size the box to the base. PixArt-Σ + SD3.5 carry a T5-XXL and are
     // memory-bound on 24 GB.)
     let _mem_guard =
-        crate::memwatch::MemoryGuard::start(&device, &format!("style train {}", args.base));
+        crate::memwatch::MemoryGuard::start_mode(&device, &format!("style train {}", args.base), crate::memwatch::Mode::Training);
 
     match args.base.as_str() {
         "sd15" | "sd1.5" | "stable-diffusion-v1-5" => {

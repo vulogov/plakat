@@ -17,59 +17,49 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.12.0 — put specific people into a scene (`plakat multiperson`)
+## What's new in 1.13.0 — a steadier host and a richer world map
 
-1.12.0 is about **placing specific people into a generated scene**, and the face
-infrastructure it took to get there — a complete, **numerically-verified face-swap stack**
-ported to candle from the InsightFace ONNX models, plus a `convert-onnx` command to build
-the weights yourself.
+1.13.0 pays down the **memory & stability** debt that had been deferred twice, and fills
+out **`plakat map`** with the coastline + world-scale features it was missing.
 
 ```bash
-# Put people from photos into a scene. Face-swap identity onto a coherent render,
-# with one OpenPose skeleton pinned per person so the right face lands on the right figure:
-plakat multiperson \
-  "two people at a cafe table by a window, watercolor, upper body, facing the viewer" \
-  --person "alice:alice.png" --at "alice:left closer front" \
-  --person "bob:bob.png"     --at "bob:right closer front" \
-  --swap --pose
+# A whole world, sliced into seamless tiles you can stitch back together
+plakat map --map-spec world.hjson --map-tiles 3x2 --map-render-tiles ./tiles/
 
-# Exact-identity, model-agnostic alternative: matte the real photos and place them.
-plakat multiperson "a cozy library // oil painting" \
-  --person "a:a.png" --at "a:left" --person "b:b.png" --at "b:right" --composite
+# Coastlines with character — peninsulas, inlets, fjords (in the terrain spec)
+plakat map --map-spec coast.hjson --map-render coast.png
 
-# Convert an InsightFace ONNX to plakat's .safetensors layout yourself:
-plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
+# Export the political layer (polities) alongside the geometry
+plakat map --map-spec realm.hjson --map-export-geojson realm.geojson
 ```
 
-**`plakat multiperson`** — give each person a photo and a relative location
-(`--at "alice:left closer front"` — position · distance · facing; omit it for scene-aware
-LLM auto-placement). Three identity paths:
+**Memory & stability.**
 
-- **`--swap`** — generate one coherent scene, then **face-swap** each figure with that
-  person's identity. **`--pose`** pins one synthetic OpenPose skeleton per region so the
-  model places a figure exactly where each person goes (fixes which-face-is-who binding).
-- **`--composite`** — generate the scene **background with any model**, matte each person's
-  actual photo (U2Net — no face model), and place them. Identity is **exact** and
-  **model-agnostic**; `--harmonize` blends them in.
+- **Render-size guard on Metal** — a warning before a too-large render hits Metal's
+  single-buffer limit and OOMs a 24 GB box.
+- **OOM-guard tuning** — the watchdog now rides out transient first-backward / decode spikes
+  (sustained window 3→5 inference, 12 for training; `PLAKAT_OOM_GUARD_SUSTAINED`).
+- **Gradient checkpointing** — investigated and **documented as a dead end** on candle 0.10.2
+  (no recompute hook; `CustomOp` backward exposes no parameter grads). See
+  [`Documentation/GRADIENT_CHECKPOINTING.md`](Documentation/GRADIENT_CHECKPOINTING.md) — the
+  transformer trainers stay verified-correct but memory-bound on 24 GB.
 
-Honest scope: identity is strongest on **few, prominent, roughly-frontal faces** from
-**photos** (a crowded scene's small faces read faintly; hair/build come from the generated
-figure, not the swap). See the [MULTIPERSON tutorial](Documentation/Tutorials/MULTIPERSON_TUTORIAL.md).
+**`plakat map` — coastlines and worlds.** All deterministic, byte-stable, no GPU:
 
-**A verified face-swap stack (new in candle).** All three InsightFace models ported and
-checked against onnxruntime: **SCRFD-500MF** detector (~1–3 px), **ArcFace `w600k_r50`**
-recognition (cosine 1.0), **`inswapper_128`** generator (max diff 1e-5). **`plakat
-convert-onnx`** converts each (`--arch scrfd-500mf | arcface-w600k | inswapper-128`) to the
-`.safetensors` layout plakat loads; the converted weights are auto-downloaded on first use.
+- **Peninsulas, inlets, fjords** — `terrain.{peninsulas,inlets,fjords}`: land spits jutting
+  into the sea, narrow sea arms cutting into the land, and deep steep-walled fjords.
+- **Multi-tile world maps** — `--map-render-tiles DIR` (with `--map-tiles CxR`) slices the
+  continuous world into seamless tile images (+ `world.png`) that reassemble exactly.
+- **Marsh hatching** for Wetland regions; **river deltas** at navigable mouths.
+- **Political layer in GeoJSON / SVG export**; **seasonal palette** on the painted
+  (`--map-render-sd`) path.
 
-**Three never-verified plakat components fixed along the way** — the SCRFD architecture
-(was a wrong best-guess), ArcFace's missing stem PReLU, and a **180°-rotation bug in the
-face-alignment transform**. The last one also lifts **`--identity faceid`** quality
-everywhere.
+**`plakat multiperson`** — `--scale LABEL:0.7` sizes a child/teen persona's `--pose`
+skeleton shorter (no more adult-sized kids).
 
-See [`Documentation/ROADMAP_FACESWAP.md`](Documentation/ROADMAP_FACESWAP.md).
+See [`Documentation/ROADMAP_1.13.0.md`](Documentation/ROADMAP_1.13.0.md).
 
-**Earlier releases** (v0.13 – v1.11):
+**Earlier releases** (v0.13 – v1.12):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

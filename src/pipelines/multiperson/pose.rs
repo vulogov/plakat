@@ -46,10 +46,33 @@ const SKELETON: [[f32; 2]; NUM_KEYPOINTS] = [
 ];
 
 /// Keypoints for one persona, placed into `bbox` (normalised `[x0,y0,x1,y1]`) at
-/// pixel scale, adjusted for `facing`. `NaN` marks an absent keypoint.
-fn place(bbox: &[f32; 4], facing: Facing, width: u32, height: u32) -> [[f32; 2]; NUM_KEYPOINTS] {
+/// pixel scale, adjusted for `facing` and `scale` (figure height; a child < 1.0
+/// occupies the lower part of the region so they render shorter, with a slightly
+/// larger head). `NaN` marks an absent keypoint.
+fn place(
+    bbox: &[f32; 4],
+    facing: Facing,
+    scale: f32,
+    width: u32,
+    height: u32,
+) -> [[f32; 2]; NUM_KEYPOINTS] {
     let (w, h) = (width as f32, height as f32);
     let mut kp = SKELETON;
+
+    // Shorter figures occupy the BOTTOM `scale` fraction of the region (feet stay
+    // put, head drops); their head is proportionally a touch larger.
+    if scale < 0.999 {
+        let head_grow = 1.0 + (1.0 - scale) * 0.4;
+        for (i, p) in kp.iter_mut().enumerate() {
+            if p[1].is_finite() {
+                p[1] = 1.0 - (1.0 - p[1]) * scale; // compress toward the bottom
+                if matches!(i, 0 | 14 | 15 | 16 | 17) {
+                    // enlarge the head cluster around the nose
+                    p[0] = 0.5 + (p[0] - 0.5) * head_grow;
+                }
+            }
+        }
+    }
 
     match facing {
         Facing::Front => {}
@@ -86,13 +109,13 @@ fn place(bbox: &[f32; 4], facing: Facing, width: u32, height: u32) -> [[f32; 2];
 /// Render one OpenPose skeleton map for the given `(bbox, facing)` regions onto a
 /// black `width × height` RGB image — the ControlNet-OpenPose conditioning.
 pub fn render_pose_map(
-    regions: &[([f32; 4], Facing)],
+    regions: &[([f32; 4], Facing, f32)],
     width: u32,
     height: u32,
 ) -> RgbImage {
     let mut img = RgbImage::new(width, height);
-    for (bbox, facing) in regions {
-        let kp = place(bbox, *facing, width, height);
+    for (bbox, facing, scale) in regions {
+        let kp = place(bbox, *facing, *scale, width, height);
         // Limbs (coloured sticks).
         for (li, [a, b]) in LIMB_SEQ.iter().enumerate() {
             let (pa, pb) = (kp[*a], kp[*b]);
@@ -148,8 +171,8 @@ mod tests {
     #[test]
     fn pose_map_draws_into_each_region() {
         let regions = [
-            ([0.0, 0.2, 0.33, 1.0], Facing::Front),
-            ([0.66, 0.2, 1.0, 1.0], Facing::Front),
+            ([0.0, 0.2, 0.33, 1.0], Facing::Front, 1.0),
+            ([0.66, 0.2, 1.0, 1.0], Facing::Front, 1.0),
         ];
         let img = render_pose_map(&regions, 256, 192);
         // Non-black pixels exist in the left third and the right third.
@@ -160,5 +183,18 @@ mod tests {
         assert!(nonblack(170, 256), "right skeleton drawn");
         // Centre is empty (no persona there).
         assert!(!nonblack(110, 150), "centre is empty");
+    }
+
+    #[test]
+    fn child_scale_skeleton_is_shorter() {
+        let bbox = [0.3, 0.0, 0.7, 1.0];
+        let top_y = |scale: f32| -> u32 {
+            let img = render_pose_map(&[(bbox, Facing::Front, scale)], 128, 256);
+            (0..256)
+                .find(|&y| (0..128).any(|x| img.get_pixel(x, y).0 != [0, 0, 0]))
+                .unwrap()
+        };
+        // A 0.6-scale figure's topmost drawn pixel sits lower than an adult's.
+        assert!(top_y(0.6) > top_y(1.0) + 20, "child skeleton starts lower");
     }
 }

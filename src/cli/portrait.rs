@@ -514,6 +514,7 @@ pub async fn run(mut args: PortraitArgs, device: Device) -> Result<()> {
         Some(args.aspect.as_str()),
         args.base,
     )?;
+    crate::imaging::sizes::warn_large_for_metal(width, height, &device);
     std::fs::create_dir_all(&args.out)?;
 
     // Identity is only wired when at least one photo is actually provided.

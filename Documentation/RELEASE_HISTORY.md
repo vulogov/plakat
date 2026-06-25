@@ -1,12 +1,28 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.11. The current
+"What's new" sections for v0.13 through 1.12. The current
 release's notes live in the [main README](../README.md). Older
 cycles are archived here so the README stays focused on what's
 new this turn.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
+
+## What's new in 1.12.0 — put specific people into a scene (`plakat multiperson`)
+
+1.12.0 places specific people into a generated scene, with a complete,
+numerically-verified face-swap stack ported to candle from InsightFace's ONNX
+models, plus a `convert-onnx` command to build the weights yourself.
+
+- **`plakat multiperson`** — give each person a photo + a relative location
+  (`--at "alice:left closer front"`). `--swap` face-swaps each figure (with `--pose`
+  pinning an OpenPose skeleton per region so the right face lands on the right figure);
+  `--composite` mattes the real photos in (exact identity, any model).
+- **Verified face-swap stack** — SCRFD-500MF (~1–3 px), ArcFace `w600k_r50` (cosine 1.0),
+  `inswapper_128` (1e-5), all checked vs onnxruntime; `plakat convert-onnx` builds them.
+- **Three never-verified components fixed** — SCRFD architecture, ArcFace stem PReLU, and a
+  180°-rotation bug in the face-alignment transform (also lifts `--identity faceid`).
+- Honest scope: identity is strongest on few, prominent, roughly-frontal faces from photos.
 
 ## What's new in 1.11.0 — relighting, richer maps, and a steadier host
 

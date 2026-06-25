@@ -113,6 +113,22 @@ pub fn to_geojson(vm: &VectorMap, spec: &MapSpec) -> String {
             "geometry": { "type": "Point", "coordinates": [round6(nx), round6(ny)] }
         }));
     }
+    // Political layer (v1.13.0): one Point per region carrying a polity — at its
+    // anchor, with the polity name + kind. No political data → none emitted.
+    for r in &spec.regions {
+        let Some(pol) = &r.political else { continue };
+        let Some((nx, ny)) = super::engine::resolve_simple(&r.anchor) else { continue };
+        features.push(json!({
+            "type": "Feature",
+            "properties": {
+                "class": "polity",
+                "id": r.id,
+                "name": pol.polity_name,
+                "kind": pol.polity_kind,
+            },
+            "geometry": { "type": "Point", "coordinates": [round6(nx as f64), round6(ny as f64)] }
+        }));
+    }
 
     let fc = json!({
         "type": "FeatureCollection",
@@ -161,6 +177,21 @@ pub fn to_svg(vm: &VectorMap, spec: &MapSpec) -> String {
             s,
             "  <text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#3a2a18\">{}</text>",
             x + 5, y + 3, xml_escape(&lm.name)
+        );
+    }
+    // Political polities: a dashed territorial marker + name at each anchor.
+    for r in &spec.regions {
+        let Some(pol) = &r.political else { continue };
+        let Some((nx, ny)) = super::engine::resolve_simple(&r.anchor) else { continue };
+        let (x, y) = ((nx * w as f32) as i32, (ny * h as f32) as i32);
+        let _ = writeln!(
+            s,
+            "  <circle cx=\"{x}\" cy=\"{y}\" r=\"5\" fill=\"none\" stroke=\"#7a2a18\" stroke-width=\"1.5\" stroke-dasharray=\"3 2\"/>"
+        );
+        let _ = writeln!(
+            s,
+            "  <text x=\"{}\" y=\"{}\" font-size=\"10\" font-weight=\"bold\" fill=\"#7a2a18\">{}</text>",
+            x + 7, y + 3, xml_escape(&pol.polity_name)
         );
     }
     let _ = writeln!(s, "  <text x=\"{}\" y=\"18\" font-size=\"16\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#3a2a18\">{}</text>", w / 2, xml_escape(&spec.name));
