@@ -58,7 +58,7 @@ multi-person-in-one-image stays frontier. Not scheduled; here so the option isn'
 
 - [x] **Coastal terrain — peninsulas, inlets, fjords** (NEW): `terrain.{peninsulas,inlets,fjords}`. DONE.
 
-- [ ] **Multi-tile world maps** — stitch adjacent tiles into a seamless world map.
+- [x] **Multi-tile world maps** — `--map-render-tiles DIR` slices the continuous world into seamless tiles. DONE.
 - [x] River **deltas** at navigable mouths; **marsh hatching** for Wetland regions. DONE.
 - [x] Seasonal palette on the **painted** (`--map-render-sd`) path; political layer in
       GeoJSON / SVG export. DONE.
