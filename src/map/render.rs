@@ -9,7 +9,7 @@ use anyhow::Result;
 use image::{Rgb, RgbImage};
 use std::path::Path;
 
-use super::biome::BiomeMap;
+use super::biome::{Biome, BiomeMap};
 use super::coastline::{Coastline, DEFAULT_SEA_LEVEL};
 use super::engine::{resolve_simple, GeoCanvas, HeightField};
 use super::hydrology::{Hydrology, DEFAULT_RIVER_THRESHOLD};
@@ -182,6 +182,7 @@ pub fn paint_base_map(geo: &Geometry, style: Style) -> RgbImage {
     let (w, h) = (geo.hf.width, geo.hf.height);
     let mut img = RgbImage::new(w, h);
     paint_base(&mut img, &geo.hf, &geo.coast, &geo.biome, style);
+    draw_marsh_hatching(&mut img, &geo.biome, &geo.coast, style);
     draw_coastline(&mut img, &geo.coast, style);
     draw_rivers(&mut img, &geo.hydro, style);
     draw_roads(&mut img, &geo.roads, style);
@@ -264,6 +265,30 @@ fn paint_base(img: &mut RgbImage, hf: &HeightField, coast: &Coastline, biome: &B
             };
             img.put_pixel(x, y, Rgb(px));
         }
+    }
+}
+
+/// Cartographic marsh symbol over Wetland regions: staggered rows of short
+/// horizontal dashes in a bluish marsh tint. Deterministic (fixed grid) so it
+/// stays byte-stable, and only touches land cells whose biome is `Wetland`, so
+/// maps with no wetlands render exactly as before.
+fn draw_marsh_hatching(img: &mut RgbImage, biome: &BiomeMap, coast: &Coastline, st: Style) {
+    let (w, h) = (biome.width, biome.height);
+    let marsh = blend(st.river, st.ink, 0.35);
+    let mut y = 2u32;
+    while y < h {
+        let ox = if (y / 5) % 2 == 0 { 0 } else { 4 }; // stagger alternate rows
+        let mut x = 2 + ox;
+        while x + 3 < w {
+            let i = (y * w + x) as usize;
+            if !coast.sea[i] && biome.biome[i] == Biome::Wetland {
+                for dx in 0..3u32 {
+                    img.put_pixel(x + dx, y, Rgb(marsh));
+                }
+            }
+            x += 8;
+        }
+        y += 5;
     }
 }
 
