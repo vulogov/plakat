@@ -63,3 +63,18 @@ fn round_to(n: u32, m: u32) -> u32 {
     let r = (n / m) * m;
     if r == 0 { m } else { r }
 }
+
+/// Warn (once, to the user) when a requested render size is large enough to risk
+/// Metal's single-buffer allocation limit on a 24 GB unified-memory box — the
+/// most common avoidable OOM. Non-destructive: it never changes the size, only
+/// suggests a smaller `--size` if the run aborts. No-op off Metal.
+pub fn warn_large_for_metal(width: u32, height: u32, device: &candle_core::Device) {
+    const METAL_SOFT_PIXELS: u64 = 1024 * 1024; // ~1MP; SDXL 1024² is borderline-OK
+    if device.is_metal() && (width as u64) * (height as u64) > METAL_SOFT_PIXELS {
+        crate::ui::progress::println(&format!(
+            "  {} {width}×{height} is large for Metal — if it OOMs (Metal single-buffer \
+             limit), retry with a smaller --size (e.g. 768×768 / 1024×768).",
+            console::style("!").yellow().bold()
+        ));
+    }
+}
