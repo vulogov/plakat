@@ -117,11 +117,37 @@ impl FaceSwapper {
     /// Compute the source identity latent (`normalize(arcface_emb @ emap)`) — the
     /// `source` input to the swapper — from a source face photo (largest face).
     pub fn source_latent(&self, source_face: &Path) -> Result<Tensor> {
-        let img = image::open(source_face)
+        let orig = image::open(source_face)
             .with_context(|| format!("opening source face {}", source_face.display()))?
             .to_rgb8();
-        let faces = self.detect(source_face)?;
-        let face = faces.first().context("no face detected in the source photo")?;
+
+        // SCRFD is tuned for faces that are a fraction of the frame; a tightly
+        // cropped portrait (face filling >50% of the image) scores below
+        // threshold or is missed. If the raw photo yields no face, pad it with a
+        // white margin so the face becomes a detectable size, then detect there.
+        let (img, face) = match self.detect(source_face)?.into_iter().next() {
+            Some(f) => (orig, f),
+            None => {
+                let padded = pad_white(&orig, 0.6);
+                let tmp = tempfile::Builder::new()
+                    .prefix("plakat-src-pad-")
+                    .suffix(".png")
+                    .tempfile()?;
+                padded.save(tmp.path())?;
+                let f = self
+                    .detect(tmp.path())?
+                    .into_iter()
+                    .next()
+                    .with_context(|| {
+                        format!(
+                            "no face detected in {} (even after padding — try a less \
+                             tightly-cropped photo with headroom around the face)",
+                            source_face.display()
+                        )
+                    })?;
+                (padded, f)
+            }
+        };
         let (aligned, _) = face_models::norm_crop(&img, face.landmarks, 112);
         let t = img_to_tensor(&aligned, 127.5, 127.5, &self.device)?;
         let emb = self.arcface.forward(&t)?; // (1,512) unit-norm
@@ -243,6 +269,16 @@ fn sample_bilinear(img: &RgbImage, x: f32, y: f32) -> [u8; 3] {
         let bot = p01[c] as f32 * (1.0 - ax) + p11[c] as f32 * ax;
         out[c] = (top * (1.0 - ay) + bot * ay).round().clamp(0.0, 255.0) as u8;
     }
+    out
+}
+
+/// Pad an image with a white border of `frac × max(w,h)` on each side — gives a
+/// tightly-cropped face room so SCRFD (trained on smaller faces) can detect it.
+fn pad_white(img: &RgbImage, frac: f32) -> RgbImage {
+    let (w, h) = (img.width(), img.height());
+    let m = ((w.max(h) as f32) * frac).round() as u32;
+    let mut out = RgbImage::from_pixel(w + 2 * m, h + 2 * m, image::Rgb([255, 255, 255]));
+    image::imageops::overlay(&mut out, img, m as i64, m as i64);
     out
 }
 
