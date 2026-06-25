@@ -327,14 +327,18 @@ fn draw_rivers(img: &mut RgbImage, hydro: &Hydrology, st: Style) {
 /// Only river paths at least this long get a delta — a proxy for "navigable /
 /// sizeable", so small creeks don't sprout fans.
 const DELTA_MIN_LEN: usize = 36;
-/// How far the distributary channels fan out into the sea (pixels).
+/// How far back upstream the distributary fan's apex sits (pixels), and the
+/// reach of each branch toward the coast.
 const DELTA_REACH: i32 = 7;
 
-/// Draw a small distributary fan into the shallow sea at each navigable river
-/// mouth — the cartographic delta. Deterministic (a fixed three-branch fan in the
-/// flow direction, clipped to sea cells) → byte-stable.
+/// Draw a small distributary fan at each navigable river mouth — the cartographic
+/// delta. The fan forms on the **land** side: its apex sits a few pixels upstream
+/// of the mouth and the three branches spread toward the coast, each terminating
+/// at the shoreline (the first sea cell) so distributaries reach the water at
+/// fanned-out points but never draw across open ocean. Deterministic → byte-stable.
 fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Style) {
     let (w, h) = (coast.width, coast.height);
+    let is_sea = |x: i32, y: i32| coast.sea[(y as u32 * w + x as u32) as usize];
     for river in &hydro.rivers {
         let n = river.len();
         if n < DELTA_MIN_LEN {
@@ -346,17 +350,22 @@ fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Sty
         let len = (dx * dx + dy * dy).sqrt().max(1e-3);
         dx /= len;
         dy /= len;
+        // Apex set back upstream of the mouth so the branches fan over land as the
+        // river approaches the coast (not projected into the sea beyond it).
+        let (ax, ay) = (mx - dx * DELTA_REACH as f32, my - dy * DELTA_REACH as f32);
         for &ang in &[-0.6f32, 0.0, 0.6] {
             let (c, s) = (ang.cos(), ang.sin());
             let (bx, by) = (dx * c - dy * s, dx * s + dy * c);
-            for step in 1..=DELTA_REACH {
-                let x = (mx + bx * step as f32).round() as i32;
-                let y = (my + by * step as f32).round() as i32;
+            // Reach a touch past the mouth so a branch lands exactly on the shore,
+            // but stop at the first sea cell — the distributary's discharge point.
+            for step in 1..=DELTA_REACH * 2 {
+                let x = (ax + bx * step as f32).round() as i32;
+                let y = (ay + by * step as f32).round() as i32;
                 if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
                     break;
                 }
-                if !coast.sea[(y as u32 * w + x as u32) as usize] {
-                    break; // fan only over open water
+                if is_sea(x, y) {
+                    break; // reached the coast — never draw over open water
                 }
                 put(img, x, y, st.river);
             }
@@ -958,6 +967,40 @@ mod tests {
         let a = render(&island(), 42, Style::default()).unwrap();
         let b = render(&island(), 42, Style::default()).unwrap();
         assert!(a.as_raw() == b.as_raw(), "render must be byte-stable");
+    }
+
+    #[test]
+    fn deltas_never_draw_over_open_sea() {
+        // Regression (1.14.0-C): the distributary fan must form on the land side
+        // and stop at the shore — never project channels across open ocean.
+        use crate::map::coastline::Coastline;
+        use crate::map::hydrology::Hydrology;
+        let (w, h): (u32, u32) = (60, 11);
+        // Land for x < 40, sea for x >= 40. A river runs east along y=5 to the coast.
+        let sea: Vec<bool> = (0..w * h).map(|i| (i % w) >= 40).collect();
+        let coast = Coastline {
+            width: w, height: h, sea_level: 0.5, sea: sea.clone(),
+            coast_dist: vec![0.0; (w * h) as usize],
+        };
+        let river: Vec<(u32, u32)> = (0..=40).map(|x| (x, 5)).collect();
+        assert!(river.len() >= DELTA_MIN_LEN);
+        let hydro = Hydrology {
+            width: w, height: h, filled: vec![], flow_dir: vec![], flow_accum: vec![],
+            rivers: vec![river],
+        };
+        let style = Style::named("parchment").unwrap();
+        let mut img = RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
+        draw_deltas(&mut img, &hydro, &coast, style);
+        let mut painted = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if *img.get_pixel(x, y) == image::Rgb(style.river) {
+                    painted += 1;
+                    assert!(!sea[(y * w + x) as usize], "delta painted a SEA cell at ({x},{y})");
+                }
+            }
+        }
+        assert!(painted > 0, "the delta fan should still draw on the land side");
     }
 
     #[test]
