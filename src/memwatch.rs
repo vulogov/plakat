@@ -33,11 +33,34 @@ use std::time::Duration;
 const DEFAULT_FLOOR_GB: f64 = 1.5;
 /// Sample period.
 const INTERVAL: Duration = Duration::from_millis(300);
-/// Consecutive sub-floor samples required before aborting (~0.9 s sustained),
-/// so a momentary dip during a large allocation doesn't trip the guard.
-const SUSTAINED: u32 = 3;
 /// Exit code on guard abort (128 + SIGKILL(9), mirroring an OS "Killed: 9").
 const ABORT_CODE: i32 = 137;
+
+/// Workload kind — sets how long critical pressure must be sustained before the
+/// guard aborts. Training's first backward / optimizer step spikes are larger and
+/// longer-lived (and the OS can ride them out via swap), so training tolerates a
+/// longer window than inference before treating the pressure as terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Inference,
+    Training,
+}
+
+/// Consecutive sub-floor / critical samples required before aborting. Bumped from
+/// the old 3 (~0.9 s) so a transient decode / first-backward spike the OS would
+/// absorb doesn't trip the guard. Inference ≈ 1.5 s, training ≈ 3.6 s. Override
+/// with `PLAKAT_OOM_GUARD_SUSTAINED`.
+fn sustained_samples(mode: Mode) -> u32 {
+    if let Ok(v) = std::env::var("PLAKAT_OOM_GUARD_SUSTAINED") {
+        if let Ok(n) = v.trim().parse::<u32>() {
+            return n.max(2);
+        }
+    }
+    match mode {
+        Mode::Inference => 5,  // ~1.5 s
+        Mode::Training => 12,  // ~3.6 s
+    }
+}
 
 /// Resolve the floor from `PLAKAT_OOM_GUARD_GB` (default 1.5; `0` disables).
 fn floor_gb() -> f64 {
@@ -56,15 +79,22 @@ pub struct MemoryGuard {
 }
 
 impl MemoryGuard {
-    /// Start watching unified memory for the given device. No-op (returns an
-    /// inert guard) on CUDA or when `PLAKAT_OOM_GUARD_GB=0`.
+    /// Start watching unified memory for the given device (inference window).
+    /// No-op (inert guard) on CUDA or when `PLAKAT_OOM_GUARD_GB=0`.
     pub fn start(device: &Device, label: &str) -> Self {
+        Self::start_mode(device, label, Mode::Inference)
+    }
+
+    /// Start watching with an explicit workload [`Mode`] — training uses a longer
+    /// sustained-pressure window than inference before aborting.
+    pub fn start_mode(device: &Device, label: &str, mode: Mode) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let floor = floor_gb();
         let cuda = matches!(device.location(), DeviceLocation::Cuda { .. });
         if floor <= 0.0 || cuda {
             return Self { stop, handle: None };
         }
+        let sustained = sustained_samples(mode);
         let stop_t = stop.clone();
         let label = label.to_string();
         let handle = thread::Builder::new()
@@ -89,7 +119,7 @@ impl MemoryGuard {
                     };
                     if danger {
                         breaches += 1;
-                        if breaches >= SUSTAINED {
+                        if breaches >= sustained {
                             eprintln!(
                                 "\n{} OOM GUARD — sustained critical memory pressure while \
                                  generating '{}'; aborting plakat now to avoid crashing the \
@@ -132,7 +162,7 @@ mod tests {
     fn floor_env_parses_and_disables() {
         // (env is process-global; just exercise the parse paths via defaults)
         assert_eq!(DEFAULT_FLOOR_GB, 1.5);
-        assert!(SUSTAINED >= 2, "need sustained breaches to avoid transient trips");
+        assert!(sustained_samples(Mode::Inference) >= 2 && sustained_samples(Mode::Training) > sustained_samples(Mode::Inference));
     }
 
     #[test]
