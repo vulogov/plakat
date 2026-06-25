@@ -47,14 +47,22 @@ already gets them — but two gaps remained:
 
 ## C — proof corpus expansion (confidence)
 
-The 1.12/1.13 features shipped with thin corpus coverage. Add committed drivers + showcases
-(and regenerate `GALLERY.md`):
+The 1.12/1.13 features shipped with thin corpus coverage. Added committed drivers +
+showcases (and regenerate `GALLERY.md`):
 
-- [ ] **multiperson** — a `--swap --pose` showcase (photos) and a `--composite` showcase.
-- [ ] **coastal maps** — a spec exercising peninsulas + inlets + fjords (byte-stable).
-- [ ] **multi-tile world** — a tiled world + the stitched `world.png`.
-- [ ] **political export** — a polity GeoJSON/SVG proof.
-- [ ] run them through the **scenario** form too, proving the automation path end-to-end.
+- [x] **coastal maps** — `corpus/map/coastal.spec.json` (peninsulas + inlets + fjords);
+      `corpus/coastal.sh` byte-checks render + heightmap + coast.
+- [x] **multi-tile world** — `coastal.sh` byte-checks `world.png` + 4 seamless tiles
+      (which reassemble pixel-exact).
+- [x] **political export** — `coastal.sh` byte-checks `corpus/map/export/realms.{geojson,svg}`
+      + asserts the `polity` class. (The committed export was stale/pre-political; fixed —
+      now carries both polities.)
+- [x] **scenario form** — `corpus/map_coastal_scenario.hjson` runs the coastal render +
+      tiled world as `type: map` tasks; `coastal.sh` asserts byte-identical to the CLI.
+- [x] **delta fix (found via the coastal sample)** — see the `fix(map)` commit: deltas no
+      longer cross the shore into open ocean.
+- [ ] **multiperson** — `--swap --pose` showcase exists; a `--composite` showcase is GPU
+      (non-deterministic) — driver entry pending a local render.
 
 ## D — carry / polish (opt-in)
 

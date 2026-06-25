@@ -35391,6 +35391,38 @@
         "name": "The Old Keep"
       },
       "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          0.15,
+          0.5
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "class": "polity",
+        "id": "westmark",
+        "kind": "confederation",
+        "name": "The Westmark League"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          0.85,
+          0.5
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "class": "polity",
+        "id": "eastreach",
+        "kind": "kingdom",
+        "name": "Eastreach Dominion"
+      },
+      "type": "Feature"
     }
   ],
   "name": "The Sundered Realms",
