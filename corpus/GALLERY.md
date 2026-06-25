@@ -1,4 +1,4 @@
-# plakat gallery
+# plakat proof corpus
 
 128 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
@@ -156,7 +156,7 @@
   <tr>
     <td width="33%"><img src="images/segment/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
-    <td width="33%"><img src="images/multiperson/plakat-multiperson-42.png" alt=""></td>
+    <td width="33%"><img src="images/multiperson/plakat-multiperson-14.png" alt=""></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
@@ -909,9 +909,9 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
-### plakat-multiperson-42.png
+### plakat-multiperson-14.png
 
-![plakat-multiperson-42.png](images/multiperson/plakat-multiperson-42.png)
+![plakat-multiperson-14.png](images/multiperson/plakat-multiperson-14.png)
 
 _(no embedded metadata)_
 
