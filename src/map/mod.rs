@@ -47,6 +47,38 @@ pub fn save_map_image(spec: &spec::MapSpec, seed: u64, style: render::Style, pat
     img.save(path).with_context(|| format!("writing map {}", path.display()))
 }
 
+/// Slice the continuous world map into a grid of **seamless** tiles. Renders the
+/// linework world once, writes the full `world.png`, then crops it into
+/// `tile_r{R}_c{C}.png` over `spec.tile_grid` (cols × rows). Because the world is
+/// rendered as one continuous canvas and sliced, the tiles reassemble pixel-exact.
+///
+/// The single entry every surface uses for tiled output (CLI `--map-render-tiles`,
+/// the scenario `map` task's `map-render-tiles`, `plakat.map.tiles`) so all emit
+/// byte-identical tiles. Returns the tile count.
+pub fn save_world_tiles(
+    spec: &spec::MapSpec,
+    seed: u64,
+    style: render::Style,
+    dir: &std::path::Path,
+) -> Result<usize> {
+    let world = render::render(spec, seed, style)?;
+    let (cols, rows) = (spec.tile_grid.cols.max(1), spec.tile_grid.rows.max(1));
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating tile output dir {}", dir.display()))?;
+    let (tw, th) = (world.width() / cols, world.height() / rows);
+    world
+        .save(dir.join("world.png"))
+        .with_context(|| format!("saving world.png in {}", dir.display()))?;
+    for r in 0..rows {
+        for c in 0..cols {
+            let tile = image::imageops::crop_imm(&world, c * tw, r * th, tw, th).to_image();
+            tile.save(dir.join(format!("tile_r{r}_c{c}.png")))
+                .with_context(|| format!("saving tile r{r} c{c}"))?;
+        }
+    }
+    Ok((cols * rows) as usize)
+}
+
 /// Resolve a `--map-scale` alias → (scale_tier, default tile grid).
 pub fn scale_alias(name: &str) -> Option<(u8, TileGrid)> {
     let g = |cols, rows| TileGrid { cols, rows };

@@ -153,6 +153,23 @@ plateaus:
 ]
 ```
 
+**Coastal shaping** — three arrays cut a jagged shoreline (all `NamedRegion`s
+anchored to the coast they shape; omit them all for a smooth coast):
+
+- `terrain.peninsulas` — land spits jutting into the sea; `size` `narrow | moderate | broad`.
+- `terrain.inlets` — bays / coves cutting *into* the land; `size` `shallow | moderate | deep`.
+- `terrain.fjords` — deep, narrow, steep-walled sea arms; `size` `moderate | deep`.
+
+```hjson
+peninsulas: [ { id: the_horn name: The Horn anchor: { kind: cardinal position: southeast } size: broad } ]
+fjords:     [ { id: cold_arm name: The Cold Arm anchor: { kind: cardinal position: northwest } size: deep } ]
+```
+
+The prose parser maps coastal language for you: *"a fjord-cut northern coast"* →
+`fjords`, *"a wide bay"* → `inlets`, *"a long cape"* → `peninsulas`. A committed
+showcase lives at `corpus/map/coastal.spec.json`. Like every terrain feature, the
+coast responds to `--map-erosion` (higher = more ragged).
+
 **Political layer** — any `region` can carry a `political` block, drawing a
 territorial ring, kind-styled borders to neighbouring regions, and a polity label.
 `borders[].kind` is `river | mountain | disputed`:
@@ -279,7 +296,20 @@ A map is a first-class step everywhere, all rendering identically to `--map-rend
 
 Fields: `map-spec`, `map-style`, `map-paint` (SD), `map-scale`/`map-tiles`,
 `map-sd-model`/`map-sd-lora`, `map-layout`, `map-erosion`, `map-provider`. Each task
-writes `<out>/<name>/map.png`.
+writes `<out>/<name>/map.png`. Every spec-level feature (coastal terrain,
+canyons, marsh, deltas, political layer) flows through automatically — it lives in
+the spec the task loads, so nothing extra is needed to use it from automation.
+
+Set `map-render-tiles: true` to slice the world into a grid of **seamless tiles**
+(over `map-tiles`/`map-scale`) instead of a single `map.png` — the task then writes
+`<out>/<name>/world.png` + `tile_r{R}_c{C}.png`, byte-identical to the CLI
+`--map-render-tiles`:
+
+```hjson
+{ out: "./out", seed: 7
+  tasks: [ { name: "world", type: "map", map-spec: "coastal.spec.json",
+             map-tiles: "2x2", map-render-tiles: true } ] }
+```
 
 **Compile** — a `type: map` block in a `prompts.txt` compiles to a scenario map task,
 so prose worldbuilding and maps live in one document:
@@ -300,6 +330,9 @@ name: my-isle
 2.0   plakat.map.erosion       \ set erosion
 "isle.json" "parchment" plakat.map.render   \ ( spec-path style -- handle ); .paint for SD
 "isle.png" plakat.save
+
+\ tile a world into seamless tiles (world.png + tile_r{R}_c{C}.png) in a dir:
+"coastal.spec.json" "parchment" "./tiles" plakat.map.tiles   \ ( spec-path style out-dir -- count )
 ```
 
 ## 9. Inspecting the geometry layers

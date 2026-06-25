@@ -299,6 +299,10 @@ struct ScenarioFile {
     map_layout: Option<String>,
     #[serde(rename = "map-erosion", default)]
     map_erosion: Option<f32>,
+    /// 1.14.0-B: emit the world as a grid of seamless tiles (over `map-tiles`/
+    /// `map-scale`) instead of a single `map.png`. Mirrors `--map-render-tiles`.
+    #[serde(rename = "map-render-tiles", default)]
+    map_render_tiles: Option<bool>,
 
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
@@ -901,6 +905,8 @@ struct TaskDef {
     map_layout: Option<String>,
     #[serde(rename = "map-erosion", default)]
     map_erosion: Option<f32>,
+    #[serde(rename = "map-render-tiles", default)]
+    map_render_tiles: Option<bool>,
 
     // ---------- 1.14.0-A: per-task `multiperson` block (a `type: multiperson` task) ----------
     /// The multiperson task body: scene prompt + placed people + identity mode.
@@ -1069,6 +1075,7 @@ fn effective_map_config(scenario: &ScenarioFile, task: &TaskDef) -> crate::map::
         sd_loras,
         urban_layout: task.map_layout.clone().or_else(|| scenario.map_layout.clone()),
         erosion: task.map_erosion.or(scenario.map_erosion),
+        render_tiles: task.map_render_tiles.or(scenario.map_render_tiles).unwrap_or(false),
         cache: false,
     }
 }
@@ -5841,6 +5848,24 @@ mod tests {
         }}"#);
         let t = parse_task(&src);
         assert_eq!(t.fast.as_deref(), Some("hyper-8"));
+    }
+
+    #[test]
+    fn task_parses_map_render_tiles() {
+        // 1.14.0-B: a map task can request seamless tiled output from automation.
+        let src = format!(r#"{{{COMMON_TASK}
+            type: map
+            map-spec: corpus/map/coastal.spec.json
+            map-tiles: 2x2
+            map-render-tiles: true
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.map_render_tiles, Some(true));
+        assert_eq!(t.map_tiles.as_deref(), Some("2x2"));
+        // effective config carries it into the MapTaskCfg the runner dispatches.
+        let s: ScenarioFile = deser_hjson::from_str(r#"{ tasks: [] }"#).unwrap();
+        let cfg = effective_map_config(&s, &t);
+        assert!(cfg.render_tiles);
     }
 
     #[test]

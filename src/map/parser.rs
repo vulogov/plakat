@@ -147,7 +147,13 @@ Top-level shape:
   "climate": "<optional>", "era": "<optional>", "language": "<optional BCP-47>",
   "terrain": { "dominant_elevation": "flat|hilly|mountainous|...",
                "erosion": <0=smooth..1=natural..2=rugged, optional>,
-               "mountain_ranges": [ { "id","name","anchor","orientation","height" } ] },
+               "mountain_ranges": [ { "id","name","anchor","orientation","height" } ],
+               "plateaus":      [ { "id","name","anchor","size":"small|moderate|large" } ],
+               "rift_valleys":  [ { "id","name","anchor","orientation","size":"shallow|moderate|deep|chasm" } ],
+               // Coastal shaping (all optional). Use when the prose calls for a jagged coast:
+               "peninsulas":    [ { "id","name","anchor","orientation","size":"narrow|moderate|broad" } ],  // land spits into the sea
+               "inlets":        [ { "id","name","anchor","size":"shallow|moderate|deep" } ],   // bays/coves cut into the land
+               "fjords":        [ { "id","name","anchor","size":"moderate|deep" } ] },         // deep, narrow, steep-walled sea arms
   "water": { "seas": [ { "id","name","position","enclosed" } ],
              "rivers": [ { "id","name","source":<anchor>,"mouth":<anchor>,"navigable" } ],
              "lakes": [ { "id","name","anchor","size","endorheic" } ] },
@@ -187,6 +193,9 @@ const RULES: &str = r#"Rules:
 - Give every feature a unique lowercase snake_case "id". Reference features by id.
 - A river's source is usually high terrain; its mouth is a coast/sea/lake.
 - Place cities plausibly: ports on coasts/river-mouths, fortresses on passes/headlands.
+- Map coastal prose to terrain: "fjord-cut"/"glacial coast" → fjords, "bay"/"cove"/"sea
+  loch" → inlets, "headland"/"spit"/"cape"/"peninsula" → peninsulas. Anchor each to the
+  coast it shapes; omit all coastal arrays for a smooth shoreline.
 - Prefer relational anchors (mouth_of, bearing, natural_harbor) over raw cardinals.
 - For a town map, pick a layout that fits: medieval/walled → radial, planned/colonial/
   plains → grid, hill/mountain/old → organic. Omit "layout" to auto-infer from context.

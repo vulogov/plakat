@@ -25,20 +25,25 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       `scenario_and_script_forms_build_identical_requests` + `defaults_mirror_the_cli_flags`
       tests assert the surfaces produce the same request with CLI-matching defaults.
 
-## B — new map features in the automation surfaces
+## B — new map features in the automation surfaces ✅
 
 The coastal terrain (`terrain.{peninsulas,inlets,fjords}`) and the render features
 (marsh/deltas/seasonal) live in the **spec / render**, so any surface that loads a spec
-already gets them — but two gaps remain:
+already gets them — but two gaps remained:
 
-- [ ] **Multi-tile render in scenario + scripting** — `--map-render-tiles` is CLI-only. Add
-      a tiled-output option to the `map` scenario task and the `plakat.map` words (a tile
-      grid + output dir), so worlds can be tiled from automation.
-- [ ] **Verify the spec-level features flow through** scenario / compile / scripting
-      (coastal terrain, marsh, deltas, seasonal, political export) and add a parity test +
-      a one-line note where each surface exposes them.
-- [ ] *(if compile reaches it)* teach the `compile` LLM prompt about the new terrain words
-      so prose like "a fjord-cut northern coast" can map to `terrain.fjords`.
+- [x] **Multi-tile render in scenario + scripting** — extracted the CLI slicing to a
+      shared `map::save_world_tiles` (CLI now calls it too). Scenario: `map-render-tiles:
+      true` task/scenario field → `MapTaskCfg.render_tiles` → emits `world.png` +
+      `tile_r{R}_c{C}.png`. Scripting: `plakat.map.tiles ( spec-path style out-dir -- count )`.
+      A byte-for-byte parity test asserts the task path == the shared helper.
+- [x] **Verify the spec-level features flow through** — committed `corpus/map/coastal.spec.json`
+      (peninsulas + inlets + fjords); `coastal_terrain_features_flow_through_source_spec`
+      asserts they survive the load path all surfaces share; tutorial §4 now documents
+      coastal shaping + §8 notes that every spec-level feature flows through automation.
+- [x] **Taught the prose parser the new terrain words** — `peninsulas`/`inlets`/`fjords`
+      (+ the previously-undocumented `plateaus`/`rift_valleys`) are now in the MapSpec
+      schema preamble with a coastal-language mapping rule, so "a fjord-cut northern coast"
+      → `terrain.fjords` (benefits CLI prose, scenario prose, and the compile `map:` block).
 
 ## C — proof corpus expansion (confidence)
 

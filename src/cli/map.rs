@@ -393,28 +393,17 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         did_dump = true;
     }
 
-    // 1.13.0: slice the continuous world into a grid of seamless tiles.
+    // 1.13.0: slice the continuous world into a grid of seamless tiles. Shared
+    // helper (also used by the scenario task + `plakat.map.tiles`) for parity.
     if let Some(dir) = &args.render_tiles {
         let rstyle = map::render::Style::named(&args.style)?
             .with_season(map::render::Season::parse(&args.season)?)
             .with_grid(args.grid);
-        let world = map::render::render(&spec, args.seed, rstyle)?;
+        let n = map::save_world_tiles(&spec, args.seed, rstyle, dir)?;
         let (cols, rows) = (spec.tile_grid.cols.max(1), spec.tile_grid.rows.max(1));
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating tile output dir {}", dir.display()))?;
-        let (tw, th) = (world.width() / cols, world.height() / rows);
-        world.save(dir.join("world.png")).context("saving full world.png")?;
-        for r in 0..rows {
-            for c in 0..cols {
-                let tile = image::imageops::crop_imm(&world, c * tw, r * th, tw, th).to_image();
-                tile.save(dir.join(format!("tile_r{r}_c{c}.png")))
-                    .with_context(|| format!("saving tile r{r} c{c}"))?;
-            }
-        }
         println!(
-            "{}  world map → {} tile(s) ({cols}×{rows}, {tw}×{th} each) + world.png → {}",
+            "{}  world map → {n} tile(s) ({cols}×{rows}) + world.png → {}",
             style("✓").green(),
-            cols * rows,
             dir.display()
         );
         did_dump = true;

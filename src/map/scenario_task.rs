@@ -38,6 +38,10 @@ pub struct MapTaskCfg {
     pub urban_layout: Option<String>,
     /// Override natural-feature erosion (0 smooth … 1 natural … >1 rugged).
     pub erosion: Option<f32>,
+    /// 1.14.0-B: emit the world as a grid of seamless tiles (`tile_r{R}_c{C}.png`
+    /// + `world.png`) over `spec.tile_grid`, instead of the single `map.png`.
+    /// Mirrors the CLI `--map-render-tiles`. Linework only (the deterministic path).
+    pub render_tiles: bool,
     /// SHA-256 cache the parsed spec.
     pub cache: bool,
 }
@@ -56,6 +60,7 @@ impl Default for MapTaskCfg {
             sd_loras: Vec::new(),
             urban_layout: None,
             erosion: None,
+            render_tiles: false,
             cache: false,
         }
     }
@@ -129,14 +134,24 @@ pub async fn run_map_task(
         spec.terrain.erosion = Some(e);
     }
     let style = Style::named(&cfg.style)?;
-    let out = out_dir.join("map.png");
+    // Tiled output: the deliverable is the sliced world (world.png + tiles), not
+    // the single map.png. Primary path reported back is world.png.
+    let out = if cfg.render_tiles {
+        out_dir.join("world.png")
+    } else {
+        out_dir.join("map.png")
+    };
     if dry_run {
         return Ok(out);
     }
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating map task out dir {}", out_dir.display()))?;
 
-    if cfg.paint {
+    if cfg.render_tiles {
+        let n = super::save_world_tiles(&spec, seed, style, out_dir)
+            .context("map task: tiled world render")?;
+        tracing::info!(target: "plakat", "map task: tiled world → {n} tile(s) + world.png");
+    } else if cfg.paint {
         let opts = SdOptions {
             model: cfg.sd_model.clone(),
             loras: cfg.resolved_loras(),
@@ -187,6 +202,60 @@ mod tests {
         let img = image::open(&out).unwrap();
         assert!(img.width() > 0 && img.height() > 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn coastal_cfg() -> MapTaskCfg {
+        MapTaskCfg {
+            spec_path: Some(PathBuf::from("corpus/map/coastal.spec.json")),
+            ..MapTaskCfg::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn coastal_terrain_features_flow_through_source_spec() {
+        // 1.14.0-B: the coastal terrain (peninsulas/inlets/fjords) added in 1.13.0
+        // lives in the spec, so any surface that loads a spec gets it. Verify the
+        // fields survive the load path the scenario/scripting/compile surfaces use.
+        let m = source_spec(&coastal_cfg()).await.unwrap();
+        assert_eq!(m.terrain.peninsulas.len(), 1, "peninsula survives load");
+        assert_eq!(m.terrain.inlets.len(), 1, "inlet survives load");
+        assert_eq!(m.terrain.fjords.len(), 2, "fjords survive load");
+        assert_eq!(m.terrain.fjords[0].id, "cold_arm");
+    }
+
+    #[tokio::test]
+    async fn coastal_spec_renders_linework() {
+        let dir = std::env::temp_dir().join("plakat-coastal-render-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = run_map_task(&coastal_cfg(), 7, Device::Cpu, &dir, false).await.unwrap();
+        assert!(out.exists(), "coastal linework render writes map.png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tiled_task_output_matches_shared_helper_byte_for_byte() {
+        // 1.14.0-B: the `map-render-tiles` task path and the CLI both dispatch the
+        // shared `save_world_tiles`, so their tiles are byte-identical (parity).
+        let base = std::env::temp_dir().join("plakat-tile-parity-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let via_task = base.join("task");
+        let via_helper = base.join("helper");
+
+        let cfg = MapTaskCfg { render_tiles: true, ..coastal_cfg() };
+        let out = run_map_task(&cfg, 7, Device::Cpu, &via_task, false).await.unwrap();
+        assert!(out.ends_with("world.png"), "tiled task reports world.png");
+
+        let spec = source_spec(&coastal_cfg()).await.unwrap();
+        let style = Style::named("parchment").unwrap();
+        let n = super::super::save_world_tiles(&spec, 7, style, &via_helper).unwrap();
+        assert_eq!(n, 4, "2x2 grid → 4 tiles");
+
+        for name in ["world.png", "tile_r0_c0.png", "tile_r0_c1.png", "tile_r1_c0.png", "tile_r1_c1.png"] {
+            let a = std::fs::read(via_task.join(name)).unwrap();
+            let b = std::fs::read(via_helper.join(name)).unwrap();
+            assert_eq!(a, b, "{name} byte-identical between task and shared helper");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

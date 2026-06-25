@@ -57,6 +57,8 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.map.erosion: {e}"))?;
     vm.register_inline("plakat.map.paint".to_string(), map::plakat_map_paint)
         .map_err(|e| anyhow!("registering plakat.map.paint: {e}"))?;
+    vm.register_inline("plakat.map.tiles".to_string(), map::plakat_map_tiles)
+        .map_err(|e| anyhow!("registering plakat.map.tiles: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)
