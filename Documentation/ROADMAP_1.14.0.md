@@ -45,7 +45,7 @@ already gets them — but two gaps remained:
       schema preamble with a coastal-language mapping rule, so "a fjord-cut northern coast"
       → `terrain.fjords` (benefits CLI prose, scenario prose, and the compile `map:` block).
 
-## C — proof corpus expansion (confidence)
+## C — proof corpus expansion (confidence) ✅
 
 The 1.12/1.13 features shipped with thin corpus coverage. Added committed drivers +
 showcases (and regenerate `GALLERY.md`):
@@ -61,8 +61,9 @@ showcases (and regenerate `GALLERY.md`):
       tiled world as `type: map` tasks; `coastal.sh` asserts byte-identical to the CLI.
 - [x] **delta fix (found via the coastal sample)** — see the `fix(map)` commit: deltas no
       longer cross the shore into open ocean.
-- [ ] **multiperson** — `--swap --pose` showcase exists; a `--composite` showcase is GPU
-      (non-deterministic) — driver entry pending a local render.
+- [x] **multiperson** — `--swap --pose` showcase (existing) + a `--composite --harmonize`
+      showcase (SDXL/Metal, `plakat-multiperson-42.png`); plus `coastal-tiles-montage.png`
+      visibly showing the four tiles reassembling into the map (per user request).
 
 ## D — carry / polish (opt-in)
 
