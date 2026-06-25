@@ -23,7 +23,7 @@
 
 #![allow(dead_code)] // face-swap is opt-in; some helpers are public for reuse.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, Module, VarBuilder};
 use std::path::Path;
