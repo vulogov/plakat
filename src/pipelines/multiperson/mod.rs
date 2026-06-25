@@ -12,6 +12,7 @@ pub mod analyser;
 pub mod placement;
 pub mod pose;
 pub mod prompt;
+pub mod scenario_task;
 
 pub use placement::{Distance, Facing, Placement, Position};
 pub use prompt::MultipersonPrompt;

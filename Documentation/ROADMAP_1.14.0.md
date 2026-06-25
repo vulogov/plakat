@@ -8,19 +8,22 @@ through the map track did at MAP-4 (`map/scenario_task.rs`, `scripting/words/map
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
-## A — multiperson everywhere (headline)
+## A — multiperson everywhere (headline) ✅
 
-- [ ] **`multiperson` as a scenario task** — a `type: multiperson` task in the scenario
-      HJSON: scene prompt + `people` (label → photo + `at` placement) + identity mode
-      (`swap` / `composite`, `pose`, `harmonize`, `scale`). The runner dispatches to
-      `pipelines::multiperson::run`, so a single in-process run can batch several
-      people-in-scene compositions (and reuse loaded weights). Model the schema on the CLI
-      flags; serde-default everything so existing scenarios are untouched.
-- [ ] **`plakat.multiperson` scripting word** — a Bund host word mirroring the scenario
-      task, so scripts can place specific people into generated scenes programmatically
-      (same dispatch path → byte-for-byte parity with the CLI, like the map words).
-- [ ] **Tutorial + parity check** — extend `MULTIPERSON_TUTORIAL.md` with the scenario +
-      scripting forms; a test asserts the three surfaces produce the same request.
+- [x] **`multiperson` as a scenario task** — `type: multiperson` task carries a
+      `multiperson:` block (scene prompt + `people` (persona name → `at`/`prompt`/`scale`)
+      + identity mode `swap`/`composite`/`pose`/`harmonize`/`restore-faces`). `people[]`
+      reference the top-level `personas:` list by name (resolved to photos, validated
+      before model load). Dispatches `pipelines::multiperson::run` via
+      `multiperson::scenario_task::build_request`; CacheEviction::DropAll on switch;
+      skips scene/weather + enhancement cross-refs (like map tasks). Serde-defaults
+      throughout. (`src/pipelines/multiperson/scenario_task.rs`, `cli/scenario.rs`)
+- [x] **`plakat.multiperson` scripting word** — `( spec-path -- handle )`: a self-
+      contained JSON spec (task fields + inline `personas` table) → the SAME builder →
+      `multiperson::run` → image handle. (`src/scripting/words/multiperson.rs`)
+- [x] **Tutorial + parity check** — `MULTIPERSON_TUTORIAL.md` covers all three surfaces;
+      `scenario_and_script_forms_build_identical_requests` + `defaults_mirror_the_cli_flags`
+      tests assert the surfaces produce the same request with CLI-matching defaults.
 
 ## B — new map features in the automation surfaces
 
