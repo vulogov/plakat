@@ -403,7 +403,8 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
 
     // MAP-6: the deterministic SD conditioning base (no GPU).
     if let Some(p) = &args.dump_conditioning {
-        let rstyle = map::render::Style::named(&args.style)?;
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?);
         map::render_sd::save_conditioning(&spec, args.seed, rstyle, p)?;
         println!("{}  conditioning → {}  (styled base, no labels, seed {})", style("✓").green(), p.display(), args.seed);
         did_dump = true;
@@ -411,7 +412,8 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
 
     // MAP-6: the painted SD render (GPU). img2img + Canny ControlNet over the base.
     if let Some(p) = &args.render_sd {
-        let rstyle = map::render::Style::named(&args.style)?;
+        let rstyle = map::render::Style::named(&args.style)?
+            .with_season(map::render::Season::parse(&args.season)?);
         // LoRA resolution: explicit --map-sd-lora wins (`none` → none); else the
         // model's default (fantasy-map for SDXL-family, none otherwise).
         let loras: Vec<String> = if args.sd_lora.is_empty() {
