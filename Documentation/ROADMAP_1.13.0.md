@@ -16,10 +16,10 @@ The real ceiling on this 24 GB box is unified memory; these are the concrete bit
       trainers on 24 GB (they OOM at the first backward). candle has no native support;
       prototype manual detach + recompute on one denoiser and measure. If infeasible,
       document the dead end so we stop re-attempting it.
-- [ ] **Cap render size on Metal** — the default `generate` size spikes Metal's
+- [x] **Cap render size on Metal** — DONE (warn on >1MP renders for Metal; `imaging::sizes::warn_large_for_metal`). Original: — the default `generate` size spikes Metal's
       single-buffer allocation on SD 1.5 / large SDXL and can OOM the host. Auto-cap or
       warn, or transparently tile large single-pass renders.
-- [ ] **OOM-guard tuning** — the watchdog can fire on a transient first-backward / decode
+- [x] **OOM-guard tuning** — DONE (sustained window 3→5 inference / 12 training; `PLAKAT_OOM_GUARD_SUSTAINED`). Original: — the watchdog can fire on a transient first-backward / decode
       spike the OS would otherwise absorb via swap. Longer sustained window, or a
       "training vs inference" sensitivity.
 - [ ] **Memory-bound SD3.5 DreamBooth** / `regional.sh sdxl|sd35` renders — unblocked once
@@ -34,7 +34,7 @@ generated figure. These items push that ceiling:
 - [ ] **Face-restore / detail pass after swap** — small scene faces lose detail when the
       128² swap is composited back down. An ADetailer-style high-res face refine (the
       pieces exist) would make crowd faces read more clearly.
-- [ ] **Child / body-scale skeletons for `--pose`** — the synthetic skeleton is
+- [x] **Child / body-scale skeletons for `--pose`** — DONE (`--scale LABEL:0.7`). Original: — the synthetic skeleton is
       adult-proportioned, so a child persona renders adult-sized. Scale per a
       persona age/build hint.
 - [ ] **FaceID in the inpaint identity path** — research puts FaceID at ~75–85% likeness vs
