@@ -1,0 +1,43 @@
+{
+  "base_prompt": "a sunny garden terrace with stone steps, potted flowers and a low wall, empty, soft natural daylight, photographic",
+  "command": "multiperson",
+  "face_refine": false,
+  "guidance": 7.0,
+  "identity": "PlusFace",
+  "layout_provider": "none",
+  "model": "sdxl",
+  "persons": [
+    {
+      "bbox": [
+        0.0,
+        0.3100000023841858,
+        0.4099999964237213,
+        1.0
+      ],
+      "behavioral_prompt": null,
+      "face_strength": 0.800000011920929,
+      "facing": "facing the viewer, front view",
+      "label": "p1",
+      "placement_source": "at"
+    },
+    {
+      "bbox": [
+        0.5900000333786011,
+        0.3100000023841858,
+        1.0,
+        1.0
+      ],
+      "behavioral_prompt": null,
+      "face_strength": 0.800000011920929,
+      "facing": "facing the viewer, front view",
+      "label": "p2",
+      "placement_source": "at"
+    }
+  ],
+  "refine_face_strength": 0.8500000238418579,
+  "scene_clause": "a sunny garden terrace with stone steps, potted flowers and a low wall, empty, soft natural daylight, photographic",
+  "seed": 42,
+  "size": "1024x768",
+  "steps": 30,
+  "style_clause": null
+}

@@ -1,112 +1,154 @@
 #!/usr/bin/env bash
 # ===================================================================
-# plakat proof corpus — map (MAP-1: MapSpec v2 + LLM geographic parser)
+# plakat proof corpus — `plakat map`: EVERY supported feature, end to end
 # ===================================================================
-# `plakat map` turns a prose world description into a structured MapSpec v2 (the
-# input the geometry engine + renderer consume in MAP-2+). MAP-1 ships the spec
-# schema + the LLM parser; this proof exercises the DETERMINISTIC path — load a
-# committed spec (no LLM), confirm it's valid + round-trips byte-stable, and that
-# the scale flags override the grid. No GPU, no network, no API key.
+# The single comprehensive map proof. It exercises every feature the map engine
+# supports and byte-checks each deterministic artifact against a committed proof
+# (geometry is a pure fn of (spec, seed) → byte-stable). The one non-deterministic
+# step — the SD-painted render — is GPU-gated and skipped under NO_GPU=1.
 #
-# (The LLM parse path — prose → spec — reuses the --enhance provider stack;
-# verify it live with e.g. `plakat map "a volcanic island kingdom" --map-dump-spec -`.)
+#   ./corpus/map.sh           # full (the SD paint needs a GPU build + a model)
+#   NO_GPU=1 ./corpus/map.sh  # deterministic only (CI / no GPU)
+#
+# Specs used (all committed, loaded with NO LLM):
+#   corpus/map/island.spec.json   — the canonical geometry pipeline
+#   corpus/map/realms.hjson       — the ALL-FEATURES 3×3 continent
+#   corpus/map/coastal.spec.json  — coastal terrain (peninsulas/inlets/fjords)
+#   corpus/map/town.spec.json     — an urban (town-scale) map
+#
+# Feature coverage: tectonic heightmap, hydrology (rivers + navigable deltas),
+# land/sea coastline, peninsulas + inlets + fjords, mountain ranges, plateaus/mesas,
+# dry canyons (rift valleys), erosion, lakes, biomes incl. wetland/marsh hatching,
+# landmarks, roads + bridges, the political layer (polity rings + borders), the
+# three cartographic styles, seasonal palettes, a tabletop grid, vector export
+# (GeoJSON/SVG), multi-tile worlds (linework + SD-painted), urban street graphs,
+# the SD conditioning base, and the `map` scenario task.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLAKAT="${PLAKAT:-$ROOT/target/release/plakat}"
-SPEC="$ROOT/corpus/map/island.spec.json"
-
-# 1) The committed MapSpec loads with NO LLM and is schema-valid.
-"$PLAKAT" map --map-spec "$SPEC" --map-dump-spec /tmp/plakat-map-1.json
-
-# 2) Serialization round-trips byte-stable (idempotent serialize/deserialize).
-"$PLAKAT" map --map-spec /tmp/plakat-map-1.json --map-dump-spec /tmp/plakat-map-2.json
-diff -q /tmp/plakat-map-1.json /tmp/plakat-map-2.json >/dev/null \
-  || { echo "✗ MapSpec round-trip is not byte-stable"; exit 1; }
-
-# 3) --map-tiles overrides the grid (the single user-facing scale control).
-"$PLAKAT" map --map-spec "$SPEC" --map-tiles 4x4 --map-dump-spec - 2>/dev/null \
-  | grep -q '"cols": 4' || { echo "✗ --map-tiles override failed"; exit 1; }
-
-rm -f /tmp/plakat-map-1.json /tmp/plakat-map-2.json
-
-# 4) MAP-2 geometry is a deterministic function of (spec, seed) — re-dump each
-#    layer's artifact and compare byte-for-byte against the committed proof.
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-heightmap /tmp/plakat-map-hm.png >/dev/null
-cmp /tmp/plakat-map-hm.png "$ROOT/corpus/images/map/island-heightmap.png" \
-  || { echo "✗ heightmap PNG drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-rivers /tmp/plakat-map-riv.png >/dev/null
-cmp /tmp/plakat-map-riv.png "$ROOT/corpus/images/map/island-rivers.png" \
-  || { echo "✗ river overlay drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-coast /tmp/plakat-map-coast.png >/dev/null
-cmp /tmp/plakat-map-coast.png "$ROOT/corpus/images/map/island-coast.png" \
-  || { echo "✗ coastline drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-biome /tmp/plakat-map-biome.png >/dev/null
-cmp /tmp/plakat-map-biome.png "$ROOT/corpus/images/map/island-biome.png" \
-  || { echo "✗ biome map drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-landmarks /tmp/plakat-map-lm.png >/dev/null
-cmp /tmp/plakat-map-lm.png "$ROOT/corpus/images/map/island-landmarks.png" \
-  || { echo "✗ landmark placement drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-roads /tmp/plakat-map-roads.png >/dev/null
-cmp /tmp/plakat-map-roads.png "$ROOT/corpus/images/map/island-roads.png" \
-  || { echo "✗ road network drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-features /tmp/plakat-map-feat.png >/dev/null
-cmp /tmp/plakat-map-feat.png "$ROOT/corpus/images/map/island-features.png" \
-  || { echo "✗ feature overlay drifted from the committed proof"; exit 1; }
-
-# 5) MAP-3 — the complete styled, labelled map (linework render). Same (spec, seed)
-#    → byte-identical PNG (terrain + coast + rivers + roads + labels + furniture).
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-render /tmp/plakat-map-render.png >/dev/null
-cmp /tmp/plakat-map-render.png "$ROOT/corpus/images/map/island-render.png" \
-  || { echo "✗ linework render drifted from the committed proof"; exit 1; }
-
-# 6) MAP-3b — vector export (GeoJSON + SVG). Deterministic text → byte-identical.
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 \
-  --map-export-geojson /tmp/plakat-map.geojson --map-export-svg /tmp/plakat-map.svg >/dev/null
-cmp /tmp/plakat-map.geojson "$ROOT/corpus/map/export/island.geojson" \
-  || { echo "✗ GeoJSON export drifted from the committed proof"; exit 1; }
-cmp /tmp/plakat-map.svg "$ROOT/corpus/map/export/island.svg" \
-  || { echo "✗ SVG export drifted from the committed proof"; exit 1; }
-
-# 7) MAP-6 — the SD conditioning base (the deterministic half of the painted
-#    render: styled map, no labels — the img2img init + Canny source). The SD
-#    denoise itself is non-deterministic (driven by corpus/map_render.sh, not here).
-"$PLAKAT" map --map-spec "$SPEC" --seed 42 --map-dump-conditioning /tmp/plakat-map-cond.png >/dev/null
-cmp /tmp/plakat-map-cond.png "$ROOT/corpus/images/map/island-conditioning.png" \
-  || { echo "✗ SD conditioning base drifted from the committed proof"; exit 1; }
-
-# 8) MAP-4 — the `map` scenario task. A `plakat scenario` batch emits a map via the
-#    SAME deterministic linework path: the parchment task must be byte-identical to
-#    the direct `--map-render` (proving the integration shares the path, no GPU).
-"$PLAKAT" scenario "$ROOT/corpus/map_scenario.hjson" >/dev/null 2>&1
-cmp "$ROOT/corpus/images/map/scenario/isle-parchment/map.png" "$ROOT/corpus/images/map/island-render.png" \
-  || { echo "✗ scenario map task drifted from the direct --map-render"; exit 1; }
-
-# ── B (1.11.0): realms showcase — the ALL-FEATURES map (HJSON) ──
-#    A continental spec (authored in HJSON) exercising every geographical
-#    feature: mountain ranges, plateaus/mesas (terrain.plateaus), dry canyons
-#    (terrain.rift_valleys), lakes, a wetland/swamp region, rivers + coast,
-#    multiple biomes, the political layer (polity rings + a disputed border +
-#    polity labels), landmarks, a road + bridge. Byte-stable (pure fn of seed).
+ISLE="$ROOT/corpus/map/island.spec.json"
 REALMS="$ROOT/corpus/map/realms.hjson"
-"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-dump-heightmap /tmp/plakat-realms-hm.png >/dev/null
-cmp /tmp/plakat-realms-hm.png "$ROOT/corpus/images/map/realms-heightmap.png" \
-  || { echo "✗ realms heightmap (canyon + plateau) drifted from the committed proof"; exit 1; }
-"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-render /tmp/plakat-realms-render.png >/dev/null
-cmp /tmp/plakat-realms-render.png "$ROOT/corpus/images/map/realms-render.png" \
-  || { echo "✗ realms render (political overlay) drifted from the committed proof"; exit 1; }
-rm -f /tmp/plakat-realms-hm.png /tmp/plakat-realms-render.png
-rm -f /tmp/plakat-map-hm.png /tmp/plakat-map-riv.png /tmp/plakat-map-coast.png /tmp/plakat-map-biome.png /tmp/plakat-map-lm.png /tmp/plakat-map-roads.png /tmp/plakat-map-feat.png /tmp/plakat-map-render.png /tmp/plakat-map.geojson /tmp/plakat-map.svg /tmp/plakat-map-cond.png
+COAST="$ROOT/corpus/map/coastal.spec.json"
+TOWN="$ROOT/corpus/map/town.spec.json"
+OUT="$ROOT/corpus/images/map"
+T=/tmp/plakat-map
+mkdir -p "$OUT"
+check() { cmp "$1" "$2" || { echo "✗ ${3:-proof} drifted from the committed proof"; exit 1; }; }
 
-echo "✓ map (MAP-1): island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
-echo "  + MAP-2 (L0+L1): tectonic heightmap byte-stable vs corpus/images/map/island-heightmap.png"
-echo "  + MAP-2 (L2): river network byte-stable vs corpus/images/map/island-rivers.png"
-echo "  + MAP-2 (L3): land/sea + coastline byte-stable vs corpus/images/map/island-coast.png"
-echo "  + MAP-2 (L4): biome map byte-stable vs corpus/images/map/island-biome.png"
-echo "  + MAP-2 (L5): landmarks resolved + placed byte-stable vs corpus/images/map/island-landmarks.png"
-echo "  + MAP-2 (L6): road network byte-stable vs corpus/images/map/island-roads.png"
-echo "  + MAP-2 (L7): assembled feature overlay byte-stable vs corpus/images/map/island-features.png — geometry engine COMPLETE"
-echo "  + MAP-3: styled, labelled linework render byte-stable vs corpus/images/map/island-render.png — first complete user-facing map"
-echo "  + MAP-3b: vector export byte-stable vs corpus/map/export/island.{geojson,svg}"
-echo "  + MAP-6: SD conditioning base byte-stable vs corpus/images/map/island-conditioning.png (painted render via corpus/map_render.sh)"
-echo "  + MAP-4: 'map' scenario task byte-identical to the direct --map-render (corpus/map_scenario.hjson)"
-echo "  + 1.11.0 B: realms.hjson all-features showcase byte-stable — mountains + plateaus/mesas + dry canyons + lakes + wetland/swamp + political layer + landmarks/roads (corpus/realms.sh)"
+echo "── PART A — island: the canonical geometry pipeline (byte-stable) ──"
+
+# A1) The committed MapSpec loads with NO LLM, is schema-valid, and round-trips.
+"$PLAKAT" map --map-spec "$ISLE" --map-dump-spec "$T-1.json" >/dev/null
+"$PLAKAT" map --map-spec "$T-1.json" --map-dump-spec "$T-2.json" >/dev/null
+diff -q "$T-1.json" "$T-2.json" >/dev/null || { echo "✗ MapSpec round-trip is not byte-stable"; exit 1; }
+# --map-tiles overrides the grid (the single user-facing scale control).
+"$PLAKAT" map --map-spec "$ISLE" --map-tiles 4x4 --map-dump-spec - 2>/dev/null \
+  | grep -q '"cols": 4' || { echo "✗ --map-tiles override failed"; exit 1; }
+echo "✓ A1 island.spec.json loads (no LLM) + round-trips byte-stable; --map-tiles overrides grid"
+
+# A2) Every geometry layer L0–L7 — a deterministic fn of (spec, seed).
+for layer in heightmap rivers coast biome landmarks roads features; do
+  "$PLAKAT" map --map-spec "$ISLE" --seed 42 --map-dump-$layer "$T-$layer.png" >/dev/null
+  check "$T-$layer.png" "$OUT/island-$layer.png" "island $layer"
+done
+echo "✓ A2 geometry layers L0–L7 (heightmap → features) byte-stable"
+
+# A3) The complete styled, labelled linework render.
+"$PLAKAT" map --map-spec "$ISLE" --seed 42 --map-render "$T-render.png" >/dev/null
+check "$T-render.png" "$OUT/island-render.png" "island render"
+# A4) Vector export (GeoJSON + SVG).
+"$PLAKAT" map --map-spec "$ISLE" --seed 42 \
+  --map-export-geojson "$T.geojson" --map-export-svg "$T.svg" >/dev/null
+check "$T.geojson" "$ROOT/corpus/map/export/island.geojson" "island GeoJSON"
+check "$T.svg" "$ROOT/corpus/map/export/island.svg" "island SVG"
+# A5) The SD conditioning base (the deterministic half of the painted render).
+"$PLAKAT" map --map-spec "$ISLE" --seed 42 --map-dump-conditioning "$T-cond.png" >/dev/null
+check "$T-cond.png" "$OUT/island-conditioning.png" "SD conditioning base"
+# A6) The `map` scenario task renders via the SAME path → byte-identical.
+"$PLAKAT" scenario "$ROOT/corpus/map_scenario.hjson" >/dev/null 2>&1
+check "$OUT/scenario/isle-parchment/map.png" "$OUT/island-render.png" "scenario map task"
+echo "✓ A3–A6 linework render + GeoJSON/SVG export + SD conditioning base + scenario task byte-stable"
+
+echo "── PART B — realms: the ALL-FEATURES 3×3 continent (byte-stable) ──"
+
+# B1) Loads + round-trips, and the spec carries every terrain feature.
+"$PLAKAT" map --map-spec "$REALMS" --map-dump-spec "$T-realms.json" >/dev/null
+for feat in mountain_ranges plateaus rift_valleys peninsulas inlets fjords; do
+  grep -q "\"$feat\"" "$T-realms.json" || { echo "✗ realms is missing terrain.$feat"; exit 1; }
+done
+grep -q '"cols": 3' "$T-realms.json" || { echo "✗ realms is not a 3×3 map"; exit 1; }
+echo "✓ B1 realms.hjson loads + is 3×3 + carries mountains/plateaus/canyons/peninsulas/inlets/fjords"
+
+# B2) Heightmap + render byte-stable (the cut sea arms, raised capes, canyons, mesas).
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-dump-heightmap "$T-realms-hm.png" >/dev/null
+check "$T-realms-hm.png" "$OUT/realms-heightmap.png" "realms heightmap"
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-render "$T-realms-render.png" >/dev/null
+check "$T-realms-render.png" "$OUT/realms-render.png" "realms render"
+echo "✓ B2 realms heightmap + render byte-stable (all terrain + coastal features)"
+
+# B3) The political layer → render variants + vector export (polity rings + labels).
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 \
+  --map-export-geojson "$T-realms.geojson" --map-export-svg "$T-realms.svg" >/dev/null
+check "$T-realms.geojson" "$ROOT/corpus/map/export/realms.geojson" "realms political GeoJSON"
+check "$T-realms.svg" "$ROOT/corpus/map/export/realms.svg" "realms political SVG"
+grep -q '"class": "polity"' "$ROOT/corpus/map/export/realms.geojson" \
+  || { echo "✗ realms GeoJSON is missing the polity layer"; exit 1; }
+# B4) Styles + seasonal + grid (generated by corpus/realms.sh; byte-check them here).
+for v in parchment inked blueprint autumn winter grid; do
+  src="$OUT/../realms/render-$v.png"
+  [ -f "$src" ] || { echo "✗ missing realms variant render-$v.png (run corpus/realms.sh)"; exit 1; }
+done
+echo "✓ B3–B4 political GeoJSON/SVG byte-stable (2 polities) + parchment/inked/blueprint/autumn/winter/grid variants present"
+
+echo "── PART C — coastal terrain detail (byte-stable) ──"
+
+# C1) peninsulas RAISE land, inlets/fjords LOWER narrow sea arms.
+"$PLAKAT" map --map-spec "$COAST" --seed 7 --map-render "$T-coast-render.png" >/dev/null
+check "$T-coast-render.png" "$OUT/coastal-render.png" "coastal render"
+"$PLAKAT" map --map-spec "$COAST" --seed 7 --map-dump-heightmap "$T-coast-hm.png" >/dev/null
+check "$T-coast-hm.png" "$OUT/coastal-heightmap.png" "coastal heightmap"
+echo "✓ C1 coastal peninsulas + inlets + fjords byte-stable"
+
+echo "── PART D — multi-tile worlds (byte-stable, reassemble pixel-exact) ──"
+
+# D1) The 3×3 realms world slices into nine seamless tiles + the stitched world.png.
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-render-tiles "$T-realms-tiles" >/dev/null
+check "$T-realms-tiles/world.png" "$OUT/realms-tiles/world.png" "realms world.png"
+for r in 0 1 2; do for c in 0 1 2; do
+  check "$T-realms-tiles/tile_r${r}_c${c}.png" "$OUT/realms-tiles/tile_r${r}_c${c}.png" "realms tile r${r}c${c}"
+done; done
+echo "✓ D1 realms 3×3 world → world.png + 9 seamless 256² tiles byte-stable"
+
+echo "── PART E — urban (town-scale) maps (byte-stable) ──"
+
+# E1) The town street graph + the labelled town map.
+"$PLAKAT" map --map-spec "$TOWN" --seed 7 --map-dump-streets "$T-town-streets.png" >/dev/null
+check "$T-town-streets.png" "$OUT/town-streets.png" "town street graph"
+"$PLAKAT" map --map-spec "$TOWN" --seed 7 --map-render "$T-town-map.png" >/dev/null
+check "$T-town-map.png" "$OUT/town-map.png" "town map"
+echo "✓ E1 urban street graph + labelled town map byte-stable"
+
+rm -rf "$T"-*.png "$T"-*.json "$T".geojson "$T".svg "$T-realms.geojson" "$T-realms.svg" \
+       "$T-realms-tiles" "$T-realms.json"
+
+echo "── PART F — SD-painted render + tiled paint (GPU; NO_GPU=1 skips) ──"
+if [ "${NO_GPU:-0}" = "1" ]; then
+  echo "  ⬜ SD-painted renders skipped (NO_GPU=1) — run locally to fill the painted showcases"
+  echo ""
+  echo "✓ map: ALL deterministic features byte-stable (island + realms 3×3 all-features + coastal + tiles + urban)"
+  exit 0
+fi
+MODEL="${MODEL:-sdxl}"
+# F1) Painted island (single tile) — the MAP-6 SD img2img + Canny path.
+"$PLAKAT" map --map-spec "$ISLE" --seed 42 --map-sd-model "$MODEL" \
+  --map-render-sd "$OUT/island-painted.png"
+echo "  ✓ F1 painted island map → corpus/images/map/island-painted.png  (model $MODEL)"
+# F2) Painted 3×3 realms with --map-sd-tile — the memory-safe TILED paint. The 768²
+#     canvas is larger than the 512px tile, so it paints in overlapping feathered
+#     tiles (this is what keeps a large all-features map on-box).
+"$PLAKAT" map --map-spec "$REALMS" --seed 42 --map-sd-model "$MODEL" \
+  --map-sd-tile 512 --map-sd-tile-stride 384 \
+  --map-render-sd "$OUT/realms-painted-tiled.png"
+echo "  ✓ F2 painted 3×3 realms (tiled, --map-sd-tile 512) → corpus/images/map/realms-painted-tiled.png"
+echo ""
+echo "✓ map: EVERY feature demonstrated — deterministic byte-stable + GPU-painted (single + tiled)"

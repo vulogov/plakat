@@ -16,10 +16,13 @@
     version: 2
     name: The Sundered Realms
     scale_tier: 3
+    // 3×3 tile grid → a 768×768 working canvas (3 × 256 px/tile). The linework
+    // world slices into nine seamless 256² tiles (corpus/map.sh), and the SD
+    // painted path tiles it with `--map-sd-tile` so it fits in memory.
     tile_grid:
     {
-        cols: 2
-        rows: 2
+        cols: 3
+        rows: 3
     }
     climate: continental
     era: iron age
@@ -90,6 +93,49 @@
                 }
                 orientation: north-south
                 length_fraction: 0.6
+                size: deep
+            }
+        ]
+
+        // Coastal shaping on the southern (sea) coast — peninsulas RAISE land
+        // into the sea, inlets/fjords LOWER narrow sea arms (fjords deeper).
+        peninsulas:
+        [
+            {
+                id: sunder_cape
+                name: Sunder Cape
+                anchor:
+                {
+                    kind: cardinal
+                    position: southeast
+                }
+                orientation: south
+                size: broad
+            }
+        ]
+        inlets:
+        [
+            {
+                id: gull_bay
+                name: Gull Bay
+                anchor:
+                {
+                    kind: cardinal
+                    position: south
+                }
+                size: moderate
+            }
+        ]
+        fjords:
+        [
+            {
+                id: the_deepcut
+                name: The Deepcut
+                anchor:
+                {
+                    kind: cardinal
+                    position: southwest
+                }
                 size: deep
             }
         ]
