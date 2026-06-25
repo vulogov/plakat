@@ -241,6 +241,19 @@ pub struct TerrainSpec {
     pub plateaus: Vec<NamedRegion>,
     #[serde(default)]
     pub rift_valleys: Vec<NamedRegion>,
+    /// Land spits jutting from the coast into the sea. `orientation` = the
+    /// direction the spit runs; `length_fraction` = how far it reaches; `size`
+    /// (`"narrow"|"moderate"|"broad"`) = its width.
+    #[serde(default)]
+    pub peninsulas: Vec<NamedRegion>,
+    /// Narrow arms of sea cutting into the land (bays / coves). `size`
+    /// (`"shallow"|"moderate"|"deep"`) controls how far below sea level.
+    #[serde(default)]
+    pub inlets: Vec<NamedRegion>,
+    /// Deep, narrow, steep-walled sea inlets (glacial fjords) — like inlets but
+    /// narrower and deeper, leaving high walls.
+    #[serde(default)]
+    pub fjords: Vec<NamedRegion>,
     /// Erosion / irregularity strength for natural features: `0.0` = smooth/idealized
     /// (circular coasts, oval ranges), `1.0` = natural (default), `>1.0` = rugged
     /// (ragged coasts, wandering ridgelines). `None` = the 1.0 default.
