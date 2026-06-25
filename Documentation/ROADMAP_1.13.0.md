@@ -56,10 +56,12 @@ multi-person-in-one-image stays frontier. Not scheduled; here so the option isn'
 
 ## D — carried map / debt (off-track, opt-in)
 
+- [x] **Coastal terrain — peninsulas, inlets, fjords** (NEW): `terrain.{peninsulas,inlets,fjords}`. DONE.
+
 - [ ] **Multi-tile world maps** — stitch adjacent tiles into a seamless world map.
 - [x] River **deltas** at navigable mouths; **marsh hatching** for Wetland regions. DONE.
-- [~] Seasonal palette on the **painted** (`--map-render-sd`) path DONE; political layer in
-      GeoJSON / SVG export still open.
+- [x] Seasonal palette on the **painted** (`--map-render-sd`) path; political layer in
+      GeoJSON / SVG export. DONE.
 
 ## Notes
 
