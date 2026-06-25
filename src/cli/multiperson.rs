@@ -47,6 +47,11 @@ pub struct MultipersonArgs {
     #[arg(long = "face-strength", value_name = "LABEL:F")]
     pub face_strength: Vec<String>,
 
+    /// Per-persona figure-height scale for `--pose`: `label:0.7` (1.0 = adult,
+    /// ~0.7 = a child/teen so they render shorter, not adult-sized). Repeatable.
+    #[arg(long = "scale", value_name = "LABEL:F")]
+    pub scale: Vec<String>,
+
     /// Global aesthetic clause (sent to the enhancer, never the scene analyser).
     #[arg(long)]
     pub style: Option<String>,
@@ -213,6 +218,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
             face_strength: None,
             face_bbox: None,
             face_landmarks: None,
+            scale: None,
         });
     }
 
@@ -249,6 +255,15 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
             bail!("face-strength {spec:?}: must be in [0,1]");
         }
         people[i].face_strength = Some(f);
+    }
+    for spec in &args.scale {
+        let (label, v) = split_label(spec, "scale")?;
+        let i = find(&label, &mut people, "scale")?;
+        let f: f32 = v.parse().with_context(|| format!("scale {spec:?}: not a number"))?;
+        if !(0.4..=1.0).contains(&f) {
+            bail!("scale {spec:?}: must be in [0.4, 1.0] (1.0 = adult height, ~0.7 = child)");
+        }
+        people[i].scale = Some(f);
     }
 
     // ── size ──
