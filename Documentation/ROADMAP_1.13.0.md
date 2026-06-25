@@ -57,9 +57,9 @@ multi-person-in-one-image stays frontier. Not scheduled; here so the option isn'
 ## D — carried map / debt (off-track, opt-in)
 
 - [ ] **Multi-tile world maps** — stitch adjacent tiles into a seamless world map.
-- [ ] River **deltas** at navigable mouths; **marsh hatching** for Wetland regions.
-- [ ] Seasonal palette on the **painted** (`--map-render-sd`) path; political layer in
-      GeoJSON / SVG export.
+- [x] River **deltas** at navigable mouths; **marsh hatching** for Wetland regions. DONE.
+- [~] Seasonal palette on the **painted** (`--map-render-sd`) path DONE; political layer in
+      GeoJSON / SVG export still open.
 
 ## Notes
 
