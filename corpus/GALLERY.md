@@ -1,6 +1,6 @@
 # plakat proof corpus
 
-128 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+142 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -20,6 +20,11 @@
   </tr>
   <tr>
     <td width="33%"><img src="images/realms/coast.png" alt=""></td>
+    <td width="33%"><img src="images/map/coastal-coast.png" alt=""></td>
+    <td width="33%"><img src="images/map/coastal-heightmap.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/map/coastal-render.png" alt=""></td>
     <td width="33%"><img src="images/segment/depth-foreground.png" alt=""></td>
     <td width="33%"><img src="images/realms/features.png" alt=""></td>
   </tr>
@@ -59,154 +64,169 @@
     <td width="33%"><img src="images/embedding-train/sd21/locomotive.png" alt="a sgwin steam locomotive"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/scenario/coastal/map.png" alt=""></td>
     <td width="33%"><img src="images/map/scenario/isle-parchment/map.png" alt=""></td>
     <td width="33%"><img src="images/map/scenario/isle-blueprint/map.png" alt=""></td>
-    <td width="33%"><img src="images/compile/mireth-tera.png" alt="arcane glow, magical atmosphere, an elven sorceress in deep blue robes holding a crystal staff, a moonlit library tower., character portrait, full body"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/compile/mireth-tera.png" alt="arcane glow, magical atmosphere, an elven sorceress in deep blue robes holding a crystal staff, a moonlit library tower., character portrait, full body"></td>
     <td width="33%"><img src="images/compile/oakshield-tera.png" alt="natural forest lighting, a grizzled human ranger in green leathers with a longbow, a misty pine forest at dawn., character portrait, full body"></td>
     <td width="33%"><img src="images/animate/ocean_waves/animation.gif" alt="ocean waves crashing on a rocky shore at sunset, cinematic, golden light"></td>
-    <td width="33%"><img src="images/genres/anime/plakat-7.png" alt="anime style, a lone samurai standing under a blossoming cherry tree, detailed anime illustration, vibrant flat colors, clean cel shading"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/genres/anime/plakat-7.png" alt="anime style, a lone samurai standing under a blossoming cherry tree, detailed anime illustration, vibrant flat colors, clean cel shading"></td>
     <td width="33%"><img src="images/dreambooth/plakat-7.png" alt="a sks fox plush toy riding a skateboard down a neon city street at night"></td>
     <td width="33%"><img src="images/artefact/valley_multi/plakat-11.png" alt="anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, Makoto Shinkai style"></td>
-    <td width="33%"><img src="images/artefact/cli-multi/plakat-11.png" alt="anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/artefact/cli-multi/plakat-11.png" alt="anime landscape illustration, a wide alpine valley, grassy meadow, distant mountains, clear blue sky, golden hour, cel-shaded, vibrant colors, detailed scenery, Makoto Shinkai style"></td>
     <td width="33%"><img src="images/embedding/baseline/plakat-11.png" alt="full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus"></td>
     <td width="33%"><img src="images/embedding/with-easynegative/plakat-11.png" alt="full-body photo of a woman standing in a sunlit garden, detailed hands, natural pose, sharp focus"></td>
-    <td width="33%"><img src="images/artefact/lake_scene/plakat-12.png" alt="anime landscape illustration, a calm mountain lake at sunset, forested far shore, warm reflective water, cel-shaded, vibrant colors, Makoto Shinkai style"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/artefact/lake_scene/plakat-12.png" alt="anime landscape illustration, a calm mountain lake at sunset, forested far shore, warm reflective water, cel-shaded, vibrant colors, Makoto Shinkai style"></td>
     <td width="33%"><img src="images/civitai/plakat-42.png" alt="an ancient cathedral shrouded in mist, towering spires, eldritch atmosphere, intricate detail"></td>
     <td width="33%"><img src="images/weather-scene/day_clear/plakat-42.png" alt=""></td>
-    <td width="33%"><img src="images/sd15/sd15_landscape/plakat-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd15/sd15_landscape/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/sdxl/sdxl_landscape/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/style-sd15/harbour/plakat-42.png" alt="a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration"></td>
-    <td width="33%"><img src="images/style-sd15/winter-village/plakat-42.png" alt="a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/style-sd15/winter-village/plakat-42.png" alt="a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration"></td>
     <td width="33%"><img src="images/style-sd15/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
     <td width="33%"><img src="images/looks/oil-painting/plakat-42.png" alt="style, oil paint, impasto, chiaroscuro, rembrandt, oil painting, thick impasto brushstrokes, a stone cottage by a forest stream, on canvas texture, classical oil painting technique, rich pigments"></td>
-    <td width="33%"><img src="images/looks/charcoal/plakat-42.png" alt="chrcl_mstr, charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/looks/charcoal/plakat-42.png" alt="chrcl_mstr, charcoal drawing, monochromatic, dramatic chiaroscuro, a stone cottage by a forest stream, on textured paper, smudged shading, expressive marks"></td>
     <td width="33%"><img src="images/looks/gouache/plakat-42.png" alt="Gouache, gouache painting, opaque matte colors, a stone cottage by a forest stream, on illustration board, flat areas of color, illustrative"></td>
     <td width="33%"><img src="images/looks/ink-wash/plakat-42.png" alt="Ivy_ink, ink wash painting, sumi-e style, monochromatic ink on rice paper, a stone cottage by a forest stream, traditional brush strokes, atmospheric negative space"></td>
-    <td width="33%"><img src="images/looks/chalk-pastel/plakat-42.png" alt="chalk pastel drawing, soft pastel strokes, a stone cottage by a forest stream, on textured paper, vibrant matte pigments, dusty surface"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/looks/chalk-pastel/plakat-42.png" alt="chalk pastel drawing, soft pastel strokes, a stone cottage by a forest stream, on textured paper, vibrant matte pigments, dusty surface"></td>
     <td width="33%"><img src="images/looks/linocut/plakat-42.png" alt="linocut print, bold carved lines, high contrast, a stone cottage by a forest stream, limited palette, traditional relief print, visible carving marks"></td>
     <td width="33%"><img src="images/looks/watercolor/plakat-42.png" alt="watercolor painting, soft transparent washes, a stone cottage by a forest stream, on cold-pressed paper, traditional watercolor techniques, visible paper texture"></td>
-    <td width="33%"><img src="images/looks/pencil/plakat-42.png" alt="pencil drawing, fine graphite lines, hatching and cross-hatching, a stone cottage by a forest stream, on sketchbook paper, traditional pencil sketch, detailed line work"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/looks/pencil/plakat-42.png" alt="pencil drawing, fine graphite lines, hatching and cross-hatching, a stone cottage by a forest stream, on sketchbook paper, traditional pencil sketch, detailed line work"></td>
     <td width="33%"><img src="images/style-sdxl/harbour/plakat-42.png" alt="a fishing harbour with wooden boats and distant hills, wcstyle watercolour painting illustration"></td>
     <td width="33%"><img src="images/style-sdxl/winter-village/plakat-42.png" alt="a snow-covered mountain village among pines at dusk, wcstyle watercolour painting illustration"></td>
-    <td width="33%"><img src="images/style-sdxl/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/style-sdxl/river-orchard/plakat-42.png" alt="a quiet riverside orchard with a wooden footbridge in autumn, wcstyle watercolour painting illustration"></td>
     <td width="33%"><img src="images/train/plakat-42.png" alt="wcstyle watercolour painting illustration, a quiet mountain village beside a lake at dawn"></td>
     <td width="33%"><img src="images/dreambooth/plakat-42.png" alt="a sks fox plush toy sitting on a snowy mountain peak at sunset, dramatic lighting"></td>
-    <td width="33%"><img src="images/regional/plakat-42.png" alt="a vast natural landscape at golden hour, cinematic wide shot, ultra-detailed, sharp focus"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/regional/plakat-42.png" alt="a vast natural landscape at golden hour, cinematic wide shot, ultra-detailed, sharp focus"></td>
     <td width="33%"><img src="images/sd21/sd21_landscape/plakat-42.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/day_storm/plakat-43.png" alt=""></td>
-    <td width="33%"><img src="images/sd15/sd15_portrait/plakat-43.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd15/sd15_portrait/plakat-43.png" alt=""></td>
     <td width="33%"><img src="images/sdxl/sdxl_portrait/plakat-43.png" alt=""></td>
     <td width="33%"><img src="images/sd21/sd21_portrait/plakat-43.png" alt=""></td>
-    <td width="33%"><img src="images/weather-scene/day_fog/plakat-44.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/weather-scene/day_fog/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_still_life/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/sdxl/sdxl_fantasy/plakat-44.png" alt=""></td>
-    <td width="33%"><img src="images/sd21/sd21_still_life/plakat-44.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd21/sd21_still_life/plakat-44.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/dusk_clear/plakat-45.png" alt=""></td>
     <td width="33%"><img src="images/sd15/sd15_controlnet_canny/plakat-45.png" alt=""></td>
-    <td width="33%"><img src="images/sdxl/sdxl_controlnet_canny/plakat-45.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sdxl/sdxl_controlnet_canny/plakat-45.png" alt=""></td>
     <td width="33%"><img src="images/weather-scene/night_clear/plakat-46.png" alt=""></td>
     <td width="33%"><img src="images/variation/steered/plakat-cascade-7.png" alt="the same rugged coastline under a dramatic stormy sky"></td>
-    <td width="33%"><img src="images/variation/pure/plakat-cascade-7.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/variation/pure/plakat-cascade-7.png" alt=""></td>
     <td width="33%"><img src="images/cascade/cascade_landscape/plakat-cascade-42.png" alt="a serene mountain lake at golden sunrise, snow-capped peak behind, autumn forest on the shore, photorealistic"></td>
     <td width="33%"><img src="images/cascade/cascade_portrait_oil/plakat-cascade-43.png" alt="a portrait of a weathered fisherman in his sixties, kind eyes, knitted sweater, soft window light, oil paint style"></td>
-    <td width="33%"><img src="images/cascade/cascade_watercolour/plakat-cascade-44.png" alt="an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/cascade/cascade_watercolour/plakat-cascade-44.png" alt="an abstract book illustration in salvador dali style, a ring of apple trees with blue leaves around a small figure reading, night sky, watercolor"></td>
     <td width="33%"><img src="images/cascade/cascade_city/plakat-cascade-45.png" alt="a busy european street in the 1850s, two-storey houses, vendors and crowds in light tunics, bright low sun with visible rays, photorealistic"></td>
     <td width="33%"><img src="images/cascade/cascade_controlnet_canny/plakat-cascade-46.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
-    <td width="33%"><img src="images/img2img/forest_inkwash/plakat-img2img-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/img2img/forest_inkwash/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/img2img/portrait_watercolor/plakat-img2img-42.png" alt=""></td>
     <td width="33%"><img src="images/img2img/coast_oil/plakat-img2img-42.png" alt=""></td>
-    <td width="33%"><img src="images/outpaint/plakat-inpaint-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/outpaint/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/segment/plakat-inpaint-42.png" alt=""></td>
     <td width="33%"><img src="images/inpaint/plakat-inpaint-42.png" alt=""></td>
-    <td width="33%"><img src="images/multiperson/plakat-multiperson-14.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/multiperson/plakat-multiperson-14.png" alt=""></td>
     <td width="33%"><img src="images/pixart/pixart_landscape/plakat-pixart-42.png" alt="terraced rice fields at dawn, mist in the valley, a lone farmer, photorealistic"></td>
     <td width="33%"><img src="images/pixart/pixart_still_life/plakat-pixart-43.png" alt="a rustic still life of bread, cheese, grapes and a clay jug on a wooden table, warm light, oil painting"></td>
-    <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/pixart/pixart_scifi/plakat-pixart-44.png" alt="a sleek solar-sail spacecraft passing a ringed gas giant, distant stars, detailed sci-fi illustration"></td>
     <td width="33%"><img src="images/portrait/astronaut/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/cartographer/plakat-portrait-42.png" alt=""></td>
-    <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/portrait/blacksmith/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_scholar/plakat-portrait-42.png" alt=""></td>
     <td width="33%"><img src="images/portrait/sage_captain/plakat-portrait-43.png" alt=""></td>
-    <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/style/harbour/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/winter-village/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/style/river-orchard/plakat-sd3-denoise-42.png" alt=""></td>
-    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/sd35/sd35_still_life/plakat-sd3-denoise-42.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_portrait/plakat-sd3-denoise-43.png" alt=""></td>
     <td width="33%"><img src="images/sd35/sd35_text/plakat-sd3-denoise-44.png" alt=""></td>
-    <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → cool watercolour 'snow-village' via InstantStyle on the SDXL style block (up_blocks.0.attentions.1)"></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/stylize/portrait-instantstyle-snow.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → cool watercolour 'snow-village' via InstantStyle on the SDXL style block (up_blocks.0.attentions.1)"></td>
     <td width="33%"><img src="images/stylize/portrait-instantstyle.png" alt="stylize --instantstyle (true painterly style): SD 1.5 portrait → watercolour 'figures' via InstantStyle decoupled IP cross-attn on the SDXL style block (up_blocks.0.attentions.1)"></td>
     <td width="33%"><img src="images/stylize/portrait-variation.png" alt="stylize (concat ref-variation): SD 1.5 portrait restyled toward the watercolour 'figures' reference — palette shifts, stays photoreal"></td>
-    <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/upscale/portrait_x2/portrait_x2.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-heightmap.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-render.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-autumn.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-autumn.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-blueprint.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-grid.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-inked.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-inked.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-parchment.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-winter.png" alt=""></td>
-    <td width="33%"><img src="images/realms/rivers.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/rivers.png" alt=""></td>
     <td width="33%"><img src="images/realms/roads.png" alt=""></td>
     <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/relight/sunset.png" alt=""></td>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r0_c0.png" alt=""></td>
+    <td width="33%"><img src="images/map/coastal-tiles/tile_r0_c0.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r0_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/coastal-tiles/tile_r0_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c0.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/map/coastal-tiles/tile_r1_c0.png" alt=""></td>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/coastal-tiles/tile_r1_c1.png" alt=""></td>
   </tr>
   <tr>
     <td width="33%"><img src="images/script/tiled-valley.png" alt="a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus"></td>
@@ -216,6 +236,10 @@
   <tr>
     <td width="33%"><img src="images/compile/tundra.png" alt="wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography"></td>
     <td width="33%"><img src="images/compose/valley-scene.png" alt=""></td>
+    <td width="33%"><img src="images/map/scenario/coastal-world/world.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/map/coastal-tiles/world.png" alt=""></td>
   </tr>
 </table>
 
@@ -288,6 +312,24 @@ Negative: `blurry, low quality, watermark, text, deformed`
 ### coast.png
 
 ![coast.png](images/realms/coast.png)
+
+_(no embedded metadata)_
+
+### coastal-coast.png
+
+![coastal-coast.png](images/map/coastal-coast.png)
+
+_(no embedded metadata)_
+
+### coastal-heightmap.png
+
+![coastal-heightmap.png](images/map/coastal-heightmap.png)
+
+_(no embedded metadata)_
+
+### coastal-render.png
+
+![coastal-render.png](images/map/coastal-render.png)
 
 _(no embedded metadata)_
 
@@ -442,6 +484,12 @@ _(no embedded metadata)_
 > a sgwin steam locomotive
 
 `sd21` · 640×640 · 28 steps · CFG 7.5 · seed 7
+
+### map.png
+
+![map.png](images/map/scenario/coastal/map.png)
+
+_(no embedded metadata)_
 
 ### map.png
 
@@ -1113,6 +1161,54 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r0_c0.png
+
+![tile_r0_c0.png](images/map/scenario/coastal-world/tile_r0_c0.png)
+
+_(no embedded metadata)_
+
+### tile_r0_c0.png
+
+![tile_r0_c0.png](images/map/coastal-tiles/tile_r0_c0.png)
+
+_(no embedded metadata)_
+
+### tile_r0_c1.png
+
+![tile_r0_c1.png](images/map/scenario/coastal-world/tile_r0_c1.png)
+
+_(no embedded metadata)_
+
+### tile_r0_c1.png
+
+![tile_r0_c1.png](images/map/coastal-tiles/tile_r0_c1.png)
+
+_(no embedded metadata)_
+
+### tile_r1_c0.png
+
+![tile_r1_c0.png](images/map/scenario/coastal-world/tile_r1_c0.png)
+
+_(no embedded metadata)_
+
+### tile_r1_c0.png
+
+![tile_r1_c0.png](images/map/coastal-tiles/tile_r1_c0.png)
+
+_(no embedded metadata)_
+
+### tile_r1_c1.png
+
+![tile_r1_c1.png](images/map/scenario/coastal-world/tile_r1_c1.png)
+
+_(no embedded metadata)_
+
+### tile_r1_c1.png
+
+![tile_r1_c1.png](images/map/coastal-tiles/tile_r1_c1.png)
+
+_(no embedded metadata)_
+
 ### tiled-valley.png
 
 ![tiled-valley.png](images/script/tiled-valley.png)
@@ -1146,6 +1242,18 @@ Negative: `blurry, low quality, watermark, text, deformed`
 ### valley-scene.png
 
 ![valley-scene.png](images/compose/valley-scene.png)
+
+_(no embedded metadata)_
+
+### world.png
+
+![world.png](images/map/scenario/coastal-world/world.png)
+
+_(no embedded metadata)_
+
+### world.png
+
+![world.png](images/map/coastal-tiles/world.png)
 
 _(no embedded metadata)_
 
