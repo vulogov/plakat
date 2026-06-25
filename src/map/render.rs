@@ -184,6 +184,7 @@ pub fn paint_base_map(geo: &Geometry, style: Style) -> RgbImage {
     paint_base(&mut img, &geo.hf, &geo.coast, &geo.biome, style);
     draw_marsh_hatching(&mut img, &geo.biome, &geo.coast, style);
     draw_coastline(&mut img, &geo.coast, style);
+    draw_deltas(&mut img, &geo.hydro, &geo.coast, style);
     draw_rivers(&mut img, &geo.hydro, style);
     draw_roads(&mut img, &geo.roads, style);
     img
@@ -320,6 +321,46 @@ fn draw_coastline(img: &mut RgbImage, coast: &Coastline, st: Style) {
 fn draw_rivers(img: &mut RgbImage, hydro: &Hydrology, st: Style) {
     for &(x, y) in hydro.rivers.iter().flatten() {
         put(img, x as i32, y as i32, st.river);
+    }
+}
+
+/// Only river paths at least this long get a delta — a proxy for "navigable /
+/// sizeable", so small creeks don't sprout fans.
+const DELTA_MIN_LEN: usize = 36;
+/// How far the distributary channels fan out into the sea (pixels).
+const DELTA_REACH: i32 = 7;
+
+/// Draw a small distributary fan into the shallow sea at each navigable river
+/// mouth — the cartographic delta. Deterministic (a fixed three-branch fan in the
+/// flow direction, clipped to sea cells) → byte-stable.
+fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Style) {
+    let (w, h) = (coast.width, coast.height);
+    for river in &hydro.rivers {
+        let n = river.len();
+        if n < DELTA_MIN_LEN {
+            continue;
+        }
+        let (mx, my) = (river[n - 1].0 as f32, river[n - 1].1 as f32);
+        let (px, py) = (river[n - 2].0 as f32, river[n - 2].1 as f32);
+        let (mut dx, mut dy) = (mx - px, my - py);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        dx /= len;
+        dy /= len;
+        for &ang in &[-0.6f32, 0.0, 0.6] {
+            let (c, s) = (ang.cos(), ang.sin());
+            let (bx, by) = (dx * c - dy * s, dx * s + dy * c);
+            for step in 1..=DELTA_REACH {
+                let x = (mx + bx * step as f32).round() as i32;
+                let y = (my + by * step as f32).round() as i32;
+                if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                    break;
+                }
+                if !coast.sea[(y as u32 * w + x as u32) as usize] {
+                    break; // fan only over open water
+                }
+                put(img, x, y, st.river);
+            }
+        }
     }
 }
 
