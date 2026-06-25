@@ -1,8 +1,8 @@
 {
-  "base_prompt": "a cozy living room interior, warm afternoon light, fireplace and bookshelves, detailed digital painting",
+  "base_prompt": "a head and shoulders group portrait of three people standing close together, watercolor painting, soft daylight, plain background, all facing the viewer, faces clearly visible",
   "command": "multiperson",
   "face_refine": false,
-  "guidance": 7.5,
+  "guidance": 7.0,
   "identity": "PlusFace",
   "layout_provider": "none",
   "model": "sdxl",
@@ -48,9 +48,9 @@
     }
   ],
   "refine_face_strength": 0.8500000238418579,
-  "scene_clause": "a cozy living room interior, warm afternoon light, fireplace and bookshelves",
-  "seed": 42,
+  "scene_clause": "a head and shoulders group portrait of three people standing close together, watercolor painting, soft daylight, plain background, all facing the viewer, faces clearly visible",
+  "seed": 21,
   "size": "1024x768",
   "steps": 30,
-  "style_clause": "detailed digital painting"
+  "style_clause": null
 }

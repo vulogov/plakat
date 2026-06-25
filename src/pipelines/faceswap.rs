@@ -75,8 +75,13 @@ impl FaceSwapper {
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
-        let detector = SCRFDDetector::load(scrfd, SCRFDConfig::default(), device, DType::F32)
+        let mut detector = SCRFDDetector::load(scrfd, SCRFDConfig::default(), device, DType::F32)
             .context("loading SCRFD for face-swap")?;
+        // Lower the score threshold: generated scene faces are often small and
+        // painterly (watercolor) and score below the 0.5 default; region-matching
+        // tolerates the occasional spurious detection, but a missed face means no
+        // swap at all. 0.35 catches them.
+        detector.score_threshold = 0.35;
         // ArcFace + inswapper run in F32 for numerical fidelity (they're small).
         let arc_vb = unsafe {
             candle_nn::VarBuilder::from_mmaped_safetensors(&[arcface], DType::F32, device)?
