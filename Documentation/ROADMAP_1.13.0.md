@@ -12,7 +12,7 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 The real ceiling on this 24 GB box is unified memory; these are the concrete bites:
 
-- [ ] **Gradient checkpointing** — the blocker for verifying the PixArt / SD3.5 / Cascade
+- [x] **Gradient checkpointing** — INVESTIGATED, dead end on candle 0.10.2 (no recompute API; CustomOp bwd gives no parameter grads). See Documentation/GRADIENT_CHECKPOINTING.md. Original goal: verify the PixArt / SD3.5 / Cascade
       trainers on 24 GB (they OOM at the first backward). candle has no native support;
       prototype manual detach + recompute on one denoiser and measure. If infeasible,
       document the dead end so we stop re-attempting it.
