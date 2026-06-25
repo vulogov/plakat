@@ -1,5 +1,5 @@
 {
-  "base_prompt": "a head and shoulders group portrait of three people standing close together, watercolor painting, soft daylight, plain background, all facing the viewer, faces clearly visible",
+  "base_prompt": "an old man on the left and a woman on the right, sitting close together at a small cafe table by a window, soft daylight, watercolor painting, upper body portrait, both facing the viewer",
   "command": "multiperson",
   "face_refine": false,
   "guidance": 7.0,
@@ -22,19 +22,6 @@
     },
     {
       "bbox": [
-        0.2900000214576721,
-        0.3100000023841858,
-        0.7099999785423279,
-        1.0
-      ],
-      "behavioral_prompt": null,
-      "face_strength": 0.800000011920929,
-      "facing": "facing the viewer, front view",
-      "label": "p2",
-      "placement_source": "at"
-    },
-    {
-      "bbox": [
         0.5900000333786011,
         0.3100000023841858,
         1.0,
@@ -43,13 +30,13 @@
       "behavioral_prompt": null,
       "face_strength": 0.800000011920929,
       "facing": "facing the viewer, front view",
-      "label": "p3",
+      "label": "p2",
       "placement_source": "at"
     }
   ],
   "refine_face_strength": 0.8500000238418579,
-  "scene_clause": "a head and shoulders group portrait of three people standing close together, watercolor painting, soft daylight, plain background, all facing the viewer, faces clearly visible",
-  "seed": 21,
+  "scene_clause": "an old man on the left and a woman on the right, sitting close together at a small cafe table by a window, soft daylight, watercolor painting, upper body portrait, both facing the viewer",
+  "seed": 14,
   "size": "1024x768",
   "steps": 30,
   "style_clause": null

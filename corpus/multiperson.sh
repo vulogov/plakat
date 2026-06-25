@@ -42,15 +42,17 @@ mkdir -p "$OUT"
 #     swap defines the faces. Describing "old man with a beard" bleeds that look
 #     onto every figure.
 #   * keep figures PROMINENT (fewer / closer = larger faces = stronger identity).
+# TWO people, framed PROMINENTLY (upper body) so each face is large enough to read
+# as a specific person. Identity strength scales with face size: a crowded scene
+# (3+ people, tiny faces) swaps faintly; two prominent figures are recognizable.
 "$PLAKAT" multiperson \
-  "a head and shoulders group portrait of three people standing close together, watercolor painting, soft daylight, plain background, all facing the viewer, faces clearly visible" \
+  "an old man on the left and a woman on the right, sitting close together at a small cafe table by a window, soft daylight, watercolor painting, upper body portrait, both facing the viewer" \
   --person "p1:$PEOPLE/1.png" --at "p1:left closer front" \
-  --person "p2:$PEOPLE/2.png" --at "p2:center closer front" \
-  --person "p3:$PEOPLE/3.png" --at "p3:right closer front" \
+  --person "p2:$PEOPLE/2.png" --at "p2:right closer front" \
   --model "$MODEL" --swap --pose \
   --size "$SIZE" --steps "$STEPS" --guidance 7.0 --seed "$SEED" \
   --out "$OUT"
 
-echo "✓ multiperson --swap --pose: 3 real people swapped into a watercolor scene → corpus/images/multiperson/"
-echo "  use PHOTOS on a light bg; keep the prompt minimal (let the swap define faces); larger faces swap stronger."
-echo "  alt identity: --composite (exact-photo cut-outs, any model); --dry-run for the placement plan"
+echo "✓ multiperson --swap --pose: 2 prominent people swapped into a watercolor scene → corpus/images/multiperson/"
+echo "  identity scales with face size — keep figures few + prominent; use PHOTOS on a light bg; minimal prompt."
+echo "  for >2 people the faces get small and read faintly. alt identity: --composite (exact-photo cut-outs, any model)."
