@@ -7,6 +7,7 @@ pub mod artefact;
 pub mod civitai;
 pub mod clone;
 pub mod compile;
+#[cfg(feature = "onnx")]
 pub mod convert_onnx;
 pub mod compose;
 pub mod map;
@@ -124,6 +125,7 @@ pub enum Command {
     /// renames them so plakat can consume the file. Currently supports
     /// `--arch scrfd-500mf` (InsightFace `det_500m.onnx` → the SCRFD face
     /// detector behind `--identity faceid` / `--adetailer` / `multiperson`).
+    #[cfg(feature = "onnx")]
     #[command(name = "convert-onnx")]
     ConvertOnnx(convert_onnx::ConvertOnnxArgs),
     /// Art-style detection from a reference photo.
@@ -265,6 +267,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
+        #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         Command::Style(args) => {
             let device = crate::device::select(&cli.device)?;

@@ -60,6 +60,10 @@ templates = ["dep:tera"]
 # for non-Latin scripts (Cyrillic, CJK). Off by default — the built-in 5x7 bitmap
 # font (Latin) stays the default so the map corpus is asset-free + byte-stable.
 shaped-labels = ["dep:ab_glyph"]
+# `plakat convert-onnx` — rebuild the hosted face-model weights (SCRFD / ArcFace /
+# inswapper) from their ONNX sources. Off by default: it pulls candle-onnx, which
+# needs `protoc` at build time. End users download the pre-built weights instead.
+onnx = ["dep:candle-onnx"]
 
 [dependencies]
 # Hardware probe (doctor --capability): system RAM detection.
@@ -145,8 +149,12 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 candle-core = "0.10"
 candle-nn = "0.10"
 candle-transformers = "0.10"
-# ONNX reading — `plakat convert-onnx` (SCRFD weight conversion).
-candle-onnx = "0.10"
+# ONNX reading — `plakat convert-onnx` (face-model weight conversion). Optional +
+# behind the `onnx` feature: it needs `protoc` at build time (prost), which most
+# users don't have, and the converted weights are already hosted — so the base
+# `cargo install plakat` stays protoc-free. Build with `--features onnx` to rebuild
+# the weights yourself.
+candle-onnx = { version = "0.10", optional = true }
 
 # Paths / tempfiles
 directories = "5"

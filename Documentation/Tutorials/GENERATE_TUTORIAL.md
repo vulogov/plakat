@@ -610,9 +610,13 @@ the FaceID portrait flow uses. Convert InsightFace's `det_500m.onnx`
 (inside `buffalo_sc.zip`) with plakat's own command — no Python:
 
 ```bash
+# convert-onnx is opt-in (needs protoc at build time): cargo install plakat --features onnx
 plakat convert-onnx det_500m.onnx scrfd_500m.safetensors --arch scrfd-500mf
 export PLAKAT_SCRFD_WEIGHTS=$(pwd)/scrfd_500m.safetensors
 ```
+
+(Most users never need this — the converted weights are already hosted and
+auto-downloaded; rebuild them yourself only if you want to.)
 
 …or point `PLAKAT_SCRFD_HF` at a converted file hosted on HuggingFace
 (`<user>/<repo>#scrfd_500m.safetensors`). A raw `onnx2torch` dump will
