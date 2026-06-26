@@ -299,6 +299,14 @@ struct ScenarioFile {
     map_layout: Option<String>,
     #[serde(rename = "map-erosion", default)]
     map_erosion: Option<f32>,
+    /// 1.14.0-B: emit the world as a grid of seamless tiles (over `map-tiles`/
+    /// `map-scale`) instead of a single `map.png`. Mirrors `--map-render-tiles`.
+    #[serde(rename = "map-render-tiles", default)]
+    map_render_tiles: Option<bool>,
+    /// 1.14.0-D: draw per-tile furniture (frame + grid coordinate + north arrow)
+    /// on each tile. Mirrors `--map-tile-furniture`.
+    #[serde(rename = "map-tile-furniture", default)]
+    map_tile_furniture: Option<bool>,
 
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
@@ -901,6 +909,17 @@ struct TaskDef {
     map_layout: Option<String>,
     #[serde(rename = "map-erosion", default)]
     map_erosion: Option<f32>,
+    #[serde(rename = "map-render-tiles", default)]
+    map_render_tiles: Option<bool>,
+    #[serde(rename = "map-tile-furniture", default)]
+    map_tile_furniture: Option<bool>,
+
+    // ---------- 1.14.0-A: per-task `multiperson` block (a `type: multiperson` task) ----------
+    /// The multiperson task body: scene prompt + placed people + identity mode.
+    /// Only consulted for `type: multiperson` tasks. `people[].persona` names
+    /// refer to the top-level `personas` list (resolved to photos at run time).
+    #[serde(default)]
+    multiperson: Option<crate::pipelines::multiperson::scenario_task::MultipersonTaskSpec>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -965,6 +984,7 @@ enum TaskKind {
     Generate,
     Animate,
     Map,
+    Multiperson,
 }
 
 impl TaskKind {
@@ -977,9 +997,10 @@ impl TaskKind {
             "generate" | "gen" | "t2i" => Ok(Self::Generate),
             "animatediff" | "animate" => Ok(Self::Animate),
             "map" => Ok(Self::Map),
+            "multiperson" | "multi-person" => Ok(Self::Multiperson),
             other => bail!(
                 "scenario task type {other:?} not recognised \
-                 (expected: generate, animatediff, map)"
+                 (expected: generate, animatediff, map, multiperson)"
             ),
         }
     }
@@ -1022,8 +1043,11 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
     match (last, current) {
         (Some(TaskKind::Generate), TaskKind::Animate) => CacheEviction::DropT2i,
         (Some(TaskKind::Animate), TaskKind::Generate) => CacheEviction::DropAnimate,
-        // A map task loads its own SD pipeline — free any cached one first.
-        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map) => CacheEviction::DropAll,
+        // A map / multiperson task loads its own SD pipeline(s) internally — free
+        // any cached t2i / animate pipeline first.
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson) => {
+            CacheEviction::DropAll
+        }
         // First task (last == None) or same-kind continuation —
         // no eviction needed.
         _ => CacheEviction::None,
@@ -1057,6 +1081,8 @@ fn effective_map_config(scenario: &ScenarioFile, task: &TaskDef) -> crate::map::
         sd_loras,
         urban_layout: task.map_layout.clone().or_else(|| scenario.map_layout.clone()),
         erosion: task.map_erosion.or(scenario.map_erosion),
+        render_tiles: task.map_render_tiles.or(scenario.map_render_tiles).unwrap_or(false),
+        render_tile_furniture: task.map_tile_furniture.or(scenario.map_tile_furniture).unwrap_or(false),
         cache: false,
     }
 }
@@ -1384,6 +1410,33 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 let cfg = effective_map_config(&s, t);
                 crate::map::render::Style::named(&cfg.style)?;
             }
+            TaskKind::Multiperson => {
+                let spec = t.multiperson.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "task {:?} is type `multiperson` but has no `multiperson:` block",
+                        t.name
+                    )
+                })?;
+                if spec.people.is_empty() {
+                    bail!("task {:?}: multiperson `people` must list at least one persona", t.name);
+                }
+                // Every referenced persona must exist in the top-level list and
+                // any identity override must parse — fail before the model load.
+                let known: BTreeSet<&str> = s.personas.iter().map(|p| p.name.as_str()).collect();
+                for r in &spec.people {
+                    if !known.contains(r.persona.as_str()) {
+                        bail!(
+                            "task {:?}: multiperson references unknown persona {:?} \
+                             (define it in the top-level `personas:` list)",
+                            t.name, r.persona
+                        );
+                    }
+                }
+                if let Some(id) = &spec.identity {
+                    id.parse::<crate::pipelines::ip_adapter::IdentityKind>()
+                        .map_err(|e| anyhow::anyhow!("task {:?}: identity {id:?}: {e}", t.name))?;
+                }
+            }
         }
     }
 
@@ -1398,8 +1451,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         .map(|p| (p.name.as_str(), p.prompt.as_str()))
         .collect();
     for t in &s.tasks {
-        // Map tasks don't use scene/weather styling — skip the cross-reference check.
-        if matches!(TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()), Ok(TaskKind::Map)) {
+        // Map / multiperson tasks don't use scene/weather styling — skip the
+        // cross-reference check (multiperson carries its own scene prompt).
+        if matches!(
+            TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()),
+            Ok(TaskKind::Map | TaskKind::Multiperson)
+        ) {
             continue;
         }
         if !scenes.contains_key(t.scene.as_str()) {
@@ -2235,8 +2292,12 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
             .tasks
             .iter()
             .filter(|t| !matches!(t.enhance, Some(EnhanceCfg::Toggle(false))))
-            // Map tasks don't run prompt enhancement (and carry no scene/weather).
-            .filter(|t| !matches!(TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()), Ok(TaskKind::Map)))
+            // Map / multiperson tasks don't run scenario prompt enhancement (they
+            // carry no scene/weather and source their own scene prompt).
+            .filter(|t| !matches!(
+                TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()),
+                Ok(TaskKind::Map | TaskKind::Multiperson)
+            ))
             .map(|t| {
                 let scene = scenes.get(t.scene.as_str()).copied().unwrap_or("");
                 let weather = weathers.get(t.weather.as_str()).copied().unwrap_or("");
@@ -2664,6 +2725,63 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     task_records.push(TaskRunRecord {
                         name: task.name.clone(),
                         kind: "map".to_string(),
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
+            seed_offset += count as u64;
+            continue;
+        }
+
+        // 1.14.0-A: multiperson-task dispatch. Resolves each placed persona to its
+        // photos (from the top-level `personas` list) and dispatches the SAME
+        // `pipelines::multiperson::run` the CLI uses — byte-for-byte parity.
+        if matches!(task_kind, TaskKind::Multiperson) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset);
+            let task_out = out_root.join(safe_name(&task.name));
+            let mp_result: Result<()> = async {
+                let spec = task.multiperson.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("task {:?}: type `multiperson` needs a `multiperson:` block", task.name)
+                })?;
+                let mut spec = spec.clone();
+                // A bare task `seed:` seeds the run when the block omits its own.
+                if spec.seed.is_none() {
+                    spec.seed = Some(task_seed);
+                }
+                let req = crate::pipelines::multiperson::scenario_task::build_request(
+                    &spec,
+                    |name| personas_map.get(name).and_then(|p| p.resolve_photos().ok()),
+                    task_out.clone(),
+                    device.clone(),
+                    &model,
+                    args.dry_run,
+                )?;
+                crate::pipelines::multiperson::run(req).await.map(|_| ())
+            }
+            .await;
+            match mp_result {
+                Ok(()) => task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: "multiperson".to_string(),
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed),
+                    note: None,
+                    error: None,
+                }),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} task {:?}: {}",
+                        style("✗ failed").red().bold(),
+                        task.name,
+                        e
+                    ));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: "multiperson".to_string(),
                         status: "failed".to_string(),
                         seed: Some(task_seed),
                         note: None,
@@ -5737,6 +5855,72 @@ mod tests {
         }}"#);
         let t = parse_task(&src);
         assert_eq!(t.fast.as_deref(), Some("hyper-8"));
+    }
+
+    #[test]
+    fn task_parses_map_render_tiles() {
+        // 1.14.0-B: a map task can request seamless tiled output from automation.
+        let src = format!(r#"{{{COMMON_TASK}
+            type: map
+            map-spec: corpus/map/coastal.spec.json
+            map-tiles: 2x2
+            map-render-tiles: true
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.map_render_tiles, Some(true));
+        assert_eq!(t.map_tiles.as_deref(), Some("2x2"));
+        // effective config carries it into the MapTaskCfg the runner dispatches.
+        let s: ScenarioFile = deser_hjson::from_str(r#"{ tasks: [] }"#).unwrap();
+        let cfg = effective_map_config(&s, &t);
+        assert!(cfg.render_tiles);
+    }
+
+    #[test]
+    fn task_parses_map_tile_furniture() {
+        // 1.14.0-D: per-tile furniture flows task → MapTaskCfg.
+        let src = format!(r#"{{{COMMON_TASK}
+            type: map
+            map-spec: corpus/map/realms.hjson
+            map-render-tiles: true
+            map-tile-furniture: true
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.map_tile_furniture, Some(true));
+        let s: ScenarioFile = deser_hjson::from_str(r#"{ tasks: [] }"#).unwrap();
+        let cfg = effective_map_config(&s, &t);
+        assert!(cfg.render_tile_furniture);
+    }
+
+    #[test]
+    fn task_parses_multiperson_block() {
+        // 1.14.0-A: a `type: multiperson` task carries a `multiperson:` block of
+        // scene + placed people that reference top-level personas by name.
+        let src = format!(r#"{{{COMMON_TASK}
+            type: multiperson
+            multiperson: {{
+                scene: "two friends at a cafe // watercolor"
+                swap: true
+                pose: true
+                people: [
+                    {{
+                        persona: alice
+                        at: "left closer front"
+                    }}
+                    {{
+                        persona: bob
+                        scale: 0.8
+                    }}
+                ]
+            }}
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.task_type.as_deref(), Some("multiperson"));
+        let mp = t.multiperson.expect("multiperson block parses");
+        assert!(mp.swap && mp.pose);
+        assert_eq!(mp.people.len(), 2);
+        assert_eq!(mp.people[0].persona, "alice");
+        assert_eq!(mp.people[0].at.as_deref(), Some("left closer front"));
+        assert_eq!(mp.people[1].scale, Some(0.8));
     }
 
     #[test]

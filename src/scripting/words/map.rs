@@ -104,6 +104,32 @@ fn do_plakat_map_paint(vm: &mut VM) -> anyhow::Result<&mut VM> {
     Ok(vm)
 }
 
+/// `plakat.map.tiles ( spec-path style out-dir -- count )` — 1.14.0-B: slice the
+/// world into seamless tiles (`tile_r{R}_c{C}.png` + `world.png`) over the spec's
+/// `tile_grid`, into `out-dir`. Pushes the tile count. Mirrors `--map-render-tiles`.
+pub fn plakat_map_tiles(vm: &mut VM) -> BundResult<'_> {
+    do_plakat_map_tiles(vm).map_err(to_bund_err)
+}
+
+fn do_plakat_map_tiles(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    const TTAG: &str = "plakat.map.tiles";
+    require_depth(vm, 3, TTAG)?;
+    // Stack bottom→top: spec-path, style, out-dir.
+    let dir_s = value_to_string(pull(vm, TTAG)?, "out-dir", TTAG)?;
+    let style_s = value_to_string(pull(vm, TTAG)?, "style", TTAG)?;
+    let path_s = value_to_string(pull(vm, TTAG)?, "spec-path", TTAG)?;
+
+    let style = crate::map::render::Style::named(&style_s)?;
+    let spec = load_spec_with_overrides(&path_s)?;
+    let seed = with_ctx(|ctx| ctx.config.seed.unwrap_or(42))?;
+
+    let n = crate::map::save_world_tiles(&spec, seed, style, std::path::Path::new(&dir_s), false)
+        .with_context(|| format!("{TTAG}: tiling {path_s} into {dir_s}"))?;
+    tracing::info!(target: "plakat", "{TTAG}: {path_s} ({style_s}) → {n} tile(s) + world.png in {dir_s}");
+    push(vm, Value::from_int(n as i64));
+    Ok(vm)
+}
+
 pub fn plakat_map_render(vm: &mut VM) -> BundResult<'_> {
     do_plakat_map_render(vm).map_err(to_bund_err)
 }

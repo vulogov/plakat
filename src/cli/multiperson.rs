@@ -147,6 +147,12 @@ pub struct MultipersonArgs {
     #[arg(long = "pose")]
     pub pose: bool,
 
+    /// After `--swap`, run a light ADetailer-style detail pass on the swapped
+    /// faces to sharpen small scene faces. OFF by default — it's a low-strength
+    /// img2img and can slightly drift the swapped identity.
+    #[arg(long = "restore-faces")]
+    pub restore_faces: bool,
+
     /// Use **face-swap** for identity (secondary): generate one coherent scene,
     /// then swap each detected face with that persona's source identity (SCRFD +
     /// ArcFace + inswapper). Far stronger likeness than the IP-Adapter region
@@ -295,6 +301,7 @@ pub async fn run(args: MultipersonArgs, device: Device) -> Result<()> {
         harmonize: args.harmonize,
         pose: args.pose,
         swap: args.swap,
+        restore_faces: args.restore_faces,
         refine_faces: args.face_refine,
         refine_face_strength: args.refine_face_strength,
         refine_denoise: args.refine_denoise,

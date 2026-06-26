@@ -153,6 +153,23 @@ plateaus:
 ]
 ```
 
+**Coastal shaping** — three arrays cut a jagged shoreline (all `NamedRegion`s
+anchored to the coast they shape; omit them all for a smooth coast):
+
+- `terrain.peninsulas` — land spits jutting into the sea; `size` `narrow | moderate | broad`.
+- `terrain.inlets` — bays / coves cutting *into* the land; `size` `shallow | moderate | deep`.
+- `terrain.fjords` — deep, narrow, steep-walled sea arms; `size` `moderate | deep`.
+
+```hjson
+peninsulas: [ { id: the_horn name: The Horn anchor: { kind: cardinal position: southeast } size: broad } ]
+fjords:     [ { id: cold_arm name: The Cold Arm anchor: { kind: cardinal position: northwest } size: deep } ]
+```
+
+The prose parser maps coastal language for you: *"a fjord-cut northern coast"* →
+`fjords`, *"a wide bay"* → `inlets`, *"a long cape"* → `peninsulas`. A committed
+showcase lives at `corpus/map/coastal.spec.json`. Like every terrain feature, the
+coast responds to `--map-erosion` (higher = more ragged).
+
 **Political layer** — any `region` can carry a `political` block, drawing a
 territorial ring, kind-styled borders to neighbouring regions, and a polity label.
 `borders[].kind` is `river | mountain | disputed`:
@@ -261,9 +278,11 @@ plakat map --map-spec isle.json --map-export-svg isle.svg          # standalone 
 plakat map --map-spec isle.json --map-export-geojson isle.geojson  # GIS FeatureCollection
 ```
 
-GeoJSON gives you the coastline (closed rings), rivers + roads (LineStrings), and
-landmarks (Points) with `name`/`kind`/`id` properties, normalized to `[0,1]`,
-north-up.
+GeoJSON gives you the coastline (closed rings), rivers + roads (LineStrings),
+landmarks (Points), and — for any region with a `political` block — both a polity
+**Point** (the label anchor) and a `territory` **Polygon** (the boundary ring as
+real GIS geometry). All `name`/`kind`/`id` properties, normalized to `[0,1]`,
+north-up. The SVG draws the territory ring as a faint dashed polygon.
 
 ## 8. Maps in batches: scenario, compile, scripting
 
@@ -279,7 +298,25 @@ A map is a first-class step everywhere, all rendering identically to `--map-rend
 
 Fields: `map-spec`, `map-style`, `map-paint` (SD), `map-scale`/`map-tiles`,
 `map-sd-model`/`map-sd-lora`, `map-layout`, `map-erosion`, `map-provider`. Each task
-writes `<out>/<name>/map.png`.
+writes `<out>/<name>/map.png`. Every spec-level feature (coastal terrain,
+canyons, marsh, deltas, political layer) flows through automatically — it lives in
+the spec the task loads, so nothing extra is needed to use it from automation.
+
+Set `map-render-tiles: true` to slice the world into a grid of **seamless tiles**
+(over `map-tiles`/`map-scale`) instead of a single `map.png` — the task then writes
+`<out>/<name>/world.png` + `tile_r{R}_c{C}.png`, byte-identical to the CLI
+`--map-render-tiles`:
+
+```hjson
+{ out: "./out", seed: 7
+  tasks: [ { name: "world", type: "map", map-spec: "coastal.spec.json",
+             map-tiles: "2x2", map-render-tiles: true } ] }
+```
+
+`world.png` is the full stitched map; the tiles are its quadrant slices (they
+reassemble pixel-exact). Add `map-tile-furniture: true` (CLI: `--map-tile-furniture`)
+to draw a frame + grid coordinate (`R1C2`) + north arrow on each tile, so a single
+tile is a usable standalone map — the stitched `world.png` stays clean.
 
 **Compile** — a `type: map` block in a `prompts.txt` compiles to a scenario map task,
 so prose worldbuilding and maps live in one document:
@@ -300,6 +337,9 @@ name: my-isle
 2.0   plakat.map.erosion       \ set erosion
 "isle.json" "parchment" plakat.map.render   \ ( spec-path style -- handle ); .paint for SD
 "isle.png" plakat.save
+
+\ tile a world into seamless tiles (world.png + tile_r{R}_c{C}.png) in a dir:
+"coastal.spec.json" "parchment" "./tiles" plakat.map.tiles   \ ( spec-path style out-dir -- count )
 ```
 
 ## 9. Inspecting the geometry layers

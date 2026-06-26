@@ -327,14 +327,18 @@ fn draw_rivers(img: &mut RgbImage, hydro: &Hydrology, st: Style) {
 /// Only river paths at least this long get a delta — a proxy for "navigable /
 /// sizeable", so small creeks don't sprout fans.
 const DELTA_MIN_LEN: usize = 36;
-/// How far the distributary channels fan out into the sea (pixels).
+/// How far back upstream the distributary fan's apex sits (pixels), and the
+/// reach of each branch toward the coast.
 const DELTA_REACH: i32 = 7;
 
-/// Draw a small distributary fan into the shallow sea at each navigable river
-/// mouth — the cartographic delta. Deterministic (a fixed three-branch fan in the
-/// flow direction, clipped to sea cells) → byte-stable.
+/// Draw a small distributary fan at each navigable river mouth — the cartographic
+/// delta. The fan forms on the **land** side: its apex sits a few pixels upstream
+/// of the mouth and the three branches spread toward the coast, each terminating
+/// at the shoreline (the first sea cell) so distributaries reach the water at
+/// fanned-out points but never draw across open ocean. Deterministic → byte-stable.
 fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Style) {
     let (w, h) = (coast.width, coast.height);
+    let is_sea = |x: i32, y: i32| coast.sea[(y as u32 * w + x as u32) as usize];
     for river in &hydro.rivers {
         let n = river.len();
         if n < DELTA_MIN_LEN {
@@ -346,17 +350,22 @@ fn draw_deltas(img: &mut RgbImage, hydro: &Hydrology, coast: &Coastline, st: Sty
         let len = (dx * dx + dy * dy).sqrt().max(1e-3);
         dx /= len;
         dy /= len;
+        // Apex set back upstream of the mouth so the branches fan over land as the
+        // river approaches the coast (not projected into the sea beyond it).
+        let (ax, ay) = (mx - dx * DELTA_REACH as f32, my - dy * DELTA_REACH as f32);
         for &ang in &[-0.6f32, 0.0, 0.6] {
             let (c, s) = (ang.cos(), ang.sin());
             let (bx, by) = (dx * c - dy * s, dx * s + dy * c);
-            for step in 1..=DELTA_REACH {
-                let x = (mx + bx * step as f32).round() as i32;
-                let y = (my + by * step as f32).round() as i32;
+            // Reach a touch past the mouth so a branch lands exactly on the shore,
+            // but stop at the first sea cell — the distributary's discharge point.
+            for step in 1..=DELTA_REACH * 2 {
+                let x = (ax + bx * step as f32).round() as i32;
+                let y = (ay + by * step as f32).round() as i32;
                 if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
                     break;
                 }
-                if !coast.sea[(y as u32 * w + x as u32) as usize] {
-                    break; // fan only over open water
+                if is_sea(x, y) {
+                    break; // reached the coast — never draw over open water
                 }
                 put(img, x, y, st.river);
             }
@@ -507,6 +516,48 @@ fn draw_grid(img: &mut RgbImage, cells: u32, st: Style) {
         let ly = (r as f32 * ch + ch * 0.5) as i32 - 3;
         labels::draw_text_haloed(img, 2, ly, &label, 1, st.ink, st.paper);
     }
+}
+
+/// 1.14.0-D: per-tile furniture for the multi-tile output. Draws a border frame,
+/// the tile's grid coordinate (`R1C2`, 1-based), the grid extent (`3x3`), and a
+/// small north arrow on a single sliced tile, so one tile is a usable standalone
+/// map rather than a bare slice. Byte-stable (bitmap font + straight lines), drawn
+/// AFTER slicing so the seamless world itself is untouched.
+pub(crate) fn draw_tile_furniture(
+    tile: &mut RgbImage,
+    row: u32,
+    col: u32,
+    cols: u32,
+    rows: u32,
+    st: Style,
+) {
+    let (w, h) = (tile.width() as i32, tile.height() as i32);
+    let (ink, paper) = (st.ink, st.paper);
+    let m = 3;
+    // Frame: a 2px border inset from the edge.
+    for x in m..w - m {
+        for dy in 0..2 {
+            put(tile, x, m + dy, ink);
+            put(tile, x, h - 1 - m - dy, ink);
+        }
+    }
+    for y in m..h - m {
+        for dx in 0..2 {
+            put(tile, m + dx, y, ink);
+            put(tile, w - 1 - m - dx, y, ink);
+        }
+    }
+    // Grid coordinate (1-based, human-facing) top-left; grid extent bottom-left.
+    labels::draw_text_haloed(tile, m + 4, m + 4, &format!("R{}C{}", row + 1, col + 1), 1, ink, paper);
+    labels::draw_text_haloed(tile, m + 4, h - m - 11, &format!("{cols}x{rows}"), 1, ink, paper);
+    // North arrow top-right: a short vertical stem with an arrowhead + an `N`.
+    let (nx, ny) = (w - m - 9, m + 7);
+    for k in 0..7 {
+        put(tile, nx, ny + k, ink);
+    }
+    put(tile, nx - 1, ny + 1, ink);
+    put(tile, nx + 1, ny + 1, ink);
+    labels::draw_text_haloed(tile, nx - 3, ny - 9, "N", 1, ink, paper);
 }
 
 /// Deterministic muted polity colour from the name, blended toward ink so it
@@ -958,6 +1009,55 @@ mod tests {
         let a = render(&island(), 42, Style::default()).unwrap();
         let b = render(&island(), 42, Style::default()).unwrap();
         assert!(a.as_raw() == b.as_raw(), "render must be byte-stable");
+    }
+
+    #[test]
+    fn tile_furniture_draws_a_frame_and_changes_pixels() {
+        // 1.14.0-D: per-tile furniture draws a border + labels so a sliced tile is
+        // a usable standalone map. It must alter the tile (and only on opt-in).
+        let st = Style::named("parchment").unwrap();
+        let blank = RgbImage::from_pixel(64, 64, image::Rgb([200, 200, 200]));
+        let mut framed = blank.clone();
+        draw_tile_furniture(&mut framed, 1, 2, 3, 3, st);
+        assert!(framed.as_raw() != blank.as_raw(), "furniture changes the tile");
+        // The inset frame paints ink along the top border row.
+        let ink = image::Rgb(st.ink);
+        let top_has_ink = (3..61).any(|x| *framed.get_pixel(x, 3) == ink);
+        assert!(top_has_ink, "frame draws along the top edge");
+    }
+
+    #[test]
+    fn deltas_never_draw_over_open_sea() {
+        // Regression (1.14.0-C): the distributary fan must form on the land side
+        // and stop at the shore — never project channels across open ocean.
+        use crate::map::coastline::Coastline;
+        use crate::map::hydrology::Hydrology;
+        let (w, h): (u32, u32) = (60, 11);
+        // Land for x < 40, sea for x >= 40. A river runs east along y=5 to the coast.
+        let sea: Vec<bool> = (0..w * h).map(|i| (i % w) >= 40).collect();
+        let coast = Coastline {
+            width: w, height: h, sea_level: 0.5, sea: sea.clone(),
+            coast_dist: vec![0.0; (w * h) as usize],
+        };
+        let river: Vec<(u32, u32)> = (0..=40).map(|x| (x, 5)).collect();
+        assert!(river.len() >= DELTA_MIN_LEN);
+        let hydro = Hydrology {
+            width: w, height: h, filled: vec![], flow_dir: vec![], flow_accum: vec![],
+            rivers: vec![river],
+        };
+        let style = Style::named("parchment").unwrap();
+        let mut img = RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
+        draw_deltas(&mut img, &hydro, &coast, style);
+        let mut painted = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if *img.get_pixel(x, y) == image::Rgb(style.river) {
+                    painted += 1;
+                    assert!(!sea[(y * w + x) as usize], "delta painted a SEA cell at ({x},{y})");
+                }
+            }
+        }
+        assert!(painted > 0, "the delta fan should still draw on the land side");
     }
 
     #[test]

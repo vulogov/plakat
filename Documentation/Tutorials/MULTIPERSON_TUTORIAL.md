@@ -1,76 +1,165 @@
-# Tutorial: put specific people into a scene (`plakat multiperson`)
+# Putting specific people into a scene — `multiperson`
 
-`plakat multiperson` places **specific people** (each from a photo) into one generated
-scene, at relative locations you give in words. There are two identity strategies; pick by
-what you need.
+`plakat multiperson` places **specific people** (from reference photos) into one
+generated scene, each at a relative location given in words. As of **1.14.0** the
+same capability is a first-class **scenario task** and a **scripting word**, so you
+can batch people-in-scene compositions from automation — all three surfaces
+dispatch the *same* pipeline, so a given spec renders identically everywhere.
 
-## The fastest path
+- [What works (and the honest ceiling)](#what-works)
+- [CLI](#cli)
+- [Scenario task (`type: multiperson`)](#scenario)
+- [Scripting word (`plakat.multiperson`)](#scripting)
+- [Parity](#parity)
+
+Build with a GPU backend for any real run (`--features metal` on Apple Silicon,
+`--features cuda` on NVIDIA). SDXL + a few inpaint/swap passes fits 24 GB; keep
+`--size` modest.
+
+<a name="what-works"></a>
+## What works (and the honest ceiling)
+
+Identity strength scales with **face size**. The reliable recipe (verified):
+
+- Use **photos** — photoreal, frontal, light background. Not paintings. Close-up
+  crops are auto-padded so the face detector finds them.
+- Keep the prompt **minimal** (`"two people at a cafe table…"`) and **don't
+  describe each person** — the swap defines the faces. Describing "an old man with
+  a beard" bleeds that look onto *every* figure.
+- Keep figures **few and prominent** (closer = larger faces = stronger identity).
+  Two prominent figures read as specific people; a crowd of tiny faces swaps faintly.
+
+Two identity paths:
+
+| mode | flag | how | when |
+|------|------|-----|------|
+| **face-swap** | `--swap` (+ `--pose`) | generate a coherent scene with one OpenPose skeleton pinned per person, then face-swap each figure from the photo | recommended — best identity on prominent frontal faces |
+| **composite** | `--composite` | generate the background, then matte each person's actual photo in | exact identity, model-agnostic; reads as a cut-out unless `--harmonize`d |
+
+<a name="cli"></a>
+## CLI
 
 ```bash
 plakat multiperson \
-  "two people at a cafe table by a window, watercolor, upper body, facing the viewer" \
-  --person "alice:alice.png" --at "alice:left closer front" \
-  --person "bob:bob.png"     --at "bob:right closer front" \
-  --swap --pose
+  "an old man on the left and a woman on the right, sitting close together at a \
+   small cafe table by a window, soft daylight, watercolor, both facing the viewer" \
+  --person "p1:assets/people/1.png" --at "p1:left closer front" \
+  --person "p2:assets/people/2.png" --at "p2:right closer front" \
+  --model sdxl --swap --pose \
+  --size 1024x768 --steps 30 --guidance 7.5 --seed 42 \
+  --out ./out
 ```
 
-`--person LABEL:photo` gives each person a reference; `--at LABEL:"<position> <distance>
-<facing>"` places them. Axes (order-insensitive): position `left|center-left|center|
-center-right|right` · distance `closer|mid|farther` · facing `front|side|back`. Omit `--at`
-for a persona and a scene-aware LLM places them.
+`--person LABEL:PATH` declares a person; `--at LABEL:"where"` places them
+(`left|center|right` × `closer|farther` × `front|…`). Omit `--at` to auto-place.
+`--scale LABEL:0.7` makes a figure shorter (child) for the `--pose` skeleton.
+Useful extras: `--composite` / `--harmonize 0.3`, `--restore-faces`.
 
-## Two identity strategies
+<a name="scenario"></a>
+## Scenario task (`type: multiperson`)
 
-### `--swap` — face-swap into a coherent scene (the natural-looking path)
+Define each person **once** in the top-level `personas:` list, then reference them
+by name from a `type: multiperson` task. One scenario can batch several
+compositions (reusing loaded weights).
 
-Generates one coherent scene, then **face-swaps** each figure with that person's identity
-(SCRFD detect → ArcFace identity → `inswapper_128` → blend back). Add **`--pose`** to pin
-one synthetic OpenPose skeleton per region, so the model places a figure exactly where each
-person goes and the right face lands on the right figure.
+```hjson
+{
+  out: ./out/cast
 
-The face-swap models auto-download on first use. Override with `PLAKAT_SCRFD_WEIGHTS` /
-`PLAKAT_ARCFACE_WEIGHTS` / `PLAKAT_INSWAPPER_WEIGHTS` (or the `_HF` variants).
+  personas: [
+    {
+      name: oldman
+      photo: assets/people/1.png
+    }
+    {
+      name: woman
+      photo: assets/people/2.png
+    }
+  ]
 
-### `--composite` — exact identity, any model
+  tasks: [
+    {
+      name: cafe
+      type: multiperson
+      multiperson: {
+        scene: "two people at a small cafe table by a window, soft daylight, watercolor, both facing the viewer"
+        model: sdxl
+        swap: true
+        pose: true
+        size: 1024x768
+        steps: 30
+        guidance: 7.5
+        people: [
+          {
+            persona: oldman
+            at: "left closer front"
+          }
+          {
+            persona: woman
+            at: "right closer front"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
 
-Generates the scene **background with any text-to-image model**, mattes each person's actual
-photo (U2Net, no face model), and places them at their `--at` positions. Identity is
-**exact** (it's the real photo) and **model-agnostic**. Add `--harmonize 0.35` to img2img the
-result so the placed people share the scene's lighting/style.
+Run it:
 
 ```bash
-plakat multiperson "a cozy library // oil painting" \
-  --person "a:a.png" --at "a:left closer" --person "b:b.png" --at "b:right closer" \
-  --composite --harmonize 0.35
+plakat scenario cast.hjson
 ```
 
-## What works, honestly
+Every `multiperson:` field mirrors a CLI flag and serde-defaults, so a minimal
+block (just `scene` + `people`) inherits the CLI defaults (`768x768`, `plus-face`,
+30 steps, guidance 7.5). `people[].persona` must name a top-level persona;
+unknown names are rejected at load, before the model loads. `at`, `prompt`, and
+`scale` are per-person; identity mode (`swap` / `composite`, `pose`, `harmonize`,
+`restore-faces`) is per-task.
 
-Face-swap gets you a **recognizable person, naturally posed in the scene** — but it swaps the
-*inner face* only, and identity strength scales with face size. To get good results:
+> **HJSON gotcha.** Inside the `people:` array, put **each object field on its own
+> line** — the HJSON parser doesn't reliably consume inline commas
+> (`{ persona: a, at: "…" }` fails; the multi-line form above works).
 
-- **Use photos** — photoreal, roughly frontal, on a light background. Paintings give weak
-  identity. Tightly-cropped close-ups are auto-padded so the detector finds the face.
-- **Keep figures few and prominent.** Two prominent faces read clearly; a crowd of small
-  faces reads faintly. Frame with "upper body" / "head and shoulders".
-- **Keep the prompt minimal** — let the swap define the faces. Don't describe each person in
-  detail ("an old man with a big beard …") — that look bleeds onto every figure. A light
-  gender/age hint to set each figure's *type* is fine ("a man and a woman …").
-- **Hair, build, and head shape come from the generated figure**, not the swap. If a person
-  is defined by a distinctive hairstyle, set it in the prompt (or use `--composite`).
+<a name="scripting"></a>
+## Scripting word (`plakat.multiperson`)
 
-For **exact** whole-person fidelity regardless of pose, `--composite` is the honest choice —
-at the cost of a more "placed-in" look that `--harmonize` softens.
+`plakat.multiperson ( spec-path -- handle )` composes a people-in-scene image and
+pushes it as an image handle (then `plakat.save` writes it). The spec is a single
+self-contained file: the task fields **plus** an inline `personas` table mapping
+each name to a reference photo.
 
-## Convert your own face-swap weights
+`cast.json`:
 
-The defaults are `plakat convert-onnx` conversions of InsightFace's ONNX models. To build
-them yourself (e.g. a different SCRFD), the InsightFace packs ship the ONNX:
-
-```bash
-plakat convert-onnx det_500m.onnx     scrfd_500m.safetensors     --arch scrfd-500mf
-plakat convert-onnx w600k_r50.onnx    arcface_w600k.safetensors  --arch arcface-w600k
-plakat convert-onnx inswapper_128.onnx inswapper_128.safetensors --arch inswapper-128
+```json
+{
+  "scene": "two people at a small cafe table, soft daylight, watercolor",
+  "model": "sdxl",
+  "swap": true,
+  "pose": true,
+  "size": "1024x768",
+  "people": [
+    { "persona": "oldman", "at": "left closer front" },
+    { "persona": "woman",  "at": "right closer front" }
+  ],
+  "personas": {
+    "oldman": "assets/people/1.png",
+    "woman":  "assets/people/2.png"
+  }
+}
 ```
 
-> `inswapper_128` is InsightFace's research/non-commercial model — mind its license.
+```forth
+"cast.json" plakat.multiperson
+"cafe.png" plakat.save
+```
+
+<a name="parity"></a>
+## Parity
+
+All three surfaces build the **same** `MultipersonRequest` and call the same
+`pipelines::multiperson::run`. The scenario task and scripting word share one
+builder (`multiperson::scenario_task::build_request`) whose defaults mirror the
+CLI flags exactly, so an identical spec renders identically on every surface — the
+same discipline the map track follows (`map/scenario_task.rs`).

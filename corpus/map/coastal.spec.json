@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "name": "The Sundered Coast",
+  "scale_tier": 1,
+  "tile_grid": { "cols": 2, "rows": 2 },
+  "climate": "cold maritime",
+  "era": "late medieval",
+  "language": "en",
+  "terrain": {
+    "dominant_elevation": "mountainous",
+    "mountain_ranges": [
+      { "id": "frostwall", "name": "The Frostwall",
+        "anchor": { "kind": "cardinal", "position": "center" },
+        "orientation": "north-south", "length_fraction": 0.55, "height": "high" }
+    ],
+    "peninsulas": [
+      { "id": "the_horn", "name": "The Horn",
+        "anchor": { "kind": "cardinal", "position": "southeast" }, "size": "large" }
+    ],
+    "inlets": [
+      { "id": "stillwater", "name": "Stillwater Reach",
+        "anchor": { "kind": "cardinal", "position": "north" } }
+    ],
+    "fjords": [
+      { "id": "cold_arm", "name": "The Cold Arm",
+        "anchor": { "kind": "cardinal", "position": "northwest" }, "size": "deep" },
+      { "id": "grey_throat", "name": "The Grey Throat",
+        "anchor": { "kind": "cardinal", "position": "west" }, "size": "deep" }
+    ]
+  },
+  "water": {
+    "seas": [ { "id": "the_reach", "name": "The Cold Reach", "position": "west", "enclosed": false } ],
+    "rivers": [
+      { "id": "thaw", "name": "The Thaw",
+        "source": { "kind": "range_slope", "range": "frostwall", "facing": "west" },
+        "mouth": { "kind": "cardinal", "position": "northwest" }, "navigable": true }
+    ],
+    "lakes": []
+  },
+  "regions": [
+    { "id": "northmarch", "name": "The North March", "biome": "boreal_forest",
+      "anchor": { "kind": "cardinal", "position": "north" }, "coverage": 0.35 },
+    { "id": "fenlands", "name": "The Fenlands", "biome": "wetland",
+      "anchor": { "kind": "cardinal", "position": "southwest" }, "coverage": 0.2 }
+  ],
+  "landmarks": [
+    { "id": "fjordhold", "name": "Fjordhold", "kind": "port",
+      "anchor": { "kind": "mouth_of", "river": "thaw" } },
+    { "id": "hornwatch", "name": "Hornwatch", "kind": "fortress",
+      "anchor": { "kind": "cardinal", "position": "southeast" } }
+  ],
+  "infrastructure": {
+    "roads": [],
+    "walls": [],
+    "bridges": []
+  }
+}

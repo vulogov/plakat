@@ -12,6 +12,7 @@ pub mod analyser;
 pub mod placement;
 pub mod pose;
 pub mod prompt;
+pub mod scenario_task;
 
 pub use placement::{Distance, Facing, Placement, Position};
 pub use prompt::MultipersonPrompt;
@@ -77,6 +78,10 @@ pub struct MultipersonRequest {
     /// Face-swap identity path: generate one coherent scene, then swap each
     /// detected face with the persona matched to its placement region.
     pub swap: bool,
+    /// After `--swap`, run a low-strength ADetailer-style detail pass on the
+    /// swapped faces (sharpens small scene faces). Off by default — at higher
+    /// strength img2img can drift the swapped identity.
+    pub restore_faces: bool,
     /// Run the identity face-refinement pass after the body inpaint (detect each
     /// face with SCRFD, re-inpaint the face crop at high identity strength). This
     /// is what actually makes the personas *look like* their reference photos —
@@ -622,6 +627,27 @@ async fn run_swap(
         }
 
         scene_img.save(&scene_path)?;
+
+        // Optional low-strength ADetailer detail pass on the swapped faces.
+        if req.restore_faces {
+            let mut cfg = crate::pipelines::adetailer::Config::defaults();
+            cfg.model = req.model.clone();
+            cfg.device = req.device.clone();
+            cfg.strength = 0.18; // light — sharpen without drifting the swapped face
+            cfg.confidence = 0.35; // catch small/painterly scene faces
+            cfg.scheduler = req.scheduler;
+            match crate::pipelines::adetailer::refine_files(&cfg, &[scene_path.clone()], None).await {
+                Ok(n) => crate::ui::progress::println(&format!(
+                    "  {} face-restore refined {n} face(s)",
+                    console::style("·").cyan()
+                )),
+                Err(e) => crate::ui::progress::println(&format!(
+                    "  {} face-restore skipped ({e})",
+                    console::style("!").yellow().bold()
+                )),
+            }
+        }
+
         write_sidecar(req, resolved, mp, &base_prompt, seed, &scene_path)?;
         crate::ui::progress::println(&format!(
             "  {} {}",

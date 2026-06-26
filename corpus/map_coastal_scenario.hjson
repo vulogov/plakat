@@ -1,0 +1,34 @@
+{
+    // ===================================================================
+    // plakat proof corpus — coastal + multi-tile `map` tasks (1.14.0-B)
+    // ===================================================================
+    // Proves the 1.13.0 map features reach the automation surface byte-for-byte:
+    //   * a `type: map` task over the coastal spec (peninsulas + inlets + fjords)
+    //     renders the SAME linework as `--map-render`.
+    //   * `map-render-tiles: true` slices the world into seamless tiles, identical
+    //     to the CLI `--map-render-tiles`.
+    // No GPU, no network, no API key — deterministic linework only.
+    //
+    //   plakat scenario corpus/map_coastal_scenario.hjson
+    // ===================================================================
+    out: ./corpus/images/map/scenario
+    seed: 7
+
+    tasks:
+    [
+        {
+            name: coastal
+            type: map
+            seed: 7
+            map-spec: corpus/map/coastal.spec.json
+            map-style: parchment
+        }
+        {
+            name: coastal-world
+            type: map
+            seed: 7
+            map-spec: corpus/map/coastal.spec.json
+            map-render-tiles: true
+        }
+    ]
+}

@@ -56,3 +56,20 @@ mkdir -p "$OUT"
 echo "✓ multiperson --swap --pose: 2 prominent people swapped into a watercolor scene → corpus/images/multiperson/"
 echo "  identity scales with face size — keep figures few + prominent; use PHOTOS on a light bg; minimal prompt."
 echo "  for >2 people the faces get small and read faintly. alt identity: --composite (exact-photo cut-outs, any model)."
+
+# --composite is the OTHER identity path: generate the scene BACKGROUND with any
+# model, then matte each persona's ACTUAL photo (U2Net cutout) and place it. The
+# identity is exact (it IS the photo) and model-agnostic; add --harmonize to
+# img2img-blend the cut-outs into the scene palette so they don't read as stickers.
+if [ "${COMPOSITE:-1}" = "1" ]; then
+  # Describe the SETTING only (no people) — the cut-outs ARE the people, so a
+  # peopled prompt just clutters the background behind them.
+  "$PLAKAT" multiperson \
+    "a sunny garden terrace with stone steps, potted flowers and a low wall, empty, soft natural daylight, photographic" \
+    --person "p1:$PEOPLE/1.png" --at "p1:left closer front" \
+    --person "p2:$PEOPLE/2.png" --at "p2:right closer front" \
+    --model "$MODEL" --composite --harmonize 0.3 \
+    --size "$SIZE" --steps "$STEPS" --guidance 7.0 --seed "$SEED" \
+    --out "$OUT"
+  echo "  ✓ multiperson --composite --harmonize: exact-photo cut-outs placed + blended → corpus/images/multiperson/"
+fi

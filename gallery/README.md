@@ -1,6 +1,6 @@
 # plakat gallery
 
-11 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+12 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -21,6 +21,7 @@
   <tr>
     <td width="33%"><img src="10.png" alt="a cozy cottage in an autumn forest, golden leaves, photorealistic"></td>
     <td width="33%"><img src="11.png" alt=""></td>
+    <td width="33%"><img src="12.png" alt=""></td>
   </tr>
 </table>
 
@@ -111,6 +112,12 @@ Negative: `blurry, low quality, watermark`
 ### 11.png
 
 ![11.png](11.png)
+
+_(no embedded metadata)_
+
+### 12.png
+
+![12.png](12.png)
 
 _(no embedded metadata)_
 
