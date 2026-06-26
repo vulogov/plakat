@@ -21,9 +21,20 @@ pub struct ModelRow {
     pub repo: String,
 }
 
+/// Live load state, fed by the ModelService over its channel.
+#[derive(Clone, Default)]
+pub enum LoadState {
+    #[default]
+    Idle,
+    Loading(String),
+    Loaded { alias: String, used_gb: f64 },
+    Error(String),
+}
+
 pub struct ModelsState {
     pub rows: Vec<ModelRow>,
     pub selected: usize,
+    pub load: LoadState,
 }
 
 impl Default for ModelsState {
@@ -45,7 +56,30 @@ impl ModelsState {
                 repo: e.repo.to_string(),
             })
             .collect();
-        Self { rows, selected: 0 }
+        Self { rows, selected: 0, load: LoadState::Idle }
+    }
+
+    /// The alias the cursor is on (what [L]/[U] act on).
+    pub fn selected_alias(&self) -> Option<String> {
+        self.rows.get(self.selected).map(|r| r.alias.clone())
+    }
+
+    /// Apply a ModelService status update.
+    pub fn apply(&mut self, msg: &crate::ui::tui::services::model_service::ModelMessage) {
+        use crate::ui::tui::services::model_service::ModelMessage as M;
+        self.load = match msg {
+            M::LoadStarted(a) => LoadState::Loading(a.clone()),
+            M::Loaded { alias, used_gb } => LoadState::Loaded { alias: alias.clone(), used_gb: *used_gb },
+            M::Unloaded => LoadState::Idle,
+            M::Error(e) => LoadState::Error(e.clone()),
+        };
+    }
+
+    fn loaded_alias(&self) -> Option<&str> {
+        match &self.load {
+            LoadState::Loaded { alias, .. } => Some(alias.as_str()),
+            _ => None,
+        }
     }
 
     fn next(&mut self) {
@@ -95,15 +129,37 @@ impl ModelsState {
     }
 
     fn render_memory_bar(&self, f: &mut Frame, area: Rect) {
+        // RAM on the left, swap on the right.
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
+            .split(area);
+
+        // RAM (unified memory).
         let total = crate::hw::total_ram_gb().max(0.1);
         let used = (total - crate::hw::available_ram_gb()).clamp(0.0, total);
-        let ratio = (used / total).clamp(0.0, 1.0);
-        let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" Memory (unified) "))
+        let ram = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(" RAM (unified) "))
             .gauge_style(Style::new().fg(Color::Cyan))
-            .ratio(ratio)
+            .ratio((used / total).clamp(0.0, 1.0))
             .label(format!("{used:.1} / {total:.1} GB"));
-        f.render_widget(gauge, area);
+        f.render_widget(ram, cols[0]);
+
+        // Swap — heavy swap signals an over-budget load.
+        let (swap_used, swap_total) = crate::hw::swap_gb();
+        let (swap_ratio, swap_label) = if swap_total > 0.05 {
+            ((swap_used / swap_total).clamp(0.0, 1.0), format!("{swap_used:.1} / {swap_total:.1} GB"))
+        } else {
+            (0.0, "off".to_string())
+        };
+        // Amber/red once swap is meaningfully in use (memory pressure).
+        let swap_color = if swap_used > 1.0 { Color::Red } else if swap_used > 0.1 { Color::Yellow } else { Color::Magenta };
+        let swap = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(" Swap "))
+            .gauge_style(Style::new().fg(swap_color))
+            .ratio(swap_ratio)
+            .label(swap_label);
+        f.render_widget(swap, cols[1]);
     }
 
     fn render_list(&self, f: &mut Frame, area: Rect) {
@@ -125,11 +181,17 @@ impl ModelsState {
             } else {
                 Span::raw("")
             };
+            let loaded = if self.loaded_alias() == Some(row.alias.as_str()) {
+                Span::styled(" ✓ loaded", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else {
+                Span::raw("")
+            };
             items.push(ListItem::new(Line::from(vec![
                 fam,
                 Span::styled(format!("{:<16}", row.alias), Style::new().fg(Color::White)),
                 Span::styled(row.kind.clone(), Style::new().fg(Color::DarkGray)),
                 gated,
+                loaded,
             ])));
         }
         let list = List::new(items)
@@ -155,10 +217,19 @@ impl ModelsState {
                     Line::from(Span::styled(r.note.clone(), Style::new().fg(Color::Gray))),
                     Line::from(""),
                 ];
-                lines.push(Line::from(Span::styled(
-                    "[L] Load  [U] Unload  — coming in the next increment",
-                    Style::new().fg(Color::DarkGray),
-                )));
+                let status = match &self.load {
+                    LoadState::Idle => Span::styled("[L] Load   [U] Unload", Style::new().fg(Color::Gray)),
+                    LoadState::Loading(a) => Span::styled(
+                        format!("⟳ loading {a}… (downloads on first use; UI stays responsive)"),
+                        Style::new().fg(Color::Yellow),
+                    ),
+                    LoadState::Loaded { alias, used_gb } => Span::styled(
+                        format!("✓ {alias} loaded · {used_gb:.1} GB in use   [U] Unload"),
+                        Style::new().fg(Color::Green),
+                    ),
+                    LoadState::Error(e) => Span::styled(format!("✗ {e}"), Style::new().fg(Color::Red)),
+                };
+                lines.push(Line::from(status));
                 lines
             }
             None => vec![Line::from("No models.")],

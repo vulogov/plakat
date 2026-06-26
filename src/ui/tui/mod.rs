@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod screens;
+pub mod services;
 pub mod workspace;
 
 use anyhow::Result;
@@ -40,9 +41,11 @@ pub fn run(args: UiArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let interactive = std::io::stdin().is_terminal();
     let ws = workspace::resolve_or_create(args.workspace, &cwd, interactive)?;
-    // Launch the TUI shell (tab bar + status bar + screen switching). The Chat +
-    // Models screen bodies + background services land in the next increments.
-    app::App::new(ws, picker).run()
+    // The model thread loads on the app's existing multi-thread runtime; select the
+    // default device (Metal/CUDA/CPU) up front so loads land on the GPU.
+    let device = crate::device::select("auto")?;
+    let rt = tokio::runtime::Handle::current();
+    app::App::new(ws, picker, device, rt).run()
 }
 
 /// Detect a usable pixel graphics protocol. Returns the `Picker` (used later to

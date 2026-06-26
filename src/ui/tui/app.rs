@@ -15,9 +15,12 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Paragraph, Tabs},
 };
+use candle_core::Device;
 use ratatui_image::picker::Picker;
+use tokio::runtime::Handle;
 
 use super::screens::models::ModelsState;
+use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
@@ -91,16 +94,19 @@ pub struct App {
     pub should_quit: bool,
     // Per-screen state (persists across screen switches).
     pub models: ModelsState,
+    // Background services.
+    pub model_svc: ModelService,
 }
 
 impl App {
-    pub fn new(workspace: Workspace, picker: Picker) -> Self {
+    pub fn new(workspace: Workspace, picker: Picker, device: Device, rt: Handle) -> Self {
         Self {
             workspace,
             picker,
             screen: ActiveScreen::Chat,
             should_quit: false,
             models: ModelsState::new(),
+            model_svc: ModelService::spawn(device, rt),
         }
     }
 
@@ -141,6 +147,11 @@ impl App {
                     self.handle_key(key);
                 }
             }
+            // Drain background-service messages each tick so a load in flight
+            // updates the UI without blocking the event loop.
+            while let Some(msg) = self.model_svc.try_recv() {
+                self.models.apply(&msg);
+            }
         }
         Ok(())
     }
@@ -177,11 +188,20 @@ impl App {
 
     /// Delegate a non-global key to the active screen.
     fn handle_screen_key(&mut self, key: KeyEvent) {
-        match self.screen {
-            ActiveScreen::Models => {
-                self.models.handle_key(key);
+        if self.screen == ActiveScreen::Models {
+            match key.code {
+                // [L] load the selected model, [U] unload — dispatched to the
+                // background ModelService (the event loop stays live during load).
+                KeyCode::Char('l' | 'L') => {
+                    if let Some(alias) = self.models.selected_alias() {
+                        self.model_svc.load(alias);
+                    }
+                }
+                KeyCode::Char('u' | 'U') => self.model_svc.unload(),
+                _ => {
+                    self.models.handle_key(key);
+                }
             }
-            _ => {}
         }
     }
 
@@ -242,10 +262,18 @@ mod tests {
     use super::*;
     use crate::ui::tui::workspace::{Workspace, WorkspaceConfig};
 
+    /// One shared runtime for the whole test binary (the nav tests never block on
+    /// it — the model thread just idles on its command channel).
+    fn test_handle() -> Handle {
+        use std::sync::OnceLock;
+        static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        RT.get_or_init(|| tokio::runtime::Runtime::new().unwrap()).handle().clone()
+    }
+
     fn test_app() -> App {
         let ws = Workspace { root: "/tmp/plakat-ui-test".into(), config: WorkspaceConfig::default() };
         // A synthetic Picker (no terminal query) so the navigation logic is testable.
-        App::new(ws, Picker::from_fontsize((8, 16)))
+        App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle())
     }
 
     fn key(c: char, ctrl: bool) -> KeyEvent {

@@ -91,6 +91,15 @@ pub fn total_ram_gb() -> f64 {
     total_ram_bytes() as f64 / 1e9
 }
 
+/// Swap usage as `(used_gb, total_gb)`. Heavy swap during/after a model load is a
+/// red flag for an over-budget model — the TUI surfaces it next to RAM. `(0, 0)`
+/// when swap is disabled.
+pub fn swap_gb() -> (f64, f64) {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    (sys.used_swap() as f64 / 1e9, sys.total_swap() as f64 / 1e9)
+}
+
 /// Coarse memory-pressure level. On macOS this is the **kernel's own** signal
 /// (`kern.memorystatus_vm_pressure_level`) which — unlike "free RAM" — already
 /// accounts for the reclaimable inactive / compressed / cached pages the OS
