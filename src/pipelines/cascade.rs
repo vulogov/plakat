@@ -520,6 +520,7 @@ impl Pipeline {
         seed: u64,
         scheduler_kind: SchedulerKind,
         control: Option<&ControlConditioning>,
+        hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         self.generate_at_size(
             prompt,
@@ -534,6 +535,7 @@ impl Pipeline {
             control,
             None,
             None,
+            hook,
         )
     }
 
@@ -584,6 +586,7 @@ impl Pipeline {
         // uncond/CFG-negative row is zeroed, matching upstream's
         // `negative_image_embeds = zeros_like`. `None` → zeroed slot.
         image_embed: Option<&Tensor>,
+        hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
         use crate::pipelines::cascade_scheduler::CascadeScheduler;
@@ -743,6 +746,12 @@ impl Pipeline {
             latent_c = c_scheduler.step(&guided, t, &latent_c)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
+            // RFC TUI-1 §0-R0-3: per-step hook on Stage C (progress + cancel).
+            if crate::pipelines::step_hook::step(hook, step_idx, c_timesteps.len())
+                == crate::pipelines::step_hook::StepControl::Cancel
+            {
+                return Err(anyhow::anyhow!("cancelled"));
+            }
         }
         bar.finish_and_clear();
 
@@ -788,7 +797,7 @@ impl Pipeline {
             b_timesteps.len() as u64,
             "cascade stage B (decoder)",
         );
-        for &t in &b_timesteps {
+        for (step_idx, &t) in b_timesteps.iter().enumerate() {
             let cfg_latent = Tensor::cat(&[&latent_b, &latent_b], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
                 .to_dtype(self.dtype)?
@@ -816,6 +825,12 @@ impl Pipeline {
             latent_b = b_scheduler.step(&guided, t, &latent_b)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
+            // RFC TUI-1 §0-R0-3: per-step hook on Stage B (progress + cancel).
+            if crate::pipelines::step_hook::step(hook, step_idx, b_timesteps.len())
+                == crate::pipelines::step_hook::StepControl::Cancel
+            {
+                return Err(anyhow::anyhow!("cancelled"));
+            }
         }
         bar.finish_and_clear();
 
@@ -894,6 +909,8 @@ impl Pipeline {
         } else {
             None
         };
+        // img2img is not hooked yet (follow-up); pass a no-op StepHook.
+        let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
         self.generate_at_size(
             prompt,
             negative,
@@ -907,6 +924,7 @@ impl Pipeline {
             control,
             Some((&init_b, strength)),
             image_embed.as_ref(),
+            &mut nohook,
         )
     }
 
@@ -932,6 +950,8 @@ impl Pipeline {
         control: Option<&ControlConditioning>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         let image_embed = self.encode_image_embed(ref_image_path)?;
+        // image-variation is not hooked yet (follow-up); pass a no-op StepHook.
+        let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
         self.generate_at_size(
             prompt,
             negative,
@@ -945,6 +965,7 @@ impl Pipeline {
             control,
             None,
             Some(&image_embed),
+            &mut nohook,
         )
     }
 }
@@ -1028,6 +1049,17 @@ fn maybe_merge_loras(
 /// Phase 0: bails after a successful CLIP-G load, proving the
 /// dispatch wiring + the text-encoder foundation.
 pub async fn run(req: RunRequest) -> Result<()> {
+    run_hooked(req, None).await
+}
+
+/// As [`run`] with an optional per-step [`StepHook`](crate::pipelines::step_hook::StepHook)
+/// (RFC TUI-1 §0-R0-3) on the text-to-image path (Stage C + B progress + cancel).
+/// On cancel the sampler returns an error that the caller distinguishes from a real
+/// failure via the shared cancel flag. `None` = the unchanged CLI path.
+pub async fn run_hooked(
+    req: RunRequest,
+    mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+) -> Result<()> {
     let repo = if req.model.contains('/') {
         req.model.clone()
     } else {
@@ -1205,6 +1237,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
                 seed,
                 req.scheduler,
                 control_conditioning.as_ref(),
+                &mut hook,
             )?
         };
 
@@ -1946,6 +1979,7 @@ mod tests {
         };
 
         eprintln!("All 4 stages loaded. Running generate at 256² with 2+2 steps...");
+        let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
         let result = pipeline.generate_at_size(
             "a misty forest at dawn, painterly",
             "blurry, low quality",
@@ -1959,6 +1993,7 @@ mod tests {
             None,
             None,
             None,
+            &mut nohook,
         );
         match result {
             Ok((buf, w, h)) => {

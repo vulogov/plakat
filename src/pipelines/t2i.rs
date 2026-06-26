@@ -1605,6 +1605,19 @@ impl Pipeline {
         req: &GenRequest,
         cfg: crate::pipelines::tiled::TiledConfig,
     ) -> Result<()> {
+        self.generate_tiled_hooked(req, cfg, None)
+    }
+
+    /// As [`generate_tiled`](Self::generate_tiled) with an optional per-step
+    /// [`StepHook`](crate::pipelines::step_hook::StepHook) (RFC TUI-1 §0-R0-3) on
+    /// the refine stage (whose latents are decoded + saved). `None` = the unchanged
+    /// CLI path. Progress + cancel; the coarse base pre-pass is not hooked.
+    pub fn generate_tiled_hooked(
+        &self,
+        req: &GenRequest,
+        cfg: crate::pipelines::tiled::TiledConfig,
+        mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+    ) -> Result<()> {
         use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
 
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
@@ -1675,6 +1688,8 @@ impl Pipeline {
 
         let vae_scale: f64 = self.core.variant.vae_scale();
 
+        // RFC TUI-1 §0-R0-3: set when a StepHook requests cancellation (refine stage).
+        let mut cancelled = false;
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -1779,7 +1794,7 @@ impl Pipeline {
                 &format!("tiled refine {}/{}", idx + 1, req.count),
             );
 
-            for &timestep in &active {
+            for (step_i, &timestep) in active.iter().enumerate() {
                 // Accumulator + weight buffers, full-latent-sized.
                 // `acc` holds Σ window·noise_pred, `weights` holds Σ window.
                 let mut acc = Tensor::zeros(
@@ -1885,6 +1900,13 @@ impl Pipeline {
 
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
+                // RFC TUI-1 §0-R0-3: per-step hook on the refine stage.
+                if crate::pipelines::step_hook::step(&mut hook, step_i, active.len())
+                    == crate::pipelines::step_hook::StepControl::Cancel
+                {
+                    cancelled = true;
+                    break;
+                }
             }
             bar.finish_and_clear();
 
@@ -1923,6 +1945,10 @@ impl Pipeline {
                 .join(format!("plakat-{seed}.{}", req.output_format.extension()));
             save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
+            // RFC TUI-1 §0-R0-3: a cancelled refine step saved this partial; stop.
+            if cancelled {
+                break;
+            }
         }
         Ok(())
     }

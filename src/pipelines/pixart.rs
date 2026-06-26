@@ -388,6 +388,7 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         anyhow::ensure!(
             width % 8 == 0 && height % 8 == 0,
@@ -437,7 +438,8 @@ impl Pipeline {
 
         // ---- Denoise loop. ----
         let bar = crate::ui::progress::step_bar(timesteps.len() as u64, "pixart");
-        for &t in &timesteps {
+        let n_steps = timesteps.len();
+        for (step_i, &t) in timesteps.iter().enumerate() {
             let scaled = scheduler.scale_model_input(latents.clone(), t)?;
             // Replicate along batch for CFG: (2, 4, lh, lw).
             let scaled_cfg = Tensor::cat(&[&scaled, &scaled], 0)?;
@@ -466,6 +468,13 @@ impl Pipeline {
             latents = scheduler.step(&guided, t, &latents)?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
+            // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
+            // On Cancel, decode + return the partial; the caller stops the count loop.
+            if crate::pipelines::step_hook::step(hook, step_i, n_steps)
+                == crate::pipelines::step_hook::StepControl::Cancel
+            {
+                break;
+            }
         }
         bar.finish_and_clear();
 
@@ -514,6 +523,15 @@ pub struct RunRequest {
 }
 
 pub async fn run(req: RunRequest) -> Result<()> {
+    run_hooked(req, None).await
+}
+
+/// As [`run`] with an optional per-step [`StepHook`](crate::pipelines::step_hook::StepHook)
+/// (RFC TUI-1 §0-R0-3) for TUI progress + cancellation. `None` = the CLI path.
+pub async fn run_hooked(
+    req: RunRequest,
+    mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+) -> Result<()> {
     let repo = if req.model.contains('/') {
         req.model.clone()
     } else {
@@ -576,6 +594,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             req.guidance,
             seed,
             req.scheduler,
+            &mut hook,
         )?;
 
         // Build sidecar metadata. PixArt now emits the full v0.34
@@ -607,6 +626,10 @@ pub async fn run(req: RunRequest) -> Result<()> {
             console::style("✓").green().bold(),
             out_path.display()
         ));
+        // RFC TUI-1 §0-R0-3: a cancelled denoise saved this partial; stop.
+        if crate::pipelines::step_hook::is_cancelled(&hook) {
+            break;
+        }
     }
 
     Ok(())

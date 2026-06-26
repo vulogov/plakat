@@ -1681,6 +1681,7 @@ impl Pipeline {
                     fill_cond_2d.as_ref(),
                     kontext_ref_2d_opt.as_ref(),
                     &bar,
+                    &mut hook,
                 )?
             } else {
                 bar.set_message(format!("flow-match denoise, {steps} steps, seed={seed}"));
@@ -2414,6 +2415,7 @@ impl Pipeline {
         // mirror the non-tiled Kontext path.
         kontext_ref_2d: Option<&Tensor>,
         bar: &indicatif::ProgressBar,
+        hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<Tensor> {
         use crate::pipelines::tiled::{hann_window_2d, tile_positions, TilePos};
 
@@ -2687,6 +2689,12 @@ impl Pipeline {
             let pred_canvas = pred_acc.broadcast_div(&weight_acc)?;
             canvas = (canvas + pred_canvas * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
+            // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
+            if crate::pipelines::step_hook::step(hook, step_i, num_steps)
+                == crate::pipelines::step_hook::StepControl::Cancel
+            {
+                break;
+            }
         }
 
         Ok(canvas)

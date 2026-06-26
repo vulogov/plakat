@@ -193,6 +193,7 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                     }
                     _ => None,
                 };
+            let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
             pipeline.generate(
                 &prompt_owned,
                 &negative,
@@ -205,6 +206,7 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 seed,
                 scheduler,
                 control.as_ref(),
+                &mut nohook,
             )?
         };
 

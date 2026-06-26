@@ -111,6 +111,7 @@ fn do_plakat_pixart(vm: &mut VM) -> anyhow::Result<&mut VM> {
         // released before push_image_with_metadata mutates ctx.
         let (buf, ow, oh) = {
             let pipeline = ctx.get_or_load_pixart()?;
+            let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
             pipeline.generate(
                 &prompt_owned,
                 &negative,
@@ -120,6 +121,7 @@ fn do_plakat_pixart(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 guidance,
                 seed,
                 scheduler,
+                &mut nohook,
             )?
         };
 

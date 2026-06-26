@@ -3932,6 +3932,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                     };
                 for img_idx in 0..eff_count {
                     let img_seed = task_seed.wrapping_add(img_idx as u64);
+                    let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
                     let (buf, ow, oh) = cp.generate(
                         &final_prompt,
                         &eff_negative,
@@ -3945,6 +3946,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         img_seed,
                         eff_scheduler,
                         cascade_control.as_ref(),
+                        &mut nohook,
                     )?;
                     let mut m = GenerationMetadata::new(
                         final_prompt.clone(),
@@ -4013,6 +4015,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                 // honour eff_count by stepping the seed per-image.
                 for img_idx in 0..eff_count {
                     let img_seed = task_seed.wrapping_add(img_idx as u64);
+                    let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
                     let (buf, ow, oh) = pp.generate(
                         &final_prompt,
                         &eff_negative,
@@ -4022,6 +4025,7 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
                         eff_guidance,
                         img_seed,
                         eff_scheduler,
+                        &mut nohook,
                     )?;
                     // Build sidecar metadata. Same field set
                     // `pixart::run` emits (v0.35 phase 4).
