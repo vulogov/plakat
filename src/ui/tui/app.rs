@@ -151,9 +151,14 @@ impl App {
                 }
             }
             // Tab / Shift-Tab cycle screens — universal fallback for terminals
-            // (e.g. iTerm2) where Ctrl+digit isn't disambiguated.
-            KeyCode::Tab => self.screen = self.screen.cycle(1),
+            // (e.g. iTerm2) where Ctrl+digit isn't disambiguated. Shift-Tab arrives
+            // as `BackTab` on legacy terminals, but as `Tab + SHIFT` once the kbd
+            // protocol is on — handle both so it always goes backward.
             KeyCode::BackTab => self.screen = self.screen.cycle(-1),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.screen = self.screen.cycle(-1)
+            }
+            KeyCode::Tab => self.screen = self.screen.cycle(1),
             // Esc: reserved for back/cancel (no-op until a screen uses it).
             KeyCode::Esc => {}
             _ => {}
@@ -250,10 +255,11 @@ mod tests {
         let mut a = test_app();
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(matches!(a.screen, ActiveScreen::Models));
+        // Shift-Tab as legacy BackTab → backward.
         a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Chat));
-        // wraps backwards from the first screen to the last
-        a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps).
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Canvas));
     }
 
