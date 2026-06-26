@@ -19,6 +19,7 @@ use candle_core::Device;
 use ratatui_image::picker::Picker;
 use tokio::runtime::Handle;
 
+use super::screens::chat::{ChatAction, ChatState};
 use super::screens::models::ModelsState;
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
@@ -93,6 +94,7 @@ pub struct App {
     pub screen: ActiveScreen,
     pub should_quit: bool,
     // Per-screen state (persists across screen switches).
+    pub chat: ChatState,
     pub models: ModelsState,
     // Background services.
     pub model_svc: ModelService,
@@ -105,6 +107,7 @@ impl App {
             picker,
             screen: ActiveScreen::Chat,
             should_quit: false,
+            chat: ChatState::new(),
             models: ModelsState::new(),
             model_svc: ModelService::spawn(device, rt),
         }
@@ -158,35 +161,60 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // ── Always-global keys (work even while a text input is focused) ──
         match key.code {
-            // Ctrl-Q / Ctrl-C quit; plain `q` quits too while no screen owns text
-            // input (the Chat input will gate this once it lands). Esc is "back",
-            // NOT quit — treating it as quit made legacy Ctrl-3 (== Esc) kill the app.
+            KeyCode::Char('c' | 'q') if ctrl => {
+                self.should_quit = true;
+                return;
+            }
+            // Ctrl-1..8 — disambiguated screen jump (Kitty/Ghostty/WezTerm/foot).
+            KeyCode::Char(c @ '1'..='8') if ctrl => {
+                if let Some(s) = ActiveScreen::from_index((c as u8 - b'1') as usize) {
+                    self.screen = s;
+                }
+                return;
+            }
+            // Tab / Shift-Tab cycle screens — universal (BackTab legacy; Tab+SHIFT
+            // under the kbd protocol).
+            KeyCode::BackTab => {
+                self.screen = self.screen.cycle(-1);
+                return;
+            }
+            KeyCode::Tab if shift => {
+                self.screen = self.screen.cycle(-1);
+                return;
+            }
+            KeyCode::Tab => {
+                self.screen = self.screen.cycle(1);
+                return;
+            }
+            _ => {}
+        }
+
+        // ── Chat owns text input: plain chars / Enter / Backspace go to it. ──
+        if self.screen == ActiveScreen::Chat {
+            if let ChatAction::Submit(prompt) = self.chat.handle_key(key) {
+                // Generation dispatch lands in the next increment; record it for now.
+                self.chat.push_utterance(prompt);
+            }
+            return;
+        }
+
+        // ── Non-input screens: plain digits switch, q quits, else delegate. ──
+        match key.code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('c' | 'q') if ctrl => self.should_quit = true,
-            // Ctrl-1..8 (RFC) or plain 1..8 — universal, works on every terminal.
             KeyCode::Char(c @ '1'..='8') => {
                 if let Some(s) = ActiveScreen::from_index((c as u8 - b'1') as usize) {
                     self.screen = s;
                 }
             }
-            // Tab / Shift-Tab cycle screens — universal fallback for terminals
-            // (e.g. iTerm2) where Ctrl+digit isn't disambiguated. Shift-Tab arrives
-            // as `BackTab` on legacy terminals, but as `Tab + SHIFT` once the kbd
-            // protocol is on — handle both so it always goes backward.
-            KeyCode::BackTab => self.screen = self.screen.cycle(-1),
-            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.screen = self.screen.cycle(-1)
-            }
-            KeyCode::Tab => self.screen = self.screen.cycle(1),
-            // Esc: reserved for back/cancel (no-op until a screen uses it).
             KeyCode::Esc => {}
-            // Anything else → the active screen's own handler (list nav, etc.).
             _ => self.handle_screen_key(key),
         }
     }
 
-    /// Delegate a non-global key to the active screen.
+    /// Delegate a non-global key to the active (non-input) screen.
     fn handle_screen_key(&mut self, key: KeyEvent) {
         if self.screen == ActiveScreen::Models {
             match key.code {
@@ -229,16 +257,7 @@ impl App {
     fn render_content(&self, f: &mut Frame, area: Rect) {
         match self.screen {
             ActiveScreen::Models => self.models.render(f, area),
-            ActiveScreen::Chat => {
-                // Chat body lands in the next increment.
-                let body = format!(
-                    "[Chat] — conversational generation lands next.\n\nworkspace: {}\n{}",
-                    self.workspace.config.name,
-                    self.workspace.root.display()
-                );
-                let block = Block::default().borders(Borders::ALL).title("Chat");
-                f.render_widget(Paragraph::new(body).block(block), area);
-            }
+            ActiveScreen::Chat => self.chat.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -248,10 +267,13 @@ impl App {
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let txt = format!(
-            " {} · 1-8 / Tab switch · Ctrl-Q quit ",
-            self.workspace.config.name
-        );
+        // On Chat the input owns plain keys, so advertise the input-safe switches.
+        let nav = if self.screen == ActiveScreen::Chat {
+            "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
+        } else {
+            "1-8 / Tab switch · Ctrl-Q quit"
+        };
+        let txt = format!(" {} · {nav} ", self.workspace.config.name);
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
     }
@@ -295,12 +317,26 @@ mod tests {
 
     #[test]
     fn quit_keys_set_should_quit() {
+        // Ctrl-Q / Ctrl-C quit from any screen (incl. the Chat input).
         let mut a = test_app();
-        a.handle_key(key('q', false));
+        a.handle_key(key('q', true));
         assert!(a.should_quit);
         let mut b = test_app();
-        b.handle_key(key('c', true)); // Ctrl-C
+        b.handle_key(key('c', true));
         assert!(b.should_quit);
+        // Plain `q` quits on a non-input screen (Models) but NOT on Chat (it types).
+        let mut c = test_app();
+        c.screen = ActiveScreen::Models;
+        c.handle_key(key('q', false));
+        assert!(c.should_quit);
+    }
+
+    #[test]
+    fn plain_q_types_into_chat_not_quit() {
+        let mut a = test_app(); // starts on Chat
+        a.handle_key(key('q', false));
+        assert!(!a.should_quit, "plain q types into the Chat input");
+        assert_eq!(a.chat.input, "q");
     }
 
     #[test]

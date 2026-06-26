@@ -41,11 +41,58 @@ pub fn run(args: UiArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let interactive = std::io::stdin().is_terminal();
     let ws = workspace::resolve_or_create(args.workspace, &cwd, interactive)?;
+    // The TUI owns the terminal. Two sources of stray output would scribble over
+    // the alternate screen during a background load/denoise: (1) the CLI's indicatif
+    // bars + `progress::println`, and (2) `tracing` logs on stderr. Suppress the
+    // first, and redirect stderr to a per-workspace log file for the second.
+    crate::ui::progress::set_quiet(true);
+    #[cfg(unix)]
+    let _stderr_guard = StderrGuard::redirect_to(&ws.cache_dir().join("ui.log"));
     // The model thread loads on the app's existing multi-thread runtime; select the
     // default device (Metal/CUDA/CPU) up front so loads land on the GPU.
     let device = crate::device::select("auto")?;
     let rt = tokio::runtime::Handle::current();
     app::App::new(ws, picker, device, rt).run()
+}
+
+/// RAII guard that redirects process stderr (fd 2) to a file for the TUI's
+/// lifetime — so `tracing` / stray `eprintln!` from background work land in a log
+/// instead of corrupting the alternate screen. Restores the original stderr on drop.
+#[cfg(unix)]
+struct StderrGuard {
+    saved_fd: i32,
+}
+
+#[cfg(unix)]
+impl StderrGuard {
+    fn redirect_to(path: &std::path::Path) -> Option<Self> {
+        use std::os::unix::io::AsRawFd;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+        // SAFETY: dup/dup2/close on valid fds; STDERR keeps the file's open
+        // description after dup2, so `file` may drop.
+        let saved_fd = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if saved_fd < 0 {
+            return None;
+        }
+        unsafe {
+            libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+        }
+        Some(Self { saved_fd })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrGuard {
+    fn drop(&mut self) {
+        // SAFETY: restore the saved stderr and release the dup.
+        unsafe {
+            libc::dup2(self.saved_fd, libc::STDERR_FILENO);
+            libc::close(self.saved_fd);
+        }
+    }
 }
 
 /// Detect a usable pixel graphics protocol. Returns the `Picker` (used later to
