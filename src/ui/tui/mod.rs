@@ -6,6 +6,7 @@
 //! resolver, app/event loop, and screens land in subsequent Phase-1 increments.
 
 pub mod app;
+pub mod screens;
 pub mod workspace;
 
 use anyhow::Result;

@@ -85,6 +85,12 @@ pub fn available_ram_gb() -> f64 {
     sys.available_memory() as f64 / 1e9
 }
 
+/// Total system RAM (GB). On Apple-Silicon unified memory this is also the GPU
+/// budget — the denominator the TUI memory bar shows.
+pub fn total_ram_gb() -> f64 {
+    total_ram_bytes() as f64 / 1e9
+}
+
 /// Coarse memory-pressure level. On macOS this is the **kernel's own** signal
 /// (`kern.memorystatus_vm_pressure_level`) which — unlike "free RAM" — already
 /// accounts for the reclaimable inactive / compressed / cached pages the OS

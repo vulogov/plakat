@@ -17,6 +17,7 @@ use ratatui::{
 };
 use ratatui_image::picker::Picker;
 
+use super::screens::models::ModelsState;
 use super::workspace::Workspace;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
@@ -88,11 +89,19 @@ pub struct App {
     pub picker: Picker,
     pub screen: ActiveScreen,
     pub should_quit: bool,
+    // Per-screen state (persists across screen switches).
+    pub models: ModelsState,
 }
 
 impl App {
     pub fn new(workspace: Workspace, picker: Picker) -> Self {
-        Self { workspace, picker, screen: ActiveScreen::Chat, should_quit: false }
+        Self {
+            workspace,
+            picker,
+            screen: ActiveScreen::Chat,
+            should_quit: false,
+            models: ModelsState::new(),
+        }
     }
 
     /// Enter the alternate screen + raw mode, run the loop, and always restore the
@@ -161,6 +170,17 @@ impl App {
             KeyCode::Tab => self.screen = self.screen.cycle(1),
             // Esc: reserved for back/cancel (no-op until a screen uses it).
             KeyCode::Esc => {}
+            // Anything else → the active screen's own handler (list nav, etc.).
+            _ => self.handle_screen_key(key),
+        }
+    }
+
+    /// Delegate a non-global key to the active screen.
+    fn handle_screen_key(&mut self, key: KeyEvent) {
+        match self.screen {
+            ActiveScreen::Models => {
+                self.models.handle_key(key);
+            }
             _ => {}
         }
     }
@@ -187,18 +207,24 @@ impl App {
     }
 
     fn render_content(&self, f: &mut Frame, area: Rect) {
-        let body = if self.screen.implemented() {
-            format!(
-                "[{}] screen — UI body lands in the next increment.\n\nworkspace: {}\n{}",
-                self.screen.title(),
-                self.workspace.config.name,
-                self.workspace.root.display()
-            )
-        } else {
-            format!("[{}] — coming in a later release (RFC TUI-1).", self.screen.title())
-        };
-        let block = Block::default().borders(Borders::ALL).title(self.screen.title());
-        f.render_widget(Paragraph::new(body).block(block), area);
+        match self.screen {
+            ActiveScreen::Models => self.models.render(f, area),
+            ActiveScreen::Chat => {
+                // Chat body lands in the next increment.
+                let body = format!(
+                    "[Chat] — conversational generation lands next.\n\nworkspace: {}\n{}",
+                    self.workspace.config.name,
+                    self.workspace.root.display()
+                );
+                let block = Block::default().borders(Borders::ALL).title("Chat");
+                f.render_widget(Paragraph::new(body).block(block), area);
+            }
+            other => {
+                let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
+                let block = Block::default().borders(Borders::ALL).title(other.title());
+                f.render_widget(Paragraph::new(body).block(block), area);
+            }
+        }
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
