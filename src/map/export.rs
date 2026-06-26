@@ -113,8 +113,9 @@ pub fn to_geojson(vm: &VectorMap, spec: &MapSpec) -> String {
             "geometry": { "type": "Point", "coordinates": [round6(nx), round6(ny)] }
         }));
     }
-    // Political layer (v1.13.0): one Point per region carrying a polity — at its
-    // anchor, with the polity name + kind. No political data → none emitted.
+    // Political layer: per region carrying a polity, a Point at its anchor (the
+    // label marker) AND a territory Polygon (1.14.0-D — the ring as real geometry).
+    // No political data → none emitted.
     for r in &spec.regions {
         let Some(pol) = &r.political else { continue };
         let Some((nx, ny)) = super::engine::resolve_simple(&r.anchor) else { continue };
@@ -128,6 +129,22 @@ pub fn to_geojson(vm: &VectorMap, spec: &MapSpec) -> String {
             },
             "geometry": { "type": "Point", "coordinates": [round6(nx as f64), round6(ny as f64)] }
         }));
+        if let Some(ring) = territory_ring(&r.anchor, r.coverage, vm.width, vm.height) {
+            // Normalize from float with the same north-up convention as `vm.norm`.
+            let coords: Vec<[f64; 2]> = ring
+                .iter()
+                .map(|&(x, y)| {
+                    let gx = x as f64 / vm.width as f64;
+                    let gy = 1.0 - y as f64 / vm.height as f64;
+                    [round6(gx), round6(gy)]
+                })
+                .collect();
+            features.push(json!({
+                "type": "Feature",
+                "properties": { "class": "territory", "id": r.id, "name": pol.polity_name },
+                "geometry": { "type": "Polygon", "coordinates": [coords] }
+            }));
+        }
     }
 
     let fc = json!({
@@ -179,15 +196,21 @@ pub fn to_svg(vm: &VectorMap, spec: &MapSpec) -> String {
             x + 5, y + 3, xml_escape(&lm.name)
         );
     }
-    // Political polities: a dashed territorial marker + name at each anchor.
+    // Political polities: the territory ring as a real dashed polygon (1.14.0-D),
+    // plus a centre dot + the polity name at the anchor.
     for r in &spec.regions {
         let Some(pol) = &r.political else { continue };
         let Some((nx, ny)) = super::engine::resolve_simple(&r.anchor) else { continue };
         let (x, y) = ((nx * w as f32) as i32, (ny * h as f32) as i32);
-        let _ = writeln!(
-            s,
-            "  <circle cx=\"{x}\" cy=\"{y}\" r=\"5\" fill=\"none\" stroke=\"#7a2a18\" stroke-width=\"1.5\" stroke-dasharray=\"3 2\"/>"
-        );
+        if let Some(ring) = territory_ring(&r.anchor, r.coverage, w, h) {
+            let pts: String = ring.iter().map(|&(px, py)| format!("{:.1},{:.1} ", px, py)).collect();
+            let _ = writeln!(
+                s,
+                "  <polygon points=\"{}\" fill=\"#7a2a18\" fill-opacity=\"0.06\" stroke=\"#7a2a18\" stroke-width=\"1.5\" stroke-dasharray=\"3 2\"/>",
+                pts.trim()
+            );
+        }
+        let _ = writeln!(s, "  <circle cx=\"{x}\" cy=\"{y}\" r=\"2\" fill=\"#7a2a18\"/>");
         let _ = writeln!(
             s,
             "  <text x=\"{}\" y=\"{}\" font-size=\"10\" font-weight=\"bold\" fill=\"#7a2a18\">{}</text>",
@@ -286,6 +309,27 @@ fn round6(v: f64) -> f64 {
     (v * 1_000_000.0).round() / 1_000_000.0
 }
 
+/// 1.14.0-D: a polity's territory ring as a closed pixel-space polygon, matching
+/// the render's `dashed_ring` (centre = the region anchor; radius =
+/// `coverage·0.5·min(w,h)`, floored). A 48-gon reads as a smooth circle but is
+/// real polygon geometry for GIS. Returns `None` if the anchor can't resolve.
+/// The returned ring is closed (first point repeated as last).
+fn territory_ring(anchor: &super::spec::Anchor, coverage: f32, w: u32, h: u32) -> Option<Vec<(f32, f32)>> {
+    let (nx, ny) = super::engine::resolve_simple(anchor)?;
+    let (cx, cy) = (nx * w as f32, ny * h as f32);
+    let extent = w.min(h) as f32;
+    let rad = (coverage.max(0.12) * 0.5 * extent).max(8.0);
+    const N: usize = 48;
+    let mut pts: Vec<(f32, f32)> = (0..N)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / N as f32;
+            (cx + rad * a.cos(), cy + rad * a.sin())
+        })
+        .collect();
+    pts.push(pts[0]); // close the ring
+    Some(pts)
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -296,6 +340,47 @@ mod tests {
 
     fn island() -> MapSpec {
         serde_json::from_str(include_str!("../../corpus/map/island.spec.json")).unwrap()
+    }
+
+    /// A minimal spec with one polity, for the political export tests.
+    fn polity_spec() -> MapSpec {
+        serde_json::from_str(
+            r#"{ "version": 2, "name": "Test", "scale_tier": 3,
+                 "tile_grid": { "cols": 2, "rows": 2 },
+                 "terrain": { "dominant_elevation": "flat" },
+                 "water": { "seas": [], "rivers": [], "lakes": [] },
+                 "regions": [ { "id": "westmark", "name": "Westmark", "biome": "temperate_grassland",
+                   "anchor": { "kind": "cardinal", "position": "west" }, "coverage": 0.3,
+                   "political": { "polity_name": "The Westmark League", "polity_kind": "confederation", "borders": [] } } ] }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn geojson_emits_polity_point_and_territory_polygon() {
+        // 1.14.0-D: a polity exports BOTH a Point (label anchor) and a closed
+        // territory Polygon (the ring as real GIS geometry).
+        let spec = polity_spec();
+        let vm = VectorMap::build(&spec, 42).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&to_geojson(&vm, &spec)).unwrap();
+        let feats = v["features"].as_array().unwrap();
+        let point = feats.iter().find(|f| f["properties"]["class"] == "polity").unwrap();
+        assert_eq!(point["geometry"]["type"], "Point");
+        let terr = feats.iter().find(|f| f["properties"]["class"] == "territory").unwrap();
+        assert_eq!(terr["geometry"]["type"], "Polygon");
+        assert_eq!(terr["properties"]["name"], "The Westmark League");
+        let ring = terr["geometry"]["coordinates"][0].as_array().unwrap();
+        assert!(ring.len() >= 4, "polygon ring has points");
+        assert_eq!(ring.first(), ring.last(), "ring is closed");
+    }
+
+    #[test]
+    fn svg_draws_territory_polygon() {
+        let spec = polity_spec();
+        let vm = VectorMap::build(&spec, 42).unwrap();
+        let svg = to_svg(&vm, &spec);
+        assert!(svg.contains("<polygon"), "territory drawn as a polygon");
+        assert!(svg.contains("The Westmark League"), "polity labelled");
     }
 
     #[test]

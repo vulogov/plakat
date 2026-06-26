@@ -65,11 +65,14 @@ showcases (and regenerate `GALLERY.md`):
       showcase (SDXL/Metal, `plakat-multiperson-42.png`); plus `coastal-tiles-montage.png`
       visibly showing the four tiles reassembling into the map (per user request).
 
-## D — carry / polish (opt-in)
+## D — carry / polish (opt-in) ✅
 
-- [ ] Multi-tile **per-tile furniture** — optional frame/scale/coordinate label per tile so a
-      single tile is a usable standalone map (not just a slice).
-- [ ] Political **polygons** (territory rings) in GeoJSON/SVG export, not just points.
+- [x] Multi-tile **per-tile furniture** — `--map-tile-furniture` (CLI) / `map-tile-furniture`
+      (scenario) draws a frame + grid coordinate (`R1C2`) + north arrow on each tile so it
+      stands alone; `world.png` stays clean. Shared `render::draw_tile_furniture` (byte-stable).
+- [x] Political **polygons** — GeoJSON now emits a `territory` Polygon (the boundary ring as
+      real GIS geometry) alongside the polity Point; SVG draws it as a faint dashed polygon.
+      Shared `export::territory_ring` matches the render's `dashed_ring`.
 - ~~M2 regional eps-blend / FaceID-in-inpaint~~ — **dropped**: both improve the inpaint
       route that `--swap` superseded; negative ROI (see the 1.13 close-out).
 

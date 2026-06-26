@@ -54,12 +54,15 @@ pub fn save_map_image(spec: &spec::MapSpec, seed: u64, style: render::Style, pat
 ///
 /// The single entry every surface uses for tiled output (CLI `--map-render-tiles`,
 /// the scenario `map` task's `map-render-tiles`, `plakat.map.tiles`) so all emit
-/// byte-identical tiles. Returns the tile count.
+/// byte-identical tiles. With `furniture`, each tile also gets a frame + grid
+/// coordinate + north arrow so it stands alone (the `world.png` stays clean).
+/// Returns the tile count.
 pub fn save_world_tiles(
     spec: &spec::MapSpec,
     seed: u64,
     style: render::Style,
     dir: &std::path::Path,
+    furniture: bool,
 ) -> Result<usize> {
     let world = render::render(spec, seed, style)?;
     let (cols, rows) = (spec.tile_grid.cols.max(1), spec.tile_grid.rows.max(1));
@@ -71,7 +74,10 @@ pub fn save_world_tiles(
         .with_context(|| format!("saving world.png in {}", dir.display()))?;
     for r in 0..rows {
         for c in 0..cols {
-            let tile = image::imageops::crop_imm(&world, c * tw, r * th, tw, th).to_image();
+            let mut tile = image::imageops::crop_imm(&world, c * tw, r * th, tw, th).to_image();
+            if furniture {
+                render::draw_tile_furniture(&mut tile, r, c, cols, rows, style);
+            }
             tile.save(dir.join(format!("tile_r{r}_c{c}.png")))
                 .with_context(|| format!("saving tile r{r} c{c}"))?;
         }

@@ -303,6 +303,10 @@ struct ScenarioFile {
     /// `map-scale`) instead of a single `map.png`. Mirrors `--map-render-tiles`.
     #[serde(rename = "map-render-tiles", default)]
     map_render_tiles: Option<bool>,
+    /// 1.14.0-D: draw per-tile furniture (frame + grid coordinate + north arrow)
+    /// on each tile. Mirrors `--map-tile-furniture`.
+    #[serde(rename = "map-tile-furniture", default)]
+    map_tile_furniture: Option<bool>,
 
     /// v0.15 phase 7a / v0.18: scenario-wide conditioning image. Three
     /// roles depending on `model:`:
@@ -907,6 +911,8 @@ struct TaskDef {
     map_erosion: Option<f32>,
     #[serde(rename = "map-render-tiles", default)]
     map_render_tiles: Option<bool>,
+    #[serde(rename = "map-tile-furniture", default)]
+    map_tile_furniture: Option<bool>,
 
     // ---------- 1.14.0-A: per-task `multiperson` block (a `type: multiperson` task) ----------
     /// The multiperson task body: scene prompt + placed people + identity mode.
@@ -1076,6 +1082,7 @@ fn effective_map_config(scenario: &ScenarioFile, task: &TaskDef) -> crate::map::
         urban_layout: task.map_layout.clone().or_else(|| scenario.map_layout.clone()),
         erosion: task.map_erosion.or(scenario.map_erosion),
         render_tiles: task.map_render_tiles.or(scenario.map_render_tiles).unwrap_or(false),
+        render_tile_furniture: task.map_tile_furniture.or(scenario.map_tile_furniture).unwrap_or(false),
         cache: false,
     }
 }
@@ -5866,6 +5873,22 @@ mod tests {
         let s: ScenarioFile = deser_hjson::from_str(r#"{ tasks: [] }"#).unwrap();
         let cfg = effective_map_config(&s, &t);
         assert!(cfg.render_tiles);
+    }
+
+    #[test]
+    fn task_parses_map_tile_furniture() {
+        // 1.14.0-D: per-tile furniture flows task → MapTaskCfg.
+        let src = format!(r#"{{{COMMON_TASK}
+            type: map
+            map-spec: corpus/map/realms.hjson
+            map-render-tiles: true
+            map-tile-furniture: true
+        }}"#);
+        let t = parse_task(&src);
+        assert_eq!(t.map_tile_furniture, Some(true));
+        let s: ScenarioFile = deser_hjson::from_str(r#"{ tasks: [] }"#).unwrap();
+        let cfg = effective_map_config(&s, &t);
+        assert!(cfg.render_tile_furniture);
     }
 
     #[test]

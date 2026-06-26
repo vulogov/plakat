@@ -278,9 +278,11 @@ plakat map --map-spec isle.json --map-export-svg isle.svg          # standalone 
 plakat map --map-spec isle.json --map-export-geojson isle.geojson  # GIS FeatureCollection
 ```
 
-GeoJSON gives you the coastline (closed rings), rivers + roads (LineStrings), and
-landmarks (Points) with `name`/`kind`/`id` properties, normalized to `[0,1]`,
-north-up.
+GeoJSON gives you the coastline (closed rings), rivers + roads (LineStrings),
+landmarks (Points), and — for any region with a `political` block — both a polity
+**Point** (the label anchor) and a `territory` **Polygon** (the boundary ring as
+real GIS geometry). All `name`/`kind`/`id` properties, normalized to `[0,1]`,
+north-up. The SVG draws the territory ring as a faint dashed polygon.
 
 ## 8. Maps in batches: scenario, compile, scripting
 
@@ -310,6 +312,11 @@ Set `map-render-tiles: true` to slice the world into a grid of **seamless tiles*
   tasks: [ { name: "world", type: "map", map-spec: "coastal.spec.json",
              map-tiles: "2x2", map-render-tiles: true } ] }
 ```
+
+`world.png` is the full stitched map; the tiles are its quadrant slices (they
+reassemble pixel-exact). Add `map-tile-furniture: true` (CLI: `--map-tile-furniture`)
+to draw a frame + grid coordinate (`R1C2`) + north arrow on each tile, so a single
+tile is a usable standalone map — the stitched `world.png` stays clean.
 
 **Compile** — a `type: map` block in a `prompts.txt` compiles to a scenario map task,
 so prose worldbuilding and maps live in one document:

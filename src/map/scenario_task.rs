@@ -42,6 +42,9 @@ pub struct MapTaskCfg {
     /// + `world.png`) over `spec.tile_grid`, instead of the single `map.png`.
     /// Mirrors the CLI `--map-render-tiles`. Linework only (the deterministic path).
     pub render_tiles: bool,
+    /// 1.14.0-D: with `render_tiles`, draw per-tile furniture (frame + grid
+    /// coordinate + north arrow). Mirrors `--map-tile-furniture`.
+    pub render_tile_furniture: bool,
     /// SHA-256 cache the parsed spec.
     pub cache: bool,
 }
@@ -61,6 +64,7 @@ impl Default for MapTaskCfg {
             urban_layout: None,
             erosion: None,
             render_tiles: false,
+            render_tile_furniture: false,
             cache: false,
         }
     }
@@ -148,7 +152,7 @@ pub async fn run_map_task(
         .with_context(|| format!("creating map task out dir {}", out_dir.display()))?;
 
     if cfg.render_tiles {
-        let n = super::save_world_tiles(&spec, seed, style, out_dir)
+        let n = super::save_world_tiles(&spec, seed, style, out_dir, cfg.render_tile_furniture)
             .context("map task: tiled world render")?;
         tracing::info!(target: "plakat", "map task: tiled world → {n} tile(s) + world.png");
     } else if cfg.paint {
@@ -247,7 +251,7 @@ mod tests {
 
         let spec = source_spec(&coastal_cfg()).await.unwrap();
         let style = Style::named("parchment").unwrap();
-        let n = super::super::save_world_tiles(&spec, 7, style, &via_helper).unwrap();
+        let n = super::super::save_world_tiles(&spec, 7, style, &via_helper, false).unwrap();
         assert_eq!(n, 4, "2x2 grid → 4 tiles");
 
         for name in ["world.png", "tile_r0_c0.png", "tile_r0_c1.png", "tile_r1_c0.png", "tile_r1_c1.png"] {

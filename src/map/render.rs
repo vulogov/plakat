@@ -518,6 +518,48 @@ fn draw_grid(img: &mut RgbImage, cells: u32, st: Style) {
     }
 }
 
+/// 1.14.0-D: per-tile furniture for the multi-tile output. Draws a border frame,
+/// the tile's grid coordinate (`R1C2`, 1-based), the grid extent (`3x3`), and a
+/// small north arrow on a single sliced tile, so one tile is a usable standalone
+/// map rather than a bare slice. Byte-stable (bitmap font + straight lines), drawn
+/// AFTER slicing so the seamless world itself is untouched.
+pub(crate) fn draw_tile_furniture(
+    tile: &mut RgbImage,
+    row: u32,
+    col: u32,
+    cols: u32,
+    rows: u32,
+    st: Style,
+) {
+    let (w, h) = (tile.width() as i32, tile.height() as i32);
+    let (ink, paper) = (st.ink, st.paper);
+    let m = 3;
+    // Frame: a 2px border inset from the edge.
+    for x in m..w - m {
+        for dy in 0..2 {
+            put(tile, x, m + dy, ink);
+            put(tile, x, h - 1 - m - dy, ink);
+        }
+    }
+    for y in m..h - m {
+        for dx in 0..2 {
+            put(tile, m + dx, y, ink);
+            put(tile, w - 1 - m - dx, y, ink);
+        }
+    }
+    // Grid coordinate (1-based, human-facing) top-left; grid extent bottom-left.
+    labels::draw_text_haloed(tile, m + 4, m + 4, &format!("R{}C{}", row + 1, col + 1), 1, ink, paper);
+    labels::draw_text_haloed(tile, m + 4, h - m - 11, &format!("{cols}x{rows}"), 1, ink, paper);
+    // North arrow top-right: a short vertical stem with an arrowhead + an `N`.
+    let (nx, ny) = (w - m - 9, m + 7);
+    for k in 0..7 {
+        put(tile, nx, ny + k, ink);
+    }
+    put(tile, nx - 1, ny + 1, ink);
+    put(tile, nx + 1, ny + 1, ink);
+    labels::draw_text_haloed(tile, nx - 3, ny - 9, "N", 1, ink, paper);
+}
+
 /// Deterministic muted polity colour from the name, blended toward ink so it
 /// reads on any palette.
 fn polity_color(name: &str, st: Style) -> [u8; 3] {
@@ -967,6 +1009,21 @@ mod tests {
         let a = render(&island(), 42, Style::default()).unwrap();
         let b = render(&island(), 42, Style::default()).unwrap();
         assert!(a.as_raw() == b.as_raw(), "render must be byte-stable");
+    }
+
+    #[test]
+    fn tile_furniture_draws_a_frame_and_changes_pixels() {
+        // 1.14.0-D: per-tile furniture draws a border + labels so a sliced tile is
+        // a usable standalone map. It must alter the tile (and only on opt-in).
+        let st = Style::named("parchment").unwrap();
+        let blank = RgbImage::from_pixel(64, 64, image::Rgb([200, 200, 200]));
+        let mut framed = blank.clone();
+        draw_tile_furniture(&mut framed, 1, 2, 3, 3, st);
+        assert!(framed.as_raw() != blank.as_raw(), "furniture changes the tile");
+        // The inset frame paints ink along the top border row.
+        let ink = image::Rgb(st.ink);
+        let top_has_ink = (3..61).any(|x| *framed.get_pixel(x, 3) == ink);
+        assert!(top_has_ink, "frame draws along the top edge");
     }
 
     #[test]

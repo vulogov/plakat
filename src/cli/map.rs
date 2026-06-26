@@ -111,6 +111,12 @@ pub struct MapArgs {
     #[arg(long = "map-render-tiles", value_name = "DIR")]
     pub render_tiles: Option<PathBuf>,
 
+    /// 1.14.0-D: with `--map-render-tiles`, draw per-tile furniture (a frame, the
+    /// grid coordinate `R1C2`, and a north arrow) on each tile so a single tile is
+    /// a usable standalone map. The stitched `world.png` stays clean.
+    #[arg(long = "map-tile-furniture", default_value_t = false)]
+    pub tile_furniture: bool,
+
     /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
     #[arg(long = "map-style", default_value = "parchment")]
     pub style: String,
@@ -399,7 +405,7 @@ pub async fn run(args: MapArgs, device_spec: &str) -> Result<()> {
         let rstyle = map::render::Style::named(&args.style)?
             .with_season(map::render::Season::parse(&args.season)?)
             .with_grid(args.grid);
-        let n = map::save_world_tiles(&spec, args.seed, rstyle, dir)?;
+        let n = map::save_world_tiles(&spec, args.seed, rstyle, dir, args.tile_furniture)?;
         let (cols, rows) = (spec.tile_grid.cols.max(1), spec.tile_grid.rows.max(1));
         println!(
             "{}  world map → {n} tile(s) ({cols}×{rows}) + world.png → {}",

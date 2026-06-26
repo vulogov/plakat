@@ -1,6 +1,6 @@
 # plakat proof corpus
 
-155 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
+165 images generated with **plakat**. Each is self-documenting — its generation parameters are embedded in the PNG. This index was built by `plakat gallery`.
 
 <table>
   <tr>
@@ -204,61 +204,77 @@
     <td width="33%"><img src="images/map/realms-render.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-tiles-furnished-montage.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-autumn.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-blueprint.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-grid.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-grid.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-inked.png" alt=""></td>
     <td width="33%"><img src="images/realms/render-parchment.png" alt=""></td>
-    <td width="33%"><img src="images/realms/render-winter.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/realms/render-winter.png" alt=""></td>
     <td width="33%"><img src="images/realms/rivers.png" alt=""></td>
     <td width="33%"><img src="images/realms/roads.png" alt=""></td>
-    <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/upscale/still_life_x2/still_life_x2.png" alt=""></td>
     <td width="33%"><img src="images/relight/sunset.png" alt=""></td>
     <td width="33%"><img src="images/map/scenario/coastal-world/tile_r0_c0.png" alt=""></td>
-    <td width="33%"><img src="images/map/coastal-tiles/tile_r0_c0.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/coastal-tiles/tile_r0_c0.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/tile_r0_c0.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r0_c0.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/map/scenario/coastal-world/tile_r0_c1.png" alt=""></td>
     <td width="33%"><img src="images/map/coastal-tiles/tile_r0_c1.png" alt=""></td>
-  </tr>
-  <tr>
     <td width="33%"><img src="images/map/realms-tiles/tile_r0_c1.png" alt=""></td>
-    <td width="33%"><img src="images/map/realms-tiles/tile_r0_c2.png" alt=""></td>
-    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c0.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r0_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles/tile_r0_c2.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r0_c2.png" alt=""></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c0.png" alt=""></td>
     <td width="33%"><img src="images/map/coastal-tiles/tile_r1_c0.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/tile_r1_c0.png" alt=""></td>
-    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c1.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r1_c0.png" alt=""></td>
+    <td width="33%"><img src="images/map/scenario/coastal-world/tile_r1_c1.png" alt=""></td>
     <td width="33%"><img src="images/map/coastal-tiles/tile_r1_c1.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/map/realms-tiles/tile_r1_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r1_c1.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/tile_r1_c2.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r1_c2.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/tile_r2_c0.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r2_c0.png" alt=""></td>
+  </tr>
+  <tr>
     <td width="33%"><img src="images/map/realms-tiles/tile_r2_c1.png" alt=""></td>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r2_c1.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/tile_r2_c2.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/realms-tiles-furnished/tile_r2_c2.png" alt=""></td>
     <td width="33%"><img src="images/script/tiled-valley.png" alt="a sweeping alpine valley panorama at golden hour, dramatic clouds, snow peaks, a winding river, ultra-detailed, sharp focus"></td>
     <td width="33%"><img src="images/map/town-map.png" alt=""></td>
-    <td width="33%"><img src="images/map/town-streets.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/town-streets.png" alt=""></td>
     <td width="33%"><img src="images/compile/tundra.png" alt="wide establishing shot, A vast frozen tundra stretching to the horizon, a lone rider on horseback silhouetted against an aurora-lit sky, sparse wind-bent pines., 8k, award-winning landscape photography"></td>
     <td width="33%"><img src="images/compose/valley-scene.png" alt=""></td>
-    <td width="33%"><img src="images/map/scenario/coastal-world/world.png" alt=""></td>
   </tr>
   <tr>
+    <td width="33%"><img src="images/map/scenario/coastal-world/world.png" alt=""></td>
     <td width="33%"><img src="images/map/coastal-tiles/world.png" alt=""></td>
     <td width="33%"><img src="images/map/realms-tiles/world.png" alt=""></td>
   </tr>
@@ -1140,6 +1156,12 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### realms-tiles-furnished-montage.png
+
+![realms-tiles-furnished-montage.png](images/map/realms-tiles-furnished-montage.png)
+
+_(no embedded metadata)_
+
 ### render-autumn.png
 
 ![render-autumn.png](images/realms/render-autumn.png)
@@ -1218,6 +1240,12 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r0_c0.png
+
+![tile_r0_c0.png](images/map/realms-tiles-furnished/tile_r0_c0.png)
+
+_(no embedded metadata)_
+
 ### tile_r0_c1.png
 
 ![tile_r0_c1.png](images/map/scenario/coastal-world/tile_r0_c1.png)
@@ -1236,9 +1264,21 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r0_c1.png
+
+![tile_r0_c1.png](images/map/realms-tiles-furnished/tile_r0_c1.png)
+
+_(no embedded metadata)_
+
 ### tile_r0_c2.png
 
 ![tile_r0_c2.png](images/map/realms-tiles/tile_r0_c2.png)
+
+_(no embedded metadata)_
+
+### tile_r0_c2.png
+
+![tile_r0_c2.png](images/map/realms-tiles-furnished/tile_r0_c2.png)
 
 _(no embedded metadata)_
 
@@ -1260,6 +1300,12 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r1_c0.png
+
+![tile_r1_c0.png](images/map/realms-tiles-furnished/tile_r1_c0.png)
+
+_(no embedded metadata)_
+
 ### tile_r1_c1.png
 
 ![tile_r1_c1.png](images/map/scenario/coastal-world/tile_r1_c1.png)
@@ -1278,9 +1324,21 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r1_c1.png
+
+![tile_r1_c1.png](images/map/realms-tiles-furnished/tile_r1_c1.png)
+
+_(no embedded metadata)_
+
 ### tile_r1_c2.png
 
 ![tile_r1_c2.png](images/map/realms-tiles/tile_r1_c2.png)
+
+_(no embedded metadata)_
+
+### tile_r1_c2.png
+
+![tile_r1_c2.png](images/map/realms-tiles-furnished/tile_r1_c2.png)
 
 _(no embedded metadata)_
 
@@ -1290,15 +1348,33 @@ _(no embedded metadata)_
 
 _(no embedded metadata)_
 
+### tile_r2_c0.png
+
+![tile_r2_c0.png](images/map/realms-tiles-furnished/tile_r2_c0.png)
+
+_(no embedded metadata)_
+
 ### tile_r2_c1.png
 
 ![tile_r2_c1.png](images/map/realms-tiles/tile_r2_c1.png)
 
 _(no embedded metadata)_
 
+### tile_r2_c1.png
+
+![tile_r2_c1.png](images/map/realms-tiles-furnished/tile_r2_c1.png)
+
+_(no embedded metadata)_
+
 ### tile_r2_c2.png
 
 ![tile_r2_c2.png](images/map/realms-tiles/tile_r2_c2.png)
+
+_(no embedded metadata)_
+
+### tile_r2_c2.png
+
+![tile_r2_c2.png](images/map/realms-tiles-furnished/tile_r2_c2.png)
 
 _(no embedded metadata)_
 

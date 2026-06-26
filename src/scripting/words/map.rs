@@ -123,7 +123,7 @@ fn do_plakat_map_tiles(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let spec = load_spec_with_overrides(&path_s)?;
     let seed = with_ctx(|ctx| ctx.config.seed.unwrap_or(42))?;
 
-    let n = crate::map::save_world_tiles(&spec, seed, style, std::path::Path::new(&dir_s))
+    let n = crate::map::save_world_tiles(&spec, seed, style, std::path::Path::new(&dir_s), false)
         .with_context(|| format!("{TTAG}: tiling {path_s} into {dir_s}"))?;
     tracing::info!(target: "plakat", "{TTAG}: {path_s} ({style_s}) → {n} tile(s) + world.png in {dir_s}");
     push(vm, Value::from_int(n as i64));
