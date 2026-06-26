@@ -81,6 +81,12 @@ cargo install plakat --features cudnn        # CUDA + cuDNN convolutions
 cargo install plakat
 ```
 
+Optional features (off by default): `templates` (Tera pre-pass for `compile`),
+`shaped-labels` (TrueType map labels for non-Latin scripts), and `onnx`
+(`plakat convert-onnx`, to rebuild the hosted face-model weights yourself — needs
+`protoc` at build time, which is why it's opt-in; everyone else downloads the
+pre-built weights).
+
 Requires Rust 1.85+ (edition 2024). On Apple hardware, see
 [`Documentation/APPLE_REQUIREMENTS.md`](Documentation/APPLE_REQUIREMENTS.md)
 for the minimum / recommended chip + memory tiers and expected

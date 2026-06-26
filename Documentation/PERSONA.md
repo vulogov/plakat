@@ -1341,7 +1341,8 @@ landmarks the aligner already consumes, so `--face-bbox` /
 ### Route A — local file (`PLAKAT_SCRFD_WEIGHTS`)
 
 `det_500m.onnx` (SCRFD-500MF) ships inside InsightFace's `buffalo_sc` model pack.
-Convert it with plakat's own `convert-onnx` command — no Python, no torch:
+Convert it with plakat's own `convert-onnx` command — no Python, no torch (the
+command is opt-in: `cargo install plakat --features onnx`, which needs `protoc`):
 
 ```bash
 # Get det_500m.onnx (inside buffalo_sc.zip):
