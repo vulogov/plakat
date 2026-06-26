@@ -1,0 +1,80 @@
+//! `plakat ui` — the terminal user interface (RFC TUI-1).
+//!
+//! Lives under the existing `ui` module (CLI progress/logging) as `ui::tui`, gated
+//! behind the default-on `ui` Cargo feature. This Phase-1 entry point wires the
+//! `plakat ui` subcommand and the terminal graphics-capability check; the workspace
+//! resolver, app/event loop, and screens land in subsequent Phase-1 increments.
+
+use anyhow::Result;
+use ratatui_image::picker::{Picker, ProtocolType};
+
+/// Arguments for `plakat ui` (parsed by clap in the subcommand router).
+#[derive(Debug, clap::Args)]
+pub struct UiArgs {
+    /// Workspace directory. Created (with a short wizard) if it has no
+    /// `plakat-workspace.hjson`. Defaults to the nearest workspace at/above the
+    /// current directory, else creates one here.
+    #[arg(long)]
+    pub workspace: Option<std::path::PathBuf>,
+
+    /// Open directly to a screen: `chat` | `models` | `scenarios` | `history`
+    /// | `lora` | `people` | `prompts` | `canvas`.
+    #[arg(long)]
+    pub screen: Option<String>,
+
+    /// A scenario / prompt file to pre-load.
+    pub file: Option<std::path::PathBuf>,
+}
+
+/// Entry point dispatched from the `plakat ui` subcommand. Detects terminal
+/// graphics support (exiting cleanly with guidance if absent), then launches the
+/// TUI. Phase 1: detection + a placeholder until the app loop lands.
+pub fn run(_args: UiArgs) -> Result<()> {
+    let picker = check_terminal_support()?;
+    // Phase 1 placeholder — the workspace wizard + app/event loop arrive next.
+    println!(
+        "plakat ui — terminal graphics OK ({}). \
+         Workspace + screens are landing incrementally (RFC TUI-1, Release 1).",
+        protocol_label(picker.protocol_type())
+    );
+    Ok(())
+}
+
+/// Detect a usable pixel graphics protocol. Returns the `Picker` (used later to
+/// render images) or a guidance error when only half-blocks / nothing is
+/// available. `Picker` is `Copy`, so reading `protocol_type()` keeps it intact.
+pub fn check_terminal_support() -> Result<Picker> {
+    let picker = Picker::from_query_stdio().map_err(|_| no_graphics_error())?;
+    match picker.protocol_type() {
+        // Half-blocks is the no-real-graphics fallback — insufficient for plakat.
+        ProtocolType::Halfblocks => Err(no_graphics_error()),
+        ProtocolType::Kitty | ProtocolType::Iterm2 | ProtocolType::Sixel => Ok(picker),
+    }
+}
+
+fn protocol_label(p: ProtocolType) -> &'static str {
+    match p {
+        ProtocolType::Kitty => "Kitty graphics",
+        ProtocolType::Iterm2 => "iTerm2 inline images",
+        ProtocolType::Sixel => "Sixel",
+        ProtocolType::Halfblocks => "half-blocks",
+    }
+}
+
+/// The "no graphics support" error, with the same guidance the RFC specifies.
+fn no_graphics_error() -> anyhow::Error {
+    let term = std::env::var("TERM_PROGRAM")
+        .or_else(|_| std::env::var("TERM"))
+        .unwrap_or_else(|_| "unknown".into());
+    anyhow::anyhow!(
+        "plakat ui requires a terminal with graphics support.\n\n\
+         Supported terminals:\n\
+         \x20 macOS:   Kitty, iTerm2, WezTerm, Ghostty\n\
+         \x20 Linux:   Kitty, WezTerm, foot, any Sixel-capable terminal\n\
+         \x20 SSH:     Kitty (via kitten ssh), iTerm2 (forwards TERM_PROGRAM)\n\n\
+         Your terminal: {term} (no graphics protocol detected)\n\n\
+         For image-free operation, use the CLI:\n\
+         \x20 plakat generate \"your prompt\"\n\
+         \x20 plakat scenario file.hjson"
+    )
+}

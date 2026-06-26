@@ -128,6 +128,11 @@ pub enum Command {
     #[cfg(feature = "onnx")]
     #[command(name = "convert-onnx")]
     ConvertOnnx(convert_onnx::ConvertOnnxArgs),
+    /// Interactive terminal UI (RFC TUI-1): conversational generation, models,
+    /// scenarios, history, LoRA, people. Needs a graphics-capable terminal.
+    #[cfg(feature = "ui")]
+    #[command(name = "ui")]
+    Ui(crate::ui::tui::UiArgs),
     /// Art-style detection from a reference photo.
     #[command(subcommand_value_name = "OP")]
     Style(style::StyleArgs),
@@ -269,6 +274,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Inspect(args) => inspect::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
+        #[cfg(feature = "ui")]
+        Command::Ui(args) => crate::ui::tui::run(args),
         Command::Style(args) => {
             let device = crate::device::select(&cli.device)?;
             style::run(args, device).await
