@@ -248,12 +248,14 @@ fn workspace_hjson(c: &WorkspaceConfig) -> String {
         "{{\n\
         \x20 // plakat workspace — created by `plakat ui` (RFC TUI-1). Edit freely.\n\
         \x20 //\n\
-        \x20 // NOTE: model weights are NOT cached here. They use the GLOBAL Hugging Face\n\
+        \x20 // NOTE: downloaded weights are NOT cached here — they use the GLOBAL plakat\n\
         \x20 // cache ($PLAKAT_CACHE_DIR / $HF_HOME / --cache-dir), shared across every\n\
-        \x20 // workspace — exactly as the CLI does. This directory holds only project\n\
-        \x20 // files (people, scenarios, prompts, chat, generated images). LoRAs are\n\
-        \x20 // global by default via `global_lora_dirs` below; the workspace `loras/`\n\
-        \x20 // dir is only for project-specific LoRAs you choose to keep alongside it.\n\
+        \x20 // workspace, exactly as the CLI does:\n\
+        \x20 //   HuggingFace models  -> <plakat-cache>/hub/\n\
+        \x20 //   Civitai LoRAs       -> <plakat-cache>/civitai/\n\
+        \x20 // This directory holds only PROJECT files (people, scenarios, prompts, chat,\n\
+        \x20 // generated images). `global_lora_dirs` below is for extra loose LoRA files\n\
+        \x20 // you keep yourself; the workspace `loras/` dir is for project-specific ones.\n\
         \x20 name: \"{name}\"\n\
         \x20 created: \"{created}\"\n\n\
         \x20 // Default generation settings (override the global config per workspace).\n\
