@@ -19,6 +19,9 @@ use candle_core::Device;
 use ratatui_image::picker::Picker;
 use tokio::runtime::Handle;
 
+use std::sync::mpsc::Receiver;
+
+use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState};
 use super::screens::models::ModelsState;
 use super::services::model_service::ModelService;
@@ -96,12 +99,21 @@ pub struct App {
     // Per-screen state (persists across screen switches).
     pub chat: ChatState,
     pub models: ModelsState,
+    // Shared Output pane (messages + live progress, fed by the rerouted sink).
+    pub output: OutputPane,
+    progress_rx: Receiver<String>,
     // Background services.
     pub model_svc: ModelService,
 }
 
 impl App {
-    pub fn new(workspace: Workspace, picker: Picker, device: Device, rt: Handle) -> Self {
+    pub fn new(
+        workspace: Workspace,
+        picker: Picker,
+        device: Device,
+        rt: Handle,
+        progress_rx: Receiver<String>,
+    ) -> Self {
         Self {
             workspace,
             picker,
@@ -109,6 +121,8 @@ impl App {
             should_quit: false,
             chat: ChatState::new(),
             models: ModelsState::new(),
+            output: OutputPane::new(),
+            progress_rx,
             model_svc: ModelService::spawn(device, rt),
         }
     }
@@ -149,6 +163,10 @@ impl App {
                 if let Event::Key(key) = event::read()? {
                     self.handle_key(key);
                 }
+            }
+            // Drain the rerouted progress sink → the Output pane (all pipelines).
+            while let Ok(line) = self.progress_rx.try_recv() {
+                self.output.push(line);
             }
             // Drain background-service messages each tick so a load in flight
             // updates the UI without blocking the event loop.
@@ -234,13 +252,28 @@ impl App {
     }
 
     fn render(&self, f: &mut Frame) {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
-            .split(f.area());
+        // [tab bar] [screen content] [Output pane — when non-empty] [status bar].
+        // The Output pane (rerouted progress + messages) is visible on every screen.
+        let show_output = !self.output.is_empty();
+        let constraints = if show_output {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(8),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]
+        };
+        let rows = Layout::default().direction(Direction::Vertical).constraints(constraints).split(f.area());
         self.render_tab_bar(f, rows[0]);
         self.render_content(f, rows[1]);
-        self.render_status_bar(f, rows[2]);
+        if show_output {
+            self.output.render(f, rows[2]);
+            self.render_status_bar(f, rows[3]);
+        } else {
+            self.render_status_bar(f, rows[2]);
+        }
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -294,8 +327,9 @@ mod tests {
 
     fn test_app() -> App {
         let ws = Workspace { root: "/tmp/plakat-ui-test".into(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
         // A synthetic Picker (no terminal query) so the navigation logic is testable.
-        App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle())
+        App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx)
     }
 
     fn key(c: char, ctrl: bool) -> KeyEvent {

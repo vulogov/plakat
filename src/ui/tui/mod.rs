@@ -6,6 +6,7 @@
 //! resolver, app/event loop, and screens land in subsequent Phase-1 increments.
 
 pub mod app;
+pub mod output;
 pub mod screens;
 pub mod services;
 pub mod workspace;
@@ -41,18 +42,18 @@ pub fn run(args: UiArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let interactive = std::io::stdin().is_terminal();
     let ws = workspace::resolve_or_create(args.workspace, &cwd, interactive)?;
-    // The TUI owns the terminal. Two sources of stray output would scribble over
-    // the alternate screen during a background load/denoise: (1) the CLI's indicatif
-    // bars + `progress::println`, and (2) `tracing` logs on stderr. Suppress the
-    // first, and redirect stderr to a per-workspace log file for the second.
-    crate::ui::progress::set_quiet(true);
+    // The TUI owns the terminal. (1) Reroute all indicatif progress (load, download,
+    // the denoise pos/len bar, scenario runs) into a channel rendered in the Output
+    // pane instead of the alternate screen; (2) redirect stderr to a per-workspace
+    // log file so `tracing` / stray eprintln don't scribble over the UI.
+    let progress_rx = crate::ui::progress::install_tui_sink();
     #[cfg(unix)]
     let _stderr_guard = StderrGuard::redirect_to(&ws.cache_dir().join("ui.log"));
     // The model thread loads on the app's existing multi-thread runtime; select the
     // default device (Metal/CUDA/CPU) up front so loads land on the GPU.
     let device = crate::device::select("auto")?;
     let rt = tokio::runtime::Handle::current();
-    app::App::new(ws, picker, device, rt).run()
+    app::App::new(ws, picker, device, rt, progress_rx).run()
 }
 
 /// RAII guard that redirects process stderr (fd 2) to a file for the TUI's

@@ -94,8 +94,24 @@ impl ChatState {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(3)])
             .split(area);
-        self.render_history(f, rows[0]);
+        // Top: chat history on the left, the generated image on the right.
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(rows[0]);
+        self.render_history(f, cols[0]);
+        self.render_image(f, cols[1]);
         self.render_input(f, rows[1]);
+    }
+
+    fn render_image(&self, f: &mut Frame, area: Rect) {
+        // Placeholder until generation wiring renders the result via ratatui-image.
+        let body = match self.history.last().and_then(|e| e.result.as_ref()) {
+            Some(path) => format!("\n  latest result:\n  {path}\n\n  (inline preview lands with generation)"),
+            None => "\n  The generated image will appear here.\n\n  Type a prompt on the left and press Enter.".to_string(),
+        };
+        let block = Block::default().borders(Borders::ALL).title(" Image ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: false }), area);
     }
 
     fn render_history(&self, f: &mut Frame, area: Rect) {
