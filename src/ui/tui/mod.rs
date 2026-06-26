@@ -31,13 +31,20 @@ pub struct UiArgs {
 /// Entry point dispatched from the `plakat ui` subcommand. Detects terminal
 /// graphics support (exiting cleanly with guidance if absent), then launches the
 /// TUI. Phase 1: detection + a placeholder until the app loop lands.
-pub fn run(_args: UiArgs) -> Result<()> {
+pub fn run(args: UiArgs) -> Result<()> {
+    use std::io::IsTerminal;
     let picker = check_terminal_support()?;
-    // Phase 1 placeholder — the workspace wizard + app/event loop arrive next.
+    // Resolve (or create, via the wizard) the workspace before any raw mode.
+    let cwd = std::env::current_dir()?;
+    let interactive = std::io::stdin().is_terminal();
+    let ws = workspace::resolve_or_create(args.workspace, &cwd, interactive)?;
+    // Phase 1 placeholder — the app/event loop + screens arrive next.
     println!(
-        "plakat ui — terminal graphics OK ({}). \
-         Workspace + screens are landing incrementally (RFC TUI-1, Release 1).",
-        protocol_label(picker.protocol_type())
+        "plakat ui — terminal graphics OK ({}); workspace '{}' at {}. \
+         The app loop + Chat/Models screens land next (RFC TUI-1, Release 1).",
+        protocol_label(picker.protocol_type()),
+        ws.config.name,
+        ws.root.display()
     );
     Ok(())
 }
