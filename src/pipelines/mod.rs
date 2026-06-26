@@ -57,6 +57,8 @@ pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;
 pub mod sam;
+pub mod gen_channel;
+pub mod gen_queue;
 pub mod scheduler;
 pub mod step_hook;
 pub mod seeds;
