@@ -52,6 +52,14 @@ onnx          = ["dep:candle-onnx"]             # unchanged (1.14.1)
 
 A CLI-only build (no TUI deps, no protoc) remains `cargo build --no-default-features`.
 
+**R0-4a — dependency resolution (resolved at impl time).** The TUI stack ships as a
+mutually-compatible set only on **ratatui 0.29** (`ratatui-image 5`, `tui-textarea 0.7`,
+`crossterm 0.28`); the whole 0.30 line has no `ratatui-image`/`tui-textarea` release yet.
+ratatui 0.29 pins `unicode-width =0.2.0`, which collided with our REPL editor
+`rustyline 18` (`unicode-width ^0.2.2`). Fix: **pin `rustyline 17`** (`unicode-width ^0.2.0`,
+accepts 0.2.0) — a one-minor downgrade, REPL unaffected (284 scripting tests pass). The
+full stack incl. `tui-textarea` is retained; nothing deferred.
+
 **R0-5 — `default = ["ui"]` is the owner's explicit decision.** Noted that this
 reverses the lean-install direction of 1.14.1 (every `cargo install plakat` now
 pulls the TUI dep tree); accepted so `plakat ui` works out of the box.

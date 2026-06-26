@@ -43,12 +43,17 @@ no-default-features = true
 features = []
 
 [features]
-# No backend selected by default. `cargo install plakat` builds a CPU-only
-# binary that runs everywhere but is slow. For real perf, pick one:
+# `ui` (the `plakat ui` TUI) is on by default so it works out of the box. No GPU
+# backend is selected by default — `cargo install plakat` builds a CPU-only binary
+# that runs everywhere but is slow. For real perf, pick one:
 #   macOS:        cargo install plakat --features metal
 #   Linux+NVIDIA: cargo install plakat --features cuda
 #   Linux+NVIDIA: cargo install plakat --features cudnn   (cuda + cuDNN)
-default = []
+# CLI-only (no TUI deps): cargo build --no-default-features
+default = ["ui"]
+# The `plakat ui` terminal UI (RFC TUI-1). Default-on; opt out with
+# --no-default-features for the lean CLI/pipeline build.
+ui = ["dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "dep:uuid"]
 cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 cudnn = ["cuda", "candle-core/cudnn"]
@@ -156,6 +161,15 @@ candle-transformers = "0.10"
 # the weights yourself.
 candle-onnx = { version = "0.10", optional = true }
 
+# `plakat ui` — terminal UI (RFC TUI-1). All behind the default-on `ui` feature so
+# the lean CLI build (`--no-default-features`) skips them. ratatui-image renders
+# generated images inline via the terminal's graphics protocol (Kitty/iTerm2/Sixel).
+ratatui = { version = "0.29", optional = true }
+ratatui-image = { version = "5", optional = true }
+crossterm = { version = "0.28", optional = true }
+tui-textarea = { version = "0.7", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
 # Paths / tempfiles
 directories = "5"
 tempfile = "3"
@@ -173,7 +187,10 @@ rust_multistackvm = "=0.38.0"
 rust_dynamic = "=0.49.0"
 easy-error = "1"
 # v0.21 phase 7: REPL line editor + history for `plakat run --repl`.
-rustyline = "18"
+# Pinned to 17 (not 18): the `ui` stack (ratatui 0.29 + ratatui-image + tui-textarea)
+# pins `unicode-width =0.2.0`; rustyline 18 bumped its requirement to ^0.2.2, which
+# conflicts. rustyline 17 requires ^0.2.0 — compatible. (RFC TUI-1 dep resolution.)
+rustyline = "17"
 safetensors = "0.7.0"
 human-panic = "2.0.5"
 
