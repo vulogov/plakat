@@ -1282,6 +1282,19 @@ impl Pipeline {
         req: &GenRequest,
         controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<()> {
+        self.generate_hooked(req, controls, None)
+    }
+
+    /// As [`generate`](Self::generate), but with an optional per-step
+    /// [`StepHook`](crate::pipelines::step_hook::StepHook) (RFC TUI-1 §0-R0-3) for
+    /// TUI progress, in-memory live preview, and cancellation. `None` is exactly
+    /// the CLI path — byte-for-byte identical to the pre-hook behaviour.
+    pub fn generate_hooked(
+        &self,
+        req: &GenRequest,
+        controls: &[crate::pipelines::controlnet::ControlRequest],
+        mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+    ) -> Result<()> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         std::fs::create_dir_all(&req.out_dir)
             .with_context(|| format!("creating output dir {}", req.out_dir.display()))?;
@@ -1363,6 +1376,9 @@ impl Pipeline {
         let latent_w = w / 8;
         let vae_scale: f64 = self.core.variant.vae_scale();
 
+        // RFC TUI-1 §0-R0-3: set when a StepHook requests cancellation; stops the
+        // current denoise + skips polish, saves the partial, breaks the count loop.
+        let mut cancelled = false;
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -1445,6 +1461,20 @@ impl Pipeline {
                 )?;
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
+                // RFC TUI-1 §0-R0-3: per-step hook (no-op when `hook` is None — the
+                // CLI path). Emits a cheap in-memory latent→RGB preview on request,
+                // then honours cancellation at this step boundary.
+                if crate::pipelines::step_hook::wants_preview(&hook, step_i, total_steps) {
+                    if let Ok(img) = crate::imaging::preview::project_latent_sd_to_rgb(&latents) {
+                        crate::pipelines::step_hook::preview(&mut hook, step_i, img);
+                    }
+                }
+                if crate::pipelines::step_hook::step(&mut hook, step_i, total_steps)
+                    == crate::pipelines::step_hook::StepControl::Cancel
+                {
+                    cancelled = true;
+                    break;
+                }
                 // v0.17 phase D: live preview every N steps via
                 // the cheap latent→RGB projection (microseconds,
                 // unlike a real VAE decode). Overwrites a single
@@ -1478,8 +1508,10 @@ impl Pipeline {
             bar.finish_and_clear();
 
             // Optional polish pass: img2img with same model at low strength.
+            // Skipped when the run was cancelled (RFC TUI-1 §0-R0-3) — the partial
+            // latents go straight to decode/save.
             if let Some(rsteps) = req.refine {
-                if rsteps > 0 {
+                if rsteps > 0 && !cancelled {
                     let strength = req.refine_strength.clamp(0.0, 1.0);
                     let mut polish = crate::pipelines::scheduler::build(
                         req.scheduler,
@@ -1541,6 +1573,10 @@ impl Pipeline {
                 .join(format!("plakat-{seed}.{}", req.output_format.extension()));
             save_with_optional_metadata(&buf, ow as u32, oh as u32, &out_path, req.metadata.as_ref(), seed)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
+            // RFC TUI-1 §0-R0-3: a cancelled step saved this partial; stop the run.
+            if cancelled {
+                break;
+            }
         }
         Ok(())
     }
