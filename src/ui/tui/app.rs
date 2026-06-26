@@ -66,6 +66,14 @@ impl ActiveScreen {
         Self::ALL.get(i).copied()
     }
 
+    /// Cycle to the next (`+1`) / previous (`-1`) screen, wrapping. Drives Tab /
+    /// Shift-Tab — universal navigation that works on every terminal.
+    fn cycle(self, delta: isize) -> Self {
+        let n = Self::ALL.len() as isize;
+        let i = (self.index() as isize + delta).rem_euclid(n) as usize;
+        Self::ALL[i]
+    }
+
     /// Whether this screen has a real body yet (Release 1: Chat + Models).
     fn implemented(self) -> bool {
         matches!(self, Self::Chat | Self::Models)
@@ -92,7 +100,24 @@ impl App {
     /// restores, so a panic won't leave the terminal wedged).
     pub fn run(&mut self) -> Result<()> {
         let mut terminal = ratatui::init();
+        // Enable the "disambiguate escape codes" keyboard protocol (Kitty/Ghostty/
+        // WezTerm/foot) so Ctrl-1..8 report as clean `Ctrl+Char` events instead of
+        // legacy control bytes (where Ctrl-3 == Esc, Ctrl-2 == NUL, Ctrl-8 == DEL).
+        // Best-effort: terminals without the protocol fall back to the plain-digit
+        // switch and are unaffected.
+        let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+        if enhanced {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::PushKeyboardEnhancementFlags(
+                    crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                )
+            );
+        }
         let res = self.event_loop(&mut terminal);
+        if enhanced {
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+        }
         ratatui::restore();
         res
     }
@@ -114,16 +139,23 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            // Ctrl-Q always quits; plain `q` / Esc quit too while no screen owns
-            // text input (the Chat input will refine this once it lands).
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('c') if ctrl => self.should_quit = true,
-            // Ctrl-1..8 (RFC) or plain 1..8 (terminals that don't emit Ctrl-digit).
+            // Ctrl-Q / Ctrl-C quit; plain `q` quits too while no screen owns text
+            // input (the Chat input will gate this once it lands). Esc is "back",
+            // NOT quit — treating it as quit made legacy Ctrl-3 (== Esc) kill the app.
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('c' | 'q') if ctrl => self.should_quit = true,
+            // Ctrl-1..8 (RFC) or plain 1..8 — universal, works on every terminal.
             KeyCode::Char(c @ '1'..='8') => {
                 if let Some(s) = ActiveScreen::from_index((c as u8 - b'1') as usize) {
                     self.screen = s;
                 }
             }
+            // Tab / Shift-Tab cycle screens — universal fallback for terminals
+            // (e.g. iTerm2) where Ctrl+digit isn't disambiguated.
+            KeyCode::Tab => self.screen = self.screen.cycle(1),
+            KeyCode::BackTab => self.screen = self.screen.cycle(-1),
+            // Esc: reserved for back/cancel (no-op until a screen uses it).
+            KeyCode::Esc => {}
             _ => {}
         }
     }
@@ -166,7 +198,7 @@ impl App {
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let txt = format!(
-            " {} · Ctrl-1..8 switch screens · Ctrl-Q / q quit ",
+            " {} · 1-8 / Tab switch · Ctrl-Q quit ",
             self.workspace.config.name
         );
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
@@ -210,6 +242,27 @@ mod tests {
         let mut b = test_app();
         b.handle_key(key('c', true)); // Ctrl-C
         assert!(b.should_quit);
+    }
+
+    #[test]
+    fn tab_cycles_screens_universally() {
+        // Tab / Shift-Tab work on every terminal (the iTerm2 / no-protocol fallback).
+        let mut a = test_app();
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(matches!(a.screen, ActiveScreen::Models));
+        a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(matches!(a.screen, ActiveScreen::Chat));
+        // wraps backwards from the first screen to the last
+        a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(matches!(a.screen, ActiveScreen::Canvas));
+    }
+
+    #[test]
+    fn esc_does_not_quit() {
+        // Regression: Esc was quitting, so legacy Ctrl-3 (== Esc byte) killed the app.
+        let mut a = test_app();
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!a.should_quit);
     }
 
     #[test]
