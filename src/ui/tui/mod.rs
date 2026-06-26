@@ -5,6 +5,8 @@
 //! `plakat ui` subcommand and the terminal graphics-capability check; the workspace
 //! resolver, app/event loop, and screens land in subsequent Phase-1 increments.
 
+pub mod workspace;
+
 use anyhow::Result;
 use ratatui_image::picker::{Picker, ProtocolType};
 
