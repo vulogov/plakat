@@ -8,6 +8,21 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.13.0 — a steadier host and a richer world map
+
+1.13.0 pays down the **memory & stability** debt that had been deferred twice, and fills
+out **`plakat map`** with the coastline + world-scale features it was missing.
+
+- **Memory & stability** — a render-size guard before Metal's single-buffer OOM; OOM-guard
+  tuning (sustained window 3→5 inference, 12 training; `PLAKAT_OOM_GUARD_SUSTAINED`); gradient
+  checkpointing investigated + documented as a dead end on candle 0.10.2.
+- **`plakat map` coastlines & worlds** (deterministic, byte-stable, no GPU) — peninsulas,
+  inlets, fjords (`terrain.{peninsulas,inlets,fjords}`); multi-tile world maps
+  (`--map-render-tiles DIR` + `--map-tiles CxR`); marsh hatching; river deltas; political
+  layer in GeoJSON/SVG export; seasonal palette on the painted path.
+- **`plakat multiperson`** — `--scale LABEL:0.7` sizes a child/teen persona's `--pose`
+  skeleton shorter.
+
 ## What's new in 1.12.0 — put specific people into a scene (`plakat multiperson`)
 
 1.12.0 places specific people into a generated scene, with a complete,

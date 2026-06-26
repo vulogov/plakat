@@ -17,49 +17,51 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.13.0 — a steadier host and a richer world map
+## What's new in 1.14.0 — every feature, every surface
 
-1.13.0 pays down the **memory & stability** debt that had been deferred twice, and fills
-out **`plakat map`** with the coastline + world-scale features it was missing.
+1.12 shipped **multiperson + face-swap** and 1.13 shipped the **map coastlines & worlds** —
+both as CLI-only. 1.14.0 **productizes** them: people-in-scene and the new map features
+become first-class in the automation surfaces (**scenario / compile / scripting**), each
+dispatching the *same* pipeline as the CLI, so a given spec renders identically everywhere.
 
 ```bash
-# A whole world, sliced into seamless tiles you can stitch back together
-plakat map --map-spec world.hjson --map-tiles 3x2 --map-render-tiles ./tiles/
+# A whole world as seamless tiles, each a usable standalone map (frame + R/C + N arrow)
+plakat map --map-spec world.hjson --map-tiles 3x3 --map-render-tiles ./tiles/ --map-tile-furniture
 
-# Coastlines with character — peninsulas, inlets, fjords (in the terrain spec)
-plakat map --map-spec coast.hjson --map-render coast.png
+# Place specific people from a scenario (personas referenced by name)
+plakat scenario cast.hjson         # a `type: multiperson` task: scene + people + swap/composite
 
-# Export the political layer (polities) alongside the geometry
+# The political layer exports as real GIS polygons now, not just points
 plakat map --map-spec realm.hjson --map-export-geojson realm.geojson
 ```
 
-**Memory & stability.**
+**Multiperson everywhere.** A `type: multiperson` **scenario task** (scene + `people` that
+reference the top-level `personas` by name + identity mode `swap`/`composite`/`pose`/
+`harmonize`) and a **`plakat.multiperson`** scripting word — both build the same request as
+the CLI (CLI-matching defaults, a parity test proves it).
 
-- **Render-size guard on Metal** — a warning before a too-large render hits Metal's
-  single-buffer limit and OOMs a 24 GB box.
-- **OOM-guard tuning** — the watchdog now rides out transient first-backward / decode spikes
-  (sustained window 3→5 inference, 12 for training; `PLAKAT_OOM_GUARD_SUSTAINED`).
-- **Gradient checkpointing** — investigated and **documented as a dead end** on candle 0.10.2
-  (no recompute hook; `CustomOp` backward exposes no parameter grads). See
-  [`Documentation/GRADIENT_CHECKPOINTING.md`](Documentation/GRADIENT_CHECKPOINTING.md) — the
-  transformer trainers stay verified-correct but memory-bound on 24 GB.
+**Maps in the automation surfaces.**
 
-**`plakat map` — coastlines and worlds.** All deterministic, byte-stable, no GPU:
+- **Multi-tile worlds from automation** — `map-render-tiles` in the scenario `map` task and a
+  **`plakat.map.tiles`** word; the shared `save_world_tiles` keeps every surface byte-identical.
+- **Per-tile furniture** — `--map-tile-furniture` (and the scenario field) draws a frame, the
+  grid coordinate (`R1C2`), and a north arrow on each tile, so one tile stands alone.
+- **Political territory polygons** — GeoJSON now emits a `territory` **Polygon** (the boundary
+  ring as real geometry) alongside the polity Point; the SVG draws it as a dashed polygon.
+- **Prose → terrain** — the map parser learned `peninsulas`/`inlets`/`fjords` (+ `plateaus`/
+  `rift_valleys`), so "a fjord-cut northern coast" maps to `terrain.fjords`.
 
-- **Peninsulas, inlets, fjords** — `terrain.{peninsulas,inlets,fjords}`: land spits jutting
-  into the sea, narrow sea arms cutting into the land, and deep steep-walled fjords.
-- **Multi-tile world maps** — `--map-render-tiles DIR` (with `--map-tiles CxR`) slices the
-  continuous world into seamless tile images (+ `world.png`) that reassemble exactly.
-- **Marsh hatching** for Wetland regions; **river deltas** at navigable mouths.
-- **Political layer in GeoJSON / SVG export**; **seasonal palette** on the painted
-  (`--map-render-sd`) path.
+**Confidence.** A comprehensive `corpus/map.sh` demonstrates **every** map feature byte-stably
+(island geometry, a 3×3 all-features continent, coastal detail, multi-tile worlds + furniture,
+urban, and the SD-painted tiled path). New multiperson swap + composite showcases.
 
-**`plakat multiperson`** — `--scale LABEL:0.7` sizes a child/teen persona's `--pose`
-skeleton shorter (no more adult-sized kids).
+**Fixes.** River deltas no longer draw across open ocean — the distributary fan now forms on
+the land side and stops at the shore (caught in a generated coastal sample).
 
-See [`Documentation/ROADMAP_1.13.0.md`](Documentation/ROADMAP_1.13.0.md).
+See [`Documentation/ROADMAP_1.14.0.md`](Documentation/ROADMAP_1.14.0.md) and
+[`Documentation/Tutorials/MULTIPERSON_TUTORIAL.md`](Documentation/Tutorials/MULTIPERSON_TUTORIAL.md).
 
-**Earlier releases** (v0.13 – v1.12):
+**Earlier releases** (v0.13 – v1.13):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
