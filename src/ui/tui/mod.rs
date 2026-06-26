@@ -5,6 +5,7 @@
 //! `plakat ui` subcommand and the terminal graphics-capability check; the workspace
 //! resolver, app/event loop, and screens land in subsequent Phase-1 increments.
 
+pub mod app;
 pub mod workspace;
 
 use anyhow::Result;
@@ -38,15 +39,9 @@ pub fn run(args: UiArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let interactive = std::io::stdin().is_terminal();
     let ws = workspace::resolve_or_create(args.workspace, &cwd, interactive)?;
-    // Phase 1 placeholder — the app/event loop + screens arrive next.
-    println!(
-        "plakat ui — terminal graphics OK ({}); workspace '{}' at {}. \
-         The app loop + Chat/Models screens land next (RFC TUI-1, Release 1).",
-        protocol_label(picker.protocol_type()),
-        ws.config.name,
-        ws.root.display()
-    );
-    Ok(())
+    // Launch the TUI shell (tab bar + status bar + screen switching). The Chat +
+    // Models screen bodies + background services land in the next increments.
+    app::App::new(ws, picker).run()
 }
 
 /// Detect a usable pixel graphics protocol. Returns the `Picker` (used later to
@@ -58,15 +53,6 @@ pub fn check_terminal_support() -> Result<Picker> {
         // Half-blocks is the no-real-graphics fallback — insufficient for plakat.
         ProtocolType::Halfblocks => Err(no_graphics_error()),
         ProtocolType::Kitty | ProtocolType::Iterm2 | ProtocolType::Sixel => Ok(picker),
-    }
-}
-
-fn protocol_label(p: ProtocolType) -> &'static str {
-    match p {
-        ProtocolType::Kitty => "Kitty graphics",
-        ProtocolType::Iterm2 => "iTerm2 inline images",
-        ProtocolType::Sixel => "Sixel",
-        ProtocolType::Halfblocks => "half-blocks",
     }
 }
 
