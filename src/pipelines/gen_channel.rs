@@ -95,6 +95,10 @@ impl StepHook for ChannelHook {
     fn on_preview(&mut self, step: usize, image: image::RgbImage) {
         let _ = self.tx.send(GenMessage::Preview { step: step as u32, image });
     }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
 }
 
 #[cfg(test)]

@@ -1150,6 +1150,19 @@ impl Pipeline {
     /// Generate `req.count` images for one prompt. Reuses the loaded models.
     /// `&mut self` because T5's forward maintains a KV cache.
     pub fn generate(&mut self, req: &GenRequest) -> Result<()> {
+        self.generate_hooked(req, None)
+    }
+
+    /// As [`generate`](Self::generate) with an optional per-step
+    /// [`StepHook`](crate::pipelines::step_hook::StepHook) (RFC TUI-1 §0-R0-3) for
+    /// TUI progress + cancellation on the standard (non-tiled) Flux path. `None` is
+    /// the CLI path, unchanged. (Live preview is SD-only for now — Flux's
+    /// 16-channel latent needs a different projection; progress + cancel apply.)
+    pub fn generate_hooked(
+        &mut self,
+        req: &GenRequest,
+        mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+    ) -> Result<()> {
         let steps = req.steps.unwrap_or_else(|| self.variant.default_steps());
         let guidance = req.guidance.unwrap_or_else(|| self.variant.default_guidance());
         // v0.18 phase 2b: opt-in Kontext aspect-bucket snap. When
@@ -1681,6 +1694,7 @@ impl Pipeline {
                     concept_cond_packed.as_ref(),
                     kontext_ref_packed.as_ref(),
                     &bar,
+                    &mut hook,
                 )?;
                 sampling::unpack(&denoised, h, w)?
             };
@@ -1717,6 +1731,10 @@ impl Pipeline {
                 .join(format!("plakat-flux-{seed}.{}", req.output_format.extension()));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
+            // RFC TUI-1 §0-R0-3: a cancelled denoise saved this partial; stop.
+            if crate::pipelines::step_hook::is_cancelled(&hook) {
+                break;
+            }
         }
         Ok(())
     }
@@ -1886,6 +1904,8 @@ impl Pipeline {
         );
 
         let state = sampling::State::new(t5_emb, clip_pooled, &noise)?;
+        // animate_frame is not hooked (single-frame, no TUI progress yet).
+        let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
         let denoised = self.denoise_with_optional_controlnet(
             &state,
             &timesteps,
@@ -1895,6 +1915,7 @@ impl Pipeline {
             None,  // no concept (Canny/Depth)
             None,  // no Kontext reference
             &bar,
+            &mut nohook,
         )?;
         bar.set_position(timesteps.len().saturating_sub(1) as u64);
         bar.finish_with_message("✓ frame denoised");
@@ -2071,6 +2092,7 @@ impl Pipeline {
         concept_cond: Option<&Tensor>,
         kontext_ref: Option<&(Tensor, Tensor)>,
         bar: &indicatif::ProgressBar,
+        hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
         let dev = state.img.device();
@@ -2235,6 +2257,14 @@ impl Pipeline {
             };
             img = (img + pred * (t_prev - t_curr))?;
             bar.set_position(step_i as u64);
+            // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
+            // On Cancel, return the partial latent — `generate_hooked` checks
+            // `is_cancelled` after this call to stop the per-image loop.
+            if crate::pipelines::step_hook::step(hook, step_i, num_steps)
+                == crate::pipelines::step_hook::StepControl::Cancel
+            {
+                break;
+            }
         }
         Ok(img)
     }

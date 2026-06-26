@@ -41,6 +41,14 @@ pub trait StepHook: Send {
     /// `wants_preview` returned `true`). Reduced fidelity vs a VAE decode — it is
     /// the live-denoise preview, not the final image.
     fn on_preview(&mut self, _step: usize, _image: image::RgbImage) {}
+
+    /// Whether cancellation has been requested. Lets a sampler whose denoise loop
+    /// lives in a helper (returning partial latents on `Cancel`) tell its caller to
+    /// stop the surrounding per-image loop too. Default `false` (the CLI never
+    /// cancels); `ChannelHook` reads its shared flag.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// A hook that does nothing and never cancels — a stand-in where a `StepHook` is
@@ -70,6 +78,10 @@ pub(crate) fn preview(hook: &mut Option<&mut dyn StepHook>, step: usize, image: 
     if let Some(h) = hook {
         h.on_preview(step, image);
     }
+}
+
+pub(crate) fn is_cancelled(hook: &Option<&mut dyn StepHook>) -> bool {
+    matches!(hook, Some(h) if h.is_cancelled())
 }
 
 #[cfg(test)]
