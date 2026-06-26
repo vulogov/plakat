@@ -874,6 +874,19 @@ impl Pipeline {
     /// Generate `req.count` images. Reuses the loaded weights across
     /// images; `&mut self` because T5 maintains an internal KV cache.
     pub fn generate(&mut self, req: &GenRequest) -> Result<()> {
+        self.generate_hooked(req, None)
+    }
+
+    /// As [`generate`](Self::generate) with an optional per-step
+    /// [`StepHook`](crate::pipelines::step_hook::StepHook) (RFC TUI-1 §0-R0-3) for
+    /// TUI progress + cancellation. `None` is the unchanged CLI path. (Live preview
+    /// is SD-only for now — SD3's 16-channel latent needs its own projection;
+    /// progress + cancel apply.)
+    pub fn generate_hooked(
+        &mut self,
+        req: &GenRequest,
+        mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+    ) -> Result<()> {
         let steps = req.steps.unwrap_or_else(|| self.variant.default_steps());
         let guidance = req.guidance.unwrap_or_else(|| self.variant.default_guidance());
         // MMDiT processes 2×2 patches of a 16-ch latent. With VAE
@@ -1057,6 +1070,8 @@ impl Pipeline {
             v
         };
 
+        // RFC TUI-1 §0-R0-3: set when a StepHook requests cancellation.
+        let mut cancelled = false;
         for idx in 0..req.count {
             let seed = req
                 .seed
@@ -1188,6 +1203,16 @@ impl Pipeline {
                 }
 
                 bar.set_position(step_i as u64);
+                // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
+                if crate::pipelines::step_hook::step(
+                    &mut hook,
+                    step_i,
+                    timesteps.len().saturating_sub(1),
+                ) == crate::pipelines::step_hook::StepControl::Cancel
+                {
+                    cancelled = true;
+                    break;
+                }
             }
             bar.set_position(timesteps.len().saturating_sub(1) as u64);
             bar.finish_with_message(format!("✓ {mode_tag} done"));
@@ -1210,6 +1235,10 @@ impl Pipeline {
                 ));
             crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, &out_path)?;
             crate::ui::progress::println(&format!("→ {}", out_path.display()));
+            // RFC TUI-1 §0-R0-3: a cancelled step saved this partial; stop.
+            if cancelled {
+                break;
+            }
         }
         Ok(())
     }
