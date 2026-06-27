@@ -259,6 +259,14 @@ impl App {
             return;
         }
 
+        // ── Scenarios EDITOR also owns text input while a buffer is open. ──
+        if self.screen == ActiveScreen::Scenarios && self.scenarios.is_editing() {
+            if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
+                self.run_scenario(path);
+            }
+            return;
+        }
+
         // ── Non-input screens: plain digits switch, q quits, else delegate. ──
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
@@ -474,8 +482,11 @@ impl App {
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        // On Chat the input owns plain keys, so advertise the input-safe switches.
-        let nav = if self.screen == ActiveScreen::Chat {
+        // In a text-input mode (Chat, or the Scenarios editor) plain keys type, so
+        // advertise only the input-safe switches.
+        let input_mode = self.screen == ActiveScreen::Chat
+            || (self.screen == ActiveScreen::Scenarios && self.scenarios.is_editing());
+        let nav = if input_mode {
             "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
             "1-8 / Tab switch · Ctrl-Q quit"
