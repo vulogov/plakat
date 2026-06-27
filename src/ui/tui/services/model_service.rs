@@ -17,7 +17,7 @@ use candle_core::Device;
 use tokio::runtime::Handle;
 
 use crate::pipelines::gen_channel::{CancelFlag, ChannelHook, GenMessage};
-use crate::pipelines::t2i;
+use crate::pipelines::{img2img, portrait, t2i};
 use crate::preset::discovery::BaseFamily;
 
 /// Parameters for a Chat generation (the model thread builds the GenRequest).
@@ -31,6 +31,10 @@ pub struct GenJob {
     pub seed: u64,
     pub out_dir: PathBuf,
     pub preview_every: usize,
+    /// `Some(path)` → conversational refinement: img2img over this image at
+    /// `strength`, reusing the loaded weights. `None` → fresh txt2img.
+    pub init_image: Option<PathBuf>,
+    pub strength: f32,
     pub tx: Sender<GenMessage>,
     pub cancel: CancelFlag,
 }
@@ -110,11 +114,14 @@ impl ModelService {
         seed: u64,
         out_dir: PathBuf,
         preview_every: usize,
+        init_image: Option<PathBuf>,
+        strength: f32,
     ) -> (std::sync::mpsc::Receiver<GenMessage>, CancelFlag) {
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = CancelFlag::new();
         let job = GenJob {
             prompt, negative, width, height, steps, guidance, seed, out_dir, preview_every,
+            init_image, strength,
             tx, cancel: cancel.clone(),
         };
         let _ = self.cmd_tx.send(ModelCommand::Generate(job));
@@ -180,12 +187,57 @@ fn model_loop(
                 let _ = msg_tx.send(ModelMessage::Unloaded);
             }
             ModelCommand::Generate(job) => {
-                let Some((_, pipeline)) = &loaded else {
+                let Some((alias, pipeline)) = &loaded else {
                     let _ = job.tx.send(GenMessage::Error {
                         message: "no model loaded — load one in Models (Ctrl-2)".into(),
                     });
                     continue;
                 };
+
+                // ── Conversational refinement: img2img over the previous image. ──
+                // Reuses the loaded weights via portrait::from_core (no reload). The
+                // img2img body isn't StepHook-wired, so progress flows to the Output
+                // pane via the rerouted `ui::progress` (no inline preview / cancel).
+                if let Some(init) = job.init_image.clone() {
+                    let _ = std::fs::create_dir_all(&job.out_dir);
+                    let refine_pipe = portrait::Pipeline::from_core(pipeline.core());
+                    let req = img2img::Request {
+                        prompt: job.prompt.clone(),
+                        negative: job.negative.clone(),
+                        model: alias.clone(),
+                        device: device.clone(),
+                        loras: Vec::new(),
+                        lora_scale: 1.0,
+                        input: init,
+                        mask: None,
+                        mask_feather: 0,
+                        mask_invert: false,
+                        width: job.width,
+                        height: job.height,
+                        count: 1,
+                        steps: job.steps,
+                        guidance: job.guidance,
+                        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                        strength: job.strength,
+                        seed: Some(job.seed),
+                        out_dir: job.out_dir.clone(),
+                        controls: Vec::new(),
+                    };
+                    match rt.block_on(img2img::run_with_pipeline(&refine_pipe, &req)) {
+                        Ok(()) => {
+                            let out = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
+                            let _ = job.tx.send(GenMessage::Done {
+                                output: out,
+                                cancelled: job.cancel.is_cancelled(),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                        }
+                    }
+                    continue;
+                }
+
                 let req = t2i::GenRequest {
                     prompt: job.prompt.clone(),
                     negative: job.negative.clone(),

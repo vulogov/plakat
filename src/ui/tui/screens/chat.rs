@@ -1,6 +1,8 @@
-//! Chat screen (RFC TUI-1 §6) — the conversational generation interface. This
-//! increment is the shell: a text input, the session history, and input-focus key
-//! handling. Generation dispatch + progressive preview land in the next increment.
+//! Chat screen (RFC TUI-1 §6) — the conversational generation interface: a text
+//! input, the session history, the inline image, and live progress. The first
+//! prompt generates (txt2img); once an image exists, a follow-up prompt refines it
+//! (img2img over the previous output) unless it starts with `/new`. The App owns
+//! the dispatch + refine decision; this screen renders state + handles input keys.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -16,6 +18,8 @@ pub struct ChatEntry {
     pub utterance: String,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// This turn refined the previous image (img2img) rather than generating fresh.
+    pub refine: bool,
 }
 
 /// Live generation status for the status line.
@@ -26,6 +30,7 @@ pub enum ChatStatus {
     Generating {
         step: u32,
         total: u32,
+        refine: bool,
     },
     Done(String),
     Error(String),
@@ -46,11 +51,21 @@ pub struct ChatState {
     /// The latest preview / final image to show in the right pane (built by the
     /// App from `GenMessage` frames via the image Picker).
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
+    /// True once a previous image exists, so the next prompt refines it (img2img).
+    /// Surfaced in the input hint; the App owns the actual refine decision.
+    pub refine_armed: bool,
 }
 
 impl ChatState {
     pub fn new() -> Self {
-        Self { input: String::new(), cursor: 0, history: Vec::new(), status: ChatStatus::Idle, preview: None }
+        Self {
+            input: String::new(),
+            cursor: 0,
+            history: Vec::new(),
+            status: ChatStatus::Idle,
+            preview: None,
+            refine_armed: false,
+        }
     }
 
     fn input_len(&self) -> usize {
@@ -103,8 +118,8 @@ impl ChatState {
     }
 
     /// Record a submitted utterance (the App calls this when dispatching it).
-    pub fn push_utterance(&mut self, utterance: String) {
-        self.history.push(ChatEntry { utterance, result: None, error: None });
+    pub fn push_utterance(&mut self, utterance: String, refine: bool) {
+        self.history.push(ChatEntry { utterance, result: None, error: None, refine });
     }
 
     /// Mark the most recent entry done / failed (called when a generation finishes).
@@ -153,7 +168,9 @@ impl ChatState {
         let inner_w = area.width.saturating_sub(2) as usize;
         let mut lines: Vec<Line> = Vec::new();
         for (i, e) in self.history.iter().enumerate() {
-            wrap_entry(&mut lines, &format!("{:>2} ▸ ", i + 1), &e.utterance, Color::Cyan, Color::White, inner_w);
+            // ↻ marks a refinement of the previous image; ▸ a fresh generation.
+            let (glyph, gcolor) = if e.refine { ("↻", Color::Magenta) } else { ("▸", Color::Cyan) };
+            wrap_entry(&mut lines, &format!("{:>2} {glyph} ", i + 1), &e.utterance, gcolor, Color::White, inner_w);
             if let Some(path) = &e.result {
                 wrap_entry(&mut lines, "      → ", path, Color::Green, Color::Green, inner_w);
             }
@@ -173,7 +190,10 @@ impl ChatState {
         let visible: Vec<Line> = lines.split_off(start);
 
         let title = match &self.status {
-            ChatStatus::Generating { step, total } => format!(" Chat  ⟳ generating {step}/{total} "),
+            ChatStatus::Generating { step, total, refine } => {
+                let verb = if *refine { "refining" } else { "generating" };
+                format!(" Chat  ⟳ {verb} {step}/{total} ")
+            }
             ChatStatus::Error(e) => format!(" Chat  ✗ {e} "),
             _ => " Chat ".to_string(),
         };
@@ -199,7 +219,14 @@ impl ChatState {
             }
             None => spans.push(Span::styled(" ", cursor_style)), // cursor at end
         }
-        let block = Block::default().borders(Borders::ALL).title(" prompt · Enter to generate ");
+        // Once an image exists, the next prompt refines it; advertise that + the
+        // /new escape hatch for a fresh generation.
+        let title = if self.refine_armed {
+            " prompt · Enter to refine · /new <prompt> = fresh "
+        } else {
+            " prompt · Enter to generate "
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
         f.render_widget(Paragraph::new(Line::from(spans)).block(block).wrap(Wrap { trim: false }), area);
     }
 }
@@ -213,7 +240,7 @@ fn wrap_to(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
     let mut cur_len = 0usize;
-    let mut add = |lines: &mut Vec<String>, cur: &mut String, cur_len: &mut usize, piece: &str| {
+    let add = |lines: &mut Vec<String>, cur: &mut String, cur_len: &mut usize, piece: &str| {
         let pl = piece.chars().count();
         if *cur_len == 0 {
             cur.push_str(piece);
@@ -347,9 +374,17 @@ mod tests {
     #[test]
     fn history_records_utterance_and_result() {
         let mut s = ChatState::new();
-        s.push_utterance("a fox".into());
+        s.push_utterance("a fox".into(), false);
         s.finish_last(Ok("out/chat/plakat-42.png".into()));
         assert_eq!(s.history.len(), 1);
         assert_eq!(s.history[0].result.as_deref(), Some("out/chat/plakat-42.png"));
+        assert!(!s.history[0].refine);
+    }
+
+    #[test]
+    fn refine_turn_is_flagged() {
+        let mut s = ChatState::new();
+        s.push_utterance("make it warmer".into(), true);
+        assert!(s.history[0].refine, "a refinement turn records refine=true");
     }
 }

@@ -31,6 +31,10 @@ use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
+/// img2img denoise strength for conversational refinement. ~0.6 keeps the previous
+/// image's composition while letting the new prompt change appreciable detail.
+const REFINE_STRENGTH: f32 = 0.6;
+
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,6 +117,8 @@ pub struct App {
     rt: Handle,
     // The in-flight Chat generation (its message channel + cancel flag).
     active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
+    // The last image generated in Chat — the base for conversational refinement.
+    last_image: Option<std::path::PathBuf>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -137,6 +143,7 @@ impl App {
             model_svc: ModelService::spawn(device, rt.clone()),
             rt,
             active_gen: None,
+            last_image: None,
             scenario_run: None,
             scenario_events: None,
             screen: ActiveScreen::Chat,
@@ -379,7 +386,19 @@ impl App {
         if self.active_gen.is_some() {
             return; // one generation at a time (the model thread is serial anyway)
         }
-        self.chat.push_utterance(prompt.clone());
+        // Conversational refinement: once an image exists, a follow-up prompt edits
+        // it (img2img) rather than starting over. `/new <prompt>` forces a fresh
+        // generation; the new image then becomes the base for the next turn.
+        let (prompt, refine) = match prompt.strip_prefix("/new") {
+            Some(rest) => (rest.trim_start().to_string(), false),
+            None => (prompt, self.last_image.is_some()),
+        };
+        if prompt.trim().is_empty() {
+            return; // bare "/new" (or empty) — nothing to generate
+        }
+        let init_image = if refine { self.last_image.clone() } else { None };
+
+        self.chat.push_utterance(prompt.clone(), refine);
         // Generate at the LOADED model's native square resolution (sd15=512,
         // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
         // which OOMs SD1.5. A per-model size override is a future item.
@@ -403,9 +422,11 @@ impl App {
             seed,
             out_dir,
             preview_every,
+            init_image,
+            REFINE_STRENGTH,
         );
         self.active_gen = Some((rx, cancel));
-        self.chat.status = ChatStatus::Generating { step: 0, total: steps as u32 };
+        self.chat.status = ChatStatus::Generating { step: 0, total: steps as u32, refine };
     }
 
     /// Drain the active generation's messages → Chat status, inline preview/final
@@ -421,7 +442,9 @@ impl App {
         for msg in msgs {
             match msg {
                 GenMessage::Progress { step, total, .. } => {
-                    self.chat.status = ChatStatus::Generating { step, total };
+                    // Preserve the in-flight turn's refine flag (Progress doesn't carry it).
+                    let refine = self.chat.history.last().is_some_and(|e| e.refine);
+                    self.chat.status = ChatStatus::Generating { step, total, refine };
                 }
                 GenMessage::Preview { image, .. } => {
                     let dynimg = image::DynamicImage::ImageRgb8(image);
@@ -431,6 +454,9 @@ impl App {
                     if let Ok(img) = image::open(&output) {
                         self.chat.preview = Some(self.picker.new_resize_protocol(img));
                     }
+                    // This image becomes the base for the next prompt's refinement.
+                    self.last_image = Some(output.clone());
+                    self.chat.refine_armed = true;
                     let path = output.display().to_string();
                     self.chat.finish_last(Ok(path.clone()));
                     self.chat.status = ChatStatus::Done(path);
@@ -601,6 +627,35 @@ mod tests {
         let mut b = test_app();
         b.handle_key(key('c', true));
         assert!(b.should_quit);
+    }
+
+    #[test]
+    fn chat_refines_after_an_image_and_new_forces_fresh() {
+        let mut a = test_app();
+        // First turn: no prior image → fresh generation.
+        a.dispatch_generation("a fox".into());
+        assert!(!a.chat.history.last().unwrap().refine, "first turn is fresh");
+
+        // Simulate that turn completing with an image on disk.
+        a.active_gen = None;
+        a.last_image = Some("/tmp/plakat-42.png".into());
+
+        // Next turn refines the previous image.
+        a.dispatch_generation("make it warmer".into());
+        assert!(a.chat.history.last().unwrap().refine, "follow-up refines");
+
+        // `/new` forces a fresh generation even with a prior image, and strips the prefix.
+        a.active_gen = None;
+        a.dispatch_generation("/new a cyberpunk city".into());
+        let last = a.chat.history.last().unwrap();
+        assert!(!last.refine, "/new is fresh");
+        assert_eq!(last.utterance, "a cyberpunk city");
+
+        // Bare `/new` is a no-op (no empty turn).
+        a.active_gen = None;
+        let before = a.chat.history.len();
+        a.dispatch_generation("/new".into());
+        assert_eq!(a.chat.history.len(), before, "bare /new generates nothing");
     }
 
     #[test]
