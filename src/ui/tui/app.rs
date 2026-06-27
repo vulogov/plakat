@@ -135,7 +135,21 @@ impl App {
     /// Enter the alternate screen + raw mode, run the loop, and always restore the
     /// terminal on the way out (`ratatui::init` also installs a panic hook that
     /// restores, so a panic won't leave the terminal wedged).
+    /// One-time startup: pre-select the workspace's default model in Models, and
+    /// auto-load it in the background if its weights are already cached (no surprise
+    /// multi-GB download). Non-SD-family or uncached defaults are only pre-selected.
+    fn startup(&mut self) {
+        let default = self.workspace.config.default_model.clone();
+        self.models.select_by_alias(&default);
+        if super::services::model_service::t2i_load_check(&default).is_ok()
+            && crate::hf::download::is_cached(&default)
+        {
+            self.model_svc.load(default);
+        }
+    }
+
     pub fn run(&mut self) -> Result<()> {
+        self.startup();
         let mut terminal = ratatui::init();
         // Enable the "disambiguate escape codes" keyboard protocol (Kitty/Ghostty/
         // WezTerm/foot) so Ctrl-1..8 report as clean `Ctrl+Char` events instead of
@@ -188,8 +202,18 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ── Always-global keys (work even while a text input is focused) ──
         match key.code {
-            KeyCode::Char('c' | 'q') if ctrl => {
+            // Ctrl-Q always quits. Ctrl-C cancels a running generation if there is
+            // one (it saves the partial), else quits.
+            KeyCode::Char('q') if ctrl => {
                 self.should_quit = true;
+                return;
+            }
+            KeyCode::Char('c') if ctrl => {
+                if let Some((_, cancel)) = &self.active_gen {
+                    cancel.cancel();
+                } else {
+                    self.should_quit = true;
+                }
                 return;
             }
             // Ctrl-1..8 — disambiguated screen jump (Kitty/Ghostty/WezTerm/foot).
@@ -264,23 +288,32 @@ impl App {
             return; // one generation at a time (the model thread is serial anyway)
         }
         self.chat.push_utterance(prompt.clone());
-        let cfg = &self.workspace.config;
-        let (w, h) = parse_size(&cfg.default_size).unwrap_or((1024, 768));
+        // Generate at the LOADED model's native square resolution (sd15=512,
+        // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
+        // which OOMs SD1.5. A per-model size override is a future item.
+        let n = self
+            .models
+            .loaded_alias()
+            .map(crate::capability::native_res)
+            .unwrap_or(768);
+        let steps = self.workspace.config.default_steps;
+        let guidance = self.workspace.config.default_guidance;
+        let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
         let seed = rand::random::<u32>() as u64;
         let (rx, cancel) = self.model_svc.generate(
             prompt,
             String::new(),
-            w,
-            h,
-            cfg.default_steps,
-            cfg.default_guidance,
+            n,
+            n,
+            steps,
+            guidance,
             seed,
             out_dir,
-            cfg.preview_every_n_steps,
+            preview_every,
         );
         self.active_gen = Some((rx, cancel));
-        self.chat.status = ChatStatus::Generating { step: 0, total: cfg.default_steps as u32 };
+        self.chat.status = ChatStatus::Generating { step: 0, total: steps as u32 };
     }
 
     /// Drain the active generation's messages → Chat status, inline preview/final
@@ -384,17 +417,6 @@ impl App {
     }
 }
 
-/// Parse a `"WxH"` (or `"N"`) size string into `(width, height)`.
-fn parse_size(s: &str) -> Option<(u32, u32)> {
-    let s = s.trim().to_ascii_lowercase();
-    if let Some((w, h)) = s.split_once('x') {
-        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-    } else {
-        let n: u32 = s.parse().ok()?;
-        Some((n, n))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,13 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_size_handles_wxh_and_n() {
-        assert_eq!(parse_size("1280x768"), Some((1280, 768)));
-        assert_eq!(parse_size("1024"), Some((1024, 1024)));
-        assert_eq!(parse_size("bad"), None);
-    }
-
-    #[test]
     fn plain_q_types_into_chat_not_quit() {
         let mut a = test_app(); // starts on Chat
         a.handle_key(key('q', false));
@@ -475,6 +490,21 @@ mod tests {
         // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps).
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Canvas));
+    }
+
+    #[test]
+    fn ctrl_c_cancels_active_generation_instead_of_quitting() {
+        let mut a = test_app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let cancel = CancelFlag::new();
+        a.active_gen = Some((rx, cancel.clone()));
+        a.handle_key(key('c', true)); // Ctrl-C
+        assert!(!a.should_quit, "Ctrl-C cancels the running gen, doesn't quit");
+        assert!(cancel.is_cancelled());
+        // With no active generation, Ctrl-C quits.
+        let mut b = test_app();
+        b.handle_key(key('c', true));
+        assert!(b.should_quit);
     }
 
     #[test]

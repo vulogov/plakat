@@ -263,6 +263,9 @@ fn workspace_hjson(c: &WorkspaceConfig) -> String {
         \x20 default_identity: {identity}\n\
         \x20 default_steps: {steps}\n\
         \x20 default_guidance: {guidance}\n\
+        \x20 // NOTE: the TUI currently generates at each model's NATIVE size (sd15=512,\n\
+        \x20 // sd21=768, sdxl=1024) so it never OOMs Metal; default_size is reserved\n\
+        \x20 // for a future per-model size override.\n\
         \x20 default_size: \"{size}\"\n\n\
         \x20 // LLM providers.\n\
         \x20 layout_provider: {provider}\n\

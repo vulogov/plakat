@@ -64,6 +64,13 @@ impl ModelsState {
         self.rows.get(self.selected).map(|r| r.alias.clone())
     }
 
+    /// Move the cursor onto a model by alias (e.g. the workspace default at startup).
+    pub fn select_by_alias(&mut self, alias: &str) {
+        if let Some(pos) = self.rows.iter().position(|r| r.alias == alias) {
+            self.selected = pos;
+        }
+    }
+
     /// Apply a ModelService status update.
     pub fn apply(&mut self, msg: &crate::ui::tui::services::model_service::ModelMessage) {
         use crate::ui::tui::services::model_service::ModelMessage as M;
@@ -75,7 +82,8 @@ impl ModelsState {
         };
     }
 
-    fn loaded_alias(&self) -> Option<&str> {
+    /// The currently-loaded model's alias (drives the generation size).
+    pub fn loaded_alias(&self) -> Option<&str> {
         match &self.load {
             LoadState::Loaded { alias, .. } => Some(alias.as_str()),
             _ => None,

@@ -145,6 +145,15 @@ fn cached_path(repo: &str, file: &str, revision: &str) -> Option<PathBuf> {
         .get(file)
 }
 
+/// Whether a model alias's weights are already in the local cache (no download
+/// needed). Checks `model_index.json` — the diffusers manifest present in every
+/// SD-family repo — so the TUI can auto-load a cached default model on startup
+/// without triggering a multi-GB download.
+pub fn is_cached(alias: &str) -> bool {
+    let repo = crate::hf::resolve_alias(alias);
+    cached_path(repo, "model_index.json", "main").is_some()
+}
+
 /// Drives a plakat `bytes_bar` from hf-hub's download callbacks → a real `%` /
 /// bytes progress bar (in the CLI, and rerouted into the TUI Output pane).
 #[derive(Clone)]
@@ -252,6 +261,12 @@ pub(crate) fn select_pull_files(files: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_cached_false_for_unknown_model() {
+        // A bogus alias resolves to itself and is never in the cache.
+        assert!(!is_cached("definitely-not-a-real-model-xyz-123"));
+    }
 
     #[test]
     fn select_pull_files_prefers_fp16_and_drops_previews() {

@@ -43,6 +43,17 @@ const MODELS: &[ModelMeta] = &[
     ModelMeta { alias: "flux-schnell",  native_res: 1024, dtype: "BF16", tuning: "→ flux-schnell-gguf Q4 + --quantize-t5; 4-step", metal_blocked: false },
 ];
 
+/// The native (training) square resolution for a model alias, e.g. sd15 → 512,
+/// sd21 → 768, sdxl → 1024. Used by the TUI to generate at a Metal-safe size for
+/// the loaded model. Unknown aliases default to 768.
+pub fn native_res(alias: &str) -> u32 {
+    MODELS
+        .iter()
+        .find(|m| m.alias == alias)
+        .map(|m| m.native_res)
+        .unwrap_or(768)
+}
+
 /// One model's feasibility on the probed hardware.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelCapability {
@@ -257,6 +268,14 @@ async fn hf_repo_gb(repo: &str, token: Option<&str>) -> anyhow::Result<f64> {
 mod tests {
     use super::*;
     use crate::hw::HardwareReport;
+
+    #[test]
+    fn native_res_per_alias() {
+        assert_eq!(native_res("sd15"), 512);
+        assert_eq!(native_res("sd21"), 768);
+        assert_eq!(native_res("sdxl"), 1024);
+        assert_eq!(native_res("totally-unknown"), 768); // safe default
+    }
 
     fn hw(budget: f64) -> HardwareReport {
         HardwareReport {

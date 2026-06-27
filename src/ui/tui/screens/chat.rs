@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 /// One turn in the session: the user's utterance + (once generated) its result.
@@ -124,38 +124,37 @@ impl ChatState {
     }
 
     fn render_history(&self, f: &mut Frame, area: Rect) {
-        let mut items: Vec<ListItem> = Vec::new();
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let mut lines: Vec<Line> = Vec::new();
         for (i, e) in self.history.iter().enumerate() {
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(format!("{:>2} ▸ ", i + 1), Style::new().fg(Color::Cyan)),
-                Span::styled(e.utterance.clone(), Style::new().fg(Color::White)),
-            ])));
+            wrap_entry(&mut lines, &format!("{:>2} ▸ ", i + 1), &e.utterance, Color::Cyan, Color::White, inner_w);
             if let Some(path) = &e.result {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("      → {path}"),
-                    Style::new().fg(Color::Green),
-                ))));
+                wrap_entry(&mut lines, "      → ", path, Color::Green, Color::Green, inner_w);
             }
             if let Some(err) = &e.error {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("      ✗ {err}"),
-                    Style::new().fg(Color::Red),
-                ))));
+                wrap_entry(&mut lines, "      ✗ ", err, Color::Red, Color::Red, inner_w);
             }
         }
-        if items.is_empty() {
-            items.push(ListItem::new(Line::from(Span::styled(
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
                 "Describe an image and press Enter. (Load a model first in Models / Ctrl-2.)",
                 Style::new().fg(Color::DarkGray),
-            ))));
+            )));
         }
+        // Keep the tail visible (latest messages) within the pane height.
+        let rows = area.height.saturating_sub(2) as usize;
+        let start = lines.len().saturating_sub(rows.max(1));
+        let visible: Vec<Line> = lines.split_off(start);
+
         let title = match &self.status {
             ChatStatus::Generating { step, total } => format!(" Chat  ⟳ generating {step}/{total} "),
             ChatStatus::Error(e) => format!(" Chat  ✗ {e} "),
             _ => " Chat ".to_string(),
         };
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
-        f.render_widget(list, area);
+        f.render_widget(
+            Paragraph::new(visible).block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
     }
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
@@ -167,6 +166,76 @@ impl ChatState {
         ]);
         let block = Block::default().borders(Borders::ALL).title(" prompt · Enter to generate ");
         f.render_widget(Paragraph::new(line).block(block).wrap(Wrap { trim: false }), area);
+    }
+}
+
+/// Word-wrap `text` to `width` columns (char-based; hard-splits a word longer than
+/// `width`, e.g. a long path). Always returns at least one line.
+fn wrap_to(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0usize;
+    let mut add = |lines: &mut Vec<String>, cur: &mut String, cur_len: &mut usize, piece: &str| {
+        let pl = piece.chars().count();
+        if *cur_len == 0 {
+            cur.push_str(piece);
+            *cur_len = pl;
+        } else if *cur_len + 1 + pl <= width {
+            cur.push(' ');
+            cur.push_str(piece);
+            *cur_len += 1 + pl;
+        } else {
+            lines.push(std::mem::take(cur));
+            cur.push_str(piece);
+            *cur_len = pl;
+        }
+    };
+    for word in text.split_whitespace() {
+        if word.chars().count() <= width {
+            add(&mut lines, &mut cur, &mut cur_len, word);
+        } else {
+            let chars: Vec<char> = word.chars().collect();
+            for chunk in chars.chunks(width) {
+                let piece: String = chunk.iter().collect();
+                add(&mut lines, &mut cur, &mut cur_len, &piece);
+            }
+        }
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Push a history entry (a `prefix` + `text`) into `lines`, wrapped to `width`.
+/// The first line shows the coloured prefix; continuation lines are indented to
+/// align under the text.
+fn wrap_entry(
+    lines: &mut Vec<Line<'static>>,
+    prefix: &str,
+    text: &str,
+    prefix_color: Color,
+    text_color: Color,
+    width: usize,
+) {
+    let plen = prefix.chars().count();
+    let avail = width.saturating_sub(plen).max(1);
+    let indent = " ".repeat(plen);
+    for (k, w) in wrap_to(text, avail).into_iter().enumerate() {
+        if k == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), Style::new().fg(prefix_color)),
+                Span::styled(w, Style::new().fg(text_color)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(w, Style::new().fg(text_color)),
+            ]));
+        }
     }
 }
 
@@ -207,6 +276,18 @@ mod tests {
     fn empty_enter_is_noop() {
         let mut s = ChatState::new();
         assert!(matches!(s.handle_key(k(KeyCode::Enter)), ChatAction::None));
+    }
+
+    #[test]
+    fn wrap_to_wraps_at_width_and_preserves_words() {
+        let out = wrap_to("the quick brown fox jumps", 9);
+        assert!(out.iter().all(|l| l.chars().count() <= 9), "no line exceeds width");
+        assert_eq!(out.join(" "), "the quick brown fox jumps", "words preserved in order");
+        assert!(out.len() >= 3);
+        // a long, space-less token (e.g. a path) is hard-split, not truncated.
+        let p = wrap_to("/a/very/long/path/with/no/spaces/at/all.png", 10);
+        assert!(p.iter().all(|l| l.chars().count() <= 10));
+        assert_eq!(p.concat(), "/a/very/long/path/with/no/spaces/at/all.png");
     }
 
     #[test]
