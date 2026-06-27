@@ -21,8 +21,10 @@ use tokio::runtime::Handle;
 
 use std::sync::mpsc::Receiver;
 
+use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
+
 use super::output::OutputPane;
-use super::screens::chat::{ChatAction, ChatState};
+use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::models::ModelsState;
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
@@ -104,6 +106,8 @@ pub struct App {
     progress_rx: Receiver<String>,
     // Background services.
     pub model_svc: ModelService,
+    // The in-flight Chat generation (its message channel + cancel flag).
+    active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
 }
 
 impl App {
@@ -124,6 +128,7 @@ impl App {
             output: OutputPane::new(),
             progress_rx,
             model_svc: ModelService::spawn(device, rt),
+            active_gen: None,
         }
     }
 
@@ -173,6 +178,7 @@ impl App {
             while let Some(msg) = self.model_svc.try_recv() {
                 self.models.apply(&msg);
             }
+            self.drain_generation();
         }
         Ok(())
     }
@@ -213,8 +219,7 @@ impl App {
         // ── Chat owns text input: plain chars / Enter / Backspace go to it. ──
         if self.screen == ActiveScreen::Chat {
             if let ChatAction::Submit(prompt) = self.chat.handle_key(key) {
-                // Generation dispatch lands in the next increment; record it for now.
-                self.chat.push_utterance(prompt);
+                self.dispatch_generation(prompt);
             }
             return;
         }
@@ -251,7 +256,74 @@ impl App {
         }
     }
 
-    fn render(&self, f: &mut Frame) {
+    /// Dispatch a Chat prompt to the model thread (must have a model loaded). The
+    /// denoise progress flows to the Output pane automatically; this also tracks the
+    /// Preview/Done frames for the inline image.
+    fn dispatch_generation(&mut self, prompt: String) {
+        if self.active_gen.is_some() {
+            return; // one generation at a time (the model thread is serial anyway)
+        }
+        self.chat.push_utterance(prompt.clone());
+        let cfg = &self.workspace.config;
+        let (w, h) = parse_size(&cfg.default_size).unwrap_or((1024, 768));
+        let out_dir = self.workspace.out_dir().join("chat");
+        let seed = rand::random::<u32>() as u64;
+        let (rx, cancel) = self.model_svc.generate(
+            prompt,
+            String::new(),
+            w,
+            h,
+            cfg.default_steps,
+            cfg.default_guidance,
+            seed,
+            out_dir,
+            cfg.preview_every_n_steps,
+        );
+        self.active_gen = Some((rx, cancel));
+        self.chat.status = ChatStatus::Generating { step: 0, total: cfg.default_steps as u32 };
+    }
+
+    /// Drain the active generation's messages → Chat status, inline preview/final
+    /// image (built here because it needs the Picker), and history.
+    fn drain_generation(&mut self) {
+        let mut msgs = Vec::new();
+        if let Some((rx, _)) = &self.active_gen {
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
+            }
+        }
+        let mut finished = false;
+        for msg in msgs {
+            match msg {
+                GenMessage::Progress { step, total, .. } => {
+                    self.chat.status = ChatStatus::Generating { step, total };
+                }
+                GenMessage::Preview { image, .. } => {
+                    let dynimg = image::DynamicImage::ImageRgb8(image);
+                    self.chat.preview = Some(self.picker.new_resize_protocol(dynimg));
+                }
+                GenMessage::Done { output, .. } => {
+                    if let Ok(img) = image::open(&output) {
+                        self.chat.preview = Some(self.picker.new_resize_protocol(img));
+                    }
+                    let path = output.display().to_string();
+                    self.chat.finish_last(Ok(path.clone()));
+                    self.chat.status = ChatStatus::Done(path);
+                    finished = true;
+                }
+                GenMessage::Error { message } => {
+                    self.chat.finish_last(Err(message.clone()));
+                    self.chat.status = ChatStatus::Error(message);
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.active_gen = None;
+        }
+    }
+
+    fn render(&mut self, f: &mut Frame) {
         // [tab bar] [screen content] [Output pane — when non-empty] [status bar].
         // The Output pane (rerouted progress + messages) is visible on every screen.
         let show_output = !self.output.is_empty();
@@ -287,7 +359,7 @@ impl App {
         f.render_widget(tabs, area);
     }
 
-    fn render_content(&self, f: &mut Frame, area: Rect) {
+    fn render_content(&mut self, f: &mut Frame, area: Rect) {
         match self.screen {
             ActiveScreen::Models => self.models.render(f, area),
             ActiveScreen::Chat => self.chat.render(f, area),
@@ -309,6 +381,17 @@ impl App {
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
+    }
+}
+
+/// Parse a `"WxH"` (or `"N"`) size string into `(width, height)`.
+fn parse_size(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim().to_ascii_lowercase();
+    if let Some((w, h)) = s.split_once('x') {
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    } else {
+        let n: u32 = s.parse().ok()?;
+        Some((n, n))
     }
 }
 
@@ -363,6 +446,13 @@ mod tests {
         c.screen = ActiveScreen::Models;
         c.handle_key(key('q', false));
         assert!(c.should_quit);
+    }
+
+    #[test]
+    fn parse_size_handles_wxh_and_n() {
+        assert_eq!(parse_size("1280x768"), Some((1280, 768)));
+        assert_eq!(parse_size("1024"), Some((1024, 1024)));
+        assert_eq!(parse_size("bad"), None);
     }
 
     #[test]

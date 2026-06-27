@@ -37,16 +37,18 @@ pub enum ChatAction {
     Submit(String),
 }
 
-#[derive(Default)]
 pub struct ChatState {
     pub input: String,
     pub history: Vec<ChatEntry>,
     pub status: ChatStatus,
+    /// The latest preview / final image to show in the right pane (built by the
+    /// App from `GenMessage` frames via the image Picker).
+    pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
 }
 
 impl ChatState {
     pub fn new() -> Self {
-        Self::default()
+        Self { input: String::new(), history: Vec::new(), status: ChatStatus::Idle, preview: None }
     }
 
     /// Handle a key while the Chat input is focused. Plain characters type into the
@@ -89,7 +91,7 @@ impl ChatState {
         }
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -104,14 +106,21 @@ impl ChatState {
         self.render_input(f, rows[1]);
     }
 
-    fn render_image(&self, f: &mut Frame, area: Rect) {
-        // Placeholder until generation wiring renders the result via ratatui-image.
-        let body = match self.history.last().and_then(|e| e.result.as_ref()) {
-            Some(path) => format!("\n  latest result:\n  {path}\n\n  (inline preview lands with generation)"),
-            None => "\n  The generated image will appear here.\n\n  Type a prompt on the left and press Enter.".to_string(),
-        };
+    fn render_image(&mut self, f: &mut Frame, area: Rect) {
         let block = Block::default().borders(Borders::ALL).title(" Image ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: false }), area);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        match &mut self.preview {
+            Some(protocol) => {
+                // ratatui-image renders the decoded image inline via the terminal's
+                // graphics protocol (Kitty/iTerm2/Sixel).
+                f.render_stateful_widget(ratatui_image::StatefulImage::new(), inner, protocol);
+            }
+            None => {
+                let body = "\n  The generated image will appear here.\n\n  Type a prompt on the left and press Enter.";
+                f.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
+            }
+        }
     }
 
     fn render_history(&self, f: &mut Frame, area: Rect) {

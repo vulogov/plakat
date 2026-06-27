@@ -11,16 +11,35 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
+use std::path::PathBuf;
+
 use candle_core::Device;
 use tokio::runtime::Handle;
 
+use crate::pipelines::gen_channel::{CancelFlag, ChannelHook, GenMessage};
 use crate::pipelines::t2i;
 use crate::preset::discovery::BaseFamily;
+
+/// Parameters for a Chat generation (the model thread builds the GenRequest).
+pub struct GenJob {
+    pub prompt: String,
+    pub negative: String,
+    pub width: u32,
+    pub height: u32,
+    pub steps: usize,
+    pub guidance: f64,
+    pub seed: u64,
+    pub out_dir: PathBuf,
+    pub preview_every: usize,
+    pub tx: Sender<GenMessage>,
+    pub cancel: CancelFlag,
+}
 
 /// A request to the model thread.
 pub enum ModelCommand {
     Load(String),
     Unload,
+    Generate(GenJob),
     Shutdown,
 }
 
@@ -75,6 +94,31 @@ impl ModelService {
 
     pub fn unload(&self) {
         let _ = self.cmd_tx.send(ModelCommand::Unload);
+    }
+
+    /// Dispatch a generation to the model thread. Returns the channel of
+    /// `GenMessage`s (Progress/Preview/Done/Error) to drain + the cancel flag.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate(
+        &self,
+        prompt: String,
+        negative: String,
+        width: u32,
+        height: u32,
+        steps: usize,
+        guidance: f64,
+        seed: u64,
+        out_dir: PathBuf,
+        preview_every: usize,
+    ) -> (std::sync::mpsc::Receiver<GenMessage>, CancelFlag) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = CancelFlag::new();
+        let job = GenJob {
+            prompt, negative, width, height, steps, guidance, seed, out_dir, preview_every,
+            tx, cancel: cancel.clone(),
+        };
+        let _ = self.cmd_tx.send(ModelCommand::Generate(job));
+        (rx, cancel)
     }
 
     /// Non-blocking drain of one status message (called from the event-loop tick).
@@ -134,6 +178,48 @@ fn model_loop(
             ModelCommand::Unload => {
                 loaded = None;
                 let _ = msg_tx.send(ModelMessage::Unloaded);
+            }
+            ModelCommand::Generate(job) => {
+                let Some((_, pipeline)) = &loaded else {
+                    let _ = job.tx.send(GenMessage::Error {
+                        message: "no model loaded — load one in Models (Ctrl-2)".into(),
+                    });
+                    continue;
+                };
+                let req = t2i::GenRequest {
+                    prompt: job.prompt.clone(),
+                    negative: job.negative.clone(),
+                    width: job.width,
+                    height: job.height,
+                    count: 1,
+                    steps: job.steps,
+                    guidance: job.guidance,
+                    seed: Some(job.seed),
+                    out_dir: job.out_dir.clone(),
+                    scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                    refine: None,
+                    refine_strength: 0.3,
+                    refiner_frac: None,
+                    clip_skip: 1,
+                    metadata: None,
+                    preview_every: None,
+                    preview_size: None,
+                    output_format: crate::imaging::io::OutputFormat::Png,
+                };
+                let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                let result = pipeline.generate_hooked(&req, &[], Some(&mut hook));
+                match result {
+                    Ok(()) => {
+                        let out = job.out_dir.join(format!("plakat-{}.png", job.seed));
+                        let _ = job.tx.send(GenMessage::Done {
+                            output: out,
+                            cancelled: job.cancel.is_cancelled(),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                    }
+                }
             }
             ModelCommand::Shutdown => break,
         }
