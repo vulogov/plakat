@@ -21,6 +21,7 @@ use tokio::runtime::Handle;
 
 use std::sync::mpsc::Receiver;
 
+use crate::cli::scenario::ScenarioEvent;
 use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 
 use super::output::OutputPane;
@@ -114,6 +115,8 @@ pub struct App {
     active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
+    // Live per-task events from the in-flight scenario run (RUNNER board).
+    scenario_events: Option<Receiver<ScenarioEvent>>,
 }
 
 impl App {
@@ -135,6 +138,7 @@ impl App {
             rt,
             active_gen: None,
             scenario_run: None,
+            scenario_events: None,
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -259,8 +263,9 @@ impl App {
             return;
         }
 
-        // ── Scenarios EDITOR also owns text input while a buffer is open. ──
-        if self.screen == ActiveScreen::Scenarios && self.scenarios.is_editing() {
+        // ── The Scenarios EDITOR / RUNNER own the keyboard (type into the buffer /
+        //    capture Esc) — route everything to them while active. ──
+        if self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input() {
             if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
                 self.run_scenario(path);
             }
@@ -316,8 +321,13 @@ impl App {
             return;
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
-        self.scenarios.status = format!("Running {name} …");
+        // Pre-populate the RUNNER board from the scenario's task names (best-effort;
+        // the runner's Started event reconciles the count if our parse differs).
+        let names = crate::cli::scenario::task_names(&path).unwrap_or_default();
+        self.scenarios.start_run(name, names);
+
         let (tx, rx) = std::sync::mpsc::channel();
+        let (etx, erx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
         std::thread::spawn(move || {
             let args = crate::cli::scenario::ScenarioArgs {
@@ -329,14 +339,22 @@ impl App {
                 limit: 0,
                 json_summary: None,
             };
-            let result = rt.block_on(crate::cli::scenario::run(args));
+            let result = rt.block_on(crate::cli::scenario::run_with_events(args, Some(etx)));
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
         });
         self.scenario_run = Some(rx);
+        self.scenario_events = Some(erx);
     }
 
-    /// Poll the in-flight scenario run for completion; update the Scenarios status.
+    /// Feed live per-task events to the RUNNER board, and poll for run completion.
     fn drain_scenario(&mut self) {
+        // Events first (they all precede the terminal result on the worker thread).
+        if let Some(rx) = &self.scenario_events {
+            let evs: Vec<ScenarioEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            for ev in evs {
+                self.scenarios.apply_event(ev);
+            }
+        }
         let done = match &self.scenario_run {
             Some(rx) => match rx.try_recv() {
                 Ok(result) => Some(result),
@@ -349,10 +367,8 @@ impl App {
         };
         if let Some(result) = done {
             self.scenario_run = None;
-            self.scenarios.status = match result {
-                Ok(()) => "✓ Scenario finished.".into(),
-                Err(e) => format!("✗ Scenario failed: {e}"),
-            };
+            self.scenario_events = None;
+            self.scenarios.finish_run(result);
         }
     }
 
@@ -485,7 +501,7 @@ impl App {
         // In a text-input mode (Chat, or the Scenarios editor) plain keys type, so
         // advertise only the input-safe switches.
         let input_mode = self.screen == ActiveScreen::Chat
-            || (self.screen == ActiveScreen::Scenarios && self.scenarios.is_editing());
+            || (self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input());
         let nav = if input_mode {
             "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {

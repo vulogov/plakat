@@ -1,12 +1,14 @@
-//! Scenarios screen (RFC TUI-1 §8). Two modes:
+//! Scenarios screen (RFC TUI-1 §8). Three modes:
 //!  - SELECT — browse the workspace's scenario HJSON files (task count + model),
 //!    run one (`Enter`), edit one (`e`), or start a new one (`n`).
 //!  - EDITOR — a `tui-textarea` multi-line editor over the selected/new file;
 //!    `Ctrl-S` saves to disk (and re-scans), `Esc` returns to SELECT.
+//!  - RUNNER — a live per-task status board driven by [`ScenarioEvent`]s from the
+//!    running scenario (pending → running → ok/failed/skipped), distinct from the
+//!    flat Output pane. `Esc` returns to SELECT (the run keeps going).
 //!
-//! A run's task-by-task progress flows to the Output pane automatically (the
-//! scenario runner uses the rerouted `ui::progress`). The nested RUNNER sub-tab
-//! (live per-task status board) is a follow-up.
+//! A run's raw task-by-task progress also flows to the Output pane (the scenario
+//! runner uses the rerouted `ui::progress`); the RUNNER board is the structured view.
 
 use std::path::{Path, PathBuf};
 
@@ -19,6 +21,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tui_textarea::TextArea;
+
+use crate::cli::scenario::ScenarioEvent;
 
 /// Starter content for a brand-new scenario (valid HJSON — one field per line).
 const STARTER_TEMPLATE: &str = "{\n  \
@@ -51,6 +55,35 @@ pub enum ScenariosAction {
 enum Mode {
     Select,
     Editor,
+    Runner,
+}
+
+/// One row of the RUNNER status board.
+struct TaskRow {
+    name: String,
+    status: RunStatus,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum RunStatus {
+    Pending,
+    Running,
+    Done(String), // the terminal status string (ok / failed / skipped / dry-run)
+}
+
+impl RunStatus {
+    fn glyph(&self) -> (&'static str, Color) {
+        match self {
+            RunStatus::Pending => ("·", Color::DarkGray),
+            RunStatus::Running => ("▶", Color::Cyan),
+            RunStatus::Done(s) => match s.as_str() {
+                "ok" => ("✓", Color::Green),
+                "failed" => ("✗", Color::Red),
+                "skipped" => ("–", Color::DarkGray),
+                _ => ("✓", Color::Yellow), // dry-run / other
+            },
+        }
+    }
 }
 
 pub struct ScenariosState {
@@ -65,6 +98,11 @@ pub struct ScenariosState {
     editing_path: Option<PathBuf>,
     /// Unsaved edits in the buffer.
     dirty: bool,
+    // ── RUNNER board ──
+    runner_name: String,
+    runner_rows: Vec<TaskRow>,
+    runner_done: bool,
+    runner_summary: String,
 }
 
 impl ScenariosState {
@@ -78,13 +116,23 @@ impl ScenariosState {
             editor: TextArea::default(),
             editing_path: None,
             dirty: false,
+            runner_name: String::new(),
+            runner_rows: Vec::new(),
+            runner_done: false,
+            runner_summary: String::new(),
         };
         s.rescan();
         s
     }
 
-    /// Whether the EDITOR is focused — the App routes ALL keys to us when true
-    /// (so plain chars / Enter type into the buffer instead of switching screens).
+    /// Whether a sub-mode owns the keyboard — the App routes ALL keys to us when
+    /// true (the EDITOR types into the buffer; the RUNNER captures Esc to return).
+    /// Without this, plain chars / digits would switch screens mid-edit/run.
+    pub fn captures_input(&self) -> bool {
+        matches!(self.mode, Mode::Editor | Mode::Runner)
+    }
+
+    /// Whether the EDITOR specifically is focused (text is being typed).
     pub fn is_editing(&self) -> bool {
         self.mode == Mode::Editor
     }
@@ -137,7 +185,100 @@ impl ScenariosState {
                 self.handle_editor_key(key);
                 ScenariosAction::None
             }
+            Mode::Runner => {
+                // Esc returns to the list. The run keeps going in the background
+                // regardless (events still arrive and update the board / status).
+                if key.code == KeyCode::Esc {
+                    self.mode = Mode::Select;
+                }
+                ScenariosAction::None
+            }
         }
+    }
+
+    // ── RUNNER board lifecycle (driven by the App from the events channel) ──
+
+    /// Begin a run: switch to the RUNNER board pre-populated from the scenario's
+    /// task names (all Pending). Called by the App right before it spawns the run.
+    pub fn start_run(&mut self, name: String, task_names: Vec<String>) {
+        self.runner_name = name;
+        self.runner_rows = task_names
+            .into_iter()
+            .map(|n| TaskRow { name: n, status: RunStatus::Pending })
+            .collect();
+        self.runner_done = false;
+        self.runner_summary = "Starting…".into();
+        self.mode = Mode::Runner;
+    }
+
+    /// Apply one structured event from the running scenario to the board.
+    pub fn apply_event(&mut self, ev: ScenarioEvent) {
+        match ev {
+            ScenarioEvent::Started { total } => {
+                // If our pre-parsed list disagrees (e.g. a template edit), trust the
+                // runner's count by padding with unnamed rows.
+                while self.runner_rows.len() < total {
+                    self.runner_rows.push(TaskRow { name: format!("task {}", self.runner_rows.len() + 1), status: RunStatus::Pending });
+                }
+                self.runner_summary = format!("Running 0/{total} …");
+            }
+            ScenarioEvent::TaskStarted { index, name } => {
+                if let Some(row) = self.row_for(index, &name) {
+                    row.status = RunStatus::Running;
+                }
+                let done = self.done_count();
+                self.runner_summary = format!("Running {done}/{} …", self.runner_rows.len());
+            }
+            ScenarioEvent::TaskFinished { index, name, status } => {
+                if let Some(row) = self.row_for(index, &name) {
+                    row.status = RunStatus::Done(status);
+                }
+                let done = self.done_count();
+                self.runner_summary = format!("Running {done}/{} …", self.runner_rows.len());
+            }
+            ScenarioEvent::Finished { ok, failed } => {
+                self.runner_summary = if failed == 0 {
+                    format!("✓ Finished — {ok} task(s) ok")
+                } else {
+                    format!("✗ Finished — {ok} ok, {failed} failed")
+                };
+            }
+        }
+    }
+
+    /// The background run thread ended (terminal). Mark the board done; a load-time
+    /// error (model load failed before any task) surfaces here.
+    pub fn finish_run(&mut self, result: Result<(), String>) {
+        self.runner_done = true;
+        // Any rows still Pending/Running when the thread ends didn't run.
+        match result {
+            Ok(()) => {
+                if !self.runner_summary.starts_with('✓') && !self.runner_summary.starts_with('✗') {
+                    self.runner_summary = "✓ Finished.".into();
+                }
+            }
+            Err(e) => self.runner_summary = format!("✗ Run failed: {e}"),
+        }
+    }
+
+    fn row_for(&mut self, index: usize, name: &str) -> Option<&mut TaskRow> {
+        // Prefer the exact index; fall back to the first not-yet-finished row with
+        // a matching name (robust to count drift between our parse and the runner).
+        if self.runner_rows.get(index).is_some_and(|r| r.name == name) {
+            return self.runner_rows.get_mut(index);
+        }
+        let pos = self
+            .runner_rows
+            .iter()
+            .position(|r| r.name == name && !matches!(r.status, RunStatus::Done(_)));
+        match pos {
+            Some(i) => self.runner_rows.get_mut(i),
+            None => self.runner_rows.get_mut(index),
+        }
+    }
+
+    fn done_count(&self) -> usize {
+        self.runner_rows.iter().filter(|r| matches!(r.status, RunStatus::Done(_))).count()
     }
 
     fn handle_select_key(&mut self, key: KeyEvent) -> ScenariosAction {
@@ -244,7 +385,55 @@ impl ScenariosState {
         match self.mode {
             Mode::Select => self.render_select(f, area),
             Mode::Editor => self.render_editor(f, area),
+            Mode::Runner => self.render_runner(f, area),
         }
+    }
+
+    fn render_runner(&self, f: &mut Frame, area: Rect) {
+        // [ summary line ] [ per-task board ].
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(area);
+
+        let color = if self.runner_summary.starts_with('✗') {
+            Color::Red
+        } else if self.runner_done || self.runner_summary.starts_with('✓') {
+            Color::Green
+        } else {
+            Color::Cyan
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(self.runner_summary.clone(), Style::new().fg(color)))),
+            rows[0],
+        );
+
+        let items: Vec<ListItem> = self
+            .runner_rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let (glyph, gcolor) = r.status.glyph();
+                let name_color = if matches!(r.status, RunStatus::Running) { Color::White } else { Color::Gray };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {glyph} "), Style::new().fg(gcolor).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{:>3}. ", i + 1), Style::new().fg(Color::DarkGray)),
+                    Span::styled(r.name.clone(), Style::new().fg(name_color)),
+                ]))
+            })
+            .collect();
+        let title = format!(
+            " Running: {}   [Esc] back{} ",
+            self.runner_name,
+            if self.runner_done { "" } else { "  (live)" }
+        );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::new().fg(color)),
+        );
+        f.render_widget(list, rows[1]);
     }
 
     fn render_select(&self, f: &mut Frame, area: Rect) {
@@ -441,6 +630,50 @@ mod tests {
         // Esc returns to SELECT.
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.is_editing());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn runner_board_tracks_events() {
+        let d = tmp_dir("runner");
+        let mut s = ScenariosState::new(d.clone());
+
+        s.start_run("demo".into(), vec!["alpha".into(), "beta".into()]);
+        assert!(s.captures_input(), "RUNNER captures keys (for Esc)");
+        assert!(!s.is_editing(), "RUNNER is not the editor");
+        assert_eq!(s.runner_rows.len(), 2);
+        assert!(matches!(s.runner_rows[0].status, RunStatus::Pending));
+
+        s.apply_event(ScenarioEvent::Started { total: 2 });
+        s.apply_event(ScenarioEvent::TaskStarted { index: 0, name: "alpha".into() });
+        assert!(matches!(s.runner_rows[0].status, RunStatus::Running));
+
+        s.apply_event(ScenarioEvent::TaskFinished { index: 0, name: "alpha".into(), status: "ok".into() });
+        assert!(matches!(s.runner_rows[0].status, RunStatus::Done(ref x) if x == "ok"));
+        assert_eq!(s.done_count(), 1);
+
+        s.apply_event(ScenarioEvent::TaskStarted { index: 1, name: "beta".into() });
+        s.apply_event(ScenarioEvent::TaskFinished { index: 1, name: "beta".into(), status: "failed".into() });
+        s.apply_event(ScenarioEvent::Finished { ok: 1, failed: 1 });
+        assert!(s.runner_summary.starts_with('✗'), "summary reflects the failure");
+
+        // The terminal result flips done; Esc returns to SELECT.
+        s.finish_run(Ok(()));
+        assert!(s.runner_done);
+        s.handle_key(key(KeyCode::Esc));
+        assert!(!s.captures_input(), "Esc leaves the RUNNER");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn started_event_pads_rows_to_runner_count() {
+        // If our pre-parse under-counts (e.g. an unsaved edit), the Started event's
+        // total tops up the board so every task gets a row.
+        let d = tmp_dir("pad");
+        let mut s = ScenariosState::new(d.clone());
+        s.start_run("demo".into(), vec!["only".into()]);
+        s.apply_event(ScenarioEvent::Started { total: 3 });
+        assert_eq!(s.runner_rows.len(), 3);
         let _ = std::fs::remove_dir_all(&d);
     }
 

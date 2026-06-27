@@ -1365,7 +1365,47 @@ pub fn peek(path: &std::path::Path) -> Result<(usize, String)> {
     Ok((s.tasks.len(), s.model.unwrap_or_else(|| "?".to_string())))
 }
 
+/// The ordered task names in a scenario file — for a runner UI to pre-populate a
+/// per-task status board before the run starts. Same parser as [`peek`].
+pub fn task_names(path: &std::path::Path) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let s: ScenarioFile = deser_hjson::from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok(s.tasks.iter().map(|t| t.name.clone()).collect())
+}
+
+/// Live per-task progress, emitted by [`run_with_events`] so a UI (the `plakat ui`
+/// Scenarios RUNNER board) can show a status board distinct from the flat rerouted
+/// log. `index` is the task's position in the scenario; `status` mirrors the
+/// `TaskRunRecord.status` strings (`ok` / `failed` / `skipped` / `dry-run`).
+#[derive(Debug, Clone)]
+pub enum ScenarioEvent {
+    Started { total: usize },
+    TaskStarted { index: usize, name: String },
+    TaskFinished { index: usize, name: String, status: String },
+    Finished { ok: usize, failed: usize },
+}
+
+/// Best-effort emit (no-op when no sink is wired, e.g. the CLI path).
+fn emit(events: &Option<std::sync::mpsc::Sender<ScenarioEvent>>, ev: ScenarioEvent) {
+    if let Some(tx) = events {
+        let _ = tx.send(ev);
+    }
+}
+
+/// Run a scenario, dispatching CLI-side (no structured event sink). The
+/// task-by-task progress still streams to `ui::progress` as before.
 pub async fn run(args: ScenarioArgs) -> Result<()> {
+    run_with_events(args, None).await
+}
+
+/// Run a scenario, optionally streaming [`ScenarioEvent`]s to `events` for a live
+/// status board. Passing `None` is byte-identical to [`run`].
+pub async fn run_with_events(
+    args: ScenarioArgs,
+    events: Option<std::sync::mpsc::Sender<ScenarioEvent>>,
+) -> Result<()> {
     // `-` reads the scenario from stdin (pipe integration: `plakat compile … --out -
     // | plakat scenario -`).
     let text = if args.file.as_os_str() == "-" {
@@ -2515,7 +2555,30 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         && !variant.is_cascade()
         && has_generate_tasks;
 
+    // Live status-board events (no-op without a sink). `emitted_records` tracks how
+    // many terminal `task_records` we've already turned into `TaskFinished` events;
+    // we flush at each loop top (and after the loop) so the eight early-`continue`
+    // paths — each of which pushes its own record — are all reported.
+    emit(&events, ScenarioEvent::Started { total: s.tasks.len() });
+    let mut emitted_records = 0usize;
+
     for (idx, task) in s.tasks.iter().enumerate() {
+        // Report any task(s) that finished since the last iteration, then mark this
+        // one running. Keyed by the record's name so it survives count drift.
+        while emitted_records < task_records.len() {
+            let r = &task_records[emitted_records];
+            emit(
+                &events,
+                ScenarioEvent::TaskFinished {
+                    index: emitted_records,
+                    name: r.name.clone(),
+                    status: r.status.clone(),
+                },
+            );
+            emitted_records += 1;
+        }
+        emit(&events, ScenarioEvent::TaskStarted { index: idx, name: task.name.clone() });
+
         // v0.19: skip tasks excluded by --only / --limit. The
         // seed_offset advance still happens for skipped tasks so a
         // partial --only run yields the same seeds as the full
@@ -4551,6 +4614,25 @@ pub async fn run(args: ScenarioArgs) -> Result<()> {
         // re-run with the same scenario gives the same global-seed
         // tasks the same composition, regardless of per-task overrides.
         seed_offset += count as u64;
+    }
+
+    // Flush the final iteration's terminal record(s) to the status board.
+    while emitted_records < task_records.len() {
+        let r = &task_records[emitted_records];
+        emit(
+            &events,
+            ScenarioEvent::TaskFinished {
+                index: emitted_records,
+                name: r.name.clone(),
+                status: r.status.clone(),
+            },
+        );
+        emitted_records += 1;
+    }
+    {
+        let failed = task_records.iter().filter(|r| r.status == "failed").count();
+        let ok = task_records.len().saturating_sub(failed);
+        emit(&events, ScenarioEvent::Finished { ok, failed });
     }
 
     // v0.18: tag the summary line so dry-run users can tell at
@@ -6953,5 +7035,66 @@ mod tests {
         assert!(json.contains("model file not found"));
         // alpha has no error → field omitted; only one "error" key.
         assert_eq!(json.matches("\"error\":").count(), 1);
+    }
+
+    #[test]
+    fn run_with_events_emits_per_task_events_on_dry_run() {
+        // A dry-run iterates every task but loads no model and hits no network
+        // (Variant::detect is pure string matching), so it exercises the live
+        // status-board event wiring offline.
+        use std::sync::mpsc;
+        let d = std::env::temp_dir().join("plakat-scenario-events-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("s.hjson");
+        let out = d.join("out");
+        // Define an empty-named scene/weather so the tasks' defaults validate.
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"model":"stable-diffusion-v1-5/stable-diffusion-v1-5","size":"512x512","enhancer":"local","out":"{}","scene":[{{"name":"","prompt":"plain"}}],"weather":[{{"name":"","prompt":"clear"}}],"tasks":[{{"name":"alpha","prompt":"a"}},{{"name":"beta","prompt":"b"}}]}}"#,
+                out.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let args = ScenarioArgs {
+            file,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(run_with_events(args, Some(tx))).expect("dry-run should succeed");
+
+        let evs: Vec<ScenarioEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(evs.first(), Some(ScenarioEvent::Started { total: 2 })), "first is Started{{2}}");
+        assert!(matches!(evs.last(), Some(ScenarioEvent::Finished { .. })), "last is Finished");
+
+        let started: Vec<String> = evs
+            .iter()
+            .filter_map(|e| match e {
+                ScenarioEvent::TaskStarted { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, vec!["alpha", "beta"]);
+
+        let finished: Vec<(String, String)> = evs
+            .iter()
+            .filter_map(|e| match e {
+                ScenarioEvent::TaskFinished { name, status, .. } => Some((name.clone(), status.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            finished,
+            vec![("alpha".into(), "dry-run".into()), ("beta".into(), "dry-run".into())]
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
