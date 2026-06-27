@@ -1352,6 +1352,19 @@ impl PersonaRef {
     }
 }
 
+/// Parse a scenario file just far enough to report `(task_count, model)` for a
+/// listing UI (the `plakat ui` Scenarios screen). Reuses the real `ScenarioFile`
+/// deserialize so every HJSON quirk (quoteless `size: 512x512`, comments, the full
+/// field set) is handled correctly — a hand-rolled minimal struct trips over
+/// unknown quoteless values. Returns an error on a malformed file.
+pub fn peek(path: &std::path::Path) -> Result<(usize, String)> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let s: ScenarioFile = deser_hjson::from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok((s.tasks.len(), s.model.unwrap_or_else(|| "?".to_string())))
+}
+
 pub async fn run(args: ScenarioArgs) -> Result<()> {
     // `-` reads the scenario from stdin (pipe integration: `plakat compile … --out -
     // | plakat scenario -`).

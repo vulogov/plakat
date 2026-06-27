@@ -26,6 +26,7 @@ use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::models::ModelsState;
+use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
@@ -84,9 +85,10 @@ impl ActiveScreen {
         Self::ALL[i]
     }
 
-    /// Whether this screen has a real body yet (Release 1: Chat + Models).
+    /// Whether this screen has a real body yet (Release 1: Chat + Models;
+    /// Release 2: Scenarios).
     fn implemented(self) -> bool {
-        matches!(self, Self::Chat | Self::Models)
+        matches!(self, Self::Chat | Self::Models | Self::Scenarios)
     }
 }
 
@@ -101,13 +103,17 @@ pub struct App {
     // Per-screen state (persists across screen switches).
     pub chat: ChatState,
     pub models: ModelsState,
+    pub scenarios: ScenariosState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
     // Background services.
     pub model_svc: ModelService,
+    rt: Handle,
     // The in-flight Chat generation (its message channel + cancel flag).
     active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
+    // The in-flight scenario run (its terminal-result channel).
+    scenario_run: Option<Receiver<Result<(), String>>>,
 }
 
 impl App {
@@ -118,17 +124,21 @@ impl App {
         rt: Handle,
         progress_rx: Receiver<String>,
     ) -> Self {
+        let scenarios = ScenariosState::new(workspace.scenarios_dir());
         Self {
-            workspace,
-            picker,
-            screen: ActiveScreen::Chat,
-            should_quit: false,
+            scenarios,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
             progress_rx,
-            model_svc: ModelService::spawn(device, rt),
+            model_svc: ModelService::spawn(device, rt.clone()),
+            rt,
             active_gen: None,
+            scenario_run: None,
+            screen: ActiveScreen::Chat,
+            should_quit: false,
+            picker,
+            workspace,
         }
     }
 
@@ -193,6 +203,7 @@ impl App {
                 self.models.apply(&msg);
             }
             self.drain_generation();
+            self.drain_scenario();
         }
         Ok(())
     }
@@ -263,8 +274,8 @@ impl App {
 
     /// Delegate a non-global key to the active (non-input) screen.
     fn handle_screen_key(&mut self, key: KeyEvent) {
-        if self.screen == ActiveScreen::Models {
-            match key.code {
+        match self.screen {
+            ActiveScreen::Models => match key.code {
                 // [L] load the selected model, [U] unload — dispatched to the
                 // background ModelService (the event loop stays live during load).
                 KeyCode::Char('l' | 'L') => {
@@ -276,7 +287,64 @@ impl App {
                 _ => {
                     self.models.handle_key(key);
                 }
+            },
+            ActiveScreen::Scenarios => {
+                if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
+                    self.run_scenario(path);
+                }
             }
+            _ => {}
+        }
+    }
+
+    /// Run a scenario file on a background thread. Its task-by-task progress (model
+    /// load, denoise bars, per-task status) flows to the Output pane automatically —
+    /// the scenario runner uses the rerouted `ui::progress`. The runner loads its own
+    /// model (independent of the TUI's ModelService); sharing the loaded pipeline is a
+    /// later optimization (RFC §0-R0-2). One run at a time.
+    fn run_scenario(&mut self, path: std::path::PathBuf) {
+        if self.scenario_run.is_some() {
+            self.scenarios.status = "A scenario is already running.".into();
+            return;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
+        self.scenarios.status = format!("Running {name} …");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let args = crate::cli::scenario::ScenarioArgs {
+                file: path,
+                dry_run: false,
+                resume: false,
+                force: false,
+                only: Vec::new(),
+                limit: 0,
+                json_summary: None,
+            };
+            let result = rt.block_on(crate::cli::scenario::run(args));
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+        });
+        self.scenario_run = Some(rx);
+    }
+
+    /// Poll the in-flight scenario run for completion; update the Scenarios status.
+    fn drain_scenario(&mut self) {
+        let done = match &self.scenario_run {
+            Some(rx) => match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("scenario thread ended unexpectedly".to_string()))
+                }
+            },
+            None => None,
+        };
+        if let Some(result) = done {
+            self.scenario_run = None;
+            self.scenarios.status = match result {
+                Ok(()) => "✓ Scenario finished.".into(),
+                Err(e) => format!("✗ Scenario failed: {e}"),
+            };
         }
     }
 
@@ -396,6 +464,7 @@ impl App {
         match self.screen {
             ActiveScreen::Models => self.models.render(f, area),
             ActiveScreen::Chat => self.chat.render(f, area),
+            ActiveScreen::Scenarios => self.scenarios.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -519,7 +588,8 @@ mod tests {
     fn release1_screens_are_implemented() {
         assert!(ActiveScreen::Chat.implemented());
         assert!(ActiveScreen::Models.implemented());
-        assert!(!ActiveScreen::Scenarios.implemented());
+        assert!(ActiveScreen::Scenarios.implemented());
+        assert!(!ActiveScreen::History.implemented());
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }
 }
