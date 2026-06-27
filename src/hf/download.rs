@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, anyhow};
-use hf_hub::api::tokio::{Api, ApiBuilder};
-use hf_hub::{Repo, RepoType};
+use hf_hub::api::tokio::{Api, ApiBuilder, Progress};
+use hf_hub::{Cache, Repo, RepoType};
+use indicatif::ProgressBar;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn api() -> Result<Api> {
     let token = std::env::var("HF_TOKEN")
@@ -112,16 +115,55 @@ pub async fn get_file_at(repo: &str, file: &str, revision: &str) -> Result<PathB
         format!(" @ {}", &revision[..revision.len().min(8)])
     };
 
-    let pb = crate::ui::progress::spinner(&format!("⤓ {repo}  {file}{rev_note}"));
-    match api.get(file).await {
+    // Fast path: already in the local cache → no network, no bar (instant).
+    if let Some(path) = cached_path(&repo, file, revision) {
+        return Ok(path);
+    }
+
+    // Download with a REAL byte-progress bar (plakat's `bytes_bar`, which is
+    // rerouted into the TUI Output pane). hf-hub's own `get()` uses its own bar on
+    // stderr, which never reaches the TUI — so we drive ours via the Progress trait.
+    let bar = crate::ui::progress::bytes_bar(0, &format!("⤓ {repo}  {file}{rev_note}"));
+    let progress = BarProgress { bar: bar.clone(), done: Arc::new(AtomicU64::new(0)) };
+    match api.download_with_progress(file, progress).await {
         Ok(path) => {
-            pb.finish_and_clear();
+            bar.finish_and_clear();
             Ok(path)
         }
         Err(e) => {
-            pb.finish_with_message(format!("✗ {repo}  {file}{rev_note}"));
+            bar.finish_with_message(format!("✗ {repo}  {file}{rev_note}"));
             Err(friendly_error(&repo, file, e))
         }
+    }
+}
+
+/// Look up a file in the local HF cache without downloading. `Some(path)` → cached
+/// (return instantly, no progress bar); `None` → must download.
+fn cached_path(repo: &str, file: &str, revision: &str) -> Option<PathBuf> {
+    Cache::new(crate::hf::cache::hf_cache_root())
+        .repo(Repo::with_revision(repo.to_string(), RepoType::Model, revision.to_string()))
+        .get(file)
+}
+
+/// Drives a plakat `bytes_bar` from hf-hub's download callbacks → a real `%` /
+/// bytes progress bar (in the CLI, and rerouted into the TUI Output pane).
+#[derive(Clone)]
+struct BarProgress {
+    bar: ProgressBar,
+    done: Arc<AtomicU64>,
+}
+
+impl Progress for BarProgress {
+    async fn init(&mut self, size: usize, _filename: &str) {
+        self.bar.set_length(size as u64);
+        self.done.store(0, Ordering::Relaxed);
+    }
+    async fn update(&mut self, size: usize) {
+        let done = self.done.fetch_add(size as u64, Ordering::Relaxed) + size as u64;
+        self.bar.set_position(done);
+    }
+    async fn finish(&mut self) {
+        self.bar.finish_and_clear();
     }
 }
 
