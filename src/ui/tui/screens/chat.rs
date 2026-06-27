@@ -39,6 +39,8 @@ pub enum ChatAction {
 
 pub struct ChatState {
     pub input: String,
+    /// Cursor position in the input, as a CHAR index (0..=char count).
+    pub cursor: usize,
     pub history: Vec<ChatEntry>,
     pub status: ChatStatus,
     /// The latest preview / final image to show in the right pane (built by the
@@ -48,32 +50,56 @@ pub struct ChatState {
 
 impl ChatState {
     pub fn new() -> Self {
-        Self { input: String::new(), history: Vec::new(), status: ChatStatus::Idle, preview: None }
+        Self { input: String::new(), cursor: 0, history: Vec::new(), status: ChatStatus::Idle, preview: None }
     }
 
-    /// Handle a key while the Chat input is focused. Plain characters type into the
-    /// input (the App routes global keys away first); Enter submits.
+    fn input_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Byte offset of the char at `char_idx` (or end of string).
+    fn byte_at(&self, char_idx: usize) -> usize {
+        self.input.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(self.input.len())
+    }
+
+    /// Handle a key while the Chat input is focused — a cursor-aware single-line
+    /// editor (insert/delete at the cursor, ←/→ Home/End). Plain characters type
+    /// into the input (the App routes global keys away first); Enter submits.
     pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
         match key.code {
             KeyCode::Char(c) => {
-                self.input.push(c);
-                ChatAction::None
+                let b = self.byte_at(self.cursor);
+                self.input.insert(b, c);
+                self.cursor += 1;
             }
             KeyCode::Backspace => {
-                self.input.pop();
-                ChatAction::None
-            }
-            KeyCode::Enter => {
-                let prompt = self.input.trim().to_string();
-                if prompt.is_empty() {
-                    ChatAction::None
-                } else {
-                    self.input.clear();
-                    ChatAction::Submit(prompt)
+                if self.cursor > 0 {
+                    let b = self.byte_at(self.cursor - 1);
+                    self.input.remove(b);
+                    self.cursor -= 1;
                 }
             }
-            _ => ChatAction::None,
+            KeyCode::Delete => {
+                if self.cursor < self.input_len() {
+                    let b = self.byte_at(self.cursor);
+                    self.input.remove(b);
+                }
+            }
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input_len()),
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = self.input_len(),
+            KeyCode::Enter => {
+                let prompt = self.input.trim().to_string();
+                if !prompt.is_empty() {
+                    self.input.clear();
+                    self.cursor = 0;
+                    return ChatAction::Submit(prompt);
+                }
+            }
+            _ => {}
         }
+        ChatAction::None
     }
 
     /// Record a submitted utterance (the App calls this when dispatching it).
@@ -158,14 +184,23 @@ impl ChatState {
     }
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
-        let line = Line::from(vec![
+        // Render the prompt with a block cursor at its char position (insert mode).
+        let chars: Vec<char> = self.input.chars().collect();
+        let before: String = chars.iter().take(self.cursor).collect();
+        let cursor_style = Style::new().bg(Color::Cyan).fg(Color::Black);
+        let mut spans = vec![
             Span::styled("> ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw(self.input.as_str()),
-            // A block cursor.
-            Span::styled("▌", Style::new().fg(Color::Cyan)),
-        ]);
+            Span::raw(before),
+        ];
+        match chars.get(self.cursor) {
+            Some(c) => {
+                spans.push(Span::styled(c.to_string(), cursor_style));
+                spans.push(Span::raw(chars.iter().skip(self.cursor + 1).collect::<String>()));
+            }
+            None => spans.push(Span::styled(" ", cursor_style)), // cursor at end
+        }
         let block = Block::default().borders(Borders::ALL).title(" prompt · Enter to generate ");
-        f.render_widget(Paragraph::new(line).block(block).wrap(Wrap { trim: false }), area);
+        f.render_widget(Paragraph::new(Line::from(spans)).block(block).wrap(Wrap { trim: false }), area);
     }
 }
 
@@ -257,6 +292,25 @@ mod tests {
         assert_eq!(s.input, "cat");
         s.handle_key(k(KeyCode::Backspace));
         assert_eq!(s.input, "ca");
+    }
+
+    #[test]
+    fn cursor_editing_inserts_and_deletes_mid_string() {
+        let mut s = ChatState::new();
+        for c in "ct".chars() {
+            s.handle_key(k(KeyCode::Char(c)));
+        }
+        assert_eq!((s.input.as_str(), s.cursor), ("ct", 2));
+        s.handle_key(k(KeyCode::Left)); // between c and t
+        assert_eq!(s.cursor, 1);
+        s.handle_key(k(KeyCode::Char('a'))); // insert mid-string
+        assert_eq!((s.input.as_str(), s.cursor), ("cat", 2));
+        s.handle_key(k(KeyCode::Home));
+        assert_eq!(s.cursor, 0);
+        s.handle_key(k(KeyCode::Delete)); // delete 'c' at cursor
+        assert_eq!((s.input.as_str(), s.cursor), ("at", 0));
+        s.handle_key(k(KeyCode::End));
+        assert_eq!(s.cursor, 2);
     }
 
     #[test]
