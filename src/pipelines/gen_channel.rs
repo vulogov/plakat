@@ -27,6 +27,9 @@ pub enum GenMessage {
     /// A cheap intermediate latent→RGB preview (reduced fidelity; live-denoise,
     /// not the final image). Only emitted on the configured cadence.
     Preview { step: u32, image: image::RgbImage },
+    /// The prompt was AI-enhanced (`/enhance`) into this expanded text before
+    /// generation. Sent once, before the denoise progress.
+    Enhanced { prompt: String },
     /// The generation finished. `cancelled` = a partial saved via `Ctrl-C`.
     Done { output: PathBuf, cancelled: bool },
     /// The generation failed.

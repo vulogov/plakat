@@ -126,6 +126,8 @@ pub struct App {
     // The in-flight turn's refine flag + full (accumulated) prompt — applied on Done.
     active_is_refine: bool,
     active_full_prompt: String,
+    // Session negative prompt (`/negative …`), applied to every generation.
+    negative: String,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -154,6 +156,7 @@ impl App {
             refine_prompt: String::new(),
             active_is_refine: false,
             active_full_prompt: String::new(),
+            negative: String::new(),
             scenario_run: None,
             scenario_events: None,
             screen: ActiveScreen::Chat,
@@ -275,7 +278,7 @@ impl App {
         // ── Chat owns text input: plain chars / Enter / Backspace go to it. ──
         if self.screen == ActiveScreen::Chat {
             if let ChatAction::Submit(prompt) = self.chat.handle_key(key) {
-                self.dispatch_generation(prompt);
+                self.handle_chat_submit(prompt);
             }
             return;
         }
@@ -389,10 +392,35 @@ impl App {
         }
     }
 
+    /// Route a submitted Chat line: slash commands (`/negative`, `/enhance`, `/new`)
+    /// or a plain prompt. `/negative` updates session state without generating.
+    fn handle_chat_submit(&mut self, text: String) {
+        if let Some(rest) = text.strip_prefix("/negative") {
+            self.negative = rest.trim().to_string();
+            let note = if self.negative.is_empty() {
+                "negative prompt cleared".to_string()
+            } else {
+                format!("negative prompt set → {}", self.negative)
+            };
+            self.chat.push_system(note);
+            return;
+        }
+        // `/enhance <prompt>` AI-expands the prompt, then generates fresh.
+        if let Some(rest) = text.strip_prefix("/enhance") {
+            let p = rest.trim().to_string();
+            if !p.is_empty() {
+                self.dispatch_generation(p, true);
+            }
+            return;
+        }
+        self.dispatch_generation(text, false);
+    }
+
     /// Dispatch a Chat prompt to the model thread (must have a model loaded). The
     /// denoise progress flows to the Output pane automatically; this also tracks the
-    /// Preview/Done frames for the inline image.
-    fn dispatch_generation(&mut self, prompt: String) {
+    /// Preview/Done frames for the inline image. `enhance` runs the prompt through the
+    /// configured LLM enhancer first (forces a fresh generation).
+    fn dispatch_generation(&mut self, prompt: String, enhance: bool) {
         if self.active_gen.is_some() {
             return; // one generation at a time (the model thread is serial anyway)
         }
@@ -405,7 +433,8 @@ impl App {
         if edit.trim().is_empty() {
             return; // bare "/new" (or empty) — nothing to generate
         }
-        let refine = !force_fresh && self.refine_base.is_some();
+        // Enhancing crafts a fresh detailed prompt, so it never refines.
+        let refine = !force_fresh && !enhance && self.refine_base.is_some();
         // Re-base each edit on the CLEAN original image and accumulate the prompt, so
         // quality doesn't compound-degrade and earlier edits persist.
         let (full_prompt, init_image) = if refine {
@@ -436,9 +465,10 @@ impl App {
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
         let seed = rand::random::<u32>() as u64;
+        let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
-            String::new(),
+            self.negative.clone(),
             n,
             n,
             steps,
@@ -448,6 +478,7 @@ impl App {
             preview_every,
             init_image,
             REFINE_STRENGTH,
+            enhancer,
         );
         self.active_gen = Some((rx, cancel));
         self.chat.status = ChatStatus::Generating { step: 0, total: steps as u32, refine };
@@ -473,6 +504,12 @@ impl App {
                 GenMessage::Preview { image, .. } => {
                     let dynimg = image::DynamicImage::ImageRgb8(image);
                     self.chat.preview = Some(self.picker.new_resize_protocol(dynimg));
+                }
+                GenMessage::Enhanced { prompt } => {
+                    // Show the expanded prompt under the turn, and make it the base
+                    // for the thread (so a later refine accumulates on the real text).
+                    self.active_full_prompt = prompt.clone();
+                    self.chat.set_last_enhanced(prompt);
                 }
                 GenMessage::Done { output, .. } => {
                     if let Ok(img) = image::open(&output) {
@@ -664,7 +701,7 @@ mod tests {
     fn chat_refines_after_an_image_and_new_forces_fresh() {
         let mut a = test_app();
         // First turn: no prior image → fresh generation.
-        a.dispatch_generation("a fox".into());
+        a.dispatch_generation("a fox".into(), false);
         assert!(!a.chat.history.last().unwrap().refine, "first turn is fresh");
         assert!(!a.active_is_refine);
         assert_eq!(a.active_full_prompt, "a fox");
@@ -675,7 +712,7 @@ mod tests {
         a.refine_prompt = "a fox".into();
 
         // Next turn refines: re-bases on the clean original + accumulates the prompt.
-        a.dispatch_generation("make it warmer".into());
+        a.dispatch_generation("make it warmer".into(), false);
         let last = a.chat.history.last().unwrap();
         assert!(last.refine, "follow-up refines");
         assert_eq!(last.utterance, "make it warmer", "history shows the user's words");
@@ -684,7 +721,7 @@ mod tests {
 
         // `/new` forces a fresh generation even with a prior image, and strips the prefix.
         a.active_gen = None;
-        a.dispatch_generation("/new a cyberpunk city".into());
+        a.dispatch_generation("/new a cyberpunk city".into(), false);
         let last = a.chat.history.last().unwrap();
         assert!(!last.refine, "/new is fresh");
         assert_eq!(last.utterance, "a cyberpunk city");
@@ -693,8 +730,33 @@ mod tests {
         // Bare `/new` is a no-op (no empty turn).
         a.active_gen = None;
         let before = a.chat.history.len();
-        a.dispatch_generation("/new".into());
+        a.dispatch_generation("/new".into(), false);
         assert_eq!(a.chat.history.len(), before, "bare /new generates nothing");
+    }
+
+    #[test]
+    fn slash_negative_sets_session_negative_without_generating() {
+        let mut a = test_app();
+        let before = a.chat.history.len();
+        a.handle_chat_submit("/negative blurry, lowres".into());
+        assert_eq!(a.negative, "blurry, lowres");
+        assert!(a.active_gen.is_none(), "/negative does not generate");
+        assert_eq!(a.chat.history.len(), before + 1, "pushes a system note");
+        assert!(a.chat.history.last().unwrap().system);
+        // Bare `/negative` clears it.
+        a.handle_chat_submit("/negative".into());
+        assert_eq!(a.negative, "");
+    }
+
+    #[test]
+    fn slash_enhance_forces_a_fresh_generation() {
+        let mut a = test_app();
+        a.refine_base = Some("/tmp/x.png".into()); // a plain prompt would refine
+        a.handle_chat_submit("/enhance a fox".into());
+        let last = a.chat.history.last().unwrap();
+        assert!(!last.refine, "/enhance never refines");
+        assert_eq!(last.utterance, "a fox");
+        assert!(!a.active_is_refine);
     }
 
     #[test]

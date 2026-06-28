@@ -35,6 +35,8 @@ pub struct GenJob {
     /// `strength`, reusing the loaded weights. `None` → fresh txt2img.
     pub init_image: Option<PathBuf>,
     pub strength: f32,
+    /// `Some(provider)` → AI-enhance the prompt (`/enhance`) before generating.
+    pub enhance: Option<String>,
     pub tx: Sender<GenMessage>,
     pub cancel: CancelFlag,
 }
@@ -116,12 +118,13 @@ impl ModelService {
         preview_every: usize,
         init_image: Option<PathBuf>,
         strength: f32,
+        enhance: Option<String>,
     ) -> (std::sync::mpsc::Receiver<GenMessage>, CancelFlag) {
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = CancelFlag::new();
         let job = GenJob {
             prompt, negative, width, height, steps, guidance, seed, out_dir, preview_every,
-            init_image, strength,
+            init_image, strength, enhance,
             tx, cancel: cancel.clone(),
         };
         let _ = self.cmd_tx.send(ModelCommand::Generate(job));
@@ -194,6 +197,23 @@ fn model_loop(
                     continue;
                 };
 
+                // ── /enhance: expand the prompt with the configured LLM first. ──
+                // On failure, fall back to the original prompt (the run still goes).
+                let mut prompt = job.prompt.clone();
+                if let Some(provider) = &job.enhance {
+                    match rt.block_on(crate::prompt::enhance(provider, &prompt)) {
+                        Ok(enhanced) => {
+                            prompt = enhanced.clone();
+                            let _ = job.tx.send(GenMessage::Enhanced { prompt: enhanced });
+                        }
+                        Err(e) => {
+                            crate::ui::progress::println(&format!(
+                                "  enhance failed ({e:#}); using the original prompt"
+                            ));
+                        }
+                    }
+                }
+
                 // ── Conversational refinement: img2img over the previous image. ──
                 // Reuses the loaded weights via portrait::from_core (no reload). The
                 // img2img body isn't StepHook-wired, so progress flows to the Output
@@ -202,7 +222,7 @@ fn model_loop(
                     let _ = std::fs::create_dir_all(&job.out_dir);
                     let refine_pipe = portrait::Pipeline::from_core(pipeline.core());
                     let req = img2img::Request {
-                        prompt: job.prompt.clone(),
+                        prompt: prompt.clone(),
                         negative: job.negative.clone(),
                         model: alias.clone(),
                         device: device.clone(),
@@ -239,7 +259,7 @@ fn model_loop(
                 }
 
                 let req = t2i::GenRequest {
-                    prompt: job.prompt.clone(),
+                    prompt: prompt.clone(),
                     negative: job.negative.clone(),
                     width: job.width,
                     height: job.height,

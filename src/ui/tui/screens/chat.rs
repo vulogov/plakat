@@ -22,6 +22,10 @@ pub struct ChatEntry {
     pub error: Option<String>,
     /// This turn refined the previous image (img2img) rather than generating fresh.
     pub refine: bool,
+    /// A system note (e.g. `/negative` feedback), not a generation turn.
+    pub system: bool,
+    /// The AI-enhanced prompt (`/enhance`), shown under the utterance.
+    pub enhanced: Option<String>,
 }
 
 /// Live generation status for the status line.
@@ -134,7 +138,33 @@ impl ChatState {
 
     /// Record a submitted utterance (the App calls this when dispatching it).
     pub fn push_utterance(&mut self, utterance: String, refine: bool) {
-        self.history.push(ChatEntry { utterance, result: None, error: None, refine });
+        self.history.push(ChatEntry {
+            utterance,
+            result: None,
+            error: None,
+            refine,
+            system: false,
+            enhanced: None,
+        });
+    }
+
+    /// Append a system note (command feedback) to the history.
+    pub fn push_system(&mut self, note: String) {
+        self.history.push(ChatEntry {
+            utterance: note,
+            result: None,
+            error: None,
+            refine: false,
+            system: true,
+            enhanced: None,
+        });
+    }
+
+    /// Record the AI-enhanced prompt on the most recent generation turn.
+    pub fn set_last_enhanced(&mut self, prompt: String) {
+        if let Some(last) = self.history.iter_mut().rev().find(|e| !e.system) {
+            last.enhanced = Some(prompt);
+        }
     }
 
     /// Mark the most recent entry done / failed (called when a generation finishes).
@@ -185,9 +215,17 @@ impl ChatState {
         let inner_w = area.width.saturating_sub(2) as usize;
         let mut lines: Vec<Line> = Vec::new();
         for (i, e) in self.history.iter().enumerate() {
+            if e.system {
+                // A command-feedback note (e.g. /negative), dimmed, no turn number.
+                wrap_entry(&mut lines, "   ⚙ ", &e.utterance, Color::DarkGray, Color::DarkGray, inner_w);
+                continue;
+            }
             // ↻ marks a refinement of the previous image; ▸ a fresh generation.
             let (glyph, gcolor) = if e.refine { ("↻", Color::Magenta) } else { ("▸", Color::Cyan) };
             wrap_entry(&mut lines, &format!("{:>2} {glyph} ", i + 1), &e.utterance, gcolor, Color::White, inner_w);
+            if let Some(enh) = &e.enhanced {
+                wrap_entry(&mut lines, "      ✨ ", enh, Color::Yellow, Color::Gray, inner_w);
+            }
             if let Some(path) = &e.result {
                 wrap_entry(&mut lines, "      → ", path, Color::Green, Color::Green, inner_w);
             }
@@ -198,6 +236,10 @@ impl ChatState {
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Describe an image and press Enter. (Load a model first in Models / Ctrl-2.)",
+                Style::new().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Commands: /new fresh · /enhance AI-expand · /negative <neg> · Ctrl-P/N recall",
                 Style::new().fg(Color::DarkGray),
             )));
         }
