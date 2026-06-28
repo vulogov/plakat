@@ -162,6 +162,9 @@ pub struct App {
     // the prompt/seed to seed the Chat continuation when it lands.
     portrait_run: Option<Receiver<Result<std::path::PathBuf, String>>>,
     portrait_prompt: String,
+    // In-flight Civitai search / download for the LoRA Hub.
+    civitai_search: Option<Receiver<Result<Vec<lorahub::CivitaiHit>, String>>>,
+    civitai_download: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -178,6 +181,7 @@ impl App {
         let lorahub = LoraHubState::new(vec![
             (workspace.loras_dir(), "workspace".into()),
             (crate::preset::discovery::default_cache_root(), "global".into()),
+            (crate::civitai::download::cache_root(), "civitai".into()),
         ]);
         Self {
             scenarios,
@@ -205,6 +209,8 @@ impl App {
             scenario_events: None,
             portrait_run: None,
             portrait_prompt: String::new(),
+            civitai_search: None,
+            civitai_download: None,
             active_loras: Vec::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
@@ -283,6 +289,7 @@ impl App {
                 self.models.loaded_alias().map(crate::preset::discovery::BaseFamily::from_model_arg),
             );
             self.lorahub.set_applied(&self.active_loras);
+            self.drain_civitai();
         }
         Ok(())
     }
@@ -381,6 +388,13 @@ impl App {
             return;
         }
 
+        // ── The LoRA Hub's Civitai search box owns the keyboard while editing. ──
+        if self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input() {
+            let action = self.lorahub.handle_key(key);
+            self.handle_lorahub_action(action);
+            return;
+        }
+
         // ── Non-input screens: plain digits switch, q quits, else delegate. ──
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
@@ -426,11 +440,107 @@ impl App {
                 people::PeopleAction::None => {}
             },
             ActiveScreen::LoraHub => {
-                if let lorahub::LoraHubAction::ToggleApply { path, compatible } = self.lorahub.handle_key(key) {
-                    self.toggle_lora(path, compatible);
-                }
+                let action = self.lorahub.handle_key(key);
+                self.handle_lorahub_action(action);
             }
             _ => {}
+        }
+    }
+
+    fn handle_lorahub_action(&mut self, action: lorahub::LoraHubAction) {
+        match action {
+            lorahub::LoraHubAction::None => {}
+            lorahub::LoraHubAction::ToggleApply { path, compatible } => self.toggle_lora(path, compatible),
+            lorahub::LoraHubAction::Search(query) => self.civitai_search(query),
+            lorahub::LoraHubAction::Download { model_id, version_id, name } => {
+                self.civitai_download(model_id, version_id, name)
+            }
+        }
+    }
+
+    /// Run a Civitai LoRA search on a background thread; results land in the Hub.
+    fn civitai_search(&mut self, query: String) {
+        if self.civitai_search.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::civitai::api::search(
+                    &query,
+                    Some(crate::civitai::api::AssetType::Lora),
+                    30,
+                    1,
+                ))
+                .map(|resp| {
+                    resp.items
+                        .into_iter()
+                        .map(|m| {
+                            let v = m.model_versions.first();
+                            lorahub::CivitaiHit {
+                                model_id: m.id,
+                                version_id: v.map(|v| v.id),
+                                name: m.name,
+                                base_model: v.and_then(|v| v.base_model.clone()).unwrap_or_default(),
+                                downloads: m.stats.download_count,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.civitai_search = Some(rx);
+    }
+
+    /// Download a Civitai LoRA on a background thread; on success rescan LOCAL.
+    fn civitai_download(&mut self, model_id: u64, version_id: Option<u64>, name: String) {
+        if self.civitai_download.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
+                .map(|_| name)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.civitai_download = Some(rx);
+    }
+
+    /// Drain the in-flight Civitai search / download into the Hub each tick.
+    fn drain_civitai(&mut self) {
+        if let Some(rx) = &self.civitai_search {
+            match rx.try_recv() {
+                Ok(Ok(hits)) => {
+                    self.lorahub.set_civitai_hits(hits);
+                    self.civitai_search = None;
+                }
+                Ok(Err(e)) => {
+                    self.lorahub.set_civitai_status(format!("✗ search failed: {e}"));
+                    self.civitai_search = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.civitai_search = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.civitai_download {
+            match rx.try_recv() {
+                Ok(Ok(name)) => {
+                    self.lorahub.set_civitai_status(format!("✓ downloaded {name} — see LOCAL"));
+                    self.lorahub.rescan();
+                    self.civitai_download = None;
+                }
+                Ok(Err(e)) => {
+                    self.lorahub.set_civitai_status(format!("✗ download failed: {e}"));
+                    self.civitai_download = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.civitai_download = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
         }
     }
 
@@ -987,7 +1097,8 @@ impl App {
         // In a text-input mode (Chat, or the Scenarios editor) plain keys type, so
         // advertise only the input-safe switches.
         let input_mode = self.screen == ActiveScreen::Chat
-            || (self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input());
+            || (self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input())
+            || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input());
         let nav = if input_mode {
             "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
