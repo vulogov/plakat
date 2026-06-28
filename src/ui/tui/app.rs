@@ -31,9 +31,10 @@ use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
-/// img2img denoise strength for conversational refinement. ~0.6 keeps the previous
-/// image's composition while letting the new prompt change appreciable detail.
-const REFINE_STRENGTH: f32 = 0.6;
+/// img2img denoise strength for conversational refinement. Each refine re-bases on
+/// the clean original (no compounding), so a moderate value preserves composition
+/// while the accumulated prompt steers the edit.
+const REFINE_STRENGTH: f32 = 0.5;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -117,8 +118,14 @@ pub struct App {
     rt: Handle,
     // The in-flight Chat generation (its message channel + cancel flag).
     active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
-    // The last image generated in Chat — the base for conversational refinement.
-    last_image: Option<std::path::PathBuf>,
+    // Conversational refinement state. Each refine re-bases on the CLEAN original
+    // image (NOT the previous refine's output) and uses the ACCUMULATED prompt, so
+    // VAE round-trips don't compound into mosaic degradation across turns.
+    refine_base: Option<std::path::PathBuf>,
+    refine_prompt: String,
+    // The in-flight turn's refine flag + full (accumulated) prompt — applied on Done.
+    active_is_refine: bool,
+    active_full_prompt: String,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -143,7 +150,10 @@ impl App {
             model_svc: ModelService::spawn(device, rt.clone()),
             rt,
             active_gen: None,
-            last_image: None,
+            refine_base: None,
+            refine_prompt: String::new(),
+            active_is_refine: false,
+            active_full_prompt: String::new(),
             scenario_run: None,
             scenario_events: None,
             screen: ActiveScreen::Chat,
@@ -387,18 +397,32 @@ impl App {
             return; // one generation at a time (the model thread is serial anyway)
         }
         // Conversational refinement: once an image exists, a follow-up prompt edits
-        // it (img2img) rather than starting over. `/new <prompt>` forces a fresh
-        // generation; the new image then becomes the base for the next turn.
-        let (prompt, refine) = match prompt.strip_prefix("/new") {
-            Some(rest) => (rest.trim_start().to_string(), false),
-            None => (prompt, self.last_image.is_some()),
+        // it rather than starting over. `/new <prompt>` forces a fresh generation.
+        let (edit, force_fresh) = match prompt.strip_prefix("/new") {
+            Some(rest) => (rest.trim_start().to_string(), true),
+            None => (prompt, false),
         };
-        if prompt.trim().is_empty() {
+        if edit.trim().is_empty() {
             return; // bare "/new" (or empty) — nothing to generate
         }
-        let init_image = if refine { self.last_image.clone() } else { None };
+        let refine = !force_fresh && self.refine_base.is_some();
+        // Re-base each edit on the CLEAN original image and accumulate the prompt, so
+        // quality doesn't compound-degrade and earlier edits persist.
+        let (full_prompt, init_image) = if refine {
+            let combined = if self.refine_prompt.is_empty() {
+                edit.clone()
+            } else {
+                format!("{}, {}", self.refine_prompt, edit)
+            };
+            (combined, self.refine_base.clone())
+        } else {
+            (edit.clone(), None)
+        };
+        self.active_is_refine = refine;
+        self.active_full_prompt = full_prompt.clone();
 
-        self.chat.push_utterance(prompt.clone(), refine);
+        // Show the user's own words in the history (not the accumulated prompt).
+        self.chat.push_utterance(edit.clone(), refine);
         // Generate at the LOADED model's native square resolution (sd15=512,
         // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
         // which OOMs SD1.5. A per-model size override is a future item.
@@ -413,7 +437,7 @@ impl App {
         let out_dir = self.workspace.out_dir().join("chat");
         let seed = rand::random::<u32>() as u64;
         let (rx, cancel) = self.model_svc.generate(
-            prompt,
+            full_prompt,
             String::new(),
             n,
             n,
@@ -454,8 +478,15 @@ impl App {
                     if let Ok(img) = image::open(&output) {
                         self.chat.preview = Some(self.picker.new_resize_protocol(img));
                     }
-                    // This image becomes the base for the next prompt's refinement.
-                    self.last_image = Some(output.clone());
+                    // Refinement bookkeeping: a FRESH generation becomes the clean
+                    // base for the thread; a refine keeps that base and just records
+                    // the accumulated prompt so the next edit builds on it.
+                    if self.active_is_refine {
+                        self.refine_prompt = self.active_full_prompt.clone();
+                    } else {
+                        self.refine_base = Some(output.clone());
+                        self.refine_prompt = self.active_full_prompt.clone();
+                    }
                     self.chat.refine_armed = true;
                     let path = output.display().to_string();
                     self.chat.finish_last(Ok(path.clone()));
@@ -635,14 +666,21 @@ mod tests {
         // First turn: no prior image → fresh generation.
         a.dispatch_generation("a fox".into());
         assert!(!a.chat.history.last().unwrap().refine, "first turn is fresh");
+        assert!(!a.active_is_refine);
+        assert_eq!(a.active_full_prompt, "a fox");
 
-        // Simulate that turn completing with an image on disk.
+        // Simulate that turn completing with a clean base image.
         a.active_gen = None;
-        a.last_image = Some("/tmp/plakat-42.png".into());
+        a.refine_base = Some("/tmp/plakat-42.png".into());
+        a.refine_prompt = "a fox".into();
 
-        // Next turn refines the previous image.
+        // Next turn refines: re-bases on the clean original + accumulates the prompt.
         a.dispatch_generation("make it warmer".into());
-        assert!(a.chat.history.last().unwrap().refine, "follow-up refines");
+        let last = a.chat.history.last().unwrap();
+        assert!(last.refine, "follow-up refines");
+        assert_eq!(last.utterance, "make it warmer", "history shows the user's words");
+        assert_eq!(a.active_full_prompt, "a fox, make it warmer", "prompt accumulates");
+        assert!(a.active_is_refine);
 
         // `/new` forces a fresh generation even with a prior image, and strips the prefix.
         a.active_gen = None;
@@ -650,6 +688,7 @@ mod tests {
         let last = a.chat.history.last().unwrap();
         assert!(!last.refine, "/new is fresh");
         assert_eq!(last.utterance, "a cyberpunk city");
+        assert_eq!(a.active_full_prompt, "a cyberpunk city", "/new resets the accumulated prompt");
 
         // Bare `/new` is a no-op (no empty turn).
         a.active_gen = None;
