@@ -201,6 +201,8 @@ fn model_loop(
                 // On failure, fall back to the original prompt (the run still goes).
                 let mut prompt = job.prompt.clone();
                 if let Some(provider) = &job.enhance {
+                    let label = crate::prompt::resolve_provider_label(provider);
+                    crate::ui::progress::println(&format!("  ✨ enhancing prompt via {label} …"));
                     match rt.block_on(crate::prompt::enhance(provider, &prompt)) {
                         Ok(enhanced) => {
                             prompt = enhanced.clone();

@@ -185,18 +185,44 @@ async fn enhance_local(
 /// Gemini if `GEMINI_API_KEY` is set → local. The local arm always
 /// works (no API key required), so this never errors at the
 /// provider-selection layer.
+/// The concrete provider `auto` resolves to right now — `"deepseek"`, `"gemini"`,
+/// or `"local"` — for display (the TUI shows it before enhancing). Mirrors
+/// [`enhance_auto`]'s key detection; a non-`auto` provider is returned as-is.
+pub fn resolve_provider_label(provider: &str) -> String {
+    if provider.eq_ignore_ascii_case("auto") {
+        let cfg = crate::config::Config::load().ok();
+        if cfg.as_ref().is_some_and(|c| c.deepseek_api_key.is_some()) {
+            return "deepseek".into();
+        }
+        if cfg.as_ref().is_some_and(|c| c.gemini_api_key.is_some()) {
+            return "gemini".into();
+        }
+        return "local".into();
+    }
+    provider.to_string()
+}
+
 async fn enhance_auto(prompt: &str, system: &str, args: &EnhanceArgs) -> Result<String> {
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    // Detect API keys the SAME way the providers do — `Config::load()` folds in
+    // `~/.config/plakat/config.toml` AND the env var. The old check only looked at
+    // the env var, so a key living in config.toml made `auto` silently fall back to
+    // the local LLM even though `--enhance deepseek` worked. Now `auto` routes to
+    // DeepSeek/Gemini whenever the CLI's explicit providers would.
+    let cfg = crate::config::Config::load().ok();
+    let has_deepseek = cfg.as_ref().is_some_and(|c| c.deepseek_api_key.is_some());
+    let has_gemini = cfg.as_ref().is_some_and(|c| c.gemini_api_key.is_some());
+
+    if has_deepseek {
         tracing::info!(
             target: "plakat",
-            "enhance auto: routing to DeepSeek (DEEPSEEK_API_KEY set)"
+            "enhance auto: routing to DeepSeek (key in config.toml or env)"
         );
         return deepseek::enhance(prompt).await;
     }
-    if std::env::var("GEMINI_API_KEY").is_ok() {
+    if has_gemini {
         tracing::info!(
             target: "plakat",
-            "enhance auto: routing to Gemini (GEMINI_API_KEY set)"
+            "enhance auto: routing to Gemini (key in config.toml or env)"
         );
         return gemini::enhance(prompt).await;
     }
@@ -211,3 +237,18 @@ async fn enhance_auto(prompt: &str, system: &str, args: &EnhanceArgs) -> Result<
 pub const SYSTEM: &str = "You rewrite text-to-image prompts. \
 Add concrete visual detail (subject, composition, lighting, medium, mood, style). \
 Keep it under 70 tokens. Output ONLY the rewritten prompt, no preamble, no quotes.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_provider_label_passes_explicit_providers_through() {
+        assert_eq!(resolve_provider_label("deepseek"), "deepseek");
+        assert_eq!(resolve_provider_label("gemini"), "gemini");
+        assert_eq!(resolve_provider_label("local"), "local");
+        assert_eq!(resolve_provider_label("local:qwen2.5-1.5b"), "local:qwen2.5-1.5b");
+        // `auto` resolves to one of the known providers (depends on config/env keys).
+        assert!(["deepseek", "gemini", "local"].contains(&resolve_provider_label("auto").as_str()));
+    }
+}
