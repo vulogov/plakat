@@ -28,9 +28,10 @@ struct HistoryEntry {
 /// What the App should do after a key.
 pub enum HistoryAction {
     None,
-    /// Continue from this image in Chat (image-anchored), seeded with `prompt`
-    /// (the positive prompt recovered from the recipe, or empty).
-    Continue { path: PathBuf, prompt: String },
+    /// Continue from this image in Chat. `prompt`/`seed` come from the embedded
+    /// recipe when present — with both, Chat continues in prompt-evolve mode (so
+    /// additive edits work); without, it falls back to image-anchored img2img.
+    Continue { path: PathBuf, prompt: String, seed: Option<u64> },
 }
 
 pub struct HistoryState {
@@ -105,7 +106,8 @@ impl HistoryState {
             KeyCode::Char('c' | 'C') | KeyCode::Enter => {
                 if let Some(path) = self.selected_path() {
                     let prompt = self.recipe.as_deref().map(positive_prompt).unwrap_or_default();
-                    return HistoryAction::Continue { path, prompt };
+                    let seed = self.recipe.as_deref().and_then(seed_from_params);
+                    return HistoryAction::Continue { path, prompt, seed };
                 }
             }
             _ => {}
@@ -276,6 +278,17 @@ fn png_dims(path: &Path) -> Option<(u32, u32)> {
     Some((info.width, info.height))
 }
 
+/// Extract the `Seed: N` value from an A1111 `parameters` block.
+fn seed_from_params(params: &str) -> Option<u64> {
+    let idx = params.find("Seed:")?;
+    let digits: String = params[idx + "Seed:".len()..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
 /// Extract the positive prompt from an A1111 `parameters` block: everything before
 /// the `Negative prompt:` / `Steps:` parameter lines.
 fn positive_prompt(params: &str) -> String {
@@ -293,6 +306,13 @@ fn positive_prompt(params: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seed_from_params_reads_the_seed() {
+        assert_eq!(seed_from_params("a fox\nSteps: 28, Seed: 12345, Size: 512x512"), Some(12345));
+        assert_eq!(seed_from_params("Seed: 7"), Some(7));
+        assert_eq!(seed_from_params("no seed here"), None);
+    }
 
     #[test]
     fn positive_prompt_stops_at_negative_and_params() {

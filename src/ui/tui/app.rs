@@ -43,6 +43,10 @@ const DEFAULT_ANCHOR_STRENGTH: f32 = 0.6;
 /// Per-LoRA scale used when applying a LoRA from the Hub to Chat.
 const APPLY_LORA_SCALE: f32 = 0.8;
 
+/// img2img strength for a Canvas inpaint turn — high, so the masked region actually
+/// regenerates (a soft 0.6 only nudges it).
+const INPAINT_STRENGTH: f32 = 0.85;
+
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -489,8 +493,8 @@ impl App {
                 }
             }
             ActiveScreen::History => {
-                if let HistoryAction::Continue { path, prompt } = self.history.handle_key(key) {
-                    self.continue_from_image(path, prompt);
+                if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
+                    self.continue_from_image(path, prompt, seed);
                 }
             }
             ActiveScreen::People => match self.people.handle_key(key) {
@@ -813,14 +817,18 @@ impl App {
         }
     }
 
-    /// Canvas `Enter` — adopt the rasterized mask as Chat's inpaint mask. Forces
-    /// image-anchored refinement (inpaint = img2img over the base, only the white
-    /// pixels change) and switches to Chat.
+    /// Canvas `Enter` — adopt the rasterized mask as a ONE-SHOT inpaint for the next
+    /// Chat prompt (only the white pixels change). It does NOT flip the session into
+    /// anchored mode — after that one turn the mask is consumed and refinement reverts
+    /// to whatever it was (prompt-evolve by default), so you're not locked in.
     fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
         self.chat_mask = Some(path);
-        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
+        // A mask needs a base to inpaint over; ensure a refine is triggered.
+        if self.base_seed.is_none() {
+            self.base_seed = Some(rand::random::<u32>() as u64);
+        }
         self.chat.refine_armed = true;
-        self.chat.push_system("inpaint mask set from Canvas — type an edit for the masked region".into());
+        self.chat.push_system("inpaint mask set from Canvas — type an edit for the masked region (one-shot)".into());
         self.screen = ActiveScreen::Chat;
     }
 
@@ -1014,27 +1022,41 @@ impl App {
         if let Some(result) = done {
             self.portrait_run = None;
             match result {
-                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone()),
+                // Portraits carry no Chat recipe → image-anchored continuation.
+                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone(), None),
                 Err(e) => self.output.push(format!("✗ portrait failed: {e}")),
             }
         }
     }
 
-    /// Load a History image into Chat as the base for image-anchored refinement: the
-    /// next prompt img2img's over it (we have the pixels, not the recipe seed), with
-    /// the recovered positive prompt as the accumulation prefix. Switches to Chat.
-    fn continue_from_image(&mut self, path: std::path::PathBuf, prompt: String) {
+    /// Load an image into Chat to keep editing it. When the image carries a recipe
+    /// (`seed` + `prompt` recovered from its metadata) we resume in PROMPT-EVOLVE mode
+    /// — txt2img at that seed reproduces ~the same image and additive edits ("add a
+    /// sun") reliably land. Without a recipe (`seed` = None) we only have the pixels,
+    /// so we fall back to image-anchored img2img. Switches to Chat.
+    fn continue_from_image(&mut self, path: std::path::PathBuf, prompt: String, seed: Option<u64>) {
         self.refine_base = Some(path.clone());
-        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
-        self.base_seed = Some(rand::random::<u32>() as u64);
         self.refine_prompt = prompt;
         self.fixed_seed = None;
+        self.chat_mask = None;
+        let mode = match seed {
+            Some(s) => {
+                self.base_seed = Some(s);
+                self.refine_strength = None; // prompt-evolve
+                "prompt-evolve"
+            }
+            None => {
+                self.base_seed = Some(rand::random::<u32>() as u64);
+                self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH); // image-anchored
+                "image-anchored"
+            }
+        };
         if let Ok(img) = image::open(&path) {
             self.chat.preview = Some(self.picker.new_resize_protocol(img));
         }
         self.chat.refine_armed = true;
         self.chat.push_system(format!(
-            "continuing from {} — type an edit (image-anchored)",
+            "continuing from {} — type an edit ({mode})",
             path.file_name().and_then(|n| n.to_str()).unwrap_or("image")
         ));
         self.screen = ActiveScreen::Chat;
@@ -1200,7 +1222,13 @@ impl App {
         } else {
             edit.clone()
         };
-        let init_image = if refine {
+        // A Canvas mask makes this ONE turn an inpaint (img2img over the base, masked)
+        // regardless of the sticky mode — then it's consumed. Otherwise the mode rules:
+        // anchored (`/strength`) = img2img over the base; prompt-evolve = txt2img.
+        let inpaint = refine && self.chat_mask.is_some() && self.refine_base.is_some();
+        let init_image = if inpaint {
+            self.refine_base.clone()
+        } else if refine {
             self.refine_strength.and(self.refine_base.clone())
         } else {
             None
@@ -1229,10 +1257,10 @@ impl App {
             .or(if refine { self.base_seed } else { None })
             .unwrap_or_else(|| rand::random::<u32>() as u64);
         self.active_seed = seed;
-        // Anchored mode passes its strength; prompt-evolve ignores it (init is None).
-        let strength = self.refine_strength.unwrap_or(0.0);
-        // The Canvas inpaint mask applies only when refining over the base image.
-        let mask = if init_image.is_some() { self.chat_mask.clone() } else { None };
+        // Inpaint runs hot (the masked region regenerates); anchored uses its strength;
+        // prompt-evolve ignores it (init is None).
+        let strength = if inpaint { INPAINT_STRENGTH } else { self.refine_strength.unwrap_or(0.0) };
+        let mask = if inpaint { self.chat_mask.take() } else { None }; // one-shot
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
@@ -1563,6 +1591,36 @@ mod tests {
         assert!(a.active_loras.is_empty(), "re-toggle removes it");
         a.toggle_lora("/tmp/bad.safetensors".into(), false);
         assert!(a.active_loras.is_empty(), "incompatible LoRA is refused");
+    }
+
+    #[test]
+    fn continue_uses_prompt_evolve_with_a_recipe_else_anchored() {
+        let mut a = test_app();
+        // With a recovered seed → prompt-evolve (refine_strength None), additive-friendly.
+        a.continue_from_image("/tmp/x.png".into(), "a fox".into(), Some(42));
+        assert_eq!(a.base_seed, Some(42));
+        assert_eq!(a.refine_strength, None, "recipe → prompt-evolve");
+        // Without a seed → image-anchored fallback.
+        a.continue_from_image("/tmp/y.png".into(), "a wolf".into(), None);
+        assert!(a.refine_strength.is_some(), "no recipe → anchored");
+    }
+
+    #[test]
+    fn canvas_mask_is_a_one_shot_inpaint_that_does_not_lock_the_mode() {
+        let mut a = test_app();
+        // Start in prompt-evolve with a base.
+        a.base_seed = Some(7);
+        a.refine_base = Some("/tmp/base.png".into());
+        a.refine_strength = None;
+        // Canvas hands over a mask — it must NOT flip the sticky mode.
+        a.apply_canvas_mask("/tmp/mask.png".into());
+        assert!(a.chat_mask.is_some());
+        assert_eq!(a.refine_strength, None, "mask doesn't lock anchored mode");
+        // The next refine consumes the mask (one-shot)…
+        a.dispatch_generation("a sun".into(), false);
+        assert!(a.chat_mask.is_none(), "mask consumed after one turn");
+        // …and the mode is still prompt-evolve for the following edits.
+        assert_eq!(a.refine_strength, None);
     }
 
     #[test]
