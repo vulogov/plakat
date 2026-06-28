@@ -27,6 +27,7 @@ use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
+use super::screens::lorahub::LoraHubState;
 use super::screens::models::ModelsState;
 use super::screens::people::{self, PeopleState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
@@ -95,7 +96,10 @@ impl ActiveScreen {
     /// Whether this screen has a real body yet (Release 1: Chat + Models;
     /// Release 2: Scenarios + History).
     fn implemented(self) -> bool {
-        matches!(self, Self::Chat | Self::Models | Self::Scenarios | Self::History | Self::People)
+        matches!(
+            self,
+            Self::Chat | Self::Models | Self::Scenarios | Self::History | Self::People | Self::LoraHub
+        )
     }
 }
 
@@ -113,6 +117,7 @@ pub struct App {
     pub scenarios: ScenariosState,
     pub history: HistoryState,
     pub people: PeopleState,
+    pub lorahub: LoraHubState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -164,10 +169,15 @@ impl App {
         let scenarios = ScenariosState::new(workspace.scenarios_dir());
         let history = HistoryState::new(workspace.out_dir());
         let people = PeopleState::new(workspace.people_dir(), workspace.scenarios_dir());
+        let lorahub = LoraHubState::new(vec![
+            (workspace.loras_dir(), "workspace".into()),
+            (crate::preset::discovery::default_cache_root(), "global".into()),
+        ]);
         Self {
             scenarios,
             history,
             people,
+            lorahub,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -261,6 +271,10 @@ impl App {
             self.sync_history();
             self.sync_people();
             self.drain_portrait();
+            // Keep the LoRA Hub's compatibility column in sync with the loaded model.
+            self.lorahub.set_loaded_family(
+                self.models.loaded_alias().map(crate::preset::discovery::BaseFamily::from_model_arg),
+            );
         }
         Ok(())
     }
@@ -403,6 +417,7 @@ impl App {
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
                 people::PeopleAction::None => {}
             },
+            ActiveScreen::LoraHub => self.lorahub.handle_key(key),
             _ => {}
         }
     }
@@ -912,6 +927,7 @@ impl App {
             ActiveScreen::Scenarios => self.scenarios.render(f, area),
             ActiveScreen::History => self.history.render(f, area),
             ActiveScreen::People => self.people.render(f, area),
+            ActiveScreen::LoraHub => self.lorahub.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -1126,7 +1142,8 @@ mod tests {
         assert!(ActiveScreen::Scenarios.implemented());
         assert!(ActiveScreen::History.implemented());
         assert!(ActiveScreen::People.implemented());
-        assert!(!ActiveScreen::LoraHub.implemented());
+        assert!(ActiveScreen::LoraHub.implemented());
+        assert!(!ActiveScreen::PromptWorkspace.implemented());
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }
 }
