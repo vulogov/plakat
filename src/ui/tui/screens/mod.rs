@@ -3,6 +3,7 @@
 //! dispatches to the active one.
 
 pub mod chat;
+pub mod history;
 pub mod models;
 pub mod prompt_editor;
 pub mod scenarios;

@@ -26,6 +26,7 @@ use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 
 use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
+use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::models::ModelsState;
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
@@ -91,9 +92,9 @@ impl ActiveScreen {
     }
 
     /// Whether this screen has a real body yet (Release 1: Chat + Models;
-    /// Release 2: Scenarios).
+    /// Release 2: Scenarios + History).
     fn implemented(self) -> bool {
-        matches!(self, Self::Chat | Self::Models | Self::Scenarios)
+        matches!(self, Self::Chat | Self::Models | Self::Scenarios | Self::History)
     }
 }
 
@@ -109,6 +110,7 @@ pub struct App {
     pub chat: ChatState,
     pub models: ModelsState,
     pub scenarios: ScenariosState,
+    pub history: HistoryState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -153,8 +155,10 @@ impl App {
         progress_rx: Receiver<String>,
     ) -> Self {
         let scenarios = ScenariosState::new(workspace.scenarios_dir());
+        let history = HistoryState::new(workspace.out_dir());
         Self {
             scenarios,
+            history,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -242,8 +246,27 @@ impl App {
             }
             self.drain_generation();
             self.drain_scenario();
+            self.sync_history();
         }
         Ok(())
+    }
+
+    /// Lazily decode the selected History image into a preview (and read its recipe),
+    /// but only while History is the active screen and only when the selection
+    /// changed — so navigating the list never blocks the event loop on every frame.
+    fn sync_history(&mut self) {
+        if self.screen != ActiveScreen::History {
+            return;
+        }
+        self.history.sync_detail();
+        let sel = self.history.selected_path();
+        if sel != self.history.preview_for {
+            self.history.preview = sel
+                .as_ref()
+                .and_then(|p| image::open(p).ok())
+                .map(|img| self.picker.new_resize_protocol(img));
+            self.history.preview_for = sel;
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -340,8 +363,33 @@ impl App {
                     self.run_scenario(path);
                 }
             }
+            ActiveScreen::History => {
+                if let HistoryAction::Continue { path, prompt } = self.history.handle_key(key) {
+                    self.continue_from_image(path, prompt);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Load a History image into Chat as the base for image-anchored refinement: the
+    /// next prompt img2img's over it (we have the pixels, not the recipe seed), with
+    /// the recovered positive prompt as the accumulation prefix. Switches to Chat.
+    fn continue_from_image(&mut self, path: std::path::PathBuf, prompt: String) {
+        self.refine_base = Some(path.clone());
+        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
+        self.base_seed = Some(rand::random::<u32>() as u64);
+        self.refine_prompt = prompt;
+        self.fixed_seed = None;
+        if let Ok(img) = image::open(&path) {
+            self.chat.preview = Some(self.picker.new_resize_protocol(img));
+        }
+        self.chat.refine_armed = true;
+        self.chat.push_system(format!(
+            "continuing from {} — type an edit (image-anchored)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("image")
+        ));
+        self.screen = ActiveScreen::Chat;
     }
 
     /// Run a scenario file on a background thread. Its task-by-task progress (model
@@ -650,6 +698,7 @@ impl App {
             ActiveScreen::Models => self.models.render(f, area),
             ActiveScreen::Chat => self.chat.render(f, area),
             ActiveScreen::Scenarios => self.scenarios.render(f, area),
+            ActiveScreen::History => self.history.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -862,7 +911,8 @@ mod tests {
         assert!(ActiveScreen::Chat.implemented());
         assert!(ActiveScreen::Models.implemented());
         assert!(ActiveScreen::Scenarios.implemented());
-        assert!(!ActiveScreen::History.implemented());
+        assert!(ActiveScreen::History.implemented());
+        assert!(!ActiveScreen::LoraHub.implemented());
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }
 }
