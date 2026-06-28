@@ -251,11 +251,15 @@ fn model_loop(
                     };
                     match rt.block_on(img2img::run_with_pipeline(&refine_pipe, &req)) {
                         Ok(()) => {
-                            let produced = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
+                            // The pipeline names by mode: a mask → "inpaint", else
+                            // "img2img". Match it or we'd rename/open a missing file
+                            // and the UI would show the stale previous image.
+                            let mode = if job.mask.is_some() { "inpaint" } else { "img2img" };
+                            let produced = job.out_dir.join(format!("plakat-{mode}-{}.png", job.seed));
                             let out = keep_unique(&produced, &job.out_dir, job.seed);
                             embed_chat_recipe(
                                 &out, alias, &prompt, &job.negative, job.seed, job.steps,
-                                job.guidance, Some("img2img"), Some(job.strength),
+                                job.guidance, Some(mode), Some(job.strength),
                             );
                             let _ = job.tx.send(GenMessage::Done {
                                 output: out,
