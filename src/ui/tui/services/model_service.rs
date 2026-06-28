@@ -35,6 +35,8 @@ pub struct GenJob {
     /// `strength`, reusing the loaded weights. `None` → fresh txt2img.
     pub init_image: Option<PathBuf>,
     pub strength: f32,
+    /// `Some(path)` → inpaint: only the mask's white pixels change (Canvas mask).
+    pub mask: Option<PathBuf>,
     /// `Some(provider)` → AI-enhance the prompt (`/enhance`) before generating.
     pub enhance: Option<String>,
     pub tx: Sender<GenMessage>,
@@ -119,13 +121,14 @@ impl ModelService {
         preview_every: usize,
         init_image: Option<PathBuf>,
         strength: f32,
+        mask: Option<PathBuf>,
         enhance: Option<String>,
     ) -> (std::sync::mpsc::Receiver<GenMessage>, CancelFlag) {
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = CancelFlag::new();
         let job = GenJob {
             prompt, negative, width, height, steps, guidance, seed, out_dir, preview_every,
-            init_image, strength, enhance,
+            init_image, strength, mask, enhance,
             tx, cancel: cancel.clone(),
         };
         let _ = self.cmd_tx.send(ModelCommand::Generate(job));
@@ -232,7 +235,7 @@ fn model_loop(
                         loras: Vec::new(),
                         lora_scale: 1.0,
                         input: init,
-                        mask: None,
+                        mask: job.mask.clone(),
                         mask_feather: 0,
                         mask_invert: false,
                         width: job.width,

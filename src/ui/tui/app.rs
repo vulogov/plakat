@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{Paragraph, Tabs},
 };
 use candle_core::Device;
 use ratatui_image::picker::Picker;
@@ -25,6 +25,7 @@ use crate::cli::scenario::ScenarioEvent;
 use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 
 use super::output::OutputPane;
+use super::screens::canvas::{self, CanvasState};
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::lorahub::{self, LoraHubState};
@@ -100,16 +101,8 @@ impl ActiveScreen {
     /// Whether this screen has a real body yet (Release 1: Chat + Models;
     /// Release 2: Scenarios + History).
     fn implemented(self) -> bool {
-        matches!(
-            self,
-            Self::Chat
-                | Self::Models
-                | Self::Scenarios
-                | Self::History
-                | Self::People
-                | Self::LoraHub
-                | Self::PromptWorkspace
-        )
+        // All eight screens have a real body — the RFC TUI-1 surface is complete.
+        true
     }
 }
 
@@ -129,6 +122,7 @@ pub struct App {
     pub people: PeopleState,
     pub lorahub: LoraHubState,
     pub prompts: PromptsState,
+    pub canvas: CanvasState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -162,6 +156,8 @@ pub struct App {
     // LoRAs applied to Chat generation (load-time merge). Changing the set reloads
     // the current model. Paths into the LoRA Hub's scanned dirs.
     active_loras: Vec<std::path::PathBuf>,
+    // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
+    chat_mask: Option<std::path::PathBuf>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -196,12 +192,14 @@ impl App {
             (crate::civitai::download::cache_root(), "civitai".into()),
         ]);
         let prompts = PromptsState::new(workspace.prompts_dir());
+        let canvas = CanvasState::new(workspace.out_dir().join("masks"));
         Self {
             scenarios,
             history,
             people,
             lorahub,
             prompts,
+            canvas,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -228,6 +226,7 @@ impl App {
             lora_assess: None,
             prompt_compile: None,
             active_loras: Vec::new(),
+            chat_mask: None,
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -308,6 +307,7 @@ impl App {
             self.drain_civitai();
             self.sync_prompts();
             self.drain_prompt_compile();
+            self.sync_canvas();
         }
         Ok(())
     }
@@ -440,6 +440,14 @@ impl App {
         if self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input() {
             let action = self.prompts.handle_key(key);
             self.handle_prompts_action(action);
+            return;
+        }
+
+        // ── The Canvas owns the keyboard (preset letters + Space painting). ──
+        if self.screen == ActiveScreen::Canvas {
+            if let canvas::CanvasAction::MaskReady(path) = self.canvas.handle_key(key) {
+                self.apply_canvas_mask(path);
+            }
             return;
         }
 
@@ -753,6 +761,36 @@ impl App {
         if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
             self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
             self.load_model(alias);
+        }
+    }
+
+    /// Canvas `Enter` — adopt the rasterized mask as Chat's inpaint mask. Forces
+    /// image-anchored refinement (inpaint = img2img over the base, only the white
+    /// pixels change) and switches to Chat.
+    fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
+        self.chat_mask = Some(path);
+        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
+        self.chat.refine_armed = true;
+        self.chat.push_system("inpaint mask set from Canvas — type an edit for the masked region".into());
+        self.screen = ActiveScreen::Chat;
+    }
+
+    /// Keep the Canvas base in sync with the current Chat base image (lazy preview).
+    fn sync_canvas(&mut self) {
+        if self.screen != ActiveScreen::Canvas {
+            return;
+        }
+        if self.refine_base != self.canvas.base_path() {
+            let dims = self.refine_base.as_ref().and_then(|p| image::open(p).ok()).map(|i| (i.width(), i.height()));
+            self.canvas.set_base(self.refine_base.clone(), dims);
+        }
+        let sel = self.refine_base.clone();
+        if sel != self.canvas.preview_for {
+            self.canvas.preview = sel
+                .as_ref()
+                .and_then(|p| image::open(p).ok())
+                .map(|img| self.picker.new_resize_protocol(img));
+            self.canvas.preview_for = sel;
         }
     }
 
@@ -1094,6 +1132,9 @@ impl App {
         if edit.trim().is_empty() {
             return; // bare "/new" (or empty) — nothing to generate
         }
+        if force_fresh {
+            self.chat_mask = None; // a fresh image drops any stale Canvas mask
+        }
         // Enhancing crafts a fresh detailed prompt, so it never refines.
         let refine = !force_fresh && !enhance && self.base_seed.is_some();
         // Accumulate the prompt so earlier edits persist ("...sea with waves, a sail
@@ -1141,6 +1182,8 @@ impl App {
         self.active_seed = seed;
         // Anchored mode passes its strength; prompt-evolve ignores it (init is None).
         let strength = self.refine_strength.unwrap_or(0.0);
+        // The Canvas inpaint mask applies only when refining over the base image.
+        let mask = if init_image.is_some() { self.chat_mask.clone() } else { None };
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
@@ -1154,6 +1197,7 @@ impl App {
             preview_every,
             init_image,
             strength,
+            mask,
             enhancer,
         );
         self.active_gen = Some((rx, cancel));
@@ -1263,11 +1307,7 @@ impl App {
             ActiveScreen::People => self.people.render(f, area),
             ActiveScreen::LoraHub => self.lorahub.render(f, area),
             ActiveScreen::PromptWorkspace => self.prompts.render(f, area),
-            other => {
-                let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
-                let block = Block::default().borders(Borders::ALL).title(other.title());
-                f.render_widget(Paragraph::new(body).block(block), area);
-            }
+            ActiveScreen::Canvas => self.canvas.render(f, area),
         }
     }
 
@@ -1491,9 +1531,8 @@ mod tests {
         assert!(ActiveScreen::Scenarios.implemented());
         assert!(ActiveScreen::History.implemented());
         assert!(ActiveScreen::People.implemented());
-        assert!(ActiveScreen::LoraHub.implemented());
-        assert!(ActiveScreen::PromptWorkspace.implemented());
-        assert!(!ActiveScreen::Canvas.implemented());
+        // Every screen has a real body now — the RFC TUI-1 surface is complete.
+        assert!(ActiveScreen::ALL.iter().all(|s| s.implemented()));
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }
 }
