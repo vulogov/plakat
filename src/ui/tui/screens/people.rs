@@ -133,6 +133,17 @@ impl Person {
             .map(|r| (self.dir.join(&r.path), r.weight))
             .collect()
     }
+
+    fn quick_gen_spec(&self) -> QuickGen {
+        QuickGen {
+            label: self.label().to_string(),
+            prompt: self.prompt.clone(),
+            negative: self.negative.clone(),
+            photos: self.resolved_photos(),
+            identity: self.identity.clone(),
+            face_strength: self.face_strength,
+        }
+    }
 }
 
 /// A quick-generate request the App turns into a `portrait::Request`.
@@ -150,8 +161,10 @@ pub struct QuickGen {
 /// What the App should do after a key.
 pub enum PeopleAction {
     None,
-    /// `G` — generate a portrait from the selected person, result opens in Chat.
+    /// `G` with one person selected → portrait. Result opens in Chat.
     Generate(QuickGen),
+    /// `G` with ≥2 marked (Space) → multiperson scene. Result opens in Chat.
+    GenerateMulti(Vec<QuickGen>),
 }
 
 pub struct PeopleState {
@@ -159,14 +172,23 @@ pub struct PeopleState {
     scenarios_dir: PathBuf,
     people: Vec<Person>,
     selected: usize,
+    /// Multi-selected rows (Space) for a multiperson generation.
+    marked: std::collections::BTreeSet<usize>,
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
 }
 
 impl PeopleState {
     pub fn new(dir: PathBuf, scenarios_dir: PathBuf) -> Self {
-        let mut s =
-            Self { dir, scenarios_dir, people: Vec::new(), selected: 0, preview: None, preview_for: None };
+        let mut s = Self {
+            dir,
+            scenarios_dir,
+            people: Vec::new(),
+            selected: 0,
+            marked: std::collections::BTreeSet::new(),
+            preview: None,
+            preview_for: None,
+        };
         s.rescan();
         s
     }
@@ -214,6 +236,7 @@ impl PeopleState {
 
         people.sort_by(|a, b| a.label().to_lowercase().cmp(&b.label().to_lowercase()));
         self.people = people;
+        self.marked.clear(); // indices change on rescan
         if self.selected >= self.people.len() {
             self.selected = self.people.len().saturating_sub(1);
         }
@@ -241,18 +264,31 @@ impl PeopleState {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
+            // Space toggles multi-select (for a multiperson generation).
+            KeyCode::Char(' ') => {
+                if !self.people.is_empty() && !self.marked.remove(&self.selected) {
+                    self.marked.insert(self.selected);
+                }
+            }
+            // G generates: marked-set if any (≥2 → multiperson), else the cursor.
             KeyCode::Char('g' | 'G') | KeyCode::Enter => {
-                if let Some(p) = self.people.get(self.selected) {
-                    if p.error.is_none() {
-                        return PeopleAction::Generate(QuickGen {
-                            label: p.label().to_string(),
-                            prompt: p.prompt.clone(),
-                            negative: p.negative.clone(),
-                            photos: p.resolved_photos(),
-                            identity: p.identity.clone(),
-                            face_strength: p.face_strength,
-                        });
-                    }
+                let idxs: Vec<usize> = if self.marked.is_empty() {
+                    vec![self.selected]
+                } else {
+                    self.marked.iter().copied().collect()
+                };
+                let specs: Vec<QuickGen> = idxs
+                    .iter()
+                    .filter_map(|&i| self.people.get(i))
+                    .filter(|p| p.error.is_none())
+                    .map(Person::quick_gen_spec)
+                    .collect();
+                self.marked.clear();
+                if specs.len() >= 2 {
+                    return PeopleAction::GenerateMulti(specs);
+                }
+                if let Some(one) = specs.into_iter().next() {
+                    return PeopleAction::Generate(one);
                 }
             }
             _ => {}
@@ -276,7 +312,12 @@ impl PeopleState {
     }
 
     fn render_library(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(format!(" People ({}) ", self.people.len()));
+        let title = if self.marked.is_empty() {
+            format!(" People ({})  ·  Space mark ", self.people.len())
+        } else {
+            format!(" People  ·  {} marked → [G] multiperson ", self.marked.len())
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if self.people.is_empty() {
@@ -306,7 +347,12 @@ impl PeopleState {
                     Style::new().fg(Color::DarkGray),
                 )
             };
-            lines.push(Line::from(vec![Span::styled(format!("{:<16}", p.label()), name_style), summary]));
+            let mark = if self.marked.contains(&i) {
+                Span::styled("● ", Style::new().fg(Color::Cyan))
+            } else {
+                Span::raw("  ")
+            };
+            lines.push(Line::from(vec![mark, Span::styled(format!("{:<14}", p.label()), name_style), summary]));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -536,6 +582,7 @@ mod tests {
         )
         .unwrap();
         let mut s = PeopleState::new(people, d.join("scenarios"));
+        eprintln!("DBG people={} marked={:?} selected={}", s.people.len(), s.marked, s.selected);
         match s.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)) {
             PeopleAction::Generate(g) => {
                 assert_eq!(g.label, "Alice");
@@ -547,6 +594,39 @@ mod tests {
             }
             _ => panic!("expected Generate"),
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn space_marks_two_people_and_g_dispatches_multiperson() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("multi");
+        let people = d.join("people");
+        for name in ["alice", "bob"] {
+            let pd = people.join(name);
+            std::fs::create_dir_all(pd.join("refs")).unwrap();
+            std::fs::write(
+                pd.join("person.hjson"),
+                format!(r#"{{"display_name":"{name}","refs":[{{"path":"refs/x.jpg","weight":1.0}}]}}"#),
+            )
+            .unwrap();
+        }
+        let mut s = PeopleState::new(people, d.join("scenarios"));
+        let sp = || KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        // Mark alice (index 0), move down, mark bob (index 1).
+        s.handle_key(sp());
+        s.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        s.handle_key(sp());
+        match s.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)) {
+            PeopleAction::GenerateMulti(v) => {
+                assert_eq!(v.len(), 2);
+                assert_eq!(v[0].label, "alice");
+                assert_eq!(v[1].label, "bob");
+            }
+            _ => panic!("expected GenerateMulti"),
+        }
+        // Marks cleared after dispatch.
+        assert!(s.marked.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 

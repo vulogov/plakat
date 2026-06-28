@@ -398,11 +398,11 @@ impl App {
                     self.continue_from_image(path, prompt);
                 }
             }
-            ActiveScreen::People => {
-                if let people::PeopleAction::Generate(spec) = self.people.handle_key(key) {
-                    self.quick_generate(spec);
-                }
-            }
+            ActiveScreen::People => match self.people.handle_key(key) {
+                people::PeopleAction::Generate(spec) => self.quick_generate(spec),
+                people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::None => {}
+            },
             _ => {}
         }
     }
@@ -479,7 +479,91 @@ impl App {
         self.portrait_run = Some(rx);
     }
 
-    /// Poll the in-flight portrait gen; on success, open it in Chat (image-anchored).
+    /// People `G` with ≥2 marked — generate a multiperson scene placing each person
+    /// in a deterministic region (no LLM auto-placement), on a background thread. The
+    /// result opens in Chat. Uses the plus-face / sd15 path.
+    fn quick_generate_multi(&mut self, specs: Vec<people::QuickGen>) {
+        if self.portrait_run.is_some() {
+            self.output.push("a generation is already running…".into());
+            return;
+        }
+        let n = specs.len();
+        let labels: Vec<String> = specs.iter().map(|s| s.label.clone()).collect();
+        // Even horizontal split across the canvas, one region per person.
+        let people_req: Vec<crate::pipelines::multiperson::Person> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let x0 = i as f32 / n as f32 + 0.02;
+                let x1 = (i as f32 + 1.0) / n as f32 - 0.02;
+                crate::pipelines::multiperson::Person {
+                    label: s.label.clone(),
+                    photos: s
+                        .photos
+                        .iter()
+                        .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
+                        .collect(),
+                    placement: None,
+                    bbox: Some([x0, 0.08, x1, 0.96]),
+                    prompt: (!s.prompt.trim().is_empty()).then(|| s.prompt.clone()),
+                    face_strength: s.face_strength,
+                    face_bbox: None,
+                    face_landmarks: None,
+                    scale: None,
+                }
+            })
+            .collect();
+
+        let scene = format!(
+            "a group portrait of {n} people standing together, soft natural light, sharp focus, detailed"
+        );
+        let seed = rand::random::<u32>() as u64;
+        let out_dir = self.workspace.out_dir().join("people");
+        let req = crate::pipelines::multiperson::MultipersonRequest {
+            scene: scene.clone(),
+            people: people_req,
+            model: "sd15".into(),
+            identity: crate::pipelines::ip_adapter::IdentityKind::PlusFace,
+            style: None,
+            negative: String::new(),
+            layout_provider: "none".into(),
+            enhancer: None,
+            width: 768,
+            height: 768,
+            steps: 30,
+            guidance: 7.5,
+            seed: Some(seed),
+            count: 1,
+            out_dir: out_dir.clone(),
+            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+            device: self.device.clone(),
+            dry_run: false,
+            composite: false,
+            relight: false,
+            harmonize: None,
+            pose: false,
+            swap: false,
+            restore_faces: false,
+            refine_faces: true,
+            refine_face_strength: 0.85,
+            refine_denoise: 0.35,
+        };
+
+        self.chat.push_system(format!("generating multiperson scene: {} — opens in Chat…", labels.join(", ")));
+        self.portrait_prompt = scene;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::pipelines::multiperson::run(req))
+                .map(|_| out_dir.join(format!("plakat-multiperson-{seed}.png")))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.portrait_run = Some(rx);
+    }
+
+    /// Poll the in-flight portrait / multiperson gen; on success, open it in Chat.
     fn drain_portrait(&mut self) {
         let done = match &self.portrait_run {
             Some(rx) => match rx.try_recv() {
