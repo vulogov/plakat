@@ -1365,6 +1365,46 @@ pub fn peek(path: &std::path::Path) -> Result<(usize, String)> {
     Ok((s.tasks.len(), s.model.unwrap_or_else(|| "?".to_string())))
 }
 
+/// A persona defined in a scenario's top-level `personas:` block, summarised for the
+/// People screen (RFC TUI-1 §11 — "read people also from scenario HJSON"). Photo
+/// paths are resolved relative to the scenario file's directory.
+#[derive(Debug, Clone)]
+pub struct PersonaSummary {
+    pub name: String,
+    pub identity: Option<String>,
+    pub face_strength: Option<f32>,
+    /// `(path, weight)` reference photos.
+    pub photos: Vec<(PathBuf, f32)>,
+}
+
+/// Read the `personas:` block of a scenario file. Empty when the file defines none.
+pub fn peek_personas(path: &std::path::Path) -> Result<Vec<PersonaSummary>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let s: ScenarioFile = deser_hjson::from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut out = Vec::new();
+    for p in &s.personas {
+        let mut photos: Vec<(PathBuf, f32)> = Vec::new();
+        if let Some(ph) = &p.photo {
+            photos.push((base.join(ph), 1.0));
+        }
+        for ph in &p.photos {
+            if let Ok(wp) = ph.to_weighted() {
+                photos.push((base.join(&wp.path), wp.weight.unwrap_or(1.0)));
+            }
+        }
+        out.push(PersonaSummary {
+            name: p.name.clone(),
+            identity: p.identity.clone(),
+            face_strength: p.face_strength,
+            photos,
+        });
+    }
+    Ok(out)
+}
+
 /// The ordered task names in a scenario file — for a runner UI to pre-populate a
 /// per-task status board before the run starts. Same parser as [`peek`].
 pub fn task_names(path: &std::path::Path) -> Result<Vec<String>> {

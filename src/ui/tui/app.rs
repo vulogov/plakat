@@ -28,6 +28,7 @@ use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::models::ModelsState;
+use super::screens::people::PeopleState;
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
@@ -94,7 +95,7 @@ impl ActiveScreen {
     /// Whether this screen has a real body yet (Release 1: Chat + Models;
     /// Release 2: Scenarios + History).
     fn implemented(self) -> bool {
-        matches!(self, Self::Chat | Self::Models | Self::Scenarios | Self::History)
+        matches!(self, Self::Chat | Self::Models | Self::Scenarios | Self::History | Self::People)
     }
 }
 
@@ -111,6 +112,7 @@ pub struct App {
     pub models: ModelsState,
     pub scenarios: ScenariosState,
     pub history: HistoryState,
+    pub people: PeopleState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -156,9 +158,11 @@ impl App {
     ) -> Self {
         let scenarios = ScenariosState::new(workspace.scenarios_dir());
         let history = HistoryState::new(workspace.out_dir());
+        let people = PeopleState::new(workspace.people_dir(), workspace.scenarios_dir());
         Self {
             scenarios,
             history,
+            people,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -247,8 +251,25 @@ impl App {
             self.drain_generation();
             self.drain_scenario();
             self.sync_history();
+            self.sync_people();
         }
         Ok(())
+    }
+
+    /// Lazily decode the selected person's primary reference photo into a preview,
+    /// only while People is active and only when the selection changed.
+    fn sync_people(&mut self) {
+        if self.screen != ActiveScreen::People {
+            return;
+        }
+        let sel = self.people.selected_ref();
+        if sel != self.people.preview_for {
+            self.people.preview = sel
+                .as_ref()
+                .and_then(|p| image::open(p).ok())
+                .map(|img| self.picker.new_resize_protocol(img));
+            self.people.preview_for = sel;
+        }
     }
 
     /// Lazily decode the selected History image into a preview (and read its recipe),
@@ -367,6 +388,9 @@ impl App {
                 if let HistoryAction::Continue { path, prompt } = self.history.handle_key(key) {
                     self.continue_from_image(path, prompt);
                 }
+            }
+            ActiveScreen::People => {
+                let _ = self.people.handle_key(key);
             }
             _ => {}
         }
@@ -699,6 +723,7 @@ impl App {
             ActiveScreen::Chat => self.chat.render(f, area),
             ActiveScreen::Scenarios => self.scenarios.render(f, area),
             ActiveScreen::History => self.history.render(f, area),
+            ActiveScreen::People => self.people.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -912,6 +937,7 @@ mod tests {
         assert!(ActiveScreen::Models.implemented());
         assert!(ActiveScreen::Scenarios.implemented());
         assert!(ActiveScreen::History.implemented());
+        assert!(ActiveScreen::People.implemented());
         assert!(!ActiveScreen::LoraHub.implemented());
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }

@@ -5,5 +5,6 @@
 pub mod chat;
 pub mod history;
 pub mod models;
+pub mod people;
 pub mod prompt_editor;
 pub mod scenarios;
