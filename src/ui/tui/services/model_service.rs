@@ -247,7 +247,8 @@ fn model_loop(
                     };
                     match rt.block_on(img2img::run_with_pipeline(&refine_pipe, &req)) {
                         Ok(()) => {
-                            let out = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
+                            let produced = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
+                            let out = keep_unique(&produced, &job.out_dir, job.seed);
                             let _ = job.tx.send(GenMessage::Done {
                                 output: out,
                                 cancelled: job.cancel.is_cancelled(),
@@ -284,7 +285,8 @@ fn model_loop(
                 let result = pipeline.generate_hooked(&req, &[], Some(&mut hook));
                 match result {
                     Ok(()) => {
-                        let out = job.out_dir.join(format!("plakat-{}.png", job.seed));
+                        let produced = job.out_dir.join(format!("plakat-{}.png", job.seed));
+                        let out = keep_unique(&produced, &job.out_dir, job.seed);
                         let _ = job.tx.send(GenMessage::Done {
                             output: out,
                             cancelled: job.cancel.is_cancelled(),
@@ -300,9 +302,52 @@ fn model_loop(
     }
 }
 
+/// Rename `produced` (the pipeline's `plakat-<seed>.png`) to the next free
+/// `plakat-<seed>-<n>.png` so successive Chat turns at the SAME (stable) seed don't
+/// overwrite each other — each step is kept as its own file. Falls back to the
+/// produced path if the rename can't happen.
+fn keep_unique(produced: &std::path::Path, out_dir: &std::path::Path, seed: u64) -> PathBuf {
+    let mut n = 1u32;
+    let target = loop {
+        let p = out_dir.join(format!("plakat-{seed}-{n}.png"));
+        if !p.exists() {
+            break p;
+        }
+        n += 1;
+    };
+    match std::fs::rename(produced, &target) {
+        Ok(()) => target,
+        Err(_) => produced.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keep_unique_increments_per_seed_without_overwriting() {
+        let d = std::env::temp_dir().join("plakat-keepunique-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let seed = 99u64;
+
+        // First turn: pipeline produced plakat-99.png → renamed to plakat-99-1.png.
+        let produced = d.join("plakat-99.png");
+        std::fs::write(&produced, b"a").unwrap();
+        let out1 = keep_unique(&produced, &d, seed);
+        assert_eq!(out1, d.join("plakat-99-1.png"));
+        assert!(out1.exists());
+        assert!(!produced.exists(), "the produced file was moved, not copied");
+
+        // Second turn at the SAME seed → plakat-99-2.png (no overwrite).
+        std::fs::write(&produced, b"b").unwrap();
+        let out2 = keep_unique(&produced, &d, seed);
+        assert_eq!(out2, d.join("plakat-99-2.png"));
+        assert!(out1.exists() && out2.exists(), "both steps are kept");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn sd_family_passes_the_load_check() {

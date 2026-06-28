@@ -31,12 +31,9 @@ use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
-/// Default img2img denoise strength for conversational refinement. Each refine
-/// re-bases on the clean original (no compounding), so this can run hotter than a
-/// chained pipeline would tolerate — high enough that edits (e.g. "add a boat")
-/// actually land, while the accumulated prompt keeps style + composition. Tunable
-/// per-session with `/strength`.
-const DEFAULT_REFINE_STRENGTH: f32 = 0.68;
+/// img2img strength used when the user opts INTO image-anchored refinement via
+/// `/strength` without a value (or as the default for that mode).
+const DEFAULT_ANCHOR_STRENGTH: f32 = 0.6;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -130,10 +127,17 @@ pub struct App {
     active_full_prompt: String,
     // Session negative prompt (`/negative …`), applied to every generation.
     negative: String,
-    // img2img strength for refinement (`/strength …`), 0.0–1.0.
-    refine_strength: f32,
-    // Pinned seed (`/seed …`) for reproducible / comparable generations; None = random.
+    // Refinement mode. None (default) = prompt-evolve: a follow-up re-renders the
+    // ACCUMULATED prompt with txt2img at the conversation's stable seed, so typed
+    // edits reliably appear and the composition stays recognizable. Some(strength) =
+    // image-anchored: img2img over the clean base at that strength (`/strength`).
+    refine_strength: Option<f32>,
+    // The conversation's stable seed (so prompt-evolve refines keep composition).
+    base_seed: Option<u64>,
+    // Explicit seed pin (`/seed …`) overriding both; None = use base_seed / random.
     fixed_seed: Option<u64>,
+    // The seed used by the in-flight turn (recorded as base_seed on a fresh Done).
+    active_seed: u64,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -163,8 +167,10 @@ impl App {
             active_is_refine: false,
             active_full_prompt: String::new(),
             negative: String::new(),
-            refine_strength: DEFAULT_REFINE_STRENGTH,
+            refine_strength: None,
+            base_seed: None,
             fixed_seed: None,
+            active_seed: 0,
             scenario_run: None,
             scenario_events: None,
             screen: ActiveScreen::Chat,
@@ -413,22 +419,26 @@ impl App {
             self.chat.push_system(note);
             return;
         }
-        // `/strength <0.1–1.0>` tunes how strongly a refine reworks the base image:
-        // higher = edits land harder but diverge more; lower = faithful but subtle.
+        // `/strength <0.1–1.0>` opts into IMAGE-ANCHORED refinement: a follow-up
+        // img2img's over the actual previous image at that strength (anchors to its
+        // exact pixels). `/strength off` returns to the default prompt-evolve mode.
         if let Some(rest) = text.strip_prefix("/strength") {
             let arg = rest.trim();
-            match arg.parse::<f32>() {
-                Ok(v) if (0.1..=1.0).contains(&v) => {
-                    self.refine_strength = v;
-                    self.chat.push_system(format!("refine strength → {v:.2}"));
+            if arg.eq_ignore_ascii_case("off") || arg == "0" {
+                self.refine_strength = None;
+                self.chat.push_system("refine mode → prompt-evolve (default)".into());
+            } else if arg.is_empty() {
+                self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
+                self.chat.push_system(format!("refine mode → image-anchored ({DEFAULT_ANCHOR_STRENGTH:.2})"));
+            } else if let Ok(v) = arg.parse::<f32>() {
+                if (0.1..=1.0).contains(&v) {
+                    self.refine_strength = Some(v);
+                    self.chat.push_system(format!("refine mode → image-anchored ({v:.2})"));
+                } else {
+                    self.chat.push_system("strength must be 0.1–1.0 (or 'off')".into());
                 }
-                _ if arg.is_empty() => {
-                    self.chat.push_system(format!(
-                        "refine strength is {:.2} (usage: /strength 0.1–1.0)",
-                        self.refine_strength
-                    ));
-                }
-                _ => self.chat.push_system("strength must be a number in 0.1–1.0".into()),
+            } else {
+                self.chat.push_system("strength must be a number 0.1–1.0 (or 'off')".into());
             }
             return;
         }
@@ -476,18 +486,25 @@ impl App {
             return; // bare "/new" (or empty) — nothing to generate
         }
         // Enhancing crafts a fresh detailed prompt, so it never refines.
-        let refine = !force_fresh && !enhance && self.refine_base.is_some();
-        // Re-base each edit on the CLEAN original image and accumulate the prompt, so
-        // quality doesn't compound-degrade and earlier edits persist.
-        let (full_prompt, init_image) = if refine {
-            let combined = if self.refine_prompt.is_empty() {
+        let refine = !force_fresh && !enhance && self.base_seed.is_some();
+        // Accumulate the prompt so earlier edits persist ("...sea with waves, a sail
+        // boat on the horizon"). DEFAULT (prompt-evolve): re-render the accumulated
+        // prompt with txt2img at the conversation's stable seed → typed edits reliably
+        // appear and the composition stays recognizable. ANCHORED (`/strength`):
+        // img2img over the clean base image at that strength.
+        let full_prompt = if refine {
+            if self.refine_prompt.is_empty() {
                 edit.clone()
             } else {
                 format!("{}, {}", self.refine_prompt, edit)
-            };
-            (combined, self.refine_base.clone())
+            }
         } else {
-            (edit.clone(), None)
+            edit.clone()
+        };
+        let init_image = if refine {
+            self.refine_strength.and(self.refine_base.clone())
+        } else {
+            None
         };
         self.active_is_refine = refine;
         self.active_full_prompt = full_prompt.clone();
@@ -506,7 +523,15 @@ impl App {
         let guidance = self.workspace.config.default_guidance;
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
-        let seed = self.fixed_seed.unwrap_or_else(|| rand::random::<u32>() as u64);
+        // Seed priority: an explicit `/seed` pin > the conversation's stable seed (so
+        // prompt-evolve refines keep composition) > a fresh random seed.
+        let seed = self
+            .fixed_seed
+            .or(if refine { self.base_seed } else { None })
+            .unwrap_or_else(|| rand::random::<u32>() as u64);
+        self.active_seed = seed;
+        // Anchored mode passes its strength; prompt-evolve ignores it (init is None).
+        let strength = self.refine_strength.unwrap_or(0.0);
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
@@ -519,7 +544,7 @@ impl App {
             out_dir,
             preview_every,
             init_image,
-            self.refine_strength,
+            strength,
             enhancer,
         );
         self.active_gen = Some((rx, cancel));
@@ -557,14 +582,14 @@ impl App {
                     if let Ok(img) = image::open(&output) {
                         self.chat.preview = Some(self.picker.new_resize_protocol(img));
                     }
-                    // Refinement bookkeeping: a FRESH generation becomes the clean
-                    // base for the thread; a refine keeps that base and just records
+                    // Refinement bookkeeping. A FRESH generation seeds the thread:
+                    // its image is the anchor base and its seed is the stable seed the
+                    // prompt-evolve refines reuse. A refine keeps both and just records
                     // the accumulated prompt so the next edit builds on it.
-                    if self.active_is_refine {
-                        self.refine_prompt = self.active_full_prompt.clone();
-                    } else {
+                    self.refine_prompt = self.active_full_prompt.clone();
+                    if !self.active_is_refine {
                         self.refine_base = Some(output.clone());
-                        self.refine_prompt = self.active_full_prompt.clone();
+                        self.base_seed = Some(self.active_seed);
                     }
                     self.chat.refine_armed = true;
                     let path = output.display().to_string();
@@ -748,12 +773,13 @@ mod tests {
         assert!(!a.active_is_refine);
         assert_eq!(a.active_full_prompt, "a fox");
 
-        // Simulate that turn completing with a clean base image.
+        // Simulate that turn completing: a stable seed + accumulated prompt are set.
         a.active_gen = None;
+        a.base_seed = Some(42);
         a.refine_base = Some("/tmp/plakat-42.png".into());
         a.refine_prompt = "a fox".into();
 
-        // Next turn refines: re-bases on the clean original + accumulates the prompt.
+        // Next turn refines: reuses the seed + accumulates the prompt.
         a.dispatch_generation("make it warmer".into(), false);
         let last = a.chat.history.last().unwrap();
         assert!(last.refine, "follow-up refines");
@@ -793,7 +819,7 @@ mod tests {
     #[test]
     fn slash_enhance_forces_a_fresh_generation() {
         let mut a = test_app();
-        a.refine_base = Some("/tmp/x.png".into()); // a plain prompt would refine
+        a.base_seed = Some(7); // a plain prompt would refine
         a.handle_chat_submit("/enhance a fox".into());
         let last = a.chat.history.last().unwrap();
         assert!(!last.refine, "/enhance never refines");
@@ -804,12 +830,16 @@ mod tests {
     #[test]
     fn slash_strength_and_seed_tune_session_state_without_generating() {
         let mut a = test_app();
+        // /strength opts into image-anchored mode at a value.
         a.handle_chat_submit("/strength 0.8".into());
-        assert!((a.refine_strength - 0.8).abs() < 1e-6);
+        assert_eq!(a.refine_strength, Some(0.8));
         assert!(a.active_gen.is_none());
         // out-of-range is rejected (value unchanged).
         a.handle_chat_submit("/strength 5".into());
-        assert!((a.refine_strength - 0.8).abs() < 1e-6);
+        assert_eq!(a.refine_strength, Some(0.8));
+        // /strength off returns to prompt-evolve (None).
+        a.handle_chat_submit("/strength off".into());
+        assert_eq!(a.refine_strength, None);
 
         a.handle_chat_submit("/seed 1234".into());
         assert_eq!(a.fixed_seed, Some(1234));
