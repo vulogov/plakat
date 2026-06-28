@@ -171,6 +171,8 @@ pub struct App {
     remote_download: Option<Receiver<Result<String, String>>>,
     // In-flight LLM LoRA assessment: (item key, assessment text).
     lora_assess: Option<Receiver<(String, String)>>,
+    // In-flight LLM recommend-for-context (LoRA Hub search tabs).
+    lora_recommend: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
 }
@@ -224,6 +226,7 @@ impl App {
             remote_search: None,
             remote_download: None,
             lora_assess: None,
+            lora_recommend: None,
             prompt_compile: None,
             active_loras: Vec::new(),
             chat_mask: None,
@@ -593,7 +596,43 @@ impl App {
             lorahub::LoraHubAction::Search { source, query } => self.remote_search(source, query),
             lorahub::LoraHubAction::Download { dl, title } => self.remote_download(dl, title),
             lorahub::LoraHubAction::Assess { key, prompt } => self.assess_lora(key, prompt),
+            lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
         }
+    }
+
+    /// Recommend-for-context: ask the LLM which candidate LoRA best fits the current
+    /// Chat prompt, on a background thread. Context = the accumulated refine prompt,
+    /// else the current Chat input, else a generic.
+    fn recommend_loras(&mut self, candidates: Vec<String>) {
+        if self.lora_recommend.is_some() {
+            return;
+        }
+        let context = if !self.refine_prompt.is_empty() {
+            self.refine_prompt.clone()
+        } else {
+            let typed = self.chat.editor.text();
+            if typed.trim().is_empty() { "a general image".into() } else { typed }
+        };
+        let list = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{}. {c}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You recommend the single best Stable Diffusion LoRA for a \
+                given image prompt. Reply with the chosen LoRA's name and ONE plain sentence \
+                explaining why. No preamble, no markdown.";
+            let user = format!("Image prompt: {context}\n\nCandidate LoRAs:\n{list}\n\nWhich fits best?");
+            let text = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_else(|e| format!("(recommendation failed: {e:#})"));
+            let _ = tx.send(text.trim().to_string());
+        });
+        self.lora_recommend = Some(rx);
     }
 
     /// Ask the LLM (workspace enhancer provider, resolved to a concrete one so the
@@ -724,6 +763,16 @@ impl App {
                     self.lora_assess = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_assess = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.lora_recommend {
+            match rx.try_recv() {
+                Ok(text) => {
+                    self.lorahub.set_recommendation(text);
+                    self.lora_recommend = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_recommend = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }

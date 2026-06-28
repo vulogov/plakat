@@ -91,9 +91,12 @@ pub enum LoraHubAction {
     Search { source: RemoteSource, query: String },
     /// Remote `D`/Enter on a result — download it (App does the async call).
     Download { dl: DownloadRef, title: String },
-    /// `R` — ask the LLM to assess the selected LoRA. `key` identifies the item
-    /// (path for LOCAL, "hit:title" for remote); `prompt` is the user message.
+    /// `R` (LOCAL) — ask the LLM to assess the selected LoRA. `key` identifies the
+    /// item (its path); `prompt` is the user message.
     Assess { key: String, prompt: String },
+    /// `R` (search results) — recommend which candidate best fits the Chat prompt.
+    /// The App supplies the prompt context and runs the LLM.
+    Recommend { candidates: Vec<String> },
 }
 
 pub struct LoraHubState {
@@ -114,6 +117,9 @@ pub struct LoraHubState {
     /// LLM assessments keyed by item key; `assessing` is the in-flight key.
     assessments: HashMap<String, String>,
     assessing: Option<String>,
+    /// Recommend-for-context result (search tabs) + in-flight flag.
+    recommendation: Option<String>,
+    recommending: bool,
 }
 
 impl LoraHubState {
@@ -132,9 +138,17 @@ impl LoraHubState {
             remote_status: "type a query · Enter to search".into(),
             assessments: HashMap::new(),
             assessing: None,
+            recommendation: None,
+            recommending: false,
         };
         s.rescan();
         s
+    }
+
+    /// The App delivers the recommend-for-context result.
+    pub fn set_recommendation(&mut self, text: String) {
+        self.recommendation = Some(text);
+        self.recommending = false;
     }
 
     /// The App delivers an LLM assessment for `key` (or an error string).
@@ -155,6 +169,8 @@ impl LoraHubState {
         self.remote_status = if hits.is_empty() { "no results".into() } else { format!("{} results", hits.len()) };
         self.hits = hits;
         self.hit_sel = 0;
+        self.recommendation = None; // stale for new results
+        self.recommending = false;
     }
 
     pub fn set_remote_status(&mut self, status: impl Into<String>) {
@@ -289,19 +305,15 @@ impl LoraHubState {
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.hit_sel = self.hit_sel.saturating_sub(1),
                 KeyCode::Char('/') => self.phase = Phase::Search,
-                // R — LLM assessment of the selected search hit.
+                // R — recommend-for-context: rank the results against the Chat prompt
+                // (the App supplies the context). RFC §10 "R from search".
                 KeyCode::Char('R') => {
-                    if let Some(h) = self.hits.get(self.hit_sel) {
-                        let key = format!("hit:{}", h.title);
-                        let prompt = format!(
-                            "Stable Diffusion LoRA '{}' ({}, {} downloads). In ONE sentence, \
-                             what is it and when would you use it?",
-                            h.title,
-                            if h.subtitle.is_empty() { "unknown base".into() } else { h.subtitle.clone() },
-                            h.downloads,
-                        );
-                        self.assessing = Some(key.clone());
-                        return LoraHubAction::Assess { key, prompt };
+                    if !self.hits.is_empty() {
+                        self.recommending = true;
+                        self.recommendation = None;
+                        return LoraHubAction::Recommend {
+                            candidates: self.hits.iter().map(|h| h.title.clone()).collect(),
+                        };
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => self.switch_tab(-1),
@@ -441,19 +453,16 @@ impl LoraHubState {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// Footer showing the selected hit's LLM assessment (`R`).
+    /// Footer showing the recommend-for-context result (`R` ranks results vs the
+    /// current Chat prompt).
     fn render_assess_footer(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" ✦ assess [R] ");
-        let key = self.hits.get(self.hit_sel).map(|h| format!("hit:{}", h.title));
-        let body = match &key {
-            Some(k) if self.assessing.as_deref() == Some(k.as_str()) => {
-                Span::styled("assessing…", Style::new().fg(Color::Yellow))
-            }
-            Some(k) => match self.assessments.get(k) {
-                Some(a) => Span::styled(a.clone(), Style::new().fg(Color::Gray)),
-                None => Span::styled("press R for an AI assessment", Style::new().fg(Color::DarkGray)),
-            },
-            None => Span::styled("no result selected", Style::new().fg(Color::DarkGray)),
+        let block = Block::default().borders(Borders::ALL).title(" ✦ recommend-for-context [R] ");
+        let body = if self.recommending {
+            Span::styled("thinking…", Style::new().fg(Color::Yellow))
+        } else if let Some(r) = &self.recommendation {
+            Span::styled(r.clone(), Style::new().fg(Color::Gray))
+        } else {
+            Span::styled("press R to rank these against your Chat prompt", Style::new().fg(Color::DarkGray))
         };
         f.render_widget(Paragraph::new(Line::from(body)).block(block).wrap(Wrap { trim: true }), area);
     }
@@ -866,6 +875,30 @@ mod tests {
         s.set_assessment(key.clone(), "A watercolour style LoRA.".into());
         assert!(s.assessing.is_none(), "cleared on result");
         assert_eq!(s.assessments.get(&key).unwrap(), "A watercolour style LoRA.");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn r_on_search_results_requests_recommend_for_context() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+
+        let d = tmp("recommend");
+        let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
+        s.handle_key(key(KeyCode::Right)); // CIVITAI
+        s.handle_key(key(KeyCode::Enter)); // search → Results phase
+        s.set_remote_hits(vec![
+            RemoteHit { title: "Watercolor".into(), subtitle: "SDXL".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 1, version_id: None } },
+            RemoteHit { title: "Anime".into(), subtitle: "SD1.5".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 2, version_id: None } },
+        ]);
+        match s.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)) {
+            LoraHubAction::Recommend { candidates } => assert_eq!(candidates, vec!["Watercolor", "Anime"]),
+            _ => panic!("expected Recommend"),
+        }
+        assert!(s.recommending);
+        s.set_recommendation("Watercolor — best matches a painterly prompt.".into());
+        assert!(!s.recommending);
+        assert!(s.recommendation.as_deref().unwrap().contains("Watercolor"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

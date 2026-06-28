@@ -18,6 +18,13 @@ If you're new to plakat, work through these in order:
    API keys. If you want the "just show me it works" experience
    before reading flag references, start here.
 
+0a. [`UI_TUTORIAL.md`](UI_TUTORIAL.md) — **`plakat ui`, the interactive
+   terminal UI.** Load a model once and *talk* to it: conversational
+   generation + refinement, browse your history, drop in a specific
+   person, paint an inpaint mask, search/apply LoRAs, compile prose
+   into scenarios — eight screens, all keyboard-driven, on the same
+   engine as the CLI. The friendliest way to explore everything below.
+
 1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **the foundation.**
    Your first generation, the flags that matter, seeds for
    reproducibility, prompt wildcards, CLIP-skip, ADetailer face
@@ -278,6 +285,7 @@ feature:
 | Tutorial | Prerequisites |
 |---|---|
 | `GETTING_STARTED.md` | plakat installed; can run `plakat --help`. |
+| `UI_TUTORIAL.md` | plakat installed (default `ui` feature). A graphics-capable terminal (Kitty/Ghostty/WezTerm/iTerm2/Sixel) for inline images; runs without one (placeholders). |
 | `GENERATE_TUTORIAL.md` | plakat installed; can run `plakat --help`. |
 | `PORTRAIT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. |
 | `STYLES_TUTORIAL.md` | Above + finished `PORTRAIT_TUTORIAL.md` (helpful but not required). |

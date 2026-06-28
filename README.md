@@ -94,6 +94,18 @@ per-image speeds.
 
 ## Quick start
 
+Prefer an interactive workflow? `plakat ui` is a full terminal UI —
+load a model once and *talk* to it: conversational generation +
+refinement, inline images, history, people, LoRA search/apply, prose →
+scenario compile, and inpaint-mask painting, all keyboard-driven. See
+[`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md).
+
+```bash
+plakat ui            # the interactive terminal UI
+```
+
+Or drive it from the command line:
+
 ```bash
 # Text-to-image with SD 1.5
 plakat generate "a brutalist poster of a whale, watercolor" --seed 42
