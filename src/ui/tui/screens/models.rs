@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 /// One row of the model list, derived from `hf::ALIAS_TABLE`.
@@ -126,7 +126,7 @@ impl ModelsState {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
             .split(area);
-        self.render_memory_bar(f, rows[0]);
+        crate::ui::tui::memory::render_memory_bar(f, rows[0]);
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -134,40 +134,6 @@ impl ModelsState {
             .split(rows[1]);
         self.render_list(f, cols[0]);
         self.render_detail(f, cols[1]);
-    }
-
-    fn render_memory_bar(&self, f: &mut Frame, area: Rect) {
-        // RAM on the left, swap on the right.
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
-            .split(area);
-
-        // RAM (unified memory).
-        let total = crate::hw::total_ram_gb().max(0.1);
-        let used = (total - crate::hw::available_ram_gb()).clamp(0.0, total);
-        let ram = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" RAM (unified) "))
-            .gauge_style(Style::new().fg(Color::Cyan))
-            .ratio((used / total).clamp(0.0, 1.0))
-            .label(format!("{used:.1} / {total:.1} GB"));
-        f.render_widget(ram, cols[0]);
-
-        // Swap — heavy swap signals an over-budget load.
-        let (swap_used, swap_total) = crate::hw::swap_gb();
-        let (swap_ratio, swap_label) = if swap_total > 0.05 {
-            ((swap_used / swap_total).clamp(0.0, 1.0), format!("{swap_used:.1} / {swap_total:.1} GB"))
-        } else {
-            (0.0, "off".to_string())
-        };
-        // Amber/red once swap is meaningfully in use (memory pressure).
-        let swap_color = if swap_used > 1.0 { Color::Red } else if swap_used > 0.1 { Color::Yellow } else { Color::Magenta };
-        let swap = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" Swap "))
-            .gauge_style(Style::new().fg(swap_color))
-            .ratio(swap_ratio)
-            .label(swap_label);
-        f.render_widget(swap, cols[1]);
     }
 
     fn render_list(&self, f: &mut Frame, area: Rect) {

@@ -150,17 +150,18 @@ impl ChatState {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            // 2 text rows + top/bottom border = 4 for the wrapping prompt editor.
-            .constraints([Constraint::Min(1), Constraint::Length(4)])
+            // [memory gauges] [history+image] [2-row wrapping prompt editor + borders].
+            .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(4)])
             .split(area);
-        // Top: chat history on the left, the generated image on the right.
+        crate::ui::tui::memory::render_memory_bar(f, rows[0]);
+        // Middle: chat history on the left, the generated image on the right.
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(rows[0]);
+            .split(rows[1]);
         self.render_history(f, cols[0]);
         self.render_image(f, cols[1]);
-        self.render_input(f, rows[1]);
+        self.render_input(f, rows[2]);
     }
 
     fn render_image(&mut self, f: &mut Frame, area: Rect) {
