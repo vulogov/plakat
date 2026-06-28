@@ -239,7 +239,7 @@ impl ChatState {
                 Style::new().fg(Color::DarkGray),
             )));
             lines.push(Line::from(Span::styled(
-                "Commands: /new fresh · /enhance AI-expand · /negative <neg> · Ctrl-P/N recall",
+                "Commands: /new /enhance /negative /strength <0.1-1> /seed <n> · Ctrl-P/N recall",
                 Style::new().fg(Color::DarkGray),
             )));
         }

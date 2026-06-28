@@ -31,10 +31,12 @@ use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
 
-/// img2img denoise strength for conversational refinement. Each refine re-bases on
-/// the clean original (no compounding), so a moderate value preserves composition
-/// while the accumulated prompt steers the edit.
-const REFINE_STRENGTH: f32 = 0.5;
+/// Default img2img denoise strength for conversational refinement. Each refine
+/// re-bases on the clean original (no compounding), so this can run hotter than a
+/// chained pipeline would tolerate — high enough that edits (e.g. "add a boat")
+/// actually land, while the accumulated prompt keeps style + composition. Tunable
+/// per-session with `/strength`.
+const DEFAULT_REFINE_STRENGTH: f32 = 0.68;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -128,6 +130,10 @@ pub struct App {
     active_full_prompt: String,
     // Session negative prompt (`/negative …`), applied to every generation.
     negative: String,
+    // img2img strength for refinement (`/strength …`), 0.0–1.0.
+    refine_strength: f32,
+    // Pinned seed (`/seed …`) for reproducible / comparable generations; None = random.
+    fixed_seed: Option<u64>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -157,6 +163,8 @@ impl App {
             active_is_refine: false,
             active_full_prompt: String::new(),
             negative: String::new(),
+            refine_strength: DEFAULT_REFINE_STRENGTH,
+            fixed_seed: None,
             scenario_run: None,
             scenario_events: None,
             screen: ActiveScreen::Chat,
@@ -405,6 +413,40 @@ impl App {
             self.chat.push_system(note);
             return;
         }
+        // `/strength <0.1–1.0>` tunes how strongly a refine reworks the base image:
+        // higher = edits land harder but diverge more; lower = faithful but subtle.
+        if let Some(rest) = text.strip_prefix("/strength") {
+            let arg = rest.trim();
+            match arg.parse::<f32>() {
+                Ok(v) if (0.1..=1.0).contains(&v) => {
+                    self.refine_strength = v;
+                    self.chat.push_system(format!("refine strength → {v:.2}"));
+                }
+                _ if arg.is_empty() => {
+                    self.chat.push_system(format!(
+                        "refine strength is {:.2} (usage: /strength 0.1–1.0)",
+                        self.refine_strength
+                    ));
+                }
+                _ => self.chat.push_system("strength must be a number in 0.1–1.0".into()),
+            }
+            return;
+        }
+        // `/seed <n>` pins the seed for reproducible / comparable runs; `/seed random`
+        // (or bare `/seed`) returns to a fresh random seed each generation.
+        if let Some(rest) = text.strip_prefix("/seed") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("random") {
+                self.fixed_seed = None;
+                self.chat.push_system("seed → random".into());
+            } else if let Ok(n) = arg.parse::<u64>() {
+                self.fixed_seed = Some(n);
+                self.chat.push_system(format!("seed pinned → {n}"));
+            } else {
+                self.chat.push_system("seed must be a non-negative integer (or 'random')".into());
+            }
+            return;
+        }
         // `/enhance <prompt>` AI-expands the prompt, then generates fresh.
         if let Some(rest) = text.strip_prefix("/enhance") {
             let p = rest.trim().to_string();
@@ -464,7 +506,7 @@ impl App {
         let guidance = self.workspace.config.default_guidance;
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
-        let seed = rand::random::<u32>() as u64;
+        let seed = self.fixed_seed.unwrap_or_else(|| rand::random::<u32>() as u64);
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
@@ -477,7 +519,7 @@ impl App {
             out_dir,
             preview_every,
             init_image,
-            REFINE_STRENGTH,
+            self.refine_strength,
             enhancer,
         );
         self.active_gen = Some((rx, cancel));
@@ -757,6 +799,24 @@ mod tests {
         assert!(!last.refine, "/enhance never refines");
         assert_eq!(last.utterance, "a fox");
         assert!(!a.active_is_refine);
+    }
+
+    #[test]
+    fn slash_strength_and_seed_tune_session_state_without_generating() {
+        let mut a = test_app();
+        a.handle_chat_submit("/strength 0.8".into());
+        assert!((a.refine_strength - 0.8).abs() < 1e-6);
+        assert!(a.active_gen.is_none());
+        // out-of-range is rejected (value unchanged).
+        a.handle_chat_submit("/strength 5".into());
+        assert!((a.refine_strength - 0.8).abs() < 1e-6);
+
+        a.handle_chat_submit("/seed 1234".into());
+        assert_eq!(a.fixed_seed, Some(1234));
+        a.handle_chat_submit("/seed random".into());
+        assert_eq!(a.fixed_seed, None);
+        // every command pushed a system note; nothing generated.
+        assert!(a.chat.history.iter().all(|e| e.system));
     }
 
     #[test]
