@@ -4,4 +4,5 @@
 
 pub mod chat;
 pub mod models;
+pub mod prompt_editor;
 pub mod scenarios;

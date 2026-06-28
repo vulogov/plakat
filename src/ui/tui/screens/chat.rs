@@ -4,14 +4,16 @@
 //! (img2img over the previous output) unless it starts with `/new`. The App owns
 //! the dispatch + refine decision; this screen renders state + handles input keys.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+
+use super::prompt_editor::{EditorOutcome, PromptEditor};
 
 /// One turn in the session: the user's utterance + (once generated) its result.
 pub struct ChatEntry {
@@ -43,9 +45,8 @@ pub enum ChatAction {
 }
 
 pub struct ChatState {
-    pub input: String,
-    /// Cursor position in the input, as a CHAR index (0..=char count).
-    pub cursor: usize,
+    /// The 2-line, soft-wrapping prompt editor (full cursor editing + scrolling).
+    pub editor: PromptEditor,
     pub history: Vec<ChatEntry>,
     pub status: ChatStatus,
     /// The latest preview / final image to show in the right pane (built by the
@@ -54,67 +55,81 @@ pub struct ChatState {
     /// True once a previous image exists, so the next prompt refines it (img2img).
     /// Surfaced in the input hint; the App owns the actual refine decision.
     pub refine_armed: bool,
+    /// Prompt-history recall cursor (Ctrl-P / Ctrl-N), shell-history style.
+    recall: Option<usize>,
 }
 
 impl ChatState {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
-            cursor: 0,
+            editor: PromptEditor::new(),
             history: Vec::new(),
             status: ChatStatus::Idle,
             preview: None,
             refine_armed: false,
+            recall: None,
         }
     }
 
-    fn input_len(&self) -> usize {
-        self.input.chars().count()
-    }
-
-    /// Byte offset of the char at `char_idx` (or end of string).
-    fn byte_at(&self, char_idx: usize) -> usize {
-        self.input.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(self.input.len())
-    }
-
-    /// Handle a key while the Chat input is focused — a cursor-aware single-line
-    /// editor (insert/delete at the cursor, ←/→ Home/End). Plain characters type
-    /// into the input (the App routes global keys away first); Enter submits.
+    /// Handle a key while the Chat input is focused. Ctrl-P / Ctrl-N recall previous
+    /// prompts into the editor; everything else goes to the editor; Enter submits.
     pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char(c) => {
-                let b = self.byte_at(self.cursor);
-                self.input.insert(b, c);
-                self.cursor += 1;
+            KeyCode::Char('p') if ctrl => {
+                self.recall_prev();
+                return ChatAction::None;
             }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    let b = self.byte_at(self.cursor - 1);
-                    self.input.remove(b);
-                    self.cursor -= 1;
-                }
-            }
-            KeyCode::Delete => {
-                if self.cursor < self.input_len() {
-                    let b = self.byte_at(self.cursor);
-                    self.input.remove(b);
-                }
-            }
-            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
-            KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input_len()),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.input_len(),
-            KeyCode::Enter => {
-                let prompt = self.input.trim().to_string();
-                if !prompt.is_empty() {
-                    self.input.clear();
-                    self.cursor = 0;
-                    return ChatAction::Submit(prompt);
-                }
+            KeyCode::Char('n') if ctrl => {
+                self.recall_next();
+                return ChatAction::None;
             }
             _ => {}
         }
+        match self.editor.handle_key(key) {
+            EditorOutcome::Submit => {
+                self.recall = None;
+                let text = self.editor.take();
+                if !text.is_empty() {
+                    return ChatAction::Submit(text);
+                }
+            }
+            EditorOutcome::Consumed => {}
+        }
         ChatAction::None
+    }
+
+    /// Recall an earlier prompt into the editor (Ctrl-P): walks backward through the
+    /// session's utterances. "Copy previous chat to prompt."
+    fn recall_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let idx = match self.recall {
+            None => self.history.len() - 1,
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.recall = Some(idx);
+        let text = self.history[idx].utterance.clone();
+        self.editor.set_text(&text);
+    }
+
+    /// Walk forward through recalled prompts (Ctrl-N); past the newest clears to a
+    /// fresh empty input.
+    fn recall_next(&mut self) {
+        match self.recall {
+            Some(i) if i + 1 < self.history.len() => {
+                self.recall = Some(i + 1);
+                let text = self.history[i + 1].utterance.clone();
+                self.editor.set_text(&text);
+            }
+            Some(_) => {
+                self.recall = None;
+                self.editor.clear();
+            }
+            None => {}
+        }
     }
 
     /// Record a submitted utterance (the App calls this when dispatching it).
@@ -135,7 +150,8 @@ impl ChatState {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            // 2 text rows + top/bottom border = 4 for the wrapping prompt editor.
+            .constraints([Constraint::Min(1), Constraint::Length(4)])
             .split(area);
         // Top: chat history on the left, the generated image on the right.
         let cols = Layout::default()
@@ -203,31 +219,15 @@ impl ChatState {
         );
     }
 
-    fn render_input(&self, f: &mut Frame, area: Rect) {
-        // Render the prompt with a block cursor at its char position (insert mode).
-        let chars: Vec<char> = self.input.chars().collect();
-        let before: String = chars.iter().take(self.cursor).collect();
-        let cursor_style = Style::new().bg(Color::Cyan).fg(Color::Black);
-        let mut spans = vec![
-            Span::styled("> ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw(before),
-        ];
-        match chars.get(self.cursor) {
-            Some(c) => {
-                spans.push(Span::styled(c.to_string(), cursor_style));
-                spans.push(Span::raw(chars.iter().skip(self.cursor + 1).collect::<String>()));
-            }
-            None => spans.push(Span::styled(" ", cursor_style)), // cursor at end
-        }
+    fn render_input(&mut self, f: &mut Frame, area: Rect) {
         // Once an image exists, the next prompt refines it; advertise that + the
-        // /new escape hatch for a fresh generation.
+        // /new escape hatch. (The editor wraps + scrolls within the 2-row box.)
         let title = if self.refine_armed {
-            " prompt · Enter to refine · /new <prompt> = fresh "
+            " prompt · Enter refine · /new fresh · Ctrl-P/N recall "
         } else {
-            " prompt · Enter to generate "
+            " prompt · Enter generate · Ctrl-P/N recall "
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
-        f.render_widget(Paragraph::new(Line::from(spans)).block(block).wrap(Wrap { trim: false }), area);
+        self.editor.render(f, area, title);
     }
 }
 
@@ -310,34 +310,19 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
     #[test]
     fn typing_builds_the_input() {
         let mut s = ChatState::new();
         for c in "cat".chars() {
             assert!(matches!(s.handle_key(k(KeyCode::Char(c))), ChatAction::None));
         }
-        assert_eq!(s.input, "cat");
+        assert_eq!(s.editor.text(), "cat");
         s.handle_key(k(KeyCode::Backspace));
-        assert_eq!(s.input, "ca");
-    }
-
-    #[test]
-    fn cursor_editing_inserts_and_deletes_mid_string() {
-        let mut s = ChatState::new();
-        for c in "ct".chars() {
-            s.handle_key(k(KeyCode::Char(c)));
-        }
-        assert_eq!((s.input.as_str(), s.cursor), ("ct", 2));
-        s.handle_key(k(KeyCode::Left)); // between c and t
-        assert_eq!(s.cursor, 1);
-        s.handle_key(k(KeyCode::Char('a'))); // insert mid-string
-        assert_eq!((s.input.as_str(), s.cursor), ("cat", 2));
-        s.handle_key(k(KeyCode::Home));
-        assert_eq!(s.cursor, 0);
-        s.handle_key(k(KeyCode::Delete)); // delete 'c' at cursor
-        assert_eq!((s.input.as_str(), s.cursor), ("at", 0));
-        s.handle_key(k(KeyCode::End));
-        assert_eq!(s.cursor, 2);
+        assert_eq!(s.editor.text(), "ca");
     }
 
     #[test]
@@ -350,13 +335,30 @@ mod tests {
             ChatAction::Submit(p) => assert_eq!(p, "a fox"),
             _ => panic!("expected submit"),
         }
-        assert!(s.input.is_empty());
+        assert!(s.editor.is_empty());
     }
 
     #[test]
     fn empty_enter_is_noop() {
         let mut s = ChatState::new();
         assert!(matches!(s.handle_key(k(KeyCode::Enter)), ChatAction::None));
+    }
+
+    #[test]
+    fn ctrl_p_recalls_previous_prompts_into_the_editor() {
+        let mut s = ChatState::new();
+        s.push_utterance("a fox".into(), false);
+        s.push_utterance("a wolf".into(), false);
+        // Ctrl-P walks back: newest first.
+        s.handle_key(ctrl('p'));
+        assert_eq!(s.editor.text(), "a wolf");
+        s.handle_key(ctrl('p'));
+        assert_eq!(s.editor.text(), "a fox");
+        // Ctrl-N walks forward; past the newest clears.
+        s.handle_key(ctrl('n'));
+        assert_eq!(s.editor.text(), "a wolf");
+        s.handle_key(ctrl('n'));
+        assert!(s.editor.is_empty());
     }
 
     #[test]

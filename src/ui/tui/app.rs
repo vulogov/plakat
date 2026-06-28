@@ -628,7 +628,7 @@ mod tests {
         let mut a = test_app(); // starts on Chat
         a.handle_key(key('q', false));
         assert!(!a.should_quit, "plain q types into the Chat input");
-        assert_eq!(a.chat.input, "q");
+        assert_eq!(a.chat.editor.text(), "q");
     }
 
     #[test]
