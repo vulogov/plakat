@@ -162,9 +162,9 @@ pub struct App {
     // the prompt/seed to seed the Chat continuation when it lands.
     portrait_run: Option<Receiver<Result<std::path::PathBuf, String>>>,
     portrait_prompt: String,
-    // In-flight Civitai search / download for the LoRA Hub.
-    civitai_search: Option<Receiver<Result<Vec<lorahub::CivitaiHit>, String>>>,
-    civitai_download: Option<Receiver<Result<String, String>>>,
+    // In-flight remote (Civitai / HF) search + download for the LoRA Hub.
+    remote_search: Option<Receiver<Result<Vec<lorahub::RemoteHit>, String>>>,
+    remote_download: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -209,8 +209,8 @@ impl App {
             scenario_events: None,
             portrait_run: None,
             portrait_prompt: String::new(),
-            civitai_search: None,
-            civitai_download: None,
+            remote_search: None,
+            remote_download: None,
             active_loras: Vec::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
@@ -451,94 +451,109 @@ impl App {
         match action {
             lorahub::LoraHubAction::None => {}
             lorahub::LoraHubAction::ToggleApply { path, compatible } => self.toggle_lora(path, compatible),
-            lorahub::LoraHubAction::Search(query) => self.civitai_search(query),
-            lorahub::LoraHubAction::Download { model_id, version_id, name } => {
-                self.civitai_download(model_id, version_id, name)
-            }
+            lorahub::LoraHubAction::Search { source, query } => self.remote_search(source, query),
+            lorahub::LoraHubAction::Download { dl, title } => self.remote_download(dl, title),
         }
     }
 
-    /// Run a Civitai LoRA search on a background thread; results land in the Hub.
-    fn civitai_search(&mut self, query: String) {
-        if self.civitai_search.is_some() {
+    /// Run a LoRA search (Civitai or HF) on a background thread; results land in the Hub.
+    fn remote_search(&mut self, source: lorahub::RemoteSource, query: String) {
+        if self.remote_search.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
         std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::civitai::api::search(
-                    &query,
-                    Some(crate::civitai::api::AssetType::Lora),
-                    30,
-                    1,
-                ))
-                .map(|resp| {
-                    resp.items
-                        .into_iter()
-                        .map(|m| {
-                            let v = m.model_versions.first();
-                            lorahub::CivitaiHit {
-                                model_id: m.id,
-                                version_id: v.map(|v| v.id),
-                                name: m.name,
-                                base_model: v.and_then(|v| v.base_model.clone()).unwrap_or_default(),
-                                downloads: m.stats.download_count,
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| format!("{e:#}"));
+            let result = match source {
+                lorahub::RemoteSource::Civitai => rt
+                    .block_on(crate::civitai::api::search(&query, Some(crate::civitai::api::AssetType::Lora), 30, 1))
+                    .map(|resp| {
+                        resp.items
+                            .into_iter()
+                            .map(|m| {
+                                let v = m.model_versions.first();
+                                lorahub::RemoteHit {
+                                    title: m.name,
+                                    subtitle: v.and_then(|v| v.base_model.clone()).unwrap_or_default(),
+                                    downloads: m.stats.download_count,
+                                    dl: lorahub::DownloadRef::Civitai { model_id: m.id, version_id: v.map(|v| v.id) },
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|e| format!("{e:#}")),
+                lorahub::RemoteSource::HuggingFace => rt
+                    .block_on(crate::hf::search::search_models(&query, 30))
+                    .map(|hits| {
+                        hits.into_iter()
+                            .map(|h| lorahub::RemoteHit {
+                                title: h.id.clone(),
+                                subtitle: h.pipeline,
+                                downloads: h.downloads,
+                                dl: lorahub::DownloadRef::Hf { repo: h.id },
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|e| format!("{e:#}")),
+            };
             let _ = tx.send(result);
         });
-        self.civitai_search = Some(rx);
+        self.remote_search = Some(rx);
     }
 
-    /// Download a Civitai LoRA on a background thread; on success rescan LOCAL.
-    fn civitai_download(&mut self, model_id: u64, version_id: Option<u64>, name: String) {
-        if self.civitai_download.is_some() {
+    /// Download a LoRA (Civitai → its cache; HF → copied into the workspace loras/
+    /// dir) on a background thread; on success rescan LOCAL.
+    fn remote_download(&mut self, dl: lorahub::DownloadRef, title: String) {
+        if self.remote_download.is_some() {
             return;
         }
+        let loras_dir = self.workspace.loras_dir();
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
         std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
-                .map(|_| name)
-                .map_err(|e| format!("{e:#}"));
+            let result = match dl {
+                lorahub::DownloadRef::Civitai { model_id, version_id } => rt
+                    .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
+                    .map(|_| title)
+                    .map_err(|e| format!("{e:#}")),
+                lorahub::DownloadRef::Hf { repo } => rt
+                    .block_on(crate::hf::search::download_lora_into(&repo, &loras_dir))
+                    .map(|_| title)
+                    .map_err(|e| format!("{e:#}")),
+            };
             let _ = tx.send(result);
         });
-        self.civitai_download = Some(rx);
+        self.remote_download = Some(rx);
     }
 
-    /// Drain the in-flight Civitai search / download into the Hub each tick.
+    /// Drain the in-flight remote search / download into the Hub each tick.
     fn drain_civitai(&mut self) {
-        if let Some(rx) = &self.civitai_search {
+        if let Some(rx) = &self.remote_search {
             match rx.try_recv() {
                 Ok(Ok(hits)) => {
-                    self.lorahub.set_civitai_hits(hits);
-                    self.civitai_search = None;
+                    self.lorahub.set_remote_hits(hits);
+                    self.remote_search = None;
                 }
                 Ok(Err(e)) => {
-                    self.lorahub.set_civitai_status(format!("✗ search failed: {e}"));
-                    self.civitai_search = None;
+                    self.lorahub.set_remote_status(format!("✗ search failed: {e}"));
+                    self.remote_search = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.civitai_search = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_search = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = &self.civitai_download {
+        if let Some(rx) = &self.remote_download {
             match rx.try_recv() {
                 Ok(Ok(name)) => {
-                    self.lorahub.set_civitai_status(format!("✓ downloaded {name} — see LOCAL"));
+                    self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL"));
                     self.lorahub.rescan();
-                    self.civitai_download = None;
+                    self.remote_download = None;
                 }
                 Ok(Err(e)) => {
-                    self.lorahub.set_civitai_status(format!("✗ download failed: {e}"));
-                    self.civitai_download = None;
+                    self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
+                    self.remote_download = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.civitai_download = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_download = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }

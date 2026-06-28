@@ -23,6 +23,65 @@ fn http() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// One HF model hit for a UI (the `plakat ui` LoRA Hub HUGGINGFACE tab).
+#[derive(Debug, Clone)]
+pub struct HfHit {
+    pub id: String,
+    pub downloads: u64,
+    pub pipeline: String,
+}
+
+/// Search HF models by `query`, newest-downloaded first. Returns the hits for a UI
+/// to render (the CLI's [`print_search`] formats the same data to stdout).
+pub async fn search_models(query: &str, limit: usize) -> Result<Vec<HfHit>> {
+    let url = reqwest::Url::parse_with_params(
+        "https://huggingface.co/api/models",
+        &[
+            ("search", query),
+            ("limit", &limit.to_string()),
+            ("sort", "downloads"),
+            ("direction", "-1"),
+        ],
+    )?;
+    let resp: Vec<ModelInfo> = http()?.get(url).send().await?.error_for_status()?.json().await?;
+    Ok(resp
+        .into_iter()
+        .map(|m| HfHit { id: m.id, downloads: m.downloads, pipeline: m.pipeline.unwrap_or_default() })
+        .collect())
+}
+
+/// Download the LoRA `.safetensors` from an HF repo and COPY it into `dest_dir`
+/// (the workspace `loras/`) so the LoRA Hub LOCAL tab picks it up. Picks the
+/// smallest `.safetensors` in the repo (LoRAs are far smaller than base weights),
+/// avoiding accidentally pulling a full checkpoint. Returns the copied path.
+pub async fn download_lora_into(repo: &str, dest_dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    let files = crate::hf::info::repo_files(repo)
+        .await
+        .map_err(|e| anyhow!("listing {repo}: {e}"))?;
+    let cand: Vec<&String> = files.iter().filter(|f| f.ends_with(".safetensors")).collect();
+    if cand.is_empty() {
+        return Err(anyhow!("{repo} has no .safetensors file"));
+    }
+    // Prefer a file whose name hints "lora"; else the first.
+    let file = cand
+        .iter()
+        .find(|f| f.to_lowercase().contains("lora"))
+        .copied()
+        .unwrap_or(cand[0]);
+
+    let cached = crate::hf::download::get_file(repo, file)
+        .await
+        .map_err(|e| anyhow!("downloading {repo}/{file}: {e}"))?;
+
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| anyhow!("creating {}: {e}", dest_dir.display()))?;
+    // Name it after the repo so collisions across repos don't clobber.
+    let stem = repo.replace('/', "__");
+    let dest = dest_dir.join(format!("{stem}.safetensors"));
+    std::fs::copy(&cached, &dest).map_err(|e| anyhow!("copying into {}: {e}", dest.display()))?;
+    Ok(dest)
+}
+
 pub async fn print_search(query: &str, limit: usize) -> Result<()> {
     let url = reqwest::Url::parse_with_params(
         "https://huggingface.co/api/models",

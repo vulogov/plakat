@@ -48,22 +48,37 @@ struct Sidecar {
 enum Tab {
     Local,
     Civitai,
+    HuggingFace,
 }
 
-/// CIVITAI tab focus: editing the query vs browsing results.
+/// A remote search source.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSource {
+    Civitai,
+    HuggingFace,
+}
+
+/// Remote-tab focus: editing the query vs browsing results.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Search,
     Results,
 }
 
-/// One Civitai search hit (filled by the App from the API).
-pub struct CivitaiHit {
-    pub model_id: u64,
-    pub version_id: Option<u64>,
-    pub name: String,
-    pub base_model: String,
+/// What the App needs to download a hit.
+#[derive(Clone)]
+pub enum DownloadRef {
+    Civitai { model_id: u64, version_id: Option<u64> },
+    Hf { repo: String },
+}
+
+/// One remote search hit (filled by the App from the Civitai / HF API).
+pub struct RemoteHit {
+    pub title: String,
+    /// Base model (Civitai) or pipeline tag (HF), shown dim.
+    pub subtitle: String,
     pub downloads: u64,
+    pub dl: DownloadRef,
 }
 
 /// What the App should do after a key.
@@ -72,10 +87,10 @@ pub enum LoraHubAction {
     /// `A` — toggle this LoRA in Chat's active set (App reloads the model).
     /// `compatible` is false when its family clashes with the loaded model.
     ToggleApply { path: PathBuf, compatible: bool },
-    /// CIVITAI Enter — run a search (App does the async call).
-    Search(String),
-    /// CIVITAI `D`/Enter on a result — download it (App does the async call).
-    Download { model_id: u64, version_id: Option<u64>, name: String },
+    /// Remote Enter — run a search (App does the async call).
+    Search { source: RemoteSource, query: String },
+    /// Remote `D`/Enter on a result — download it (App does the async call).
+    Download { dl: DownloadRef, title: String },
 }
 
 pub struct LoraHubState {
@@ -86,13 +101,13 @@ pub struct LoraHubState {
     loaded_family: Option<BaseFamily>,
     /// Paths currently applied to Chat (mirrored from the App each tick).
     applied: std::collections::HashSet<PathBuf>,
-    // ── CIVITAI tab ──
+    // ── Remote (CIVITAI / HUGGINGFACE) tabs ──
     tab: Tab,
     phase: Phase,
     query: String,
-    hits: Vec<CivitaiHit>,
+    hits: Vec<RemoteHit>,
     hit_sel: usize,
-    civitai_status: String,
+    remote_status: String,
 }
 
 impl LoraHubState {
@@ -108,26 +123,33 @@ impl LoraHubState {
             query: String::new(),
             hits: Vec::new(),
             hit_sel: 0,
-            civitai_status: "type a query · Enter to search".into(),
+            remote_status: "type a query · Enter to search".into(),
         };
         s.rescan();
         s
     }
 
-    /// True while the CIVITAI query box is focused — the App routes all keys here.
+    /// True while a remote query box is focused — the App routes all keys here.
     pub fn captures_input(&self) -> bool {
-        self.tab == Tab::Civitai && self.phase == Phase::Search
+        self.tab != Tab::Local && self.phase == Phase::Search
     }
 
     /// The App sets the search results (and clears the searching status).
-    pub fn set_civitai_hits(&mut self, hits: Vec<CivitaiHit>) {
-        self.civitai_status = if hits.is_empty() { "no results".into() } else { format!("{} results", hits.len()) };
+    pub fn set_remote_hits(&mut self, hits: Vec<RemoteHit>) {
+        self.remote_status = if hits.is_empty() { "no results".into() } else { format!("{} results", hits.len()) };
         self.hits = hits;
         self.hit_sel = 0;
     }
 
-    pub fn set_civitai_status(&mut self, status: impl Into<String>) {
-        self.civitai_status = status.into();
+    pub fn set_remote_status(&mut self, status: impl Into<String>) {
+        self.remote_status = status.into();
+    }
+
+    fn source(&self) -> RemoteSource {
+        match self.tab {
+            Tab::HuggingFace => RemoteSource::HuggingFace,
+            _ => RemoteSource::Civitai,
+        }
     }
 
     /// The App calls this each tick with the loaded model's family so the
@@ -172,7 +194,22 @@ impl LoraHubState {
     pub fn handle_key(&mut self, key: KeyEvent) -> LoraHubAction {
         match self.tab {
             Tab::Local => self.handle_local_key(key),
-            Tab::Civitai => self.handle_civitai_key(key),
+            _ => self.handle_remote_key(key),
+        }
+    }
+
+    /// Move to an adjacent tab (LOCAL ↔ CIVITAI ↔ HUGGINGFACE), resetting the remote
+    /// view to its search box.
+    fn switch_tab(&mut self, delta: i32) {
+        let order = [Tab::Local, Tab::Civitai, Tab::HuggingFace];
+        let i = order.iter().position(|t| *t == self.tab).unwrap_or(0) as i32;
+        let n = order.len() as i32;
+        self.tab = order[(i + delta).rem_euclid(n) as usize];
+        if self.tab != Tab::Local {
+            self.phase = Phase::Search;
+            self.query.clear();
+            self.hits.clear();
+            self.remote_status = "type a query · Enter to search".into();
         }
     }
 
@@ -181,11 +218,8 @@ impl LoraHubState {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
-            // → switches to the CIVITAI search tab.
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.tab = Tab::Civitai;
-                self.phase = Phase::Search;
-            }
+            KeyCode::Right | KeyCode::Char('l') => self.switch_tab(1),
+            KeyCode::Left | KeyCode::Char('h') => self.switch_tab(-1),
             KeyCode::Char('a' | 'A') | KeyCode::Enter => {
                 if let Some(l) = self.loras.get(self.selected) {
                     let compatible = self.compatible(l) != Some(false);
@@ -199,7 +233,7 @@ impl LoraHubState {
         LoraHubAction::None
     }
 
-    fn handle_civitai_key(&mut self, key: KeyEvent) -> LoraHubAction {
+    fn handle_remote_key(&mut self, key: KeyEvent) -> LoraHubAction {
         match self.phase {
             // SEARCH: a tiny single-line query editor.
             Phase::Search => match key.code {
@@ -210,8 +244,8 @@ impl LoraHubState {
                 }
                 KeyCode::Enter => {
                     self.phase = Phase::Results;
-                    self.civitai_status = "searching…".into();
-                    return LoraHubAction::Search(self.query.clone());
+                    self.remote_status = "searching…".into();
+                    return LoraHubAction::Search { source: self.source(), query: self.query.clone() };
                 }
                 _ => {}
             },
@@ -223,18 +257,13 @@ impl LoraHubState {
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.hit_sel = self.hit_sel.saturating_sub(1),
-                // edit the query again
                 KeyCode::Char('/') => self.phase = Phase::Search,
-                // ← back to LOCAL
-                KeyCode::Left | KeyCode::Char('h') => self.tab = Tab::Local,
+                KeyCode::Left | KeyCode::Char('h') => self.switch_tab(-1),
+                KeyCode::Right | KeyCode::Char('l') => self.switch_tab(1),
                 KeyCode::Char('d' | 'D') | KeyCode::Enter => {
                     if let Some(h) = self.hits.get(self.hit_sel) {
-                        self.civitai_status = format!("downloading {}…", h.name);
-                        return LoraHubAction::Download {
-                            model_id: h.model_id,
-                            version_id: h.version_id,
-                            name: h.name.clone(),
-                        };
+                        self.remote_status = format!("downloading {}…", h.title);
+                        return LoraHubAction::Download { dl: h.dl.clone(), title: h.title.clone() };
                     }
                 }
                 _ => {}
@@ -267,7 +296,7 @@ impl LoraHubState {
                 self.render_list(f, cols[0]);
                 self.render_detail(f, cols[1]);
             }
-            Tab::Civitai => self.render_civitai(f, rows[1]),
+            _ => self.render_remote(f, rows[1]),
         }
     }
 
@@ -279,22 +308,25 @@ impl LoraHubState {
                 Span::styled(format!(" {name} "), Style::new().fg(Color::Gray))
             }
         };
-        let hint = match self.tab {
-            Tab::Local => "  →/CIVITAI",
-            Tab::Civitai => "  ←/LOCAL · / edit query · D download",
+        let hint = if self.tab == Tab::Local {
+            "  →/← switch tab"
+        } else {
+            "  ←/→ tab · / edit query · D download"
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 tab("LOCAL", self.tab == Tab::Local),
                 Span::raw(" "),
                 tab("CIVITAI", self.tab == Tab::Civitai),
+                Span::raw(" "),
+                tab("HUGGINGFACE", self.tab == Tab::HuggingFace),
                 Span::styled(hint, Style::new().fg(Color::DarkGray)),
             ])),
             area,
         );
     }
 
-    fn render_civitai(&self, f: &mut Frame, area: Rect) {
+    fn render_remote(&self, f: &mut Frame, area: Rect) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -307,9 +339,17 @@ impl LoraHubState {
             spans.push(Span::styled(" ", Style::new().bg(Color::Cyan)));
         }
         let qcolor = if editing { Color::Cyan } else { Color::DarkGray };
+        let src = match self.tab {
+            Tab::HuggingFace => "HuggingFace",
+            _ => "Civitai",
+        };
         f.render_widget(
-            Paragraph::new(Line::from(spans))
-                .block(Block::default().borders(Borders::ALL).title(format!(" Civitai LoRA · {} ", self.civitai_status)).border_style(Style::new().fg(qcolor))),
+            Paragraph::new(Line::from(spans)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {src} LoRA · {} ", self.remote_status))
+                    .border_style(Style::new().fg(qcolor)),
+            ),
             rows[0],
         );
 
@@ -328,11 +368,14 @@ impl LoraHubState {
         }
         let mut lines: Vec<Line> = Vec::new();
         for (i, h) in self.hits.iter().enumerate() {
-            let fam = family_from_str(&h.base_model);
-            let (glyph, gcolor) = match (fam, self.loaded_family) {
-                (Some(a), Some(b)) if a == b => ("✓", Color::Green),
-                (Some(_), Some(_)) => ("✗", Color::Red),
-                _ => ("·", Color::DarkGray),
+            // Civitai hits carry a base model → show compatibility; HF hits don't.
+            let (glyph, gcolor) = match family_from_str(&h.subtitle) {
+                Some(a) => match self.loaded_family {
+                    Some(b) if a == b => ("✓", Color::Green),
+                    Some(_) => ("✗", Color::Red),
+                    None => ("·", Color::DarkGray),
+                },
+                None => ("·", Color::DarkGray),
             };
             let name_style = if i == self.hit_sel && self.phase == Phase::Results {
                 Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
@@ -341,9 +384,9 @@ impl LoraHubState {
             };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {glyph} "), Style::new().fg(gcolor).add_modifier(Modifier::BOLD)),
-                Span::styled(trunc(&h.name, 30), name_style),
+                Span::styled(trunc(&h.title, 32), name_style),
                 Span::styled(
-                    format!("  {}  ↓{}", if h.base_model.is_empty() { "?" } else { &h.base_model }, compact_count(h.downloads)),
+                    format!("  {}  ↓{}", if h.subtitle.is_empty() { "?" } else { &h.subtitle }, compact_count(h.downloads)),
                     Style::new().fg(Color::DarkGray),
                 ),
             ]));
@@ -672,47 +715,61 @@ mod tests {
     }
 
     #[test]
-    fn civitai_tab_search_and_download_state_machine() {
+    fn remote_tabs_search_and_download_state_machine() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
         let ch = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
 
-        let d = tmp("civitai");
+        let d = tmp("remote");
         let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
         assert!(!s.captures_input());
 
-        // → enters the CIVITAI search box (captures input).
+        // → enters CIVITAI (search box captures input).
         s.handle_key(key(KeyCode::Right));
         assert!(s.captures_input());
         for c in "water".chars() {
             s.handle_key(ch(c));
         }
-        // Enter runs the search and switches to results browsing.
         match s.handle_key(key(KeyCode::Enter)) {
-            LoraHubAction::Search(q) => assert_eq!(q, "water"),
-            _ => panic!("expected Search"),
+            LoraHubAction::Search { source: RemoteSource::Civitai, query } => assert_eq!(query, "water"),
+            _ => panic!("expected Civitai Search"),
         }
         assert!(!s.captures_input(), "Results phase doesn't capture input");
 
-        // The App delivers results.
-        s.set_civitai_hits(vec![CivitaiHit {
-            model_id: 42,
-            version_id: Some(7),
-            name: "Watercolor".into(),
-            base_model: "SDXL 1.0".into(),
+        s.set_remote_hits(vec![RemoteHit {
+            title: "Watercolor".into(),
+            subtitle: "SDXL 1.0".into(),
             downloads: 12345,
+            dl: DownloadRef::Civitai { model_id: 42, version_id: Some(7) },
         }]);
-        // D downloads the selected hit.
         match s.handle_key(ch('D')) {
-            LoraHubAction::Download { model_id, version_id, name } => {
+            LoraHubAction::Download { dl: DownloadRef::Civitai { model_id, version_id }, title } => {
                 assert_eq!((model_id, version_id), (42, Some(7)));
-                assert_eq!(name, "Watercolor");
+                assert_eq!(title, "Watercolor");
             }
-            _ => panic!("expected Download"),
+            _ => panic!("expected Civitai Download"),
         }
-        // ← returns to LOCAL.
-        s.handle_key(key(KeyCode::Left));
-        assert!(!s.captures_input());
+
+        // → again reaches HUGGINGFACE; its search yields an Hf source.
+        s.handle_key(key(KeyCode::Right));
+        assert!(s.captures_input());
+        for c in "anime".chars() {
+            s.handle_key(ch(c));
+        }
+        match s.handle_key(key(KeyCode::Enter)) {
+            LoraHubAction::Search { source: RemoteSource::HuggingFace, query } => assert_eq!(query, "anime"),
+            _ => panic!("expected HF Search"),
+        }
+        s.set_remote_hits(vec![RemoteHit {
+            title: "user/anime-lora".into(),
+            subtitle: "text-to-image".into(),
+            downloads: 99,
+            dl: DownloadRef::Hf { repo: "user/anime-lora".into() },
+        }]);
+        match s.handle_key(key(KeyCode::Enter)) {
+            LoraHubAction::Download { dl: DownloadRef::Hf { repo }, .. } => assert_eq!(repo, "user/anime-lora"),
+            _ => panic!("expected HF Download"),
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
