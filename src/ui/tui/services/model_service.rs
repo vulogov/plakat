@@ -43,7 +43,7 @@ pub struct GenJob {
 
 /// A request to the model thread.
 pub enum ModelCommand {
-    Load(String),
+    Load { alias: String, loras: Vec<crate::pipelines::lora::LoraSpec> },
     Unload,
     Generate(GenJob),
     Shutdown,
@@ -94,8 +94,9 @@ impl ModelService {
         Self { cmd_tx, msg_rx, handle: Some(handle) }
     }
 
-    pub fn load(&self, alias: impl Into<String>) {
-        let _ = self.cmd_tx.send(ModelCommand::Load(alias.into()));
+    /// Load `alias`, merging `loras` into the weights (LoRA application is load-time).
+    pub fn load(&self, alias: impl Into<String>, loras: Vec<crate::pipelines::lora::LoraSpec>) {
+        let _ = self.cmd_tx.send(ModelCommand::Load { alias: alias.into(), loras });
     }
 
     pub fn unload(&self) {
@@ -156,7 +157,7 @@ fn model_loop(
     let mut loaded: Option<(String, t2i::Pipeline)> = None;
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
-            ModelCommand::Load(alias) => {
+            ModelCommand::Load { alias, loras } => {
                 if let Err(msg) = t2i_load_check(&alias) {
                     let _ = msg_tx.send(ModelMessage::Error(msg));
                     continue;
@@ -168,7 +169,7 @@ fn model_loop(
                 let req = t2i::LoadRequest {
                     model: alias.clone(),
                     device: device.clone(),
-                    loras: Vec::new(),
+                    loras,
                     lora_scale: 1.0,
                     use_refiner: false,
                     embeddings: Vec::new(),

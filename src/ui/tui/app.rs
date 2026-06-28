@@ -27,7 +27,7 @@ use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
-use super::screens::lorahub::LoraHubState;
+use super::screens::lorahub::{self, LoraHubState};
 use super::screens::models::ModelsState;
 use super::screens::people::{self, PeopleState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
@@ -37,6 +37,9 @@ use super::workspace::Workspace;
 /// img2img strength used when the user opts INTO image-anchored refinement via
 /// `/strength` without a value (or as the default for that mode).
 const DEFAULT_ANCHOR_STRENGTH: f32 = 0.6;
+
+/// Per-LoRA scale used when applying a LoRA from the Hub to Chat.
+const APPLY_LORA_SCALE: f32 = 0.8;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -148,6 +151,9 @@ pub struct App {
     fixed_seed: Option<u64>,
     // The seed used by the in-flight turn (recorded as base_seed on a fresh Done).
     active_seed: u64,
+    // LoRAs applied to Chat generation (load-time merge). Changing the set reloads
+    // the current model. Paths into the LoRA Hub's scanned dirs.
+    active_loras: Vec<std::path::PathBuf>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -199,6 +205,7 @@ impl App {
             scenario_events: None,
             portrait_run: None,
             portrait_prompt: String::new(),
+            active_loras: Vec::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -218,7 +225,7 @@ impl App {
         if super::services::model_service::t2i_load_check(&default).is_ok()
             && crate::hf::download::is_cached(&default)
         {
-            self.model_svc.load(default);
+            self.load_model(default);
         }
     }
 
@@ -271,10 +278,11 @@ impl App {
             self.sync_history();
             self.sync_people();
             self.drain_portrait();
-            // Keep the LoRA Hub's compatibility column in sync with the loaded model.
+            // Keep the LoRA Hub's compatibility column + applied marks in sync.
             self.lorahub.set_loaded_family(
                 self.models.loaded_alias().map(crate::preset::discovery::BaseFamily::from_model_arg),
             );
+            self.lorahub.set_applied(&self.active_loras);
         }
         Ok(())
     }
@@ -394,7 +402,7 @@ impl App {
                 // background ModelService (the event loop stays live during load).
                 KeyCode::Char('l' | 'L') => {
                     if let Some(alias) = self.models.selected_alias() {
-                        self.model_svc.load(alias);
+                        self.load_model(alias);
                     }
                 }
                 KeyCode::Char('u' | 'U') => self.model_svc.unload(),
@@ -417,8 +425,47 @@ impl App {
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
                 people::PeopleAction::None => {}
             },
-            ActiveScreen::LoraHub => self.lorahub.handle_key(key),
+            ActiveScreen::LoraHub => {
+                if let lorahub::LoraHubAction::ToggleApply { path, compatible } = self.lorahub.handle_key(key) {
+                    self.toggle_lora(path, compatible);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Load (or reload) `alias` with the currently-applied LoRAs merged in.
+    fn load_model(&mut self, alias: impl Into<String>) {
+        let specs: Vec<crate::pipelines::lora::LoraSpec> = self
+            .active_loras
+            .iter()
+            .map(|p| crate::pipelines::lora::LoraSpec {
+                source: crate::pipelines::lora::LoraSource::Local(p.clone()),
+                scale: APPLY_LORA_SCALE,
+            })
+            .collect();
+        self.model_svc.load(alias, specs);
+    }
+
+    /// Toggle a LoRA in Chat's active set (LoRA Hub `A`). Applying reloads the loaded
+    /// model so the LoRA is merged in; an incompatible LoRA is refused with a note.
+    fn toggle_lora(&mut self, path: std::path::PathBuf, compatible: bool) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lora").to_string();
+        if let Some(pos) = self.active_loras.iter().position(|p| p == &path) {
+            self.active_loras.remove(pos);
+            self.chat.push_system(format!("LoRA off: {name} ({} active)", self.active_loras.len()));
+        } else {
+            if !compatible {
+                self.chat.push_system(format!("⚠ {name} doesn't match the loaded model — not applied"));
+                return;
+            }
+            self.active_loras.push(path);
+            self.chat.push_system(format!("LoRA on: {name} ({} active)", self.active_loras.len()));
+        }
+        // Reload the loaded model with the new set so the merge takes effect.
+        if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
+            self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
+            self.load_model(alias);
         }
     }
 
@@ -1125,6 +1172,18 @@ mod tests {
         assert_eq!(a.fixed_seed, None);
         // every command pushed a system note; nothing generated.
         assert!(a.chat.history.iter().all(|e| e.system));
+    }
+
+    #[test]
+    fn toggle_lora_applies_removes_and_refuses_incompatible() {
+        let mut a = test_app(); // no model loaded → no reload side-effect
+        let p1 = std::path::PathBuf::from("/tmp/style.safetensors");
+        a.toggle_lora(p1.clone(), true);
+        assert_eq!(a.active_loras, vec![p1.clone()], "compatible LoRA applied");
+        a.toggle_lora(p1.clone(), true);
+        assert!(a.active_loras.is_empty(), "re-toggle removes it");
+        a.toggle_lora("/tmp/bad.safetensors".into(), false);
+        assert!(a.active_loras.is_empty(), "incompatible LoRA is refused");
     }
 
     #[test]

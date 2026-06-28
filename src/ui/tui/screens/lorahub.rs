@@ -43,17 +43,33 @@ struct Sidecar {
     notes: String,
 }
 
+/// What the App should do after a key.
+pub enum LoraHubAction {
+    None,
+    /// `A` — toggle this LoRA in Chat's active set (App reloads the model).
+    /// `compatible` is false when its family clashes with the loaded model.
+    ToggleApply { path: PathBuf, compatible: bool },
+}
+
 pub struct LoraHubState {
     dirs: Vec<(PathBuf, String)>,
     loras: Vec<LoraInfo>,
     selected: usize,
     /// Family of the currently-loaded model (set by the App), for compatibility.
     loaded_family: Option<BaseFamily>,
+    /// Paths currently applied to Chat (mirrored from the App each tick).
+    applied: std::collections::HashSet<PathBuf>,
 }
 
 impl LoraHubState {
     pub fn new(dirs: Vec<(PathBuf, String)>) -> Self {
-        let mut s = Self { dirs, loras: Vec::new(), selected: 0, loaded_family: None };
+        let mut s = Self {
+            dirs,
+            loras: Vec::new(),
+            selected: 0,
+            loaded_family: None,
+            applied: std::collections::HashSet::new(),
+        };
         s.rescan();
         s
     }
@@ -62,6 +78,15 @@ impl LoraHubState {
     /// compatibility column reflects what's actually loaded.
     pub fn set_loaded_family(&mut self, family: Option<BaseFamily>) {
         self.loaded_family = family;
+    }
+
+    /// The App calls this each tick with the paths currently applied to Chat.
+    pub fn set_applied(&mut self, paths: &[PathBuf]) {
+        self.applied = paths.iter().cloned().collect();
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.loras.get(self.selected).map(|l| l.path.clone())
     }
 
     pub fn rescan(&mut self) {
@@ -88,13 +113,22 @@ impl LoraHubState {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
+    pub fn handle_key(&mut self, key: KeyEvent) -> LoraHubAction {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
+            KeyCode::Char('a' | 'A') | KeyCode::Enter => {
+                if let Some(l) = self.loras.get(self.selected) {
+                    let compatible = self.compatible(l) != Some(false);
+                    if let Some(path) = self.selected_path() {
+                        return LoraHubAction::ToggleApply { path, compatible };
+                    }
+                }
+            }
             _ => {}
         }
+        LoraHubAction::None
     }
 
     /// Compatibility of a LoRA vs the loaded model: Some(true)=match, Some(false)=
@@ -121,9 +155,11 @@ impl LoraHubState {
             .map(family_label)
             .map(|s| format!(" vs {s} "))
             .unwrap_or_else(|| " no model loaded ".into());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" LoRA · LOCAL ({}) ·{loaded}", self.loras.len()));
+        let applied_n = self.applied.len();
+        let block = Block::default().borders(Borders::ALL).title(format!(
+            " LoRA · LOCAL ({}) ·{loaded}· [A] apply ({applied_n} on) ",
+            self.loras.len()
+        ));
         let inner = block.inner(area);
         f.render_widget(block, area);
         if self.loras.is_empty() {
@@ -147,9 +183,16 @@ impl LoraHubState {
             } else {
                 Style::new().fg(Color::White)
             };
+            // ★ = applied to Chat.
+            let applied = if self.applied.contains(&l.path) {
+                Span::styled("★", Style::new().fg(Color::Yellow))
+            } else {
+                Span::raw(" ")
+            };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {glyph} "), Style::new().fg(gcolor).add_modifier(Modifier::BOLD)),
-                Span::styled(trunc(&l.name, 26), name_style),
+                applied,
+                Span::styled(trunc(&l.name, 24), name_style),
                 Span::styled(
                     format!("  {}", l.family.map(family_label).unwrap_or("?")),
                     Style::new().fg(Color::DarkGray),
