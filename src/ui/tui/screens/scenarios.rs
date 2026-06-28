@@ -322,6 +322,21 @@ impl ScenariosState {
     }
 
     /// Load the selected file into the editor buffer.
+    /// Open a specific file in the editor (used by the Prompt Workspace to hand a
+    /// freshly-compiled scenario straight into the Scenarios EDITOR).
+    pub fn open_path_in_editor(&mut self, path: PathBuf) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                self.editor = text_area_from(&text);
+                self.editing_path = Some(path);
+                self.mode = Mode::Editor;
+                self.dirty = false;
+                self.status.clear();
+            }
+            Err(e) => self.status = format!("✗ Could not read file: {e}"),
+        }
+    }
+
     fn open_selected_in_editor(&mut self) {
         let Some(path) = self.selected_path() else {
             self.status = "No scenario selected to edit.".into();

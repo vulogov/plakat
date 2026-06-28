@@ -30,6 +30,7 @@ use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::lorahub::{self, LoraHubState};
 use super::screens::models::ModelsState;
 use super::screens::people::{self, PeopleState};
+use super::screens::prompts::{self, PromptsState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
@@ -101,7 +102,13 @@ impl ActiveScreen {
     fn implemented(self) -> bool {
         matches!(
             self,
-            Self::Chat | Self::Models | Self::Scenarios | Self::History | Self::People | Self::LoraHub
+            Self::Chat
+                | Self::Models
+                | Self::Scenarios
+                | Self::History
+                | Self::People
+                | Self::LoraHub
+                | Self::PromptWorkspace
         )
     }
 }
@@ -121,6 +128,7 @@ pub struct App {
     pub history: HistoryState,
     pub people: PeopleState,
     pub lorahub: LoraHubState,
+    pub prompts: PromptsState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -167,6 +175,8 @@ pub struct App {
     remote_download: Option<Receiver<Result<String, String>>>,
     // In-flight LLM LoRA assessment: (item key, assessment text).
     lora_assess: Option<Receiver<(String, String)>>,
+    // In-flight Prompt Workspace LLM compile.
+    prompt_compile: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -185,11 +195,13 @@ impl App {
             (crate::preset::discovery::default_cache_root(), "global".into()),
             (crate::civitai::download::cache_root(), "civitai".into()),
         ]);
+        let prompts = PromptsState::new(workspace.prompts_dir());
         Self {
             scenarios,
             history,
             people,
             lorahub,
+            prompts,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -214,6 +226,7 @@ impl App {
             remote_search: None,
             remote_download: None,
             lora_assess: None,
+            prompt_compile: None,
             active_loras: Vec::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
@@ -293,8 +306,33 @@ impl App {
             );
             self.lorahub.set_applied(&self.active_loras);
             self.drain_civitai();
+            self.sync_prompts();
+            self.drain_prompt_compile();
         }
         Ok(())
+    }
+
+    fn drain_prompt_compile(&mut self) {
+        if let Some(rx) = &self.prompt_compile {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.prompts.compiling = false;
+                    match result {
+                        Ok(hjson) => {
+                            self.prompts.compiled = hjson;
+                            self.prompts.compile_err = None;
+                        }
+                        Err(e) => self.prompts.compile_err = Some(e),
+                    }
+                    self.prompt_compile = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.prompts.compiling = false;
+                    self.prompt_compile = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
     }
 
     /// Lazily decode the selected person's primary reference photo into a preview,
@@ -398,6 +436,13 @@ impl App {
             return;
         }
 
+        // ── The Prompt Workspace editor owns the keyboard while focused. ──
+        if self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input() {
+            let action = self.prompts.handle_key(key);
+            self.handle_prompts_action(action);
+            return;
+        }
+
         // ── Non-input screens: plain digits switch, q quits, else delegate. ──
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
@@ -446,7 +491,90 @@ impl App {
                 let action = self.lorahub.handle_key(key);
                 self.handle_lorahub_action(action);
             }
+            ActiveScreen::PromptWorkspace => {
+                let action = self.prompts.handle_key(key);
+                self.handle_prompts_action(action);
+            }
             _ => {}
+        }
+    }
+
+    fn handle_prompts_action(&mut self, action: prompts::PromptsAction) {
+        match action {
+            prompts::PromptsAction::None => {}
+            prompts::PromptsAction::LlmCompile(text) => self.prompt_llm_compile(text),
+            prompts::PromptsAction::OpenInScenarios { name, hjson } => {
+                self.open_compiled_in_scenarios(name, hjson)
+            }
+        }
+    }
+
+    /// Deterministic structural compile (no LLM) of the Prompt Workspace buffer,
+    /// recomputed only when the text changed. compile_to_string with no_enhance +
+    /// no_negative does no network, so a `block_on` here is instant.
+    fn sync_prompts(&mut self) {
+        if self.screen != ActiveScreen::PromptWorkspace || self.prompts.compiling {
+            return;
+        }
+        let src = self.prompts.editor_text();
+        if self.prompts.last_compiled_src.as_deref() == Some(src.as_str()) {
+            return;
+        }
+        let opts = self.compile_opts(&self.prompts.buffer_name(), true);
+        match self.rt.block_on(crate::compile::compile_to_string(&src, &opts)) {
+            Ok(hjson) => {
+                self.prompts.compiled = hjson;
+                self.prompts.compile_err = None;
+            }
+            Err(e) => self.prompts.compile_err = Some(format!("{e:#}")),
+        }
+        self.prompts.last_compiled_src = Some(src);
+    }
+
+    /// Build compile options. `structural` → no LLM (deterministic); else the full
+    /// LLM compile using the workspace enhancer provider.
+    fn compile_opts(&self, name: &str, structural: bool) -> crate::compile::CompileOpts {
+        crate::compile::CompileOpts {
+            provider: if structural { "none".into() } else { self.workspace.config.enhancer.clone() },
+            default_model: self.workspace.config.default_model.clone(),
+            no_enhance: structural,
+            no_negative: structural,
+            system_override: None,
+            cache: !structural,
+            parallel: 0,
+            input_name: name.to_string(),
+        }
+    }
+
+    /// Run the full LLM compile on a background thread; result lands in the pane.
+    fn prompt_llm_compile(&mut self, text: String) {
+        if self.prompt_compile.is_some() {
+            return;
+        }
+        let opts = self.compile_opts(&self.prompts.buffer_name(), false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::compile::compile_to_string(&text, &opts))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.prompt_compile = Some(rx);
+    }
+
+    /// `Ctrl-O` — save the compiled HJSON into the scenarios dir and open it in the
+    /// Scenarios EDITOR.
+    fn open_compiled_in_scenarios(&mut self, name: String, hjson: String) {
+        let path = self.workspace.scenarios_dir().join(format!("{name}.hjson"));
+        let _ = std::fs::create_dir_all(self.workspace.scenarios_dir());
+        match std::fs::write(&path, hjson) {
+            Ok(()) => {
+                self.scenarios.rescan();
+                self.scenarios.open_path_in_editor(path);
+                self.screen = ActiveScreen::Scenarios;
+            }
+            Err(e) => self.output.push(format!("✗ could not write scenario: {e}")),
         }
     }
 
@@ -1134,6 +1262,7 @@ impl App {
             ActiveScreen::History => self.history.render(f, area),
             ActiveScreen::People => self.people.render(f, area),
             ActiveScreen::LoraHub => self.lorahub.render(f, area),
+            ActiveScreen::PromptWorkspace => self.prompts.render(f, area),
             other => {
                 let body = format!("[{}] — coming in a later release (RFC TUI-1).", other.title());
                 let block = Block::default().borders(Borders::ALL).title(other.title());
@@ -1147,7 +1276,8 @@ impl App {
         // advertise only the input-safe switches.
         let input_mode = self.screen == ActiveScreen::Chat
             || (self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input())
-            || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input());
+            || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input())
+            || (self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input());
         let nav = if input_mode {
             "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
@@ -1362,7 +1492,8 @@ mod tests {
         assert!(ActiveScreen::History.implemented());
         assert!(ActiveScreen::People.implemented());
         assert!(ActiveScreen::LoraHub.implemented());
-        assert!(!ActiveScreen::PromptWorkspace.implemented());
+        assert!(ActiveScreen::PromptWorkspace.implemented());
+        assert!(!ActiveScreen::Canvas.implemented());
         assert_eq!(ActiveScreen::ALL.len(), 8);
     }
 }
