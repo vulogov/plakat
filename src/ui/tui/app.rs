@@ -165,6 +165,8 @@ pub struct App {
     // In-flight remote (Civitai / HF) search + download for the LoRA Hub.
     remote_search: Option<Receiver<Result<Vec<lorahub::RemoteHit>, String>>>,
     remote_download: Option<Receiver<Result<String, String>>>,
+    // In-flight LLM LoRA assessment: (item key, assessment text).
+    lora_assess: Option<Receiver<(String, String)>>,
 }
 
 impl App {
@@ -211,6 +213,7 @@ impl App {
             portrait_prompt: String::new(),
             remote_search: None,
             remote_download: None,
+            lora_assess: None,
             active_loras: Vec::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
@@ -453,7 +456,28 @@ impl App {
             lorahub::LoraHubAction::ToggleApply { path, compatible } => self.toggle_lora(path, compatible),
             lorahub::LoraHubAction::Search { source, query } => self.remote_search(source, query),
             lorahub::LoraHubAction::Download { dl, title } => self.remote_download(dl, title),
+            lorahub::LoraHubAction::Assess { key, prompt } => self.assess_lora(key, prompt),
         }
+    }
+
+    /// Ask the LLM (workspace enhancer provider, resolved to a concrete one so the
+    /// custom system prompt is honoured) to assess a LoRA, on a background thread.
+    fn assess_lora(&mut self, key: String, prompt: String) {
+        if self.lora_assess.is_some() {
+            return;
+        }
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You are a concise assistant describing Stable Diffusion \
+                LoRAs. Reply in ONE plain sentence, no preamble, no markdown.";
+            let text = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &prompt, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_else(|e| format!("(assessment failed: {e:#})"));
+            let _ = tx.send((key, text.trim().to_string()));
+        });
+        self.lora_assess = Some(rx);
     }
 
     /// Run a LoRA search (Civitai or HF) on a background thread; results land in the Hub.
@@ -554,6 +578,16 @@ impl App {
                     self.remote_download = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_download = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.lora_assess {
+            match rx.try_recv() {
+                Ok((key, text)) => {
+                    self.lorahub.set_assessment(key, text);
+                    self.lora_assess = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_assess = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }

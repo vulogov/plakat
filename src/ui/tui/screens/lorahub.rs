@@ -91,6 +91,9 @@ pub enum LoraHubAction {
     Search { source: RemoteSource, query: String },
     /// Remote `D`/Enter on a result — download it (App does the async call).
     Download { dl: DownloadRef, title: String },
+    /// `R` — ask the LLM to assess the selected LoRA. `key` identifies the item
+    /// (path for LOCAL, "hit:title" for remote); `prompt` is the user message.
+    Assess { key: String, prompt: String },
 }
 
 pub struct LoraHubState {
@@ -108,6 +111,9 @@ pub struct LoraHubState {
     hits: Vec<RemoteHit>,
     hit_sel: usize,
     remote_status: String,
+    /// LLM assessments keyed by item key; `assessing` is the in-flight key.
+    assessments: HashMap<String, String>,
+    assessing: Option<String>,
 }
 
 impl LoraHubState {
@@ -124,9 +130,19 @@ impl LoraHubState {
             hits: Vec::new(),
             hit_sel: 0,
             remote_status: "type a query · Enter to search".into(),
+            assessments: HashMap::new(),
+            assessing: None,
         };
         s.rescan();
         s
+    }
+
+    /// The App delivers an LLM assessment for `key` (or an error string).
+    pub fn set_assessment(&mut self, key: String, text: String) {
+        if self.assessing.as_deref() == Some(key.as_str()) {
+            self.assessing = None;
+        }
+        self.assessments.insert(key, text);
     }
 
     /// True while a remote query box is focused — the App routes all keys here.
@@ -218,6 +234,21 @@ impl LoraHubState {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
+            // R — LLM assessment of the selected LoRA.
+            KeyCode::Char('R') => {
+                if let Some(l) = self.loras.get(self.selected) {
+                    let key = l.path.display().to_string();
+                    let prompt = format!(
+                        "Stable Diffusion LoRA file '{}', base model {}, trigger words: {}. \
+                         In ONE sentence say what this LoRA is for and when to use it.",
+                        l.name,
+                        l.family.map(family_label).unwrap_or("unknown"),
+                        if l.triggers.is_empty() { "(none)".into() } else { l.triggers.join(", ") },
+                    );
+                    self.assessing = Some(key.clone());
+                    return LoraHubAction::Assess { key, prompt };
+                }
+            }
             KeyCode::Right | KeyCode::Char('l') => self.switch_tab(1),
             KeyCode::Left | KeyCode::Char('h') => self.switch_tab(-1),
             KeyCode::Char('a' | 'A') | KeyCode::Enter => {
@@ -258,6 +289,21 @@ impl LoraHubState {
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.hit_sel = self.hit_sel.saturating_sub(1),
                 KeyCode::Char('/') => self.phase = Phase::Search,
+                // R — LLM assessment of the selected search hit.
+                KeyCode::Char('R') => {
+                    if let Some(h) = self.hits.get(self.hit_sel) {
+                        let key = format!("hit:{}", h.title);
+                        let prompt = format!(
+                            "Stable Diffusion LoRA '{}' ({}, {} downloads). In ONE sentence, \
+                             what is it and when would you use it?",
+                            h.title,
+                            if h.subtitle.is_empty() { "unknown base".into() } else { h.subtitle.clone() },
+                            h.downloads,
+                        );
+                        self.assessing = Some(key.clone());
+                        return LoraHubAction::Assess { key, prompt };
+                    }
+                }
                 KeyCode::Left | KeyCode::Char('h') => self.switch_tab(-1),
                 KeyCode::Right | KeyCode::Char('l') => self.switch_tab(1),
                 KeyCode::Char('d' | 'D') | KeyCode::Enter => {
@@ -329,8 +375,9 @@ impl LoraHubState {
     fn render_remote(&self, f: &mut Frame, area: Rect) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(3)])
             .split(area);
+        self.render_assess_footer(f, rows[2]);
 
         // Query box (block cursor while editing).
         let editing = self.phase == Phase::Search;
@@ -394,6 +441,23 @@ impl LoraHubState {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    /// Footer showing the selected hit's LLM assessment (`R`).
+    fn render_assess_footer(&self, f: &mut Frame, area: Rect) {
+        let block = Block::default().borders(Borders::ALL).title(" ✦ assess [R] ");
+        let key = self.hits.get(self.hit_sel).map(|h| format!("hit:{}", h.title));
+        let body = match &key {
+            Some(k) if self.assessing.as_deref() == Some(k.as_str()) => {
+                Span::styled("assessing…", Style::new().fg(Color::Yellow))
+            }
+            Some(k) => match self.assessments.get(k) {
+                Some(a) => Span::styled(a.clone(), Style::new().fg(Color::Gray)),
+                None => Span::styled("press R for an AI assessment", Style::new().fg(Color::DarkGray)),
+            },
+            None => Span::styled("no result selected", Style::new().fg(Color::DarkGray)),
+        };
+        f.render_widget(Paragraph::new(Line::from(body)).block(block).wrap(Wrap { trim: true }), area);
+    }
+
     fn render_list(&self, f: &mut Frame, area: Rect) {
         let loaded = self
             .loaded_family
@@ -448,7 +512,7 @@ impl LoraHubState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Detail ");
+        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(l) = self.loras.get(self.selected) else { return };
@@ -482,6 +546,16 @@ impl LoraHubState {
         if !l.notes.is_empty() {
             lines.push(Line::from(""));
             lines.push(kv("notes", l.notes.clone()));
+        }
+        // LLM assessment (R).
+        let key = l.path.display().to_string();
+        if self.assessing.as_deref() == Some(key.as_str()) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  ✦ assessing…", Style::new().fg(Color::Yellow))));
+        } else if let Some(a) = self.assessments.get(&key) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("✦ AI assessment", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(a.clone(), Style::new().fg(Color::Gray))));
         }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
@@ -770,6 +844,28 @@ mod tests {
             LoraHubAction::Download { dl: DownloadRef::Hf { repo }, .. } => assert_eq!(repo, "user/anime-lora"),
             _ => panic!("expected HF Download"),
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn r_requests_an_assessment_and_stores_the_result() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("assess");
+        let xl = d.join("foo.safetensors");
+        write_st(&xl, &[("ss_base_model_version", "sdxl")], "x", &[8, 4]);
+        let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
+
+        let key = match s.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)) {
+            LoraHubAction::Assess { key, prompt } => {
+                assert!(prompt.contains("foo"), "prompt names the LoRA: {prompt}");
+                key
+            }
+            _ => panic!("expected Assess"),
+        };
+        assert_eq!(s.assessing.as_deref(), Some(key.as_str()), "marked in-flight");
+        s.set_assessment(key.clone(), "A watercolour style LoRA.".into());
+        assert!(s.assessing.is_none(), "cleared on result");
+        assert_eq!(s.assessments.get(&key).unwrap(), "A watercolour style LoRA.");
         let _ = std::fs::remove_dir_all(&d);
     }
 
