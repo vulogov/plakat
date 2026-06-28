@@ -249,6 +249,10 @@ fn model_loop(
                         Ok(()) => {
                             let produced = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
                             let out = keep_unique(&produced, &job.out_dir, job.seed);
+                            embed_chat_recipe(
+                                &out, alias, &prompt, &job.negative, job.seed, job.steps,
+                                job.guidance, Some("img2img"), Some(job.strength),
+                            );
                             let _ = job.tx.send(GenMessage::Done {
                                 output: out,
                                 cancelled: job.cancel.is_cancelled(),
@@ -287,6 +291,10 @@ fn model_loop(
                     Ok(()) => {
                         let produced = job.out_dir.join(format!("plakat-{}.png", job.seed));
                         let out = keep_unique(&produced, &job.out_dir, job.seed);
+                        embed_chat_recipe(
+                            &out, alias, &prompt, &job.negative, job.seed, job.steps,
+                            job.guidance, None, None,
+                        );
                         let _ = job.tx.send(GenMessage::Done {
                             output: out,
                             cancelled: job.cancel.is_cancelled(),
@@ -321,6 +329,35 @@ fn keep_unique(produced: &std::path::Path, out_dir: &std::path::Path, seed: u64)
     }
 }
 
+/// Embed the generation recipe into the final PNG (A1111 `parameters` tEXt chunk +
+/// JSON sidecar) so the History screen can show it and continue from it. Best-effort
+/// — a failure never affects the generation. Re-encodes the saved PNG (lossless),
+/// which keeps the txt2img and img2img paths uniform: img2img's pipeline writes no
+/// metadata, and txt2img's would land at the pre-rename name + orphan its sidecar.
+#[allow(clippy::too_many_arguments)]
+fn embed_chat_recipe(
+    path: &std::path::Path,
+    model: &str,
+    prompt: &str,
+    negative: &str,
+    seed: u64,
+    steps: usize,
+    guidance: f64,
+    mode: Option<&str>,
+    strength: Option<f32>,
+) {
+    let Ok(img) = image::open(path) else { return };
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+        prompt, model, seed, steps, guidance, "default", w, h,
+    );
+    meta.negative = negative.to_string();
+    meta.mode = mode.map(|m| m.to_string());
+    meta.strength = strength;
+    let _ = crate::imaging::io::save_rgb_u8_with_metadata(rgb.as_raw(), w, h, path, &meta);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +383,26 @@ mod tests {
         assert_eq!(out2, d.join("plakat-99-2.png"));
         assert!(out1.exists() && out2.exists(), "both steps are kept");
 
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn embed_chat_recipe_writes_a_readable_parameters_chunk() {
+        let d = std::env::temp_dir().join("plakat-embedmeta-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("plakat-7-1.png");
+        // A 2x1 PNG with no metadata.
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3, 4, 5, 6], 2, 1, &p).unwrap();
+        assert!(crate::imaging::io::read_parameters_chunk(&p).unwrap().is_none());
+
+        embed_chat_recipe(&p, "sd15", "a red fox", "blurry", 7, 28, 7.5, Some("img2img"), Some(0.6));
+
+        let params = crate::imaging::io::read_parameters_chunk(&p).unwrap().expect("recipe embedded");
+        assert!(params.contains("a red fox"), "prompt round-trips: {params:?}");
+        assert!(params.contains("blurry"), "negative round-trips: {params:?}");
+        // The JSON sidecar is written too.
+        assert!(p.with_extension("json").exists(), "sidecar written");
         let _ = std::fs::remove_dir_all(&d);
     }
 
