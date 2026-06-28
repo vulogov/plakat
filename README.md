@@ -17,51 +17,50 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.14.0 — every feature, every surface
+## What's new in 1.15.0 — `plakat ui`, the interactive terminal UI
 
-1.12 shipped **multiperson + face-swap** and 1.13 shipped the **map coastlines & worlds** —
-both as CLI-only. 1.14.0 **productizes** them: people-in-scene and the new map features
-become first-class in the automation surfaces (**scenario / compile / scripting**), each
-dispatching the *same* pipeline as the CLI, so a given spec renders identically everywhere.
+plakat has always been a powerful but flag-heavy CLI. 1.15.0 adds **`plakat ui`** — a
+full-screen, keyboard-driven terminal application over the *same* engine. Load a model
+once and **talk** to it: conversational generation + refinement with inline images,
+browse everything you've made, drop in a specific person, paint an inpaint mask, search
+and apply LoRAs, compile prose into scenarios — eight integrated screens (RFC TUI-1).
 
 ```bash
-# A whole world as seamless tiles, each a usable standalone map (frame + R/C + N arrow)
-plakat map --map-spec world.hjson --map-tiles 3x3 --map-render-tiles ./tiles/ --map-tile-furniture
-
-# Place specific people from a scenario (personas referenced by name)
-plakat scenario cast.hjson         # a `type: multiperson` task: scene + people + swap/composite
-
-# The political layer exports as real GIS polygons now, not just points
-plakat map --map-spec realm.hjson --map-export-geojson realm.geojson
+plakat ui            # the interactive terminal UI
 ```
 
-**Multiperson everywhere.** A `type: multiperson` **scenario task** (scene + `people` that
-reference the top-level `personas` by name + identity mode `swap`/`composite`/`pose`/
-`harmonize`) and a **`plakat.multiperson`** scripting word — both build the same request as
-the CLI (CLI-matching defaults, a parity test proves it).
+- **Chat** — type a prompt, the image renders inline; the next prompt **evolves** it
+  (accumulated prompt at a stable seed, so edits land and composition holds). Commands:
+  `/new` `/negative` `/enhance` (DeepSeek/Gemini/local) `/strength` `/seed`, `Ctrl-P/N`
+  prompt recall, a 2-line wrapping editor. Every step + its recipe is saved.
+- **Models** — load/unload with live RAM + swap gauges and rerouted download/load progress.
+- **Scenarios** — browse, edit (built-in editor), and run batch jobs with a live per-task
+  status board.
+- **History** — every output under `out/`, by date, with its embedded recipe; `C` continues
+  any image in Chat.
+- **People** — an identity library (incl. personas read from your scenarios); `G` makes a
+  portrait, or mark two+ and `G` makes a multiperson scene — opens in Chat.
+- **LoRA Hub** — LOCAL (header-inferred family + compatibility vs the loaded model; `A`
+  applies, reloading with it merged), plus **CivitAI** and **HuggingFace** search/download,
+  and LLM **assess** / **recommend-for-context**.
+- **Prompt Workspace** — write prose, watch the **structural compile** update live; `Ctrl-R`
+  for the full LLM compile; `Ctrl-O` saves the scenario and opens it in the editor.
+- **Canvas** — paint a coarse inpaint mask (presets for sky/background/foreground/halves/
+  person); `Enter` hands Chat a full-res mask so the next prompt inpaints just that region.
 
-**Maps in the automation surfaces.**
+The whole thing is one loop: compile a prompt → run it → browse the output → pull it back
+into Chat → refine → mask a region → inpaint → apply a LoRA → drop a person in. Everything is
+a normal plakat PNG (recipe embedded) and every compiled scenario runs headlessly.
 
-- **Multi-tile worlds from automation** — `map-render-tiles` in the scenario `map` task and a
-  **`plakat.map.tiles`** word; the shared `save_world_tiles` keeps every surface byte-identical.
-- **Per-tile furniture** — `--map-tile-furniture` (and the scenario field) draws a frame, the
-  grid coordinate (`R1C2`), and a north arrow on each tile, so one tile stands alone.
-- **Political territory polygons** — GeoJSON now emits a `territory` **Polygon** (the boundary
-  ring as real geometry) alongside the polity Point; the SVG draws it as a dashed polygon.
-- **Prose → terrain** — the map parser learned `peninsulas`/`inlets`/`fjords` (+ `plateaus`/
-  `rift_valleys`), so "a fjord-cut northern coast" maps to `terrain.fjords`.
+> Inline images use the terminal's graphics protocol (Kitty/Ghostty/WezTerm/iTerm2/Sixel);
+> the UI runs without one (placeholders). It's behind the default-on `ui` feature. The UI
+> loads SD-family models today (Flux/SD3/PixArt/Cascade in the UI are a 1.16.0 carry).
 
-**Confidence.** A comprehensive `corpus/map.sh` demonstrates **every** map feature byte-stably
-(island geometry, a 3×3 all-features continent, coastal detail, multi-tile worlds + furniture,
-urban, and the SD-painted tiled path). New multiperson swap + composite showcases.
+See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
+[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
+[`Documentation/ROADMAP_1.16.0.md`](Documentation/ROADMAP_1.16.0.md).
 
-**Fixes.** River deltas no longer draw across open ocean — the distributary fan now forms on
-the land side and stops at the shore (caught in a generated coastal sample).
-
-See [`Documentation/ROADMAP_1.14.0.md`](Documentation/ROADMAP_1.14.0.md) and
-[`Documentation/Tutorials/MULTIPERSON_TUTORIAL.md`](Documentation/Tutorials/MULTIPERSON_TUTORIAL.md).
-
-**Earlier releases** (v0.13 – v1.13):
+**Earlier releases** (v0.13 – v1.14):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

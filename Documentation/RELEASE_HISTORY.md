@@ -8,6 +8,25 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.14.0 — every feature, every surface
+
+1.12 shipped **multiperson + face-swap** and 1.13 shipped the **map coastlines & worlds** —
+both as CLI-only. 1.14.0 **productizes** them: people-in-scene and the new map features
+become first-class in the automation surfaces (**scenario / compile / scripting**), each
+dispatching the *same* pipeline as the CLI, so a given spec renders identically everywhere.
+
+- **Multiperson everywhere** — a `type: multiperson` scenario task (scene + `people` that
+  reference the top-level `personas` by name + identity mode swap/composite/pose/harmonize)
+  and a `plakat.multiperson` scripting word, both building the same request as the CLI.
+- **Maps in the automation surfaces** — multi-tile worlds from scenario/scripting
+  (`plakat.map.tiles`), per-tile furniture (`--map-tile-furniture`), political territory
+  **polygons** in GeoJSON/SVG, and prose-parser coastal words (`peninsulas`/`inlets`/`fjords`).
+- **Confidence** — a comprehensive `corpus/map.sh` demonstrates every map feature byte-stably.
+- **Fixes** — river deltas no longer draw across open ocean (the fan forms land-side).
+
+(1.14.1 followed: `candle-onnx` made opt-in behind an `onnx` feature so `cargo install`
+and release builds don't require `protoc`.)
+
 ## What's new in 1.13.0 — a steadier host and a richer world map
 
 1.13.0 pays down the **memory & stability** debt that had been deferred twice, and fills
