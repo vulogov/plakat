@@ -28,7 +28,7 @@ use super::output::OutputPane;
 use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::models::ModelsState;
-use super::screens::people::PeopleState;
+use super::screens::people::{self, PeopleState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
 use super::services::model_service::ModelService;
 use super::workspace::Workspace;
@@ -119,6 +119,7 @@ pub struct App {
     // Background services.
     pub model_svc: ModelService,
     rt: Handle,
+    device: Device,
     // The in-flight Chat generation (its message channel + cancel flag).
     active_gen: Option<(Receiver<GenMessage>, CancelFlag)>,
     // Conversational refinement state. Each refine re-bases on the CLEAN original
@@ -146,6 +147,10 @@ pub struct App {
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
     scenario_events: Option<Receiver<ScenarioEvent>>,
+    // The in-flight People quick-generate (portrait) — output path on success, plus
+    // the prompt/seed to seed the Chat continuation when it lands.
+    portrait_run: Option<Receiver<Result<std::path::PathBuf, String>>>,
+    portrait_prompt: String,
 }
 
 impl App {
@@ -167,8 +172,9 @@ impl App {
             models: ModelsState::new(),
             output: OutputPane::new(),
             progress_rx,
-            model_svc: ModelService::spawn(device, rt.clone()),
+            model_svc: ModelService::spawn(device.clone(), rt.clone()),
             rt,
+            device,
             active_gen: None,
             refine_base: None,
             refine_prompt: String::new(),
@@ -181,6 +187,8 @@ impl App {
             active_seed: 0,
             scenario_run: None,
             scenario_events: None,
+            portrait_run: None,
+            portrait_prompt: String::new(),
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -252,6 +260,7 @@ impl App {
             self.drain_scenario();
             self.sync_history();
             self.sync_people();
+            self.drain_portrait();
         }
         Ok(())
     }
@@ -390,9 +399,104 @@ impl App {
                 }
             }
             ActiveScreen::People => {
-                let _ = self.people.handle_key(key);
+                if let people::PeopleAction::Generate(spec) = self.people.handle_key(key) {
+                    self.quick_generate(spec);
+                }
             }
             _ => {}
+        }
+    }
+
+    /// People `G` — generate a portrait from a person on a background thread (loads
+    /// its own model; progress flows to the Output pane). The result opens in Chat.
+    fn quick_generate(&mut self, spec: people::QuickGen) {
+        if self.portrait_run.is_some() {
+            self.output.push("a portrait is already generating…".into());
+            return;
+        }
+        // Identity strategy → model family + IdentityKind. No photos = text-only.
+        let sdxl = spec.identity.to_lowercase().contains("sdxl");
+        let model = if sdxl { "sdxl" } else { "sd15" }.to_string();
+        let (w, h) = if sdxl { (768u32, 960u32) } else { (512u32, 640u32) };
+        let identity = if spec.photos.is_empty() {
+            None
+        } else {
+            Some(
+                spec.identity
+                    .parse::<crate::pipelines::ip_adapter::IdentityKind>()
+                    .unwrap_or(crate::pipelines::ip_adapter::IdentityKind::PlusFace),
+            )
+        };
+        let prompt = if spec.prompt.trim().is_empty() {
+            "portrait photograph, head and shoulders, soft studio lighting, sharp focus, detailed".to_string()
+        } else {
+            spec.prompt.clone()
+        };
+        let photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto> = spec
+            .photos
+            .iter()
+            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
+            .collect();
+        let seed = rand::random::<u32>() as u64;
+        let out_dir = self.workspace.out_dir().join("people");
+        let req = crate::pipelines::portrait::Request {
+            prompt: prompt.clone(),
+            negative: spec.negative,
+            photos,
+            model,
+            width: w,
+            height: h,
+            count: 1,
+            steps: 30,
+            guidance: 7.0,
+            seed: Some(seed),
+            out_dir: out_dir.clone(),
+            device: self.device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+            refine: None,
+            refine_strength: 0.0,
+            face_strength: spec.face_strength.unwrap_or(0.8),
+            face_bbox: None,
+            face_landmarks: None,
+            identity,
+            shared_clip_h: None,
+            controls: Vec::new(),
+        };
+
+        self.chat.push_system(format!("generating portrait of {} — opens in Chat…", spec.label));
+        self.portrait_prompt = prompt;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::pipelines::portrait::run(req))
+                .map(|_| out_dir.join(format!("plakat-portrait-{seed}.png")))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.portrait_run = Some(rx);
+    }
+
+    /// Poll the in-flight portrait gen; on success, open it in Chat (image-anchored).
+    fn drain_portrait(&mut self) {
+        let done = match &self.portrait_run {
+            Some(rx) => match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("portrait thread ended unexpectedly".to_string()))
+                }
+            },
+            None => None,
+        };
+        if let Some(result) = done {
+            self.portrait_run = None;
+            match result {
+                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone()),
+                Err(e) => self.output.push(format!("✗ portrait failed: {e}")),
+            }
         }
     }
 

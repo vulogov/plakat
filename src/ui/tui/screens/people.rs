@@ -124,11 +124,34 @@ impl Person {
             .max_by(|a, b| a.weight.total_cmp(&b.weight))
             .map(|r| self.dir.join(&r.path))
     }
+
+    /// All reference photos resolved to full paths with their weights.
+    fn resolved_photos(&self) -> Vec<(PathBuf, f32)> {
+        self.refs
+            .iter()
+            .filter(|r| !r.path.is_empty())
+            .map(|r| (self.dir.join(&r.path), r.weight))
+            .collect()
+    }
+}
+
+/// A quick-generate request the App turns into a `portrait::Request`.
+pub struct QuickGen {
+    pub label: String,
+    pub prompt: String,
+    pub negative: String,
+    /// Resolved reference photos `(path, weight)` (empty → text-only portrait).
+    pub photos: Vec<(PathBuf, f32)>,
+    /// Identity strategy string (empty → default when photos are present).
+    pub identity: String,
+    pub face_strength: Option<f32>,
 }
 
 /// What the App should do after a key.
 pub enum PeopleAction {
     None,
+    /// `G` — generate a portrait from the selected person, result opens in Chat.
+    Generate(QuickGen),
 }
 
 pub struct PeopleState {
@@ -218,6 +241,20 @@ impl PeopleState {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
+            KeyCode::Char('g' | 'G') | KeyCode::Enter => {
+                if let Some(p) = self.people.get(self.selected) {
+                    if p.error.is_none() {
+                        return PeopleAction::Generate(QuickGen {
+                            label: p.label().to_string(),
+                            prompt: p.prompt.clone(),
+                            negative: p.negative.clone(),
+                            photos: p.resolved_photos(),
+                            identity: p.identity.clone(),
+                            face_strength: p.face_strength,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
         PeopleAction::None
@@ -288,7 +325,7 @@ impl PeopleState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Identity ");
+        let block = Block::default().borders(Borders::ALL).title(" Identity  ·  [G] generate → Chat ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(p) = self.people.get(self.selected) else { return };
@@ -483,6 +520,33 @@ mod tests {
         assert!(bob.source.starts_with("scenario · shoot.hjson"));
         assert_eq!(bob.identity, "faceid");
         assert_eq!(bob.refs.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn g_builds_a_quickgen_spec_from_the_selected_person() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("quickgen");
+        let people = d.join("people");
+        let alice = people.join("alice");
+        std::fs::create_dir_all(alice.join("refs")).unwrap();
+        std::fs::write(
+            alice.join("person.hjson"),
+            r#"{"display_name":"Alice","identity":"plus-face","face_strength":0.7,"prompt":"smiling","refs":[{"path":"refs/a.jpg","weight":1.0}]}"#,
+        )
+        .unwrap();
+        let mut s = PeopleState::new(people, d.join("scenarios"));
+        match s.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE)) {
+            PeopleAction::Generate(g) => {
+                assert_eq!(g.label, "Alice");
+                assert_eq!(g.prompt, "smiling");
+                assert_eq!(g.identity, "plus-face");
+                assert_eq!(g.face_strength, Some(0.7));
+                assert_eq!(g.photos.len(), 1);
+                assert!(g.photos[0].0.ends_with("refs/a.jpg"), "ref path resolved");
+            }
+            _ => panic!("expected Generate"),
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
