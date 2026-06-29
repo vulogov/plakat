@@ -24,9 +24,13 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
         loads via `sd3::Pipeline::load` and generates via its hooked `generate_hooked`
         (one call covers txt2img / img2img / inpaint), so the full Chat flow — refine,
         Canvas inpaint, LoRA apply, live preview/cancel — works on SD3.5 too.
+  - [x] **PixArt-Σ** / **Stable Cascade** — `run_hooked(RunRequest)` (both already
+        StepHook-wired). No persistent pipeline, so `Loaded::{PixArt,Cascade}` hold
+        only the applied LoRA set and generate load-per-call (the first gen shows the
+        download/load). txt2img only (no img2img): prompt-evolve refine works,
+        anchored/inpaint falls back to a fresh render.
   - [ ] **Flux** — `flux::run` is load-per-call with a ~25-field `Request` (+ the
-        GGUF-Metal block); needs its own dispatch.
-  - [ ] **PixArt** / **Cascade** — `run(RunRequest)`, load-per-call; memory-heavy.
+        GGUF-Metal block); needs its own dispatch. Last family.
 - [ ] **In-process scenario / portrait runner** — Scenario runs and People quick-gen
       load their **own** model alongside any Chat model (double load, memory
       pressure). **Large refactor**: the scenario runner is monolithic and selects its

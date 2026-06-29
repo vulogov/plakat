@@ -17,7 +17,8 @@ use candle_core::Device;
 use tokio::runtime::Handle;
 
 use crate::pipelines::gen_channel::{CancelFlag, ChannelHook, GenMessage};
-use crate::pipelines::{img2img, portrait, sd3, t2i};
+use crate::pipelines::{cascade, img2img, pixart, portrait, sd3, t2i};
+use crate::pipelines::lora::LoraSpec;
 use crate::preset::discovery::BaseFamily;
 
 /// Parameters for a Chat generation (the model thread builds the GenRequest).
@@ -64,11 +65,13 @@ pub enum ModelMessage {
     Error(String),
 }
 
-/// Which UI loader handles a model. SD-family and SD3/3.5 are wired; the rest are
-/// CLI-only for now (a per-family follow-up).
+/// Which UI loader handles a model. SD-family, SD3/3.5, PixArt-Σ, and Stable Cascade
+/// are wired; Flux is still CLI-only (a follow-up).
 enum UiFamily {
     Sd,
     Sd3,
+    PixArt,
+    Cascade,
 }
 
 /// Resolve a model alias to its UI loader, or a friendly error for unwired families.
@@ -77,9 +80,11 @@ fn ui_family(alias: &str) -> Result<UiFamily, String> {
     match BaseFamily::from_model_arg(alias) {
         BaseFamily::Sd15 | BaseFamily::Sd21 | BaseFamily::Sdxl => Ok(UiFamily::Sd),
         BaseFamily::Sd3 => Ok(UiFamily::Sd3),
+        BaseFamily::PixArt => Ok(UiFamily::PixArt),
+        BaseFamily::StableCascade => Ok(UiFamily::Cascade),
         other => Err(format!(
             "'{alias}' is a {other:?} model — the TUI loads SD-family (sd15 / sd21 / \
-             sdxl) and SD3/3.5 models; {other:?} support is a follow-up."
+             sdxl), SD3/3.5, PixArt, and Cascade; {other:?} support is a follow-up."
         )),
     }
 }
@@ -95,6 +100,10 @@ pub fn t2i_load_check(alias: &str) -> Result<(), String> {
 enum Loaded {
     Sd(t2i::Pipeline),
     Sd3(sd3::Pipeline),
+    // PixArt / Cascade have no persistent pipeline (their `run()` loads per call), so
+    // we hold only the applied LoRA set and load-per-generation. Slower, but usable.
+    PixArt { loras: Vec<LoraSpec> },
+    Cascade { loras: Vec<LoraSpec> },
 }
 
 /// Handle to the model thread. Drop signals shutdown and joins.
@@ -193,6 +202,9 @@ fn model_loop(
                 // Free the current model first — unified memory means we can't hold
                 // two large models at once.
                 loaded = None;
+                // PixArt / Cascade have no persistent pipeline — their `run()` loads
+                // per generation, so "loading" just records the alias + applied LoRAs
+                // (the first gen shows the real download/load in the Output pane).
                 let result = match family {
                     UiFamily::Sd => rt
                         .block_on(t2i::Pipeline::load(t2i::LoadRequest {
@@ -216,6 +228,8 @@ fn model_loop(
                             embeddings: Vec::new(),
                         }))
                         .map(Loaded::Sd3),
+                    UiFamily::PixArt => Ok(Loaded::PixArt { loras }),
+                    UiFamily::Cascade => Ok(Loaded::Cascade { loras }),
                 };
                 match result {
                     Ok(p) => {
@@ -307,6 +321,81 @@ fn model_loop(
                                     output: out,
                                     cancelled: job.cancel.is_cancelled(),
                                 });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                    // ── PixArt-Σ: load-per-gen txt2img (hooked → live preview/cancel).
+                    //    No img2img — `init_image` is ignored (prompt-evolve carries the
+                    //    edits). ──
+                    Loaded::PixArt { loras } => {
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let req = pixart::RunRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            width: job.width,
+                            height: job.height,
+                            steps: job.steps,
+                            guidance: job.guidance,
+                            seed: Some(job.seed),
+                            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                            out_dir: job.out_dir.clone(),
+                            count: 1,
+                            loras: loras.clone(),
+                            lora_scale: 1.0,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match rt.block_on(pixart::run_hooked(req, Some(&mut hook))) {
+                            Ok(()) => {
+                                let produced = job.out_dir.join(format!("plakat-pixart-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
+                                let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                    // ── Stable Cascade: load-per-gen txt2img (hooked). Square output;
+                    //    Stage C/B step split mirrors the CLI default. ──
+                    Loaded::Cascade { loras } => {
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let stage_c_steps = (job.steps * 2).div_ceil(3).max(1);
+                        let stage_b_steps = job.steps.saturating_sub(stage_c_steps).max(1);
+                        let req = cascade::RunRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            output_dim: job.width,
+                            image_prompt: None,
+                            stage_c_steps,
+                            stage_b_steps,
+                            guidance: job.guidance,
+                            decoder_guidance: 1.1,
+                            seed: Some(job.seed),
+                            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                            out_dir: job.out_dir.clone(),
+                            count: 1,
+                            loras: loras.clone(),
+                            lora_scale: 1.0,
+                            control_spec: None,
+                            controlnet_weights: None,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match rt.block_on(cascade::run_hooked(req, Some(&mut hook))) {
+                            Ok(()) => {
+                                let produced = job.out_dir.join(format!("plakat-cascade-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
+                                let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
                             }
                             Err(e) => {
                                 let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
@@ -544,20 +633,21 @@ mod tests {
     }
 
     #[test]
-    fn sd3_family_is_now_loadable() {
-        assert!(t2i_load_check("sd35-medium").is_ok());
-        assert!(t2i_load_check("sd35-large").is_ok());
-        assert!(matches!(ui_family("sd35-medium"), Ok(UiFamily::Sd3)));
+    fn non_sd_families_map_to_their_loaders() {
         assert!(matches!(ui_family("sdxl"), Ok(UiFamily::Sd)));
+        assert!(matches!(ui_family("sd35-medium"), Ok(UiFamily::Sd3)));
+        assert!(matches!(ui_family("pixart"), Ok(UiFamily::PixArt)));
+        assert!(matches!(ui_family("stable-cascade"), Ok(UiFamily::Cascade)));
+        // All four are loadable in the UI now.
+        for a in ["sdxl", "sd35-medium", "pixart", "stable-cascade"] {
+            assert!(t2i_load_check(a).is_ok(), "{a} should load");
+        }
     }
 
     #[test]
-    fn other_families_get_a_friendly_error() {
+    fn flux_still_gets_a_friendly_cli_only_error() {
         let e = t2i_load_check("flux-dev").unwrap_err();
         assert!(e.contains("Flux"));
         assert!(e.contains("follow-up"));
-        // Flux / PixArt / Cascade remain CLI-only for now.
-        assert!(t2i_load_check("pixart-sigma").is_err());
-        assert!(t2i_load_check("stable-cascade").is_err());
     }
 }

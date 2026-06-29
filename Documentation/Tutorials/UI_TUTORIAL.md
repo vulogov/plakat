@@ -257,8 +257,10 @@ headlessly with `plakat scenario FILE.hjson`.
 
 ## Notes & limits
 
-- The UI loads **SD-family** (sd15 / sd21 / sdxl) and **SD3 / 3.5** models. Flux,
-  PixArt, and Cascade remain CLI-only for now.
+- The UI loads **SD-family** (sd15 / sd21 / sdxl), **SD3 / 3.5**, **PixArt-Σ**, and
+  **Stable Cascade** models. Only **Flux** remains CLI-only for now. PixArt / Cascade
+  have no persistent pipeline, so they reload on each generation (slower) and support
+  fresh / prompt-evolve generation but not image-anchored refine or Canvas inpaint.
 - People quick-gen and Scenario runs load their **own** model
   alongside any Chat model — on a 24 GB box, unload the Chat model
   first if memory is tight.
