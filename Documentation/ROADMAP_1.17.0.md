@@ -41,8 +41,10 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 ## C — History (remaining)
 
 - [ ] **True thumbnail grid** (lazy, LRU cache) instead of list + single preview.
-- [ ] **Background image decode** — move the selected-image decode off the event-loop
-      tick to a worker so large (upscaled) PNGs never hitch navigation.
+- [x] **Background image decode** — the History preview decode (`image::open`) now runs
+      on a worker thread; the main thread only builds the (cheap) image protocol when the
+      decode lands, and stale results (the cursor moved on) are dropped. Large/upscaled
+      PNGs no longer hitch `j`/`k` navigation.
 - [ ] **Embedding-based semantic search** — rank the `/` filter by meaning, not just
       substring (the substring filter over filename/tags/recipe shipped in 1.16.0).
 

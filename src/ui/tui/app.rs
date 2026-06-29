@@ -193,6 +193,8 @@ pub struct App {
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
     // In-flight Canvas face detection (for the face-aware `B` preset): `(base, boxes)`.
     canvas_faces: Option<Receiver<(std::path::PathBuf, Vec<[f32; 4]>)>>,
+    // In-flight History image decode (off the event-loop tick): `(path, decoded image)`.
+    history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -279,6 +281,7 @@ impl App {
             prompt_compile: None,
             chat_to_scenario: None,
             canvas_faces: None,
+            history_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
             auto_route: false,
@@ -428,12 +431,47 @@ impl App {
         }
         self.history.sync_detail();
         let sel = self.history.selected_path();
-        if sel != self.history.preview_for {
-            self.history.preview = sel
-                .as_ref()
-                .and_then(|p| image::open(p).ok())
-                .map(|img| self.picker.new_resize_protocol(img));
-            self.history.preview_for = sel;
+        // Already showing the right image (or nothing selected) → done.
+        if sel == self.history.preview_for {
+            return;
+        }
+        // A completed background decode for the *current* selection → build the
+        // protocol (cheap) on the main thread and show it. A stale result (the user
+        // moved on) is dropped; the mismatch re-triggers a decode below.
+        if let Some((path, rx)) = &self.history_decode {
+            match rx.try_recv() {
+                Ok(decoded) => {
+                    let matched = Some(path) == sel.as_ref();
+                    self.history_decode = None;
+                    if matched {
+                        self.history.preview = decoded.map(|img| self.picker.new_resize_protocol(img));
+                        self.history.preview_for = sel;
+                        return; // showing the current selection now
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.history_decode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // No decode in flight for the current selection → start one on a worker so a
+        // large (upscaled) PNG never hitches j/k navigation on the event-loop tick.
+        let decoding_current = self.history_decode.as_ref().map(|(p, _)| Some(p) == sel.as_ref()).unwrap_or(false);
+        match &sel {
+            None => {
+                self.history.preview = None;
+                self.history.preview_for = None;
+                self.history_decode = None;
+            }
+            Some(path) if !decoding_current => {
+                let path = path.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let worker_path = path.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(image::open(&worker_path).ok());
+                });
+                self.history_decode = Some((path, rx));
+            }
+            Some(_) => {}
         }
     }
 
@@ -2541,6 +2579,38 @@ mod tests {
         assert_eq!(replace_ci("hi @Alice there", "@alice", "X"), "hi X there");
         assert_eq!(replace_ci("@a @A", "@a", "Z"), "Z Z");
         assert_eq!(replace_ci("nothing", "@x", "Y"), "nothing");
+    }
+
+    #[test]
+    fn history_preview_decodes_on_a_worker_then_applies() {
+        // A real PNG under the workspace out/ dir; History should decode it off-tick
+        // and, once the worker returns, show it (preview_for == the image path).
+        let root = std::env::temp_dir().join("plakat-ui-histdecode-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        crate::imaging::io::save_rgb_u8(&[9, 9, 9], 1, 1, &out.join("plakat-1-1.png")).unwrap();
+
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+        a.screen = ActiveScreen::History;
+        let want = a.history.selected_path();
+        assert!(want.is_some(), "history found the PNG");
+
+        // First tick spawns the decode; subsequent ticks drain it. Pump a bounded loop.
+        let mut applied = false;
+        for _ in 0..200 {
+            a.sync_history();
+            if a.history.preview_for == want {
+                applied = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(applied, "background decode eventually set the preview");
+        assert!(a.history.preview.is_some(), "preview protocol built on the main thread");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
