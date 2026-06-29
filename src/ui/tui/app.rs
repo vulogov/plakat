@@ -157,9 +157,9 @@ pub struct App {
     fixed_seed: Option<u64>,
     // The seed used by the in-flight turn (recorded as base_seed on a fresh Done).
     active_seed: u64,
-    // LoRAs applied to Chat generation (load-time merge). Changing the set reloads
-    // the current model. Paths into the LoRA Hub's scanned dirs.
-    active_loras: Vec<std::path::PathBuf>,
+    // LoRAs applied to Chat generation (load-time merge), each with its weight.
+    // Changing the set or a weight reloads the current model.
+    active_loras: Vec<(std::path::PathBuf, f32)>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
     // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
@@ -609,6 +609,7 @@ impl App {
             lorahub::LoraHubAction::Download { dl, title } => self.remote_download(dl, title),
             lorahub::LoraHubAction::Assess { key, prompt } => self.assess_lora(key, prompt),
             lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
+            lorahub::LoraHubAction::AdjustWeight { path, delta } => self.adjust_lora_weight(path, delta),
         }
     }
 
@@ -794,24 +795,33 @@ impl App {
         }
     }
 
-    /// Load (or reload) `alias` with the currently-applied LoRAs merged in.
+    /// Load (or reload) `alias` with the currently-applied LoRAs merged in (each at
+    /// its per-LoRA weight).
     fn load_model(&mut self, alias: impl Into<String>) {
         let specs: Vec<crate::pipelines::lora::LoraSpec> = self
             .active_loras
             .iter()
-            .map(|p| crate::pipelines::lora::LoraSpec {
+            .map(|(p, w)| crate::pipelines::lora::LoraSpec {
                 source: crate::pipelines::lora::LoraSource::Local(p.clone()),
-                scale: APPLY_LORA_SCALE,
+                scale: *w,
             })
             .collect();
         self.model_svc.load(alias, specs);
+    }
+
+    /// Reload the loaded model so a LoRA-set / weight change takes effect.
+    fn reload_for_loras(&mut self) {
+        if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
+            self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
+            self.load_model(alias);
+        }
     }
 
     /// Toggle a LoRA in Chat's active set (LoRA Hub `A`). Applying reloads the loaded
     /// model so the LoRA is merged in; an incompatible LoRA is refused with a note.
     fn toggle_lora(&mut self, path: std::path::PathBuf, compatible: bool) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lora").to_string();
-        if let Some(pos) = self.active_loras.iter().position(|p| p == &path) {
+        if let Some(pos) = self.active_loras.iter().position(|(p, _)| p == &path) {
             self.active_loras.remove(pos);
             self.chat.push_system(format!("LoRA off: {name} ({} active)", self.active_loras.len()));
         } else {
@@ -819,14 +829,28 @@ impl App {
                 self.chat.push_system(format!("⚠ {name} doesn't match the loaded model — not applied"));
                 return;
             }
-            self.active_loras.push(path);
-            self.chat.push_system(format!("LoRA on: {name} ({} active)", self.active_loras.len()));
+            self.active_loras.push((path, APPLY_LORA_SCALE));
+            self.chat.push_system(format!("LoRA on: {name} @ {APPLY_LORA_SCALE:.2} ({} active)", self.active_loras.len()));
         }
-        // Reload the loaded model with the new set so the merge takes effect.
-        if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
-            self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
-            self.load_model(alias);
-        }
+        self.reload_for_loras();
+    }
+
+    /// Nudge an applied LoRA's weight (LoRA Hub `+`/`-`) and reload. Ignored (with a
+    /// hint) when the LoRA isn't applied.
+    fn adjust_lora_weight(&mut self, path: std::path::PathBuf, delta: f32) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lora").to_string();
+        let new_w = match self.active_loras.iter_mut().find(|(p, _)| p == &path) {
+            Some(entry) => {
+                entry.1 = (entry.1 + delta).clamp(0.1, 1.5);
+                entry.1
+            }
+            None => {
+                self.chat.push_system(format!("apply {name} (A) before changing its weight"));
+                return;
+            }
+        };
+        self.chat.push_system(format!("LoRA weight: {name} → {new_w:.2}"));
+        self.reload_for_loras();
     }
 
     /// Canvas `Enter` — adopt the rasterized mask as a ONE-SHOT inpaint for the next
@@ -1652,11 +1676,28 @@ mod tests {
         let mut a = test_app(); // no model loaded → no reload side-effect
         let p1 = std::path::PathBuf::from("/tmp/style.safetensors");
         a.toggle_lora(p1.clone(), true);
-        assert_eq!(a.active_loras, vec![p1.clone()], "compatible LoRA applied");
+        assert_eq!(a.active_loras, vec![(p1.clone(), APPLY_LORA_SCALE)], "applied at default weight");
         a.toggle_lora(p1.clone(), true);
         assert!(a.active_loras.is_empty(), "re-toggle removes it");
         a.toggle_lora("/tmp/bad.safetensors".into(), false);
         assert!(a.active_loras.is_empty(), "incompatible LoRA is refused");
+    }
+
+    #[test]
+    fn adjust_lora_weight_clamps_and_only_affects_applied() {
+        let mut a = test_app();
+        let p = std::path::PathBuf::from("/tmp/style.safetensors");
+        a.toggle_lora(p.clone(), true); // applied @ 0.8
+        a.adjust_lora_weight(p.clone(), 0.1);
+        assert!((a.active_loras[0].1 - 0.9).abs() < 1e-6, "weight nudged up");
+        // Clamps at 1.5.
+        for _ in 0..20 {
+            a.adjust_lora_weight(p.clone(), 0.1);
+        }
+        assert!(a.active_loras[0].1 <= 1.5 + 1e-6);
+        // A non-applied LoRA is left alone.
+        a.adjust_lora_weight("/tmp/other.safetensors".into(), 0.1);
+        assert_eq!(a.active_loras.len(), 1);
     }
 
     #[test]

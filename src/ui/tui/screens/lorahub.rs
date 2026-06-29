@@ -100,6 +100,8 @@ pub enum LoraHubAction {
     /// `R` (search results) — recommend which candidate best fits the Chat prompt.
     /// The App supplies the prompt context and runs the LLM.
     Recommend { candidates: Vec<String> },
+    /// `+`/`-` (LOCAL) — nudge the selected applied LoRA's weight (App reloads).
+    AdjustWeight { path: PathBuf, delta: f32 },
 }
 
 pub struct LoraHubState {
@@ -108,8 +110,8 @@ pub struct LoraHubState {
     selected: usize,
     /// Family of the currently-loaded model (set by the App), for compatibility.
     loaded_family: Option<BaseFamily>,
-    /// Paths currently applied to Chat (mirrored from the App each tick).
-    applied: std::collections::HashSet<PathBuf>,
+    /// Applied LoRAs → their weight (mirrored from the App each tick).
+    applied: HashMap<PathBuf, f32>,
     // ── Remote (CIVITAI / HUGGINGFACE) tabs ──
     tab: Tab,
     phase: Phase,
@@ -132,7 +134,7 @@ impl LoraHubState {
             loras: Vec::new(),
             selected: 0,
             loaded_family: None,
-            applied: std::collections::HashSet::new(),
+            applied: HashMap::new(),
             tab: Tab::Local,
             phase: Phase::Search,
             query: String::new(),
@@ -193,9 +195,9 @@ impl LoraHubState {
         self.loaded_family = family;
     }
 
-    /// The App calls this each tick with the paths currently applied to Chat.
-    pub fn set_applied(&mut self, paths: &[PathBuf]) {
-        self.applied = paths.iter().cloned().collect();
+    /// The App calls this each tick with the applied LoRAs + their weights.
+    pub fn set_applied(&mut self, applied: &[(PathBuf, f32)]) {
+        self.applied = applied.iter().cloned().collect();
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
@@ -276,6 +278,17 @@ impl LoraHubState {
                     if let Some(path) = self.selected_path() {
                         return LoraHubAction::ToggleApply { path, compatible };
                     }
+                }
+            }
+            // +/- nudge the selected applied LoRA's weight by 0.1.
+            KeyCode::Char('+' | '=') => {
+                if let Some(p) = self.selected_path() {
+                    return LoraHubAction::AdjustWeight { path: p, delta: 0.1 };
+                }
+            }
+            KeyCode::Char('-' | '_') => {
+                if let Some(p) = self.selected_path() {
+                    return LoraHubAction::AdjustWeight { path: p, delta: -0.1 };
                 }
             }
             _ => {}
@@ -478,7 +491,7 @@ impl LoraHubState {
             .unwrap_or_else(|| " no model loaded ".into());
         let applied_n = self.applied.len();
         let block = Block::default().borders(Borders::ALL).title(format!(
-            " LoRA · LOCAL ({}) ·{loaded}· [A] apply ({applied_n} on) ",
+            " LoRA · LOCAL ({}) ·{loaded}· [A] apply · +/- weight ({applied_n} on) ",
             self.loras.len()
         ));
         let inner = block.inner(area);
@@ -504,16 +517,15 @@ impl LoraHubState {
             } else {
                 Style::new().fg(Color::White)
             };
-            // ★ = applied to Chat.
-            let applied = if self.applied.contains(&l.path) {
-                Span::styled("★", Style::new().fg(Color::Yellow))
-            } else {
-                Span::raw(" ")
+            // ★<weight> = applied to Chat (the weight is editable with +/-).
+            let applied = match self.applied.get(&l.path) {
+                Some(w) => Span::styled(format!("★{w:.2} "), Style::new().fg(Color::Yellow)),
+                None => Span::raw("      "),
             };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {glyph} "), Style::new().fg(gcolor).add_modifier(Modifier::BOLD)),
                 applied,
-                Span::styled(trunc(&l.name, 24), name_style),
+                Span::styled(trunc(&l.name, 22), name_style),
                 Span::styled(
                     format!("  {}", l.family.map(family_label).unwrap_or("?")),
                     Style::new().fg(Color::DarkGray),
