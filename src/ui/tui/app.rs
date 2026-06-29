@@ -463,6 +463,16 @@ impl App {
             return;
         }
 
+        // ── People's delete-confirm modal owns the keyboard (type the name). ──
+        if self.screen == ActiveScreen::People && self.people.captures_input() {
+            match self.people.handle_key(key) {
+                people::PeopleAction::Generate(spec) => self.quick_generate(spec),
+                people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::None => {}
+            }
+            return;
+        }
+
         // ── The Canvas owns the keyboard (preset letters + Space painting). ──
         if self.screen == ActiveScreen::Canvas {
             if let canvas::CanvasAction::MaskReady(path) = self.canvas.handle_key(key) {

@@ -47,12 +47,14 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
       (lazy grid + pairwise-similarity consistency), TEST (4 fixed test gens),
       KNOWN-GOOD (editable param table, apply-to-Chat), SETTINGS (consent + privacy
       audit). The `person.hjson` schema already reserves these fields.
-- [ ] **Import** (`I`) — pull personas out of a scenario file into `people/<name>/`
-      (conflict-aware; rewrite ref paths).
+- [x] **Import** (`I`) — pull personas out of a scenario file into `people/<name>/`
+      (copies refs into `refs/`, rewrites paths relative, conflict-aware via a
+      `slugify`'d dir name; one-field-per-line HJSON so refs parse).
 - [ ] **Re-encode** (`E`) — explicit identity encoding with a quality score; auto on
       first strategy+model use; invalidated by ref/strategy/model change.
-- [ ] **Right to be forgotten** (`Del`) — type-name confirmation; remove the dir,
-      update scenario refs, offer to delete `out/` images.
+- [x] **Right to be forgotten** (`Del`) — type-name confirmation modal (People now
+      captures input while confirming); on a match removes `people/<name>/` (refs +
+      encodings). Scenario-ref rewrite + `out/` image cleanup remain smaller follow-ups.
 - [ ] **Mixed-family multiperson** — route a marked set by the personas' strategies
       instead of forcing plus-face/sd15 for the whole scene.
 - [ ] **Identity-preserving Chat continuation** — continuing a portrait keeps the

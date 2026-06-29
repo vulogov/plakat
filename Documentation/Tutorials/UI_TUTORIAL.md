@@ -160,6 +160,15 @@ tagged `◇`).
 - **`Space`** marks people (`●`); with **two or more marked, `G`**
   generates a **multiperson scene** placing each person in their own
   region.
+- **`I`** **imports** a scenario-defined persona (`◇`) into your editable
+  `people/` library — it copies the reference photos into
+  `people/<name>/refs/` and writes a `person.hjson`, so you can encode,
+  re-use, and edit it like any other identity (conflict-aware; an
+  existing dir is never overwritten).
+- **`Del`** **removes** a `people/` identity — the *right to be
+  forgotten*. You must **type the identity's name** to confirm; on a
+  match the whole `people/<name>/` directory (refs + encodings) is
+  deleted. (Scenario personas are read-only here — edit the scenario.)
 
 ---
 
