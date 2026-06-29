@@ -8,6 +8,32 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.15.0 — `plakat ui`, the interactive terminal UI
+
+plakat has always been a powerful but flag-heavy CLI. 1.15.0 added **`plakat ui`** — a
+full-screen, keyboard-driven terminal application over the *same* engine. Load a model
+once and **talk** to it: conversational generation + refinement with inline images,
+browse everything you've made, drop in a specific person, paint an inpaint mask, search
+and apply LoRAs, compile prose into scenarios — eight integrated screens (RFC TUI-1).
+
+- **Chat** — type a prompt, the image renders inline; the next prompt **evolves** it
+  (accumulated prompt at a stable seed). Commands: `/new` `/negative` `/enhance`
+  `/strength` `/seed`, `Ctrl-P/N` prompt recall, a 2-line wrapping editor.
+- **Models** — load/unload with live RAM + swap gauges and rerouted progress.
+- **Scenarios** — browse, edit (built-in editor), run batch jobs with a per-task board.
+- **History** — every output under `out/`, by date, with its embedded recipe; `C`
+  continues any image in Chat.
+- **People** — an identity library (incl. personas read from scenarios); `G` makes a
+  portrait, or mark two+ for a multiperson scene.
+- **LoRA Hub** — LOCAL (family + compatibility, `A` applies) + CivitAI/HuggingFace
+  search/download + LLM assess / recommend.
+- **Prompt Workspace** — prose → live structural compile; `Ctrl-R` LLM compile;
+  `Ctrl-O` → Scenarios editor.
+- **Canvas** — paint a coarse inpaint mask (presets); `Enter` hands Chat a full-res mask.
+
+The UI loaded SD-family models at 1.15.0; SD3/PixArt/Cascade in the UI plus the depth
+features landed in 1.16.0.
+
 ## What's new in 1.14.0 — every feature, every surface
 
 1.12 shipped **multiperson + face-swap** and 1.13 shipped the **map coastlines & worlds** —

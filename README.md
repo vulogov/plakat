@@ -17,50 +17,48 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.15.0 — `plakat ui`, the interactive terminal UI
+## What's new in 1.16.0 — `plakat ui` grows up
 
-plakat has always been a powerful but flag-heavy CLI. 1.15.0 adds **`plakat ui`** — a
-full-screen, keyboard-driven terminal application over the *same* engine. Load a model
-once and **talk** to it: conversational generation + refinement with inline images,
-browse everything you've made, drop in a specific person, paint an inpaint mask, search
-and apply LoRAs, compile prose into scenarios — eight integrated screens (RFC TUI-1).
+1.15.0 shipped the eight-screen **`plakat ui`** terminal UI. 1.16.0 pays down its depth
+deferrals — more models, smarter refinement, and the workflow glue that turns *exploring*
+into *producing*.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **Chat** — type a prompt, the image renders inline; the next prompt **evolves** it
-  (accumulated prompt at a stable seed, so edits land and composition holds). Commands:
-  `/new` `/negative` `/enhance` (DeepSeek/Gemini/local) `/strength` `/seed`, `Ctrl-P/N`
-  prompt recall, a 2-line wrapping editor. Every step + its recipe is saved.
-- **Models** — load/unload with live RAM + swap gauges and rerouted download/load progress.
-- **Scenarios** — browse, edit (built-in editor), and run batch jobs with a live per-task
-  status board.
-- **History** — every output under `out/`, by date, with its embedded recipe; `C` continues
-  any image in Chat.
-- **People** — an identity library (incl. personas read from your scenarios); `G` makes a
-  portrait, or mark two+ and `G` makes a multiperson scene — opens in Chat.
-- **LoRA Hub** — LOCAL (header-inferred family + compatibility vs the loaded model; `A`
-  applies, reloading with it merged), plus **CivitAI** and **HuggingFace** search/download,
-  and LLM **assess** / **recommend-for-context**.
-- **Prompt Workspace** — write prose, watch the **structural compile** update live; `Ctrl-R`
-  for the full LLM compile; `Ctrl-O` saves the scenario and opens it in the editor.
-- **Canvas** — paint a coarse inpaint mask (presets for sky/background/foreground/halves/
-  person); `Enter` hands Chat a full-res mask so the next prompt inpaints just that region.
+- **More models in the UI** — **SD3 / 3.5**, **PixArt-Σ**, and **Stable Cascade** now
+  load and generate in Chat alongside SD-family (only Flux stays CLI-only for now). Chat
+  refine / Canvas inpaint get **live preview + mid-denoise cancel** (StepHook-wired
+  img2img), and `/auto` lets an LLM decide **edit-vs-new** for each follow-up.
+- **LoRA Hub completeness** — per-LoRA **weights** (`+`/`-`, shown `★w`), `Ctrl-R` LLM
+  **stack suggestions**, HuggingFace **base-model markers**, 1h **search caching**, and a
+  `●` download indicator.
+- **Chat → Scenario** — `Ctrl-G` in the Scenarios editor distills your whole Chat thread
+  into one coherent prompt and inserts it as a scenario task: explore in Chat, batch as a
+  scenario.
+- **People** — `I` **imports** a scenario persona into your editable `people/` library;
+  `Del` is the **right to be forgotten** (type-name confirmation).
+- **History** — `/` **filter** across filename / tags / recipe, `T` **tag**, `X`
+  **export** the filtered set, and `d` **compares** two recipes (only the changed fields).
+- **Canvas** — `M` **outpaint**: pick an edge + band and extend the image; Chat fills the
+  new region.
+- **Prompt Workspace** — `Ctrl-Tab` cycles buffers, `Ctrl-N` starts a new one.
+- **Chat sessions** — `/save`, `/load`, `/sessions` persist and restore a whole thread
+  (prompt + seed + negative + base image) so you can pick up where you left off.
 
-The whole thing is one loop: compile a prompt → run it → browse the output → pull it back
-into Chat → refine → mask a region → inpaint → apply a LoRA → drop a person in. Everything is
-a normal plakat PNG (recipe embedded) and every compiled scenario runs headlessly.
+Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
+that a compiled scenario runs headlessly.
 
 > Inline images use the terminal's graphics protocol (Kitty/Ghostty/WezTerm/iTerm2/Sixel);
-> the UI runs without one (placeholders). It's behind the default-on `ui` feature. The UI
-> loads SD-family models today (Flux/SD3/PixArt/Cascade in the UI are a 1.16.0 carry).
+> the UI runs without one (placeholders). It's behind the default-on `ui` feature. Flux in
+> the UI is postponed until it can be verified on capable hardware.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
 [`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
-[`Documentation/ROADMAP_1.16.0.md`](Documentation/ROADMAP_1.16.0.md).
+[`Documentation/ROADMAP_1.17.0.md`](Documentation/ROADMAP_1.17.0.md).
 
-**Earlier releases** (v0.13 – v1.14):
+**Earlier releases** (v0.13 – v1.15):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
