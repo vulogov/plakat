@@ -108,9 +108,12 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 
 - [ ] **Tera mode** (`Ctrl-T`) — toggle the compile Tera pre-pass (`templates`
       feature) with a live variable panel.
-- [ ] **Buffer cycling** (`Ctrl-Tab`) polish + new-buffer naming.
-- [ ] **Canvas outpaint** (`M`) — arrow at a boundary extends by 128px units, grey
-      preview; hands Chat an outpaint job.
+- [x] **Buffer cycling** (`Ctrl-Tab`) + new-buffer (`Ctrl-N`) — cycle saved buffers in
+      the editor (wraps, dirty-guarded); `Ctrl-N` opens a fresh uniquely-named buffer.
+- [x] **Canvas outpaint** (`M`) — outpaint mode: pick an edge (`←/→/↑/↓`) + band
+      (`+/-`, ×128px, ≤4), `Enter` builds a grey-padded enlarged base + band mask and
+      hands Chat a one-shot inpaint over the new region. Generation now runs at the
+      init image's real (non-square) dims so the mask aligns.
 - [ ] **Canvas face-aware `B`** — exclude detected faces from the background preset.
 - [ ] **Finer masks** — document the external-editor + `--mask-path` path more
       prominently; optionally a finer grid toggle.

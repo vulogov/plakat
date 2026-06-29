@@ -221,6 +221,15 @@ regenerate).
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
 
+### Outpaint — extend the canvas (`M`)
+
+Press **`M`** for **outpaint mode**: instead of masking *inside* the
+image, you grow it. Pick an edge with the arrows (`←/→/↑/↓`), set how
+far with `+`/`-` (each band = 128px, up to 4), and press `Enter`. The
+Canvas builds a grey-padded, enlarged base with a mask over the new
+strip and hands it to Chat — your next prompt **paints the new region**
+(e.g. extend a landscape rightward). `M` or `Esc` cancels.
+
 This is *regional* masking (coarse by design). For pixel-precise
 masks, paint one in an external editor and use the CLI's
 `--mask-path`.
@@ -284,6 +293,8 @@ the scenario HJSON your prose produces.
   into `scenarios/` and opens it in the Scenarios editor.
 - **`Esc`** jumps to the buffer list (`.txt`/`.tera`/`.hjson`);
   **Enter** loads one.
+- **`Ctrl-N`** starts a fresh buffer (name it by saving); **`Ctrl-Tab`**
+  cycles through your saved buffers without leaving the editor.
 
 See [`COMPILE_TUTORIAL.md`](COMPILE_TUTORIAL.md) for the prose format.
 

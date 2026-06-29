@@ -142,6 +142,9 @@ impl PromptsState {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.focus = Focus::Files,
+            // Ctrl-Tab cycles to the next saved buffer; Ctrl-N starts a fresh one.
+            KeyCode::Tab if ctrl => self.cycle_buffer(),
+            KeyCode::Char('n' | 'N') if ctrl => self.new_buffer(),
             KeyCode::Char('s' | 'S') if ctrl => self.save(),
             KeyCode::Char('r' | 'R') if ctrl => {
                 self.compiling = true;
@@ -165,6 +168,49 @@ impl PromptsState {
             }
         }
         PromptsAction::None
+    }
+
+    /// Cycle the editor to the next saved buffer (wraps), staying in the editor. With a
+    /// dirty unsaved buffer it warns rather than silently discarding edits.
+    fn cycle_buffer(&mut self) {
+        self.rescan();
+        if self.files.is_empty() {
+            self.status = "no other buffers — Ctrl-N for a new one".into();
+            return;
+        }
+        if self.dirty {
+            self.status = "unsaved edits — Ctrl-S to save before cycling".into();
+            return;
+        }
+        let cur = self.editing_path.as_ref().and_then(|p| self.files.iter().position(|f| f == p));
+        let next = match cur {
+            Some(i) => (i + 1) % self.files.len(),
+            None => 0,
+        };
+        let path = self.files[next].clone();
+        self.file_sel = next;
+        self.load(path);
+        self.status = format!("buffer {}/{}: {}", next + 1, self.files.len(), self.buffer_name());
+    }
+
+    /// Open a fresh, uniquely-named `prompt-N.txt` buffer (name it by saving). The
+    /// buffer is dirty (not yet on disk) until `Ctrl-S`.
+    fn new_buffer(&mut self) {
+        let mut n = 0usize;
+        let path = loop {
+            let name = if n == 0 { "prompt.txt".to_string() } else { format!("prompt-{n}.txt") };
+            let p = self.dir.join(&name);
+            if !p.exists() {
+                break p;
+            }
+            n += 1;
+        };
+        self.editor = text_area_from(STARTER);
+        self.editing_path = Some(path);
+        self.dirty = true;
+        self.last_compiled_src = None;
+        self.focus = Focus::Editor;
+        self.status = format!("new buffer ‘{}’ — Ctrl-S to save (renames the file)", self.buffer_name());
     }
 
     fn load(&mut self, path: PathBuf) {
@@ -236,7 +282,7 @@ impl PromptsState {
     fn render_editor(&self, f: &mut Frame, area: Rect) {
         let name = self.buffer_name();
         let title = format!(
-            " {name}{}  [Ctrl-S save · Ctrl-R LLM · Ctrl-O→Scenarios · Esc buffers] ",
+            " {name}{}  [Ctrl-S save · Ctrl-N new · Ctrl-Tab cycle · Ctrl-R LLM · Ctrl-O→Scenarios · Esc] ",
             if self.dirty { " ●" } else { "" }
         );
         let border = if self.focus == Focus::Editor { Color::Cyan } else { Color::DarkGray };
@@ -328,6 +374,39 @@ mod tests {
             PromptsAction::OpenInScenarios { hjson, .. } => assert!(hjson.contains("tasks")),
             _ => panic!("expected OpenInScenarios"),
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_n_makes_a_new_unique_buffer_and_ctrl_tab_cycles() {
+        let d = tmp("buffers");
+        std::fs::write(d.join("a.txt"), "alpha").unwrap();
+        std::fs::write(d.join("b.txt"), "beta").unwrap();
+        let mut s = PromptsState::new(d.clone());
+
+        // Ctrl-N opens a fresh, uniquely-named, dirty buffer.
+        s.handle_key(ctrl('n'));
+        assert_eq!(s.buffer_name(), "prompt");
+        assert!(s.dirty);
+        // Save it, then Ctrl-Tab cycles among the saved buffers (a, b, prompt).
+        s.handle_key(ctrl('s'));
+        assert!(!s.dirty);
+        let first = s.buffer_name();
+        s.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL));
+        assert_ne!(s.buffer_name(), first, "cycled to a different buffer");
+        assert!(s.status.starts_with("buffer "));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_tab_warns_on_unsaved_edits() {
+        let d = tmp("dirty-cycle");
+        std::fs::write(d.join("a.txt"), "alpha").unwrap();
+        let mut s = PromptsState::new(d.clone());
+        s.handle_key(ch('z')); // dirty the buffer
+        assert!(s.dirty);
+        s.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL));
+        assert!(s.status.contains("unsaved"), "cycling a dirty buffer warns");
         let _ = std::fs::remove_dir_all(&d);
     }
 

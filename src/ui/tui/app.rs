@@ -483,8 +483,10 @@ impl App {
 
         // ── The Canvas owns the keyboard (preset letters + Space painting). ──
         if self.screen == ActiveScreen::Canvas {
-            if let canvas::CanvasAction::MaskReady(path) = self.canvas.handle_key(key) {
-                self.apply_canvas_mask(path);
+            match self.canvas.handle_key(key) {
+                canvas::CanvasAction::MaskReady(path) => self.apply_canvas_mask(path),
+                canvas::CanvasAction::OutpaintReady { base, mask } => self.apply_outpaint(base, mask),
+                canvas::CanvasAction::None => {}
             }
             return;
         }
@@ -1025,6 +1027,19 @@ impl App {
         self.screen = ActiveScreen::Chat;
     }
 
+    /// Apply a Canvas outpaint: the enlarged grey-padded image becomes the Chat base
+    /// and the band mask is a one-shot inpaint, so the next prompt fills the new region.
+    fn apply_outpaint(&mut self, base: std::path::PathBuf, mask: std::path::PathBuf) {
+        self.refine_base = Some(base);
+        self.chat_mask = Some(mask);
+        if self.base_seed.is_none() {
+            self.base_seed = Some(rand::random::<u32>() as u64);
+        }
+        self.chat.refine_armed = true;
+        self.chat.push_system("outpaint base set from Canvas — type what fills the new region (one-shot)".into());
+        self.screen = ActiveScreen::Chat;
+    }
+
     /// Keep the Canvas base in sync with the current Chat base image (lazy preview).
     fn sync_canvas(&mut self) {
         if self.screen != ActiveScreen::Canvas {
@@ -1509,11 +1524,18 @@ impl App {
         let strength = if inpaint { INPAINT_STRENGTH } else { self.refine_strength.unwrap_or(0.0) };
         let mask = if inpaint { self.chat_mask.take() } else { None }; // one-shot
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
+        // An img2img/inpaint init image (e.g. a Canvas outpaint's grey-padded base) may
+        // be non-square — generate at ITS dimensions (rounded to /8) so the mask aligns,
+        // rather than squishing it into the native square. txt2img stays native-square.
+        let (gen_w, gen_h) = match init_image.as_ref().and_then(|p| image::image_dimensions(p).ok()) {
+            Some((iw, ih)) => ((iw / 8 * 8).max(8), (ih / 8 * 8).max(8)),
+            None => (n, n),
+        };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
             self.negative.clone(),
-            n,
-            n,
+            gen_w,
+            gen_h,
             steps,
             guidance,
             seed,
