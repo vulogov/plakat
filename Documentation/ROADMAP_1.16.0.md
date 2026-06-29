@@ -29,8 +29,11 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
         only the applied LoRA set and generate load-per-call (the first gen shows the
         download/load). txt2img only (no img2img): prompt-evolve refine works,
         anchored/inpaint falls back to a fresh render.
-  - [ ] **Flux** — `flux::run` is load-per-call with a ~25-field `Request` (+ the
-        GGUF-Metal block); needs its own dispatch. Last family.
+  - [⏸] **Flux** — **POSTPONED** (not a code decision): Flux can't be verified on the
+        current box (hardware ceiling — Flux is too large to load/run for end-to-end
+        confirmation, and GGUF-Flux-on-Metal is a known-broken kernel path). Deferred
+        until verifiable hardware is available; the friendly CLI-only error stays until
+        then. `flux::run` dispatch is the only remaining family.
 - [ ] **In-process scenario / portrait runner** — Scenario runs and People quick-gen
       load their **own** model alongside any Chat model (double load, memory
       pressure). **Large refactor**: the scenario runner is monolithic and selects its
