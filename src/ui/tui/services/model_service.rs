@@ -249,7 +249,14 @@ fn model_loop(
                         out_dir: job.out_dir.clone(),
                         controls: Vec::new(),
                     };
-                    match rt.block_on(img2img::run_with_pipeline(&refine_pipe, &req)) {
+                    // Live preview + cancel during the refine (RFC §0-R0-3).
+                    let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                    let result = rt.block_on(img2img::run_with_pipeline_hooked(
+                        &refine_pipe,
+                        &req,
+                        Some(&mut hook),
+                    ));
+                    match result {
                         Ok(()) => {
                             // The pipeline names by mode: a mask → "inpaint", else
                             // "img2img". Match it or we'd rename/open a missing file
