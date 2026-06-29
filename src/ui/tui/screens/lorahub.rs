@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -102,6 +102,9 @@ pub enum LoraHubAction {
     Recommend { candidates: Vec<String> },
     /// `+`/`-` (LOCAL) — nudge the selected applied LoRA's weight (App reloads).
     AdjustWeight { path: PathBuf, delta: f32 },
+    /// `Ctrl-R` (LOCAL) — LLM-suggest a LoRA *stack* for the Chat prompt from the
+    /// compatible local LoRAs. The App supplies the prompt context.
+    SuggestCombination { candidates: Vec<String> },
 }
 
 pub struct LoraHubState {
@@ -125,6 +128,9 @@ pub struct LoraHubState {
     /// Recommend-for-context result (search tabs) + in-flight flag.
     recommendation: Option<String>,
     recommending: bool,
+    /// LoRA-combination suggestion (LOCAL Ctrl-R) + in-flight flag.
+    combination: Option<String>,
+    combining: bool,
 }
 
 impl LoraHubState {
@@ -145,6 +151,8 @@ impl LoraHubState {
             assessing: None,
             recommendation: None,
             recommending: false,
+            combination: None,
+            combining: false,
         };
         s.rescan();
         s
@@ -154,6 +162,12 @@ impl LoraHubState {
     pub fn set_recommendation(&mut self, text: String) {
         self.recommendation = Some(text);
         self.recommending = false;
+    }
+
+    /// The App delivers the LoRA-combination suggestion (LOCAL).
+    pub fn set_combination(&mut self, text: String) {
+        self.combination = Some(text);
+        self.combining = false;
     }
 
     /// The App delivers an LLM assessment for `key` (or an error string).
@@ -254,6 +268,20 @@ impl LoraHubState {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
+            // Ctrl-R — suggest a LoRA *stack* for the Chat prompt (compatible LoRAs).
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let candidates: Vec<String> = self
+                    .loras
+                    .iter()
+                    .filter(|l| self.compatible(l) != Some(false))
+                    .map(|l| l.name.clone())
+                    .collect();
+                if !candidates.is_empty() {
+                    self.combining = true;
+                    self.combination = None;
+                    return LoraHubAction::SuggestCombination { candidates };
+                }
+            }
             KeyCode::Char('r') => self.rescan(),
             // R — LLM assessment of the selected LoRA.
             KeyCode::Char('R') => {
@@ -536,7 +564,7 @@ impl LoraHubState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess ");
+        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess · [Ctrl-R] combo ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(l) = self.loras.get(self.selected) else { return };
@@ -580,6 +608,15 @@ impl LoraHubState {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("✦ AI assessment", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
             lines.push(Line::from(Span::styled(a.clone(), Style::new().fg(Color::Gray))));
+        }
+        // LoRA-combination suggestion (Ctrl-R) — applies to the whole compatible set.
+        if self.combining {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  ⊕ suggesting a combination…", Style::new().fg(Color::Yellow))));
+        } else if let Some(c) = &self.combination {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("⊕ suggested stack", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(c.clone(), Style::new().fg(Color::Gray))));
         }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
@@ -917,6 +954,23 @@ mod tests {
         s.set_recommendation("Watercolor — best matches a painterly prompt.".into());
         assert!(!s.recommending);
         assert!(s.recommendation.as_deref().unwrap().contains("Watercolor"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_r_on_local_requests_a_combination() {
+        let d = tmp("combo");
+        write_st(&d.join("a.safetensors"), &[("ss_base_model_version", "sdxl")], "x", &[8, 4]);
+        write_st(&d.join("b.safetensors"), &[("ss_base_model_version", "sdxl")], "x", &[8, 4]);
+        let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
+        match s.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)) {
+            LoraHubAction::SuggestCombination { candidates } => assert_eq!(candidates.len(), 2),
+            _ => panic!("expected SuggestCombination"),
+        }
+        assert!(s.combining);
+        s.set_combination("Stack a @0.7 + b @0.4".into());
+        assert!(!s.combining);
+        assert!(s.combination.as_deref().unwrap().contains("Stack"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

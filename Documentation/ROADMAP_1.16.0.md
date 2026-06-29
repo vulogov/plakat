@@ -58,18 +58,18 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 
 ## C — LoRA Hub completeness
 
-- [ ] **`Ctrl-R` combination suggestions** — LLM-suggested LoRA *stacks* for a prompt
-      (populates Chat's active-LoRA list). (RFC §10 3c, the last LLM feature.)
-- [ ] **Per-LoRA weight control** — a weight slider per applied LoRA (sidecar
-      `weight_range`/`default`), instead of the fixed 0.8.
-- [ ] **Download manager** — inline progress bar (currently status-line only), ≤2
-      concurrent, range-resume, SHA-256 verify, version-update detection, `●` in the
-      tab bar.
+- [x] **`Ctrl-R` combination suggestions** — on LOCAL, the LLM suggests a LoRA *stack*
+      (1–3 + rough weights) for the current Chat prompt from the compatible LoRAs;
+      shown in the detail pane.
+- [x] **Per-LoRA weight control** — `active_loras` carries a per-LoRA weight; `+`/`-`
+      on an applied LoRA nudges it (0.1–1.5) and reloads; the list shows `★<weight>`.
+- [x] **HF base-model marker** — `RemoteHit.family` is inferred (Civitai from
+      `baseModel`, HF guessed from the repo id), so HF hits show `✓`/`✗`.
+- [ ] **Download manager** — download *progress* already streams to the Output pane
+      (rerouted bars); still missing: ≤2 concurrent, range-resume, explicit SHA-256
+      verify, version-update detection, `●` in the tab bar.
 - [ ] **Search caching** — Civitai/HF results cached 1h, LLM assessments 24h
-      (sidecar `llm_assessments[]`); the two-stage HF pre-filter (discard
-      non-`.safetensors`/non-diffusion/zero-download<24h before the LLM scores 30–40).
-- [ ] **HF base-model marker** — infer/guess a base family for HF hits (the API
-      doesn't expose one) so the compat `✓`/`✗` works before download.
+      (sidecar `llm_assessments[]`); the two-stage HF pre-filter.
 
 ## D — History richness
 

@@ -182,6 +182,8 @@ pub struct App {
     lora_assess: Option<Receiver<(String, String)>>,
     // In-flight LLM recommend-for-context (LoRA Hub search tabs).
     lora_recommend: Option<Receiver<String>>,
+    // In-flight LLM LoRA-combination suggestion (LoRA Hub Ctrl-R).
+    lora_combine: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
 }
@@ -236,6 +238,7 @@ impl App {
             remote_download: None,
             lora_assess: None,
             lora_recommend: None,
+            lora_combine: None,
             prompt_compile: None,
             active_loras: Vec::new(),
             chat_mask: None,
@@ -610,7 +613,37 @@ impl App {
             lorahub::LoraHubAction::Assess { key, prompt } => self.assess_lora(key, prompt),
             lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
             lorahub::LoraHubAction::AdjustWeight { path, delta } => self.adjust_lora_weight(path, delta),
+            lorahub::LoraHubAction::SuggestCombination { candidates } => self.suggest_combination(candidates),
         }
+    }
+
+    /// `Ctrl-R` — ask the LLM which compatible LoRAs to STACK for the current Chat
+    /// prompt, on a background thread; the suggestion shows in the LOCAL detail.
+    fn suggest_combination(&mut self, candidates: Vec<String>) {
+        if self.lora_combine.is_some() {
+            return;
+        }
+        let context = if !self.refine_prompt.is_empty() {
+            self.refine_prompt.clone()
+        } else {
+            let typed = self.chat.editor.text();
+            if typed.trim().is_empty() { "a general image".into() } else { typed }
+        };
+        let list = candidates.join(", ");
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You compose Stable Diffusion LoRA STACKS. Given an image \
+                prompt and available LoRAs, suggest which to combine (1–3) and rough weights, \
+                in ONE plain sentence. No preamble, no markdown.";
+            let user = format!("Image prompt: {context}\n\nAvailable LoRAs: {list}\n\nSuggest a combination.");
+            let text = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_else(|e| format!("(suggestion failed: {e:#})"));
+            let _ = tx.send(text.trim().to_string());
+        });
+        self.lora_combine = Some(rx);
     }
 
     /// Recommend-for-context: ask the LLM which candidate LoRA best fits the current
@@ -790,6 +823,16 @@ impl App {
                     self.lora_recommend = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_recommend = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.lora_combine {
+            match rx.try_recv() {
+                Ok(text) => {
+                    self.lorahub.set_combination(text);
+                    self.lora_combine = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_combine = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
