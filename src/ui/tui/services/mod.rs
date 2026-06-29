@@ -3,3 +3,4 @@
 //! and talks back over channels the `App` drains each tick.
 
 pub mod model_service;
+pub mod search_cache;

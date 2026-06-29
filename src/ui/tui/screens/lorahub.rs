@@ -15,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::preset::discovery::BaseFamily;
 
@@ -66,13 +66,14 @@ enum Phase {
 }
 
 /// What the App needs to download a hit.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum DownloadRef {
     Civitai { model_id: u64, version_id: Option<u64> },
     Hf { repo: String },
 }
 
 /// One remote search hit (filled by the App from the Civitai / HF API).
+#[derive(Serialize, Deserialize)]
 pub struct RemoteHit {
     pub title: String,
     /// Base model (Civitai) or pipeline tag (HF), shown dim.
@@ -131,6 +132,8 @@ pub struct LoraHubState {
     /// LoRA-combination suggestion (LOCAL Ctrl-R) + in-flight flag.
     combination: Option<String>,
     combining: bool,
+    /// True while a download is in flight (App-driven) → `●` in the tab bar.
+    downloading: bool,
 }
 
 impl LoraHubState {
@@ -153,9 +156,15 @@ impl LoraHubState {
             recommending: false,
             combination: None,
             combining: false,
+            downloading: false,
         };
         s.rescan();
         s
+    }
+
+    /// The App mirrors whether a download is in flight (drives the `●` tab marker).
+    pub fn set_downloading(&mut self, on: bool) {
+        self.downloading = on;
     }
 
     /// The App delivers the recommend-for-context result.
@@ -415,17 +424,18 @@ impl LoraHubState {
         } else {
             "  ←/→ tab · / edit query · D download"
         };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                tab("LOCAL", self.tab == Tab::Local),
-                Span::raw(" "),
-                tab("CIVITAI", self.tab == Tab::Civitai),
-                Span::raw(" "),
-                tab("HUGGINGFACE", self.tab == Tab::HuggingFace),
-                Span::styled(hint, Style::new().fg(Color::DarkGray)),
-            ])),
-            area,
-        );
+        let mut spans = vec![
+            tab("LOCAL", self.tab == Tab::Local),
+            Span::raw(" "),
+            tab("CIVITAI", self.tab == Tab::Civitai),
+            Span::raw(" "),
+            tab("HUGGINGFACE", self.tab == Tab::HuggingFace),
+        ];
+        if self.downloading {
+            spans.push(Span::styled("  ● downloading", Style::new().fg(Color::Yellow)));
+        }
+        spans.push(Span::styled(hint, Style::new().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_remote(&self, f: &mut Frame, area: Rect) {

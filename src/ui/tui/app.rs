@@ -706,6 +706,17 @@ impl App {
         if self.remote_search.is_some() {
             return;
         }
+        let src_tag = match source {
+            lorahub::RemoteSource::Civitai => "civitai",
+            lorahub::RemoteSource::HuggingFace => "hf",
+        };
+        // Serve an identical recent query from the 1h disk cache — no network round-trip.
+        if let Some(hits) = super::services::search_cache::get(src_tag, &query) {
+            let n = hits.len();
+            self.lorahub.set_remote_hits(hits);
+            self.lorahub.set_remote_status(format!("{n} results (cached)"));
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
         std::thread::spawn(move || {
@@ -745,6 +756,10 @@ impl App {
                     })
                     .map_err(|e| format!("{e:#}")),
             };
+            // Persist successful results for the next identical query within the TTL.
+            if let Ok(hits) = &result {
+                super::services::search_cache::put(src_tag, &query, hits);
+            }
             let _ = tx.send(result);
         });
         self.remote_search = Some(rx);
@@ -772,6 +787,7 @@ impl App {
             };
             let _ = tx.send(result);
         });
+        self.lorahub.set_downloading(true);
         self.remote_download = Some(rx);
     }
 
@@ -796,13 +812,18 @@ impl App {
                 Ok(Ok(name)) => {
                     self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL"));
                     self.lorahub.rescan();
+                    self.lorahub.set_downloading(false);
                     self.remote_download = None;
                 }
                 Ok(Err(e)) => {
                     self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
+                    self.lorahub.set_downloading(false);
                     self.remote_download = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_download = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.lorahub.set_downloading(false);
+                    self.remote_download = None;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
