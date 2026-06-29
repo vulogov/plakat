@@ -65,11 +65,24 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
       on an applied LoRA nudges it (0.1–1.5) and reloads; the list shows `★<weight>`.
 - [x] **HF base-model marker** — `RemoteHit.family` is inferred (Civitai from
       `baseModel`, HF guessed from the repo id), so HF hits show `✓`/`✗`.
-- [ ] **Download manager** — download *progress* already streams to the Output pane
-      (rerouted bars); still missing: ≤2 concurrent, range-resume, explicit SHA-256
-      verify, version-update detection, `●` in the tab bar.
-- [ ] **Search caching** — Civitai/HF results cached 1h, LLM assessments 24h
-      (sidecar `llm_assessments[]`); the two-stage HF pre-filter.
+- [~] **Download manager** — download *progress* already streams to the Output pane
+      (rerouted bars) and the tab bar now shows `● downloading` while a download is in
+      flight (single-flight, guarded). Still deferred (deep robustness, low leverage):
+      ≤2 concurrent, range-resume, explicit SHA-256 verify, version-update detection.
+- [x] **Search caching** — Civitai/HF results cached **1h** to a sidecar JSON under the
+      shared cache root (`<cache>/plakat-ui/lora-search/`, honors `--cache-dir`), keyed
+      by `(source, normalized query)`, fresh via file mtime; an identical recent query
+      is served from disk with a `(cached)` status. `RemoteHit`/`DownloadRef` are now
+      `Serialize`/`Deserialize`. (LLM-assessment 24h caching + the two-stage HF
+      pre-filter remain as smaller follow-ups.)
+
+## C′ — Chat → Scenario (new this cycle)
+
+- [x] **Grab Chat session as a task** (`Ctrl-G` in the Scenarios EDITOR) — distill the
+      whole Chat refinement thread into one coherent prompt via the LLM and insert a
+      `{ name, prompt }` task at the cursor (quoted + escaped; background job; opens a
+      fresh template if no editor is active). Closes the explore-in-Chat →
+      batch-as-scenario loop.
 
 ## D — History richness
 

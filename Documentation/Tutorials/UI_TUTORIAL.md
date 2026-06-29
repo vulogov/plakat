@@ -213,6 +213,36 @@ Press **`Ctrl-3`**. Browse the `.hjson` files in `scenarios/`:
 - **`e`** edits the file in a built-in editor (`Ctrl-S` saves), **`n`**
   starts a new one from a template.
 
+### Grab a task from your Chat session (`Ctrl-G`)
+
+Inside the editor, **`Ctrl-G`** turns the conversation you've been having
+in Chat into a reusable scenario task. plakat takes the whole refinement
+thread — `a fox` → `make it autumn` → `add falling leaves` — and asks the
+LLM to **distill it into one coherent prompt**, then inserts a
+`{ name: from-chat, prompt: "…" }` block at the cursor:
+
+```
+> tasks: [
+>   ▏            ← cursor here, press Ctrl-G
+> ]
+```
+
+becomes
+
+```
+> tasks: [
+>   {
+>     name: from-chat
+>     prompt: "a fox in an autumn forest, falling leaves, soft light"
+>   }
+> ]
+```
+
+It runs in the background (the editor stays live); the prompt value is
+quoted and escaped so commas and quotes survive. `Ctrl-S` to save. This
+is the fast path from *exploring* an image in Chat to *batching* it
+(seeds, weather, scene variants) as a scenario.
+
 See [`SCENARIOS_TUTORIAL.md`](SCENARIOS_TUTORIAL.md) for the scenario
 format itself.
 

@@ -186,6 +186,8 @@ pub struct App {
     lora_combine: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
+    // In-flight Chat→Scenario summary (Scenarios editor Ctrl-G).
+    chat_to_scenario: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -240,6 +242,7 @@ impl App {
             lora_recommend: None,
             lora_combine: None,
             prompt_compile: None,
+            chat_to_scenario: None,
             active_loras: Vec::new(),
             chat_mask: None,
             auto_route: false,
@@ -441,9 +444,8 @@ impl App {
         // ── The Scenarios EDITOR / RUNNER own the keyboard (type into the buffer /
         //    capture Esc) — route everything to them while active. ──
         if self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input() {
-            if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
-                self.run_scenario(path);
-            }
+            let action = self.scenarios.handle_key(key);
+            self.handle_scenarios_action(action);
             return;
         }
 
@@ -499,9 +501,8 @@ impl App {
                 }
             },
             ActiveScreen::Scenarios => {
-                if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
-                    self.run_scenario(path);
-                }
+                let action = self.scenarios.handle_key(key);
+                self.handle_scenarios_action(action);
             }
             ActiveScreen::History => {
                 if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
@@ -619,6 +620,66 @@ impl App {
 
     /// `Ctrl-R` — ask the LLM which compatible LoRAs to STACK for the current Chat
     /// prompt, on a background thread; the suggestion shows in the LOCAL detail.
+    /// Route a Scenarios screen action.
+    fn handle_scenarios_action(&mut self, action: ScenariosAction) {
+        match action {
+            ScenariosAction::None => {}
+            ScenariosAction::Run(path) => self.run_scenario(path),
+            ScenariosAction::GrabFromChat => self.grab_chat_into_scenario(),
+        }
+    }
+
+    /// Summarize the current Chat session into one coherent image prompt and (when the
+    /// LLM returns) insert it as a `{ name, prompt }` task at the editor cursor. Source
+    /// = the session's non-system utterances (the whole refinement thread), else the
+    /// accumulated refine prompt, else whatever is typed in the Chat box. The summary
+    /// runs on a background thread (the editor stays live); `drain_civitai` delivers it.
+    fn grab_chat_into_scenario(&mut self) {
+        if self.chat_to_scenario.is_some() {
+            return;
+        }
+        // Build the source material from the chat thread.
+        let steps: Vec<String> = self
+            .chat
+            .history
+            .iter()
+            .filter(|e| !e.system)
+            .map(|e| e.utterance.clone())
+            .collect();
+        let source = if !steps.is_empty() {
+            steps.join("\n")
+        } else if !self.refine_prompt.is_empty() {
+            self.refine_prompt.clone()
+        } else {
+            self.chat.editor.text()
+        };
+        if source.trim().is_empty() {
+            self.scenarios.set_status("✗ nothing in Chat to summarize yet — generate something first");
+            return;
+        }
+        let negative = self.negative.clone();
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You distill a Stable Diffusion chat session into ONE reusable \
+                image prompt. The user's messages are successive refinement steps (each builds on \
+                the last). Merge them into a single coherent, comma-separated prompt capturing the \
+                final intended image. Output ONLY the prompt — no preamble, no quotes, no markdown.";
+            let user = if negative.trim().is_empty() {
+                format!("Refinement steps (oldest first):\n{source}\n\nFinal prompt:")
+            } else {
+                format!("Refinement steps (oldest first):\n{source}\n\n(Negative: {negative})\n\nFinal prompt:")
+            };
+            let result = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .map(|t| t.trim().trim_matches('"').to_string())
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.chat_to_scenario = Some(rx);
+    }
+
     fn suggest_combination(&mut self, candidates: Vec<String>) {
         if self.lora_combine.is_some() {
             return;
@@ -854,6 +915,20 @@ impl App {
                     self.lora_combine = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_combine = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.chat_to_scenario {
+            match rx.try_recv() {
+                Ok(Ok(prompt)) => {
+                    self.scenarios.insert_task("from-chat", &prompt);
+                    self.chat_to_scenario = None;
+                }
+                Ok(Err(e)) => {
+                    self.scenarios.set_status(format!("✗ Chat summary failed: {e}"));
+                    self.chat_to_scenario = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.chat_to_scenario = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
@@ -1819,6 +1894,28 @@ mod tests {
         let mut a = test_app();
         a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!a.should_quit);
+    }
+
+    #[test]
+    fn grab_from_chat_needs_something_to_summarize() {
+        // With an empty chat thread / refine prompt / editor, the grab is a no-op that
+        // reports why — no background LLM job is spawned.
+        let mut a = test_app();
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_none(), "no LLM job without source material");
+        assert!(a.scenarios.status.contains("nothing in Chat"));
+    }
+
+    #[test]
+    fn grab_from_chat_spawns_a_summary_when_the_thread_has_content() {
+        // A real chat utterance gives the summarizer source → an in-flight job starts.
+        let mut a = test_app();
+        a.chat.push_utterance("a watercolor fox".into(), false);
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_some(), "a summary job is in flight");
+        // A second press while one is in flight is ignored (no double-spawn).
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_some());
     }
 
     #[test]
