@@ -62,6 +62,10 @@ Eight screens, switched with **`Ctrl-1`…`Ctrl-8`** or **`Tab`** /
 | 7 | **Prompts** | Prompt Workspace — compile prose → scenario |
 | 8 | **Canvas** | Paint an inpaint mask, hand it to Chat |
 
+- **`Ctrl-K`** opens the **command palette** — a fuzzy launcher for every
+  action available on the current screen (plus jump-to-any-screen and
+  quit). Type to filter, `↑/↓` to move, `Enter` to run, `Esc` to dismiss.
+  It works from anywhere, even mid-typing.
 - **`Ctrl-Q`** quits from anywhere.
 - **`Ctrl-C`** cancels a running generation (or quits if none).
 - A shared **Output pane** at the bottom shows live download / denoise

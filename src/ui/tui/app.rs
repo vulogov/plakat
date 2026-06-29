@@ -30,6 +30,7 @@ use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::lorahub::{self, LoraHubState};
 use super::screens::models::ModelsState;
+use super::screens::palette::{self, Cmd, PaletteResult};
 use super::screens::people::{self, PeopleState};
 use super::screens::prompts::{self, PromptsState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
@@ -127,6 +128,8 @@ pub struct App {
     pub lorahub: LoraHubState,
     pub prompts: PromptsState,
     pub canvas: CanvasState,
+    // Command palette overlay (Ctrl-K), fuzzy action launcher (RFC §5).
+    pub palette: palette::PaletteState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -244,6 +247,7 @@ impl App {
             lorahub,
             prompts,
             canvas,
+            palette: palette::PaletteState::new(),
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -420,9 +424,21 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // ── The command palette overlay owns all input while open. ──
+        if self.palette.is_open() {
+            if let PaletteResult::Run(cmd) = self.palette.handle_key(key) {
+                self.exec_palette(cmd);
+            }
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ── Always-global keys (work even while a text input is focused) ──
+        // Ctrl-K opens the command palette from anywhere (even a text editor).
+        if ctrl && key.code == KeyCode::Char('k') {
+            self.open_palette();
+            return;
+        }
         match key.code {
             // Ctrl-Q always quits. Ctrl-C cancels a running generation if there is
             // one (it saves the partial), else quits.
@@ -455,7 +471,9 @@ impl App {
                 self.screen = self.screen.cycle(-1);
                 return;
             }
-            KeyCode::Tab => {
+            // Plain Tab cycles screens; Ctrl-Tab falls through (the Prompt Workspace
+            // uses it to cycle buffers).
+            KeyCode::Tab if !ctrl => {
                 self.screen = self.screen.cycle(1);
                 return;
             }
@@ -581,6 +599,87 @@ impl App {
             prompts::PromptsAction::LlmCompile(text) => self.prompt_llm_compile(text),
             prompts::PromptsAction::OpenInScenarios { name, hjson } => {
                 self.open_compiled_in_scenarios(name, hjson)
+            }
+        }
+    }
+
+    /// Build the command list for the current context and open the palette (Ctrl-K):
+    /// the active screen's most-relevant actions first, then screen navigation, then
+    /// quit. Most entries replay a key into the active screen so existing handlers run.
+    fn open_palette(&mut self) {
+        let k = |c: char| Cmd::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let kc = |c: char| Cmd::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        let enter = Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let mut cmds: Vec<(String, Cmd)> = Vec::new();
+        match self.screen {
+            ActiveScreen::Chat => {
+                cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
+                cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
+                cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
+            }
+            ActiveScreen::Models => {
+                cmds.push(("Load selected model".into(), k('l')));
+                cmds.push(("Unload model".into(), k('u')));
+            }
+            ActiveScreen::Scenarios => {
+                cmds.push(("Run selected scenario".into(), enter.clone()));
+                cmds.push(("Edit selected scenario".into(), k('e')));
+                cmds.push(("New scenario".into(), k('n')));
+            }
+            ActiveScreen::History => {
+                cmds.push(("Filter images…".into(), k('/')));
+                cmds.push(("Tag selected".into(), k('t')));
+                cmds.push(("Export filtered set".into(), k('x')));
+                cmds.push(("Compare baseline".into(), k('d')));
+                cmds.push(("Continue selected in Chat".into(), k('c')));
+                cmds.push(("Rescan".into(), k('r')));
+            }
+            ActiveScreen::People => {
+                cmds.push(("Generate selected → Chat".into(), k('g')));
+                cmds.push(("Import scenario persona".into(), k('i')));
+                cmds.push(("Rescan".into(), k('r')));
+            }
+            ActiveScreen::LoraHub => {
+                cmds.push(("Apply selected LoRA".into(), k('a')));
+                cmds.push(("Assess selected (LLM)".into(), k('r')));
+                cmds.push(("Suggest a LoRA stack (LLM)".into(), kc('r')));
+            }
+            ActiveScreen::PromptWorkspace => {
+                cmds.push(("New buffer".into(), kc('n')));
+                cmds.push(("Save buffer".into(), kc('s')));
+                cmds.push(("LLM compile".into(), kc('r')));
+                cmds.push(("Open compiled in Scenarios".into(), kc('o')));
+            }
+            ActiveScreen::Canvas => {
+                cmds.push(("Outpaint mode".into(), k('m')));
+                cmds.push(("Rasterize mask → Chat".into(), enter.clone()));
+                cmds.push(("Clear mask".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT))));
+            }
+        }
+        for s in ActiveScreen::ALL {
+            if s != self.screen {
+                cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
+            }
+        }
+        cmds.push(("Quit plakat ui".into(), Cmd::Quit));
+        self.palette.open(cmds);
+    }
+
+    /// Execute a palette command: navigate, quit, replay a key into the active screen,
+    /// or submit a Chat line.
+    fn exec_palette(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Goto(i) => {
+                if let Some(s) = ActiveScreen::from_index(i) {
+                    self.screen = s;
+                }
+            }
+            Cmd::Quit => self.should_quit = true,
+            Cmd::Key(k) => self.handle_key(k),
+            Cmd::Submit(line) => {
+                self.screen = ActiveScreen::Chat;
+                self.handle_chat_submit(line);
             }
         }
     }
@@ -1763,6 +1862,8 @@ impl App {
         } else {
             self.render_status_bar(f, rows[2]);
         }
+        // The command palette floats above everything when open.
+        self.palette.render(f, f.area());
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -1797,9 +1898,9 @@ impl App {
             || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input())
             || (self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input());
         let nav = if input_mode {
-            "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
+            "Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
-            "1-8 / Tab switch · Ctrl-Q quit"
+            "Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
         };
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
@@ -2138,6 +2239,49 @@ mod tests {
         a.handle_chat_submit("/sessions".into());
         assert!(a.chat.history.last().unwrap().utterance.contains("fox-demo"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_k_opens_palette_and_a_command_navigates() {
+        let mut a = test_app(); // starts on Chat
+        assert!(!a.palette.is_open());
+        // Ctrl-K opens the palette (even though Chat owns text input).
+        a.handle_key(key('k', true));
+        assert!(a.palette.is_open(), "Ctrl-K opens the palette");
+        // While open, plain chars filter the palette (don't reach Chat).
+        for c in "go to models".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.chat.editor.text(), "", "typing filters the palette, not Chat");
+        // Enter runs the top match → navigate to Models, palette closes.
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Models));
+    }
+
+    #[test]
+    fn palette_esc_closes_without_acting() {
+        let mut a = test_app();
+        a.handle_key(key('k', true));
+        assert!(a.palette.is_open());
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Chat), "Esc didn't navigate");
+    }
+
+    #[test]
+    fn palette_key_command_drives_the_active_screen() {
+        // On Models, the palette's "Load selected model" replays 'l' → loads.
+        let mut a = test_app();
+        a.screen = ActiveScreen::Models;
+        a.handle_key(key('k', true));
+        for c in "load selected".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // The palette closed and we stayed on Models (the load dispatched to the svc).
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Models));
     }
 
     #[test]

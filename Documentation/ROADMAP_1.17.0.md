@@ -52,7 +52,10 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 ## E — polish (remaining)
 
-- [ ] **Command palette** (RFC §5) — fuzzy action launcher per screen.
+- [x] **Command palette** (RFC §5) — `Ctrl-K` opens a fuzzy launcher overlay
+      (`palette.rs`): context commands for the active screen + jump-to-any-screen +
+      quit. Subsequence fuzzy filter; most entries replay a key into the active screen
+      so existing handlers run (also fixed the global `Tab` arm shadowing Ctrl-Tab).
 - [ ] **Chat session thumbnail strip + explicit rollback / variations** — builds on the
       `/save`·`/load`·`/sessions` persistence shipped in 1.16.0.
 - [ ] **`@mention`** people / LoRAs / styles inline in the Chat prompt (live completion).
