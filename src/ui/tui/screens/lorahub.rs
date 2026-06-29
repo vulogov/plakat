@@ -78,6 +78,9 @@ pub struct RemoteHit {
     /// Base model (Civitai) or pipeline tag (HF), shown dim.
     pub subtitle: String,
     pub downloads: u64,
+    /// Inferred base family for the compatibility marker (Civitai from `baseModel`,
+    /// HF guessed from the repo id). `None` → unknown.
+    pub family: Option<BaseFamily>,
     pub dl: DownloadRef,
 }
 
@@ -428,7 +431,7 @@ impl LoraHubState {
         let mut lines: Vec<Line> = Vec::new();
         for (i, h) in self.hits.iter().enumerate() {
             // Civitai hits carry a base model → show compatibility; HF hits don't.
-            let (glyph, gcolor) = match family_from_str(&h.subtitle) {
+            let (glyph, gcolor) = match h.family {
                 Some(a) => match self.loaded_family {
                     Some(b) if a == b => ("✓", Color::Green),
                     Some(_) => ("✗", Color::Red),
@@ -570,8 +573,9 @@ impl LoraHubState {
     }
 }
 
-/// Map a free-text base-model string (e.g. a sidecar's "SDXL 1.0") to a family.
-fn family_from_str(s: &str) -> Option<BaseFamily> {
+/// Map a free-text base-model string (e.g. a sidecar's "SDXL 1.0", or an HF repo id
+/// like "user/foo-sdxl-lora") to a family. Used by the App to tag remote hits.
+pub fn family_from_str(s: &str) -> Option<BaseFamily> {
     let s = s.to_lowercase();
     if s.is_empty() {
         return None;
@@ -822,6 +826,7 @@ mod tests {
         s.set_remote_hits(vec![RemoteHit {
             title: "Watercolor".into(),
             subtitle: "SDXL 1.0".into(),
+            family: Some(BaseFamily::Sdxl),
             downloads: 12345,
             dl: DownloadRef::Civitai { model_id: 42, version_id: Some(7) },
         }]);
@@ -846,6 +851,7 @@ mod tests {
         s.set_remote_hits(vec![RemoteHit {
             title: "user/anime-lora".into(),
             subtitle: "text-to-image".into(),
+            family: None,
             downloads: 99,
             dl: DownloadRef::Hf { repo: "user/anime-lora".into() },
         }]);
@@ -888,8 +894,8 @@ mod tests {
         s.handle_key(key(KeyCode::Right)); // CIVITAI
         s.handle_key(key(KeyCode::Enter)); // search → Results phase
         s.set_remote_hits(vec![
-            RemoteHit { title: "Watercolor".into(), subtitle: "SDXL".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 1, version_id: None } },
-            RemoteHit { title: "Anime".into(), subtitle: "SD1.5".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 2, version_id: None } },
+            RemoteHit { title: "Watercolor".into(), subtitle: "SDXL".into(), family: Some(BaseFamily::Sdxl), downloads: 9, dl: DownloadRef::Civitai { model_id: 1, version_id: None } },
+            RemoteHit { title: "Anime".into(), subtitle: "SD1.5".into(), family: Some(BaseFamily::Sd15), downloads: 9, dl: DownloadRef::Civitai { model_id: 2, version_id: None } },
         ]);
         match s.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)) {
             LoraHubAction::Recommend { candidates } => assert_eq!(candidates, vec!["Watercolor", "Anime"]),
@@ -907,6 +913,14 @@ mod tests {
         assert_eq!(compact_count(999), "999");
         assert_eq!(compact_count(1500), "1.5k");
         assert_eq!(compact_count(2_000_000), "2.0M");
+    }
+
+    #[test]
+    fn family_from_str_guesses_hf_repo_ids() {
+        assert_eq!(family_from_str("ostris/super-cereal-sdxl-lora"), Some(BaseFamily::Sdxl));
+        assert_eq!(family_from_str("user/flux-something"), Some(BaseFamily::Flux));
+        assert_eq!(family_from_str("user/anime-1.5-style"), Some(BaseFamily::Sd15));
+        assert_eq!(family_from_str("user/mystery-lora"), None);
     }
 
     #[test]

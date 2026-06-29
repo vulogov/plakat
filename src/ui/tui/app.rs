@@ -683,9 +683,11 @@ impl App {
                             .into_iter()
                             .map(|m| {
                                 let v = m.model_versions.first();
+                                let base = v.and_then(|v| v.base_model.clone()).unwrap_or_default();
                                 lorahub::RemoteHit {
                                     title: m.name,
-                                    subtitle: v.and_then(|v| v.base_model.clone()).unwrap_or_default(),
+                                    family: lorahub::family_from_str(&base),
+                                    subtitle: base,
                                     downloads: m.stats.download_count,
                                     dl: lorahub::DownloadRef::Civitai { model_id: m.id, version_id: v.map(|v| v.id) },
                                 }
@@ -698,6 +700,8 @@ impl App {
                     .map(|hits| {
                         hits.into_iter()
                             .map(|h| lorahub::RemoteHit {
+                                // HF exposes no per-LoRA base model → guess from the repo id.
+                                family: lorahub::family_from_str(&h.id),
                                 title: h.id.clone(),
                                 subtitle: h.pipeline,
                                 downloads: h.downloads,
