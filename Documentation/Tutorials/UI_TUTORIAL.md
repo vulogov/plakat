@@ -257,8 +257,8 @@ headlessly with `plakat scenario FILE.hjson`.
 
 ## Notes & limits
 
-- The UI loads **SD-family** models (sd15 / sd21 / sdxl). Other
-  families (Flux, SD3, PixArt, Cascade) remain CLI-only for now.
+- The UI loads **SD-family** (sd15 / sd21 / sdxl) and **SD3 / 3.5** models. Flux,
+  PixArt, and Cascade remain CLI-only for now.
 - People quick-gen and Scenario runs load their **own** model
   alongside any Chat model — on a 24 GB box, unload the Chat model
   first if memory is tight.

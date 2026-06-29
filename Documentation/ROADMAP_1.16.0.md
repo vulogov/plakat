@@ -19,12 +19,14 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 - [x] **LLM operation classifier** — `/auto on|off` (opt-in): an LLM classifies each
       follow-up as EDIT (refine) vs NEW (fresh) before dispatch, instead of the
       always-refine heuristic. (RFC §6)
-- [ ] **Non-SD families in the UI** — the UI loads only SD-family (sd15/sd21/sdxl);
-      Flux, SD3, PixArt, and Cascade are CLI-only. **Large**: each family is a
-      separate pipeline with a ~20-field `Request` and its own memory profile, and
-      none holds a persistent pipeline (all are load-per-`run`). Do it family-by-
-      family (SD3 first — it has a real `Pipeline::load`); refine falls back to fresh
-      for families without an img2img path.
+- [~] **Non-SD families in the UI** — done family-by-family.
+  - [x] **SD3 / 3.5** — `ModelService` now holds a `Loaded` enum (`Sd` | `Sd3`); SD3
+        loads via `sd3::Pipeline::load` and generates via its hooked `generate_hooked`
+        (one call covers txt2img / img2img / inpaint), so the full Chat flow — refine,
+        Canvas inpaint, LoRA apply, live preview/cancel — works on SD3.5 too.
+  - [ ] **Flux** — `flux::run` is load-per-call with a ~25-field `Request` (+ the
+        GGUF-Metal block); needs its own dispatch.
+  - [ ] **PixArt** / **Cascade** — `run(RunRequest)`, load-per-call; memory-heavy.
 - [ ] **In-process scenario / portrait runner** — Scenario runs and People quick-gen
       load their **own** model alongside any Chat model (double load, memory
       pressure). **Large refactor**: the scenario runner is monolithic and selects its
