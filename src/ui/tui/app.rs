@@ -162,6 +162,11 @@ pub struct App {
     active_loras: Vec<std::path::PathBuf>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
+    // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
+    // instead of the always-refine heuristic. Off by default (adds a quick LLM call).
+    auto_route: bool,
+    // In-flight classification: (is_new, edit_text).
+    route_rx: Option<Receiver<(bool, String)>>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -234,6 +239,8 @@ impl App {
             prompt_compile: None,
             active_loras: Vec::new(),
             chat_mask: None,
+            auto_route: false,
+            route_rx: None,
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -315,6 +322,7 @@ impl App {
             self.sync_prompts();
             self.drain_prompt_compile();
             self.sync_canvas();
+            self.drain_route();
         }
         Ok(())
     }
@@ -1183,7 +1191,61 @@ impl App {
             }
             return;
         }
+        // `/auto on|off` — LLM edit/new routing for follow-ups.
+        if let Some(rest) = text.strip_prefix("/auto") {
+            self.auto_route = !rest.trim().eq_ignore_ascii_case("off");
+            self.chat.push_system(
+                if self.auto_route { "auto edit/new routing ON" } else { "auto routing OFF" }.into(),
+            );
+            return;
+        }
+        // With `/auto` on and an image already in the thread, classify the follow-up
+        // (edit vs new scene) before dispatching — instead of always refining.
+        if self.auto_route && self.base_seed.is_some() && self.route_rx.is_none() && self.active_gen.is_none() {
+            self.classify_route(text);
+            return;
+        }
         self.dispatch_generation(text, false);
+    }
+
+    /// Ask the LLM whether `edit` edits the current image or asks for a new one, on a
+    /// background thread; `drain_route` dispatches fresh / refine from the verdict.
+    fn classify_route(&mut self, edit: String) {
+        let context = if self.refine_prompt.is_empty() { "an image".into() } else { self.refine_prompt.clone() };
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        self.chat.push_system(format!("routing “{edit}” …"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You decide whether a user's instruction EDITS the current \
+                image or asks for a COMPLETELY NEW / different image. Reply with exactly one \
+                word: EDIT or NEW.";
+            let user = format!("Current image: {context}\nInstruction: {edit}");
+            let verdict = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_default();
+            let is_new = verdict.to_uppercase().contains("NEW");
+            let _ = tx.send((is_new, edit));
+        });
+        self.route_rx = Some(rx);
+    }
+
+    /// Drain the in-flight classification → dispatch fresh (`/new`) or refine.
+    fn drain_route(&mut self) {
+        if let Some(rx) = &self.route_rx {
+            match rx.try_recv() {
+                Ok((is_new, edit)) => {
+                    self.route_rx = None;
+                    if is_new {
+                        self.dispatch_generation(format!("/new {edit}"), false);
+                    } else {
+                        self.dispatch_generation(edit, false);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.route_rx = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
     }
 
     /// Dispatch a Chat prompt to the model thread (must have a model loaded). The
@@ -1621,6 +1683,25 @@ mod tests {
         assert!(a.chat_mask.is_none(), "mask consumed after one turn");
         // …and the mode is still prompt-evolve for the following edits.
         assert_eq!(a.refine_strength, None);
+    }
+
+    #[test]
+    fn auto_route_toggles_and_defers_dispatch_to_classification() {
+        let mut a = test_app();
+        assert!(!a.auto_route, "off by default");
+        a.handle_chat_submit("/auto on".into());
+        assert!(a.auto_route);
+
+        // With an image in the thread, a follow-up classifies (deferred) instead of
+        // dispatching immediately.
+        a.base_seed = Some(7);
+        a.refine_base = Some("/tmp/x.png".into());
+        a.handle_chat_submit("a dragon".into());
+        assert!(a.route_rx.is_some(), "submission is routed, not yet dispatched");
+        assert!(a.active_gen.is_none());
+
+        a.handle_chat_submit("/auto off".into());
+        assert!(!a.auto_route);
     }
 
     #[test]
