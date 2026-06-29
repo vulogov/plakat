@@ -148,6 +148,15 @@ impl ChatState {
         });
     }
 
+    /// Replace the visible history from a saved session: each turn is
+    /// `(utterance, result, refine, system)`. (Keeps `ChatEntry` construction here.)
+    pub fn restore(&mut self, turns: Vec<(String, Option<String>, bool, bool)>) {
+        self.history = turns
+            .into_iter()
+            .map(|(utterance, result, refine, system)| ChatEntry { utterance, result, error: None, refine, system, enhanced: None })
+            .collect();
+    }
+
     /// Append a system note (command feedback) to the history.
     pub fn push_system(&mut self, note: String) {
         self.history.push(ChatEntry {
@@ -239,7 +248,7 @@ impl ChatState {
                 Style::new().fg(Color::DarkGray),
             )));
             lines.push(Line::from(Span::styled(
-                "Type to evolve the image · /new /enhance /negative /seed <n> /strength <0.1-1|off>",
+                "Type to evolve · /new /enhance /negative /seed /strength <0.1-1|off> /auto <on|off>",
                 Style::new().fg(Color::DarkGray),
             )));
         }

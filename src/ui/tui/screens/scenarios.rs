@@ -49,6 +49,10 @@ pub struct ScenarioInfo {
 pub enum ScenariosAction {
     None,
     Run(PathBuf),
+    /// `Ctrl-G` in the EDITOR — summarize the current Chat session into a coherent
+    /// prompt and insert it as a new task at the cursor (the App runs the LLM, then
+    /// calls [`ScenariosState::insert_task`]).
+    GrabFromChat,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -181,10 +185,7 @@ impl ScenariosState {
     pub fn handle_key(&mut self, key: KeyEvent) -> ScenariosAction {
         match self.mode {
             Mode::Select => self.handle_select_key(key),
-            Mode::Editor => {
-                self.handle_editor_key(key);
-                ScenariosAction::None
-            }
+            Mode::Editor => self.handle_editor_key(key),
             Mode::Runner => {
                 // Esc returns to the list. The run keeps going in the background
                 // regardless (events still arrive and update the board / status).
@@ -298,11 +299,16 @@ impl ScenariosState {
         ScenariosAction::None
     }
 
-    fn handle_editor_key(&mut self, key: KeyEvent) {
+    fn handle_editor_key(&mut self, key: KeyEvent) -> ScenariosAction {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             // Save to disk + re-scan (keeps editing).
             KeyCode::Char('s' | 'S') if ctrl => self.save(),
+            // Summarize the Chat session into a new task at the cursor (App runs the LLM).
+            KeyCode::Char('g' | 'G') if ctrl => {
+                self.status = "summarizing Chat session into a task…".into();
+                return ScenariosAction::GrabFromChat;
+            }
             // Back to the list (the buffer is kept in case you re-enter).
             KeyCode::Esc => {
                 self.mode = Mode::Select;
@@ -319,6 +325,28 @@ impl ScenariosState {
                 }
             }
         }
+        ScenariosAction::None
+    }
+
+    /// Insert a `{ name, prompt }` task block at the editor cursor (App-driven, after
+    /// the Chat-summary LLM returns). The prompt value is quoted + escaped so commas
+    /// and special characters survive HJSON parsing. Marks the buffer dirty and shows
+    /// a status line. If the editor isn't open (e.g. the user left), open a fresh
+    /// template first so the grabbed task always lands somewhere usable.
+    pub fn insert_task(&mut self, name: &str, prompt: &str) {
+        if self.mode != Mode::Editor {
+            self.new_scenario();
+        }
+        let escaped = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+        let block = format!("\n    {{\n      name: {name}\n      prompt: \"{escaped}\"\n    }}");
+        self.editor.insert_str(&block);
+        self.dirty = true;
+        self.status = format!("✓ inserted task ‘{name}’ from Chat — Ctrl-S to save");
+    }
+
+    /// App-facing status setter (e.g. to report a failed Chat summary).
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
     }
 
     /// Load the selected file into the editor buffer.
@@ -526,7 +554,7 @@ impl ScenariosState {
             .and_then(|n| n.to_str())
             .unwrap_or("scenario");
         let title = format!(
-            " Editing {name}{}   [Ctrl-S] save  [Esc] back ",
+            " Editing {name}{}   [Ctrl-S] save  [Ctrl-G] grab Chat→task  [Esc] back ",
             if self.dirty { " ●" } else { "" }
         );
         let block = Block::default()
@@ -645,6 +673,40 @@ mod tests {
         // Esc returns to SELECT.
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.is_editing());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_g_in_editor_requests_a_chat_grab() {
+        let d = tmp_dir("grab");
+        std::fs::write(d.join("z.hjson"), r#"{"model":"sdxl","tasks":[]}"#).unwrap();
+        let mut s = ScenariosState::new(d.clone());
+        s.handle_key(ch('e')); // open editor
+        assert!(s.is_editing());
+        // Ctrl-G bubbles GrabFromChat (the App runs the LLM) + sets a working status.
+        assert!(matches!(s.handle_key(ctrl('g')), ScenariosAction::GrabFromChat));
+        assert!(s.status.contains("summarizing"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn insert_task_drops_a_quoted_escaped_block_at_the_cursor() {
+        let d = tmp_dir("insert");
+        std::fs::write(d.join("z.hjson"), "{\n  tasks: [\n  ]\n}\n").unwrap();
+        let mut s = ScenariosState::new(d.clone());
+        s.handle_key(ch('e'));
+        // A prompt with a comma and an embedded quote must survive into the buffer.
+        s.insert_task("from-chat", "a fox, \"autumn\" forest");
+        let body = s.editor.lines().join("\n");
+        assert!(body.contains("name: from-chat"));
+        assert!(body.contains(r#"prompt: "a fox, \"autumn\" forest""#), "got: {body}");
+        assert!(s.dirty);
+        // Even with no editor open, the grab still lands somewhere (fresh template).
+        let mut s2 = ScenariosState::new(d.clone());
+        assert!(!s2.is_editing());
+        s2.insert_task("from-chat", "lone prompt");
+        assert!(s2.is_editing(), "insert_task opens a fresh scenario when none is being edited");
+        assert!(s2.editor.lines().join("\n").contains("lone prompt"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

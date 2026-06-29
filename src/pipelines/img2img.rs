@@ -102,6 +102,16 @@ pub async fn run_with_pipeline(
     pipeline: &portrait::Pipeline,
     req: &Request,
 ) -> Result<()> {
+    run_with_pipeline_hooked(pipeline, req, None).await
+}
+
+/// As [`run_with_pipeline`], but with an optional per-step hook (RFC §0-R0-3) so the
+/// Chat refine / inpaint path gets live preview + cancellation. `None` = unchanged.
+pub async fn run_with_pipeline_hooked(
+    pipeline: &portrait::Pipeline,
+    req: &Request,
+    mut hook: Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+) -> Result<()> {
     // Pre-load the ControlNet stack + conditioning(s) once per call.
     // The owned data lives on this frame; ControlRequest borrows from
     // it below. img2img's distinguishing feature is the "auto-annotate
@@ -228,17 +238,17 @@ pub async fn run_with_pipeline(
             })
             .collect();
 
-        let new_latents = pipeline
-            .blend_latents_one(
-                &base_latents,
-                &mask_tensor,
-                &gen_req,
-                req.strength,
-                seed,
-                &control_reqs,
-                inpaint_masked_latents.as_ref(),
-            )
-            .with_context(|| format!("denoise (seed {seed})"))?;
+        let denoised = pipeline.blend_latents_one(
+            &base_latents,
+            &mask_tensor,
+            &gen_req,
+            req.strength,
+            seed,
+            &control_reqs,
+            inpaint_masked_latents.as_ref(),
+            hook.as_deref_mut(),
+        );
+        let new_latents = denoised.with_context(|| format!("denoise (seed {seed})"))?;
 
         let out_path = output_path(&req.out_dir, mode_tag, seed);
         pipeline.save_image(&new_latents, &out_path)?;

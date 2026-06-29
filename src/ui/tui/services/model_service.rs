@@ -17,7 +17,8 @@ use candle_core::Device;
 use tokio::runtime::Handle;
 
 use crate::pipelines::gen_channel::{CancelFlag, ChannelHook, GenMessage};
-use crate::pipelines::{img2img, portrait, t2i};
+use crate::pipelines::{cascade, img2img, pixart, portrait, sd3, t2i};
+use crate::pipelines::lora::LoraSpec;
 use crate::preset::discovery::BaseFamily;
 
 /// Parameters for a Chat generation (the model thread builds the GenRequest).
@@ -64,16 +65,45 @@ pub enum ModelMessage {
     Error(String),
 }
 
-/// Whether the t2i loader handles this model's family. Pure — unit-tested. Returns
-/// `Err(message)` with friendly guidance for families not yet wired in the TUI.
-pub fn t2i_load_check(alias: &str) -> Result<(), String> {
+/// Which UI loader handles a model. SD-family, SD3/3.5, PixArt-Σ, and Stable Cascade
+/// are wired; Flux is still CLI-only (a follow-up).
+enum UiFamily {
+    Sd,
+    Sd3,
+    PixArt,
+    Cascade,
+}
+
+/// Resolve a model alias to its UI loader, or a friendly error for unwired families.
+/// Pure — unit-tested.
+fn ui_family(alias: &str) -> Result<UiFamily, String> {
     match BaseFamily::from_model_arg(alias) {
-        BaseFamily::Sd15 | BaseFamily::Sd21 | BaseFamily::Sdxl => Ok(()),
+        BaseFamily::Sd15 | BaseFamily::Sd21 | BaseFamily::Sdxl => Ok(UiFamily::Sd),
+        BaseFamily::Sd3 => Ok(UiFamily::Sd3),
+        BaseFamily::PixArt => Ok(UiFamily::PixArt),
+        BaseFamily::StableCascade => Ok(UiFamily::Cascade),
         other => Err(format!(
-            "'{alias}' is a {other:?} model — the TUI loads SD-family models \
-             (sd15 / sd21 / sdxl) in this release; {other:?} support is a follow-up."
+            "'{alias}' is a {other:?} model — the TUI loads SD-family (sd15 / sd21 / \
+             sdxl), SD3/3.5, PixArt, and Cascade; {other:?} support is a follow-up."
         )),
     }
+}
+
+/// Whether the UI can load this model (SD-family or SD3). Used by the App's startup
+/// auto-load gate. Pure — unit-tested.
+pub fn t2i_load_check(alias: &str) -> Result<(), String> {
+    ui_family(alias).map(|_| ())
+}
+
+/// A loaded model — the UI holds SD-family and SD3 pipelines (each persistent, so
+/// refines are fast). Lives on the model thread and never crosses threads.
+enum Loaded {
+    Sd(t2i::Pipeline),
+    Sd3(sd3::Pipeline),
+    // PixArt / Cascade have no persistent pipeline (their `run()` loads per call), so
+    // we hold only the applied LoRA set and load-per-generation. Slower, but usable.
+    PixArt { loras: Vec<LoraSpec> },
+    Cascade { loras: Vec<LoraSpec> },
 }
 
 /// Handle to the model thread. Drop signals shutdown and joins.
@@ -157,28 +187,51 @@ fn model_loop(
     rt: Handle,
 ) {
     // The loaded pipeline lives here and never leaves this thread.
-    let mut loaded: Option<(String, t2i::Pipeline)> = None;
+    let mut loaded: Option<(String, Loaded)> = None;
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             ModelCommand::Load { alias, loras } => {
-                if let Err(msg) = t2i_load_check(&alias) {
-                    let _ = msg_tx.send(ModelMessage::Error(msg));
-                    continue;
-                }
+                let family = match ui_family(&alias) {
+                    Ok(f) => f,
+                    Err(msg) => {
+                        let _ = msg_tx.send(ModelMessage::Error(msg));
+                        continue;
+                    }
+                };
                 let _ = msg_tx.send(ModelMessage::LoadStarted(alias.clone()));
                 // Free the current model first — unified memory means we can't hold
                 // two large models at once.
                 loaded = None;
-                let req = t2i::LoadRequest {
-                    model: alias.clone(),
-                    device: device.clone(),
-                    loras,
-                    lora_scale: 1.0,
-                    use_refiner: false,
-                    embeddings: Vec::new(),
-                    vae_cache: None,
+                // PixArt / Cascade have no persistent pipeline — their `run()` loads
+                // per generation, so "loading" just records the alias + applied LoRAs
+                // (the first gen shows the real download/load in the Output pane).
+                let result = match family {
+                    UiFamily::Sd => rt
+                        .block_on(t2i::Pipeline::load(t2i::LoadRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            loras,
+                            lora_scale: 1.0,
+                            use_refiner: false,
+                            embeddings: Vec::new(),
+                            vae_cache: None,
+                        }))
+                        .map(Loaded::Sd),
+                    UiFamily::Sd3 => rt
+                        .block_on(sd3::Pipeline::load(sd3::LoadRequest {
+                            variant: sd3_variant(&alias),
+                            repo: resolve_repo(&alias),
+                            device: device.clone(),
+                            loras,
+                            lora_scale: 1.0,
+                            controlnets: Vec::new(),
+                            embeddings: Vec::new(),
+                        }))
+                        .map(Loaded::Sd3),
+                    UiFamily::PixArt => Ok(Loaded::PixArt { loras }),
+                    UiFamily::Cascade => Ok(Loaded::Cascade { loras }),
                 };
-                match rt.block_on(t2i::Pipeline::load(req)) {
+                match result {
                     Ok(p) => {
                         let used = (crate::hw::total_ram_gb() - crate::hw::available_ram_gb()).max(0.0);
                         loaded = Some((alias.clone(), p));
@@ -194,15 +247,16 @@ fn model_loop(
                 let _ = msg_tx.send(ModelMessage::Unloaded);
             }
             ModelCommand::Generate(job) => {
-                let Some((alias, pipeline)) = &loaded else {
+                if loaded.is_none() {
                     let _ = job.tx.send(GenMessage::Error {
                         message: "no model loaded — load one in Models (Ctrl-2)".into(),
                     });
                     continue;
-                };
+                }
 
                 // ── /enhance: expand the prompt with the configured LLM first. ──
                 // On failure, fall back to the original prompt (the run still goes).
+                // Family-agnostic (no pipeline access), so it runs before dispatch.
                 let mut prompt = job.prompt.clone();
                 if let Some(provider) = &job.enhance {
                     let label = crate::prompt::resolve_provider_label(provider);
@@ -220,10 +274,140 @@ fn model_loop(
                     }
                 }
 
-                // ── Conversational refinement: img2img over the previous image. ──
-                // Reuses the loaded weights via portrait::from_core (no reload). The
-                // img2img body isn't StepHook-wired, so progress flows to the Output
-                // pane via the rerouted `ui::progress` (no inline preview / cancel).
+                let (alias, model) = loaded.as_mut().expect("loaded checked above");
+                let pipeline = match model {
+                    Loaded::Sd(p) => p,
+                    // ── SD3 / 3.5: one generate_hooked handles txt2img / img2img /
+                    //    inpaint (it branches on init_image + mask). ──
+                    Loaded::Sd3(sd3_pipe) => {
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let req = sd3::GenRequest {
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            width: job.width,
+                            height: job.height,
+                            count: 1,
+                            steps: Some(job.steps),
+                            guidance: Some(job.guidance),
+                            seed: Some(job.seed),
+                            out_dir: job.out_dir.clone(),
+                            init_image: job.init_image.clone(),
+                            mask: job.mask.clone(),
+                            mask_feather: 0,
+                            mask_invert: false,
+                            strength: job.init_image.as_ref().map(|_| job.strength),
+                            tiled: None,
+                            regions: Vec::new(),
+                            controlnet_conditioning: Vec::new(),
+                            output_format: crate::imaging::io::OutputFormat::Png,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match sd3_pipe.generate_hooked(&req, Some(&mut hook)) {
+                            Ok(()) => {
+                                // sd3 names plakat-sd3-{mode}-{seed}.png.
+                                let mode = match (job.init_image.is_some(), job.mask.is_some()) {
+                                    (true, true) => "inpaint",
+                                    (true, false) => "img2img",
+                                    _ => "denoise",
+                                };
+                                let produced = job.out_dir.join(format!("plakat-sd3-{mode}-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(
+                                    &out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance,
+                                    job.init_image.as_ref().map(|_| mode),
+                                    job.init_image.as_ref().map(|_| job.strength),
+                                );
+                                let _ = job.tx.send(GenMessage::Done {
+                                    output: out,
+                                    cancelled: job.cancel.is_cancelled(),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                    // ── PixArt-Σ: load-per-gen txt2img (hooked → live preview/cancel).
+                    //    No img2img — `init_image` is ignored (prompt-evolve carries the
+                    //    edits). ──
+                    Loaded::PixArt { loras } => {
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let req = pixart::RunRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            width: job.width,
+                            height: job.height,
+                            steps: job.steps,
+                            guidance: job.guidance,
+                            seed: Some(job.seed),
+                            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                            out_dir: job.out_dir.clone(),
+                            count: 1,
+                            loras: loras.clone(),
+                            lora_scale: 1.0,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match rt.block_on(pixart::run_hooked(req, Some(&mut hook))) {
+                            Ok(()) => {
+                                let produced = job.out_dir.join(format!("plakat-pixart-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
+                                let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                    // ── Stable Cascade: load-per-gen txt2img (hooked). Square output;
+                    //    Stage C/B step split mirrors the CLI default. ──
+                    Loaded::Cascade { loras } => {
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let stage_c_steps = (job.steps * 2).div_ceil(3).max(1);
+                        let stage_b_steps = job.steps.saturating_sub(stage_c_steps).max(1);
+                        let req = cascade::RunRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            output_dim: job.width,
+                            image_prompt: None,
+                            stage_c_steps,
+                            stage_b_steps,
+                            guidance: job.guidance,
+                            decoder_guidance: 1.1,
+                            seed: Some(job.seed),
+                            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                            out_dir: job.out_dir.clone(),
+                            count: 1,
+                            loras: loras.clone(),
+                            lora_scale: 1.0,
+                            control_spec: None,
+                            controlnet_weights: None,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match rt.block_on(cascade::run_hooked(req, Some(&mut hook))) {
+                            Ok(()) => {
+                                let produced = job.out_dir.join(format!("plakat-cascade-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
+                                let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                };
+
+                // ── SD-family conversational refinement: img2img over the previous
+                //    image. Reuses the loaded weights via portrait::from_core (no
+                //    reload), StepHook-wired for live preview + cancel (A1). ──
                 if let Some(init) = job.init_image.clone() {
                     let _ = std::fs::create_dir_all(&job.out_dir);
                     let refine_pipe = portrait::Pipeline::from_core(pipeline.core());
@@ -249,13 +433,24 @@ fn model_loop(
                         out_dir: job.out_dir.clone(),
                         controls: Vec::new(),
                     };
-                    match rt.block_on(img2img::run_with_pipeline(&refine_pipe, &req)) {
+                    // Live preview + cancel during the refine (RFC §0-R0-3).
+                    let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                    let result = rt.block_on(img2img::run_with_pipeline_hooked(
+                        &refine_pipe,
+                        &req,
+                        Some(&mut hook),
+                    ));
+                    match result {
                         Ok(()) => {
-                            let produced = job.out_dir.join(format!("plakat-img2img-{}.png", job.seed));
+                            // The pipeline names by mode: a mask → "inpaint", else
+                            // "img2img". Match it or we'd rename/open a missing file
+                            // and the UI would show the stale previous image.
+                            let mode = if job.mask.is_some() { "inpaint" } else { "img2img" };
+                            let produced = job.out_dir.join(format!("plakat-{mode}-{}.png", job.seed));
                             let out = keep_unique(&produced, &job.out_dir, job.seed);
                             embed_chat_recipe(
                                 &out, alias, &prompt, &job.negative, job.seed, job.steps,
-                                job.guidance, Some("img2img"), Some(job.strength),
+                                job.guidance, Some(mode), Some(job.strength),
                             );
                             let _ = job.tx.send(GenMessage::Done {
                                 output: out,
@@ -311,6 +506,26 @@ fn model_loop(
             }
             ModelCommand::Shutdown => break,
         }
+    }
+}
+
+/// Resolve a model alias to its HF repo (an explicit `org/name` passes through).
+fn resolve_repo(alias: &str) -> String {
+    if alias.contains('/') {
+        alias.to_string()
+    } else {
+        crate::hf::resolve_alias(alias).to_string()
+    }
+}
+
+/// Map an SD3 alias to its `sd3::Variant` (caller already gated to an SD3 family).
+fn sd3_variant(alias: &str) -> sd3::Variant {
+    match t2i::Variant::detect(alias) {
+        t2i::Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+        t2i::Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+        t2i::Variant::Sd35Large => sd3::Variant::Sd35Large,
+        t2i::Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+        _ => sd3::Variant::Sd35Medium,
     }
 }
 
@@ -418,11 +633,21 @@ mod tests {
     }
 
     #[test]
-    fn other_families_get_a_friendly_error() {
+    fn non_sd_families_map_to_their_loaders() {
+        assert!(matches!(ui_family("sdxl"), Ok(UiFamily::Sd)));
+        assert!(matches!(ui_family("sd35-medium"), Ok(UiFamily::Sd3)));
+        assert!(matches!(ui_family("pixart"), Ok(UiFamily::PixArt)));
+        assert!(matches!(ui_family("stable-cascade"), Ok(UiFamily::Cascade)));
+        // All four are loadable in the UI now.
+        for a in ["sdxl", "sd35-medium", "pixart", "stable-cascade"] {
+            assert!(t2i_load_check(a).is_ok(), "{a} should load");
+        }
+    }
+
+    #[test]
+    fn flux_still_gets_a_friendly_cli_only_error() {
         let e = t2i_load_check("flux-dev").unwrap_err();
         assert!(e.contains("Flux"));
         assert!(e.contains("follow-up"));
-        assert!(t2i_load_check("sd35-medium").is_err());
-        assert!(t2i_load_check("pixart-sigma").is_err());
     }
 }

@@ -790,6 +790,7 @@ where
                 seed.wrapping_add(0x9e37_79b9),
                 &[],
                 None,
+                None, // no step hook on the CLI path
             )
             .with_context(|| format!("multiperson: face-refine persona '{}'", p.label))?;
         crate::ui::progress::println(&format!(

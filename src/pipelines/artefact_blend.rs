@@ -234,6 +234,7 @@ pub async fn blend_files(
                 // SD 1.5 / SDXL) — RePaint blending. SDXL-Inpaint
                 // isn't supported on the artefact-blend path.
                 None,
+                None, // no step hook on the CLI path
             )
             .with_context(|| format!("blend denoise on {}", path.display()))?;
         pipeline

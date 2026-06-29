@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::preset::discovery::BaseFamily;
 
@@ -66,18 +66,22 @@ enum Phase {
 }
 
 /// What the App needs to download a hit.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum DownloadRef {
     Civitai { model_id: u64, version_id: Option<u64> },
     Hf { repo: String },
 }
 
 /// One remote search hit (filled by the App from the Civitai / HF API).
+#[derive(Serialize, Deserialize)]
 pub struct RemoteHit {
     pub title: String,
     /// Base model (Civitai) or pipeline tag (HF), shown dim.
     pub subtitle: String,
     pub downloads: u64,
+    /// Inferred base family for the compatibility marker (Civitai from `baseModel`,
+    /// HF guessed from the repo id). `None` → unknown.
+    pub family: Option<BaseFamily>,
     pub dl: DownloadRef,
 }
 
@@ -97,6 +101,11 @@ pub enum LoraHubAction {
     /// `R` (search results) — recommend which candidate best fits the Chat prompt.
     /// The App supplies the prompt context and runs the LLM.
     Recommend { candidates: Vec<String> },
+    /// `+`/`-` (LOCAL) — nudge the selected applied LoRA's weight (App reloads).
+    AdjustWeight { path: PathBuf, delta: f32 },
+    /// `Ctrl-R` (LOCAL) — LLM-suggest a LoRA *stack* for the Chat prompt from the
+    /// compatible local LoRAs. The App supplies the prompt context.
+    SuggestCombination { candidates: Vec<String> },
 }
 
 pub struct LoraHubState {
@@ -105,8 +114,8 @@ pub struct LoraHubState {
     selected: usize,
     /// Family of the currently-loaded model (set by the App), for compatibility.
     loaded_family: Option<BaseFamily>,
-    /// Paths currently applied to Chat (mirrored from the App each tick).
-    applied: std::collections::HashSet<PathBuf>,
+    /// Applied LoRAs → their weight (mirrored from the App each tick).
+    applied: HashMap<PathBuf, f32>,
     // ── Remote (CIVITAI / HUGGINGFACE) tabs ──
     tab: Tab,
     phase: Phase,
@@ -120,6 +129,11 @@ pub struct LoraHubState {
     /// Recommend-for-context result (search tabs) + in-flight flag.
     recommendation: Option<String>,
     recommending: bool,
+    /// LoRA-combination suggestion (LOCAL Ctrl-R) + in-flight flag.
+    combination: Option<String>,
+    combining: bool,
+    /// True while a download is in flight (App-driven) → `●` in the tab bar.
+    downloading: bool,
 }
 
 impl LoraHubState {
@@ -129,7 +143,7 @@ impl LoraHubState {
             loras: Vec::new(),
             selected: 0,
             loaded_family: None,
-            applied: std::collections::HashSet::new(),
+            applied: HashMap::new(),
             tab: Tab::Local,
             phase: Phase::Search,
             query: String::new(),
@@ -140,15 +154,29 @@ impl LoraHubState {
             assessing: None,
             recommendation: None,
             recommending: false,
+            combination: None,
+            combining: false,
+            downloading: false,
         };
         s.rescan();
         s
+    }
+
+    /// The App mirrors whether a download is in flight (drives the `●` tab marker).
+    pub fn set_downloading(&mut self, on: bool) {
+        self.downloading = on;
     }
 
     /// The App delivers the recommend-for-context result.
     pub fn set_recommendation(&mut self, text: String) {
         self.recommendation = Some(text);
         self.recommending = false;
+    }
+
+    /// The App delivers the LoRA-combination suggestion (LOCAL).
+    pub fn set_combination(&mut self, text: String) {
+        self.combination = Some(text);
+        self.combining = false;
     }
 
     /// The App delivers an LLM assessment for `key` (or an error string).
@@ -190,9 +218,9 @@ impl LoraHubState {
         self.loaded_family = family;
     }
 
-    /// The App calls this each tick with the paths currently applied to Chat.
-    pub fn set_applied(&mut self, paths: &[PathBuf]) {
-        self.applied = paths.iter().cloned().collect();
+    /// The App calls this each tick with the applied LoRAs + their weights.
+    pub fn set_applied(&mut self, applied: &[(PathBuf, f32)]) {
+        self.applied = applied.iter().cloned().collect();
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
@@ -249,6 +277,20 @@ impl LoraHubState {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
+            // Ctrl-R — suggest a LoRA *stack* for the Chat prompt (compatible LoRAs).
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let candidates: Vec<String> = self
+                    .loras
+                    .iter()
+                    .filter(|l| self.compatible(l) != Some(false))
+                    .map(|l| l.name.clone())
+                    .collect();
+                if !candidates.is_empty() {
+                    self.combining = true;
+                    self.combination = None;
+                    return LoraHubAction::SuggestCombination { candidates };
+                }
+            }
             KeyCode::Char('r') => self.rescan(),
             // R — LLM assessment of the selected LoRA.
             KeyCode::Char('R') => {
@@ -273,6 +315,17 @@ impl LoraHubState {
                     if let Some(path) = self.selected_path() {
                         return LoraHubAction::ToggleApply { path, compatible };
                     }
+                }
+            }
+            // +/- nudge the selected applied LoRA's weight by 0.1.
+            KeyCode::Char('+' | '=') => {
+                if let Some(p) = self.selected_path() {
+                    return LoraHubAction::AdjustWeight { path: p, delta: 0.1 };
+                }
+            }
+            KeyCode::Char('-' | '_') => {
+                if let Some(p) = self.selected_path() {
+                    return LoraHubAction::AdjustWeight { path: p, delta: -0.1 };
                 }
             }
             _ => {}
@@ -371,17 +424,18 @@ impl LoraHubState {
         } else {
             "  ←/→ tab · / edit query · D download"
         };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                tab("LOCAL", self.tab == Tab::Local),
-                Span::raw(" "),
-                tab("CIVITAI", self.tab == Tab::Civitai),
-                Span::raw(" "),
-                tab("HUGGINGFACE", self.tab == Tab::HuggingFace),
-                Span::styled(hint, Style::new().fg(Color::DarkGray)),
-            ])),
-            area,
-        );
+        let mut spans = vec![
+            tab("LOCAL", self.tab == Tab::Local),
+            Span::raw(" "),
+            tab("CIVITAI", self.tab == Tab::Civitai),
+            Span::raw(" "),
+            tab("HUGGINGFACE", self.tab == Tab::HuggingFace),
+        ];
+        if self.downloading {
+            spans.push(Span::styled("  ● downloading", Style::new().fg(Color::Yellow)));
+        }
+        spans.push(Span::styled(hint, Style::new().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_remote(&self, f: &mut Frame, area: Rect) {
@@ -428,7 +482,7 @@ impl LoraHubState {
         let mut lines: Vec<Line> = Vec::new();
         for (i, h) in self.hits.iter().enumerate() {
             // Civitai hits carry a base model → show compatibility; HF hits don't.
-            let (glyph, gcolor) = match family_from_str(&h.subtitle) {
+            let (glyph, gcolor) = match h.family {
                 Some(a) => match self.loaded_family {
                     Some(b) if a == b => ("✓", Color::Green),
                     Some(_) => ("✗", Color::Red),
@@ -475,7 +529,7 @@ impl LoraHubState {
             .unwrap_or_else(|| " no model loaded ".into());
         let applied_n = self.applied.len();
         let block = Block::default().borders(Borders::ALL).title(format!(
-            " LoRA · LOCAL ({}) ·{loaded}· [A] apply ({applied_n} on) ",
+            " LoRA · LOCAL ({}) ·{loaded}· [A] apply · +/- weight ({applied_n} on) ",
             self.loras.len()
         ));
         let inner = block.inner(area);
@@ -501,16 +555,15 @@ impl LoraHubState {
             } else {
                 Style::new().fg(Color::White)
             };
-            // ★ = applied to Chat.
-            let applied = if self.applied.contains(&l.path) {
-                Span::styled("★", Style::new().fg(Color::Yellow))
-            } else {
-                Span::raw(" ")
+            // ★<weight> = applied to Chat (the weight is editable with +/-).
+            let applied = match self.applied.get(&l.path) {
+                Some(w) => Span::styled(format!("★{w:.2} "), Style::new().fg(Color::Yellow)),
+                None => Span::raw("      "),
             };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {glyph} "), Style::new().fg(gcolor).add_modifier(Modifier::BOLD)),
                 applied,
-                Span::styled(trunc(&l.name, 24), name_style),
+                Span::styled(trunc(&l.name, 22), name_style),
                 Span::styled(
                     format!("  {}", l.family.map(family_label).unwrap_or("?")),
                     Style::new().fg(Color::DarkGray),
@@ -521,7 +574,7 @@ impl LoraHubState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess ");
+        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess · [Ctrl-R] combo ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(l) = self.loras.get(self.selected) else { return };
@@ -566,12 +619,22 @@ impl LoraHubState {
             lines.push(Line::from(Span::styled("✦ AI assessment", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
             lines.push(Line::from(Span::styled(a.clone(), Style::new().fg(Color::Gray))));
         }
+        // LoRA-combination suggestion (Ctrl-R) — applies to the whole compatible set.
+        if self.combining {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  ⊕ suggesting a combination…", Style::new().fg(Color::Yellow))));
+        } else if let Some(c) = &self.combination {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("⊕ suggested stack", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(c.clone(), Style::new().fg(Color::Gray))));
+        }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
 
-/// Map a free-text base-model string (e.g. a sidecar's "SDXL 1.0") to a family.
-fn family_from_str(s: &str) -> Option<BaseFamily> {
+/// Map a free-text base-model string (e.g. a sidecar's "SDXL 1.0", or an HF repo id
+/// like "user/foo-sdxl-lora") to a family. Used by the App to tag remote hits.
+pub fn family_from_str(s: &str) -> Option<BaseFamily> {
     let s = s.to_lowercase();
     if s.is_empty() {
         return None;
@@ -822,6 +885,7 @@ mod tests {
         s.set_remote_hits(vec![RemoteHit {
             title: "Watercolor".into(),
             subtitle: "SDXL 1.0".into(),
+            family: Some(BaseFamily::Sdxl),
             downloads: 12345,
             dl: DownloadRef::Civitai { model_id: 42, version_id: Some(7) },
         }]);
@@ -846,6 +910,7 @@ mod tests {
         s.set_remote_hits(vec![RemoteHit {
             title: "user/anime-lora".into(),
             subtitle: "text-to-image".into(),
+            family: None,
             downloads: 99,
             dl: DownloadRef::Hf { repo: "user/anime-lora".into() },
         }]);
@@ -888,8 +953,8 @@ mod tests {
         s.handle_key(key(KeyCode::Right)); // CIVITAI
         s.handle_key(key(KeyCode::Enter)); // search → Results phase
         s.set_remote_hits(vec![
-            RemoteHit { title: "Watercolor".into(), subtitle: "SDXL".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 1, version_id: None } },
-            RemoteHit { title: "Anime".into(), subtitle: "SD1.5".into(), downloads: 9, dl: DownloadRef::Civitai { model_id: 2, version_id: None } },
+            RemoteHit { title: "Watercolor".into(), subtitle: "SDXL".into(), family: Some(BaseFamily::Sdxl), downloads: 9, dl: DownloadRef::Civitai { model_id: 1, version_id: None } },
+            RemoteHit { title: "Anime".into(), subtitle: "SD1.5".into(), family: Some(BaseFamily::Sd15), downloads: 9, dl: DownloadRef::Civitai { model_id: 2, version_id: None } },
         ]);
         match s.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)) {
             LoraHubAction::Recommend { candidates } => assert_eq!(candidates, vec!["Watercolor", "Anime"]),
@@ -903,10 +968,35 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_r_on_local_requests_a_combination() {
+        let d = tmp("combo");
+        write_st(&d.join("a.safetensors"), &[("ss_base_model_version", "sdxl")], "x", &[8, 4]);
+        write_st(&d.join("b.safetensors"), &[("ss_base_model_version", "sdxl")], "x", &[8, 4]);
+        let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
+        match s.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)) {
+            LoraHubAction::SuggestCombination { candidates } => assert_eq!(candidates.len(), 2),
+            _ => panic!("expected SuggestCombination"),
+        }
+        assert!(s.combining);
+        s.set_combination("Stack a @0.7 + b @0.4".into());
+        assert!(!s.combining);
+        assert!(s.combination.as_deref().unwrap().contains("Stack"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn compact_count_formats() {
         assert_eq!(compact_count(999), "999");
         assert_eq!(compact_count(1500), "1.5k");
         assert_eq!(compact_count(2_000_000), "2.0M");
+    }
+
+    #[test]
+    fn family_from_str_guesses_hf_repo_ids() {
+        assert_eq!(family_from_str("ostris/super-cereal-sdxl-lora"), Some(BaseFamily::Sdxl));
+        assert_eq!(family_from_str("user/flux-something"), Some(BaseFamily::Flux));
+        assert_eq!(family_from_str("user/anime-1.5-style"), Some(BaseFamily::Sd15));
+        assert_eq!(family_from_str("user/mystery-lora"), None);
     }
 
     #[test]

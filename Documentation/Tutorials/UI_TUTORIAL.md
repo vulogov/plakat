@@ -120,6 +120,9 @@ lose an earlier version.
 | `/strength <0.1–1>` | Switch refinement to **image-anchored** (img2img) mode |
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
+| `/save [name]` | Save the whole Chat session (thread + prompt + seed + base) |
+| `/load <name>` | Reload a saved session and keep refining where you left off |
+| `/sessions` | List your saved sessions |
 
 `/enhance` uses your configured enhancer (`auto` by default) — set a
 `DEEPSEEK_API_KEY` (env or `~/.config/plakat/config.toml`) and it
@@ -144,6 +147,21 @@ image-anchored base seeded with its recovered prompt, and you're
 dropped into Chat to keep editing it. Because Chat writes the recipe
 into every PNG it makes, this round-trips your own chat images too.
 
+### Find, tag, compare, and export
+
+- **`/`** **filters** the list live — type any text and it matches
+  against the filename, an image's **tags**, and its **recipe** (prompt,
+  seed, steps, model, …). `Enter` keeps the filter, `Esc` clears it.
+- **`T`** **tags** the selected image — type a label and press `Enter`.
+  Tags are stored in a `<image>.tags` sidecar and shown as `#label` in
+  the list; filter by one to gather a collection.
+- **`X`** **exports** the current (filtered) set into `out/export/` —
+  filter to a tag, then `X`, to build a collection folder.
+- **`d`** marks the selected image as a **compare baseline** (`◆`); move
+  to another image and press `d` again to see a **recipe diff** (only
+  the fields that changed — seed, steps, prompt, …). `d` on the baseline
+  again clears it.
+
 ---
 
 ## 6. People — put a specific person in the picture
@@ -160,6 +178,15 @@ tagged `◇`).
 - **`Space`** marks people (`●`); with **two or more marked, `G`**
   generates a **multiperson scene** placing each person in their own
   region.
+- **`I`** **imports** a scenario-defined persona (`◇`) into your editable
+  `people/` library — it copies the reference photos into
+  `people/<name>/refs/` and writes a `person.hjson`, so you can encode,
+  re-use, and edit it like any other identity (conflict-aware; an
+  existing dir is never overwritten).
+- **`Del`** **removes** a `people/` identity — the *right to be
+  forgotten*. You must **type the identity's name** to confirm; on a
+  match the whole `people/<name>/` directory (refs + encodings) is
+  deleted. (Scenario personas are read-only here — edit the scenario.)
 
 ---
 
@@ -197,6 +224,15 @@ regenerate).
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
 
+### Outpaint — extend the canvas (`M`)
+
+Press **`M`** for **outpaint mode**: instead of masking *inside* the
+image, you grow it. Pick an edge with the arrows (`←/→/↑/↓`), set how
+far with `+`/`-` (each band = 128px, up to 4), and press `Enter`. The
+Canvas builds a grey-padded, enlarged base with a mask over the new
+strip and hands it to Chat — your next prompt **paints the new region**
+(e.g. extend a landscape rightward). `M` or `Esc` cancels.
+
 This is *regional* masking (coarse by design). For pixel-precise
 masks, paint one in an external editor and use the CLI's
 `--mask-path`.
@@ -212,6 +248,36 @@ Press **`Ctrl-3`**. Browse the `.hjson` files in `scenarios/`:
   to the Output pane.
 - **`e`** edits the file in a built-in editor (`Ctrl-S` saves), **`n`**
   starts a new one from a template.
+
+### Grab a task from your Chat session (`Ctrl-G`)
+
+Inside the editor, **`Ctrl-G`** turns the conversation you've been having
+in Chat into a reusable scenario task. plakat takes the whole refinement
+thread — `a fox` → `make it autumn` → `add falling leaves` — and asks the
+LLM to **distill it into one coherent prompt**, then inserts a
+`{ name: from-chat, prompt: "…" }` block at the cursor:
+
+```
+> tasks: [
+>   ▏            ← cursor here, press Ctrl-G
+> ]
+```
+
+becomes
+
+```
+> tasks: [
+>   {
+>     name: from-chat
+>     prompt: "a fox in an autumn forest, falling leaves, soft light"
+>   }
+> ]
+```
+
+It runs in the background (the editor stays live); the prompt value is
+quoted and escaped so commas and quotes survive. `Ctrl-S` to save. This
+is the fast path from *exploring* an image in Chat to *batching* it
+(seeds, weather, scene variants) as a scenario.
 
 See [`SCENARIOS_TUTORIAL.md`](SCENARIOS_TUTORIAL.md) for the scenario
 format itself.
@@ -230,6 +296,8 @@ the scenario HJSON your prose produces.
   into `scenarios/` and opens it in the Scenarios editor.
 - **`Esc`** jumps to the buffer list (`.txt`/`.tera`/`.hjson`);
   **Enter** loads one.
+- **`Ctrl-N`** starts a fresh buffer (name it by saving); **`Ctrl-Tab`**
+  cycles through your saved buffers without leaving the editor.
 
 See [`COMPILE_TUTORIAL.md`](COMPILE_TUTORIAL.md) for the prose format.
 
@@ -257,8 +325,10 @@ headlessly with `plakat scenario FILE.hjson`.
 
 ## Notes & limits
 
-- The UI loads **SD-family** models (sd15 / sd21 / sdxl). Other
-  families (Flux, SD3, PixArt, Cascade) remain CLI-only for now.
+- The UI loads **SD-family** (sd15 / sd21 / sdxl), **SD3 / 3.5**, **PixArt-Σ**, and
+  **Stable Cascade** models. Only **Flux** remains CLI-only for now. PixArt / Cascade
+  have no persistent pipeline, so they reload on each generation (slower) and support
+  fresh / prompt-evolve generation but not image-anchored refine or Canvas inpaint.
 - People quick-gen and Scenario runs load their **own** model
   alongside any Chat model — on a 24 GB box, unload the Chat model
   first if memory is tight.

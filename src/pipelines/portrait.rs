@@ -889,6 +889,11 @@ impl Pipeline {
         // v0.12 Inpaint UNet: VAE-encoded masked-image latents.
         // Same contract as [`Self::inpaint_latents_one`].
         inpaint_masked_latents: Option<&Tensor>,
+        // 1.16.0 (RFC §0-R0-3): optional per-step hook for live preview + cancel
+        // during a Chat refine / inpaint. `None` = the CLI path, unchanged. The
+        // `+ '_` decouples the trait-object lifetime from the `&mut` reborrow so a
+        // caller can pass `hook.as_deref_mut()` inside a loop.
+        mut hook: Option<&mut (dyn crate::pipelines::step_hook::StepHook + '_)>,
     ) -> Result<Tensor> {
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
         let strength = strength.clamp(0.0, 1.0);
@@ -1008,6 +1013,20 @@ impl Pipeline {
             )?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));
+            // RFC §0-R0-3 hook: cheap latent→RGB preview on request, then honour
+            // cancellation at this step boundary (no-op when `hook` is None). Called
+            // inline (not via the `&Option<&mut>` helpers) to avoid &mut invariance.
+            let total_active = active.len();
+            if let Some(h) = hook.as_deref_mut() {
+                if h.wants_preview(i, total_active) {
+                    if let Ok(img) = crate::imaging::preview::project_latent_sd_to_rgb(&latents) {
+                        h.on_preview(i, img);
+                    }
+                }
+                if matches!(h.on_step(i, total_active), crate::pipelines::step_hook::StepControl::Cancel) {
+                    break; // return the partial composite (Ctrl-C during a refine)
+                }
+            }
         }
         bar.finish_and_clear();
 

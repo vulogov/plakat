@@ -174,6 +174,10 @@ pub struct PeopleState {
     selected: usize,
     /// Multi-selected rows (Space) for a multiperson generation.
     marked: std::collections::BTreeSet<usize>,
+    /// Type-name confirmation buffer while deleting an identity (`Del`); `None` = idle.
+    confirm_delete: Option<String>,
+    /// Last action feedback (import / delete / errors), shown in the library footer.
+    status: String,
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
 }
@@ -186,6 +190,8 @@ impl PeopleState {
             people: Vec::new(),
             selected: 0,
             marked: std::collections::BTreeSet::new(),
+            confirm_delete: None,
+            status: String::new(),
             preview: None,
             preview_for: None,
         };
@@ -259,11 +265,49 @@ impl PeopleState {
         }
     }
 
+    /// True while the delete confirmation modal is open — the App routes every key here.
+    pub fn captures_input(&self) -> bool {
+        self.confirm_delete.is_some()
+    }
+
+    fn selected_person(&self) -> Option<&Person> {
+        self.people.get(self.selected)
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> PeopleAction {
+        // ── Delete confirmation modal: type the identity's name to confirm. ──
+        if self.confirm_delete.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.confirm_delete = None;
+                    self.status = "delete cancelled".into();
+                }
+                KeyCode::Backspace => {
+                    if let Some(buf) = self.confirm_delete.as_mut() {
+                        buf.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(buf) = self.confirm_delete.as_mut() {
+                        buf.push(c);
+                    }
+                }
+                KeyCode::Enter => {
+                    let typed = self.confirm_delete.take().unwrap_or_default();
+                    self.delete_selected_if_matches(&typed);
+                }
+                _ => {}
+            }
+            return PeopleAction::None;
+        }
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('r') => self.rescan(),
+            // I — import a scenario-defined persona into the editable people/ library.
+            KeyCode::Char('i' | 'I') => self.import_selected(),
+            // Del — remove a people-dir identity (type-name confirmation first).
+            KeyCode::Delete => self.begin_delete(),
             // Space toggles multi-select (for a multiperson generation).
             KeyCode::Char(' ') => {
                 if !self.people.is_empty() && !self.marked.remove(&self.selected) {
@@ -296,6 +340,84 @@ impl PeopleState {
         PeopleAction::None
     }
 
+    /// Import the selected scenario-sourced persona into `people/<slug>/` so it becomes
+    /// a first-class, editable identity: copy each reference photo into `refs/` and
+    /// write a `person.hjson` with rewritten (relative) ref paths. Conflict-aware — an
+    /// existing `people/<slug>/` is never overwritten.
+    fn import_selected(&mut self) {
+        let Some(p) = self.selected_person() else { return };
+        if p.source == "people" {
+            self.status = "already a people/ identity — nothing to import".into();
+            return;
+        }
+        if p.error.is_some() {
+            self.status = "can't import a malformed persona".into();
+            return;
+        }
+        let slug = slugify(p.label());
+        if slug.is_empty() {
+            self.status = "persona has no usable name to import".into();
+            return;
+        }
+        let dest = self.dir.join(&slug);
+        if dest.exists() {
+            self.status = format!("people/{slug} already exists — rename or remove it first");
+            return;
+        }
+        match write_person_dir(&dest, p) {
+            Ok(n) => {
+                self.status = format!("✓ imported ‘{}’ → people/{slug} ({n} ref(s))", p.label());
+                self.rescan();
+                if let Some(i) = self.people.iter().position(|q| q.source == "people" && slugify(q.label()) == slug) {
+                    self.selected = i;
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dest); // don't leave a half-written dir
+                self.status = format!("✗ import failed: {e}");
+            }
+        }
+    }
+
+    /// Begin deleting the selected identity (only a canonical people-dir one). Opens the
+    /// type-name confirmation modal; the actual removal happens on a matching Enter.
+    fn begin_delete(&mut self) {
+        let Some(p) = self.selected_person() else { return };
+        if p.source != "people" {
+            self.status = "scenario personas are read-only here — edit the scenario file".into();
+            return;
+        }
+        let label = p.label().to_string();
+        self.confirm_delete = Some(String::new());
+        self.status = format!("type ‘{label}’ then Enter to delete (Esc cancels)");
+    }
+
+    /// Remove the selected identity's directory iff `typed` matches its name. Implements
+    /// the "right to be forgotten" — deletes `people/<name>/` (refs, encodings, hjson).
+    /// (Scenario-ref rewrite + `out/` image cleanup are noted follow-ups.)
+    fn delete_selected_if_matches(&mut self, typed: &str) {
+        let Some(p) = self.selected_person() else { return };
+        let label = p.label().to_string();
+        let dir = p.dir.clone();
+        if typed.trim().to_lowercase() != label.to_lowercase() {
+            self.status = format!("name didn't match ‘{label}’ — not deleted");
+            return;
+        }
+        if dir.as_os_str().is_empty() || !dir.exists() {
+            self.status = "nothing on disk to delete".into();
+            return;
+        }
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                self.status = format!("✓ deleted identity ‘{label}’");
+                self.preview = None;
+                self.preview_for = None;
+                self.rescan();
+            }
+            Err(e) => self.status = format!("✗ delete failed: {e}"),
+        }
+    }
+
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -312,14 +434,36 @@ impl PeopleState {
     }
 
     fn render_library(&self, f: &mut Frame, area: Rect) {
-        let title = if self.marked.is_empty() {
-            format!(" People ({})  ·  Space mark ", self.people.len())
+        let title = if self.confirm_delete.is_some() {
+            " People  ·  confirm delete ".to_string()
+        } else if self.marked.is_empty() {
+            format!(" People ({})  ·  Space mark · I import · Del remove ", self.people.len())
         } else {
             format!(" People  ·  {} marked → [G] multiperson ", self.marked.len())
         };
         let block = Block::default().borders(Borders::ALL).title(title);
-        let inner = block.inner(area);
+        let outer = block.inner(area);
         f.render_widget(block, area);
+        // Reserve a one-line footer for status / the delete-confirm prompt.
+        let footer_h = if self.confirm_delete.is_some() || !self.status.is_empty() { 1 } else { 0 };
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(footer_h)])
+            .split(outer);
+        let inner = parts[0];
+        if footer_h == 1 {
+            let footer = if let Some(buf) = &self.confirm_delete {
+                Line::from(vec![
+                    Span::styled("delete> ", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(buf.clone(), Style::new().fg(Color::White)),
+                    Span::styled("▏", Style::new().fg(Color::Red)),
+                ])
+            } else {
+                let color = if self.status.starts_with('✗') { Color::Red } else { Color::Green };
+                Line::from(Span::styled(self.status.clone(), Style::new().fg(color)))
+            };
+            f.render_widget(Paragraph::new(footer), parts[1]);
+        }
         if self.people.is_empty() {
             f.render_widget(
                 Paragraph::new("No people yet. Add people/<name>/person.hjson.")
@@ -504,6 +648,58 @@ fn from_persona(ps: crate::cli::scenario::PersonaSummary, source: String) -> Per
     }
 }
 
+/// Filesystem-safe identity directory name (lowercase, non-alphanumerics → `-`).
+fn slugify(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    s.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// Write a `people/<slug>/` directory for `p`: copy its reference photos into `refs/`
+/// (rewriting paths to relative) and emit a `person.hjson`. Returns the ref count.
+fn write_person_dir(dest: &Path, p: &Person) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dest.join("refs"))?;
+    let mut ref_lines = Vec::new();
+    let mut n = 0usize;
+    for (i, (src, weight)) in p.resolved_photos().into_iter().enumerate() {
+        if !src.exists() {
+            continue; // skip missing source photos rather than fail the whole import
+        }
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("png");
+        let fname = format!("ref-{i}.{ext}");
+        std::fs::copy(&src, dest.join("refs").join(&fname))?;
+        // One field per line — inline `{ k: v, … }` objects break HJSON (quoteless
+        // values run to end-of-line and swallow the rest).
+        ref_lines.push(format!("    {{\n      path: refs/{fname}\n      weight: {weight}\n    }}"));
+        n += 1;
+    }
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut body = String::from("{\n");
+    body.push_str(&format!("  name: {}\n", slugify(p.label())));
+    body.push_str(&format!("  display_name: \"{}\"\n", esc(p.label())));
+    if !p.identity.is_empty() {
+        body.push_str(&format!("  identity: {}\n", p.identity));
+    }
+    if let Some(fs) = p.face_strength {
+        body.push_str(&format!("  face_strength: {fs}\n"));
+    }
+    if !p.prompt.is_empty() {
+        body.push_str(&format!("  prompt: \"{}\"\n", esc(&p.prompt)));
+    }
+    if !p.negative.is_empty() {
+        body.push_str(&format!("  negative: \"{}\"\n", esc(&p.negative)));
+    }
+    body.push_str("  refs: [\n");
+    body.push_str(&ref_lines.join("\n"));
+    body.push_str("\n  ]\n}\n");
+    std::fs::write(dest.join("person.hjson"), body)?;
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +824,88 @@ mod tests {
         // Marks cleared after dispatch.
         assert!(s.marked.is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn import_pulls_a_scenario_persona_into_the_people_dir() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("import");
+        let people = d.join("people");
+        let scen = d.join("scenarios");
+        std::fs::create_dir_all(&people).unwrap();
+        std::fs::create_dir_all(&scen).unwrap();
+        // A real photo the persona points at (absolute path, as peek_personas resolves).
+        let photo = scen.join("carol.png");
+        std::fs::write(&photo, b"\x89PNG fake").unwrap();
+        std::fs::write(
+            scen.join("shoot.hjson"),
+            format!(r#"{{"model":"sd15","personas":[{{"name":"Carol Doe","photo":"{}","identity":"faceid"}}],"tasks":[]}}"#, photo.display()),
+        )
+        .unwrap();
+
+        let mut s = PeopleState::new(people.clone(), scen);
+        // Select the scenario persona (only entry) and import it.
+        assert_eq!(s.people.len(), 1);
+        assert_eq!(s.people[0].source.starts_with("scenario"), true);
+        s.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
+        assert!(s.status.starts_with("✓ imported"), "status: {}", s.status);
+        // Now there's a canonical people/carol-doe/ with the ref copied + relative path.
+        let dest = people.join("carol-doe");
+        assert!(dest.join("person.hjson").exists());
+        assert!(dest.join("refs/ref-0.png").exists(), "ref photo copied in");
+        let hj = std::fs::read_to_string(dest.join("person.hjson")).unwrap();
+        assert!(hj.contains("identity: faceid"));
+        assert!(hj.contains("path: refs/ref-0.png"), "ref path rewritten relative");
+        // After rescan the imported identity is people-sourced and selected.
+        assert!(s.people.iter().any(|p| p.source == "people" && p.label() == "Carol Doe"));
+        // A second import is conflict-aware (refuses to overwrite).
+        if let Some(i) = s.people.iter().position(|p| p.source.starts_with("scenario")) {
+            s.selected = i;
+            s.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
+            assert!(s.status.contains("already exists"));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn delete_needs_the_typed_name_to_match() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("delete");
+        let people = d.join("people");
+        let alice = people.join("alice");
+        std::fs::create_dir_all(alice.join("refs")).unwrap();
+        std::fs::write(alice.join("person.hjson"), r#"{"display_name":"alice"}"#).unwrap();
+        let mut s = PeopleState::new(people.clone(), d.join("scenarios"));
+        let ch = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+
+        // Del opens the type-name modal (captures input).
+        s.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert!(s.captures_input());
+        // Wrong name → kept on disk.
+        for c in "bob".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(alice.exists(), "mismatch must not delete");
+        assert!(!s.captures_input());
+
+        // Right name → removed.
+        s.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        for c in "alice".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!alice.exists(), "match deletes the identity dir");
+        assert!(s.status.starts_with("✓ deleted"));
+        assert!(s.people.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn slugify_makes_safe_dir_names() {
+        assert_eq!(slugify("Carol Doe"), "carol-doe");
+        assert_eq!(slugify("  Анна  "), "анна");
+        assert_eq!(slugify("a/b\\c"), "a-b-c");
     }
 
     #[test]

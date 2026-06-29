@@ -43,6 +43,10 @@ const DEFAULT_ANCHOR_STRENGTH: f32 = 0.6;
 /// Per-LoRA scale used when applying a LoRA from the Hub to Chat.
 const APPLY_LORA_SCALE: f32 = 0.8;
 
+/// img2img strength for a Canvas inpaint turn — high, so the masked region actually
+/// regenerates (a soft 0.6 only nudges it).
+const INPAINT_STRENGTH: f32 = 0.85;
+
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,11 +157,16 @@ pub struct App {
     fixed_seed: Option<u64>,
     // The seed used by the in-flight turn (recorded as base_seed on a fresh Done).
     active_seed: u64,
-    // LoRAs applied to Chat generation (load-time merge). Changing the set reloads
-    // the current model. Paths into the LoRA Hub's scanned dirs.
-    active_loras: Vec<std::path::PathBuf>,
+    // LoRAs applied to Chat generation (load-time merge), each with its weight.
+    // Changing the set or a weight reloads the current model.
+    active_loras: Vec<(std::path::PathBuf, f32)>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
+    // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
+    // instead of the always-refine heuristic. Off by default (adds a quick LLM call).
+    auto_route: bool,
+    // In-flight classification: (is_new, edit_text).
+    route_rx: Option<Receiver<(bool, String)>>,
     // The in-flight scenario run (its terminal-result channel).
     scenario_run: Option<Receiver<Result<(), String>>>,
     // Live per-task events from the in-flight scenario run (RUNNER board).
@@ -173,8 +182,41 @@ pub struct App {
     lora_assess: Option<Receiver<(String, String)>>,
     // In-flight LLM recommend-for-context (LoRA Hub search tabs).
     lora_recommend: Option<Receiver<String>>,
+    // In-flight LLM LoRA-combination suggestion (LoRA Hub Ctrl-R).
+    lora_combine: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
+    // In-flight Chat→Scenario summary (Scenarios editor Ctrl-G).
+    chat_to_scenario: Option<Receiver<Result<String, String>>>,
+}
+
+/// A persisted Chat session (`/save` / `/load`): the visible thread plus the
+/// refinement state needed to keep editing where you left off.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct ChatSession {
+    #[serde(default)]
+    turns: Vec<SessionTurn>,
+    #[serde(default)]
+    refine_prompt: String,
+    #[serde(default)]
+    base_seed: Option<u64>,
+    #[serde(default)]
+    negative: String,
+    #[serde(default)]
+    refine_base: Option<String>,
+    #[serde(default)]
+    active_seed: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionTurn {
+    utterance: String,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    refine: bool,
+    #[serde(default)]
+    system: bool,
 }
 
 impl App {
@@ -227,9 +269,13 @@ impl App {
             remote_download: None,
             lora_assess: None,
             lora_recommend: None,
+            lora_combine: None,
             prompt_compile: None,
+            chat_to_scenario: None,
             active_loras: Vec::new(),
             chat_mask: None,
+            auto_route: false,
+            route_rx: None,
             screen: ActiveScreen::Chat,
             should_quit: false,
             picker,
@@ -311,6 +357,7 @@ impl App {
             self.sync_prompts();
             self.drain_prompt_compile();
             self.sync_canvas();
+            self.drain_route();
         }
         Ok(())
     }
@@ -426,9 +473,8 @@ impl App {
         // ── The Scenarios EDITOR / RUNNER own the keyboard (type into the buffer /
         //    capture Esc) — route everything to them while active. ──
         if self.screen == ActiveScreen::Scenarios && self.scenarios.captures_input() {
-            if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
-                self.run_scenario(path);
-            }
+            let action = self.scenarios.handle_key(key);
+            self.handle_scenarios_action(action);
             return;
         }
 
@@ -446,10 +492,30 @@ impl App {
             return;
         }
 
+        // ── History's filter / tag input owns the keyboard while typing. ──
+        if self.screen == ActiveScreen::History && self.history.captures_input() {
+            if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
+                self.continue_from_image(path, prompt, seed);
+            }
+            return;
+        }
+
+        // ── People's delete-confirm modal owns the keyboard (type the name). ──
+        if self.screen == ActiveScreen::People && self.people.captures_input() {
+            match self.people.handle_key(key) {
+                people::PeopleAction::Generate(spec) => self.quick_generate(spec),
+                people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::None => {}
+            }
+            return;
+        }
+
         // ── The Canvas owns the keyboard (preset letters + Space painting). ──
         if self.screen == ActiveScreen::Canvas {
-            if let canvas::CanvasAction::MaskReady(path) = self.canvas.handle_key(key) {
-                self.apply_canvas_mask(path);
+            match self.canvas.handle_key(key) {
+                canvas::CanvasAction::MaskReady(path) => self.apply_canvas_mask(path),
+                canvas::CanvasAction::OutpaintReady { base, mask } => self.apply_outpaint(base, mask),
+                canvas::CanvasAction::None => {}
             }
             return;
         }
@@ -484,13 +550,12 @@ impl App {
                 }
             },
             ActiveScreen::Scenarios => {
-                if let ScenariosAction::Run(path) = self.scenarios.handle_key(key) {
-                    self.run_scenario(path);
-                }
+                let action = self.scenarios.handle_key(key);
+                self.handle_scenarios_action(action);
             }
             ActiveScreen::History => {
-                if let HistoryAction::Continue { path, prompt } = self.history.handle_key(key) {
-                    self.continue_from_image(path, prompt);
+                if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
+                    self.continue_from_image(path, prompt, seed);
                 }
             }
             ActiveScreen::People => match self.people.handle_key(key) {
@@ -597,7 +662,98 @@ impl App {
             lorahub::LoraHubAction::Download { dl, title } => self.remote_download(dl, title),
             lorahub::LoraHubAction::Assess { key, prompt } => self.assess_lora(key, prompt),
             lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
+            lorahub::LoraHubAction::AdjustWeight { path, delta } => self.adjust_lora_weight(path, delta),
+            lorahub::LoraHubAction::SuggestCombination { candidates } => self.suggest_combination(candidates),
         }
+    }
+
+    /// `Ctrl-R` — ask the LLM which compatible LoRAs to STACK for the current Chat
+    /// prompt, on a background thread; the suggestion shows in the LOCAL detail.
+    /// Route a Scenarios screen action.
+    fn handle_scenarios_action(&mut self, action: ScenariosAction) {
+        match action {
+            ScenariosAction::None => {}
+            ScenariosAction::Run(path) => self.run_scenario(path),
+            ScenariosAction::GrabFromChat => self.grab_chat_into_scenario(),
+        }
+    }
+
+    /// Summarize the current Chat session into one coherent image prompt and (when the
+    /// LLM returns) insert it as a `{ name, prompt }` task at the editor cursor. Source
+    /// = the session's non-system utterances (the whole refinement thread), else the
+    /// accumulated refine prompt, else whatever is typed in the Chat box. The summary
+    /// runs on a background thread (the editor stays live); `drain_civitai` delivers it.
+    fn grab_chat_into_scenario(&mut self) {
+        if self.chat_to_scenario.is_some() {
+            return;
+        }
+        // Build the source material from the chat thread.
+        let steps: Vec<String> = self
+            .chat
+            .history
+            .iter()
+            .filter(|e| !e.system)
+            .map(|e| e.utterance.clone())
+            .collect();
+        let source = if !steps.is_empty() {
+            steps.join("\n")
+        } else if !self.refine_prompt.is_empty() {
+            self.refine_prompt.clone()
+        } else {
+            self.chat.editor.text()
+        };
+        if source.trim().is_empty() {
+            self.scenarios.set_status("✗ nothing in Chat to summarize yet — generate something first");
+            return;
+        }
+        let negative = self.negative.clone();
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You distill a Stable Diffusion chat session into ONE reusable \
+                image prompt. The user's messages are successive refinement steps (each builds on \
+                the last). Merge them into a single coherent, comma-separated prompt capturing the \
+                final intended image. Output ONLY the prompt — no preamble, no quotes, no markdown.";
+            let user = if negative.trim().is_empty() {
+                format!("Refinement steps (oldest first):\n{source}\n\nFinal prompt:")
+            } else {
+                format!("Refinement steps (oldest first):\n{source}\n\n(Negative: {negative})\n\nFinal prompt:")
+            };
+            let result = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .map(|t| t.trim().trim_matches('"').to_string())
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.chat_to_scenario = Some(rx);
+    }
+
+    fn suggest_combination(&mut self, candidates: Vec<String>) {
+        if self.lora_combine.is_some() {
+            return;
+        }
+        let context = if !self.refine_prompt.is_empty() {
+            self.refine_prompt.clone()
+        } else {
+            let typed = self.chat.editor.text();
+            if typed.trim().is_empty() { "a general image".into() } else { typed }
+        };
+        let list = candidates.join(", ");
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You compose Stable Diffusion LoRA STACKS. Given an image \
+                prompt and available LoRAs, suggest which to combine (1–3) and rough weights, \
+                in ONE plain sentence. No preamble, no markdown.";
+            let user = format!("Image prompt: {context}\n\nAvailable LoRAs: {list}\n\nSuggest a combination.");
+            let text = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_else(|e| format!("(suggestion failed: {e:#})"));
+            let _ = tx.send(text.trim().to_string());
+        });
+        self.lora_combine = Some(rx);
     }
 
     /// Recommend-for-context: ask the LLM which candidate LoRA best fits the current
@@ -660,6 +816,17 @@ impl App {
         if self.remote_search.is_some() {
             return;
         }
+        let src_tag = match source {
+            lorahub::RemoteSource::Civitai => "civitai",
+            lorahub::RemoteSource::HuggingFace => "hf",
+        };
+        // Serve an identical recent query from the 1h disk cache — no network round-trip.
+        if let Some(hits) = super::services::search_cache::get(src_tag, &query) {
+            let n = hits.len();
+            self.lorahub.set_remote_hits(hits);
+            self.lorahub.set_remote_status(format!("{n} results (cached)"));
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
         std::thread::spawn(move || {
@@ -671,9 +838,11 @@ impl App {
                             .into_iter()
                             .map(|m| {
                                 let v = m.model_versions.first();
+                                let base = v.and_then(|v| v.base_model.clone()).unwrap_or_default();
                                 lorahub::RemoteHit {
                                     title: m.name,
-                                    subtitle: v.and_then(|v| v.base_model.clone()).unwrap_or_default(),
+                                    family: lorahub::family_from_str(&base),
+                                    subtitle: base,
                                     downloads: m.stats.download_count,
                                     dl: lorahub::DownloadRef::Civitai { model_id: m.id, version_id: v.map(|v| v.id) },
                                 }
@@ -686,6 +855,8 @@ impl App {
                     .map(|hits| {
                         hits.into_iter()
                             .map(|h| lorahub::RemoteHit {
+                                // HF exposes no per-LoRA base model → guess from the repo id.
+                                family: lorahub::family_from_str(&h.id),
                                 title: h.id.clone(),
                                 subtitle: h.pipeline,
                                 downloads: h.downloads,
@@ -695,6 +866,10 @@ impl App {
                     })
                     .map_err(|e| format!("{e:#}")),
             };
+            // Persist successful results for the next identical query within the TTL.
+            if let Ok(hits) = &result {
+                super::services::search_cache::put(src_tag, &query, hits);
+            }
             let _ = tx.send(result);
         });
         self.remote_search = Some(rx);
@@ -722,6 +897,7 @@ impl App {
             };
             let _ = tx.send(result);
         });
+        self.lorahub.set_downloading(true);
         self.remote_download = Some(rx);
     }
 
@@ -746,13 +922,18 @@ impl App {
                 Ok(Ok(name)) => {
                     self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL"));
                     self.lorahub.rescan();
+                    self.lorahub.set_downloading(false);
                     self.remote_download = None;
                 }
                 Ok(Err(e)) => {
                     self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
+                    self.lorahub.set_downloading(false);
                     self.remote_download = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.remote_download = None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.lorahub.set_downloading(false);
+                    self.remote_download = None;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
@@ -776,26 +957,59 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        if let Some(rx) = &self.lora_combine {
+            match rx.try_recv() {
+                Ok(text) => {
+                    self.lorahub.set_combination(text);
+                    self.lora_combine = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_combine = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.chat_to_scenario {
+            match rx.try_recv() {
+                Ok(Ok(prompt)) => {
+                    self.scenarios.insert_task("from-chat", &prompt);
+                    self.chat_to_scenario = None;
+                }
+                Ok(Err(e)) => {
+                    self.scenarios.set_status(format!("✗ Chat summary failed: {e}"));
+                    self.chat_to_scenario = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.chat_to_scenario = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
     }
 
-    /// Load (or reload) `alias` with the currently-applied LoRAs merged in.
+    /// Load (or reload) `alias` with the currently-applied LoRAs merged in (each at
+    /// its per-LoRA weight).
     fn load_model(&mut self, alias: impl Into<String>) {
         let specs: Vec<crate::pipelines::lora::LoraSpec> = self
             .active_loras
             .iter()
-            .map(|p| crate::pipelines::lora::LoraSpec {
+            .map(|(p, w)| crate::pipelines::lora::LoraSpec {
                 source: crate::pipelines::lora::LoraSource::Local(p.clone()),
-                scale: APPLY_LORA_SCALE,
+                scale: *w,
             })
             .collect();
         self.model_svc.load(alias, specs);
+    }
+
+    /// Reload the loaded model so a LoRA-set / weight change takes effect.
+    fn reload_for_loras(&mut self) {
+        if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
+            self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
+            self.load_model(alias);
+        }
     }
 
     /// Toggle a LoRA in Chat's active set (LoRA Hub `A`). Applying reloads the loaded
     /// model so the LoRA is merged in; an incompatible LoRA is refused with a note.
     fn toggle_lora(&mut self, path: std::path::PathBuf, compatible: bool) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lora").to_string();
-        if let Some(pos) = self.active_loras.iter().position(|p| p == &path) {
+        if let Some(pos) = self.active_loras.iter().position(|(p, _)| p == &path) {
             self.active_loras.remove(pos);
             self.chat.push_system(format!("LoRA off: {name} ({} active)", self.active_loras.len()));
         } else {
@@ -803,25 +1017,145 @@ impl App {
                 self.chat.push_system(format!("⚠ {name} doesn't match the loaded model — not applied"));
                 return;
             }
-            self.active_loras.push(path);
-            self.chat.push_system(format!("LoRA on: {name} ({} active)", self.active_loras.len()));
+            self.active_loras.push((path, APPLY_LORA_SCALE));
+            self.chat.push_system(format!("LoRA on: {name} @ {APPLY_LORA_SCALE:.2} ({} active)", self.active_loras.len()));
         }
-        // Reload the loaded model with the new set so the merge takes effect.
-        if let Some(alias) = self.models.loaded_alias().map(str::to_string) {
-            self.output.push(format!("reloading {alias} with {} LoRA(s)…", self.active_loras.len()));
-            self.load_model(alias);
+        self.reload_for_loras();
+    }
+
+    /// Nudge an applied LoRA's weight (LoRA Hub `+`/`-`) and reload. Ignored (with a
+    /// hint) when the LoRA isn't applied.
+    fn adjust_lora_weight(&mut self, path: std::path::PathBuf, delta: f32) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lora").to_string();
+        let new_w = match self.active_loras.iter_mut().find(|(p, _)| p == &path) {
+            Some(entry) => {
+                entry.1 = (entry.1 + delta).clamp(0.1, 1.5);
+                entry.1
+            }
+            None => {
+                self.chat.push_system(format!("apply {name} (A) before changing its weight"));
+                return;
+            }
+        };
+        self.chat.push_system(format!("LoRA weight: {name} → {new_w:.2}"));
+        self.reload_for_loras();
+    }
+
+    /// Canvas `Enter` — adopt the rasterized mask as a ONE-SHOT inpaint for the next
+    /// Chat prompt (only the white pixels change). It does NOT flip the session into
+    /// anchored mode — after that one turn the mask is consumed and refinement reverts
+    /// to whatever it was (prompt-evolve by default), so you're not locked in.
+    fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
+        self.chat_mask = Some(path);
+        // A mask needs a base to inpaint over; ensure a refine is triggered.
+        if self.base_seed.is_none() {
+            self.base_seed = Some(rand::random::<u32>() as u64);
+        }
+        self.chat.refine_armed = true;
+        self.chat.push_system("inpaint mask set from Canvas — type an edit for the masked region (one-shot)".into());
+        self.screen = ActiveScreen::Chat;
+    }
+
+    /// Apply a Canvas outpaint: the enlarged grey-padded image becomes the Chat base
+    /// and the band mask is a one-shot inpaint, so the next prompt fills the new region.
+    fn apply_outpaint(&mut self, base: std::path::PathBuf, mask: std::path::PathBuf) {
+        self.refine_base = Some(base);
+        self.chat_mask = Some(mask);
+        if self.base_seed.is_none() {
+            self.base_seed = Some(rand::random::<u32>() as u64);
+        }
+        self.chat.refine_armed = true;
+        self.chat.push_system("outpaint base set from Canvas — type what fills the new region (one-shot)".into());
+        self.screen = ActiveScreen::Chat;
+    }
+
+    fn sessions_dir(&self) -> std::path::PathBuf {
+        self.workspace.root.join("sessions")
+    }
+
+    /// `/save [name]` — write the Chat thread + refinement state to
+    /// `sessions/<name>.json` so it can be reloaded later.
+    fn save_session(&mut self, name: &str) {
+        let slug = session_slug(name);
+        let session = ChatSession {
+            turns: self
+                .chat
+                .history
+                .iter()
+                .map(|e| SessionTurn { utterance: e.utterance.clone(), result: e.result.clone(), refine: e.refine, system: e.system })
+                .collect(),
+            refine_prompt: self.refine_prompt.clone(),
+            base_seed: self.base_seed,
+            negative: self.negative.clone(),
+            refine_base: self.refine_base.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            active_seed: self.active_seed,
+        };
+        let dir = self.sessions_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("{slug}.json"));
+        match serde_json::to_vec_pretty(&session) {
+            Ok(bytes) => match std::fs::write(&path, bytes) {
+                Ok(()) => self.chat.push_system(format!("✓ saved session → sessions/{slug}.json ({} turn(s))", session.turns.len())),
+                Err(e) => self.chat.push_system(format!("✗ save failed: {e}")),
+            },
+            Err(e) => self.chat.push_system(format!("✗ serialize failed: {e}")),
         }
     }
 
-    /// Canvas `Enter` — adopt the rasterized mask as Chat's inpaint mask. Forces
-    /// image-anchored refinement (inpaint = img2img over the base, only the white
-    /// pixels change) and switches to Chat.
-    fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
-        self.chat_mask = Some(path);
-        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
-        self.chat.refine_armed = true;
-        self.chat.push_system("inpaint mask set from Canvas — type an edit for the masked region".into());
+    /// `/load <name>` — restore a saved session into Chat (thread + accumulated prompt,
+    /// seed, negative, base image) so refinement continues where it left off.
+    fn load_session(&mut self, name: &str) {
+        if name.is_empty() {
+            self.chat.push_system("usage: /load <name> — see /sessions".into());
+            return;
+        }
+        let path = self.sessions_dir().join(format!("{}.json", session_slug(name)));
+        let session: ChatSession = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string())) {
+            Ok(s) => s,
+            Err(e) => {
+                self.chat.push_system(format!("✗ couldn't load ‘{name}’: {e}"));
+                return;
+            }
+        };
+        let turns = session.turns.len();
+        self.chat.restore(session.turns.into_iter().map(|t| (t.utterance, t.result, t.refine, t.system)).collect());
+        self.refine_prompt = session.refine_prompt;
+        self.base_seed = session.base_seed;
+        self.negative = session.negative;
+        self.active_seed = session.active_seed;
+        self.refine_base = session.refine_base.map(std::path::PathBuf::from);
+        // Rebuild the inline preview from the restored base image, if it still exists.
+        self.chat.preview = self
+            .refine_base
+            .as_ref()
+            .and_then(|p| image::open(p).ok())
+            .map(|img| self.picker.new_resize_protocol(img));
+        self.chat.refine_armed = self.base_seed.is_some();
         self.screen = ActiveScreen::Chat;
+        self.chat.push_system(format!("✓ loaded session ‘{name}’ ({turns} turn(s)) — keep refining"));
+    }
+
+    /// `/sessions` — list the saved sessions under `sessions/`.
+    fn list_sessions(&mut self) {
+        let dir = self.sessions_dir();
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        (p.extension().and_then(|x| x.to_str()) == Some("json"))
+                            .then(|| p.file_stem().and_then(|n| n.to_str()).map(str::to_string))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        if names.is_empty() {
+            self.chat.push_system("no saved sessions yet — /save [name] to create one".into());
+        } else {
+            self.chat.push_system(format!("sessions: {} · /load <name>", names.join(", ")));
+        }
     }
 
     /// Keep the Canvas base in sync with the current Chat base image (lazy preview).
@@ -1014,27 +1348,41 @@ impl App {
         if let Some(result) = done {
             self.portrait_run = None;
             match result {
-                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone()),
+                // Portraits carry no Chat recipe → image-anchored continuation.
+                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone(), None),
                 Err(e) => self.output.push(format!("✗ portrait failed: {e}")),
             }
         }
     }
 
-    /// Load a History image into Chat as the base for image-anchored refinement: the
-    /// next prompt img2img's over it (we have the pixels, not the recipe seed), with
-    /// the recovered positive prompt as the accumulation prefix. Switches to Chat.
-    fn continue_from_image(&mut self, path: std::path::PathBuf, prompt: String) {
+    /// Load an image into Chat to keep editing it. When the image carries a recipe
+    /// (`seed` + `prompt` recovered from its metadata) we resume in PROMPT-EVOLVE mode
+    /// — txt2img at that seed reproduces ~the same image and additive edits ("add a
+    /// sun") reliably land. Without a recipe (`seed` = None) we only have the pixels,
+    /// so we fall back to image-anchored img2img. Switches to Chat.
+    fn continue_from_image(&mut self, path: std::path::PathBuf, prompt: String, seed: Option<u64>) {
         self.refine_base = Some(path.clone());
-        self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH);
-        self.base_seed = Some(rand::random::<u32>() as u64);
         self.refine_prompt = prompt;
         self.fixed_seed = None;
+        self.chat_mask = None;
+        let mode = match seed {
+            Some(s) => {
+                self.base_seed = Some(s);
+                self.refine_strength = None; // prompt-evolve
+                "prompt-evolve"
+            }
+            None => {
+                self.base_seed = Some(rand::random::<u32>() as u64);
+                self.refine_strength = Some(DEFAULT_ANCHOR_STRENGTH); // image-anchored
+                "image-anchored"
+            }
+        };
         if let Ok(img) = image::open(&path) {
             self.chat.preview = Some(self.picker.new_resize_protocol(img));
         }
         self.chat.refine_armed = true;
         self.chat.push_system(format!(
-            "continuing from {} — type an edit (image-anchored)",
+            "continuing from {} — type an edit ({mode})",
             path.file_name().and_then(|n| n.to_str()).unwrap_or("image")
         ));
         self.screen = ActiveScreen::Chat;
@@ -1161,7 +1509,75 @@ impl App {
             }
             return;
         }
+        // `/save [name]` / `/load <name>` / `/sessions` — persist & restore the thread.
+        if let Some(rest) = text.strip_prefix("/sessions") {
+            let _ = rest;
+            self.list_sessions();
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/save") {
+            self.save_session(rest.trim());
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/load") {
+            self.load_session(rest.trim());
+            return;
+        }
+        // `/auto on|off` — LLM edit/new routing for follow-ups.
+        if let Some(rest) = text.strip_prefix("/auto") {
+            self.auto_route = !rest.trim().eq_ignore_ascii_case("off");
+            self.chat.push_system(
+                if self.auto_route { "auto edit/new routing ON" } else { "auto routing OFF" }.into(),
+            );
+            return;
+        }
+        // With `/auto` on and an image already in the thread, classify the follow-up
+        // (edit vs new scene) before dispatching — instead of always refining.
+        if self.auto_route && self.base_seed.is_some() && self.route_rx.is_none() && self.active_gen.is_none() {
+            self.classify_route(text);
+            return;
+        }
         self.dispatch_generation(text, false);
+    }
+
+    /// Ask the LLM whether `edit` edits the current image or asks for a new one, on a
+    /// background thread; `drain_route` dispatches fresh / refine from the verdict.
+    fn classify_route(&mut self, edit: String) {
+        let context = if self.refine_prompt.is_empty() { "an image".into() } else { self.refine_prompt.clone() };
+        let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
+        self.chat.push_system(format!("routing “{edit}” …"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            const SYSTEM: &str = "You decide whether a user's instruction EDITS the current \
+                image or asks for a COMPLETELY NEW / different image. Reply with exactly one \
+                word: EDIT or NEW.";
+            let user = format!("Current image: {context}\nInstruction: {edit}");
+            let verdict = rt
+                .block_on(crate::prompt::complete(&provider, SYSTEM, &user, &crate::prompt::EnhanceArgs::default()))
+                .unwrap_or_default();
+            let is_new = verdict.to_uppercase().contains("NEW");
+            let _ = tx.send((is_new, edit));
+        });
+        self.route_rx = Some(rx);
+    }
+
+    /// Drain the in-flight classification → dispatch fresh (`/new`) or refine.
+    fn drain_route(&mut self) {
+        if let Some(rx) = &self.route_rx {
+            match rx.try_recv() {
+                Ok((is_new, edit)) => {
+                    self.route_rx = None;
+                    if is_new {
+                        self.dispatch_generation(format!("/new {edit}"), false);
+                    } else {
+                        self.dispatch_generation(edit, false);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.route_rx = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
     }
 
     /// Dispatch a Chat prompt to the model thread (must have a model loaded). The
@@ -1200,7 +1616,13 @@ impl App {
         } else {
             edit.clone()
         };
-        let init_image = if refine {
+        // A Canvas mask makes this ONE turn an inpaint (img2img over the base, masked)
+        // regardless of the sticky mode — then it's consumed. Otherwise the mode rules:
+        // anchored (`/strength`) = img2img over the base; prompt-evolve = txt2img.
+        let inpaint = refine && self.chat_mask.is_some() && self.refine_base.is_some();
+        let init_image = if inpaint {
+            self.refine_base.clone()
+        } else if refine {
             self.refine_strength.and(self.refine_base.clone())
         } else {
             None
@@ -1229,16 +1651,23 @@ impl App {
             .or(if refine { self.base_seed } else { None })
             .unwrap_or_else(|| rand::random::<u32>() as u64);
         self.active_seed = seed;
-        // Anchored mode passes its strength; prompt-evolve ignores it (init is None).
-        let strength = self.refine_strength.unwrap_or(0.0);
-        // The Canvas inpaint mask applies only when refining over the base image.
-        let mask = if init_image.is_some() { self.chat_mask.clone() } else { None };
+        // Inpaint runs hot (the masked region regenerates); anchored uses its strength;
+        // prompt-evolve ignores it (init is None).
+        let strength = if inpaint { INPAINT_STRENGTH } else { self.refine_strength.unwrap_or(0.0) };
+        let mask = if inpaint { self.chat_mask.take() } else { None }; // one-shot
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
+        // An img2img/inpaint init image (e.g. a Canvas outpaint's grey-padded base) may
+        // be non-square — generate at ITS dimensions (rounded to /8) so the mask aligns,
+        // rather than squishing it into the native square. txt2img stays native-square.
+        let (gen_w, gen_h) = match init_image.as_ref().and_then(|p| image::image_dimensions(p).ok()) {
+            Some((iw, ih)) => ((iw / 8 * 8).max(8), (ih / 8 * 8).max(8)),
+            None => (n, n),
+        };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
             self.negative.clone(),
-            n,
-            n,
+            gen_w,
+            gen_h,
             steps,
             guidance,
             seed,
@@ -1376,6 +1805,13 @@ impl App {
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
     }
+}
+
+/// Filesystem-safe Chat-session file stem (empty → "session").
+fn session_slug(name: &str) -> String {
+    let s: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let s: String = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    if s.is_empty() { "session".to_string() } else { s }
 }
 
 #[cfg(test)]
@@ -1558,11 +1994,77 @@ mod tests {
         let mut a = test_app(); // no model loaded → no reload side-effect
         let p1 = std::path::PathBuf::from("/tmp/style.safetensors");
         a.toggle_lora(p1.clone(), true);
-        assert_eq!(a.active_loras, vec![p1.clone()], "compatible LoRA applied");
+        assert_eq!(a.active_loras, vec![(p1.clone(), APPLY_LORA_SCALE)], "applied at default weight");
         a.toggle_lora(p1.clone(), true);
         assert!(a.active_loras.is_empty(), "re-toggle removes it");
         a.toggle_lora("/tmp/bad.safetensors".into(), false);
         assert!(a.active_loras.is_empty(), "incompatible LoRA is refused");
+    }
+
+    #[test]
+    fn adjust_lora_weight_clamps_and_only_affects_applied() {
+        let mut a = test_app();
+        let p = std::path::PathBuf::from("/tmp/style.safetensors");
+        a.toggle_lora(p.clone(), true); // applied @ 0.8
+        a.adjust_lora_weight(p.clone(), 0.1);
+        assert!((a.active_loras[0].1 - 0.9).abs() < 1e-6, "weight nudged up");
+        // Clamps at 1.5.
+        for _ in 0..20 {
+            a.adjust_lora_weight(p.clone(), 0.1);
+        }
+        assert!(a.active_loras[0].1 <= 1.5 + 1e-6);
+        // A non-applied LoRA is left alone.
+        a.adjust_lora_weight("/tmp/other.safetensors".into(), 0.1);
+        assert_eq!(a.active_loras.len(), 1);
+    }
+
+    #[test]
+    fn continue_uses_prompt_evolve_with_a_recipe_else_anchored() {
+        let mut a = test_app();
+        // With a recovered seed → prompt-evolve (refine_strength None), additive-friendly.
+        a.continue_from_image("/tmp/x.png".into(), "a fox".into(), Some(42));
+        assert_eq!(a.base_seed, Some(42));
+        assert_eq!(a.refine_strength, None, "recipe → prompt-evolve");
+        // Without a seed → image-anchored fallback.
+        a.continue_from_image("/tmp/y.png".into(), "a wolf".into(), None);
+        assert!(a.refine_strength.is_some(), "no recipe → anchored");
+    }
+
+    #[test]
+    fn canvas_mask_is_a_one_shot_inpaint_that_does_not_lock_the_mode() {
+        let mut a = test_app();
+        // Start in prompt-evolve with a base.
+        a.base_seed = Some(7);
+        a.refine_base = Some("/tmp/base.png".into());
+        a.refine_strength = None;
+        // Canvas hands over a mask — it must NOT flip the sticky mode.
+        a.apply_canvas_mask("/tmp/mask.png".into());
+        assert!(a.chat_mask.is_some());
+        assert_eq!(a.refine_strength, None, "mask doesn't lock anchored mode");
+        // The next refine consumes the mask (one-shot)…
+        a.dispatch_generation("a sun".into(), false);
+        assert!(a.chat_mask.is_none(), "mask consumed after one turn");
+        // …and the mode is still prompt-evolve for the following edits.
+        assert_eq!(a.refine_strength, None);
+    }
+
+    #[test]
+    fn auto_route_toggles_and_defers_dispatch_to_classification() {
+        let mut a = test_app();
+        assert!(!a.auto_route, "off by default");
+        a.handle_chat_submit("/auto on".into());
+        assert!(a.auto_route);
+
+        // With an image in the thread, a follow-up classifies (deferred) instead of
+        // dispatching immediately.
+        a.base_seed = Some(7);
+        a.refine_base = Some("/tmp/x.png".into());
+        a.handle_chat_submit("a dragon".into());
+        assert!(a.route_rx.is_some(), "submission is routed, not yet dispatched");
+        assert!(a.active_gen.is_none());
+
+        a.handle_chat_submit("/auto off".into());
+        assert!(!a.auto_route);
     }
 
     #[test]
@@ -1571,6 +2073,71 @@ mod tests {
         let mut a = test_app();
         a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!a.should_quit);
+    }
+
+    #[test]
+    fn grab_from_chat_needs_something_to_summarize() {
+        // With an empty chat thread / refine prompt / editor, the grab is a no-op that
+        // reports why — no background LLM job is spawned.
+        let mut a = test_app();
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_none(), "no LLM job without source material");
+        assert!(a.scenarios.status.contains("nothing in Chat"));
+    }
+
+    #[test]
+    fn grab_from_chat_spawns_a_summary_when_the_thread_has_content() {
+        // A real chat utterance gives the summarizer source → an in-flight job starts.
+        let mut a = test_app();
+        a.chat.push_utterance("a watercolor fox".into(), false);
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_some(), "a summary job is in flight");
+        // A second press while one is in flight is ignored (no double-spawn).
+        a.grab_chat_into_scenario();
+        assert!(a.chat_to_scenario.is_some());
+    }
+
+    #[test]
+    fn session_slug_is_filesystem_safe() {
+        assert_eq!(session_slug("My Session 1"), "my-session-1");
+        assert_eq!(session_slug("  "), "session");
+        assert_eq!(session_slug("a/b"), "a-b");
+    }
+
+    #[test]
+    fn save_then_load_session_round_trips() {
+        let root = std::env::temp_dir().join("plakat-ui-session-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+
+        // Build a little session: a turn + accumulated state.
+        a.chat.push_utterance("a watercolor fox".into(), false);
+        a.chat.finish_last(Ok("out/chat/plakat-7-1.png".into()));
+        a.refine_prompt = "a watercolor fox, autumn leaves".into();
+        a.base_seed = Some(7);
+        a.negative = "blurry".into();
+        a.active_seed = 7;
+        a.handle_chat_submit("/save fox-demo".into());
+        assert!(root.join("sessions/fox-demo.json").exists(), "session written");
+
+        // Wipe live state, then load it back.
+        a.chat.restore(vec![]);
+        a.refine_prompt.clear();
+        a.base_seed = None;
+        a.negative.clear();
+        a.handle_chat_submit("/load fox-demo".into());
+        assert_eq!(a.refine_prompt, "a watercolor fox, autumn leaves");
+        assert_eq!(a.base_seed, Some(7));
+        assert_eq!(a.negative, "blurry");
+        // The fox utterance is back (plus the load's system note).
+        assert!(a.chat.history.iter().any(|e| e.utterance == "a watercolor fox" && !e.system));
+        // /sessions lists it without error.
+        a.handle_chat_submit("/sessions".into());
+        assert!(a.chat.history.last().unwrap().utterance.contains("fox-demo"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
