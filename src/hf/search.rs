@@ -33,21 +33,58 @@ pub struct HfHit {
 
 /// Search HF models by `query`, newest-downloaded first. Returns the hits for a UI
 /// to render (the CLI's [`print_search`] formats the same data to stdout).
+///
+/// Two-stage pre-filter: stage A is a **LoRA-tag-filtered** query (`filter=lora`) for
+/// precision — most HF text-search hits for a style term are full checkpoints, not
+/// adapters; stage B is the **plain search** for recall. Stage-A hits come first, then
+/// any stage-B hits the tag missed fill the remaining slots (deduped by id). If the
+/// tag-filtered call fails, stage B alone still returns results.
 pub async fn search_models(query: &str, limit: usize) -> Result<Vec<HfHit>> {
-    let url = reqwest::Url::parse_with_params(
-        "https://huggingface.co/api/models",
-        &[
-            ("search", query),
-            ("limit", &limit.to_string()),
-            ("sort", "downloads"),
-            ("direction", "-1"),
-        ],
-    )?;
-    let resp: Vec<ModelInfo> = http()?.get(url).send().await?.error_for_status()?.json().await?;
+    let client = http()?;
+    // Stage A — tag-filtered (LoRA adapters). Best-effort: an error/empty result just
+    // means stage B carries the search.
+    let tagged = fetch_models(&client, query, Some("lora"), limit).await.unwrap_or_default();
+    // Stage B — plain search (recall). This is the authoritative call; its failure is
+    // the function's failure.
+    let plain = fetch_models(&client, query, None, limit).await?;
+    Ok(merge_hits(tagged, plain, limit))
+}
+
+/// One HF `/api/models` call → `HfHit`s. `tag` adds a `filter=<tag>` narrowing.
+async fn fetch_models(client: &reqwest::Client, query: &str, tag: Option<&str>, limit: usize) -> Result<Vec<HfHit>> {
+    let limit_s = limit.to_string();
+    let mut params: Vec<(&str, &str)> = vec![
+        ("search", query),
+        ("limit", &limit_s),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+    ];
+    if let Some(t) = tag {
+        params.push(("filter", t));
+    }
+    let url = reqwest::Url::parse_with_params("https://huggingface.co/api/models", &params)?;
+    let resp: Vec<ModelInfo> = client.get(url).send().await?.error_for_status()?.json().await?;
     Ok(resp
         .into_iter()
         .map(|m| HfHit { id: m.id, downloads: m.downloads, pipeline: m.pipeline.unwrap_or_default() })
         .collect())
+}
+
+/// Merge two stages (LoRA-tagged first, then plain) into one list: stage-A order is
+/// preserved, stage-B hits whose id isn't already present fill the rest, capped at
+/// `limit`.
+fn merge_hits(primary: Vec<HfHit>, secondary: Vec<HfHit>, limit: usize) -> Vec<HfHit> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(limit);
+    for h in primary.into_iter().chain(secondary) {
+        if out.len() >= limit {
+            break;
+        }
+        if seen.insert(h.id.clone()) {
+            out.push(h);
+        }
+    }
+    out
 }
 
 /// Download the LoRA `.safetensors` from an HF repo and COPY it into `dest_dir`
@@ -163,5 +200,40 @@ fn print_table(items: &[ModelInfo], label: &str, show_trending: bool) {
             trail,
             style(m.pipeline.as_deref().unwrap_or("")).dim(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(id: &str, dl: u64) -> HfHit {
+        HfHit { id: id.into(), downloads: dl, pipeline: "text-to-image".into() }
+    }
+
+    #[test]
+    fn merge_keeps_lora_stage_first_then_fills_and_dedups() {
+        let tagged = vec![hit("a/lora-1", 100), hit("a/lora-2", 50)];
+        let plain = vec![hit("a/lora-2", 50), hit("b/checkpoint", 999), hit("c/other", 10)];
+        let merged = merge_hits(tagged, plain, 10);
+        let ids: Vec<&str> = merged.iter().map(|h| h.id.as_str()).collect();
+        // LoRA-tagged hits lead; the duplicate (lora-2) appears once; recall fills rest.
+        assert_eq!(ids, vec!["a/lora-1", "a/lora-2", "b/checkpoint", "c/other"]);
+    }
+
+    #[test]
+    fn merge_respects_the_limit() {
+        let tagged = vec![hit("a", 1), hit("b", 1)];
+        let plain = vec![hit("c", 1), hit("d", 1)];
+        let merged = merge_hits(tagged, plain, 3);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].id, "a");
+    }
+
+    #[test]
+    fn merge_with_empty_tagged_stage_is_plain_search() {
+        // Stage A failed/empty → stage B alone, order preserved.
+        let merged = merge_hits(vec![], vec![hit("x", 5), hit("y", 4)], 10);
+        assert_eq!(merged.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["x", "y"]);
     }
 }

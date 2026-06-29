@@ -92,4 +92,7 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       sidecar under the shared cache (keyed by the LoRA's path, 24h TTL via mtime); a
       fresh one is served without re-billing the LLM. Failed/empty assessments aren't
       cached (so they retry). (The two-stage HF pre-filter remains.)
-- [ ] **Two-stage HF pre-filter** — narrow HF LoRA search before the per-repo file probe.
+- [x] **Two-stage HF pre-filter** — `search_models` now runs a LoRA-`filter=lora`-tagged
+      query (precision) + the plain search (recall) and merges them (tagged first, deduped
+      by id, capped), so the HF tab surfaces actual adapters ahead of full checkpoints. A
+      failed tag stage degrades to plain search.
