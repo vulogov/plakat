@@ -993,6 +993,12 @@ impl App {
         if self.lora_assess.is_some() {
             return;
         }
+        // A LoRA's assessment describes the file, not the chat — serve a fresh (24h)
+        // cached one without re-billing the LLM.
+        if let Some(cached) = super::services::search_cache::assessment_get(&key) {
+            self.lorahub.set_assessment(key, cached);
+            return;
+        }
         let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -1002,7 +1008,10 @@ impl App {
             let text = rt
                 .block_on(crate::prompt::complete(&provider, SYSTEM, &prompt, &crate::prompt::EnhanceArgs::default()))
                 .unwrap_or_else(|e| format!("(assessment failed: {e:#})"));
-            let _ = tx.send((key, text.trim().to_string()));
+            let text = text.trim().to_string();
+            // Cache successful assessments for the day (assessment_put skips failures).
+            super::services::search_cache::assessment_put(&key, &text);
+            let _ = tx.send((key, text));
         });
         self.lora_assess = Some(rx);
     }

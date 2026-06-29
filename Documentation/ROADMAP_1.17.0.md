@@ -88,4 +88,8 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 - [ ] **Download manager depth** — ≤2 concurrent, range-resume, explicit SHA-256 verify,
       version-update detection (progress + a `●` indicator + 1h search caching shipped).
-- [ ] **LLM-assessment caching** (24h sidecar) + the two-stage HF pre-filter.
+- [x] **LLM-assessment caching** (24h sidecar) — `R` assessments are cached to a `.txt`
+      sidecar under the shared cache (keyed by the LoRA's path, 24h TTL via mtime); a
+      fresh one is served without re-billing the LLM. Failed/empty assessments aren't
+      cached (so they retry). (The two-stage HF pre-filter remains.)
+- [ ] **Two-stage HF pre-filter** — narrow HF LoRA search before the per-repo file probe.

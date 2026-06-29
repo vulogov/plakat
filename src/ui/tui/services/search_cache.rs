@@ -64,6 +64,43 @@ pub fn put(source: &str, query: &str, hits: &[RemoteHit]) {
     }
 }
 
+// ── LLM-assessment text cache (roadmap F) ───────────────────────────────────────────
+// A LoRA's assessment describes the *file* (not the chat prompt), so it's stable; cache
+// it for a day keyed by the LoRA's identity to avoid re-billing the LLM on every `R`.
+
+/// LLM assessments live for a day.
+pub const ASSESSMENT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn assessment_path(item_key: &str) -> Option<PathBuf> {
+    // Reuse the same key scheme (namespace "assess") + a `.txt` sidecar.
+    let mut name = key("assess", item_key);
+    name.push_str(".txt");
+    Some(cache_dir()?.join(name))
+}
+
+/// Return a cached assessment for `item_key` (the LoRA's path/identity) if a fresh
+/// (< [`ASSESSMENT_TTL`]) one exists.
+pub fn assessment_get(item_key: &str) -> Option<String> {
+    let p = assessment_path(item_key)?;
+    let meta = std::fs::metadata(&p).ok()?;
+    let age = SystemTime::now().duration_since(meta.modified().ok()?).ok()?;
+    if age > ASSESSMENT_TTL {
+        return None;
+    }
+    std::fs::read_to_string(&p).ok().filter(|s| !s.trim().is_empty())
+}
+
+/// Persist an assessment for `item_key`. Best-effort; never a correctness path. A
+/// failed/empty assessment is not cached (so a transient LLM error retries next time).
+pub fn assessment_put(item_key: &str, text: &str) {
+    if text.trim().is_empty() || text.starts_with("(assessment failed") {
+        return;
+    }
+    if let Some(p) = assessment_path(item_key) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +139,28 @@ mod tests {
         assert_eq!(got[0].title, "alpha");
         // Clean up the sidecar we just wrote.
         if let Some(p) = path("hf", q) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn assessment_round_trips_and_skips_failures() {
+        if cache_dir().is_none() {
+            return;
+        }
+        let k = "/loras/assess-test-zzqq-7741.safetensors";
+        assert!(assessment_get(k).is_none(), "no entry yet");
+        assessment_put(k, "A watercolour-style LoRA for soft painterly portraits.");
+        assert_eq!(
+            assessment_get(k).as_deref(),
+            Some("A watercolour-style LoRA for soft painterly portraits.")
+        );
+        // A failed / empty assessment is NOT cached (so it retries next time).
+        let k2 = "/loras/assess-fail-zzqq-7742.safetensors";
+        assessment_put(k2, "(assessment failed: timeout)");
+        assessment_put(k2, "   ");
+        assert!(assessment_get(k2).is_none());
+        if let Some(p) = assessment_path(k) {
             let _ = std::fs::remove_file(p);
         }
     }
