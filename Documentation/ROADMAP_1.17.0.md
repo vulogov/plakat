@@ -58,7 +58,11 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       so existing handlers run (also fixed the global `Tab` arm shadowing Ctrl-Tab).
 - [ ] **Chat session thumbnail strip + explicit rollback / variations** — builds on the
       `/save`·`/load`·`/sessions` persistence shipped in 1.16.0.
-- [ ] **`@mention`** people / LoRAs / styles inline in the Chat prompt (live completion).
+- [x] **`@mention`** people / LoRAs inline in the Chat prompt — `@` opens a live
+      completion popup (people `◆` + local LoRAs `★`, fuzzy-filtered); accepting a
+      person leaves a readable `@name` token expanded to its prompt fragment at submit,
+      accepting a LoRA applies it + strips the token. (Styles deferred — needs a styles
+      registry the UI doesn't surface yet.)
 
 ## F — LoRA Hub (smaller follow-ups)
 

@@ -212,6 +212,20 @@ impl LoraHubState {
         }
     }
 
+    /// Local LoRA names (for Chat `@mention` completion).
+    pub fn local_names(&self) -> Vec<String> {
+        self.loras.iter().map(|l| l.name.clone()).collect()
+    }
+
+    /// Resolve a local LoRA by name (case-insensitive) → `(path, compatible)` so the
+    /// App can apply it from a `@mention`. `compatible` is false only on a known clash.
+    pub fn resolve_local(&self, name: &str) -> Option<(PathBuf, bool)> {
+        self.loras
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(name))
+            .map(|l| (l.path.clone(), self.compatible(l) != Some(false)))
+    }
+
     /// The App calls this each tick with the loaded model's family so the
     /// compatibility column reflects what's actually loaded.
     pub fn set_loaded_family(&mut self, family: Option<BaseFamily>) {

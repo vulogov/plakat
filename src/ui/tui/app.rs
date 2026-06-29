@@ -362,8 +362,18 @@ impl App {
             self.drain_prompt_compile();
             self.sync_canvas();
             self.drain_route();
+            self.sync_chat_mentions();
         }
         Ok(())
+    }
+
+    /// Keep the Chat `@mention` candidates current (people labels + local LoRA names),
+    /// only while Chat is active.
+    fn sync_chat_mentions(&mut self) {
+        if self.screen != ActiveScreen::Chat {
+            return;
+        }
+        self.chat.set_mention_candidates(self.people.names(), self.lorahub.local_names());
     }
 
     fn drain_prompt_compile(&mut self) {
@@ -482,8 +492,10 @@ impl App {
 
         // ── Chat owns text input: plain chars / Enter / Backspace go to it. ──
         if self.screen == ActiveScreen::Chat {
-            if let ChatAction::Submit(prompt) = self.chat.handle_key(key) {
-                self.handle_chat_submit(prompt);
+            match self.chat.handle_key(key) {
+                ChatAction::Submit(prompt) => self.handle_chat_submit(prompt),
+                ChatAction::ApplyLora(name) => self.apply_lora_by_name(&name),
+                ChatAction::None => {}
             }
             return;
         }
@@ -1122,6 +1134,32 @@ impl App {
         self.reload_for_loras();
     }
 
+    /// Apply a local LoRA by name (from a Chat `@mention`): resolve → apply if not
+    /// already on. Unknown name / incompatible family → a Chat system note.
+    fn apply_lora_by_name(&mut self, name: &str) {
+        let Some((path, compatible)) = self.lorahub.resolve_local(name) else {
+            self.chat.push_system(format!("no local LoRA named ‘{name}’"));
+            return;
+        };
+        if self.active_loras.iter().any(|(p, _)| p == &path) {
+            self.chat.push_system(format!("LoRA ‘{name}’ already applied"));
+            return;
+        }
+        self.toggle_lora(path, compatible);
+    }
+
+    /// Expand `@name` person mentions into their prompt fragments (case-insensitive).
+    /// LoRA mentions are applied + stripped at accept-time, so only people remain here.
+    fn expand_mentions(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for name in self.people.names() {
+            if let Some(frag) = self.people.prompt_fragment(&name) {
+                out = replace_ci(&out, &format!("@{name}"), &frag);
+            }
+        }
+        out
+    }
+
     /// Nudge an applied LoRA's weight (LoRA Hub `+`/`-`) and reload. Ignored (with a
     /// hint) when the LoRA isn't applied.
     fn adjust_lora_weight(&mut self, path: std::path::PathBuf, delta: f32) {
@@ -1552,6 +1590,9 @@ impl App {
     /// Route a submitted Chat line: slash commands (`/negative`, `/enhance`, `/new`)
     /// or a plain prompt. `/negative` updates session state without generating.
     fn handle_chat_submit(&mut self, text: String) {
+        // Expand `@name` person mentions into their prompt fragments before routing
+        // (slash commands don't carry person tokens, so this is a no-op for them).
+        let text = self.expand_mentions(&text);
         if let Some(rest) = text.strip_prefix("/negative") {
             self.negative = rest.trim().to_string();
             let note = if self.negative.is_empty() {
@@ -1906,6 +1947,34 @@ impl App {
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
     }
+}
+
+/// Case-insensitive replace of every `needle` in `haystack` with `repl` (char-based,
+/// UTF-8 safe).
+fn replace_ci(haystack: &str, needle: &str, repl: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let hay: Vec<char> = haystack.chars().collect();
+    let hl: Vec<char> = haystack.to_lowercase().chars().collect();
+    let nl: Vec<char> = needle.to_lowercase().chars().collect();
+    // Rare: lowercasing changes the char count → fall back to a case-sensitive replace
+    // rather than risk a misaligned index.
+    if hl.len() != hay.len() {
+        return haystack.replace(needle, repl);
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < hay.len() {
+        if i + nl.len() <= hl.len() && hl[i..i + nl.len()] == nl[..] {
+            out.push_str(repl);
+            i += nl.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Filesystem-safe Chat-session file stem (empty → "session").
@@ -2282,6 +2351,20 @@ mod tests {
         // The palette closed and we stayed on Models (the load dispatched to the svc).
         assert!(!a.palette.is_open());
         assert!(matches!(a.screen, ActiveScreen::Models));
+    }
+
+    #[test]
+    fn replace_ci_is_case_insensitive_and_utf8_safe() {
+        assert_eq!(replace_ci("hi @Alice there", "@alice", "X"), "hi X there");
+        assert_eq!(replace_ci("@a @A", "@a", "Z"), "Z Z");
+        assert_eq!(replace_ci("nothing", "@x", "Y"), "nothing");
+    }
+
+    #[test]
+    fn apply_lora_by_name_reports_unknown() {
+        let mut a = test_app();
+        a.apply_lora_by_name("does-not-exist");
+        assert!(a.chat.history.last().unwrap().utterance.contains("no local LoRA"));
     }
 
     #[test]

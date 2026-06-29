@@ -68,6 +68,39 @@ impl PromptEditor {
         self.scroll = 0;
     }
 
+    /// If the cursor sits at the end of an `@token` (an `@` at a word boundary followed
+    /// by non-space chars up to the cursor), return `(index-of-@, partial-after-@)`.
+    /// Drives the `@mention` completion popup.
+    pub fn active_mention(&self) -> Option<(usize, String)> {
+        let mut i = self.cursor;
+        while i > 0 {
+            let c = self.chars[i - 1];
+            if c == '@' {
+                // The `@` must start the buffer or follow whitespace.
+                if i >= 2 && !self.chars[i - 2].is_whitespace() {
+                    return None;
+                }
+                let partial: String = self.chars[(i)..self.cursor].iter().collect();
+                return Some((i - 1, partial));
+            }
+            if c.is_whitespace() {
+                return None;
+            }
+            i -= 1;
+        }
+        None
+    }
+
+    /// Replace `chars[start..cursor]` (an `@partial` token) with `replacement`, moving
+    /// the cursor to the end of the inserted text. Used to accept a mention completion.
+    pub fn replace_mention(&mut self, start: usize, replacement: &str) {
+        let end = self.cursor.min(self.chars.len());
+        let start = start.min(end);
+        let repl: Vec<char> = replacement.chars().collect();
+        self.chars.splice(start..end, repl.iter().copied());
+        self.cursor = start + repl.len();
+    }
+
     /// Return the trimmed text and clear the buffer (on submit).
     pub fn take(&mut self) -> String {
         let t = self.text().trim().to_string();
@@ -230,6 +263,29 @@ mod tests {
 
     fn chars(s: &str) -> Vec<char> {
         s.chars().collect()
+    }
+
+    #[test]
+    fn active_mention_detects_the_token_under_the_cursor() {
+        // Cursor at end, right after "@al".
+        let e = ed("a portrait of @al", 40);
+        let (start, partial) = e.active_mention().expect("active mention");
+        assert_eq!(partial, "al");
+        assert_eq!(e.text().chars().nth(start), Some('@'));
+        // No mention after a space.
+        let e2 = ed("@alice and a fox", 40);
+        assert!(e2.active_mention().is_none(), "cursor past the token → no mention");
+        // An '@' mid-word (e.g. an email) is not a mention.
+        let e3 = ed("a@b", 40);
+        assert!(e3.active_mention().is_none());
+    }
+
+    #[test]
+    fn replace_mention_swaps_the_token() {
+        let mut e = ed("hi @al", 40);
+        let (start, _) = e.active_mention().unwrap();
+        e.replace_mention(start, "@Alice ");
+        assert_eq!(e.text(), "hi @Alice ");
     }
 
     #[test]

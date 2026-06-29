@@ -132,6 +132,18 @@ lose an earlier version.
 `DEEPSEEK_API_KEY` (env or `~/.config/plakat/config.toml`) and it
 routes to DeepSeek, exactly like the CLI.
 
+### `@mention` people and LoRAs
+
+Type **`@`** in the prompt to pop up a completion list of your **people**
+(`◆`) and local **LoRAs** (`★`); keep typing to filter, `↑/↓` to move,
+**`Tab`**/**`Enter`** to accept, `Esc` to dismiss.
+
+- Accepting a **person** leaves a readable `@name` token in the prompt —
+  at generation time it expands to that person's prompt fragment (so
+  `a portrait of @alice` renders Alice's look).
+- Accepting a **LoRA** applies it to Chat right away (the model reloads
+  with it merged) and removes the token from your prompt.
+
 ### Other keys
 
 - **`Ctrl-P`** / **`Ctrl-N`** — recall previous prompts into the editor.

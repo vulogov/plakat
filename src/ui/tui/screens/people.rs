@@ -248,6 +248,20 @@ impl PeopleState {
         }
     }
 
+    /// Labels of all readable identities (for Chat `@mention` completion).
+    pub fn names(&self) -> Vec<String> {
+        self.people.iter().filter(|p| p.error.is_none()).map(|p| p.label().to_string()).collect()
+    }
+
+    /// The prompt fragment a `@name` mention expands to: the persona's prompt text if
+    /// it has one, else just its label. Case-insensitive name match.
+    pub fn prompt_fragment(&self, name: &str) -> Option<String> {
+        self.people
+            .iter()
+            .find(|p| p.error.is_none() && p.label().eq_ignore_ascii_case(name))
+            .map(|p| if p.prompt.is_empty() { p.label().to_string() } else { p.prompt.clone() })
+    }
+
     /// The primary-ref path of the selected person (for the App to lazily preview).
     pub fn selected_ref(&self) -> Option<PathBuf> {
         self.people.get(self.selected).and_then(Person::primary_ref)
