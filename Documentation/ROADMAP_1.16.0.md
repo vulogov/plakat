@@ -12,19 +12,24 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 
 ## A — generation engine (cross-cutting, highest leverage)
 
-- [ ] **StepHook-wired img2img** — the refinement / inpaint path runs `img2img`
-      without a `StepHook`, so there's **no live preview and no mid-denoise cancel**
-      during a refine (only the final image + Output-pane progress). Thread the hook
-      through `img2img::run_with_pipeline` like the txt2img sampler. (RFC §0-R0-3)
+- [x] **StepHook-wired img2img** — threaded an optional `StepHook` through
+      `blend_latents_one` → `img2img::run_with_pipeline_hooked` → the model thread's
+      `ChannelHook`, so a Chat refine / inpaint now has live preview + mid-denoise
+      cancel. (RFC §0-R0-3)
+- [x] **LLM operation classifier** — `/auto on|off` (opt-in): an LLM classifies each
+      follow-up as EDIT (refine) vs NEW (fresh) before dispatch, instead of the
+      always-refine heuristic. (RFC §6)
+- [ ] **Non-SD families in the UI** — the UI loads only SD-family (sd15/sd21/sdxl);
+      Flux, SD3, PixArt, and Cascade are CLI-only. **Large**: each family is a
+      separate pipeline with a ~20-field `Request` and its own memory profile, and
+      none holds a persistent pipeline (all are load-per-`run`). Do it family-by-
+      family (SD3 first — it has a real `Pipeline::load`); refine falls back to fresh
+      for families without an img2img path.
 - [ ] **In-process scenario / portrait runner** — Scenario runs and People quick-gen
       load their **own** model alongside any Chat model (double load, memory
-      pressure). Extract a runner that accepts the already-loaded pipeline. (RFC §0-R0-2)
-- [ ] **Non-SD families in the UI** — the UI loads only SD-family (sd15/sd21/sdxl);
-      Flux, SD3, PixArt, and Cascade are CLI-only. Wire their loaders into
-      `ModelService` (per-family `t2i_load_check`).
-- [ ] **LLM operation classifier** — Chat refinement is a heuristic (image-exists →
-      refine, `/new` → fresh). Add the RFC §6 intent classifier (edit vs new scene
-      vs variation) so the mode is inferred from the prompt.
+      pressure). **Large refactor**: the scenario runner is monolithic and selects its
+      own model; sharing the loaded pipeline means extracting a runner that accepts an
+      already-loaded model + reconciling the scenario's model field. (RFC §0-R0-2)
 
 ## B — People depth
 
