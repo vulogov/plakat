@@ -259,6 +259,8 @@ regenerate).
   detected faces*, so the inpaint regenerates the scene while preserving
   the people. (Face detection runs once per base in the background; if no
   detector is configured it just fills plainly.)
+- **`g`** cycles the **grid density** (16×12 → 24×18 → 32×24) for finer
+  control — switching density clears the current mask.
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
 
@@ -271,9 +273,28 @@ Canvas builds a grey-padded, enlarged base with a mask over the new
 strip and hands it to Chat — your next prompt **paints the new region**
 (e.g. extend a landscape rightward). `M` or `Esc` cancels.
 
-This is *regional* masking (coarse by design). For pixel-precise
-masks, paint one in an external editor and use the CLI's
-`--mask-path`.
+### Finer masks — `g` density, or an external editor
+
+The Canvas is *regional* masking. For more control, press **`g`** to step
+up the grid density (up to 32×24). When you need **pixel-precise** edges —
+a hairline, a hand, text — paint the mask in any image editor instead:
+
+1. Export or copy the base image you're refining (every Chat image is a
+   normal PNG under `out/chat/`).
+2. In an external editor (Photoshop, GIMP, Krita, Preview…), paint the
+   region to regenerate **pure white** on a **black** background, at the
+   image's exact resolution, and save it as a PNG.
+3. Run the edit from the CLI with that mask:
+
+   ```bash
+   plakat img2img out/chat/plakat-<seed>-1.png \
+     --prompt "your edit" \
+     --mask my-mask.png --strength 0.85
+   ```
+
+White = regenerate, black = keep. This is the same inpaint path the
+Canvas drives, just with a hand-authored mask. `plakat img2img --help`
+lists the related flags (`--mask-feather`, `--mask-invert`).
 
 ---
 

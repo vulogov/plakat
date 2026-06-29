@@ -18,8 +18,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+/// Default (coarse) grid; `g` cycles through [`GRID_DENSITIES`].
 const COLS: usize = 16;
 const ROWS: usize = 12;
+
+/// Selectable mask grid densities `(cols, rows)` — coarse → fine (`g` cycles).
+const GRID_DENSITIES: [(usize, usize); 3] = [(16, 12), (24, 18), (32, 24)];
 
 /// One outpaint band = 128px (RFC §13). Bounded so the padded canvas stays Metal-sane.
 const OUTPAINT_UNIT: u32 = 128;
@@ -57,7 +61,10 @@ pub enum CanvasAction {
 
 pub struct CanvasState {
     out_dir: PathBuf,
-    painted: Vec<bool>, // COLS*ROWS
+    /// Grid dimensions (cols, rows) — runtime, toggled with `g`.
+    cols: usize,
+    rows: usize,
+    painted: Vec<bool>, // cols*rows
     cr: usize,
     cc: usize,
     base_path: Option<PathBuf>,
@@ -79,6 +86,8 @@ impl CanvasState {
     pub fn new(out_dir: PathBuf) -> Self {
         Self {
             out_dir,
+            cols: COLS,
+            rows: ROWS,
             painted: vec![false; COLS * ROWS],
             cr: 0,
             cc: 0,
@@ -130,12 +139,24 @@ impl CanvasState {
     }
 
     fn at(&self, r: usize, c: usize) -> usize {
-        r * COLS + c
+        r * self.cols + c
+    }
+
+    /// Cycle to the next grid density (`g`): rebuild the (cleared) mask + clamp cursor.
+    fn cycle_density(&mut self) {
+        let cur = GRID_DENSITIES.iter().position(|&(c, r)| c == self.cols && r == self.rows).unwrap_or(0);
+        let (c, r) = GRID_DENSITIES[(cur + 1) % GRID_DENSITIES.len()];
+        self.cols = c;
+        self.rows = r;
+        self.painted = vec![false; c * r];
+        self.cr = self.cr.min(r - 1);
+        self.cc = self.cc.min(c - 1);
+        self.status = format!("grid {c}×{r} (mask cleared)");
     }
 
     fn fill_rows(&mut self, r0: usize, r1: usize) {
-        for r in r0..r1.min(ROWS) {
-            for c in 0..COLS {
+        for r in r0..r1.min(self.rows) {
+            for c in 0..self.cols {
                 let i = self.at(r, c);
                 self.painted[i] = true;
             }
@@ -148,14 +169,14 @@ impl CanvasState {
         let mut cleared = 0;
         for b in &self.face_boxes.clone() {
             // Pad the box by ~one cell so jaw/hair near the boundary is kept too.
-            let px = 1.0 / COLS as f32;
-            let py = 1.0 / ROWS as f32;
+            let px = 1.0 / self.cols as f32;
+            let py = 1.0 / self.rows as f32;
             let (x1, y1, x2, y2) = (b[0] - px, b[1] - py, b[2] + px, b[3] + py);
-            for r in 0..ROWS {
-                for c in 0..COLS {
+            for r in 0..self.rows {
+                for c in 0..self.cols {
                     // This cell's normalized extent.
-                    let (cx1, cx2) = (c as f32 / COLS as f32, (c + 1) as f32 / COLS as f32);
-                    let (cy1, cy2) = (r as f32 / ROWS as f32, (r + 1) as f32 / ROWS as f32);
+                    let (cx1, cx2) = (c as f32 / self.cols as f32, (c + 1) as f32 / self.cols as f32);
+                    let (cy1, cy2) = (r as f32 / self.rows as f32, (r + 1) as f32 / self.rows as f32);
                     let overlaps = cx1 < x2 && cx2 > x1 && cy1 < y2 && cy2 > y1;
                     if overlaps {
                         let i = self.at(r, c);
@@ -171,8 +192,8 @@ impl CanvasState {
     }
 
     fn fill_cols(&mut self, c0: usize, c1: usize) {
-        for r in 0..ROWS {
-            for c in c0..c1.min(COLS) {
+        for r in 0..self.rows {
+            for c in c0..c1.min(self.cols) {
                 let i = self.at(r, c);
                 self.painted[i] = true;
             }
@@ -213,12 +234,14 @@ impl CanvasState {
                 let i = self.at(self.cr, self.cc);
                 self.painted[i] = !self.painted[i];
             }
+            // g — cycle the grid density (coarse → fine), clearing the mask.
+            KeyCode::Char('g') => self.cycle_density(),
             // Preset regions (white = inpaint).
-            KeyCode::Char('S') => self.fill_rows(0, (ROWS as f32 * 0.30).round() as usize),
+            KeyCode::Char('S') => self.fill_rows(0, (self.rows as f32 * 0.30).round() as usize),
             // B — background: fill the upper region, then punch out any detected faces
             // so the inpaint regenerates the background while preserving the people.
             KeyCode::Char('B') => {
-                self.fill_rows(0, (ROWS as f32 * 0.60).round() as usize);
+                self.fill_rows(0, (self.rows as f32 * 0.60).round() as usize);
                 let cleared = self.clear_face_cells();
                 self.status = match (self.faces_for.is_some(), cleared) {
                     (false, _) => "background (detecting faces…)".into(),
@@ -226,10 +249,10 @@ impl CanvasState {
                     (true, n) => format!("background · preserved {n} face cell(s)"),
                 };
             }
-            KeyCode::Char('F') => self.fill_rows((ROWS as f32 * 0.60).round() as usize, ROWS),
-            KeyCode::Char('L') => self.fill_cols(0, COLS / 2),
-            KeyCode::Char('R') => self.fill_cols(COLS / 2, COLS),
-            KeyCode::Char('P') => self.fill_cols(COLS / 3, 2 * COLS / 3), // centre person column
+            KeyCode::Char('F') => self.fill_rows((self.rows as f32 * 0.60).round() as usize, self.rows),
+            KeyCode::Char('L') => self.fill_cols(0, self.cols / 2),
+            KeyCode::Char('R') => self.fill_cols(self.cols / 2, self.cols),
+            KeyCode::Char('P') => self.fill_cols(self.cols / 3, 2 * self.cols / 3), // centre person column
             KeyCode::Char('C') => {
                 self.painted.iter_mut().for_each(|p| *p = false);
             }
@@ -240,8 +263,8 @@ impl CanvasState {
     }
 
     fn move_cursor(&mut self, dr: i32, dc: i32, paint: bool) {
-        self.cr = (self.cr as i32 + dr).clamp(0, ROWS as i32 - 1) as usize;
-        self.cc = (self.cc as i32 + dc).clamp(0, COLS as i32 - 1) as usize;
+        self.cr = (self.cr as i32 + dr).clamp(0, self.rows as i32 - 1) as usize;
+        self.cc = (self.cc as i32 + dc).clamp(0, self.cols as i32 - 1) as usize;
         if paint {
             let i = self.at(self.cr, self.cc);
             self.painted[i] = true;
@@ -260,15 +283,15 @@ impl CanvasState {
             return CanvasAction::None;
         }
         let mut img = GrayImage::new(w, h);
-        for r in 0..ROWS {
-            for c in 0..COLS {
+        for r in 0..self.rows {
+            for c in 0..self.cols {
                 if !self.painted[self.at(r, c)] {
                     continue;
                 }
-                let x0 = (c as u32 * w) / COLS as u32;
-                let x1 = ((c as u32 + 1) * w) / COLS as u32;
-                let y0 = (r as u32 * h) / ROWS as u32;
-                let y1 = ((r as u32 + 1) * h) / ROWS as u32;
+                let x0 = (c as u32 * w) / self.cols as u32;
+                let x1 = ((c as u32 + 1) * w) / self.cols as u32;
+                let y0 = (r as u32 * h) / self.rows as u32;
+                let y1 = ((r as u32 + 1) * h) / self.rows as u32;
                 for y in y0..y1 {
                     for x in x0..x1 {
                         img.put_pixel(x, y, Luma([255]));
@@ -362,7 +385,9 @@ impl CanvasState {
     }
 
     fn render_grid(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Mask · white = inpaint ");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Mask {}×{} · white = inpaint ", self.cols, self.rows));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -371,10 +396,10 @@ impl CanvasState {
             .constraints([Constraint::Min(1), Constraint::Length(4)])
             .split(inner);
 
-        let mut lines: Vec<Line> = Vec::with_capacity(ROWS);
-        for r in 0..ROWS {
-            let mut spans = Vec::with_capacity(COLS);
-            for c in 0..COLS {
+        let mut lines: Vec<Line> = Vec::with_capacity(self.rows);
+        for r in 0..self.rows {
+            let mut spans = Vec::with_capacity(self.cols);
+            for c in 0..self.cols {
                 let painted = self.painted[self.at(r, c)];
                 let cursor = r == self.cr && c == self.cc;
                 let style = if cursor {
@@ -405,7 +430,7 @@ impl CanvasState {
         } else {
             vec![
                 Line::from(Span::styled(
-                    "move ←↑↓→/hjkl · Shift+move paint · Space toggle · C clear · M outpaint · Enter → Chat",
+                    "move ←↑↓→/hjkl · Shift+move paint · Space toggle · g grid · C clear · M outpaint · Enter → Chat",
                     Style::new().fg(Color::Gray),
                 )),
                 Line::from(Span::styled(
@@ -552,6 +577,44 @@ mod tests {
         let top = (ROWS as f32 * 0.60).round() as usize;
         assert!(s.painted[s.at(0, 0)] && s.painted[s.at(top - 1, COLS - 1)]);
         assert!(s.status.contains("no faces"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn g_cycles_grid_density_and_clears_the_mask() {
+        let mut s = CanvasState::new(tmp("density"));
+        assert_eq!((s.cols, s.rows), (16, 12));
+        // Paint something, then toggle → finer grid, mask cleared.
+        s.handle_key(key(KeyCode::Char(' ')));
+        assert!(s.painted.iter().any(|p| *p));
+        s.handle_key(key(KeyCode::Char('g')));
+        assert_eq!((s.cols, s.rows), (24, 18));
+        assert_eq!(s.painted.len(), 24 * 18);
+        assert!(!s.painted.iter().any(|p| *p), "mask cleared on density change");
+        // Cycle through the rest back to coarse.
+        s.handle_key(key(KeyCode::Char('g')));
+        assert_eq!((s.cols, s.rows), (32, 24));
+        s.handle_key(key(KeyCode::Char('g')));
+        assert_eq!((s.cols, s.rows), (16, 12));
+    }
+
+    #[test]
+    fn fine_grid_rasterizes_at_full_resolution() {
+        let d = tmp("fine-raster");
+        let mut s = CanvasState::new(d.clone());
+        s.set_base(Some(d.join("base.png")), Some((96, 96)));
+        s.handle_key(key(KeyCode::Char('g'))); // 24×18
+        // Paint the top-left cell, rasterize — still full base resolution.
+        s.handle_key(key(KeyCode::Char(' ')));
+        match s.handle_key(key(KeyCode::Enter)) {
+            CanvasAction::MaskReady(p) => {
+                let img = image::open(&p).unwrap().to_luma8();
+                assert_eq!(img.dimensions(), (96, 96));
+                assert_eq!(img.get_pixel(1, 1)[0], 255, "top-left cell white");
+                assert_eq!(img.get_pixel(95, 95)[0], 0, "far corner preserved");
+            }
+            _ => panic!("expected MaskReady"),
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

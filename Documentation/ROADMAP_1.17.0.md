@@ -59,8 +59,9 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       (once per base, background thread), normalizes the boxes to 0..1, and punches the
       (slightly padded) face cells out of the background fill so the inpaint preserves
       the people. Graceful no-op when no detector is configured / no faces found.
-- [ ] **Finer masks** — document the external-editor + `--mask-path` path more
-      prominently; optionally a finer grid toggle.
+- [x] **Finer masks** — `g` cycles the Canvas grid density (16×12 → 24×18 → 32×24,
+      runtime `cols`/`rows`; switching clears the mask), and the tutorial now documents
+      the external-editor + `plakat img2img --mask` pixel-precise path step by step.
 
 ## E — polish (remaining)
 
