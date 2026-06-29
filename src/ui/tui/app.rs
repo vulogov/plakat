@@ -191,6 +191,8 @@ pub struct App {
     prompt_compile: Option<Receiver<Result<String, String>>>,
     // In-flight Chat→Scenario summary (Scenarios editor Ctrl-G).
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
+    // In-flight Canvas face detection (for the face-aware `B` preset): `(base, boxes)`.
+    canvas_faces: Option<Receiver<(std::path::PathBuf, Vec<[f32; 4]>)>>,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -276,6 +278,7 @@ impl App {
             lora_combine: None,
             prompt_compile: None,
             chat_to_scenario: None,
+            canvas_faces: None,
             active_loras: Vec::new(),
             chat_mask: None,
             auto_route: false,
@@ -361,6 +364,7 @@ impl App {
             self.sync_prompts();
             self.drain_prompt_compile();
             self.sync_canvas();
+            self.drain_canvas_faces();
             self.drain_route();
             self.sync_chat_mentions();
         }
@@ -1355,6 +1359,40 @@ impl App {
                 .map(|img| self.picker.new_resize_protocol(img));
             self.canvas.preview_for = sel;
         }
+        // Kick off face detection for the face-aware `B` preset (once per base).
+        if self.canvas_faces.is_none() {
+            if let Some(base) = self.canvas.faces_needed_for() {
+                self.detect_canvas_faces(base);
+            }
+        }
+    }
+
+    /// Deliver completed Canvas face detection to the Canvas each tick.
+    fn drain_canvas_faces(&mut self) {
+        if let Some(rx) = &self.canvas_faces {
+            match rx.try_recv() {
+                Ok((base, boxes)) => {
+                    self.canvas.set_faces(base, boxes);
+                    self.canvas_faces = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.canvas_faces = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    /// Detect faces in the Canvas base on a background thread (SCRFD), normalize the
+    /// boxes to 0..1, and hand them to the Canvas for the face-aware `B` preset. A
+    /// missing detector / no faces just yields an empty set (B then fills plainly).
+    fn detect_canvas_faces(&mut self, base: std::path::PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        let device = self.device.clone();
+        std::thread::spawn(move || {
+            let boxes = detect_face_boxes_normalized(&rt, &device, &base).unwrap_or_default();
+            let _ = tx.send((base, boxes));
+        });
+        self.canvas_faces = Some(rx);
     }
 
     /// People `G` — generate a portrait from a person on a background thread (loads
@@ -2020,6 +2058,43 @@ impl App {
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
     }
+}
+
+/// Detect faces in `path` with SCRFD and return their boxes normalized to 0..1
+/// `[x1, y1, x2, y2]`. Best-effort: a missing/unavailable detector or any error yields
+/// an empty list (the Canvas `B` preset then fills the background plainly).
+fn detect_face_boxes_normalized(
+    rt: &Handle,
+    device: &Device,
+    path: &std::path::Path,
+) -> Option<Vec<[f32; 4]>> {
+    let weights = rt.block_on(crate::pipelines::scrfd::resolve_scrfd_weights()).ok().flatten()?;
+    let detector = crate::pipelines::scrfd::SCRFDDetector::load(
+        &weights,
+        crate::pipelines::scrfd::SCRFDConfig::default(),
+        device,
+        candle_core::DType::F32,
+    )
+    .ok()?;
+    let faces = detector.detect(path).ok()?;
+    let (w, h) = image::image_dimensions(path).ok()?;
+    let (w, h) = (w as f32, h as f32);
+    if w <= 0.0 || h <= 0.0 {
+        return Some(Vec::new());
+    }
+    Some(
+        faces
+            .iter()
+            .map(|f| {
+                [
+                    (f.bbox[0] / w).clamp(0.0, 1.0),
+                    (f.bbox[1] / h).clamp(0.0, 1.0),
+                    (f.bbox[2] / w).clamp(0.0, 1.0),
+                    (f.bbox[3] / h).clamp(0.0, 1.0),
+                ]
+            })
+            .collect(),
+    )
 }
 
 /// Recover `(positive prompt, seed)` from an image's embedded A1111 recipe, for

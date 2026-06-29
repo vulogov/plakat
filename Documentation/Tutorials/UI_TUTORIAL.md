@@ -255,6 +255,10 @@ regenerate).
   **`Shift`+move** paints while moving.
 - Preset regions: **`S`** sky, **`B`** background, **`F`** foreground,
   **`L`**/**`R`** halves, **`P`** person column, **`C`** clear.
+- **`B` is face-aware**: it masks the background *but punches out any
+  detected faces*, so the inpaint regenerates the scene while preserving
+  the people. (Face detection runs once per base in the background; if no
+  detector is configured it just fills plainly.)
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
 

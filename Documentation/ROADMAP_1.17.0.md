@@ -55,7 +55,10 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       loop vars, `set` targets, `.attr`/`|filter` tails, keywords) and lets you set
       values inline; the compiled output re-renders live. Needs `--features templates`
       (else the pane shows the recompile hint). Also in the command palette.
-- [ ] **Canvas face-aware `B`** — exclude detected faces from the background preset.
+- [x] **Canvas face-aware `B`** — the background preset now runs SCRFD on the base
+      (once per base, background thread), normalizes the boxes to 0..1, and punches the
+      (slightly padded) face cells out of the background fill so the inpaint preserves
+      the people. Graceful no-op when no detector is configured / no faces found.
 - [ ] **Finer masks** — document the external-editor + `--mask-path` path more
       prominently; optionally a finer grid toggle.
 

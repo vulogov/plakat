@@ -65,6 +65,11 @@ pub struct CanvasState {
     /// Outpaint mode: `Some(edge)` while choosing how to extend; `band` is in 128px units.
     outpaint: Option<Edge>,
     band: u32,
+    /// Detected face boxes in normalized `[x1, y1, x2, y2]` (0..1), App-fed; the
+    /// face-aware `B` preset punches these out of the background fill.
+    face_boxes: Vec<[f32; 4]>,
+    /// The base path the `face_boxes` were computed for (so stale boxes aren't used).
+    faces_for: Option<PathBuf>,
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
     status: String,
@@ -81,10 +86,27 @@ impl CanvasState {
             base_dims: None,
             outpaint: None,
             band: 1,
+            face_boxes: Vec::new(),
+            faces_for: None,
             preview: None,
             preview_for: None,
             status: String::new(),
         }
+    }
+
+    /// The base image the App should run face detection on, when it differs from the
+    /// one we already have boxes for (`None` → nothing to detect / already current).
+    pub fn faces_needed_for(&self) -> Option<PathBuf> {
+        match (&self.base_path, &self.faces_for) {
+            (Some(b), f) if Some(b) != f.as_ref() => Some(b.clone()),
+            _ => None,
+        }
+    }
+
+    /// The App delivers detected face boxes (normalized xyxy) for `base`.
+    pub fn set_faces(&mut self, base: PathBuf, boxes: Vec<[f32; 4]>) {
+        self.faces_for = Some(base);
+        self.face_boxes = boxes;
     }
 
     /// The Canvas owns the keyboard (preset letters + Space painting).
@@ -94,6 +116,11 @@ impl CanvasState {
 
     /// The base image to mask (set by the App from the current Chat base).
     pub fn set_base(&mut self, path: Option<PathBuf>, dims: Option<(u32, u32)>) {
+        if path != self.base_path {
+            // A different base invalidates the cached face boxes.
+            self.face_boxes.clear();
+            self.faces_for = None;
+        }
         self.base_path = path;
         self.base_dims = dims;
     }
@@ -113,6 +140,34 @@ impl CanvasState {
                 self.painted[i] = true;
             }
         }
+    }
+
+    /// Un-paint every cell overlapping a detected face box (slightly padded so the
+    /// face's edges + a little margin stay in the preserved region). Returns the count.
+    fn clear_face_cells(&mut self) -> usize {
+        let mut cleared = 0;
+        for b in &self.face_boxes.clone() {
+            // Pad the box by ~one cell so jaw/hair near the boundary is kept too.
+            let px = 1.0 / COLS as f32;
+            let py = 1.0 / ROWS as f32;
+            let (x1, y1, x2, y2) = (b[0] - px, b[1] - py, b[2] + px, b[3] + py);
+            for r in 0..ROWS {
+                for c in 0..COLS {
+                    // This cell's normalized extent.
+                    let (cx1, cx2) = (c as f32 / COLS as f32, (c + 1) as f32 / COLS as f32);
+                    let (cy1, cy2) = (r as f32 / ROWS as f32, (r + 1) as f32 / ROWS as f32);
+                    let overlaps = cx1 < x2 && cx2 > x1 && cy1 < y2 && cy2 > y1;
+                    if overlaps {
+                        let i = self.at(r, c);
+                        if self.painted[i] {
+                            self.painted[i] = false;
+                            cleared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        cleared
     }
 
     fn fill_cols(&mut self, c0: usize, c1: usize) {
@@ -160,7 +215,17 @@ impl CanvasState {
             }
             // Preset regions (white = inpaint).
             KeyCode::Char('S') => self.fill_rows(0, (ROWS as f32 * 0.30).round() as usize),
-            KeyCode::Char('B') => self.fill_rows(0, (ROWS as f32 * 0.60).round() as usize),
+            // B — background: fill the upper region, then punch out any detected faces
+            // so the inpaint regenerates the background while preserving the people.
+            KeyCode::Char('B') => {
+                self.fill_rows(0, (ROWS as f32 * 0.60).round() as usize);
+                let cleared = self.clear_face_cells();
+                self.status = match (self.faces_for.is_some(), cleared) {
+                    (false, _) => "background (detecting faces…)".into(),
+                    (true, 0) => "background (no faces detected)".into(),
+                    (true, n) => format!("background · preserved {n} face cell(s)"),
+                };
+            }
             KeyCode::Char('F') => self.fill_rows((ROWS as f32 * 0.60).round() as usize, ROWS),
             KeyCode::Char('L') => self.fill_cols(0, COLS / 2),
             KeyCode::Char('R') => self.fill_cols(COLS / 2, COLS),
@@ -344,7 +409,7 @@ impl CanvasState {
                     Style::new().fg(Color::Gray),
                 )),
                 Line::from(Span::styled(
-                    "presets: S sky · B background · F foreground · L/R halves · P person",
+                    "presets: S sky · B background (face-aware) · F foreground · L/R halves · P person",
                     Style::new().fg(Color::DarkGray),
                 )),
             ]
@@ -455,6 +520,53 @@ mod tests {
         }
         // Mode cleared after producing.
         assert!(s.outpaint.is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn face_aware_background_preserves_face_cells() {
+        let d = tmp("faceaware");
+        let mut s = CanvasState::new(d.clone());
+        s.set_base(Some(d.join("base.png")), Some((512, 512)));
+        // A face box covering the centre of the top half (normalized xyxy).
+        s.set_faces(d.join("base.png"), vec![[0.40, 0.10, 0.60, 0.40]]);
+        // B fills the top 60% then punches out the face cells.
+        s.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+        // A background cell well outside the face (top-left corner) stays painted.
+        assert!(s.painted[s.at(0, 0)], "corner background is masked");
+        // The cell at the face centre is cleared (preserved).
+        let fr = (0.25 * ROWS as f32) as usize; // ~row inside [0.10,0.40]
+        let fc = (0.50 * COLS as f32) as usize; // ~col inside [0.40,0.60]
+        assert!(!s.painted[s.at(fr, fc)], "face cell is preserved (not masked)");
+        assert!(s.status.contains("preserved"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn background_without_faces_fills_plainly() {
+        let d = tmp("noface");
+        let mut s = CanvasState::new(d.clone());
+        s.set_base(Some(d.join("base.png")), Some((512, 512)));
+        s.set_faces(d.join("base.png"), vec![]); // detection ran, found nothing
+        s.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+        let top = (ROWS as f32 * 0.60).round() as usize;
+        assert!(s.painted[s.at(0, 0)] && s.painted[s.at(top - 1, COLS - 1)]);
+        assert!(s.status.contains("no faces"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn faces_needed_for_tracks_the_base() {
+        let d = tmp("needed");
+        let mut s = CanvasState::new(d.clone());
+        assert!(s.faces_needed_for().is_none(), "no base → nothing to detect");
+        s.set_base(Some(d.join("a.png")), Some((64, 64)));
+        assert_eq!(s.faces_needed_for(), Some(d.join("a.png")));
+        s.set_faces(d.join("a.png"), vec![]);
+        assert!(s.faces_needed_for().is_none(), "already detected for this base");
+        // Switching base invalidates and re-requests.
+        s.set_base(Some(d.join("b.png")), Some((64, 64)));
+        assert_eq!(s.faces_needed_for(), Some(d.join("b.png")));
         let _ = std::fs::remove_dir_all(&d);
     }
 
