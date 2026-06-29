@@ -1524,6 +1524,10 @@ impl App {
         }
         let n = specs.len();
         let labels: Vec<String> = specs.iter().map(|s| s.label.clone()).collect();
+        // Route the scene's identity strategy + model from the marked personas' own
+        // strategies, rather than forcing plus-face / sd15 for everyone.
+        let strategies: Vec<String> = specs.iter().map(|s| s.identity.clone()).collect();
+        let (identity, model) = route_multiperson_identity(&strategies);
         // Even horizontal split across the canvas, one region per person.
         let people_req: Vec<crate::pipelines::multiperson::Person> = specs
             .iter()
@@ -1557,14 +1561,15 @@ impl App {
         let req = crate::pipelines::multiperson::MultipersonRequest {
             scene: scene.clone(),
             people: people_req,
-            model: "sd15".into(),
-            identity: crate::pipelines::ip_adapter::IdentityKind::PlusFace,
+            model: model.to_string(),
+            identity,
             style: None,
             negative: String::new(),
             layout_provider: "none".into(),
             enhancer: None,
-            width: 768,
-            height: 768,
+            // SDXL strategies render at 1024²; sd15 strategies at 768².
+            width: if model == "sdxl" { 1024 } else { 768 },
+            height: if model == "sdxl" { 1024 } else { 768 },
             steps: 30,
             guidance: 7.5,
             seed: Some(seed),
@@ -1584,7 +1589,11 @@ impl App {
             refine_denoise: 0.35,
         };
 
-        self.chat.push_system(format!("generating multiperson scene: {} — opens in Chat…", labels.join(", ")));
+        self.chat.push_system(format!(
+            "generating multiperson scene: {} [{} · {model}] — opens in Chat…",
+            labels.join(", "),
+            identity.label()
+        ));
         self.portrait_prompt = scene;
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -2107,6 +2116,36 @@ impl App {
     }
 }
 
+/// Pick the multiperson scene's identity strategy + model from the marked personas'
+/// own strategies (instead of forcing plus-face / sd15 for everyone). One pipeline runs
+/// one encoder, so a single strategy must cover the set:
+///   - parse each persona's `identity` string (empty / unknown are ignored);
+///   - SDXL and SD1.5 encoders can't mix → if *any* SDXL strategy is present, the scene
+///     is SDXL (PlusFaceSdxl unless every named strategy is FaceId → FaceIdSdxl);
+///   - otherwise SD1.5: FaceId only when *every* named strategy is FaceId, else PlusFace
+///     (the more general CLIP-H whole-face encoder);
+///   - nothing named → default PlusFace / sd15.
+/// Returns `(IdentityKind, model_alias)`.
+fn route_multiperson_identity(strategies: &[String]) -> (crate::pipelines::ip_adapter::IdentityKind, &'static str) {
+    use crate::pipelines::ip_adapter::IdentityKind;
+    let kinds: Vec<IdentityKind> = strategies
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| s.parse::<IdentityKind>().ok())
+        .collect();
+    if kinds.is_empty() {
+        return (IdentityKind::PlusFace, "sd15");
+    }
+    let any_sdxl = kinds.iter().any(|k| matches!(k, IdentityKind::PlusFaceSdxl | IdentityKind::FaceIdSdxl));
+    let all_faceid = kinds.iter().all(|k| matches!(k, IdentityKind::FaceId | IdentityKind::FaceIdSdxl));
+    match (any_sdxl, all_faceid) {
+        (true, true) => (IdentityKind::FaceIdSdxl, "sdxl"),
+        (true, false) => (IdentityKind::PlusFaceSdxl, "sdxl"),
+        (false, true) => (IdentityKind::FaceId, "sd15"),
+        (false, false) => (IdentityKind::PlusFace, "sd15"),
+    }
+}
+
 /// Detect faces in `path` with SCRFD and return their boxes normalized to 0..1
 /// `[x1, y1, x2, y2]`. Best-effort: a missing/unavailable detector or any error yields
 /// an empty list (the Canvas `B` preset then fills the background plainly).
@@ -2620,6 +2659,24 @@ mod tests {
         assert!(applied, "background decode eventually set the preview");
         assert!(a.history.preview.is_some(), "preview protocol built on the main thread");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn multiperson_identity_routes_from_persona_strategies() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let r = |s: &[&str]| route_multiperson_identity(&s.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        // Nothing named → default plus-face / sd15.
+        assert!(matches!(r(&["", ""]), (IdentityKind::PlusFace, "sd15")));
+        // All faceid (sd15) → FaceId.
+        assert!(matches!(r(&["faceid", "face-id"]), (IdentityKind::FaceId, "sd15")));
+        // Mixed sd15 strategies → the general PlusFace.
+        assert!(matches!(r(&["faceid", "plus-face"]), (IdentityKind::PlusFace, "sd15")));
+        // Any SDXL present → the scene is SDXL.
+        assert!(matches!(r(&["plus-face", "plus-face-sdxl"]), (IdentityKind::PlusFaceSdxl, "sdxl")));
+        // All faceid with an SDXL one → FaceIdSdxl.
+        assert!(matches!(r(&["faceid", "faceid-sdxl"]), (IdentityKind::FaceIdSdxl, "sdxl")));
+        // Unknown strings are ignored (fall back to default).
+        assert!(matches!(r(&["instantid", "???"]), (IdentityKind::PlusFace, "sd15")));
     }
 
     #[test]

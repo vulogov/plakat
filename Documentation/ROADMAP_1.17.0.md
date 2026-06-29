@@ -33,8 +33,13 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       lazy thumbnail grid — remain (see the dedicated items below).
 - [ ] **Re-encode** (`E`) — explicit identity encoding with a quality score; auto on
       first strategy+model use; invalidated by ref/strategy/model change.
-- [ ] **Mixed-family multiperson** — route a marked set by each persona's strategy
-      instead of forcing plus-face/sd15 for the whole scene.
+- [x] **Mixed-family multiperson** — the People multi-select → multiperson quick-gen now
+      routes the scene's identity strategy + model from the marked personas' own
+      strategies (`route_multiperson_identity`): SDXL strategies force an SDXL scene
+      (1024²), all-FaceId picks FaceId(/Sdxl), else the general PlusFace; nothing named →
+      plus-face/sd15. The routed strategy + model show in the Chat note. (One pipeline
+      runs one encoder, so the set still resolves to a single best-fit strategy — true
+      per-person mixed encoders would need a multi-pipeline composite.)
 - [ ] **Identity-preserving Chat continuation** — an IP-Adapter-aware refine path so a
       continued portrait keeps face identity (Chat refine is plain img2img today).
 
