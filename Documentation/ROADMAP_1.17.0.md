@@ -48,8 +48,13 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 ## D — Prompt Workspace + Canvas (remaining)
 
-- [ ] **Tera mode** (`Ctrl-T`) — toggle the compile Tera pre-pass (`templates` feature)
-      with a live variable panel.
+- [x] **Tera mode** (`Ctrl-T`) — toggles the compile Tera pre-pass in the Prompt
+      Workspace: the buffer renders through Tera (with the panel's variable values)
+      before the structural / LLM compile. A live **variable panel** (`Ctrl-V` to focus)
+      lists every `{{ variable }}` the template reads (heuristic extractor that skips
+      loop vars, `set` targets, `.attr`/`|filter` tails, keywords) and lets you set
+      values inline; the compiled output re-renders live. Needs `--features templates`
+      (else the pane shows the recompile hint). Also in the command palette.
 - [ ] **Canvas face-aware `B`** — exclude detected faces from the background preset.
 - [ ] **Finer masks** — document the external-editor + `--mask-path` path more
       prominently; optionally a finer grid toggle.

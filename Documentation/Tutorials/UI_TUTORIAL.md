@@ -326,6 +326,12 @@ the scenario HJSON your prose produces.
 
 - **`Ctrl-R`** runs the full **LLM compile** (family-aware enhancement
   + auto-negative).
+- **`Ctrl-T`** toggles **Tera mode**: the buffer is rendered through the
+  Tera template engine *before* compiling. A live **variable panel**
+  appears on the right listing every `{{ variable }}` the template reads;
+  press **`Ctrl-V`** to jump into it, `↑/↓` to select, and type to set a
+  value — the compiled output re-renders as you go. (Needs a build with
+  `--features templates`; otherwise the pane shows a recompile hint.)
 - **`Ctrl-S`** saves the buffer; **`Ctrl-O`** writes the compiled HJSON
   into `scenarios/` and opens it in the Scenarios editor.
 - **`Esc`** jumps to the buffer list (`.txt`/`.tera`/`.hjson`);

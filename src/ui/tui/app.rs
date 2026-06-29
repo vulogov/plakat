@@ -670,6 +670,7 @@ impl App {
             ActiveScreen::PromptWorkspace => {
                 cmds.push(("New buffer".into(), kc('n')));
                 cmds.push(("Save buffer".into(), kc('s')));
+                cmds.push(("Toggle Tera mode".into(), kc('t')));
                 cmds.push(("LLM compile".into(), kc('r')));
                 cmds.push(("Open compiled in Scenarios".into(), kc('o')));
             }
@@ -717,8 +718,26 @@ impl App {
         if self.prompts.last_compiled_src.as_deref() == Some(src.as_str()) {
             return;
         }
+        // Tera mode: render the buffer through the Tera pre-pass (with the panel's
+        // variable values) before the structural compile. A Tera error stops here.
+        let to_compile = if self.prompts.tera_mode {
+            let topts = crate::compile::TemplateOpts {
+                vars: self.prompts.tera_var_pairs(),
+                ..Default::default()
+            };
+            match crate::compile::template::render(&src, self.prompts.path(), &topts) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    self.prompts.compile_err = Some(format!("Tera: {e:#}"));
+                    self.prompts.last_compiled_src = Some(src);
+                    return;
+                }
+            }
+        } else {
+            src.clone()
+        };
         let opts = self.compile_opts(&self.prompts.buffer_name(), true);
-        match self.rt.block_on(crate::compile::compile_to_string(&src, &opts)) {
+        match self.rt.block_on(crate::compile::compile_to_string(&to_compile, &opts)) {
             Ok(hjson) => {
                 self.prompts.compiled = hjson;
                 self.prompts.compile_err = None;
@@ -748,6 +767,20 @@ impl App {
         if self.prompt_compile.is_some() {
             return;
         }
+        // In Tera mode, render the template first (same as the live structural pane).
+        let text = if self.prompts.tera_mode {
+            let topts = crate::compile::TemplateOpts { vars: self.prompts.tera_var_pairs(), ..Default::default() };
+            match crate::compile::template::render(&text, self.prompts.path(), &topts) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.prompts.compiling = false;
+                    self.prompts.compile_err = Some(format!("Tera: {e:#}"));
+                    return;
+                }
+            }
+        } else {
+            text
+        };
         let opts = self.compile_opts(&self.prompts.buffer_name(), false);
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
