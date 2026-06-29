@@ -190,6 +190,35 @@ pub struct App {
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
 }
 
+/// A persisted Chat session (`/save` / `/load`): the visible thread plus the
+/// refinement state needed to keep editing where you left off.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct ChatSession {
+    #[serde(default)]
+    turns: Vec<SessionTurn>,
+    #[serde(default)]
+    refine_prompt: String,
+    #[serde(default)]
+    base_seed: Option<u64>,
+    #[serde(default)]
+    negative: String,
+    #[serde(default)]
+    refine_base: Option<String>,
+    #[serde(default)]
+    active_seed: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionTurn {
+    utterance: String,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    refine: bool,
+    #[serde(default)]
+    system: bool,
+}
+
 impl App {
     pub fn new(
         workspace: Workspace,
@@ -1040,6 +1069,95 @@ impl App {
         self.screen = ActiveScreen::Chat;
     }
 
+    fn sessions_dir(&self) -> std::path::PathBuf {
+        self.workspace.root.join("sessions")
+    }
+
+    /// `/save [name]` — write the Chat thread + refinement state to
+    /// `sessions/<name>.json` so it can be reloaded later.
+    fn save_session(&mut self, name: &str) {
+        let slug = session_slug(name);
+        let session = ChatSession {
+            turns: self
+                .chat
+                .history
+                .iter()
+                .map(|e| SessionTurn { utterance: e.utterance.clone(), result: e.result.clone(), refine: e.refine, system: e.system })
+                .collect(),
+            refine_prompt: self.refine_prompt.clone(),
+            base_seed: self.base_seed,
+            negative: self.negative.clone(),
+            refine_base: self.refine_base.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            active_seed: self.active_seed,
+        };
+        let dir = self.sessions_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("{slug}.json"));
+        match serde_json::to_vec_pretty(&session) {
+            Ok(bytes) => match std::fs::write(&path, bytes) {
+                Ok(()) => self.chat.push_system(format!("✓ saved session → sessions/{slug}.json ({} turn(s))", session.turns.len())),
+                Err(e) => self.chat.push_system(format!("✗ save failed: {e}")),
+            },
+            Err(e) => self.chat.push_system(format!("✗ serialize failed: {e}")),
+        }
+    }
+
+    /// `/load <name>` — restore a saved session into Chat (thread + accumulated prompt,
+    /// seed, negative, base image) so refinement continues where it left off.
+    fn load_session(&mut self, name: &str) {
+        if name.is_empty() {
+            self.chat.push_system("usage: /load <name> — see /sessions".into());
+            return;
+        }
+        let path = self.sessions_dir().join(format!("{}.json", session_slug(name)));
+        let session: ChatSession = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string())) {
+            Ok(s) => s,
+            Err(e) => {
+                self.chat.push_system(format!("✗ couldn't load ‘{name}’: {e}"));
+                return;
+            }
+        };
+        let turns = session.turns.len();
+        self.chat.restore(session.turns.into_iter().map(|t| (t.utterance, t.result, t.refine, t.system)).collect());
+        self.refine_prompt = session.refine_prompt;
+        self.base_seed = session.base_seed;
+        self.negative = session.negative;
+        self.active_seed = session.active_seed;
+        self.refine_base = session.refine_base.map(std::path::PathBuf::from);
+        // Rebuild the inline preview from the restored base image, if it still exists.
+        self.chat.preview = self
+            .refine_base
+            .as_ref()
+            .and_then(|p| image::open(p).ok())
+            .map(|img| self.picker.new_resize_protocol(img));
+        self.chat.refine_armed = self.base_seed.is_some();
+        self.screen = ActiveScreen::Chat;
+        self.chat.push_system(format!("✓ loaded session ‘{name}’ ({turns} turn(s)) — keep refining"));
+    }
+
+    /// `/sessions` — list the saved sessions under `sessions/`.
+    fn list_sessions(&mut self) {
+        let dir = self.sessions_dir();
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        (p.extension().and_then(|x| x.to_str()) == Some("json"))
+                            .then(|| p.file_stem().and_then(|n| n.to_str()).map(str::to_string))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        if names.is_empty() {
+            self.chat.push_system("no saved sessions yet — /save [name] to create one".into());
+        } else {
+            self.chat.push_system(format!("sessions: {} · /load <name>", names.join(", ")));
+        }
+    }
+
     /// Keep the Canvas base in sync with the current Chat base image (lazy preview).
     fn sync_canvas(&mut self) {
         if self.screen != ActiveScreen::Canvas {
@@ -1391,6 +1509,20 @@ impl App {
             }
             return;
         }
+        // `/save [name]` / `/load <name>` / `/sessions` — persist & restore the thread.
+        if let Some(rest) = text.strip_prefix("/sessions") {
+            let _ = rest;
+            self.list_sessions();
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/save") {
+            self.save_session(rest.trim());
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/load") {
+            self.load_session(rest.trim());
+            return;
+        }
         // `/auto on|off` — LLM edit/new routing for follow-ups.
         if let Some(rest) = text.strip_prefix("/auto") {
             self.auto_route = !rest.trim().eq_ignore_ascii_case("off");
@@ -1675,6 +1807,13 @@ impl App {
     }
 }
 
+/// Filesystem-safe Chat-session file stem (empty → "session").
+fn session_slug(name: &str) -> String {
+    let s: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let s: String = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    if s.is_empty() { "session".to_string() } else { s }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1956,6 +2095,49 @@ mod tests {
         // A second press while one is in flight is ignored (no double-spawn).
         a.grab_chat_into_scenario();
         assert!(a.chat_to_scenario.is_some());
+    }
+
+    #[test]
+    fn session_slug_is_filesystem_safe() {
+        assert_eq!(session_slug("My Session 1"), "my-session-1");
+        assert_eq!(session_slug("  "), "session");
+        assert_eq!(session_slug("a/b"), "a-b");
+    }
+
+    #[test]
+    fn save_then_load_session_round_trips() {
+        let root = std::env::temp_dir().join("plakat-ui-session-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+
+        // Build a little session: a turn + accumulated state.
+        a.chat.push_utterance("a watercolor fox".into(), false);
+        a.chat.finish_last(Ok("out/chat/plakat-7-1.png".into()));
+        a.refine_prompt = "a watercolor fox, autumn leaves".into();
+        a.base_seed = Some(7);
+        a.negative = "blurry".into();
+        a.active_seed = 7;
+        a.handle_chat_submit("/save fox-demo".into());
+        assert!(root.join("sessions/fox-demo.json").exists(), "session written");
+
+        // Wipe live state, then load it back.
+        a.chat.restore(vec![]);
+        a.refine_prompt.clear();
+        a.base_seed = None;
+        a.negative.clear();
+        a.handle_chat_submit("/load fox-demo".into());
+        assert_eq!(a.refine_prompt, "a watercolor fox, autumn leaves");
+        assert_eq!(a.base_seed, Some(7));
+        assert_eq!(a.negative, "blurry");
+        // The fox utterance is back (plus the load's system note).
+        assert!(a.chat.history.iter().any(|e| e.utterance == "a watercolor fox" && !e.system));
+        // /sessions lists it without error.
+        a.handle_chat_submit("/sessions".into());
+        assert!(a.chat.history.last().unwrap().utterance.contains("fox-demo"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

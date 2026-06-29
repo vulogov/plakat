@@ -121,5 +121,8 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 ## F — polish
 
 - [ ] **Command palette** (RFC §5) — fuzzy action launcher per screen.
-- [ ] **Save/load Chat session** + thumbnail strip + explicit rollback/variations.
+- [~] **Save/load Chat session** — `/save [name]` / `/load <name>` / `/sessions`
+      persist the thread + accumulated prompt + seed + negative + base image to
+      `sessions/<name>.json` and restore it (rebuilds the inline preview). Thumbnail
+      strip + explicit rollback/variations remain follow-ups.
 - [ ] **`@mention`** people / LoRAs / styles inline in the Chat prompt.

@@ -120,6 +120,9 @@ lose an earlier version.
 | `/strength <0.1–1>` | Switch refinement to **image-anchored** (img2img) mode |
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
+| `/save [name]` | Save the whole Chat session (thread + prompt + seed + base) |
+| `/load <name>` | Reload a saved session and keep refining where you left off |
+| `/sessions` | List your saved sessions |
 
 `/enhance` uses your configured enhancer (`auto` by default) — set a
 `DEEPSEEK_API_KEY` (env or `~/.config/plakat/config.toml`) and it
