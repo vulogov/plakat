@@ -23,10 +23,14 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 ## B — People depth (remaining)
 
-- [ ] **Detail sub-tabs** (RFC §11) — REFS (angle/lighting coverage), ENCODING
-      (per-strategy quality + re-encode + compare), PORTFOLIO (grid + consistency),
-      TEST (4 fixed gens), KNOWN-GOOD (param table → apply-to-Chat), SETTINGS (consent
-      + privacy audit). The `person.hjson` schema already reserves these fields.
+- [x] **Detail sub-tabs** (RFC §11) — six `←/→`-cycled tabs in the DETAIL pane: **REFS**
+      (weighted photos + angle-coverage guidance), **ENCODING** (strategy/mode/quality +
+      on-disk encoding count), **PORTFOLIO** (portfolio images + consistency score),
+      **TEST** (the 4 fixed identity tests + on-disk results), **KNOWN-GOOD** (the
+      `known_good[]` param-combo table), **SETTINGS** (consent + privacy audit). Added
+      `encoding_quality` + `known_good[]` + `KnownGood` to the schema. The *active*
+      bits — re-encode (`E`), side-by-side strategy compare, apply-a-specific-combo,
+      lazy thumbnail grid — remain (see the dedicated items below).
 - [ ] **Re-encode** (`E`) — explicit identity encoding with a quality score; auto on
       first strategy+model use; invalidated by ref/strategy/model change.
 - [ ] **Mixed-family multiperson** — route a marked set by each persona's strategy

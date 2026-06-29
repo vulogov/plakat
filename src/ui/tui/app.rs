@@ -658,6 +658,7 @@ impl App {
             }
             ActiveScreen::People => {
                 cmds.push(("Generate selected → Chat".into(), k('g')));
+                cmds.push(("Next detail tab".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))));
                 cmds.push(("Import scenario persona".into(), k('i')));
                 cmds.push(("Rescan".into(), k('r')));
             }

@@ -70,6 +70,66 @@ struct Stats {
     consistency: f32,
 }
 
+/// A recorded good parameter combination (RFC §11 KNOWN-GOOD table).
+#[derive(Deserialize, Default, Clone)]
+struct KnownGood {
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    negative: String,
+    #[serde(default)]
+    steps: Option<u32>,
+    #[serde(default)]
+    guidance: Option<f32>,
+    #[serde(default)]
+    seed: Option<u64>,
+    #[serde(default)]
+    face_strength: Option<f32>,
+    #[serde(default)]
+    notes: String,
+}
+
+/// The six DETAIL sub-tabs (RFC §11), cycled with ←/→ (or `h`/`l`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetailTab {
+    Refs,
+    Encoding,
+    Portfolio,
+    Test,
+    KnownGood,
+    Settings,
+}
+
+impl DetailTab {
+    const ALL: [DetailTab; 6] = [
+        DetailTab::Refs,
+        DetailTab::Encoding,
+        DetailTab::Portfolio,
+        DetailTab::Test,
+        DetailTab::KnownGood,
+        DetailTab::Settings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            DetailTab::Refs => "REFS",
+            DetailTab::Encoding => "ENCODING",
+            DetailTab::Portfolio => "PORTFOLIO",
+            DetailTab::Test => "TEST",
+            DetailTab::KnownGood => "KNOWN-GOOD",
+            DetailTab::Settings => "SETTINGS",
+        }
+    }
+
+    fn cycle(self, delta: isize) -> DetailTab {
+        let n = Self::ALL.len() as isize;
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0) as isize;
+        Self::ALL[((i + delta).rem_euclid(n)) as usize]
+    }
+}
+
 /// The `person.hjson` schema (all fields default-tolerant so hand-written / partial
 /// files parse). `dir` and `error` are filled by the loader, not deserialized.
 #[derive(Deserialize, Default, Clone)]
@@ -90,6 +150,10 @@ struct Person {
     negative: String,
     #[serde(default)]
     refs: Vec<PersonRef>,
+    #[serde(default)]
+    encoding_quality: Option<f32>,
+    #[serde(default)]
+    known_good: Vec<KnownGood>,
     #[serde(default)]
     consent: Option<Consent>,
     #[serde(default)]
@@ -178,6 +242,8 @@ pub struct PeopleState {
     confirm_delete: Option<String>,
     /// Last action feedback (import / delete / errors), shown in the library footer.
     status: String,
+    /// Active DETAIL sub-tab (RFC §11).
+    detail_tab: DetailTab,
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
 }
@@ -192,6 +258,7 @@ impl PeopleState {
             marked: std::collections::BTreeSet::new(),
             confirm_delete: None,
             status: String::new(),
+            detail_tab: DetailTab::Refs,
             preview: None,
             preview_for: None,
         };
@@ -317,6 +384,9 @@ impl PeopleState {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
+            // ←/→ (or h/l) cycle the DETAIL sub-tab.
+            KeyCode::Left | KeyCode::Char('h') => self.detail_tab = self.detail_tab.cycle(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.detail_tab = self.detail_tab.cycle(1),
             KeyCode::Char('r') => self.rescan(),
             // I — import a scenario-defined persona into the editable people/ library.
             KeyCode::Char('i' | 'I') => self.import_selected(),
@@ -529,58 +599,202 @@ impl PeopleState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Identity  ·  [G] generate → Chat ");
-        let inner = block.inner(area);
+        let block = Block::default().borders(Borders::ALL).title(" Identity  ·  ←/→ tab · [G] → Chat ");
+        let outer = block.inner(area);
         f.render_widget(block, area);
         let Some(p) = self.people.get(self.selected) else { return };
 
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(Span::styled(p.label().to_string(), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+        // [name] [tab bar] [tab body].
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+            .split(outer);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                p.label().to_string(),
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))),
+            rows[0],
+        );
         if let Some(err) = &p.error {
-            lines.push(Line::from(Span::styled(format!("✗ {err}"), Style::new().fg(Color::Red))));
-            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+            f.render_widget(
+                Paragraph::new(Span::styled(format!("✗ {err}"), Style::new().fg(Color::Red))).wrap(Wrap { trim: true }),
+                rows[2],
+            );
             return;
         }
 
-        let kv = |k: &str, v: String| -> Line {
-            Line::from(vec![
-                Span::styled(format!("{k:<10}"), Style::new().fg(Color::DarkGray)),
-                Span::styled(v, Style::new().fg(Color::White)),
-            ])
-        };
-        lines.push(kv("source", or_dash(&p.source)));
-        lines.push(kv("strategy", or_dash(&p.identity)));
-        lines.push(kv("encoding", or_dash(&p.encoding_mode)));
-        lines.push(kv("face-str", p.face_strength.map(|v| format!("{v:.2}")).unwrap_or_else(|| "—".into())));
+        // Tab bar.
+        let tabs: Vec<Span> = DetailTab::ALL
+            .iter()
+            .flat_map(|t| {
+                let style = if *t == self.detail_tab {
+                    Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(Color::DarkGray)
+                };
+                [Span::styled(format!(" {} ", t.label()), style), Span::raw(" ")]
+            })
+            .collect();
+        f.render_widget(Paragraph::new(Line::from(tabs)), rows[1]);
 
-        // Coverage summary across refs (RFC: actionable guidance).
+        let lines = match self.detail_tab {
+            DetailTab::Refs => self.tab_refs(p),
+            DetailTab::Encoding => self.tab_encoding(p),
+            DetailTab::Portfolio => self.tab_portfolio(p),
+            DetailTab::Test => self.tab_test(p),
+            DetailTab::KnownGood => self.tab_known_good(p),
+            DetailTab::Settings => self.tab_settings(p),
+        };
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[2]);
+    }
+
+    /// REFS — each weighted reference photo (weight · angle/lighting · file) plus an
+    /// angle-coverage summary with actionable guidance.
+    fn tab_refs(&self, p: &Person) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if p.refs.is_empty() {
+            lines.push(dim("no reference photos."));
+            return lines;
+        }
+        for r in &p.refs {
+            let file = Path::new(&r.path).file_name().and_then(|n| n.to_str()).unwrap_or(&r.path);
+            let mut meta = format!("★{:.2}", r.weight);
+            if !r.angle.is_empty() {
+                meta.push_str(&format!("  {}", r.angle));
+            }
+            if !r.lighting.is_empty() {
+                meta.push_str(&format!("/{}", r.lighting));
+            }
+            lines.push(Line::from(vec![
+                Span::styled(format!("{meta:<18} "), Style::new().fg(Color::DarkGray)),
+                Span::styled(file.to_string(), Style::new().fg(Color::White)),
+            ]));
+        }
         let angles: Vec<String> = {
             let mut a: Vec<String> = p.refs.iter().map(|r| r.angle.to_lowercase()).filter(|s| !s.is_empty()).collect();
             a.sort();
             a.dedup();
             a
         };
-        lines.push(kv("angles", if angles.is_empty() { "—".into() } else { angles.join(", ") }));
-        if !p.refs.is_empty() && !angles.iter().any(|a| a.contains("right") || a.contains("profile")) {
-            lines.push(Line::from(Span::styled(
-                "  ⚠ no right/profile ref → right-facing scenes may be less consistent",
-                Style::new().fg(Color::Yellow),
-            )));
-        }
-
-        if !p.prompt.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(kv("prompt", p.prompt.clone()));
-        }
-        if !p.negative.is_empty() {
-            lines.push(kv("negative", p.negative.clone()));
-        }
-
-        // Consent.
         lines.push(Line::from(""));
+        lines.push(kv("coverage", if angles.is_empty() { "no angle tags".into() } else { angles.join(", ") }));
+        if !angles.iter().any(|a| a.contains("right") || a.contains("profile")) {
+            lines.push(warn("⚠ no right/profile ref → right-facing scenes may be less consistent"));
+        }
+        if !angles.iter().any(|a| a.contains("left")) {
+            lines.push(warn("⚠ no left ref → left-facing scenes may be less consistent"));
+        }
+        lines
+    }
+
+    /// ENCODING — strategy + mode + recorded quality + on-disk encoding files.
+    fn tab_encoding(&self, p: &Person) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        lines.push(kv("strategy", or_dash(&p.identity)));
+        lines.push(kv("mode", or_dash(&p.encoding_mode)));
+        lines.push(kv("face-str", p.face_strength.map(|v| format!("{v:.2}")).unwrap_or_else(|| "—".into())));
+        match p.encoding_quality {
+            Some(q) => lines.push(kv("quality", format!("{q:.2} (face similarity vs refs)"))),
+            None => lines.push(kv("quality", "not yet encoded".into())),
+        }
+        let enc = count_files(&p.dir.join("encoding"));
+        lines.push(kv("on disk", format!("{enc} encoding file(s)")));
+        lines.push(Line::from(""));
+        if p.encoding_quality.is_none() && enc == 0 {
+            lines.push(warn("⚠ no encoding yet — it's computed on first use (re-encode: `E`, planned)"));
+        } else {
+            lines.push(dim("re-encode (`E`) + side-by-side strategy compare are planned."));
+        }
+        lines
+    }
+
+    /// PORTFOLIO — generated images on disk + the consistency score.
+    fn tab_portfolio(&self, p: &Person) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let imgs = list_images(&p.dir.join("portfolio"));
+        if imgs.is_empty() {
+            lines.push(dim("no portfolio images yet — generate some with [G]."));
+        } else {
+            lines.push(kv("images", format!("{}", imgs.len())));
+            for name in imgs.iter().take(12) {
+                lines.push(Line::from(Span::styled(format!("  • {name}"), Style::new().fg(Color::White))));
+            }
+            if imgs.len() > 12 {
+                lines.push(dim(&format!("  …and {} more", imgs.len() - 12)));
+            }
+        }
+        if p.stats.consistency > 0.0 {
+            lines.push(Line::from(""));
+            lines.push(kv("consistency", format!("{:.2} (pairwise face similarity)", p.stats.consistency)));
+        }
+        lines
+    }
+
+    /// TEST — the four fixed identity test generations + whether results exist on disk.
+    fn tab_test(&self, p: &Person) -> Vec<Line<'static>> {
+        const TESTS: [&str; 4] = [
+            "neutral frontal portrait",
+            "three-quarter left, soft light",
+            "smiling, outdoor daylight",
+            "dramatic side lighting",
+        ];
+        let done = count_files(&p.dir.join("encoding_tests"));
+        let mut lines = vec![dim("Four fixed test renders gauge identity consistency:")];
+        for (i, t) in TESTS.iter().enumerate() {
+            let mark = if (i as usize) < done { ("✓", Color::Green) } else { ("·", Color::DarkGray) };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", mark.0), Style::new().fg(mark.1)),
+                Span::styled((*t).to_string(), Style::new().fg(Color::White)),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(dim(&format!("{done}/4 result(s) in encoding_tests/ · [G] renders a portrait")));
+        lines
+    }
+
+    /// KNOWN-GOOD — recorded parameter combos that work well for this identity.
+    fn tab_known_good(&self, p: &Person) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if p.known_good.is_empty() {
+            lines.push(dim("no known-good combos recorded yet."));
+            lines.push(dim("Add a `known_good[]` block to person.hjson (label/prompt/steps/…)."));
+            return lines;
+        }
+        for kg in &p.known_good {
+            let title = if kg.label.is_empty() { "combo".to_string() } else { kg.label.clone() };
+            lines.push(Line::from(Span::styled(format!("◆ {title}"), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+            let mut params = Vec::new();
+            if let Some(s) = kg.steps {
+                params.push(format!("steps {s}"));
+            }
+            if let Some(g) = kg.guidance {
+                params.push(format!("cfg {g:.1}"));
+            }
+            if let Some(fs) = kg.face_strength {
+                params.push(format!("face {fs:.2}"));
+            }
+            if let Some(sd) = kg.seed {
+                params.push(format!("seed {sd}"));
+            }
+            if !params.is_empty() {
+                lines.push(Line::from(Span::styled(format!("    {}", params.join(" · ")), Style::new().fg(Color::Gray))));
+            }
+            if !kg.prompt.is_empty() {
+                lines.push(Line::from(Span::styled(format!("    “{}”", kg.prompt), Style::new().fg(Color::White))));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(dim("[G] generates with this identity (apply-a-specific-combo is planned)."));
+        lines
+    }
+
+    /// SETTINGS — consent block + a privacy audit.
+    fn tab_settings(&self, p: &Person) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
         match &p.consent {
             Some(c) if !c.granted_by.is_empty() => {
-                lines.push(kv("consent", format!("✓ {} {}", c.granted_by, c.date)));
+                lines.push(kv("consent", format!("✓ {} {}", c.granted_by, or_dash(&c.date))));
                 if !c.permitted_uses.is_empty() {
                     lines.push(kv("uses", c.permitted_uses.join(", ")));
                 }
@@ -588,27 +802,60 @@ impl PeopleState {
                     lines.push(kv("limits", c.restrictions.join(", ")));
                 }
             }
-            _ => lines.push(Line::from(Span::styled(
-                "  ⚠ no consent block recorded",
-                Style::new().fg(Color::Yellow),
-            ))),
+            _ => lines.push(warn("⚠ no consent block recorded")),
         }
-
-        // Stats.
-        let st = &p.stats;
-        if st.appearances > 0 || !st.last_used.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(kv(
-                "used",
-                format!("{}× · {} scenario(s) · {} session(s) · last {}", st.appearances, st.scenarios, st.sessions, or_dash(&st.last_used)),
-            ));
-            if st.consistency > 0.0 {
-                lines.push(kv("consistency", format!("{:.2}", st.consistency)));
-            }
+        lines.push(Line::from(""));
+        // Privacy audit.
+        lines.push(Line::from(Span::styled("privacy audit", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        lines.push(kv("source", or_dash(&p.source)));
+        lines.push(kv("refs", format!("{} photo(s) on disk", p.refs.len())));
+        let restricted = p.consent.as_ref().map(|c| !c.restrictions.is_empty()).unwrap_or(false);
+        lines.push(kv("enforced", if restricted { "yes (at generation time)".into() } else { "none".into() }));
+        if p.source == "people" {
+            lines.push(dim("[Del] removes this identity (right to be forgotten)."));
         }
-
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        lines
     }
+}
+
+/// A `key: value` detail line.
+fn kv(k: &str, v: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{k:<10}"), Style::new().fg(Color::DarkGray)),
+        Span::styled(v, Style::new().fg(Color::White)),
+    ])
+}
+
+fn dim(s: &str) -> Line<'static> {
+    Line::from(Span::styled(s.to_string(), Style::new().fg(Color::DarkGray)))
+}
+
+fn warn(s: &str) -> Line<'static> {
+    Line::from(Span::styled(s.to_string(), Style::new().fg(Color::Yellow)))
+}
+
+/// Count regular files directly under `dir` (0 if it doesn't exist).
+fn count_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map(|rd| rd.flatten().filter(|e| e.path().is_file()).count()).unwrap_or(0)
+}
+
+/// Image file names (png/jpg/jpeg/webp) directly under `dir`, sorted.
+fn list_images(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+                    (matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp"))
+                        .then(|| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                        .flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
 }
 
 fn or_dash(s: &str) -> String {
@@ -934,6 +1181,102 @@ mod tests {
         assert_eq!(s.people.len(), 1);
         assert_eq!(s.people[0].label(), "bob");
         assert!(s.people[0].error.is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn one_person_state() -> PeopleState {
+        let d = tmp("detail");
+        let alice = d.join("people").join("alice");
+        std::fs::create_dir_all(alice.join("refs")).unwrap();
+        std::fs::write(
+            alice.join("person.hjson"),
+            r#"{"display_name":"Alice","identity":"plus-face","refs":[{"path":"refs/a.jpg","weight":1.0,"angle":"front"}]}"#,
+        )
+        .unwrap();
+        PeopleState::new(d.join("people"), d.join("scenarios"))
+    }
+
+    #[test]
+    fn detail_tabs_cycle_with_left_and_right() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut s = one_person_state();
+        let right = || KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        assert!(matches!(s.detail_tab, DetailTab::Refs));
+        s.handle_key(right());
+        assert!(matches!(s.detail_tab, DetailTab::Encoding));
+        // Cycle all the way around (6 tabs) → back to Refs.
+        for _ in 0..5 {
+            s.handle_key(right());
+        }
+        assert!(matches!(s.detail_tab, DetailTab::Refs));
+        // Left wraps to the last tab.
+        s.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(matches!(s.detail_tab, DetailTab::Settings));
+        let _ = std::fs::remove_dir_all(s.dir.parent().unwrap());
+    }
+
+    #[test]
+    fn refs_tab_lists_photos_and_flags_missing_coverage() {
+        let s = one_person_state();
+        let lines = s.tab_refs(&s.people[0]);
+        let text: String = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("a.jpg"), "lists the ref photo");
+        assert!(text.contains("front"), "shows the angle tag");
+        // Only a front ref → both left and right warnings fire.
+        assert!(text.contains("no right/profile"));
+        assert!(text.contains("no left ref"));
+        let _ = std::fs::remove_dir_all(s.dir.parent().unwrap());
+    }
+
+    #[test]
+    fn known_good_tab_renders_the_combo_table() {
+        let mut s = one_person_state();
+        s.people[0].known_good = vec![KnownGood {
+            label: "hero shot".into(),
+            prompt: "a hero pose".into(),
+            steps: Some(30),
+            guidance: Some(6.5),
+            ..Default::default()
+        }];
+        let lines = s.tab_known_good(&s.people[0]);
+        let text: String = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("hero shot"));
+        assert!(text.contains("steps 30"));
+        assert!(text.contains("a hero pose"));
+        let _ = std::fs::remove_dir_all(s.dir.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_tab_audits_missing_consent() {
+        let s = one_person_state();
+        let lines = s.tab_settings(&s.people[0]);
+        let text: String = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("no consent block"));
+        assert!(text.contains("privacy audit"));
+        assert!(text.contains("1 photo"));
+        let _ = std::fs::remove_dir_all(s.dir.parent().unwrap());
+    }
+
+    #[test]
+    fn known_good_and_quality_parse_from_hjson() {
+        let d = tmp("kg");
+        let alice = d.join("people").join("alice");
+        std::fs::create_dir_all(&alice).unwrap();
+        // known_good is an array of objects → one field per line (HJSON inline trap).
+        std::fs::write(
+            alice.join("person.hjson"),
+            "{\n  display_name: Alice\n  encoding_quality: 0.82\n  known_good: [\n    {\n      label: hero\n      steps: 30\n    }\n  ]\n}\n",
+        )
+        .unwrap();
+        let s = PeopleState::new(d.join("people"), d.join("scenarios"));
+        assert_eq!(s.people[0].encoding_quality, Some(0.82));
+        assert_eq!(s.people[0].known_good.len(), 1);
+        assert_eq!(s.people[0].known_good[0].label, "hero");
+        assert_eq!(s.people[0].known_good[0].steps, Some(30));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

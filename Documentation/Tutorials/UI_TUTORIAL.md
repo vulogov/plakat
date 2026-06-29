@@ -200,8 +200,13 @@ strategy — stored under `people/<name>/person.hjson`. The library also
 surfaces any personas defined in your scenario files (read-only,
 tagged `◇`).
 
-- Move with `j`/`k`; the primary reference photo previews on the right
-  with the identity's strategy, ref coverage, consent, and stats.
+- Move with `j`/`k`; the primary reference photo previews on the right.
+- The detail pane has **six sub-tabs** (cycle with **`←`/`→`** or
+  `h`/`l`): **REFS** (weighted photos + angle-coverage guidance),
+  **ENCODING** (strategy/mode/quality + on-disk encodings), **PORTFOLIO**
+  (generated images + consistency score), **TEST** (the four fixed
+  identity test renders), **KNOWN-GOOD** (recorded parameter combos), and
+  **SETTINGS** (consent + a privacy audit).
 - **`G`** generates a **portrait** of the selected person — it opens in
   Chat ready to refine.
 - **`Space`** marks people (`●`); with **two or more marked, `G`**
