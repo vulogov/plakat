@@ -23,6 +23,21 @@ struct HistoryEntry {
     date_label: String, // YYYY-MM-DD
     time_label: String, // HH:MM
     mtime: SystemTime,
+    /// Tags from the `<image>.tags` sidecar (one per line), for collection building.
+    tags: Vec<String>,
+    /// The embedded recipe text, lazily read when first needed for search.
+    recipe_cache: Option<String>,
+    recipe_loaded: bool,
+}
+
+impl HistoryEntry {
+    fn file_name(&self) -> &str {
+        self.path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+    }
+    /// The `<image>.tags` sidecar path.
+    fn tags_path(&self) -> PathBuf {
+        self.path.with_extension("png.tags")
+    }
 }
 
 /// What the App should do after a key.
@@ -37,7 +52,18 @@ pub enum HistoryAction {
 pub struct HistoryState {
     out_dir: PathBuf,
     entries: Vec<HistoryEntry>,
+    /// Indices into `entries` that pass the current filter, in display order. All
+    /// navigation / selection is relative to this view; `selected` indexes into it.
+    view: Vec<usize>,
     selected: usize,
+    /// Current filter query (matches filename, tags, and recipe text); empty = all.
+    query: String,
+    /// Typing the filter query (`/`) — the screen captures input.
+    filtering: bool,
+    /// Typing a tag (`T`) for the selected image — the screen captures input.
+    tag_input: Option<String>,
+    /// Baseline image for side-by-side recipe compare (`d` marks, `d` again diffs).
+    compare_base: Option<PathBuf>,
     /// First visible display row (headers + entries), for scrolling.
     scroll: usize,
     // Lazily-synced detail for the selected entry.
@@ -56,7 +82,12 @@ impl HistoryState {
         let mut s = Self {
             out_dir,
             entries: Vec::new(),
+            view: Vec::new(),
             selected: 0,
+            query: String::new(),
+            filtering: false,
+            tag_input: None,
+            compare_base: None,
             scroll: 0,
             detail_for: None,
             recipe: None,
@@ -75,19 +106,60 @@ impl HistoryState {
         let mut found = Vec::new();
         collect_pngs(&self.out_dir, &mut found, 0);
         found.sort_by(|a: &HistoryEntry, b: &HistoryEntry| b.mtime.cmp(&a.mtime));
+        for e in &mut found {
+            e.tags = load_tags(&e.tags_path());
+        }
         self.entries = found;
-        self.selected = self.selected.min(self.entries.len().saturating_sub(1));
         self.detail_for = None; // force a re-sync of the detail pane
-        self.status = format!("{} image(s)", self.entries.len());
+        self.rebuild_view();
+    }
+
+    /// Recompute the visible `view` from the current query. An empty query shows
+    /// everything; otherwise an entry matches if the (lowercased) query is a substring
+    /// of its filename, any tag, or its recipe text (recipes are read lazily + cached).
+    fn rebuild_view(&mut self) {
+        let q = self.query.trim().to_lowercase();
+        if q.is_empty() {
+            self.view = (0..self.entries.len()).collect();
+        } else {
+            // Ensure recipes are available for the search (one-time lazy read per entry).
+            for e in &mut self.entries {
+                if !e.recipe_loaded {
+                    e.recipe_cache = crate::imaging::io::read_parameters_chunk(&e.path).ok().flatten();
+                    e.recipe_loaded = true;
+                }
+            }
+            self.view = (0..self.entries.len())
+                .filter(|&i| {
+                    let e = &self.entries[i];
+                    e.file_name().to_lowercase().contains(&q)
+                        || e.tags.iter().any(|t| t.to_lowercase().contains(&q))
+                        || e.recipe_cache.as_deref().map(|r| r.to_lowercase().contains(&q)).unwrap_or(false)
+                })
+                .collect();
+        }
+        if self.selected >= self.view.len() {
+            self.selected = self.view.len().saturating_sub(1);
+        }
+        self.status = if q.is_empty() {
+            format!("{} image(s)", self.entries.len())
+        } else {
+            format!("{} / {} match “{}”", self.view.len(), self.entries.len(), self.query)
+        };
+    }
+
+    /// The entry currently under the cursor (via the filtered view).
+    fn cur(&self) -> Option<&HistoryEntry> {
+        self.view.get(self.selected).and_then(|&i| self.entries.get(i))
     }
 
     pub fn selected_path(&self) -> Option<PathBuf> {
-        self.entries.get(self.selected).map(|e| e.path.clone())
+        self.cur().map(|e| e.path.clone())
     }
 
     fn next(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = (self.selected + 1).min(self.entries.len() - 1);
+        if !self.view.is_empty() {
+            self.selected = (self.selected + 1).min(self.view.len() - 1);
         }
     }
 
@@ -95,13 +167,77 @@ impl HistoryState {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// True while a text-input modal (filter query / tag entry) is open.
+    pub fn captures_input(&self) -> bool {
+        self.filtering || self.tag_input.is_some()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> HistoryAction {
+        // ── Filter-query input (`/`). ──
+        if self.filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    self.query.clear();
+                    self.filtering = false;
+                    self.rebuild_view();
+                }
+                KeyCode::Enter => self.filtering = false,
+                KeyCode::Backspace => {
+                    self.query.pop();
+                    self.rebuild_view();
+                }
+                KeyCode::Char(c) => {
+                    self.query.push(c);
+                    self.rebuild_view();
+                }
+                _ => {}
+            }
+            return HistoryAction::None;
+        }
+        // ── Tag input (`T`). ──
+        if self.tag_input.is_some() {
+            match key.code {
+                KeyCode::Esc => self.tag_input = None,
+                KeyCode::Backspace => {
+                    if let Some(b) = self.tag_input.as_mut() {
+                        b.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(b) = self.tag_input.as_mut() {
+                        b.push(c);
+                    }
+                }
+                KeyCode::Enter => {
+                    let tag = self.tag_input.take().unwrap_or_default();
+                    self.add_tag(tag.trim());
+                }
+                _ => {}
+            }
+            return HistoryAction::None;
+        }
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('g') => self.selected = 0,
-            KeyCode::Char('G') => self.selected = self.entries.len().saturating_sub(1),
+            KeyCode::Char('G') => self.selected = self.view.len().saturating_sub(1),
             KeyCode::Char('r') => self.rescan(),
+            // `/` — start a filter query across filename / tags / recipe text.
+            KeyCode::Char('/') => {
+                self.filtering = true;
+                self.status = "filter: type to match filename / tags / recipe · Enter keep · Esc clear".into();
+            }
+            // `T` — tag the selected image (collection building).
+            KeyCode::Char('t' | 'T') => {
+                if self.selected_path().is_some() {
+                    self.tag_input = Some(String::new());
+                    self.status = "tag: type a label · Enter add · Esc cancel".into();
+                }
+            }
+            // `X` — export the current (filtered) set into out/export/.
+            KeyCode::Char('x' | 'X') => self.export_view(),
+            // `d` — mark the selected as compare baseline, or diff against an existing one.
+            KeyCode::Char('d' | 'D') => self.toggle_compare(),
             // Continue from this image in Chat.
             KeyCode::Char('c' | 'C') | KeyCode::Enter => {
                 if let Some(path) = self.selected_path() {
@@ -113,6 +249,74 @@ impl HistoryState {
             _ => {}
         }
         HistoryAction::None
+    }
+
+    /// Append `tag` to the selected image's `.tags` sidecar (dedup, persisted).
+    fn add_tag(&mut self, tag: &str) {
+        if tag.is_empty() {
+            return;
+        }
+        let Some(&i) = self.view.get(self.selected) else { return };
+        let e = &mut self.entries[i];
+        if e.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            self.status = format!("already tagged ‘{tag}’");
+            return;
+        }
+        e.tags.push(tag.to_string());
+        let body = e.tags.join("\n") + "\n";
+        match std::fs::write(e.tags_path(), body) {
+            Ok(()) => self.status = format!("✓ tagged ‘{tag}’ ({} tag(s))", e.tags.len()),
+            Err(err) => self.status = format!("✗ tag write failed: {err}"),
+        }
+    }
+
+    /// Copy every image in the current view into `out/export/` (collection building).
+    /// Filenames are kept; collisions get a `-N` suffix.
+    fn export_view(&mut self) {
+        if self.view.is_empty() {
+            self.status = "nothing to export".into();
+            return;
+        }
+        let dest = self.out_dir.join("export");
+        if let Err(e) = std::fs::create_dir_all(&dest) {
+            self.status = format!("✗ export dir failed: {e}");
+            return;
+        }
+        let mut n = 0usize;
+        for &i in &self.view {
+            let src = &self.entries[i].path;
+            if src.starts_with(&dest) {
+                continue; // don't re-export the export dir itself
+            }
+            let mut target = dest.join(self.entries[i].file_name());
+            let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("image").to_string();
+            let mut k = 1;
+            while target.exists() {
+                target = dest.join(format!("{stem}-{k}.png"));
+                k += 1;
+            }
+            if std::fs::copy(src, &target).is_ok() {
+                n += 1;
+            }
+        }
+        let scope = if self.query.trim().is_empty() { "all".to_string() } else { format!("“{}”", self.query) };
+        self.status = format!("✓ exported {n} image(s) ({scope}) → out/export/");
+    }
+
+    /// Mark the selected image as the compare baseline; pressing `d` on a *different*
+    /// image then shows their recipe diff in the detail pane (Esc/`d`-again clears).
+    fn toggle_compare(&mut self) {
+        let Some(path) = self.selected_path() else { return };
+        match &self.compare_base {
+            Some(b) if *b == path => {
+                self.compare_base = None;
+                self.status = "compare baseline cleared".into();
+            }
+            _ => {
+                self.compare_base = Some(path);
+                self.status = "compare baseline set — move to another image and press d to diff".into();
+            }
+        }
     }
 
     /// Read the selected image's recipe (A1111 `parameters` tEXt chunk) + header
@@ -146,17 +350,45 @@ impl HistoryState {
     }
 
     fn render_list(&mut self, f: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" History ({}) ", self.entries.len()));
-        let inner = block.inner(area);
+        let title = if self.filtering {
+            format!(" History · /{}▏ ", self.query)
+        } else if !self.query.trim().is_empty() {
+            format!(" History ({}/{}) · /{} ", self.view.len(), self.entries.len(), self.query)
+        } else {
+            format!(" History ({}) ", self.entries.len())
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let outer = block.inner(area);
         f.render_widget(block, area);
 
-        if self.entries.is_empty() {
+        // One-line footer for status (filter help / tag prompt / export feedback).
+        let footer_h = if self.tag_input.is_some() || !self.status.is_empty() { 1 } else { 0 };
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(footer_h)])
+            .split(outer);
+        let inner = parts[0];
+        if footer_h == 1 {
+            let footer = if let Some(b) = &self.tag_input {
+                Line::from(vec![
+                    Span::styled("tag> ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{b}▏"), Style::new().fg(Color::White)),
+                ])
+            } else {
+                let c = if self.status.starts_with('✗') { Color::Red } else { Color::DarkGray };
+                Line::from(Span::styled(self.status.clone(), Style::new().fg(c)))
+            };
+            f.render_widget(Paragraph::new(footer), parts[1]);
+        }
+
+        if self.view.is_empty() {
+            let msg = if self.entries.is_empty() {
+                "No images under out/ yet. Generate something in Chat (Ctrl-1)."
+            } else {
+                "No images match the filter. Esc to clear."
+            };
             f.render_widget(
-                Paragraph::new("No images under out/ yet. Generate something in Chat (Ctrl-1).")
-                    .style(Style::new().fg(Color::DarkGray))
-                    .wrap(Wrap { trim: true }),
+                Paragraph::new(msg).style(Style::new().fg(Color::DarkGray)).wrap(Wrap { trim: true }),
                 inner,
             );
             return;
@@ -166,32 +398,42 @@ impl HistoryState {
         // Track which display row the selected entry sits on for scroll + highlight.
         let mut rows: Vec<Line> = Vec::new();
         let mut sel_row = 0usize;
-        let mut last_date: Option<&str> = None;
-        for (i, e) in self.entries.iter().enumerate() {
-            if last_date != Some(e.date_label.as_str()) {
+        let mut last_date: Option<String> = None;
+        for (vi, &ei) in self.view.iter().enumerate() {
+            let e = &self.entries[ei];
+            if last_date.as_deref() != Some(e.date_label.as_str()) {
                 rows.push(Line::from(Span::styled(
                     format!("─ {} ", e.date_label),
                     Style::new().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
                 )));
-                last_date = Some(e.date_label.as_str());
+                last_date = Some(e.date_label.clone());
             }
-            if i == self.selected {
+            if vi == self.selected {
                 sel_row = rows.len();
             }
-            let name = e.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let style = if i == self.selected {
+            let style = if vi == self.selected {
                 Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(Color::White)
             };
-            rows.push(Line::from(vec![
-                Span::styled(format!(" {} ", e.time_label), Style::new().fg(Color::DarkGray)),
-                Span::styled(name.to_string(), style),
-            ]));
+            let base_mark = if self.compare_base.as_ref() == Some(&e.path) {
+                Span::styled("◆ ", Style::new().fg(Color::Magenta))
+            } else {
+                Span::raw("  ")
+            };
+            let mut spans = vec![
+                base_mark,
+                Span::styled(format!("{} ", e.time_label), Style::new().fg(Color::DarkGray)),
+                Span::styled(e.file_name().to_string(), style),
+            ];
+            if !e.tags.is_empty() {
+                spans.push(Span::styled(format!("  #{}", e.tags.join(" #")), Style::new().fg(Color::Yellow)));
+            }
+            rows.push(Line::from(spans));
         }
 
         // Scroll so the selected row stays visible.
-        let h = inner.height as usize;
+        let h = inner.height.max(1) as usize;
         if sel_row < self.scroll {
             self.scroll = sel_row;
         } else if sel_row >= self.scroll + h {
@@ -217,12 +459,51 @@ impl HistoryState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Recipe  ·  [C] continue in Chat ");
+        // When a compare baseline is set and we're on a *different* image, the pane
+        // becomes a recipe diff instead of the plain recipe.
+        let cur_path = self.selected_path();
+        let comparing = matches!((&self.compare_base, &cur_path), (Some(b), Some(c)) if b != c);
+        let title = if comparing {
+            " Compare  ·  ◆ baseline vs cursor  ·  [d] clear "
+        } else {
+            " Recipe  ·  [C] continue · [d] compare · [T] tag · [X] export · [/] filter "
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
         let mut lines: Vec<Line> = Vec::new();
-        if let Some(e) = self.entries.get(self.selected) {
+        if comparing {
+            let base = self.compare_base.as_ref().and_then(|p| crate::imaging::io::read_parameters_chunk(p).ok().flatten()).unwrap_or_default();
+            let cur = self.recipe.clone().unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::styled("◆ ", Style::new().fg(Color::Magenta)),
+                Span::styled(
+                    self.compare_base.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("?").to_string(),
+                    Style::new().fg(Color::Magenta),
+                ),
+                Span::styled("  vs  ", Style::new().fg(Color::DarkGray)),
+                Span::styled(cur_path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("?").to_string(), Style::new().fg(Color::Cyan)),
+            ]));
+            lines.push(Line::from(""));
+            for (k, bv, cv) in diff_recipes(&base, &cur) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{k:<10} "), Style::new().fg(Color::DarkGray)),
+                    Span::styled(format!("◆ {bv}"), Style::new().fg(Color::Magenta)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("           "),
+                    Span::styled(format!("→ {cv}"), Style::new().fg(Color::Cyan)),
+                ]));
+            }
+            if lines.len() <= 2 {
+                lines.push(Line::from(Span::styled("(recipes identical)", Style::new().fg(Color::DarkGray))));
+            }
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+            return;
+        }
+
+        if let Some(e) = self.cur() {
             let mut meta = format!("{}  {}", e.date_label, e.time_label);
             if let Some((w, h)) = self.dims {
                 meta.push_str(&format!("  ·  {w}×{h}"));
@@ -231,6 +512,9 @@ impl HistoryState {
                 meta.push_str(&format!("  ·  {} KB", self.file_size / 1024));
             }
             lines.push(Line::from(Span::styled(meta, Style::new().fg(Color::Gray))));
+            if !e.tags.is_empty() {
+                lines.push(Line::from(Span::styled(format!("#{}", e.tags.join(" #")), Style::new().fg(Color::Yellow))));
+            }
             lines.push(Line::from(""));
             match &self.recipe {
                 Some(r) => {
@@ -260,11 +544,23 @@ fn collect_pngs(dir: &Path, out: &mut Vec<HistoryEntry>, depth: usize) {
         if p.is_dir() {
             collect_pngs(&p, out, depth + 1);
         } else if p.extension().and_then(|x| x.to_str()) == Some("png") {
+            // Skip our own export copies + tag sidecars in the listing.
+            if p.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with(".tags")).unwrap_or(false) {
+                continue;
+            }
             let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
             let stamp = humantime::format_rfc3339_seconds(mtime).to_string();
             let date_label: String = stamp.chars().take(10).collect();
             let time_label: String = stamp.chars().skip(11).take(5).collect();
-            out.push(HistoryEntry { path: p, date_label, time_label, mtime });
+            out.push(HistoryEntry {
+                path: p,
+                date_label,
+                time_label,
+                mtime,
+                tags: Vec::new(),
+                recipe_cache: None,
+                recipe_loaded: false,
+            });
         }
     }
 }
@@ -276,6 +572,62 @@ fn png_dims(path: &Path) -> Option<(u32, u32)> {
     let reader = dec.read_info().ok()?;
     let info = reader.info();
     Some((info.width, info.height))
+}
+
+/// Read a `<image>.tags` sidecar (one tag per line); missing file → no tags.
+fn load_tags(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Diff two A1111 recipe blocks into `(key, baseline, current)` rows that differ. The
+/// first line (the positive prompt) is keyed `prompt`; subsequent `Key: value, …`
+/// fields are split out. A field present on only one side shows `—` on the other.
+fn diff_recipes(base: &str, cur: &str) -> Vec<(String, String, String)> {
+    let bf = recipe_fields(base);
+    let cf = recipe_fields(cur);
+    let mut keys: Vec<String> = bf.keys().chain(cf.keys()).cloned().collect();
+    keys.sort();
+    keys.dedup();
+    // Keep "prompt" first for readability.
+    keys.sort_by_key(|k| if k == "prompt" { 0 } else { 1 });
+    let mut out = Vec::new();
+    for k in keys {
+        let b = bf.get(&k).cloned().unwrap_or_else(|| "—".into());
+        let c = cf.get(&k).cloned().unwrap_or_else(|| "—".into());
+        if b != c {
+            out.push((k, b, c));
+        }
+    }
+    out
+}
+
+/// Parse an A1111 recipe into `field → value`. Line 1 = the positive prompt (`prompt`);
+/// the trailing `Key: value, Key: value` line(s) are split on commas.
+fn recipe_fields(recipe: &str) -> std::collections::BTreeMap<String, String> {
+    let mut m = std::collections::BTreeMap::new();
+    let mut lines = recipe.lines();
+    if let Some(first) = lines.next() {
+        if !first.trim().is_empty() {
+            m.insert("prompt".to_string(), first.trim().to_string());
+        }
+    }
+    for line in lines {
+        if let Some(rest) = line.strip_prefix("Negative prompt:") {
+            m.insert("negative".to_string(), rest.trim().to_string());
+            continue;
+        }
+        for field in line.split(',') {
+            if let Some((k, v)) = field.split_once(':') {
+                let k = k.trim();
+                if !k.is_empty() {
+                    m.insert(k.to_lowercase(), v.trim().to_string());
+                }
+            }
+        }
+    }
+    m
 }
 
 /// Extract the `Seed: N` value from an A1111 `parameters` block.
@@ -351,6 +703,108 @@ mod tests {
             HistoryAction::Continue { path, .. } => assert!(path.extension().unwrap() == "png"),
             _ => panic!("expected Continue"),
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn ch(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE)
+    }
+    fn special(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn filter_narrows_the_view_by_filename() {
+        let d = tmp("filter");
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &d.join("fox.png")).unwrap();
+        crate::imaging::io::save_rgb_u8(&[4, 5, 6], 1, 1, &d.join("wolf.png")).unwrap();
+        let mut s = HistoryState::new(d.clone());
+        assert_eq!(s.view.len(), 2);
+        // `/` then type "fox" → only the matching file remains in the view.
+        s.handle_key(ch('/'));
+        assert!(s.captures_input());
+        for c in "fox".chars() {
+            s.handle_key(ch(c));
+        }
+        assert_eq!(s.view.len(), 1);
+        assert_eq!(s.selected_path().unwrap().file_name().unwrap(), "fox.png");
+        // Enter keeps the filter (stops capturing); Esc would clear it.
+        s.handle_key(special(KeyCode::Enter));
+        assert!(!s.captures_input());
+        assert_eq!(s.view.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tag_writes_a_sidecar_and_filters_by_tag() {
+        let d = tmp("tag");
+        let img = d.join("a.png");
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &img).unwrap();
+        crate::imaging::io::save_rgb_u8(&[4, 5, 6], 1, 1, &d.join("b.png")).unwrap();
+        let _ = img; // (the specific file tagged is whichever the cursor lands on)
+        let mut s = HistoryState::new(d.clone());
+        // Tag the selected image "hero".
+        let tagged = s.selected_path().unwrap();
+        s.handle_key(ch('T'));
+        assert!(s.captures_input());
+        for c in "hero".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(special(KeyCode::Enter));
+        assert!(tagged.with_extension("png.tags").exists(), "sidecar written");
+        // Filtering by the tag finds exactly the tagged image.
+        s.handle_key(ch('/'));
+        for c in "hero".chars() {
+            s.handle_key(ch(c));
+        }
+        assert_eq!(s.view.len(), 1);
+        assert_eq!(s.selected_path().unwrap(), tagged);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn export_copies_the_filtered_set() {
+        let d = tmp("export");
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &d.join("keep.png")).unwrap();
+        crate::imaging::io::save_rgb_u8(&[4, 5, 6], 1, 1, &d.join("skip.png")).unwrap();
+        let mut s = HistoryState::new(d.clone());
+        // Filter to "keep", then export the view.
+        s.handle_key(ch('/'));
+        for c in "keep".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(special(KeyCode::Enter));
+        s.handle_key(ch('X'));
+        assert!(d.join("export/keep.png").exists());
+        assert!(!d.join("export/skip.png").exists(), "only the filtered set is exported");
+        assert!(s.status.starts_with("✓ exported 1"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn diff_recipes_reports_only_changed_fields() {
+        let base = "a fox\nSteps: 28, Seed: 1, CFG scale: 7";
+        let cur = "a fox\nSteps: 28, Seed: 2, CFG scale: 7";
+        let d = diff_recipes(base, cur);
+        // Only Seed changed.
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].0, "seed");
+        assert_eq!(d[0].1, "1");
+        assert_eq!(d[0].2, "2");
+        // Identical recipes → no rows.
+        assert!(diff_recipes(base, base).is_empty());
+    }
+
+    #[test]
+    fn compare_baseline_toggles() {
+        let d = tmp("compare");
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &d.join("a.png")).unwrap();
+        let mut s = HistoryState::new(d.clone());
+        assert!(s.compare_base.is_none());
+        s.handle_key(ch('d')); // set baseline
+        assert!(s.compare_base.is_some());
+        s.handle_key(ch('d')); // same image → clears
+        assert!(s.compare_base.is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

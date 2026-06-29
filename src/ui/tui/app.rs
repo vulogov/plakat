@@ -463,6 +463,14 @@ impl App {
             return;
         }
 
+        // ── History's filter / tag input owns the keyboard while typing. ──
+        if self.screen == ActiveScreen::History && self.history.captures_input() {
+            if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
+                self.continue_from_image(path, prompt, seed);
+            }
+            return;
+        }
+
         // ── People's delete-confirm modal owns the keyboard (type the name). ──
         if self.screen == ActiveScreen::People && self.people.captures_input() {
             match self.people.handle_key(key) {

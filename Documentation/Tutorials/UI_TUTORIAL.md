@@ -144,6 +144,21 @@ image-anchored base seeded with its recovered prompt, and you're
 dropped into Chat to keep editing it. Because Chat writes the recipe
 into every PNG it makes, this round-trips your own chat images too.
 
+### Find, tag, compare, and export
+
+- **`/`** **filters** the list live — type any text and it matches
+  against the filename, an image's **tags**, and its **recipe** (prompt,
+  seed, steps, model, …). `Enter` keeps the filter, `Esc` clears it.
+- **`T`** **tags** the selected image — type a label and press `Enter`.
+  Tags are stored in a `<image>.tags` sidecar and shown as `#label` in
+  the list; filter by one to gather a collection.
+- **`X`** **exports** the current (filtered) set into `out/export/` —
+  filter to a tag, then `X`, to build a collection folder.
+- **`d`** marks the selected image as a **compare baseline** (`◆`); move
+  to another image and press `d` again to see a **recipe diff** (only
+  the fields that changed — seed, steps, prompt, …). `d` on the baseline
+  again clears it.
+
 ---
 
 ## 6. People — put a specific person in the picture

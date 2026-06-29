@@ -91,9 +91,15 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md) (the design of record).
 
 ## D — History richness
 
-- [ ] **Semantic search** across any recipe field.
-- [ ] **Side-by-side compare** (`Ctrl-C`) that highlights recipe diffs.
-- [ ] **Tag** (`T`) + **export** (`X`) for collection building.
+- [x] **Search** (`/`) across any recipe field — live substring filter over filename +
+      tags + recipe text (lazy recipe read, cached); a `view` index drives the list.
+      (Embedding-based *semantic* ranking remains a future refinement.)
+- [x] **Side-by-side compare** (`d`) that highlights recipe diffs — mark a `◆` baseline,
+      move to another image, `d` again diffs the parsed recipe fields (only changed
+      rows). (Uses `d`, not `Ctrl-C` — that's the global cancel/quit key.)
+- [x] **Tag** (`T`) + **export** (`X`) for collection building — `T` writes a
+      `<image>.tags` sidecar (shown as `#tag`, filterable); `X` copies the current
+      filtered set into `out/export/` (collision-suffixed).
 - [ ] **True thumbnail grid** (lazy, LRU cache) instead of list + single preview.
 - [ ] **Background image decode** — move the selected-image decode off the event-loop
       tick to a worker so large (upscaled) PNGs never hitch navigation.
