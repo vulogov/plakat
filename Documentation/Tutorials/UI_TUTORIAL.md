@@ -144,6 +144,19 @@ Type **`@`** in the prompt to pop up a completion list of your **people**
 - Accepting a **LoRA** applies it to Chat right away (the model reloads
   with it merged) and removes the token from your prompt.
 
+### Session filmstrip — scrub, roll back, vary
+
+Once you've made a few images, a **filmstrip** appears under the image
+pane — one numbered cell per generated frame this session.
+
+- **`Ctrl-←`** / **`Ctrl-→`** scrub through the frames; the selected one
+  shows in the image pane (past the newest returns to the live latest).
+- **`Ctrl-B`** **rolls back** to the selected frame — it becomes the live
+  base (its prompt + seed recovered), so your next prompt **branches**
+  from there instead of the latest.
+- **`Ctrl-Y`** makes a **variation** of the selected frame: its prompt
+  re-rendered at a new seed.
+
 ### Other keys
 
 - **`Ctrl-P`** / **`Ctrl-N`** — recall previous prompts into the editor.

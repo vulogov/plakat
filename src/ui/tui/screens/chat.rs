@@ -4,6 +4,8 @@
 //! (img2img over the previous output) unless it starts with `/new`. The App owns
 //! the dispatch + refine decision; this screen renders state + handles input keys.
 
+use std::path::PathBuf;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
@@ -48,6 +50,13 @@ pub enum ChatAction {
     Submit(String),
     /// A `@mention` of a LoRA was accepted — apply it (App resolves the name → path).
     ApplyLora(String),
+    /// Filmstrip navigation — show this frame in the image pane (`None` = back to live).
+    SelectFrame(Option<PathBuf>),
+    /// Roll the session back to this frame (branch): make it the live base, recovering
+    /// its prompt + seed so the next prompt refines from there.
+    Rollback(PathBuf),
+    /// Generate a fresh variation of this frame (its prompt at a new random seed).
+    Vary(PathBuf),
 }
 
 /// A `@mention` completion candidate.
@@ -77,6 +86,8 @@ pub struct ChatState {
     mention_sel: usize,
     /// The `@`-index the user dismissed (Esc); suppress the popup there until it moves.
     mention_dismissed_at: Option<usize>,
+    /// Session filmstrip: the selected frame (index into `frames()`); `None` = live latest.
+    strip_sel: Option<usize>,
 }
 
 impl ChatState {
@@ -92,6 +103,80 @@ impl ChatState {
             mention_loras: Vec::new(),
             mention_sel: 0,
             mention_dismissed_at: None,
+            strip_sel: None,
+        }
+    }
+
+    /// The session filmstrip: `(turn-number, result-path)` for every generated image,
+    /// oldest first.
+    pub fn frames(&self) -> Vec<(usize, PathBuf)> {
+        self.history
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.system && e.error.is_none())
+            .filter_map(|(i, e)| e.result.as_ref().map(|p| (i + 1, PathBuf::from(p))))
+            .collect()
+    }
+
+    /// Path of the most recent generated image (for "back to live").
+    pub fn latest_frame_path(&self) -> Option<PathBuf> {
+        self.frames().pop().map(|(_, p)| p)
+    }
+
+    /// Move the filmstrip cursor toward older frames (Ctrl-Left).
+    fn strip_left(&mut self) -> ChatAction {
+        let frames = self.frames();
+        if frames.is_empty() {
+            return ChatAction::None;
+        }
+        let new = match self.strip_sel {
+            None => frames.len() - 1, // from live → select the latest
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.strip_sel = Some(new);
+        ChatAction::SelectFrame(Some(frames[new].1.clone()))
+    }
+
+    /// Move the filmstrip cursor toward newer frames; past the newest → back to live.
+    fn strip_right(&mut self) -> ChatAction {
+        let frames = self.frames();
+        match self.strip_sel {
+            Some(i) if i + 1 < frames.len() => {
+                self.strip_sel = Some(i + 1);
+                ChatAction::SelectFrame(Some(frames[i + 1].1.clone()))
+            }
+            Some(_) => {
+                self.strip_sel = None;
+                ChatAction::SelectFrame(None)
+            }
+            None => ChatAction::None,
+        }
+    }
+
+    fn selected_frame(&self) -> Option<PathBuf> {
+        self.strip_sel.and_then(|i| self.frames().into_iter().nth(i).map(|(_, p)| p))
+    }
+
+    /// Roll back / branch from the selected frame (Ctrl-B).
+    fn rollback(&mut self) -> ChatAction {
+        match self.selected_frame() {
+            Some(p) => {
+                self.strip_sel = None; // back to live after branching
+                ChatAction::Rollback(p)
+            }
+            None => ChatAction::None,
+        }
+    }
+
+    /// New variation of the selected frame (Ctrl-Y).
+    fn vary(&mut self) -> ChatAction {
+        match self.selected_frame() {
+            Some(p) => {
+                self.strip_sel = None;
+                ChatAction::Vary(p)
+            }
+            None => ChatAction::None,
         }
     }
 
@@ -168,6 +253,11 @@ impl ChatState {
             }
         }
         match key.code {
+            // ── Session filmstrip: navigate / rollback / vary. ──
+            KeyCode::Left if ctrl => return self.strip_left(),
+            KeyCode::Right if ctrl => return self.strip_right(),
+            KeyCode::Char('b') if ctrl => return self.rollback(),
+            KeyCode::Char('y') if ctrl => return self.vary(),
             KeyCode::Char('p') if ctrl => {
                 self.recall_prev();
                 return ChatAction::None;
@@ -232,6 +322,7 @@ impl ChatState {
 
     /// Record a submitted utterance (the App calls this when dispatching it).
     pub fn push_utterance(&mut self, utterance: String, refine: bool) {
+        self.strip_sel = None; // a new turn returns the filmstrip to live
         self.history.push(ChatEntry {
             utterance,
             result: None,
@@ -293,10 +384,53 @@ impl ChatState {
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(rows[1]);
         self.render_history(f, cols[0]);
-        self.render_image(f, cols[1]);
+        // The image pane gives up its bottom rows to the session filmstrip when there
+        // is more than one frame to scrub through.
+        if self.frames().len() > 1 {
+            let img_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(2)])
+                .split(cols[1]);
+            self.render_image(f, img_rows[0]);
+            self.render_filmstrip(f, img_rows[1]);
+        } else {
+            self.render_image(f, cols[1]);
+        }
         self.render_input(f, rows[2]);
         // The @mention popup floats just above the input, over the history column.
         self.render_mention_popup(f, rows[1], rows[2]);
+    }
+
+    /// A one-line scrubber of every generated frame this session; the shown frame is
+    /// highlighted (`live` when following the latest). Ctrl-←/→ navigate, Ctrl-B rolls
+    /// back to the selected frame, Ctrl-Y makes a variation.
+    fn render_filmstrip(&self, f: &mut Frame, area: Rect) {
+        let frames = self.frames();
+        let live = self.strip_sel.is_none();
+        let mut spans: Vec<Span> = vec![Span::styled(
+            "film ",
+            Style::new().fg(Color::DarkGray),
+        )];
+        for (vi, (turn, _)) in frames.iter().enumerate() {
+            let selected = self.strip_sel == Some(vi) || (live && vi + 1 == frames.len());
+            let style = if selected {
+                Style::new().bg(Color::Magenta).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Gray)
+            };
+            spans.push(Span::styled(format!(" {turn} "), style));
+            spans.push(Span::raw(" "));
+        }
+        let hint = if live {
+            "  Ctrl-←/→ scrub"
+        } else {
+            "  Ctrl-←/→ scrub · Ctrl-B rollback · Ctrl-Y vary"
+        };
+        spans.push(Span::styled(hint, Style::new().fg(Color::DarkGray)));
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::TOP)),
+            area,
+        );
     }
 
     /// Draw the `@mention` completion popup anchored above the input (when active).
@@ -587,6 +721,76 @@ mod tests {
         // Typing more re-opens it.
         type_str(&mut s, "i");
         assert!(!s.mention_items().is_empty());
+    }
+
+    fn with_two_frames() -> ChatState {
+        let mut s = ChatState::new();
+        s.push_utterance("a fox".into(), false);
+        s.finish_last(Ok("/out/plakat-1-1.png".into()));
+        s.push_utterance("make it autumn".into(), true);
+        s.finish_last(Ok("/out/plakat-1-2.png".into()));
+        s
+    }
+
+    fn ctrl_code(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn filmstrip_collects_generated_frames() {
+        let s = with_two_frames();
+        let frames = s.frames();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].1.ends_with("plakat-1-1.png"));
+        assert_eq!(s.latest_frame_path().unwrap().file_name().unwrap(), "plakat-1-2.png");
+    }
+
+    #[test]
+    fn ctrl_left_right_scrub_the_filmstrip() {
+        let mut s = with_two_frames();
+        // From live, Ctrl-Left selects the latest frame (index 1).
+        match s.handle_key(ctrl_code(KeyCode::Left)) {
+            ChatAction::SelectFrame(Some(p)) => assert!(p.ends_with("plakat-1-2.png")),
+            _ => panic!("expected SelectFrame"),
+        }
+        // Ctrl-Left again → the older frame.
+        match s.handle_key(ctrl_code(KeyCode::Left)) {
+            ChatAction::SelectFrame(Some(p)) => assert!(p.ends_with("plakat-1-1.png")),
+            _ => panic!("expected older frame"),
+        }
+        // Ctrl-Right → newer, then past-newest → back to live (None).
+        s.handle_key(ctrl_code(KeyCode::Right));
+        match s.handle_key(ctrl_code(KeyCode::Right)) {
+            ChatAction::SelectFrame(None) => {}
+            _ => panic!("expected back-to-live"),
+        }
+    }
+
+    #[test]
+    fn ctrl_b_rolls_back_and_ctrl_y_varies_the_selected_frame() {
+        let mut s = with_two_frames();
+        // Select the first frame.
+        s.handle_key(ctrl_code(KeyCode::Left)); // latest
+        s.handle_key(ctrl_code(KeyCode::Left)); // older (index 0)
+        match s.handle_key(ctrl_code(KeyCode::Char('b'))) {
+            ChatAction::Rollback(p) => assert!(p.ends_with("plakat-1-1.png")),
+            _ => panic!("expected Rollback"),
+        }
+        // Rollback returns the strip to live.
+        assert!(s.strip_sel.is_none());
+
+        // Re-select and vary.
+        s.handle_key(ctrl_code(KeyCode::Left));
+        match s.handle_key(ctrl_code(KeyCode::Char('y'))) {
+            ChatAction::Vary(_) => {}
+            _ => panic!("expected Vary"),
+        }
+    }
+
+    #[test]
+    fn rollback_without_a_selection_is_a_noop() {
+        let mut s = with_two_frames();
+        assert!(matches!(s.handle_key(ctrl_code(KeyCode::Char('b'))), ChatAction::None));
     }
 
     #[test]

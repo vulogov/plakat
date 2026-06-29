@@ -56,8 +56,13 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       (`palette.rs`): context commands for the active screen + jump-to-any-screen +
       quit. Subsequence fuzzy filter; most entries replay a key into the active screen
       so existing handlers run (also fixed the global `Tab` arm shadowing Ctrl-Tab).
-- [ ] **Chat session thumbnail strip + explicit rollback / variations** — builds on the
-      `/save`·`/load`·`/sessions` persistence shipped in 1.16.0.
+- [x] **Chat session filmstrip + explicit rollback / variations** — a one-line scrubber
+      of every generated frame this session (`Ctrl-←/→` select → shows in the image
+      pane), **rollback/branch** (`Ctrl-B` makes the selected frame the live base,
+      recovering its prompt+seed) and **variation** (`Ctrl-Y` re-renders its prompt at a
+      new seed). Also in the command palette. (A real decoded-thumbnail row is a future
+      nicety — the terminal-graphics cost of N inline images made a text scrubber the
+      right call.)
 - [x] **`@mention`** people / LoRAs inline in the Chat prompt — `@` opens a live
       completion popup (people `◆` + local LoRAs `★`, fuzzy-filtered); accepting a
       person leaves a readable `@name` token expanded to its prompt fragment at submit,

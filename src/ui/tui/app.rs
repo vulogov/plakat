@@ -495,6 +495,9 @@ impl App {
             match self.chat.handle_key(key) {
                 ChatAction::Submit(prompt) => self.handle_chat_submit(prompt),
                 ChatAction::ApplyLora(name) => self.apply_lora_by_name(&name),
+                ChatAction::SelectFrame(path) => self.show_chat_frame(path),
+                ChatAction::Rollback(path) => self.rollback_to_frame(path),
+                ChatAction::Vary(path) => self.vary_frame(path),
                 ChatAction::None => {}
             }
             return;
@@ -629,6 +632,12 @@ impl App {
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
+                if self.chat.frames().len() > 1 {
+                    cmds.push(("Filmstrip: previous frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL))));
+                    cmds.push(("Filmstrip: next frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL))));
+                    cmds.push(("Roll back to selected frame".into(), kc('b')));
+                    cmds.push(("New variation of selected frame".into(), kc('y')));
+                }
             }
             ActiveScreen::Models => {
                 cmds.push(("Load selected model".into(), k('l')));
@@ -1525,6 +1534,36 @@ impl App {
         self.screen = ActiveScreen::Chat;
     }
 
+    /// Show a session filmstrip frame in the image pane (`None` → the latest image).
+    fn show_chat_frame(&mut self, path: Option<std::path::PathBuf>) {
+        let target = path.or_else(|| self.chat.latest_frame_path());
+        self.chat.preview = target
+            .as_ref()
+            .and_then(|p| image::open(p).ok())
+            .map(|img| self.picker.new_resize_protocol(img));
+    }
+
+    /// Roll the session back to a filmstrip frame: branch from it (recover its prompt +
+    /// seed → prompt-evolve continuation), so the next prompt refines from there.
+    fn rollback_to_frame(&mut self, path: std::path::PathBuf) {
+        let (prompt, seed) = recover_recipe(&path);
+        self.continue_from_image(path, prompt, seed);
+    }
+
+    /// Generate a fresh variation of a filmstrip frame — its prompt at a new seed.
+    fn vary_frame(&mut self, path: std::path::PathBuf) {
+        let (prompt, _) = recover_recipe(&path);
+        if prompt.trim().is_empty() {
+            self.chat.push_system("can't vary — that frame has no embedded recipe".into());
+            return;
+        }
+        self.chat.push_system(format!(
+            "variation of {} (same prompt, new seed)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("frame")
+        ));
+        self.handle_chat_submit(format!("/new {prompt}"));
+    }
+
     /// Run a scenario file on a background thread. Its task-by-task progress (model
     /// load, denoise bars, per-task status) flows to the Output pane automatically —
     /// the scenario runner uses the rerouted `ui::progress`. The runner loads its own
@@ -1949,6 +1988,41 @@ impl App {
     }
 }
 
+/// Recover `(positive prompt, seed)` from an image's embedded A1111 recipe, for
+/// filmstrip rollback / variation. Empty / `None` when the image carries no recipe.
+fn recover_recipe(path: &std::path::Path) -> (String, Option<u64>) {
+    match crate::imaging::io::read_parameters_chunk(path).ok().flatten() {
+        Some(params) => (recipe_positive(&params), recipe_seed(&params)),
+        None => (String::new(), None),
+    }
+}
+
+/// The positive prompt of an A1111 recipe: everything before the `Negative prompt:` /
+/// `Steps:` parameter lines.
+fn recipe_positive(params: &str) -> String {
+    let mut out = Vec::new();
+    for line in params.lines() {
+        let t = line.trim_start();
+        if t.starts_with("Negative prompt:") || t.starts_with("Steps:") {
+            break;
+        }
+        out.push(line);
+    }
+    out.join(" ").trim().to_string()
+}
+
+/// The `Seed: N` value of an A1111 recipe.
+fn recipe_seed(params: &str) -> Option<u64> {
+    let idx = params.find("Seed:")?;
+    params[idx + "Seed:".len()..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
 /// Case-insensitive replace of every `needle` in `haystack` with `repl` (char-based,
 /// UTF-8 safe).
 fn replace_ci(haystack: &str, needle: &str, repl: &str) -> String {
@@ -2358,6 +2432,14 @@ mod tests {
         assert_eq!(replace_ci("hi @Alice there", "@alice", "X"), "hi X there");
         assert_eq!(replace_ci("@a @A", "@a", "Z"), "Z Z");
         assert_eq!(replace_ci("nothing", "@x", "Y"), "nothing");
+    }
+
+    #[test]
+    fn recipe_recovery_reads_prompt_and_seed() {
+        let params = "a red fox in a forest\nNegative prompt: blurry\nSteps: 28, Seed: 4242, Size: 512x512";
+        assert_eq!(recipe_positive(params), "a red fox in a forest");
+        assert_eq!(recipe_seed(params), Some(4242));
+        assert_eq!(recipe_seed("no seed"), None);
     }
 
     #[test]
