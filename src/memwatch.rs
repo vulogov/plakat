@@ -25,9 +25,29 @@
 
 use candle_core::{Device, DeviceLocation};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+
+/// A cleanup run just before the guard's hard `process::exit` — e.g. the TUI restores
+/// the terminal (raw mode is bypassed by `exit`, which skips Drop). Best-effort; called
+/// from the watchdog thread, so it must be self-contained + panic-free.
+type AbortHook = Box<dyn Fn() + Send + Sync>;
+static ABORT_HOOK: OnceLock<AbortHook> = OnceLock::new();
+
+/// Register the pre-abort cleanup (idempotent — only the first registration wins). The
+/// TUI calls this with a terminal-restore so a guard abort doesn't leave a garbled shell.
+pub fn set_abort_hook<F: Fn() + Send + Sync + 'static>(hook: F) {
+    let _ = ABORT_HOOK.set(Box::new(hook));
+}
+
+/// Run the registered abort hook, if any (called immediately before a hard exit).
+fn run_abort_hook() {
+    if let Some(hook) = ABORT_HOOK.get() {
+        hook();
+    }
+}
 
 /// Default critical floor (GB free) below which a host crash is imminent.
 const DEFAULT_FLOOR_GB: f64 = 1.5;
@@ -130,6 +150,10 @@ impl MemoryGuard {
                                 console::style("⛔").red().bold(),
                                 label,
                             );
+                            // Restore the terminal (TUI) before the hard exit — `exit`
+                            // skips Drop, so the alt-screen / raw mode would otherwise
+                            // leak into the user's shell.
+                            run_abort_hook();
                             // Hard exit: the OS reclaims all memory (incl. Metal
                             // buffers) on process death, relieving pressure fast.
                             std::process::exit(ABORT_CODE);
@@ -173,5 +197,18 @@ mod tests {
             handle: None,
         };
         drop(g);
+    }
+
+    #[test]
+    fn abort_hook_runs_when_registered() {
+        use std::sync::atomic::AtomicBool;
+        // A registered hook is invoked by run_abort_hook (the pre-exit cleanup path).
+        static RAN: AtomicBool = AtomicBool::new(false);
+        set_abort_hook(|| RAN.store(true, Ordering::SeqCst));
+        run_abort_hook();
+        assert!(RAN.load(Ordering::SeqCst), "the registered abort hook ran");
+        // run_abort_hook with no hook (other process) is a no-op — already covered by
+        // OnceLock semantics; calling it again here is still safe.
+        run_abort_hook();
     }
 }

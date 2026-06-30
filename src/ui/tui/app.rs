@@ -371,6 +371,15 @@ impl App {
                 )
             );
         }
+        // If the OOM watchdog has to hard-exit, it skips Drop — so restore the terminal
+        // (raw mode + alt screen + keyboard flags) here too, or the user's shell is left
+        // garbled. Best-effort, runs on the watchdog thread.
+        crate::memwatch::set_abort_hook(move || {
+            if enhanced {
+                let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+            }
+            ratatui::restore();
+        });
         let res = self.event_loop(&mut terminal);
         if enhanced {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
