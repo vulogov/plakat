@@ -17,29 +17,30 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.18.0 — `plakat ui`, sturdier
+## What's new in 1.19.0 — semantic search + a calmer, clearer UI
 
-1.17.0 made the `plakat ui` terminal UI fast and pleasant; 1.18.0 makes it **sturdy** —
-no more double-load OOMs, faces that survive a refine, self-maintaining identities, and a
-finished download manager.
+1.18.0 made `plakat ui` sturdy; 1.19.0 adds **semantic search**, hardens it against
+out-of-memory crashes, and fixes two confusing spots in the build-an-image loop.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **In-process runner — no double-load OOM** — Scenario runs and People quick-gen no
-  longer load a *second* model alongside the loaded Chat one. They run on the model
-  thread, which **frees the Chat pipeline first**, so only one model is ever resident on
-  unified memory.
-- **Identity-preserving Chat continuation** — continue a portrait into Chat and your
-  refines now **keep the face**: each edit re-runs the person's IP-Adapter pass (same
-  reference photos + seed) with your accumulated prompt.
-- **People auto-encode + invalidation** — the `E` **encoding-quality score** now computes
-  automatically the first time you view a person's ENCODING tab, and **re-scores itself**
-  when you change the references or the strategy.
-- **Download manager, complete** — `U` checks a Civitai LoRA for a **newer version** (and
-  downloads it); downloads run **≤2 at a time** with a queue; and an interrupted download
-  **resumes** via an HTTP Range request (alongside 1.17.0's SHA-256 verify).
+- **Semantic search in History** (`?`) — rank every image by *relevance* to a query
+  (TF-IDF cosine over filename + tags + recipe), most-related first. "snowy peak"
+  surfaces "a mountain in winter, fresh snow" with no shared substring. Local + instant,
+  no model or network. (`/` stays the plain substring filter.)
+- **Canvas shows the image** — the mask grid now renders the **current** picture (each
+  cell tinted with that region's colour), so you can see *where* you're painting; painted
+  cells get a bright-green overlay. The Canvas masks + inpaints the **latest** render, so
+  you can **gradually build an image** — mask → inpaint → mask again on top — and it's
+  model-agnostic (re-render the result in a scenario under any model).
+- **Add-an-object nudge** — the first time you type "add a …" in Chat, a tip points you at
+  Canvas inpaint (prompt-evolve re-describes the whole scene and can't reliably *insert*
+  an object).
+- **OOM hardening** — the memory watchdog now covers **all** `plakat ui` generations (not
+  just CLI/scenario), so an out-of-memory abort exits plakat cleanly instead of crashing
+  the host — and it now **restores your terminal** on the way out.
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -50,9 +51,9 @@ that a compiled scenario runs headlessly.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
 [`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
-[`Documentation/ROADMAP_1.19.0.md`](Documentation/ROADMAP_1.19.0.md).
+[`Documentation/ROADMAP_1.20.0.md`](Documentation/ROADMAP_1.20.0.md).
 
-**Earlier releases** (v0.13 – v1.17):
+**Earlier releases** (v0.13 – v1.18):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

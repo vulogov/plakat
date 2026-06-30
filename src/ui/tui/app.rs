@@ -168,6 +168,13 @@ pub struct App {
     active_loras: Vec<(std::path::PathBuf, f32)>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
+    // The exact image a Canvas mask / outpaint was painted over (the LATEST render, not
+    // the prompt-evolve base) — the inpaint runs over THIS so the mask aligns and edits
+    // compound on the current state. One-shot, consumed with the mask.
+    inpaint_base: Option<std::path::PathBuf>,
+    // One-time-per-session nudge: prompt-evolve can't reliably ADD an object → point at
+    // Canvas inpaint the first time the user types an "add a …"-style edit.
+    inpaint_nudged: bool,
     // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
     // instead of the always-refine heuristic. Off by default (adds a quick LLM call).
     auto_route: bool,
@@ -329,6 +336,8 @@ impl App {
             thumb_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
+            inpaint_base: None,
+            inpaint_nudged: false,
             auto_route: false,
             route_rx: None,
             screen: ActiveScreen::Chat,
@@ -371,6 +380,15 @@ impl App {
                 )
             );
         }
+        // If the OOM watchdog has to hard-exit, it skips Drop — so restore the terminal
+        // (raw mode + alt screen + keyboard flags) here too, or the user's shell is left
+        // garbled. Best-effort, runs on the watchdog thread.
+        crate::memwatch::set_abort_hook(move || {
+            if enhanced {
+                let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+            }
+            ratatui::restore();
+        });
         let res = self.event_loop(&mut terminal);
         if enhanced {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
@@ -797,6 +815,7 @@ impl App {
             ActiveScreen::History => {
                 cmds.push(("Toggle thumbnail grid".into(), k('v')));
                 cmds.push(("Filter images…".into(), k('/')));
+                cmds.push(("Semantic search…".into(), k('?')));
                 cmds.push(("Tag selected".into(), k('t')));
                 cmds.push(("Export filtered set".into(), k('x')));
                 cmds.push(("Compare baseline".into(), k('d')));
@@ -1470,6 +1489,10 @@ impl App {
     /// to whatever it was (prompt-evolve by default), so you're not locked in.
     fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
         self.chat_mask = Some(path);
+        // Inpaint over the exact image the mask was painted on (the Canvas base = the
+        // latest render), so the mask aligns and the edit compounds on the current state.
+        // Fall back to the prompt-evolve base if the Canvas wasn't synced (e.g. tests).
+        self.inpaint_base = self.canvas.base_path().or_else(|| self.refine_base.clone());
         // A mask needs a base to inpaint over; ensure a refine is triggered.
         if self.base_seed.is_none() {
             self.base_seed = Some(rand::random::<u32>() as u64);
@@ -1482,7 +1505,8 @@ impl App {
     /// Apply a Canvas outpaint: the enlarged grey-padded image becomes the Chat base
     /// and the band mask is a one-shot inpaint, so the next prompt fills the new region.
     fn apply_outpaint(&mut self, base: std::path::PathBuf, mask: std::path::PathBuf) {
-        self.refine_base = Some(base);
+        self.refine_base = Some(base.clone());
+        self.inpaint_base = Some(base); // inpaint over the grey-padded canvas
         self.chat_mask = Some(mask);
         if self.base_seed.is_none() {
             self.base_seed = Some(rand::random::<u32>() as u64);
@@ -1586,11 +1610,15 @@ impl App {
         if self.screen != ActiveScreen::Canvas {
             return;
         }
-        if self.refine_base != self.canvas.base_path() {
-            let dims = self.refine_base.as_ref().and_then(|p| image::open(p).ok()).map(|i| (i.width(), i.height()));
-            self.canvas.set_base(self.refine_base.clone(), dims);
+        // Mask over the LATEST rendered image (not the prompt-evolve base, which stays the
+        // clean original) — so you paint + inpaint the current state and edits compound.
+        // Works for any model (it just reads the produced PNG).
+        let target = self.chat.latest_frame_path().or_else(|| self.refine_base.clone());
+        if target != self.canvas.base_path() {
+            let dims = target.as_ref().and_then(|p| image::open(p).ok()).map(|i| (i.width(), i.height()));
+            self.canvas.set_base(target.clone(), dims);
         }
-        let sel = self.refine_base.clone();
+        let sel = target;
         if sel != self.canvas.preview_for {
             self.canvas.preview = sel
                 .as_ref()
@@ -2236,12 +2264,13 @@ impl App {
         } else {
             edit.clone()
         };
-        // A Canvas mask makes this ONE turn an inpaint (img2img over the base, masked)
-        // regardless of the sticky mode — then it's consumed. Otherwise the mode rules:
-        // anchored (`/strength`) = img2img over the base; prompt-evolve = txt2img.
-        let inpaint = refine && self.chat_mask.is_some() && self.refine_base.is_some();
+        // A Canvas mask makes this ONE turn an inpaint over the masked image (the latest
+        // render — `inpaint_base`), regardless of the sticky mode; then it's consumed.
+        // Otherwise the mode rules: anchored (`/strength`) = img2img over the clean base;
+        // prompt-evolve = txt2img.
+        let inpaint = refine && self.chat_mask.is_some() && self.inpaint_base.is_some();
         let init_image = if inpaint {
-            self.refine_base.clone()
+            self.inpaint_base.clone()
         } else if refine {
             self.refine_strength.and(self.refine_base.clone())
         } else {
@@ -2252,6 +2281,24 @@ impl App {
 
         // Show the user's own words in the history (not the accumulated prompt).
         self.chat.push_utterance(edit.clone(), refine);
+        // Discoverability nudge (once per session): prompt-evolve re-describes the whole
+        // scene, so an "add a …" edit often won't insert the object. Point at Canvas
+        // inpaint — the reliable way to add content to a specific region. Skipped for
+        // anchored / inpaint turns (those already use the base image).
+        if refine
+            && !inpaint
+            && self.refine_strength.is_none()
+            && !self.inpaint_nudged
+            && looks_like_object_insertion(&edit)
+        {
+            self.inpaint_nudged = true;
+            self.chat.push_system(
+                "tip: prompt-evolve re-renders the whole scene, so small additions may not \
+                 appear. To reliably ADD an object, paint its area in Canvas (Ctrl-8) then \
+                 prompt it."
+                    .into(),
+            );
+        }
         // Generate at the LOADED model's native square resolution (sd15=512,
         // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
         // which OOMs SD1.5. A per-model size override is a future item.
@@ -2275,6 +2322,9 @@ impl App {
         // prompt-evolve ignores it (init is None).
         let strength = if inpaint { INPAINT_STRENGTH } else { self.refine_strength.unwrap_or(0.0) };
         let mask = if inpaint { self.chat_mask.take() } else { None }; // one-shot
+        if inpaint {
+            self.inpaint_base = None; // consumed with the mask
+        }
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         // An img2img/inpaint init image (e.g. a Canvas outpaint's grey-padded base) may
         // be non-square — generate at ITS dimensions (rounded to /8) so the mask aligns,
@@ -2557,6 +2607,15 @@ fn replace_ci(haystack: &str, needle: &str, repl: &str) -> String {
         }
     }
     out
+}
+
+/// Whether a Chat edit reads like an "insert an object" instruction (`add a …`, `put …`,
+/// `place …`, `give it …`) — the case prompt-evolve handles poorly and Canvas inpaint
+/// handles well. Heuristic, used only to fire a one-time discoverability hint.
+fn looks_like_object_insertion(edit: &str) -> bool {
+    let e = edit.trim_start().to_lowercase();
+    const LEADS: &[&str] = &["add ", "put ", "place ", "insert ", "give "];
+    LEADS.iter().any(|p| e.starts_with(p))
 }
 
 /// Filesystem-safe Chat-session file stem (empty → "session").
@@ -3058,6 +3117,39 @@ mod tests {
         a.portrait_run = None;
         a.dispatch_generation("/new a landscape".into(), false);
         assert!(a.chat_identity.is_none(), "a fresh image drops the identity context");
+    }
+
+    #[test]
+    fn canvas_masks_the_latest_image_not_the_original_base() {
+        let mut a = test_app();
+        // A thread: a fresh image (the prompt-evolve base) then a refine (the latest).
+        a.refine_base = Some("/tmp/original.png".into());
+        a.chat.push_utterance("a fox".into(), false);
+        a.chat.finish_last(Ok("/tmp/original.png".into()));
+        a.chat.push_utterance("make it autumn".into(), true);
+        a.chat.finish_last(Ok("/tmp/latest.png".into()));
+        a.base_seed = Some(7);
+
+        // On Canvas, the base tracks the LATEST render, not refine_base (the original).
+        a.screen = ActiveScreen::Canvas;
+        a.sync_canvas();
+        assert_eq!(a.canvas.base_path(), Some("/tmp/latest.png".into()));
+
+        // Applying a mask captures the latest image as the inpaint target.
+        a.apply_canvas_mask("/tmp/mask.png".into());
+        assert_eq!(a.inpaint_base, Some("/tmp/latest.png".into()));
+        assert_ne!(a.inpaint_base, a.refine_base, "inpaint over the latest, not the original");
+    }
+
+    #[test]
+    fn object_insertion_phrasing_is_detected() {
+        assert!(looks_like_object_insertion("add a fisherman to the boat"));
+        assert!(looks_like_object_insertion("  Put a bird in the sky"));
+        assert!(looks_like_object_insertion("place a sun above the mountain"));
+        assert!(looks_like_object_insertion("give it a red hat"));
+        // Not insertions — style / global edits.
+        assert!(!looks_like_object_insertion("make the background snowy"));
+        assert!(!looks_like_object_insertion("warmer lighting, autumn palette"));
     }
 
     #[test]

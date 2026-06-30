@@ -186,6 +186,11 @@ into every PNG it makes, this round-trips your own chat images too.
 - **`/`** **filters** the list live — type any text and it matches
   against the filename, an image's **tags**, and its **recipe** (prompt,
   seed, steps, model, …). `Enter` keeps the filter, `Esc` clears it.
+- **`?`** is **semantic search** — instead of an exact-substring filter,
+  it ranks every image by *relevance* to your query (a TF-IDF cosine over
+  filename + tags + recipe), most-related first. "snowy peak" surfaces
+  "a mountain in winter, fresh snow" even with no shared substring. It's
+  fully local + instant (no model, no network).
 - **`T`** **tags** the selected image — type a label and press `Enter`.
   Tags are stored in a `<image>.tags` sidecar and shown as `#label` in
   the list; filter by one to gather a collection.
@@ -265,6 +270,9 @@ Press **`Ctrl-8`**. The current Chat base image shows on the left; a
 coarse cell grid on the right is your **mask** (white = the region to
 regenerate).
 
+- The mask grid **shows the base image** (each cell tinted with that
+  region's colour), so you can see *where* on the picture you're painting.
+  Painted cells get a bright-green `▓▓` overlay; the cursor is a `[]` box.
 - Move the cursor with arrows / `hjkl`; **`Space`** toggles a cell;
   **`Shift`+move** paints while moving.
 - Preset regions: **`S`** sky, **`B`** background, **`F`** foreground,
