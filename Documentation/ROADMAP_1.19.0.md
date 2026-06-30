@@ -16,11 +16,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## B — History
 
-- [ ] **Embedding-based semantic search** — rank History's `/` filter by *meaning*, not
-      just substring (the substring filter + thumbnail grid + background decode shipped in
-      1.17.0). Needs a small text-embedding model: embed each recipe (prompt + tags) once,
-      cache the vectors, and rank by cosine to the query embedding. The heaviest remaining
-      UI item — it introduces an embedding model + a vector cache.
+- [x] **Semantic search** — `?` ranks History by *relevance* (most-related first) rather
+      than substring-filtering. Implemented with the classic vector-space model: each
+      image's searchable text (filename + tags + recipe) → a **TF-IDF embedding**, ranked
+      by **cosine** to the query (`services/semantic.rs`, pure + tested). Chosen over a
+      neural text-embedding model deliberately — a ~250MB model load would wreck History's
+      lightweight feel; the TF-IDF embedder is zero-dep, instant, and offline, and gives
+      real meaning-aware ranking ("snowy peak" → "a mountain in winter, fresh snow"). A
+      neural-embedding upgrade remains possible behind the same `semantic::rank` seam.
 
 ---
 

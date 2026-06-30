@@ -38,6 +38,20 @@ impl HistoryEntry {
     fn tags_path(&self) -> PathBuf {
         self.path.with_extension("png.tags")
     }
+
+    /// The text the semantic ranker embeds: filename + tags + recipe (loaded by then).
+    fn searchable_text(&self) -> String {
+        let mut s = self.file_name().replace(['-', '_', '.'], " ");
+        if !self.tags.is_empty() {
+            s.push(' ');
+            s.push_str(&self.tags.join(" "));
+        }
+        if let Some(r) = &self.recipe_cache {
+            s.push(' ');
+            s.push_str(r);
+        }
+        s
+    }
 }
 
 /// What the App should do after a key.
@@ -60,6 +74,8 @@ pub struct HistoryState {
     query: String,
     /// Typing the filter query (`/`) — the screen captures input.
     filtering: bool,
+    /// Semantic ranking (TF-IDF cosine, `Tab` in the filter) vs plain substring filter.
+    semantic: bool,
     /// Typing a tag (`T`) for the selected image — the screen captures input.
     tag_input: Option<String>,
     /// Baseline image for side-by-side recipe compare (`d` marks, `d` again diffs).
@@ -97,6 +113,7 @@ impl HistoryState {
             selected: 0,
             query: String::new(),
             filtering: false,
+            semantic: false,
             tag_input: None,
             compare_base: None,
             scroll: 0,
@@ -144,22 +161,33 @@ impl HistoryState {
                     e.recipe_loaded = true;
                 }
             }
-            self.view = (0..self.entries.len())
-                .filter(|&i| {
-                    let e = &self.entries[i];
-                    e.file_name().to_lowercase().contains(&q)
-                        || e.tags.iter().any(|t| t.to_lowercase().contains(&q))
-                        || e.recipe_cache.as_deref().map(|r| r.to_lowercase().contains(&q)).unwrap_or(false)
-                })
-                .collect();
+            if self.semantic {
+                // Semantic ranking: each entry's searchable text → a TF-IDF vector,
+                // ranked by cosine to the query (most-relevant first), not just filtered.
+                let docs: Vec<String> = self.entries.iter().map(|e| e.searchable_text()).collect();
+                self.view = crate::ui::tui::services::semantic::rank(&self.query, &docs)
+                    .into_iter()
+                    .map(|(i, _)| i)
+                    .collect();
+            } else {
+                self.view = (0..self.entries.len())
+                    .filter(|&i| {
+                        let e = &self.entries[i];
+                        e.file_name().to_lowercase().contains(&q)
+                            || e.tags.iter().any(|t| t.to_lowercase().contains(&q))
+                            || e.recipe_cache.as_deref().map(|r| r.to_lowercase().contains(&q)).unwrap_or(false)
+                    })
+                    .collect();
+            }
         }
         if self.selected >= self.view.len() {
             self.selected = self.view.len().saturating_sub(1);
         }
+        let mode = if self.semantic { "semantic" } else { "match" };
         self.status = if q.is_empty() {
             format!("{} image(s)", self.entries.len())
         } else {
-            format!("{} / {} match “{}”", self.view.len(), self.entries.len(), self.query)
+            format!("{} / {} {mode} “{}”", self.view.len(), self.entries.len(), self.query)
         };
     }
 
@@ -293,10 +321,17 @@ impl HistoryState {
             KeyCode::Char('g') => self.selected = 0,
             KeyCode::Char('G') => self.selected = self.view.len().saturating_sub(1),
             KeyCode::Char('r') => self.rescan(),
-            // `/` — start a filter query across filename / tags / recipe text.
+            // `/` — substring filter across filename / tags / recipe text.
             KeyCode::Char('/') => {
                 self.filtering = true;
+                self.semantic = false;
                 self.status = "filter: type to match filename / tags / recipe · Enter keep · Esc clear".into();
+            }
+            // `?` — semantic search: rank by relevance (TF-IDF cosine), most-related first.
+            KeyCode::Char('?') => {
+                self.filtering = true;
+                self.semantic = true;
+                self.status = "semantic search: type a query · ranks by relevance · Enter keep · Esc clear".into();
             }
             // `T` — tag the selected image (collection building).
             KeyCode::Char('t' | 'T') => {
@@ -488,12 +523,13 @@ impl HistoryState {
     }
 
     fn render_list(&mut self, f: &mut Frame, area: Rect) {
+        let sigil = if self.semantic { "?" } else { "/" };
         let title = if self.filtering {
-            format!(" History · /{}▏ ", self.query)
+            format!(" History · {sigil}{}▏ ", self.query)
         } else if !self.query.trim().is_empty() {
-            format!(" History ({}/{}) · /{} ", self.view.len(), self.entries.len(), self.query)
+            format!(" History ({}/{}) · {sigil}{} ", self.view.len(), self.entries.len(), self.query)
         } else {
-            format!(" History ({}) ", self.entries.len())
+            format!(" History ({}) · / filter · ? semantic ", self.entries.len())
         };
         let block = Block::default().borders(Borders::ALL).title(title);
         let outer = block.inner(area);
@@ -921,6 +957,30 @@ mod tests {
         s.handle_key(special(KeyCode::Enter));
         assert!(!s.captures_input());
         assert_eq!(s.view.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn semantic_search_ranks_by_relevance() {
+        let d = tmp("semantic");
+        // Two real PNGs whose filenames carry the topic (recipes are absent here, so the
+        // ranker embeds the filename text).
+        crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &d.join("snowy-mountain-village.png")).unwrap();
+        crate::imaging::io::save_rgb_u8(&[4, 5, 6], 1, 1, &d.join("neon-city-street-rain.png")).unwrap();
+        let mut s = HistoryState::new(d.clone());
+        // `?` enters semantic mode.
+        s.handle_key(ch('?'));
+        assert!(s.semantic && s.captures_input());
+        for c in "winter mountain".chars() {
+            s.handle_key(ch(c));
+        }
+        // The mountain image ranks (the city one shares no query terms → excluded).
+        assert_eq!(s.view.len(), 1);
+        assert_eq!(s.selected_path().unwrap().file_name().unwrap(), "snowy-mountain-village.png");
+        // `/` switches back to plain substring filtering.
+        s.handle_key(special(KeyCode::Esc));
+        s.handle_key(ch('/'));
+        assert!(!s.semantic);
         let _ = std::fs::remove_dir_all(&d);
     }
 

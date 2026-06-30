@@ -797,6 +797,7 @@ impl App {
             ActiveScreen::History => {
                 cmds.push(("Toggle thumbnail grid".into(), k('v')));
                 cmds.push(("Filter images…".into(), k('/')));
+                cmds.push(("Semantic search…".into(), k('?')));
                 cmds.push(("Tag selected".into(), k('t')));
                 cmds.push(("Export filtered set".into(), k('x')));
                 cmds.push(("Compare baseline".into(), k('d')));

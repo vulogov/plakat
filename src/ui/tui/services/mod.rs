@@ -4,3 +4,4 @@
 
 pub mod model_service;
 pub mod search_cache;
+pub mod semantic;
