@@ -270,6 +270,9 @@ Press **`Ctrl-8`**. The current Chat base image shows on the left; a
 coarse cell grid on the right is your **mask** (white = the region to
 regenerate).
 
+- The mask grid **shows the base image** (each cell tinted with that
+  region's colour), so you can see *where* on the picture you're painting.
+  Painted cells get a bright-green `▓▓` overlay; the cursor is a `[]` box.
 - Move the cursor with arrows / `hjkl`; **`Space`** toggles a cell;
   **`Shift`+move** paints while moving.
 - Preset regions: **`S`** sky, **`B`** background, **`F`** foreground,

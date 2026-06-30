@@ -168,6 +168,9 @@ pub struct App {
     active_loras: Vec<(std::path::PathBuf, f32)>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
+    // One-time-per-session nudge: prompt-evolve can't reliably ADD an object → point at
+    // Canvas inpaint the first time the user types an "add a …"-style edit.
+    inpaint_nudged: bool,
     // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
     // instead of the always-refine heuristic. Off by default (adds a quick LLM call).
     auto_route: bool,
@@ -329,6 +332,7 @@ impl App {
             thumb_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
+            inpaint_nudged: false,
             auto_route: false,
             route_rx: None,
             screen: ActiveScreen::Chat,
@@ -2262,6 +2266,24 @@ impl App {
 
         // Show the user's own words in the history (not the accumulated prompt).
         self.chat.push_utterance(edit.clone(), refine);
+        // Discoverability nudge (once per session): prompt-evolve re-describes the whole
+        // scene, so an "add a …" edit often won't insert the object. Point at Canvas
+        // inpaint — the reliable way to add content to a specific region. Skipped for
+        // anchored / inpaint turns (those already use the base image).
+        if refine
+            && !inpaint
+            && self.refine_strength.is_none()
+            && !self.inpaint_nudged
+            && looks_like_object_insertion(&edit)
+        {
+            self.inpaint_nudged = true;
+            self.chat.push_system(
+                "tip: prompt-evolve re-renders the whole scene, so small additions may not \
+                 appear. To reliably ADD an object, paint its area in Canvas (Ctrl-8) then \
+                 prompt it."
+                    .into(),
+            );
+        }
         // Generate at the LOADED model's native square resolution (sd15=512,
         // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
         // which OOMs SD1.5. A per-model size override is a future item.
@@ -2567,6 +2589,15 @@ fn replace_ci(haystack: &str, needle: &str, repl: &str) -> String {
         }
     }
     out
+}
+
+/// Whether a Chat edit reads like an "insert an object" instruction (`add a …`, `put …`,
+/// `place …`, `give it …`) — the case prompt-evolve handles poorly and Canvas inpaint
+/// handles well. Heuristic, used only to fire a one-time discoverability hint.
+fn looks_like_object_insertion(edit: &str) -> bool {
+    let e = edit.trim_start().to_lowercase();
+    const LEADS: &[&str] = &["add ", "put ", "place ", "insert ", "give "];
+    LEADS.iter().any(|p| e.starts_with(p))
 }
 
 /// Filesystem-safe Chat-session file stem (empty → "session").
@@ -3068,6 +3099,17 @@ mod tests {
         a.portrait_run = None;
         a.dispatch_generation("/new a landscape".into(), false);
         assert!(a.chat_identity.is_none(), "a fresh image drops the identity context");
+    }
+
+    #[test]
+    fn object_insertion_phrasing_is_detected() {
+        assert!(looks_like_object_insertion("add a fisherman to the boat"));
+        assert!(looks_like_object_insertion("  Put a bird in the sky"));
+        assert!(looks_like_object_insertion("place a sun above the mountain"));
+        assert!(looks_like_object_insertion("give it a red hat"));
+        // Not insertions — style / global edits.
+        assert!(!looks_like_object_insertion("make the background snowy"));
+        assert!(!looks_like_object_insertion("warmer lighting, autumn palette"));
     }
 
     #[test]

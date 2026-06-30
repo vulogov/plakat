@@ -13,7 +13,7 @@ use image::{GrayImage, Luma};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -80,6 +80,11 @@ pub struct CanvasState {
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
     status: String,
+    /// The base image downsampled to one RGB per grid cell — so the mask grid SHOWS the
+    /// picture, and you can see *where* you're painting. Recomputed when the base /
+    /// density changes.
+    cell_colors: Vec<[u8; 3]>,
+    colors_for: Option<(PathBuf, usize, usize)>,
 }
 
 impl CanvasState {
@@ -100,6 +105,8 @@ impl CanvasState {
             preview: None,
             preview_for: None,
             status: String::new(),
+            cell_colors: Vec::new(),
+            colors_for: None,
         }
     }
 
@@ -361,12 +368,38 @@ impl CanvasState {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        self.ensure_cell_colors();
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
             .split(area);
         self.render_image(f, cols[0]);
         self.render_grid(f, cols[1]);
+    }
+
+    /// Downsample the base image to one RGB per grid cell (cached) so the mask grid
+    /// shows the picture — you can see *where* on the image you're painting. Recomputed
+    /// only when the base path or grid density changes.
+    fn ensure_cell_colors(&mut self) {
+        let key = self.base_path.as_ref().map(|p| (p.clone(), self.cols, self.rows));
+        if key == self.colors_for {
+            return;
+        }
+        self.colors_for = key.clone();
+        self.cell_colors = match key {
+            Some((path, cols, rows)) => image::open(&path)
+                .ok()
+                .map(|img| {
+                    // Nearest-neighbour shrink to the grid — one averaged-ish pixel/cell.
+                    let small = img.resize_exact(cols as u32, rows as u32, image::imageops::FilterType::Triangle).to_rgb8();
+                    (0..rows)
+                        .flat_map(|r| (0..cols).map(move |c| (r, c)))
+                        .map(|(r, c)| small.get_pixel(c as u32, r as u32).0)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
     }
 
     fn render_image(&mut self, f: &mut Frame, area: Rect) {
@@ -387,7 +420,7 @@ impl CanvasState {
     fn render_grid(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Mask {}×{} · white = inpaint ", self.cols, self.rows));
+            .title(format!(" Mask {}×{} · over the image · white = inpaint ", self.cols, self.rows));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -396,20 +429,34 @@ impl CanvasState {
             .constraints([Constraint::Min(1), Constraint::Length(4)])
             .split(inner);
 
+        // The grid cells carry the base image's colour (so you see WHERE you're masking);
+        // painted cells get a bright-green overlay; the cursor is a high-contrast box.
+        let have_image = self.cell_colors.len() == self.cols * self.rows;
         let mut lines: Vec<Line> = Vec::with_capacity(self.rows);
         for r in 0..self.rows {
             let mut spans = Vec::with_capacity(self.cols);
             for c in 0..self.cols {
-                let painted = self.painted[self.at(r, c)];
+                let i = self.at(r, c);
+                let painted = self.painted[i];
                 let cursor = r == self.cr && c == self.cc;
-                let style = if cursor {
-                    Style::new().bg(Color::Cyan).fg(if painted { Color::White } else { Color::Black })
+                let img_bg = have_image.then(|| {
+                    let [cr, cg, cb] = self.cell_colors[i];
+                    Color::Rgb(cr, cg, cb)
+                });
+                let (glyph, style) = if cursor {
+                    // High-contrast cursor regardless of the image colour underneath.
+                    ("[]", Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD))
                 } else if painted {
-                    Style::new().fg(Color::Green)
+                    // Bright-green mask overlay on the image colour.
+                    let st = Style::new().fg(Color::LightGreen).add_modifier(Modifier::BOLD);
+                    ("▓▓", if let Some(bg) = img_bg { st.bg(bg) } else { st })
+                } else if let Some(bg) = img_bg {
+                    // Show the image: two spaces tinted with the cell colour.
+                    ("  ", Style::new().bg(bg))
                 } else {
-                    Style::new().fg(Color::DarkGray)
+                    ("··", Style::new().fg(Color::DarkGray))
                 };
-                spans.push(Span::styled(if painted { "██" } else { "··" }, style));
+                spans.push(Span::styled(glyph, style));
             }
             lines.push(Line::from(spans));
         }
@@ -489,6 +536,32 @@ mod tests {
         // C clears.
         s.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
         assert!(!s.painted.iter().any(|p| *p));
+    }
+
+    #[test]
+    fn cell_colors_downsample_the_base_image_to_the_grid() {
+        let d = tmp("cellcolors");
+        // A 64×48 image: left half red, right half blue → the grid should reflect that.
+        let mut img = image::RgbImage::new(64, 48);
+        for (x, _y, p) in img.enumerate_pixels_mut() {
+            *p = if x < 32 { image::Rgb([200, 0, 0]) } else { image::Rgb([0, 0, 200]) };
+        }
+        let base = d.join("base.png");
+        img.save(&base).unwrap();
+        let mut s = CanvasState::new(d.clone());
+        s.set_base(Some(base.clone()), Some((64, 48)));
+        s.ensure_cell_colors();
+        assert_eq!(s.cell_colors.len(), s.cols * s.rows, "one colour per grid cell");
+        // Top-left cell is reddish; top-right cell is bluish.
+        let tl = s.cell_colors[s.at(0, 0)];
+        let tr = s.cell_colors[s.at(0, s.cols - 1)];
+        assert!(tl[0] > tl[2], "left cell leans red: {tl:?}");
+        assert!(tr[2] > tr[0], "right cell leans blue: {tr:?}");
+        // Toggling density recomputes for the new cell count.
+        s.handle_key(key(KeyCode::Char('g')));
+        s.ensure_cell_colors();
+        assert_eq!(s.cell_colors.len(), s.cols * s.rows);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
