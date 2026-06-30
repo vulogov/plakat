@@ -234,6 +234,12 @@ fn model_loop(
     device: Device,
     rt: Handle,
 ) {
+    // OOM watchdog for the whole UI session: every TUI generation (Chat, portrait,
+    // multiperson, and any in-process scenario) runs on THIS thread + device, so one
+    // guard covers them all. On sustained critical unified-memory pressure it aborts
+    // plakat cleanly (the OS then reclaims all memory, incl. Metal buffers) rather than
+    // letting the host crash. No-op on CUDA / `PLAKAT_OOM_GUARD_GB=0`.
+    let _mem_guard = crate::memwatch::MemoryGuard::start(&device, "plakat ui");
     // The loaded pipeline lives here and never leaves this thread.
     let mut loaded: Option<(String, Loaded)> = None;
     while let Ok(cmd) = cmd_rx.recv() {
