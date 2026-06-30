@@ -248,6 +248,8 @@ Press **`Ctrl-5`**. Three tabs, switched with **`←`/`→`**:
     in (`★` marks applied; an incompatible LoRA is refused with a note).
     Your next Chat generation uses it.
   - **`R`** asks the LLM for a one-sentence **assessment** of the LoRA.
+  - **`U`** checks a Civitai-downloaded LoRA for a **newer version** and,
+    if one exists, downloads it (the result lands back in LOCAL).
 - **CIVITAI** / **HUGGINGFACE** — type a query, **Enter** to search,
   `j`/`k` to browse, **`D`** to download. Civitai LoRAs land in the
   shared cache; HF LoRAs are copied into your `loras/` dir — either way

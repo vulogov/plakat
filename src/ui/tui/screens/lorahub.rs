@@ -106,6 +106,10 @@ pub enum LoraHubAction {
     /// `Ctrl-R` (LOCAL) — LLM-suggest a LoRA *stack* for the Chat prompt from the
     /// compatible local LoRAs. The App supplies the prompt context.
     SuggestCombination { candidates: Vec<String> },
+    /// `U` (LOCAL) — check whether the selected LoRA (`path`) has a newer Civitai version
+    /// and, if so, download it. The App resolves the model/version ids from the path,
+    /// queries Civitai, and reports to the Output pane.
+    CheckUpdate { path: PathBuf, name: String },
 }
 
 pub struct LoraHubState {
@@ -319,6 +323,12 @@ impl LoraHubState {
                     );
                     self.assessing = Some(key.clone());
                     return LoraHubAction::Assess { key, prompt };
+                }
+            }
+            // U — check the selected LoRA for a newer Civitai version (App does it).
+            KeyCode::Char('u' | 'U') => {
+                if let Some(l) = self.loras.get(self.selected) {
+                    return LoraHubAction::CheckUpdate { path: l.path.clone(), name: l.name.clone() };
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => self.switch_tab(1),
@@ -588,7 +598,7 @@ impl LoraHubState {
     }
 
     fn render_detail(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess · [Ctrl-R] combo ");
+        let block = Block::default().borders(Borders::ALL).title(" Detail · [A] apply · [R] assess · [Ctrl-R] combo · [U] update ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(l) = self.loras.get(self.selected) else { return };
@@ -644,6 +654,23 @@ impl LoraHubState {
         }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
+}
+
+/// Parse `(model_id, version_id)` from a Civitai cache path of the form
+/// `…/civitai/model-<N>/version-<M>/<file>.safetensors`. Returns `None` for any LoRA not
+/// laid out that way (user files, HF downloads). Used by the `U` update check.
+pub fn civitai_ids_from_path(path: &Path) -> Option<(u64, u64)> {
+    let mut comps = path.components().rev();
+    let _file = comps.next()?; // the .safetensors
+    let version = comps.next()?.as_os_str().to_str()?.strip_prefix("version-")?.parse().ok()?;
+    let model = comps.next()?.as_os_str().to_str()?.strip_prefix("model-")?.parse().ok()?;
+    Some((model, version))
+}
+
+/// The latest version newer than `current_id`, if any. Civitai returns a model's
+/// versions newest-first; a newer one has a higher id than the cached version.
+pub fn newer_version(current_id: u64, versions: &[crate::civitai::api::ModelVersion]) -> Option<&crate::civitai::api::ModelVersion> {
+    versions.iter().find(|v| v.id > current_id)
 }
 
 /// Map a free-text base-model string (e.g. a sidecar's "SDXL 1.0", or an HF repo id
@@ -1011,6 +1038,36 @@ mod tests {
         assert_eq!(family_from_str("user/flux-something"), Some(BaseFamily::Flux));
         assert_eq!(family_from_str("user/anime-1.5-style"), Some(BaseFamily::Sd15));
         assert_eq!(family_from_str("user/mystery-lora"), None);
+    }
+
+    #[test]
+    fn civitai_ids_parse_from_the_cache_path() {
+        let p = Path::new("/cache/civitai/model-4242/version-7777/cool-lora.safetensors");
+        assert_eq!(civitai_ids_from_path(p), Some((4242, 7777)));
+        // A user file / HF download isn't laid out that way → None.
+        assert_eq!(civitai_ids_from_path(Path::new("/loras/my.safetensors")), None);
+        assert_eq!(civitai_ids_from_path(Path::new("/x/model-abc/version-7/f.safetensors")), None);
+    }
+
+    #[test]
+    fn newer_version_picks_a_higher_id() {
+        use crate::civitai::api::ModelVersion;
+        let v = |id: u64| ModelVersion {
+            id,
+            name: format!("v{id}"),
+            base_model: None,
+            trained_words: vec![],
+            download_url: None,
+            files: vec![],
+        };
+        // Civitai returns newest-first.
+        let versions = vec![v(20), v(10), v(5)];
+        // Cached version 10 → 20 is newer.
+        assert_eq!(newer_version(10, &versions).map(|x| x.id), Some(20));
+        // Already on the latest → nothing newer.
+        assert!(newer_version(20, &versions).is_none());
+        // Cached newer than anything listed (shouldn't happen) → None.
+        assert!(newer_version(99, &versions).is_none());
     }
 
     #[test]

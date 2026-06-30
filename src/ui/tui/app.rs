@@ -187,6 +187,9 @@ pub struct App {
     lora_recommend: Option<Receiver<String>>,
     // In-flight LLM LoRA-combination suggestion (LoRA Hub Ctrl-R).
     lora_combine: Option<Receiver<String>>,
+    // In-flight Civitai update check (LoRA Hub `U`): `(model_id, name, Result<Option<(new_id, new_name)>>)`.
+    #[allow(clippy::type_complexity)]
+    lora_update: Option<Receiver<(u64, String, Result<Option<(u64, String)>, String>)>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
     // In-flight Prompt Workspace structural (live) compile: `(src, result)`. Runs on a
@@ -287,6 +290,7 @@ impl App {
             lora_assess: None,
             lora_recommend: None,
             lora_combine: None,
+            lora_update: None,
             prompt_compile: None,
             prompt_structural: None,
             chat_to_scenario: None,
@@ -780,6 +784,7 @@ impl App {
             ActiveScreen::LoraHub => {
                 cmds.push(("Apply selected LoRA".into(), k('a')));
                 cmds.push(("Assess selected (LLM)".into(), k('r')));
+                cmds.push(("Check for a newer version".into(), k('u')));
                 cmds.push(("Suggest a LoRA stack (LLM)".into(), kc('r')));
             }
             ActiveScreen::PromptWorkspace => {
@@ -958,7 +963,32 @@ impl App {
             lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
             lorahub::LoraHubAction::AdjustWeight { path, delta } => self.adjust_lora_weight(path, delta),
             lorahub::LoraHubAction::SuggestCombination { candidates } => self.suggest_combination(candidates),
+            lorahub::LoraHubAction::CheckUpdate { path, name } => self.check_lora_update(path, name),
         }
+    }
+
+    /// `U` — check whether a Civitai-sourced LoRA has a newer version; if so, download it
+    /// (it lands in LOCAL) — reuses the remote-download path. Reports to the Output pane.
+    fn check_lora_update(&mut self, path: std::path::PathBuf, name: String) {
+        let Some((model_id, version_id)) = lorahub::civitai_ids_from_path(&path) else {
+            self.output.push(format!("‘{name}’ isn't a Civitai download — no update check"));
+            return;
+        };
+        if self.lora_update.is_some() {
+            return;
+        }
+        self.output.push(format!("checking ‘{name}’ for a newer version…"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            // Query the model's versions; report a newer one (id, name) if present.
+            let result = rt
+                .block_on(crate::civitai::api::get_model(model_id))
+                .map(|model| lorahub::newer_version(version_id, &model.model_versions).map(|v| (v.id, v.name.clone())))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send((model_id, name, result));
+        });
+        self.lora_update = Some(rx);
     }
 
     /// `Ctrl-R` — ask the LLM which compatible LoRAs to STACK for the current Chat
@@ -1267,6 +1297,27 @@ impl App {
                     self.lora_combine = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_combine = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.lora_update {
+            match rx.try_recv() {
+                Ok((model_id, name, result)) => {
+                    self.lora_update = None;
+                    match result {
+                        Ok(Some((new_id, new_name))) => {
+                            self.output.push(format!("↑ ‘{name}’: newer version ‘{new_name}’ — downloading…"));
+                            // Reuse the remote-download path; the new version lands in LOCAL.
+                            self.remote_download(
+                                lorahub::DownloadRef::Civitai { model_id, version_id: Some(new_id) },
+                                format!("{name} ({new_name})"),
+                            );
+                        }
+                        Ok(None) => self.output.push(format!("✓ ‘{name}’ is up to date")),
+                        Err(e) => self.output.push(format!("✗ update check for ‘{name}’ failed: {e}")),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_update = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
