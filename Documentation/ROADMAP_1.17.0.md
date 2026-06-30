@@ -51,7 +51,11 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 ## C — History (remaining)
 
-- [ ] **True thumbnail grid** (lazy, LRU cache) instead of list + single preview.
+- [x] **True thumbnail grid** (lazy, LRU cache) — `v` toggles a 4-column grid of image
+      thumbnails (arrow nav by cell/row, Enter/C continues). Thumbnails are decoded +
+      downscaled on a worker (one per tick, only the visible page) and their protocols
+      LRU-cached (cap 40), so a page of large PNGs never hitches; built on the main
+      thread (Picker-owned). List view stays the default.
 - [x] **Background image decode** — the History preview decode (`image::open`) now runs
       on a worker thread; the main thread only builds the (cheap) image protocol when the
       decode lands, and stale results (the cursor moved on) are dropped. Large/upscaled

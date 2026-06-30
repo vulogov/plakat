@@ -75,7 +75,18 @@ pub struct HistoryState {
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
     status: String,
+    /// `true` → thumbnail GRID view; `false` → list + single preview (default).
+    grid: bool,
+    /// Thumbnail protocols by path (built by the App), with an LRU eviction order.
+    thumbs: std::collections::HashMap<PathBuf, ratatui_image::protocol::StatefulProtocol>,
+    thumb_lru: Vec<PathBuf>,
+    /// Rows of grid cells the last render fit — so the App's sync knows the page size.
+    grid_rows_cache: usize,
 }
+
+/// Columns in the thumbnail grid, and the cap on cached thumbnail protocols.
+const GRID_COLS: usize = 4;
+const THUMB_CACHE_CAP: usize = 40;
 
 impl HistoryState {
     pub fn new(out_dir: PathBuf) -> Self {
@@ -96,6 +107,10 @@ impl HistoryState {
             preview: None,
             preview_for: None,
             status: String::new(),
+            grid: false,
+            thumbs: std::collections::HashMap::new(),
+            thumb_lru: Vec::new(),
+            grid_rows_cache: 4,
         };
         s.rescan();
         s
@@ -167,6 +182,55 @@ impl HistoryState {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Move the selection by `delta` (grid row navigation), clamped to the view.
+    fn move_by(&mut self, delta: isize) {
+        if self.view.is_empty() {
+            return;
+        }
+        let max = self.view.len() as isize - 1;
+        self.selected = (self.selected as isize + delta).clamp(0, max) as usize;
+    }
+
+    /// Whether the thumbnail grid view is active (the App switches its sync + the
+    /// detail pane accordingly).
+    pub fn is_grid(&self) -> bool {
+        self.grid
+    }
+
+    /// The paths of the thumbnails the current grid PAGE needs (using the last-rendered
+    /// row count) so the App only decodes what's visible. Empty in list view.
+    pub fn visible_thumb_paths(&self) -> Vec<PathBuf> {
+        let rows = self.grid_rows_cache;
+        if !self.grid || rows == 0 {
+            return Vec::new();
+        }
+        let per_page = rows * GRID_COLS;
+        let page = self.selected / per_page;
+        let start = page * per_page;
+        self.view
+            .iter()
+            .skip(start)
+            .take(per_page)
+            .map(|&i| self.entries[i].path.clone())
+            .collect()
+    }
+
+    /// True if a thumbnail protocol is already cached for `path`.
+    pub fn has_thumb(&self, path: &Path) -> bool {
+        self.thumbs.contains_key(path)
+    }
+
+    /// The App delivers a built thumbnail protocol; cache it (LRU-capped).
+    pub fn set_thumb(&mut self, path: PathBuf, protocol: ratatui_image::protocol::StatefulProtocol) {
+        self.thumb_lru.retain(|p| p != &path);
+        self.thumb_lru.push(path.clone());
+        self.thumbs.insert(path, protocol);
+        while self.thumb_lru.len() > THUMB_CACHE_CAP {
+            let evict = self.thumb_lru.remove(0);
+            self.thumbs.remove(&evict);
+        }
+    }
+
     /// True while a text-input modal (filter query / tag entry) is open.
     pub fn captures_input(&self) -> bool {
         self.filtering || self.tag_input.is_some()
@@ -217,6 +281,13 @@ impl HistoryState {
             return HistoryAction::None;
         }
         match key.code {
+            // `v` — toggle between the list+preview view and the thumbnail grid.
+            KeyCode::Char('v' | 'V') => self.grid = !self.grid,
+            // In the grid, ←/→ move within a row and ↑/↓ move by a full row.
+            KeyCode::Left | KeyCode::Char('h') if self.grid => self.prev(),
+            KeyCode::Right | KeyCode::Char('l') if self.grid => self.next(),
+            KeyCode::Down | KeyCode::Char('j') if self.grid => self.move_by(GRID_COLS as isize),
+            KeyCode::Up | KeyCode::Char('k') if self.grid => self.move_by(-(GRID_COLS as isize)),
             KeyCode::Down | KeyCode::Char('j') => self.next(),
             KeyCode::Up | KeyCode::Char('k') => self.prev(),
             KeyCode::Char('g') => self.selected = 0,
@@ -334,6 +405,10 @@ impl HistoryState {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        if self.grid {
+            self.render_grid(f, area);
+            return;
+        }
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
@@ -347,6 +422,69 @@ impl HistoryState {
             .split(cols[1]);
         self.render_preview(f, right[0]);
         self.render_detail(f, right[1]);
+    }
+
+    /// Rows of cells that fit the grid area, given a fixed cell height.
+    fn grid_rows(inner_h: u16) -> usize {
+        const CELL_H: u16 = 7; // ~6 image rows + a caption line
+        (inner_h / CELL_H).max(1) as usize
+    }
+
+    fn render_grid(&mut self, f: &mut Frame, area: Rect) {
+        let title = if self.query.trim().is_empty() {
+            format!(" History grid ({}) · v list · ↑↓←→ move · Enter continue ", self.view.len())
+        } else {
+            format!(" History grid ({}/{}) · /{} · v list ", self.view.len(), self.entries.len(), self.query)
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        if self.view.is_empty() {
+            f.render_widget(
+                Paragraph::new("No images. Esc to clear any filter.").style(Style::new().fg(Color::DarkGray)),
+                inner,
+            );
+            return;
+        }
+
+        let rows = Self::grid_rows(inner.height);
+        self.grid_rows_cache = rows;
+        let per_page = rows * GRID_COLS;
+        let page = self.selected / per_page;
+        let start = page * per_page;
+
+        // Split the area into `rows` × GRID_COLS cells.
+        let row_rects = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Ratio(1, rows as u32); rows])
+            .split(inner);
+        for r in 0..rows {
+            let col_rects = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Ratio(1, GRID_COLS as u32); GRID_COLS])
+                .split(row_rects[r]);
+            for c in 0..GRID_COLS {
+                let vi = start + r * GRID_COLS + c;
+                let Some(&ei) = self.view.get(vi) else { continue };
+                let cell = col_rects[c];
+                let selected = vi == self.selected;
+                let border = if selected { Color::Cyan } else { Color::DarkGray };
+                let name = self.entries[ei].file_name().to_string();
+                let cap: String = name.chars().rev().take(14).collect::<String>().chars().rev().collect();
+                let cb = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(border))
+                    .title(if selected { format!("▶{cap}") } else { cap });
+                let ci = cb.inner(cell);
+                f.render_widget(cb, cell);
+                // The thumbnail (if the App has built it) fills the cell; else a hint.
+                let path = self.entries[ei].path.clone();
+                match self.thumbs.get_mut(&path) {
+                    Some(proto) => f.render_stateful_widget(ratatui_image::StatefulImage::new(), ci, proto),
+                    None => f.render_widget(Paragraph::new("…").style(Style::new().fg(Color::DarkGray)), ci),
+                }
+            }
+        }
     }
 
     fn render_list(&mut self, f: &mut Frame, area: Rect) {
@@ -711,6 +849,57 @@ mod tests {
     }
     fn special(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn v_toggles_grid_and_grid_nav_moves_by_row() {
+        let d = tmp("grid");
+        for i in 0..10 {
+            crate::imaging::io::save_rgb_u8(&[i, i, i], 1, 1, &d.join(format!("img{i:02}.png"))).unwrap();
+        }
+        let mut s = HistoryState::new(d.clone());
+        assert_eq!(s.view.len(), 10);
+        assert!(!s.is_grid());
+        // `v` enters the grid.
+        s.handle_key(ch('v'));
+        assert!(s.is_grid());
+        // ←/→ move by one; ↓ moves by a full row (GRID_COLS).
+        s.handle_key(special(KeyCode::Right));
+        assert_eq!(s.selected, 1);
+        s.handle_key(special(KeyCode::Down));
+        assert_eq!(s.selected, 1 + GRID_COLS);
+        s.handle_key(special(KeyCode::Up));
+        assert_eq!(s.selected, 1);
+        // Clamped at the bottom (can't run past the view).
+        for _ in 0..20 {
+            s.handle_key(special(KeyCode::Down));
+        }
+        assert_eq!(s.selected, s.view.len() - 1);
+        // `v` returns to the list.
+        s.handle_key(ch('v'));
+        assert!(!s.is_grid());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn visible_thumb_paths_pages_around_the_selection() {
+        let d = tmp("thumbpage");
+        for i in 0..30 {
+            crate::imaging::io::save_rgb_u8(&[1, 2, 3], 1, 1, &d.join(format!("p{i:02}.png"))).unwrap();
+        }
+        let mut s = HistoryState::new(d.clone());
+        // List view → no thumbnails wanted.
+        assert!(s.visible_thumb_paths().is_empty());
+        s.handle_key(ch('v')); // grid
+        s.grid_rows_cache = 3; // 3 rows × 4 cols = 12 per page
+        // Page 0 holds the first 12.
+        assert_eq!(s.visible_thumb_paths().len(), 12);
+        // Jump near the end → the page slides to cover the selection.
+        s.handle_key(ch('G'));
+        let page = s.visible_thumb_paths();
+        assert!(!page.is_empty());
+        assert!(page.iter().any(|p| p == &s.selected_path().unwrap()), "the selected cell is on the visible page");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

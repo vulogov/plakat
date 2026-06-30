@@ -171,6 +171,11 @@ Press **`Ctrl-4`**. Every PNG under `out/` is listed by date, newest
 first. Move with `j`/`k`; the selected image previews on the right
 along with its **embedded recipe** (prompt, seed, steps, model).
 
+Press **`v`** to toggle a **thumbnail grid** — a 4-column lazy grid of
+your images (decoded in the background, LRU-cached). Move with the
+arrows (`←/→` within a row, `↑/↓` by a row), and `Enter` / `C` continues
+the highlighted one in Chat. `v` returns to the list.
+
 Press **`C`** to **continue in Chat**: the image loads as an
 image-anchored base seeded with its recovered prompt, and you're
 dropped into Chat to keep editing it. Because Chat writes the recipe

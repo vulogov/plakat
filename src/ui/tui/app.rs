@@ -202,6 +202,8 @@ pub struct App {
     people_encode: Option<Receiver<(String, std::path::PathBuf, Result<(f32, usize, usize), String>)>>,
     // In-flight History image decode (off the event-loop tick): `(path, decoded image)`.
     history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
+    // In-flight History thumbnail decode (grid view): `(path, decoded thumbnail)`.
+    thumb_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -291,6 +293,7 @@ impl App {
             canvas_faces: None,
             people_encode: None,
             history_decode: None,
+            thumb_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
             auto_route: false,
@@ -440,6 +443,12 @@ impl App {
             return;
         }
         self.history.sync_detail();
+        // Grid view: lazily build thumbnail protocols for the visible page, one decode
+        // per tick (small thumbnails, cheap to build), so the grid never hitches.
+        if self.history.is_grid() {
+            self.sync_history_thumbs();
+            return; // the grid doesn't use the single big preview
+        }
         let sel = self.history.selected_path();
         // Already showing the right image (or nothing selected) → done.
         if sel == self.history.preview_for {
@@ -483,6 +492,49 @@ impl App {
             }
             Some(_) => {}
         }
+    }
+
+    /// Build thumbnail protocols for the visible grid page, one decode per tick on a
+    /// worker thread (resized small), so a page of large PNGs never hitches the loop.
+    fn sync_history_thumbs(&mut self) {
+        // Land a completed thumbnail decode into the History cache (build the protocol
+        // on the main thread — it owns the Picker).
+        if let Some((path, rx)) = &self.thumb_decode {
+            match rx.try_recv() {
+                Ok(decoded) => {
+                    if let Some(img) = decoded {
+                        let proto = self.picker.new_resize_protocol(img);
+                        self.history.set_thumb(path.clone(), proto);
+                    }
+                    self.thumb_decode = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.thumb_decode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return, // still decoding
+            }
+        }
+        if self.thumb_decode.is_some() {
+            return;
+        }
+        // The first visible cell whose thumbnail isn't cached yet → decode it.
+        let Some(next) = self
+            .history
+            .visible_thumb_paths()
+            .into_iter()
+            .find(|p| !self.history.has_thumb(p))
+        else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_path = next.clone();
+        std::thread::spawn(move || {
+            // Decode + downscale to a thumbnail so building the protocol is cheap and the
+            // cache stays small.
+            let thumb = image::open(&worker_path)
+                .ok()
+                .map(|img| img.thumbnail(192, 192));
+            let _ = tx.send(thumb);
+        });
+        self.thumb_decode = Some((next, rx));
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -703,6 +755,7 @@ impl App {
                 cmds.push(("New scenario".into(), k('n')));
             }
             ActiveScreen::History => {
+                cmds.push(("Toggle thumbnail grid".into(), k('v')));
                 cmds.push(("Filter images…".into(), k('/')));
                 cmds.push(("Tag selected".into(), k('t')));
                 cmds.push(("Export filtered set".into(), k('x')));
