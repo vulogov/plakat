@@ -30,6 +30,7 @@ use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::lorahub::{self, LoraHubState};
 use super::screens::models::ModelsState;
+use super::screens::palette::{self, Cmd, PaletteResult};
 use super::screens::people::{self, PeopleState};
 use super::screens::prompts::{self, PromptsState};
 use super::screens::scenarios::{ScenariosAction, ScenariosState};
@@ -127,6 +128,8 @@ pub struct App {
     pub lorahub: LoraHubState,
     pub prompts: PromptsState,
     pub canvas: CanvasState,
+    // Command palette overlay (Ctrl-K), fuzzy action launcher (RFC §5).
+    pub palette: palette::PaletteState,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -186,8 +189,21 @@ pub struct App {
     lora_combine: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
+    // In-flight Prompt Workspace structural (live) compile: `(src, result)`. Runs on a
+    // worker thread — block_on must NOT run on the event-loop thread (it's inside the
+    // tokio runtime, which would panic).
+    prompt_structural: Option<(String, Receiver<Result<String, String>>)>,
     // In-flight Chat→Scenario summary (Scenarios editor Ctrl-G).
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
+    // In-flight Canvas face detection (for the face-aware `B` preset): `(base, boxes)`.
+    canvas_faces: Option<Receiver<(std::path::PathBuf, Vec<[f32; 4]>)>>,
+    // In-flight People identity re-encode: `(name, dir, Result<(score, faces, total)>)`.
+    #[allow(clippy::type_complexity)]
+    people_encode: Option<Receiver<(String, std::path::PathBuf, Result<(f32, usize, usize), String>)>>,
+    // In-flight History image decode (off the event-loop tick): `(path, decoded image)`.
+    history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
+    // In-flight History thumbnail decode (grid view): `(path, decoded thumbnail)`.
+    thumb_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -244,6 +260,7 @@ impl App {
             lorahub,
             prompts,
             canvas,
+            palette: palette::PaletteState::new(),
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -271,7 +288,12 @@ impl App {
             lora_recommend: None,
             lora_combine: None,
             prompt_compile: None,
+            prompt_structural: None,
             chat_to_scenario: None,
+            canvas_faces: None,
+            people_encode: None,
+            history_decode: None,
+            thumb_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
             auto_route: false,
@@ -357,9 +379,21 @@ impl App {
             self.sync_prompts();
             self.drain_prompt_compile();
             self.sync_canvas();
+            self.drain_canvas_faces();
+            self.drain_people_encode();
             self.drain_route();
+            self.sync_chat_mentions();
         }
         Ok(())
+    }
+
+    /// Keep the Chat `@mention` candidates current (people labels + local LoRA names),
+    /// only while Chat is active.
+    fn sync_chat_mentions(&mut self) {
+        if self.screen != ActiveScreen::Chat {
+            return;
+        }
+        self.chat.set_mention_candidates(self.people.names(), self.lorahub.local_names());
     }
 
     fn drain_prompt_compile(&mut self) {
@@ -409,20 +443,116 @@ impl App {
             return;
         }
         self.history.sync_detail();
+        // Grid view: lazily build thumbnail protocols for the visible page, one decode
+        // per tick (small thumbnails, cheap to build), so the grid never hitches.
+        if self.history.is_grid() {
+            self.sync_history_thumbs();
+            return; // the grid doesn't use the single big preview
+        }
         let sel = self.history.selected_path();
-        if sel != self.history.preview_for {
-            self.history.preview = sel
-                .as_ref()
-                .and_then(|p| image::open(p).ok())
-                .map(|img| self.picker.new_resize_protocol(img));
-            self.history.preview_for = sel;
+        // Already showing the right image (or nothing selected) → done.
+        if sel == self.history.preview_for {
+            return;
+        }
+        // A completed background decode for the *current* selection → build the
+        // protocol (cheap) on the main thread and show it. A stale result (the user
+        // moved on) is dropped; the mismatch re-triggers a decode below.
+        if let Some((path, rx)) = &self.history_decode {
+            match rx.try_recv() {
+                Ok(decoded) => {
+                    let matched = Some(path) == sel.as_ref();
+                    self.history_decode = None;
+                    if matched {
+                        self.history.preview = decoded.map(|img| self.picker.new_resize_protocol(img));
+                        self.history.preview_for = sel;
+                        return; // showing the current selection now
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.history_decode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // No decode in flight for the current selection → start one on a worker so a
+        // large (upscaled) PNG never hitches j/k navigation on the event-loop tick.
+        let decoding_current = self.history_decode.as_ref().map(|(p, _)| Some(p) == sel.as_ref()).unwrap_or(false);
+        match &sel {
+            None => {
+                self.history.preview = None;
+                self.history.preview_for = None;
+                self.history_decode = None;
+            }
+            Some(path) if !decoding_current => {
+                let path = path.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let worker_path = path.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(image::open(&worker_path).ok());
+                });
+                self.history_decode = Some((path, rx));
+            }
+            Some(_) => {}
         }
     }
 
+    /// Build thumbnail protocols for the visible grid page, one decode per tick on a
+    /// worker thread (resized small), so a page of large PNGs never hitches the loop.
+    fn sync_history_thumbs(&mut self) {
+        // Land a completed thumbnail decode into the History cache (build the protocol
+        // on the main thread — it owns the Picker).
+        if let Some((path, rx)) = &self.thumb_decode {
+            match rx.try_recv() {
+                Ok(decoded) => {
+                    if let Some(img) = decoded {
+                        let proto = self.picker.new_resize_protocol(img);
+                        self.history.set_thumb(path.clone(), proto);
+                    }
+                    self.thumb_decode = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.thumb_decode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return, // still decoding
+            }
+        }
+        if self.thumb_decode.is_some() {
+            return;
+        }
+        // The first visible cell whose thumbnail isn't cached yet → decode it.
+        let Some(next) = self
+            .history
+            .visible_thumb_paths()
+            .into_iter()
+            .find(|p| !self.history.has_thumb(p))
+        else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_path = next.clone();
+        std::thread::spawn(move || {
+            // Decode + downscale to a thumbnail so building the protocol is cheap and the
+            // cache stays small.
+            let thumb = image::open(&worker_path)
+                .ok()
+                .map(|img| img.thumbnail(192, 192));
+            let _ = tx.send(thumb);
+        });
+        self.thumb_decode = Some((next, rx));
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
+        // ── The command palette overlay owns all input while open. ──
+        if self.palette.is_open() {
+            if let PaletteResult::Run(cmd) = self.palette.handle_key(key) {
+                self.exec_palette(cmd);
+            }
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ── Always-global keys (work even while a text input is focused) ──
+        // Ctrl-K opens the command palette from anywhere (even a text editor).
+        if ctrl && key.code == KeyCode::Char('k') {
+            self.open_palette();
+            return;
+        }
         match key.code {
             // Ctrl-Q always quits. Ctrl-C cancels a running generation if there is
             // one (it saves the partial), else quits.
@@ -455,7 +585,9 @@ impl App {
                 self.screen = self.screen.cycle(-1);
                 return;
             }
-            KeyCode::Tab => {
+            // Plain Tab cycles screens; Ctrl-Tab falls through (the Prompt Workspace
+            // uses it to cycle buffers).
+            KeyCode::Tab if !ctrl => {
                 self.screen = self.screen.cycle(1);
                 return;
             }
@@ -464,8 +596,13 @@ impl App {
 
         // ── Chat owns text input: plain chars / Enter / Backspace go to it. ──
         if self.screen == ActiveScreen::Chat {
-            if let ChatAction::Submit(prompt) = self.chat.handle_key(key) {
-                self.handle_chat_submit(prompt);
+            match self.chat.handle_key(key) {
+                ChatAction::Submit(prompt) => self.handle_chat_submit(prompt),
+                ChatAction::ApplyLora(name) => self.apply_lora_by_name(&name),
+                ChatAction::SelectFrame(path) => self.show_chat_frame(path),
+                ChatAction::Rollback(path) => self.rollback_to_frame(path),
+                ChatAction::Vary(path) => self.vary_frame(path),
+                ChatAction::None => {}
             }
             return;
         }
@@ -505,6 +642,7 @@ impl App {
             match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
                 people::PeopleAction::None => {}
             }
             return;
@@ -561,6 +699,7 @@ impl App {
             ActiveScreen::People => match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
                 people::PeopleAction::None => {}
             },
             ActiveScreen::LoraHub => {
@@ -585,26 +724,160 @@ impl App {
         }
     }
 
+    /// Build the command list for the current context and open the palette (Ctrl-K):
+    /// the active screen's most-relevant actions first, then screen navigation, then
+    /// quit. Most entries replay a key into the active screen so existing handlers run.
+    fn open_palette(&mut self) {
+        let k = |c: char| Cmd::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let kc = |c: char| Cmd::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        let enter = Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let mut cmds: Vec<(String, Cmd)> = Vec::new();
+        match self.screen {
+            ActiveScreen::Chat => {
+                cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
+                cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
+                cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
+                if self.chat.frames().len() > 1 {
+                    cmds.push(("Filmstrip: previous frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL))));
+                    cmds.push(("Filmstrip: next frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL))));
+                    cmds.push(("Roll back to selected frame".into(), kc('b')));
+                    cmds.push(("New variation of selected frame".into(), kc('y')));
+                }
+            }
+            ActiveScreen::Models => {
+                cmds.push(("Load selected model".into(), k('l')));
+                cmds.push(("Unload model".into(), k('u')));
+            }
+            ActiveScreen::Scenarios => {
+                cmds.push(("Run selected scenario".into(), enter.clone()));
+                cmds.push(("Edit selected scenario".into(), k('e')));
+                cmds.push(("New scenario".into(), k('n')));
+            }
+            ActiveScreen::History => {
+                cmds.push(("Toggle thumbnail grid".into(), k('v')));
+                cmds.push(("Filter images…".into(), k('/')));
+                cmds.push(("Tag selected".into(), k('t')));
+                cmds.push(("Export filtered set".into(), k('x')));
+                cmds.push(("Compare baseline".into(), k('d')));
+                cmds.push(("Continue selected in Chat".into(), k('c')));
+                cmds.push(("Rescan".into(), k('r')));
+            }
+            ActiveScreen::People => {
+                cmds.push(("Generate selected → Chat".into(), k('g')));
+                cmds.push(("Next detail tab".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))));
+                cmds.push(("Encode identity (quality score)".into(), k('e')));
+                cmds.push(("Import scenario persona".into(), k('i')));
+                cmds.push(("Rescan".into(), k('r')));
+            }
+            ActiveScreen::LoraHub => {
+                cmds.push(("Apply selected LoRA".into(), k('a')));
+                cmds.push(("Assess selected (LLM)".into(), k('r')));
+                cmds.push(("Suggest a LoRA stack (LLM)".into(), kc('r')));
+            }
+            ActiveScreen::PromptWorkspace => {
+                cmds.push(("New buffer".into(), kc('n')));
+                cmds.push(("Save buffer".into(), kc('s')));
+                cmds.push(("Toggle Tera mode".into(), kc('t')));
+                cmds.push(("LLM compile".into(), kc('r')));
+                cmds.push(("Open compiled in Scenarios".into(), kc('o')));
+            }
+            ActiveScreen::Canvas => {
+                cmds.push(("Outpaint mode".into(), k('m')));
+                cmds.push(("Rasterize mask → Chat".into(), enter.clone()));
+                cmds.push(("Clear mask".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT))));
+            }
+        }
+        for s in ActiveScreen::ALL {
+            if s != self.screen {
+                cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
+            }
+        }
+        cmds.push(("Quit plakat ui".into(), Cmd::Quit));
+        self.palette.open(cmds);
+    }
+
+    /// Execute a palette command: navigate, quit, replay a key into the active screen,
+    /// or submit a Chat line.
+    fn exec_palette(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Goto(i) => {
+                if let Some(s) = ActiveScreen::from_index(i) {
+                    self.screen = s;
+                }
+            }
+            Cmd::Quit => self.should_quit = true,
+            Cmd::Key(k) => self.handle_key(k),
+            Cmd::Submit(line) => {
+                self.screen = ActiveScreen::Chat;
+                self.handle_chat_submit(line);
+            }
+        }
+    }
+
     /// Deterministic structural compile (no LLM) of the Prompt Workspace buffer,
-    /// recomputed only when the text changed. compile_to_string with no_enhance +
-    /// no_negative does no network, so a `block_on` here is instant.
+    /// recomputed when the text changes. The compile runs on a WORKER thread (the event
+    /// loop is inside the tokio runtime, so `block_on` here would panic); the result is
+    /// drained back into the pane the next tick.
     fn sync_prompts(&mut self) {
         if self.screen != ActiveScreen::PromptWorkspace || self.prompts.compiling {
             return;
+        }
+        // Drain an in-flight structural compile.
+        if let Some((src, rx)) = &self.prompt_structural {
+            match rx.try_recv() {
+                Ok(result) => {
+                    match result {
+                        Ok(hjson) => {
+                            self.prompts.compiled = hjson;
+                            self.prompts.compile_err = None;
+                        }
+                        Err(e) => self.prompts.compile_err = Some(e),
+                    }
+                    self.prompts.last_compiled_src = Some(src.clone());
+                    self.prompt_structural = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return, // still computing
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.prompt_structural = None,
+            }
         }
         let src = self.prompts.editor_text();
         if self.prompts.last_compiled_src.as_deref() == Some(src.as_str()) {
             return;
         }
-        let opts = self.compile_opts(&self.prompts.buffer_name(), true);
-        match self.rt.block_on(crate::compile::compile_to_string(&src, &opts)) {
-            Ok(hjson) => {
-                self.prompts.compiled = hjson;
-                self.prompts.compile_err = None;
-            }
-            Err(e) => self.prompts.compile_err = Some(format!("{e:#}")),
+        // Already compiling this exact source → wait for it.
+        if self.prompt_structural.as_ref().map(|(s, _)| s == &src).unwrap_or(false) {
+            return;
         }
-        self.prompts.last_compiled_src = Some(src);
+        // Tera mode: render the buffer through the Tera pre-pass (with the panel's
+        // variable values) before the structural compile. The Tera render is synchronous
+        // and cheap, so it runs inline; a Tera error stops here.
+        let to_compile = if self.prompts.tera_mode {
+            let topts = crate::compile::TemplateOpts {
+                vars: self.prompts.tera_var_pairs(),
+                ..Default::default()
+            };
+            match crate::compile::template::render(&src, self.prompts.path(), &topts) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    self.prompts.compile_err = Some(format!("Tera: {e:#}"));
+                    self.prompts.last_compiled_src = Some(src);
+                    return;
+                }
+            }
+        } else {
+            src.clone()
+        };
+        let opts = self.compile_opts(&self.prompts.buffer_name(), true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::compile::compile_to_string(&to_compile, &opts))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.prompt_structural = Some((src, rx));
     }
 
     /// Build compile options. `structural` → no LLM (deterministic); else the full
@@ -627,6 +900,20 @@ impl App {
         if self.prompt_compile.is_some() {
             return;
         }
+        // In Tera mode, render the template first (same as the live structural pane).
+        let text = if self.prompts.tera_mode {
+            let topts = crate::compile::TemplateOpts { vars: self.prompts.tera_var_pairs(), ..Default::default() };
+            match crate::compile::template::render(&text, self.prompts.path(), &topts) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.prompts.compiling = false;
+                    self.prompts.compile_err = Some(format!("Tera: {e:#}"));
+                    return;
+                }
+            }
+        } else {
+            text
+        };
         let opts = self.compile_opts(&self.prompts.buffer_name(), false);
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -797,6 +1084,12 @@ impl App {
         if self.lora_assess.is_some() {
             return;
         }
+        // A LoRA's assessment describes the file, not the chat — serve a fresh (24h)
+        // cached one without re-billing the LLM.
+        if let Some(cached) = super::services::search_cache::assessment_get(&key) {
+            self.lorahub.set_assessment(key, cached);
+            return;
+        }
         let provider = crate::prompt::resolve_provider_label(&self.workspace.config.enhancer);
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -806,7 +1099,10 @@ impl App {
             let text = rt
                 .block_on(crate::prompt::complete(&provider, SYSTEM, &prompt, &crate::prompt::EnhanceArgs::default()))
                 .unwrap_or_else(|e| format!("(assessment failed: {e:#})"));
-            let _ = tx.send((key, text.trim().to_string()));
+            let text = text.trim().to_string();
+            // Cache successful assessments for the day (assessment_put skips failures).
+            super::services::search_cache::assessment_put(&key, &text);
+            let _ = tx.send((key, text));
         });
         self.lora_assess = Some(rx);
     }
@@ -1023,6 +1319,32 @@ impl App {
         self.reload_for_loras();
     }
 
+    /// Apply a local LoRA by name (from a Chat `@mention`): resolve → apply if not
+    /// already on. Unknown name / incompatible family → a Chat system note.
+    fn apply_lora_by_name(&mut self, name: &str) {
+        let Some((path, compatible)) = self.lorahub.resolve_local(name) else {
+            self.chat.push_system(format!("no local LoRA named ‘{name}’"));
+            return;
+        };
+        if self.active_loras.iter().any(|(p, _)| p == &path) {
+            self.chat.push_system(format!("LoRA ‘{name}’ already applied"));
+            return;
+        }
+        self.toggle_lora(path, compatible);
+    }
+
+    /// Expand `@name` person mentions into their prompt fragments (case-insensitive).
+    /// LoRA mentions are applied + stripped at accept-time, so only people remain here.
+    fn expand_mentions(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for name in self.people.names() {
+            if let Some(frag) = self.people.prompt_fragment(&name) {
+                out = replace_ci(&out, &format!("@{name}"), &frag);
+            }
+        }
+        out
+    }
+
     /// Nudge an applied LoRA's weight (LoRA Hub `+`/`-`) and reload. Ignored (with a
     /// hint) when the LoRA isn't applied.
     fn adjust_lora_weight(&mut self, path: std::path::PathBuf, delta: f32) {
@@ -1175,6 +1497,81 @@ impl App {
                 .map(|img| self.picker.new_resize_protocol(img));
             self.canvas.preview_for = sel;
         }
+        // Kick off face detection for the face-aware `B` preset (once per base).
+        if self.canvas_faces.is_none() {
+            if let Some(base) = self.canvas.faces_needed_for() {
+                self.detect_canvas_faces(base);
+            }
+        }
+    }
+
+    /// (Re)compute an identity's encoding quality (mean pairwise ArcFace cosine of its
+    /// refs) on a background thread, persist it, and reflect it in the People screen.
+    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>) {
+        if self.people_encode.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        let device = self.device.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::pipelines::identity_quality::IdentityScorer::load_resolved(&device))
+                .and_then(|scorer| scorer.score(&photos))
+                .map(|r| (r.score, r.faces, r.total))
+                .map_err(|e| format!("{e:#}"));
+            // Persist a successful score next to the identity so it survives rescans.
+            if let Ok((score, _, _)) = &result {
+                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score);
+            }
+            let _ = tx.send((name, dir, result));
+        });
+        self.people_encode = Some(rx);
+    }
+
+    /// Deliver a completed identity re-encode to the People screen each tick.
+    fn drain_people_encode(&mut self) {
+        if let Some(rx) = &self.people_encode {
+            match rx.try_recv() {
+                Ok((name, _dir, result)) => {
+                    match result {
+                        Ok((score, faces, total)) => self.people.set_encoding_quality(&name, score, faces, total),
+                        Err(e) => self.people.set_encoding_error(&name, &e),
+                    }
+                    self.people_encode = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.people_encode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    /// Deliver completed Canvas face detection to the Canvas each tick.
+    fn drain_canvas_faces(&mut self) {
+        if let Some(rx) = &self.canvas_faces {
+            match rx.try_recv() {
+                Ok((base, boxes)) => {
+                    self.canvas.set_faces(base, boxes);
+                    self.canvas_faces = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.canvas_faces = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    /// Detect faces in the Canvas base on a background thread (SCRFD), normalize the
+    /// boxes to 0..1, and hand them to the Canvas for the face-aware `B` preset. A
+    /// missing detector / no faces just yields an empty set (B then fills plainly).
+    fn detect_canvas_faces(&mut self, base: std::path::PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        let device = self.device.clone();
+        std::thread::spawn(move || {
+            let boxes = detect_face_boxes_normalized(&rt, &device, &base).unwrap_or_default();
+            let _ = tx.send((base, boxes));
+        });
+        self.canvas_faces = Some(rx);
     }
 
     /// People `G` — generate a portrait from a person on a background thread (loads
@@ -1259,6 +1656,10 @@ impl App {
         }
         let n = specs.len();
         let labels: Vec<String> = specs.iter().map(|s| s.label.clone()).collect();
+        // Route the scene's identity strategy + model from the marked personas' own
+        // strategies, rather than forcing plus-face / sd15 for everyone.
+        let strategies: Vec<String> = specs.iter().map(|s| s.identity.clone()).collect();
+        let (identity, model) = route_multiperson_identity(&strategies);
         // Even horizontal split across the canvas, one region per person.
         let people_req: Vec<crate::pipelines::multiperson::Person> = specs
             .iter()
@@ -1292,14 +1693,15 @@ impl App {
         let req = crate::pipelines::multiperson::MultipersonRequest {
             scene: scene.clone(),
             people: people_req,
-            model: "sd15".into(),
-            identity: crate::pipelines::ip_adapter::IdentityKind::PlusFace,
+            model: model.to_string(),
+            identity,
             style: None,
             negative: String::new(),
             layout_provider: "none".into(),
             enhancer: None,
-            width: 768,
-            height: 768,
+            // SDXL strategies render at 1024²; sd15 strategies at 768².
+            width: if model == "sdxl" { 1024 } else { 768 },
+            height: if model == "sdxl" { 1024 } else { 768 },
             steps: 30,
             guidance: 7.5,
             seed: Some(seed),
@@ -1319,7 +1721,11 @@ impl App {
             refine_denoise: 0.35,
         };
 
-        self.chat.push_system(format!("generating multiperson scene: {} — opens in Chat…", labels.join(", ")));
+        self.chat.push_system(format!(
+            "generating multiperson scene: {} [{} · {model}] — opens in Chat…",
+            labels.join(", "),
+            identity.label()
+        ));
         self.portrait_prompt = scene;
         let (tx, rx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -1388,6 +1794,36 @@ impl App {
         self.screen = ActiveScreen::Chat;
     }
 
+    /// Show a session filmstrip frame in the image pane (`None` → the latest image).
+    fn show_chat_frame(&mut self, path: Option<std::path::PathBuf>) {
+        let target = path.or_else(|| self.chat.latest_frame_path());
+        self.chat.preview = target
+            .as_ref()
+            .and_then(|p| image::open(p).ok())
+            .map(|img| self.picker.new_resize_protocol(img));
+    }
+
+    /// Roll the session back to a filmstrip frame: branch from it (recover its prompt +
+    /// seed → prompt-evolve continuation), so the next prompt refines from there.
+    fn rollback_to_frame(&mut self, path: std::path::PathBuf) {
+        let (prompt, seed) = recover_recipe(&path);
+        self.continue_from_image(path, prompt, seed);
+    }
+
+    /// Generate a fresh variation of a filmstrip frame — its prompt at a new seed.
+    fn vary_frame(&mut self, path: std::path::PathBuf) {
+        let (prompt, _) = recover_recipe(&path);
+        if prompt.trim().is_empty() {
+            self.chat.push_system("can't vary — that frame has no embedded recipe".into());
+            return;
+        }
+        self.chat.push_system(format!(
+            "variation of {} (same prompt, new seed)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("frame")
+        ));
+        self.handle_chat_submit(format!("/new {prompt}"));
+    }
+
     /// Run a scenario file on a background thread. Its task-by-task progress (model
     /// load, denoise bars, per-task status) flows to the Output pane automatically —
     /// the scenario runner uses the rerouted `ui::progress`. The runner loads its own
@@ -1404,6 +1840,11 @@ impl App {
         let names = crate::cli::scenario::task_names(&path).unwrap_or_default();
         self.scenarios.start_run(name, names);
 
+        // Land scenario images under the workspace out/ dir (grouped per scenario) so
+        // History — which scans workspace.out_dir() — picks them up, no matter what the
+        // scenario file's own `out:` says.
+        let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
+        let out_override = Some(self.workspace.out_dir().join("scenarios").join(stem));
         let (tx, rx) = std::sync::mpsc::channel();
         let (etx, erx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -1416,6 +1857,7 @@ impl App {
                 only: Vec::new(),
                 limit: 0,
                 json_summary: None,
+                out_override,
             };
             let result = rt.block_on(crate::cli::scenario::run_with_events(args, Some(etx)));
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
@@ -1447,12 +1889,18 @@ impl App {
             self.scenario_run = None;
             self.scenario_events = None;
             self.scenarios.finish_run(result);
+            // The run wrote images under the workspace out/ dir — refresh History so
+            // they show up without the user pressing `r`.
+            self.history.rescan();
         }
     }
 
     /// Route a submitted Chat line: slash commands (`/negative`, `/enhance`, `/new`)
     /// or a plain prompt. `/negative` updates session state without generating.
     fn handle_chat_submit(&mut self, text: String) {
+        // Expand `@name` person mentions into their prompt fragments before routing
+        // (slash commands don't carry person tokens, so this is a no-op for them).
+        let text = self.expand_mentions(&text);
         if let Some(rest) = text.strip_prefix("/negative") {
             self.negative = rest.trim().to_string();
             let note = if self.negative.is_empty() {
@@ -1763,6 +2211,8 @@ impl App {
         } else {
             self.render_status_bar(f, rows[2]);
         }
+        // The command palette floats above everything when open.
+        self.palette.render(f, f.area());
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -1797,14 +2247,144 @@ impl App {
             || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input())
             || (self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input());
         let nav = if input_mode {
-            "Ctrl-1..8 / Tab switch · Ctrl-Q quit"
+            "Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
-            "1-8 / Tab switch · Ctrl-Q quit"
+            "Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
         };
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
         let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(bar, area);
     }
+}
+
+/// Pick the multiperson scene's identity strategy + model from the marked personas'
+/// own strategies (instead of forcing plus-face / sd15 for everyone). One pipeline runs
+/// one encoder, so a single strategy must cover the set:
+///   - parse each persona's `identity` string (empty / unknown are ignored);
+///   - SDXL and SD1.5 encoders can't mix → if *any* SDXL strategy is present, the scene
+///     is SDXL (PlusFaceSdxl unless every named strategy is FaceId → FaceIdSdxl);
+///   - otherwise SD1.5: FaceId only when *every* named strategy is FaceId, else PlusFace
+///     (the more general CLIP-H whole-face encoder);
+///   - nothing named → default PlusFace / sd15.
+/// Returns `(IdentityKind, model_alias)`.
+fn route_multiperson_identity(strategies: &[String]) -> (crate::pipelines::ip_adapter::IdentityKind, &'static str) {
+    use crate::pipelines::ip_adapter::IdentityKind;
+    let kinds: Vec<IdentityKind> = strategies
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| s.parse::<IdentityKind>().ok())
+        .collect();
+    if kinds.is_empty() {
+        return (IdentityKind::PlusFace, "sd15");
+    }
+    let any_sdxl = kinds.iter().any(|k| matches!(k, IdentityKind::PlusFaceSdxl | IdentityKind::FaceIdSdxl));
+    let all_faceid = kinds.iter().all(|k| matches!(k, IdentityKind::FaceId | IdentityKind::FaceIdSdxl));
+    match (any_sdxl, all_faceid) {
+        (true, true) => (IdentityKind::FaceIdSdxl, "sdxl"),
+        (true, false) => (IdentityKind::PlusFaceSdxl, "sdxl"),
+        (false, true) => (IdentityKind::FaceId, "sd15"),
+        (false, false) => (IdentityKind::PlusFace, "sd15"),
+    }
+}
+
+/// Detect faces in `path` with SCRFD and return their boxes normalized to 0..1
+/// `[x1, y1, x2, y2]`. Best-effort: a missing/unavailable detector or any error yields
+/// an empty list (the Canvas `B` preset then fills the background plainly).
+fn detect_face_boxes_normalized(
+    rt: &Handle,
+    device: &Device,
+    path: &std::path::Path,
+) -> Option<Vec<[f32; 4]>> {
+    let weights = rt.block_on(crate::pipelines::scrfd::resolve_scrfd_weights()).ok().flatten()?;
+    let detector = crate::pipelines::scrfd::SCRFDDetector::load(
+        &weights,
+        crate::pipelines::scrfd::SCRFDConfig::default(),
+        device,
+        candle_core::DType::F32,
+    )
+    .ok()?;
+    let faces = detector.detect(path).ok()?;
+    let (w, h) = image::image_dimensions(path).ok()?;
+    let (w, h) = (w as f32, h as f32);
+    if w <= 0.0 || h <= 0.0 {
+        return Some(Vec::new());
+    }
+    Some(
+        faces
+            .iter()
+            .map(|f| {
+                [
+                    (f.bbox[0] / w).clamp(0.0, 1.0),
+                    (f.bbox[1] / h).clamp(0.0, 1.0),
+                    (f.bbox[2] / w).clamp(0.0, 1.0),
+                    (f.bbox[3] / h).clamp(0.0, 1.0),
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// Recover `(positive prompt, seed)` from an image's embedded A1111 recipe, for
+/// filmstrip rollback / variation. Empty / `None` when the image carries no recipe.
+fn recover_recipe(path: &std::path::Path) -> (String, Option<u64>) {
+    match crate::imaging::io::read_parameters_chunk(path).ok().flatten() {
+        Some(params) => (recipe_positive(&params), recipe_seed(&params)),
+        None => (String::new(), None),
+    }
+}
+
+/// The positive prompt of an A1111 recipe: everything before the `Negative prompt:` /
+/// `Steps:` parameter lines.
+fn recipe_positive(params: &str) -> String {
+    let mut out = Vec::new();
+    for line in params.lines() {
+        let t = line.trim_start();
+        if t.starts_with("Negative prompt:") || t.starts_with("Steps:") {
+            break;
+        }
+        out.push(line);
+    }
+    out.join(" ").trim().to_string()
+}
+
+/// The `Seed: N` value of an A1111 recipe.
+fn recipe_seed(params: &str) -> Option<u64> {
+    let idx = params.find("Seed:")?;
+    params[idx + "Seed:".len()..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// Case-insensitive replace of every `needle` in `haystack` with `repl` (char-based,
+/// UTF-8 safe).
+fn replace_ci(haystack: &str, needle: &str, repl: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let hay: Vec<char> = haystack.chars().collect();
+    let hl: Vec<char> = haystack.to_lowercase().chars().collect();
+    let nl: Vec<char> = needle.to_lowercase().chars().collect();
+    // Rare: lowercasing changes the char count → fall back to a case-sensitive replace
+    // rather than risk a misaligned index.
+    if hl.len() != hay.len() {
+        return haystack.replace(needle, repl);
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < hay.len() {
+        if i + nl.len() <= hl.len() && hl[i..i + nl.len()] == nl[..] {
+            out.push_str(repl);
+            i += nl.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Filesystem-safe Chat-session file stem (empty → "session").
@@ -2138,6 +2718,121 @@ mod tests {
         a.handle_chat_submit("/sessions".into());
         assert!(a.chat.history.last().unwrap().utterance.contains("fox-demo"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_k_opens_palette_and_a_command_navigates() {
+        let mut a = test_app(); // starts on Chat
+        assert!(!a.palette.is_open());
+        // Ctrl-K opens the palette (even though Chat owns text input).
+        a.handle_key(key('k', true));
+        assert!(a.palette.is_open(), "Ctrl-K opens the palette");
+        // While open, plain chars filter the palette (don't reach Chat).
+        for c in "go to models".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.chat.editor.text(), "", "typing filters the palette, not Chat");
+        // Enter runs the top match → navigate to Models, palette closes.
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Models));
+    }
+
+    #[test]
+    fn palette_esc_closes_without_acting() {
+        let mut a = test_app();
+        a.handle_key(key('k', true));
+        assert!(a.palette.is_open());
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Chat), "Esc didn't navigate");
+    }
+
+    #[test]
+    fn palette_key_command_drives_the_active_screen() {
+        // On Models, the palette's "Load selected model" replays 'l' → loads.
+        let mut a = test_app();
+        a.screen = ActiveScreen::Models;
+        a.handle_key(key('k', true));
+        for c in "load selected".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // The palette closed and we stayed on Models (the load dispatched to the svc).
+        assert!(!a.palette.is_open());
+        assert!(matches!(a.screen, ActiveScreen::Models));
+    }
+
+    #[test]
+    fn replace_ci_is_case_insensitive_and_utf8_safe() {
+        assert_eq!(replace_ci("hi @Alice there", "@alice", "X"), "hi X there");
+        assert_eq!(replace_ci("@a @A", "@a", "Z"), "Z Z");
+        assert_eq!(replace_ci("nothing", "@x", "Y"), "nothing");
+    }
+
+    #[test]
+    fn history_preview_decodes_on_a_worker_then_applies() {
+        // A real PNG under the workspace out/ dir; History should decode it off-tick
+        // and, once the worker returns, show it (preview_for == the image path).
+        let root = std::env::temp_dir().join("plakat-ui-histdecode-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        crate::imaging::io::save_rgb_u8(&[9, 9, 9], 1, 1, &out.join("plakat-1-1.png")).unwrap();
+
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+        a.screen = ActiveScreen::History;
+        let want = a.history.selected_path();
+        assert!(want.is_some(), "history found the PNG");
+
+        // First tick spawns the decode; subsequent ticks drain it. Pump a bounded loop.
+        let mut applied = false;
+        for _ in 0..200 {
+            a.sync_history();
+            if a.history.preview_for == want {
+                applied = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(applied, "background decode eventually set the preview");
+        assert!(a.history.preview.is_some(), "preview protocol built on the main thread");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn multiperson_identity_routes_from_persona_strategies() {
+        use crate::pipelines::ip_adapter::IdentityKind;
+        let r = |s: &[&str]| route_multiperson_identity(&s.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        // Nothing named → default plus-face / sd15.
+        assert!(matches!(r(&["", ""]), (IdentityKind::PlusFace, "sd15")));
+        // All faceid (sd15) → FaceId.
+        assert!(matches!(r(&["faceid", "face-id"]), (IdentityKind::FaceId, "sd15")));
+        // Mixed sd15 strategies → the general PlusFace.
+        assert!(matches!(r(&["faceid", "plus-face"]), (IdentityKind::PlusFace, "sd15")));
+        // Any SDXL present → the scene is SDXL.
+        assert!(matches!(r(&["plus-face", "plus-face-sdxl"]), (IdentityKind::PlusFaceSdxl, "sdxl")));
+        // All faceid with an SDXL one → FaceIdSdxl.
+        assert!(matches!(r(&["faceid", "faceid-sdxl"]), (IdentityKind::FaceIdSdxl, "sdxl")));
+        // Unknown strings are ignored (fall back to default).
+        assert!(matches!(r(&["instantid", "???"]), (IdentityKind::PlusFace, "sd15")));
+    }
+
+    #[test]
+    fn recipe_recovery_reads_prompt_and_seed() {
+        let params = "a red fox in a forest\nNegative prompt: blurry\nSteps: 28, Seed: 4242, Size: 512x512";
+        assert_eq!(recipe_positive(params), "a red fox in a forest");
+        assert_eq!(recipe_seed(params), Some(4242));
+        assert_eq!(recipe_seed("no seed"), None);
+    }
+
+    #[test]
+    fn apply_lora_by_name_reports_unknown() {
+        let mut a = test_app();
+        a.apply_lora_by_name("does-not-exist");
+        assert!(a.chat.history.last().unwrap().utterance.contains("no local LoRA"));
     }
 
     #[test]

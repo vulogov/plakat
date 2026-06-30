@@ -201,11 +201,43 @@ pub async fn download_version(
 
     let bytes_written = stream_to_file(&url, &target).await
         .with_context(|| format!("downloading Civitai file from {url}"))?;
+
+    // SHA-256 integrity check: Civitai publishes the expected hash per file. A mismatch
+    // means a corrupt / truncated / tampered download — delete it so a retry re-fetches
+    // rather than leaving a bad .safetensors the loader would mmap. No published hash →
+    // skip (size was already checked).
+    if let Some(expected) = file.hashes.sha256.as_deref().filter(|h| !h.is_empty()) {
+        verify_sha256(&target, expected).inspect_err(|_| {
+            let _ = std::fs::remove_file(&target);
+        })?;
+    }
+
     Ok(DownloadResult {
         path: target,
         bytes_written,
         cache_hit: false,
     })
+}
+
+/// Verify a file's SHA-256 against the (hex, case-insensitive) `expected` digest. Reads
+/// the file in chunks so a multi-GB checkpoint doesn't load into memory.
+pub fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).with_context(|| format!("opening {} to verify", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).with_context(|| format!("hashing {}", path.display()))?;
+    let got = hasher.finalize();
+    let got_hex = got.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if !got_hex.eq_ignore_ascii_case(expected.trim()) {
+        bail!(
+            "SHA-256 mismatch for {}: expected {}, got {} — download corrupt, deleted",
+            path.display(),
+            expected.trim().to_lowercase(),
+            got_hex
+        );
+    }
+    tracing::debug!(target: "plakat", "SHA-256 verified for {}", path.display());
+    Ok(())
 }
 
 /// Resolve `(model_id, version_id)` into a concrete `ModelVersion`
@@ -418,6 +450,29 @@ mod tests {
         // With a token → don't blame the (present) key's absence.
         let with_token = civitai_download_hint(true);
         assert!(!with_token.contains("set CIVITAI_API_KEY"));
+    }
+
+    #[test]
+    fn verify_sha256_accepts_the_right_hash_and_rejects_a_wrong_one() {
+        let d = std::env::temp_dir().join("plakat-civitai-sha-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("blob.bin");
+        std::fs::write(&f, b"hello plakat").unwrap();
+        // Known SHA-256 of "hello plakat".
+        let expected = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"hello plakat");
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        // Correct hash (and case-insensitive) passes.
+        assert!(verify_sha256(&f, &expected).is_ok());
+        assert!(verify_sha256(&f, &expected.to_uppercase()).is_ok());
+        // A wrong hash fails with a mismatch message.
+        let err = verify_sha256(&f, &"00".repeat(32)).unwrap_err().to_string();
+        assert!(err.contains("SHA-256 mismatch"), "{err}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

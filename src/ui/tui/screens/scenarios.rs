@@ -25,15 +25,35 @@ use tui_textarea::TextArea;
 use crate::cli::scenario::ScenarioEvent;
 
 /// Starter content for a brand-new scenario (valid HJSON — one field per line).
+// A NEW scenario must be runnable by `plakat scenario <file>` out of the box: it needs
+// a `scene` + `weather` catalog (every generate task references both), and an enhancer
+// that works without an API key. `enhancer: local` validates offline and the task's
+// `enhance: false` skips the LLM entirely, so it renders with no external dependency.
+// Keep this in sync with the `new_scenario_template_is_runnable` test.
 const STARTER_TEMPLATE: &str = "{\n  \
     model: stable-diffusion-v1-5/stable-diffusion-v1-5\n  \
     size: 512x512\n  \
     steps: 28\n  \
     guidance: 7.0\n  \
+    enhancer: local\n  \
+    scene: [\n    \
+        {\n      \
+            name: main\n      \
+            prompt: a serene mountain lake at dawn, soft light\n    \
+        }\n  \
+    ]\n  \
+    weather: [\n    \
+        {\n      \
+            name: clear\n      \
+            prompt: clear sky, gentle natural light\n    \
+        }\n  \
+    ]\n  \
     tasks: [\n    \
         {\n      \
             name: first\n      \
-            prompt: a serene mountain lake at dawn, soft light\n    \
+            scene: main\n      \
+            weather: clear\n      \
+            enhance: false\n    \
         }\n  \
     ]\n}\n";
 
@@ -102,6 +122,8 @@ pub struct ScenariosState {
     editing_path: Option<PathBuf>,
     /// Unsaved edits in the buffer.
     dirty: bool,
+    /// While `Some`, the editor is capturing a new file name (`Ctrl-R` rename).
+    rename_buf: Option<String>,
     // ── RUNNER board ──
     runner_name: String,
     runner_rows: Vec<TaskRow>,
@@ -120,6 +142,7 @@ impl ScenariosState {
             editor: TextArea::default(),
             editing_path: None,
             dirty: false,
+            rename_buf: None,
             runner_name: String::new(),
             runner_rows: Vec::new(),
             runner_done: false,
@@ -300,10 +323,49 @@ impl ScenariosState {
     }
 
     fn handle_editor_key(&mut self, key: KeyEvent) -> ScenariosAction {
+        // ── Rename modal: type the new file name, Enter applies, Esc cancels. ──
+        if self.rename_buf.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.rename_buf = None;
+                    self.status = "rename cancelled".into();
+                }
+                KeyCode::Enter => {
+                    let name = self.rename_buf.take().unwrap_or_default();
+                    self.apply_rename(&name);
+                }
+                KeyCode::Backspace => {
+                    if let Some(b) = self.rename_buf.as_mut() {
+                        b.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(b) = self.rename_buf.as_mut() {
+                        b.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return ScenariosAction::None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             // Save to disk + re-scan (keeps editing).
             KeyCode::Char('s' | 'S') if ctrl => self.save(),
+            // Ctrl-R — name / rename this scenario's file.
+            KeyCode::Char('r' | 'R') if ctrl => {
+                // Seed with the current stem (minus "untitled" so a fresh one starts empty).
+                let stem = self
+                    .editing_path
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.starts_with("untitled"))
+                    .unwrap_or("")
+                    .to_string();
+                self.rename_buf = Some(stem);
+                self.status = "name the scenario, then Enter (Esc cancels)".into();
+            }
             // Summarize the Chat session into a new task at the cursor (App runs the LLM).
             KeyCode::Char('g' | 'G') if ctrl => {
                 self.status = "summarizing Chat session into a task…".into();
@@ -326,6 +388,39 @@ impl ScenariosState {
             }
         }
         ScenariosAction::None
+    }
+
+    /// Apply a rename from the modal: set the editing path to `<dir>/<name>.hjson`. If a
+    /// file already exists at the old path, move it; otherwise the new name takes effect
+    /// on the next save. Refuses an empty / conflicting name.
+    fn apply_rename(&mut self, name: &str) {
+        let slug: String = name.trim().trim_end_matches(".hjson").to_string();
+        if slug.is_empty() {
+            self.status = "✗ name can't be empty".into();
+            return;
+        }
+        // Filesystem-safe: collapse path separators / spaces to '-'.
+        let safe: String = slug.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        let dest = self.dir.join(format!("{safe}.hjson"));
+        if dest.exists() && self.editing_path.as_ref() != Some(&dest) {
+            self.status = format!("✗ {safe}.hjson already exists");
+            return;
+        }
+        // Move an already-saved file; an unsaved buffer just retargets.
+        if let Some(old) = self.editing_path.clone() {
+            if old.exists() && old != dest {
+                if let Err(e) = std::fs::rename(&old, &dest) {
+                    self.status = format!("✗ rename failed: {e}");
+                    return;
+                }
+            }
+        }
+        self.editing_path = Some(dest);
+        self.rescan();
+        if let Some(i) = self.files.iter().position(|f| Some(&f.path) == self.editing_path.as_ref()) {
+            self.selected = i;
+        }
+        self.status = format!("✓ scenario name → {safe}.hjson (Ctrl-S to save)");
     }
 
     /// Insert a `{ name, prompt }` task block at the editor cursor (App-driven, after
@@ -554,7 +649,7 @@ impl ScenariosState {
             .and_then(|n| n.to_str())
             .unwrap_or("scenario");
         let title = format!(
-            " Editing {name}{}   [Ctrl-S] save  [Ctrl-G] grab Chat→task  [Esc] back ",
+            " Editing {name}{}   [Ctrl-S] save  [Ctrl-R] name  [Ctrl-G] grab Chat→task  [Esc] back ",
             if self.dirty { " ●" } else { "" }
         );
         let block = Block::default()
@@ -563,7 +658,24 @@ impl ScenariosState {
             .border_style(Style::new().fg(if self.dirty { Color::Yellow } else { Color::Cyan }));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        f.render_widget(&self.editor, inner);
+        // Reserve a one-line footer for the rename prompt when active.
+        if let Some(buf) = &self.rename_buf {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            f.render_widget(&self.editor, parts[0]);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("name> ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{buf}.hjson"), Style::new().fg(Color::White)),
+                    Span::styled("  ⏎ apply · Esc cancel", Style::new().fg(Color::DarkGray)),
+                ])),
+                parts[1],
+            );
+        } else {
+            f.render_widget(&self.editor, inner);
+        }
     }
 }
 
@@ -618,6 +730,65 @@ mod tests {
         assert_eq!(s.files[0].model, "sdxl");
         assert_eq!(s.files[1].name, "b");
         assert_eq!(s.files[1].tasks, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn new_scenario_template_is_runnable_out_of_the_box() {
+        // The `n` (new scenario) template must dry-run cleanly with no API key: it needs
+        // a scene + weather catalog every task references, and an offline enhancer.
+        let d = tmp_dir("starter");
+        let mut s = ScenariosState::new(d.clone());
+        s.handle_key(ch('n')); // open the starter template in the editor
+        s.handle_key(ctrl('s')); // save it to disk
+        let path = s.editing_path.clone().expect("a path after new+save");
+        assert!(path.exists());
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let args = crate::cli::scenario::ScenarioArgs {
+            file: path,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override: None,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(crate::cli::scenario::run_with_events(args, Some(tx)))
+            .expect("the new-scenario template must dry-run cleanly");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_r_renames_the_scenario_file() {
+        let d = tmp_dir("rename");
+        let mut s = ScenariosState::new(d.clone());
+        s.handle_key(ch('n')); // new (untitled) in the editor
+        s.handle_key(ctrl('s')); // save → untitled.hjson on disk
+        assert!(d.join("untitled.hjson").exists());
+
+        // Ctrl-R opens the rename modal; type a name; Enter applies (moves the file).
+        s.handle_key(ctrl('r'));
+        for c in "my-shoot".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(key(KeyCode::Enter));
+        assert!(d.join("my-shoot.hjson").exists(), "renamed on disk");
+        assert!(!d.join("untitled.hjson").exists(), "old name gone");
+        assert!(s.editing_path.as_ref().unwrap().ends_with("my-shoot.hjson"));
+        // Unsafe characters are sanitized to '-'. The modal pre-seeds the current name,
+        // so clear it first (backspace) before typing the new one.
+        s.handle_key(ctrl('r'));
+        for _ in 0.."my-shoot".len() {
+            s.handle_key(key(KeyCode::Backspace));
+        }
+        for c in "a b/c".chars() {
+            s.handle_key(ch(c));
+        }
+        s.handle_key(key(KeyCode::Enter));
+        assert!(d.join("a-b-c.hjson").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

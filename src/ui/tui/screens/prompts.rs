@@ -5,7 +5,8 @@
 //! it in the Scenarios EDITOR. The structural compile is driven by the App (it owns
 //! the runtime); this screen renders state + handles input. Tera mode is a follow-up.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -21,6 +22,8 @@ use tui_textarea::TextArea;
 enum Focus {
     Files,
     Editor,
+    /// Editing Tera variable values (Tera mode only).
+    Vars,
 }
 
 /// What the App should do after a key.
@@ -47,6 +50,12 @@ pub struct PromptsState {
     pub compiling: bool,
     /// The editor text last handed to the structural compiler (App-owned debounce).
     pub last_compiled_src: Option<String>,
+    /// Tera mode (`Ctrl-T`): run the Tera pre-pass before the structural compile.
+    pub tera_mode: bool,
+    /// Tera variable values (the live variable panel), edited in `Focus::Vars`.
+    tera_vars: BTreeMap<String, String>,
+    /// Selected row in the variable panel.
+    var_sel: usize,
 }
 
 impl PromptsState {
@@ -64,9 +73,42 @@ impl PromptsState {
             compile_err: None,
             compiling: false,
             last_compiled_src: None,
+            tera_mode: false,
+            tera_vars: BTreeMap::new(),
+            var_sel: 0,
         };
         s.rescan();
         s
+    }
+
+    /// The editing buffer's path (so the Tera pre-pass can resolve sibling includes).
+    pub fn path(&self) -> Option<&Path> {
+        self.editing_path.as_deref()
+    }
+
+    /// Variable values for the Tera pre-pass (`--var KEY=VALUE` equivalents).
+    pub fn tera_var_pairs(&self) -> Vec<(String, String)> {
+        self.tera_vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Variables referenced by the current template (for the live panel).
+    fn variables(&self) -> Vec<String> {
+        extract_variables(&self.editor_text())
+    }
+
+    /// Toggle Tera mode; forces a recompile and seeds any newly-seen variables.
+    fn toggle_tera(&mut self) {
+        self.tera_mode = !self.tera_mode;
+        self.last_compiled_src = None; // mode change → recompute the compiled pane
+        if self.tera_mode {
+            for v in self.variables() {
+                self.tera_vars.entry(v).or_default();
+            }
+            self.status = "Tera mode ON — Ctrl-V edits variables (needs --features templates)".into();
+        } else {
+            self.focus = Focus::Editor;
+            self.status = "Tera mode OFF".into();
+        }
     }
 
     pub fn rescan(&mut self) {
@@ -91,9 +133,9 @@ impl PromptsState {
         }
     }
 
-    /// The App routes ALL keys here while the editor is focused.
+    /// The App routes ALL keys here while the editor / variable panel is focused.
     pub fn captures_input(&self) -> bool {
-        self.focus == Focus::Editor
+        matches!(self.focus, Focus::Editor | Focus::Vars)
     }
 
     /// Current editor text (the App compiles this).
@@ -115,6 +157,38 @@ impl PromptsState {
         match self.focus {
             Focus::Files => self.handle_files_key(key),
             Focus::Editor => self.handle_editor_key(key),
+            Focus::Vars => {
+                self.handle_vars_key(key);
+                PromptsAction::None
+            }
+        }
+    }
+
+    /// Variable-panel editing (Tera mode): Up/Down select, typing edits the selected
+    /// variable's value, Esc/Enter return to the editor.
+    fn handle_vars_key(&mut self, key: KeyEvent) {
+        let vars = self.variables();
+        if vars.is_empty() {
+            self.focus = Focus::Editor;
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.focus = Focus::Editor,
+            KeyCode::Up => self.var_sel = self.var_sel.saturating_sub(1),
+            KeyCode::Down => self.var_sel = (self.var_sel + 1).min(vars.len() - 1),
+            KeyCode::Char(c) => {
+                if let Some(name) = vars.get(self.var_sel) {
+                    self.tera_vars.entry(name.clone()).or_default().push(c);
+                    self.last_compiled_src = None; // re-render live
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(name) = vars.get(self.var_sel) {
+                    self.tera_vars.entry(name.clone()).or_default().pop();
+                    self.last_compiled_src = None;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -145,6 +219,16 @@ impl PromptsState {
             // Ctrl-Tab cycles to the next saved buffer; Ctrl-N starts a fresh one.
             KeyCode::Tab if ctrl => self.cycle_buffer(),
             KeyCode::Char('n' | 'N') if ctrl => self.new_buffer(),
+            // Ctrl-T toggles Tera mode; Ctrl-V jumps to the variable panel (Tera on).
+            KeyCode::Char('t' | 'T') if ctrl => self.toggle_tera(),
+            KeyCode::Char('v' | 'V') if ctrl && self.tera_mode => {
+                if self.variables().is_empty() {
+                    self.status = "no template variables to edit".into();
+                } else {
+                    self.var_sel = 0;
+                    self.focus = Focus::Vars;
+                }
+            }
             KeyCode::Char('s' | 'S') if ctrl => self.save(),
             KeyCode::Char('r' | 'R') if ctrl => {
                 self.compiling = true;
@@ -255,7 +339,53 @@ impl PromptsState {
             .split(area);
         self.render_files(f, cols[0]);
         self.render_editor(f, cols[1]);
-        self.render_compiled(f, cols[2]);
+        // In Tera mode the right column carries the live variable panel above the
+        // compiled HJSON.
+        if self.tera_mode {
+            let right = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .split(cols[2]);
+            self.render_vars(f, right[0]);
+            self.render_compiled(f, right[1]);
+        } else {
+            self.render_compiled(f, cols[2]);
+        }
+    }
+
+    /// The live Tera variable panel: each referenced variable + its current value.
+    fn render_vars(&self, f: &mut Frame, area: Rect) {
+        let focused = self.focus == Focus::Vars;
+        let border = if focused { Color::Cyan } else { Color::Magenta };
+        let title = if focused { " Variables · type value · Esc " } else { " Variables · Ctrl-V " };
+        let block = Block::default().borders(Borders::ALL).title(title).border_style(Style::new().fg(border));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let vars = self.variables();
+        if vars.is_empty() {
+            f.render_widget(
+                Paragraph::new("(no {{ variables }} in this template)").style(Style::new().fg(Color::DarkGray)).wrap(Wrap { trim: true }),
+                inner,
+            );
+            return;
+        }
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, name) in vars.iter().enumerate() {
+            let val = self.tera_vars.get(name).cloned().unwrap_or_default();
+            let sel = focused && i == self.var_sel;
+            let name_style = if sel {
+                Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::White)
+            };
+            let shown = if val.is_empty() { "—".to_string() } else { val };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{name} "), name_style),
+                Span::styled(format!("= {shown}"), Style::new().fg(Color::Gray)),
+                if sel { Span::styled("▏", Style::new().fg(Color::Cyan)) } else { Span::raw("") },
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
     fn render_files(&self, f: &mut Frame, area: Rect) {
@@ -281,8 +411,9 @@ impl PromptsState {
 
     fn render_editor(&self, f: &mut Frame, area: Rect) {
         let name = self.buffer_name();
+        let tera = if self.tera_mode { " · τ Tera" } else { "" };
         let title = format!(
-            " {name}{}  [Ctrl-S save · Ctrl-N new · Ctrl-Tab cycle · Ctrl-R LLM · Ctrl-O→Scenarios · Esc] ",
+            " {name}{}{tera}  [Ctrl-S · Ctrl-N · Ctrl-Tab · Ctrl-T tera · Ctrl-R LLM · Ctrl-O→Scen · Esc] ",
             if self.dirty { " ●" } else { "" }
         );
         let border = if self.focus == Focus::Editor { Color::Cyan } else { Color::DarkGray };
@@ -326,6 +457,136 @@ fn text_area_from(text: &str) -> TextArea<'static> {
     ta
 }
 
+/// Tera keywords / builtins that look like identifiers but aren't user variables.
+const TERA_KEYWORDS: &[&str] = &[
+    "if", "elif", "else", "endif", "for", "endfor", "in", "and", "or", "not", "is", "set",
+    "block", "endblock", "include", "import", "macro", "endmacro", "filter", "endfilter",
+    "true", "false", "loop", "self", "as", "with", "raw", "endraw",
+];
+
+/// Best-effort extraction of the top-level variables a Tera template *reads* (for the
+/// live variable panel). Scans `{{ … }}` expressions and `{% if/for/set … %}` tags for
+/// leading identifiers, then subtracts loop variables and `set` targets (locally bound)
+/// and keywords. Heuristic, not a full parser — good enough to surface what to fill in.
+fn extract_variables(src: &str) -> Vec<String> {
+    let mut referenced: Vec<String> = Vec::new();
+    let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'{' && (bytes[i + 1] == b'{' || bytes[i + 1] == b'%') {
+            let stmt = bytes[i + 1] == b'%';
+            let close: &[u8] = if stmt { b"%}" } else { b"}}" };
+            let start = i + 2;
+            let end = find_sub(&bytes[start..], close).map(|p| start + p).unwrap_or(bytes.len());
+            let inner = src[start..end].trim();
+            if stmt {
+                scan_tag(inner, &mut referenced, &mut defined);
+            } else {
+                // {{ expr }} → idents in the expression are reads.
+                for id in idents(inner) {
+                    referenced.push(id);
+                }
+            }
+            i = end + close.len();
+        } else {
+            i += 1;
+        }
+    }
+    // Dedup (stable order), drop locally-bound names + keywords.
+    let mut out = Vec::new();
+    for r in referenced {
+        if !defined.contains(&r) && !out.contains(&r) && !TERA_KEYWORDS.contains(&r.as_str()) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// Process a `{% … %}` tag body: record `for`-loop vars + `set` targets as *defined*,
+/// and the rest of the idents (collection / condition / value) as *referenced*.
+fn scan_tag(inner: &str, referenced: &mut Vec<String>, defined: &mut std::collections::HashSet<String>) {
+    let toks: Vec<&str> = inner.split_whitespace().collect();
+    match toks.first().copied() {
+        Some("for") => {
+            // for X[, Y] in EXPR
+            if let Some(in_pos) = toks.iter().position(|t| *t == "in") {
+                for t in &toks[1..in_pos] {
+                    for id in idents(t) {
+                        defined.insert(id);
+                    }
+                }
+                for t in &toks[in_pos + 1..] {
+                    for id in idents(t) {
+                        referenced.push(id);
+                    }
+                }
+            }
+        }
+        Some("set") => {
+            // set X = EXPR
+            if let Some(eq) = toks.iter().position(|t| *t == "=") {
+                for t in &toks[1..eq] {
+                    for id in idents(t) {
+                        defined.insert(id);
+                    }
+                }
+                for t in &toks[eq + 1..] {
+                    for id in idents(t) {
+                        referenced.push(id);
+                    }
+                }
+            }
+        }
+        Some("if") | Some("elif") => {
+            for t in &toks[1..] {
+                for id in idents(t) {
+                    referenced.push(id);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Root identifiers in `s` that name variables. A `.attr` access or `| filter` tail is
+/// dropped (only the chain's root is a variable); numbers / string literals are skipped.
+fn idents(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut bound = false; // the previous separator run made this ident an attr/filter
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            if !bound {
+                out.push(chars[start..i].iter().collect());
+            }
+            // Scan the following separator run; `.`/`|` bind the next ident as a
+            // non-variable (attribute / filter).
+            bound = false;
+            while i < chars.len() && !(chars[i].is_alphanumeric() || chars[i] == '_') {
+                if chars[i] == '.' || chars[i] == '|' {
+                    bound = true;
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Index of the first occurrence of `needle` in `hay`.
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +604,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn extract_variables_finds_reads_and_skips_locals() {
+        let tpl = "{% set greeting = title %}\n{% for item in items %}{{ item }} {{ subject | upper }} {{ scene.name }}{% endfor %}\n{% if dramatic %}moody{% endif %}";
+        let vars = extract_variables(tpl);
+        // Reads: title (set rhs), items (for coll), subject, scene (root of scene.name), dramatic.
+        assert!(vars.contains(&"title".to_string()));
+        assert!(vars.contains(&"items".to_string()));
+        assert!(vars.contains(&"subject".to_string()));
+        assert!(vars.contains(&"scene".to_string()));
+        assert!(vars.contains(&"dramatic".to_string()));
+        // Locals are excluded: `greeting` (set target) and `item` (loop var).
+        assert!(!vars.contains(&"greeting".to_string()));
+        assert!(!vars.contains(&"item".to_string()));
+        // Attribute + keyword excluded.
+        assert!(!vars.contains(&"name".to_string()));
+        assert!(!vars.contains(&"upper".to_string()));
+    }
+
+    #[test]
+    fn ctrl_t_toggles_tera_and_seeds_variables() {
+        let d = tmp("tera");
+        let mut s = PromptsState::new(d.clone());
+        s.editor = text_area_from("a {{ subject }} in {{ place }}");
+        assert!(!s.tera_mode);
+        s.handle_key(ctrl('t'));
+        assert!(s.tera_mode);
+        // Variables are seeded (empty) so the panel + render have entries.
+        assert!(s.tera_vars.contains_key("subject"));
+        assert!(s.tera_vars.contains_key("place"));
+        // A recompile is forced.
+        assert!(s.last_compiled_src.is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ctrl_v_enters_var_panel_and_typing_edits_values() {
+        let d = tmp("vars");
+        let mut s = PromptsState::new(d.clone());
+        s.editor = text_area_from("a {{ subject }}");
+        s.handle_key(ctrl('t')); // Tera on
+        s.handle_key(ctrl('v')); // into the variable panel
+        assert!(matches!(s.focus, Focus::Vars));
+        assert!(s.captures_input(), "Vars focus captures input");
+        for c in "fox".chars() {
+            s.handle_key(ch(c));
+        }
+        assert_eq!(s.tera_vars.get("subject").map(String::as_str), Some("fox"));
+        // Esc returns to the editor.
+        s.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(s.focus, Focus::Editor));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

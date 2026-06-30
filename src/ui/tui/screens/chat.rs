@@ -4,13 +4,15 @@
 //! (img2img over the previous output) unless it starts with `/new`. The App owns
 //! the dispatch + refine decision; this screen renders state + handles input keys.
 
+use std::path::PathBuf;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use super::prompt_editor::{EditorOutcome, PromptEditor};
@@ -46,6 +48,22 @@ pub enum ChatStatus {
 pub enum ChatAction {
     None,
     Submit(String),
+    /// A `@mention` of a LoRA was accepted — apply it (App resolves the name → path).
+    ApplyLora(String),
+    /// Filmstrip navigation — show this frame in the image pane (`None` = back to live).
+    SelectFrame(Option<PathBuf>),
+    /// Roll the session back to this frame (branch): make it the live base, recovering
+    /// its prompt + seed so the next prompt refines from there.
+    Rollback(PathBuf),
+    /// Generate a fresh variation of this frame (its prompt at a new random seed).
+    Vary(PathBuf),
+}
+
+/// A `@mention` completion candidate.
+#[derive(Clone, PartialEq, Eq)]
+pub enum MentionKind {
+    Person,
+    Lora,
 }
 
 pub struct ChatState {
@@ -61,6 +79,15 @@ pub struct ChatState {
     pub refine_armed: bool,
     /// Prompt-history recall cursor (Ctrl-P / Ctrl-N), shell-history style.
     recall: Option<usize>,
+    /// `@mention` candidates (fed by the App each tick): people + local LoRA names.
+    mention_people: Vec<String>,
+    mention_loras: Vec<String>,
+    /// Highlighted row in the mention popup.
+    mention_sel: usize,
+    /// The `@`-index the user dismissed (Esc); suppress the popup there until it moves.
+    mention_dismissed_at: Option<usize>,
+    /// Session filmstrip: the selected frame (index into `frames()`); `None` = live latest.
+    strip_sel: Option<usize>,
 }
 
 impl ChatState {
@@ -72,6 +99,133 @@ impl ChatState {
             preview: None,
             refine_armed: false,
             recall: None,
+            mention_people: Vec::new(),
+            mention_loras: Vec::new(),
+            mention_sel: 0,
+            mention_dismissed_at: None,
+            strip_sel: None,
+        }
+    }
+
+    /// The session filmstrip: `(turn-number, result-path)` for every generated image,
+    /// oldest first.
+    pub fn frames(&self) -> Vec<(usize, PathBuf)> {
+        self.history
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.system && e.error.is_none())
+            .filter_map(|(i, e)| e.result.as_ref().map(|p| (i + 1, PathBuf::from(p))))
+            .collect()
+    }
+
+    /// Path of the most recent generated image (for "back to live").
+    pub fn latest_frame_path(&self) -> Option<PathBuf> {
+        self.frames().pop().map(|(_, p)| p)
+    }
+
+    /// Move the filmstrip cursor toward older frames (Ctrl-Left).
+    fn strip_left(&mut self) -> ChatAction {
+        let frames = self.frames();
+        if frames.is_empty() {
+            return ChatAction::None;
+        }
+        let new = match self.strip_sel {
+            None => frames.len() - 1, // from live → select the latest
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.strip_sel = Some(new);
+        ChatAction::SelectFrame(Some(frames[new].1.clone()))
+    }
+
+    /// Move the filmstrip cursor toward newer frames; past the newest → back to live.
+    fn strip_right(&mut self) -> ChatAction {
+        let frames = self.frames();
+        match self.strip_sel {
+            Some(i) if i + 1 < frames.len() => {
+                self.strip_sel = Some(i + 1);
+                ChatAction::SelectFrame(Some(frames[i + 1].1.clone()))
+            }
+            Some(_) => {
+                self.strip_sel = None;
+                ChatAction::SelectFrame(None)
+            }
+            None => ChatAction::None,
+        }
+    }
+
+    fn selected_frame(&self) -> Option<PathBuf> {
+        self.strip_sel.and_then(|i| self.frames().into_iter().nth(i).map(|(_, p)| p))
+    }
+
+    /// Roll back / branch from the selected frame (Ctrl-B).
+    fn rollback(&mut self) -> ChatAction {
+        match self.selected_frame() {
+            Some(p) => {
+                self.strip_sel = None; // back to live after branching
+                ChatAction::Rollback(p)
+            }
+            None => ChatAction::None,
+        }
+    }
+
+    /// New variation of the selected frame (Ctrl-Y).
+    fn vary(&mut self) -> ChatAction {
+        match self.selected_frame() {
+            Some(p) => {
+                self.strip_sel = None;
+                ChatAction::Vary(p)
+            }
+            None => ChatAction::None,
+        }
+    }
+
+    /// The App feeds the current `@mention` candidates (people + local LoRA names).
+    pub fn set_mention_candidates(&mut self, people: Vec<String>, loras: Vec<String>) {
+        self.mention_people = people;
+        self.mention_loras = loras;
+    }
+
+    /// The filtered `@mention` candidates for the active token (people first, then
+    /// LoRAs), capped. Empty when no token is active / it was dismissed / nothing matches.
+    pub fn mention_items(&self) -> Vec<(MentionKind, String)> {
+        let Some((start, partial)) = self.editor.active_mention() else { return Vec::new() };
+        if self.mention_dismissed_at == Some(start) {
+            return Vec::new();
+        }
+        let q = partial.to_lowercase();
+        let pick = |names: &[String], kind: MentionKind| -> Vec<(MentionKind, String)> {
+            names
+                .iter()
+                .filter(|n| q.is_empty() || n.to_lowercase().contains(&q))
+                .map(|n| (kind.clone(), n.clone()))
+                .collect()
+        };
+        let mut items = pick(&self.mention_people, MentionKind::Person);
+        items.extend(pick(&self.mention_loras, MentionKind::Lora));
+        items.truncate(8);
+        items
+    }
+
+    fn mention_open(&self) -> bool {
+        !self.mention_items().is_empty()
+    }
+
+    /// Accept the highlighted mention: a person becomes a readable `@name` token
+    /// (expanded at submit); a LoRA is stripped from the text and applied via the App.
+    fn accept_mention(&mut self) -> ChatAction {
+        let Some((start, _)) = self.editor.active_mention() else { return ChatAction::None };
+        let items = self.mention_items();
+        let Some((kind, name)) = items.get(self.mention_sel).cloned() else { return ChatAction::None };
+        match kind {
+            MentionKind::Person => {
+                self.editor.replace_mention(start, &format!("@{name} "));
+                ChatAction::None
+            }
+            MentionKind::Lora => {
+                self.editor.replace_mention(start, "");
+                ChatAction::ApplyLora(name)
+            }
         }
     }
 
@@ -79,7 +233,31 @@ impl ChatState {
     /// prompts into the editor; everything else goes to the editor; Enter submits.
     pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // ── `@mention` completion popup owns a few keys while it's showing. ──
+        if self.mention_open() && !ctrl {
+            match key.code {
+                KeyCode::Up => {
+                    self.mention_sel = self.mention_sel.saturating_sub(1);
+                    return ChatAction::None;
+                }
+                KeyCode::Down => {
+                    self.mention_sel = (self.mention_sel + 1).min(self.mention_items().len().saturating_sub(1));
+                    return ChatAction::None;
+                }
+                KeyCode::Tab | KeyCode::Enter => return self.accept_mention(),
+                KeyCode::Esc => {
+                    self.mention_dismissed_at = self.editor.active_mention().map(|(s, _)| s);
+                    return ChatAction::None;
+                }
+                _ => {}
+            }
+        }
         match key.code {
+            // ── Session filmstrip: navigate / rollback / vary. ──
+            KeyCode::Left if ctrl => return self.strip_left(),
+            KeyCode::Right if ctrl => return self.strip_right(),
+            KeyCode::Char('b') if ctrl => return self.rollback(),
+            KeyCode::Char('y') if ctrl => return self.vary(),
             KeyCode::Char('p') if ctrl => {
                 self.recall_prev();
                 return ChatAction::None;
@@ -90,7 +268,13 @@ impl ChatState {
             }
             _ => {}
         }
-        match self.editor.handle_key(key) {
+        let outcome = self.editor.handle_key(key);
+        // Typing moves/changes the token → reset the popup selection + un-dismiss.
+        if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+            self.mention_sel = 0;
+            self.mention_dismissed_at = None;
+        }
+        match outcome {
             EditorOutcome::Submit => {
                 self.recall = None;
                 let text = self.editor.take();
@@ -138,6 +322,7 @@ impl ChatState {
 
     /// Record a submitted utterance (the App calls this when dispatching it).
     pub fn push_utterance(&mut self, utterance: String, refine: bool) {
+        self.strip_sel = None; // a new turn returns the filmstrip to live
         self.history.push(ChatEntry {
             utterance,
             result: None,
@@ -199,8 +384,90 @@ impl ChatState {
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(rows[1]);
         self.render_history(f, cols[0]);
-        self.render_image(f, cols[1]);
+        // The image pane gives up its bottom rows to the session filmstrip when there
+        // is more than one frame to scrub through.
+        if self.frames().len() > 1 {
+            let img_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(2)])
+                .split(cols[1]);
+            self.render_image(f, img_rows[0]);
+            self.render_filmstrip(f, img_rows[1]);
+        } else {
+            self.render_image(f, cols[1]);
+        }
         self.render_input(f, rows[2]);
+        // The @mention popup floats just above the input, over the history column.
+        self.render_mention_popup(f, rows[1], rows[2]);
+    }
+
+    /// A one-line scrubber of every generated frame this session; the shown frame is
+    /// highlighted (`live` when following the latest). Ctrl-←/→ navigate, Ctrl-B rolls
+    /// back to the selected frame, Ctrl-Y makes a variation.
+    fn render_filmstrip(&self, f: &mut Frame, area: Rect) {
+        let frames = self.frames();
+        let live = self.strip_sel.is_none();
+        let mut spans: Vec<Span> = vec![Span::styled(
+            "film ",
+            Style::new().fg(Color::DarkGray),
+        )];
+        for (vi, (turn, _)) in frames.iter().enumerate() {
+            let selected = self.strip_sel == Some(vi) || (live && vi + 1 == frames.len());
+            let style = if selected {
+                Style::new().bg(Color::Magenta).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Gray)
+            };
+            spans.push(Span::styled(format!(" {turn} "), style));
+            spans.push(Span::raw(" "));
+        }
+        let hint = if live {
+            "  Ctrl-←/→ scrub"
+        } else {
+            "  Ctrl-←/→ scrub · Ctrl-B rollback · Ctrl-Y vary"
+        };
+        spans.push(Span::styled(hint, Style::new().fg(Color::DarkGray)));
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::TOP)),
+            area,
+        );
+    }
+
+    /// Draw the `@mention` completion popup anchored above the input (when active).
+    fn render_mention_popup(&self, f: &mut Frame, content: Rect, input: Rect) {
+        let items = self.mention_items();
+        if items.is_empty() {
+            return;
+        }
+        let h = (items.len() as u16 + 2).min(content.height.max(3));
+        let w = 38.min(content.width.max(10));
+        let x = content.x + 2;
+        let y = input.y.saturating_sub(h);
+        let area = Rect { x, y, width: w, height: h };
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Magenta))
+            .title(" @mention · ↑↓ · Tab/Enter · Esc ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, (kind, name)) in items.iter().enumerate() {
+            let (glyph, gc) = match kind {
+                MentionKind::Person => ("◆", Color::Cyan),
+                MentionKind::Lora => ("★", Color::Yellow),
+            };
+            let style = if i == self.mention_sel {
+                Style::new().bg(Color::Magenta).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::new().fg(gc)),
+                Span::styled(name.clone(), style),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     fn render_image(&mut self, f: &mut Frame, area: Rect) {
@@ -388,6 +655,142 @@ mod tests {
             _ => panic!("expected submit"),
         }
         assert!(s.editor.is_empty());
+    }
+
+    fn type_str(s: &mut ChatState, text: &str) {
+        for c in text.chars() {
+            s.handle_key(k(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn at_mention_popup_filters_people_and_loras() {
+        let mut s = ChatState::new();
+        s.set_mention_candidates(vec!["Alice".into(), "Bob".into()], vec!["watercolor".into()]);
+        // No popup until an @token is typed.
+        assert!(s.mention_items().is_empty());
+        type_str(&mut s, "a portrait of @al");
+        let items = s.mention_items();
+        assert_eq!(items.len(), 1, "‘al’ matches Alice only");
+        assert_eq!(items[0].1, "Alice");
+        assert!(matches!(items[0].0, MentionKind::Person));
+    }
+
+    #[test]
+    fn accepting_a_person_mention_keeps_a_readable_token() {
+        let mut s = ChatState::new();
+        s.set_mention_candidates(vec!["Alice".into()], vec![]);
+        type_str(&mut s, "@al");
+        // Tab accepts → "@Alice " stays in the text (expanded later, by the App).
+        assert!(matches!(s.handle_key(k(KeyCode::Tab)), ChatAction::None));
+        assert_eq!(s.editor.text(), "@Alice ");
+    }
+
+    #[test]
+    fn accepting_a_lora_mention_strips_the_token_and_applies() {
+        let mut s = ChatState::new();
+        s.set_mention_candidates(vec![], vec!["watercolor".into()]);
+        type_str(&mut s, "sunset @water");
+        match s.handle_key(k(KeyCode::Enter)) {
+            ChatAction::ApplyLora(name) => assert_eq!(name, "watercolor"),
+            _ => panic!("expected ApplyLora"),
+        }
+        // The token is removed from the prompt (the LoRA is applied, not described).
+        assert_eq!(s.editor.text(), "sunset ");
+    }
+
+    #[test]
+    fn enter_with_no_mention_open_still_submits() {
+        let mut s = ChatState::new();
+        s.set_mention_candidates(vec!["Alice".into()], vec![]);
+        type_str(&mut s, "a fox");
+        match s.handle_key(k(KeyCode::Enter)) {
+            ChatAction::Submit(p) => assert_eq!(p, "a fox"),
+            _ => panic!("expected submit when no popup"),
+        }
+    }
+
+    #[test]
+    fn esc_dismisses_the_mention_popup() {
+        let mut s = ChatState::new();
+        s.set_mention_candidates(vec!["Alice".into()], vec![]);
+        type_str(&mut s, "@al");
+        assert!(!s.mention_items().is_empty());
+        s.handle_key(k(KeyCode::Esc));
+        assert!(s.mention_items().is_empty(), "Esc hides the popup for this token");
+        // Typing more re-opens it.
+        type_str(&mut s, "i");
+        assert!(!s.mention_items().is_empty());
+    }
+
+    fn with_two_frames() -> ChatState {
+        let mut s = ChatState::new();
+        s.push_utterance("a fox".into(), false);
+        s.finish_last(Ok("/out/plakat-1-1.png".into()));
+        s.push_utterance("make it autumn".into(), true);
+        s.finish_last(Ok("/out/plakat-1-2.png".into()));
+        s
+    }
+
+    fn ctrl_code(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn filmstrip_collects_generated_frames() {
+        let s = with_two_frames();
+        let frames = s.frames();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].1.ends_with("plakat-1-1.png"));
+        assert_eq!(s.latest_frame_path().unwrap().file_name().unwrap(), "plakat-1-2.png");
+    }
+
+    #[test]
+    fn ctrl_left_right_scrub_the_filmstrip() {
+        let mut s = with_two_frames();
+        // From live, Ctrl-Left selects the latest frame (index 1).
+        match s.handle_key(ctrl_code(KeyCode::Left)) {
+            ChatAction::SelectFrame(Some(p)) => assert!(p.ends_with("plakat-1-2.png")),
+            _ => panic!("expected SelectFrame"),
+        }
+        // Ctrl-Left again → the older frame.
+        match s.handle_key(ctrl_code(KeyCode::Left)) {
+            ChatAction::SelectFrame(Some(p)) => assert!(p.ends_with("plakat-1-1.png")),
+            _ => panic!("expected older frame"),
+        }
+        // Ctrl-Right → newer, then past-newest → back to live (None).
+        s.handle_key(ctrl_code(KeyCode::Right));
+        match s.handle_key(ctrl_code(KeyCode::Right)) {
+            ChatAction::SelectFrame(None) => {}
+            _ => panic!("expected back-to-live"),
+        }
+    }
+
+    #[test]
+    fn ctrl_b_rolls_back_and_ctrl_y_varies_the_selected_frame() {
+        let mut s = with_two_frames();
+        // Select the first frame.
+        s.handle_key(ctrl_code(KeyCode::Left)); // latest
+        s.handle_key(ctrl_code(KeyCode::Left)); // older (index 0)
+        match s.handle_key(ctrl_code(KeyCode::Char('b'))) {
+            ChatAction::Rollback(p) => assert!(p.ends_with("plakat-1-1.png")),
+            _ => panic!("expected Rollback"),
+        }
+        // Rollback returns the strip to live.
+        assert!(s.strip_sel.is_none());
+
+        // Re-select and vary.
+        s.handle_key(ctrl_code(KeyCode::Left));
+        match s.handle_key(ctrl_code(KeyCode::Char('y'))) {
+            ChatAction::Vary(_) => {}
+            _ => panic!("expected Vary"),
+        }
+    }
+
+    #[test]
+    fn rollback_without_a_selection_is_a_noop() {
+        let mut s = with_two_frames();
+        assert!(matches!(s.handle_key(ctrl_code(KeyCode::Char('b'))), ChatAction::None));
     }
 
     #[test]

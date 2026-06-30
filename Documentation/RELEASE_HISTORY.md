@@ -8,6 +8,27 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.16.0 — `plakat ui` grows up
+
+1.15.0 shipped the eight-screen `plakat ui` terminal UI; 1.16.0 paid down its depth
+deferrals — more models, smarter refinement, and the workflow glue that turns
+*exploring* into *producing*.
+
+- **More models in the UI** — SD3 / 3.5, PixArt-Σ, and Stable Cascade load + generate in
+  Chat alongside SD-family; Chat refine / Canvas inpaint get live preview + mid-denoise
+  cancel (StepHook-wired img2img); `/auto` LLM edit-vs-new routing.
+- **LoRA Hub completeness** — per-LoRA weights (`+`/`-`, `★w`), `Ctrl-R` LLM stack
+  suggestions, HuggingFace base-model markers, 1h search caching, `●` download indicator.
+- **Chat → Scenario** — `Ctrl-G` distills the Chat thread into a scenario task.
+- **People** — `I` imports a scenario persona into the editable library; `Del` is the
+  right to be forgotten (type-name confirmation).
+- **History** — `/` filter (filename / tags / recipe), `T` tag, `X` export, `d` recipe
+  compare.
+- **Canvas** — `M` outpaint. **Prompt Workspace** — `Ctrl-Tab` cycle, `Ctrl-N` new.
+  **Chat sessions** — `/save` · `/load` · `/sessions`.
+
+Flux in the UI was postponed (hardware).
+
 ## What's new in 1.15.0 — `plakat ui`, the interactive terminal UI
 
 plakat has always been a powerful but flag-heavy CLI. 1.15.0 added **`plakat ui`** — a

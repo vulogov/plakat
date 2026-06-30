@@ -62,6 +62,10 @@ Eight screens, switched with **`Ctrl-1`…`Ctrl-8`** or **`Tab`** /
 | 7 | **Prompts** | Prompt Workspace — compile prose → scenario |
 | 8 | **Canvas** | Paint an inpaint mask, hand it to Chat |
 
+- **`Ctrl-K`** opens the **command palette** — a fuzzy launcher for every
+  action available on the current screen (plus jump-to-any-screen and
+  quit). Type to filter, `↑/↓` to move, `Enter` to run, `Esc` to dismiss.
+  It works from anywhere, even mid-typing.
 - **`Ctrl-Q`** quits from anywhere.
 - **`Ctrl-C`** cancels a running generation (or quits if none).
 - A shared **Output pane** at the bottom shows live download / denoise
@@ -128,6 +132,31 @@ lose an earlier version.
 `DEEPSEEK_API_KEY` (env or `~/.config/plakat/config.toml`) and it
 routes to DeepSeek, exactly like the CLI.
 
+### `@mention` people and LoRAs
+
+Type **`@`** in the prompt to pop up a completion list of your **people**
+(`◆`) and local **LoRAs** (`★`); keep typing to filter, `↑/↓` to move,
+**`Tab`**/**`Enter`** to accept, `Esc` to dismiss.
+
+- Accepting a **person** leaves a readable `@name` token in the prompt —
+  at generation time it expands to that person's prompt fragment (so
+  `a portrait of @alice` renders Alice's look).
+- Accepting a **LoRA** applies it to Chat right away (the model reloads
+  with it merged) and removes the token from your prompt.
+
+### Session filmstrip — scrub, roll back, vary
+
+Once you've made a few images, a **filmstrip** appears under the image
+pane — one numbered cell per generated frame this session.
+
+- **`Ctrl-←`** / **`Ctrl-→`** scrub through the frames; the selected one
+  shows in the image pane (past the newest returns to the live latest).
+- **`Ctrl-B`** **rolls back** to the selected frame — it becomes the live
+  base (its prompt + seed recovered), so your next prompt **branches**
+  from there instead of the latest.
+- **`Ctrl-Y`** makes a **variation** of the selected frame: its prompt
+  re-rendered at a new seed.
+
 ### Other keys
 
 - **`Ctrl-P`** / **`Ctrl-N`** — recall previous prompts into the editor.
@@ -141,6 +170,11 @@ routes to DeepSeek, exactly like the CLI.
 Press **`Ctrl-4`**. Every PNG under `out/` is listed by date, newest
 first. Move with `j`/`k`; the selected image previews on the right
 along with its **embedded recipe** (prompt, seed, steps, model).
+
+Press **`v`** to toggle a **thumbnail grid** — a 4-column lazy grid of
+your images (decoded in the background, LRU-cached). Move with the
+arrows (`←/→` within a row, `↑/↓` by a row), and `Enter` / `C` continues
+the highlighted one in Chat. `v` returns to the list.
 
 Press **`C`** to **continue in Chat**: the image loads as an
 image-anchored base seeded with its recovered prompt, and you're
@@ -171,13 +205,23 @@ strategy — stored under `people/<name>/person.hjson`. The library also
 surfaces any personas defined in your scenario files (read-only,
 tagged `◇`).
 
-- Move with `j`/`k`; the primary reference photo previews on the right
-  with the identity's strategy, ref coverage, consent, and stats.
+- Move with `j`/`k`; the primary reference photo previews on the right.
+- The detail pane has **six sub-tabs** (cycle with **`←`/`→`** or
+  `h`/`l`): **REFS** (weighted photos + angle-coverage guidance),
+  **ENCODING** (strategy/mode/quality + on-disk encodings), **PORTFOLIO**
+  (generated images + consistency score), **TEST** (the four fixed
+  identity test renders), **KNOWN-GOOD** (recorded parameter combos), and
+  **SETTINGS** (consent + a privacy audit).
 - **`G`** generates a **portrait** of the selected person — it opens in
   Chat ready to refine.
 - **`Space`** marks people (`●`); with **two or more marked, `G`**
   generates a **multiperson scene** placing each person in their own
   region.
+- **`E`** computes the identity's **encoding quality** — it detects + aligns
+  + ArcFace-embeds every reference photo and reports their mean similarity
+  (high = the refs are clearly the same face; low = inconsistent refs that
+  will muddy the identity). The score shows in the **ENCODING** sub-tab and
+  persists across runs.
 - **`I`** **imports** a scenario-defined persona (`◇`) into your editable
   `people/` library — it copies the reference photos into
   `people/<name>/refs/` and writes a `person.hjson`, so you can encode,
@@ -221,6 +265,12 @@ regenerate).
   **`Shift`+move** paints while moving.
 - Preset regions: **`S`** sky, **`B`** background, **`F`** foreground,
   **`L`**/**`R`** halves, **`P`** person column, **`C`** clear.
+- **`B` is face-aware**: it masks the background *but punches out any
+  detected faces*, so the inpaint regenerates the scene while preserving
+  the people. (Face detection runs once per base in the background; if no
+  detector is configured it just fills plainly.)
+- **`g`** cycles the **grid density** (16×12 → 24×18 → 32×24) for finer
+  control — switching density clears the current mask.
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
 
@@ -233,9 +283,28 @@ Canvas builds a grey-padded, enlarged base with a mask over the new
 strip and hands it to Chat — your next prompt **paints the new region**
 (e.g. extend a landscape rightward). `M` or `Esc` cancels.
 
-This is *regional* masking (coarse by design). For pixel-precise
-masks, paint one in an external editor and use the CLI's
-`--mask-path`.
+### Finer masks — `g` density, or an external editor
+
+The Canvas is *regional* masking. For more control, press **`g`** to step
+up the grid density (up to 32×24). When you need **pixel-precise** edges —
+a hairline, a hand, text — paint the mask in any image editor instead:
+
+1. Export or copy the base image you're refining (every Chat image is a
+   normal PNG under `out/chat/`).
+2. In an external editor (Photoshop, GIMP, Krita, Preview…), paint the
+   region to regenerate **pure white** on a **black** background, at the
+   image's exact resolution, and save it as a PNG.
+3. Run the edit from the CLI with that mask:
+
+   ```bash
+   plakat img2img out/chat/plakat-<seed>-1.png \
+     --prompt "your edit" \
+     --mask my-mask.png --strength 0.85
+   ```
+
+White = regenerate, black = keep. This is the same inpaint path the
+Canvas drives, just with a hand-authored mask. `plakat img2img --help`
+lists the related flags (`--mask-feather`, `--mask-invert`).
 
 ---
 
@@ -247,7 +316,11 @@ Press **`Ctrl-3`**. Browse the `.hjson` files in `scenarios/`:
   shows each task go pending → running → ✓/✗ while its progress streams
   to the Output pane.
 - **`e`** edits the file in a built-in editor (`Ctrl-S` saves), **`n`**
-  starts a new one from a template.
+  starts a new one from a template. The template is **runnable as-is** —
+  `n` → `Ctrl-S` → `Enter` generates without any API key.
+- **`Ctrl-R`** (in the editor) **names** the scenario — type a file name
+  and press `Enter`; it renames `untitled.hjson` (or an existing file) to
+  `<name>.hjson`.
 
 ### Grab a task from your Chat session (`Ctrl-G`)
 
@@ -292,6 +365,12 @@ the scenario HJSON your prose produces.
 
 - **`Ctrl-R`** runs the full **LLM compile** (family-aware enhancement
   + auto-negative).
+- **`Ctrl-T`** toggles **Tera mode**: the buffer is rendered through the
+  Tera template engine *before* compiling. A live **variable panel**
+  appears on the right listing every `{{ variable }}` the template reads;
+  press **`Ctrl-V`** to jump into it, `↑/↓` to select, and type to set a
+  value — the compiled output re-renders as you go. (Needs a build with
+  `--features templates`; otherwise the pane shows a recompile hint.)
 - **`Ctrl-S`** saves the buffer; **`Ctrl-O`** writes the compiled HJSON
   into `scenarios/` and opens it in the Scenarios editor.
 - **`Esc`** jumps to the buffer list (`.txt`/`.tera`/`.hjson`);
