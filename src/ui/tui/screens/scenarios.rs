@@ -753,6 +753,7 @@ mod tests {
             only: Vec::new(),
             limit: 0,
             json_summary: None,
+            out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(crate::cli::scenario::run_with_events(args, Some(tx)))

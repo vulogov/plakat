@@ -29,6 +29,7 @@ pub mod motion_module;
 pub mod sd15_motion_unet;
 pub mod face_models;
 pub mod faceid_lora;
+pub mod identity_quality;
 pub mod flux;
 pub mod flux_controlnet;
 pub mod flux_fast;

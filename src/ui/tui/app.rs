@@ -197,6 +197,9 @@ pub struct App {
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
     // In-flight Canvas face detection (for the face-aware `B` preset): `(base, boxes)`.
     canvas_faces: Option<Receiver<(std::path::PathBuf, Vec<[f32; 4]>)>>,
+    // In-flight People identity re-encode: `(name, dir, Result<(score, faces, total)>)`.
+    #[allow(clippy::type_complexity)]
+    people_encode: Option<Receiver<(String, std::path::PathBuf, Result<(f32, usize, usize), String>)>>,
     // In-flight History image decode (off the event-loop tick): `(path, decoded image)`.
     history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
 }
@@ -286,6 +289,7 @@ impl App {
             prompt_structural: None,
             chat_to_scenario: None,
             canvas_faces: None,
+            people_encode: None,
             history_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
@@ -373,6 +377,7 @@ impl App {
             self.drain_prompt_compile();
             self.sync_canvas();
             self.drain_canvas_faces();
+            self.drain_people_encode();
             self.drain_route();
             self.sync_chat_mentions();
         }
@@ -585,6 +590,7 @@ impl App {
             match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
                 people::PeopleAction::None => {}
             }
             return;
@@ -641,6 +647,7 @@ impl App {
             ActiveScreen::People => match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
+                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
                 people::PeopleAction::None => {}
             },
             ActiveScreen::LoraHub => {
@@ -706,6 +713,7 @@ impl App {
             ActiveScreen::People => {
                 cmds.push(("Generate selected → Chat".into(), k('g')));
                 cmds.push(("Next detail tab".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))));
+                cmds.push(("Encode identity (quality score)".into(), k('e')));
                 cmds.push(("Import scenario persona".into(), k('i')));
                 cmds.push(("Rescan".into(), k('r')));
             }
@@ -1440,6 +1448,47 @@ impl App {
         if self.canvas_faces.is_none() {
             if let Some(base) = self.canvas.faces_needed_for() {
                 self.detect_canvas_faces(base);
+            }
+        }
+    }
+
+    /// (Re)compute an identity's encoding quality (mean pairwise ArcFace cosine of its
+    /// refs) on a background thread, persist it, and reflect it in the People screen.
+    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>) {
+        if self.people_encode.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        let device = self.device.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::pipelines::identity_quality::IdentityScorer::load_resolved(&device))
+                .and_then(|scorer| scorer.score(&photos))
+                .map(|r| (r.score, r.faces, r.total))
+                .map_err(|e| format!("{e:#}"));
+            // Persist a successful score next to the identity so it survives rescans.
+            if let Ok((score, _, _)) = &result {
+                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score);
+            }
+            let _ = tx.send((name, dir, result));
+        });
+        self.people_encode = Some(rx);
+    }
+
+    /// Deliver a completed identity re-encode to the People screen each tick.
+    fn drain_people_encode(&mut self) {
+        if let Some(rx) = &self.people_encode {
+            match rx.try_recv() {
+                Ok((name, _dir, result)) => {
+                    match result {
+                        Ok((score, faces, total)) => self.people.set_encoding_quality(&name, score, faces, total),
+                        Err(e) => self.people.set_encoding_error(&name, &e),
+                    }
+                    self.people_encode = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.people_encode = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
     }

@@ -212,6 +212,11 @@ tagged `◇`).
 - **`Space`** marks people (`●`); with **two or more marked, `G`**
   generates a **multiperson scene** placing each person in their own
   region.
+- **`E`** computes the identity's **encoding quality** — it detects + aligns
+  + ArcFace-embeds every reference photo and reports their mean similarity
+  (high = the refs are clearly the same face; low = inconsistent refs that
+  will muddy the identity). The score shows in the **ENCODING** sub-tab and
+  persists across runs.
 - **`I`** **imports** a scenario-defined persona (`◇`) into your editable
   `people/` library — it copies the reference photos into
   `people/<name>/refs/` and writes a `person.hjson`, so you can encode,

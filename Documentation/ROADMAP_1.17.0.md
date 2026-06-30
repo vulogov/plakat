@@ -31,8 +31,14 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
       `encoding_quality` + `known_good[]` + `KnownGood` to the schema. The *active*
       bits — re-encode (`E`), side-by-side strategy compare, apply-a-specific-combo,
       lazy thumbnail grid — remain (see the dedicated items below).
-- [ ] **Re-encode** (`E`) — explicit identity encoding with a quality score; auto on
-      first strategy+model use; invalidated by ref/strategy/model change.
+- [x] **Re-encode** (`E`) — `E` (re)computes an identity's **encoding quality score**:
+      SCRFD-detect + 5-point-align + ArcFace-embed each reference, then the mean pairwise
+      cosine similarity (1.0 = identical, ~0.4+ = same person across poses, low =
+      inconsistent refs). Runs on a worker thread (`identity_quality.rs`, detector +
+      ArcFace only — no inswapper); the score persists to an `encoding/quality.txt`
+      sidecar (survives rescans without rewriting person.hjson) and the ENCODING tab
+      shows it with an interpretation. (Auto-on-first-use + strategy/model invalidation
+      remain as polish.)
 - [x] **Mixed-family multiperson** — the People multi-select → multiperson quick-gen now
       routes the scene's identity strategy + model from the marked personas' own
       strategies (`route_multiperson_identity`): SDXL strategies force an SDXL scene

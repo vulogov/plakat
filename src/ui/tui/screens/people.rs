@@ -229,6 +229,9 @@ pub enum PeopleAction {
     Generate(QuickGen),
     /// `G` with ≥2 marked (Space) → multiperson scene. Result opens in Chat.
     GenerateMulti(Vec<QuickGen>),
+    /// `E` — (re)compute the selected identity's encoding quality score from its refs.
+    /// `name` identifies the person (its dir slug); `photos` are the resolved refs.
+    Encode { name: String, dir: PathBuf, photos: Vec<PathBuf> },
 }
 
 pub struct PeopleState {
@@ -390,6 +393,8 @@ impl PeopleState {
             KeyCode::Char('r') => self.rescan(),
             // I — import a scenario-defined persona into the editable people/ library.
             KeyCode::Char('i' | 'I') => self.import_selected(),
+            // E — (re)compute the selected identity's encoding quality score.
+            KeyCode::Char('e' | 'E') => return self.encode_selected(),
             // Del — remove a people-dir identity (type-name confirmation first).
             KeyCode::Delete => self.begin_delete(),
             // Space toggles multi-select (for a multiperson generation).
@@ -465,6 +470,44 @@ impl PeopleState {
 
     /// Begin deleting the selected identity (only a canonical people-dir one). Opens the
     /// type-name confirmation modal; the actual removal happens on a matching Enter.
+    /// `E` — ask the App to (re)compute the selected identity's encoding quality from
+    /// its reference photos. People-dir identities only (a scenario persona is read-only
+    /// and its refs live elsewhere).
+    fn encode_selected(&mut self) -> PeopleAction {
+        let Some(p) = self.selected_person() else { return PeopleAction::None };
+        if p.source != "people" {
+            self.status = "import the persona first (I) — only people/ identities encode".into();
+            return PeopleAction::None;
+        }
+        if p.error.is_some() {
+            self.status = "can't encode a malformed identity".into();
+            return PeopleAction::None;
+        }
+        let photos: Vec<PathBuf> = p.resolved_photos().into_iter().map(|(path, _)| path).collect();
+        let name = p.label().to_string();
+        let dir = p.dir.clone();
+        if photos.is_empty() {
+            self.status = "no reference photos to encode".into();
+            return PeopleAction::None;
+        }
+        self.status = format!("encoding {name} from {} ref(s)…", photos.len());
+        PeopleAction::Encode { name, dir, photos }
+    }
+
+    /// The App delivers the computed quality score (in `[-1, 1]`, with the face count)
+    /// for the named identity; reflect it on the in-memory person + status.
+    pub fn set_encoding_quality(&mut self, name: &str, score: f32, faces: usize, total: usize) {
+        if let Some(p) = self.people.iter_mut().find(|p| p.source == "people" && p.label() == name) {
+            p.encoding_quality = Some(score);
+        }
+        self.status = format!("✓ {name}: quality {score:.2} ({faces}/{total} ref faces) — see ENCODING tab");
+    }
+
+    /// The App reports an encoding failure.
+    pub fn set_encoding_error(&mut self, name: &str, err: &str) {
+        self.status = format!("✗ encode {name}: {err}");
+    }
+
     fn begin_delete(&mut self) {
         let Some(p) = self.selected_person() else { return };
         if p.source != "people" {
@@ -521,7 +564,7 @@ impl PeopleState {
         let title = if self.confirm_delete.is_some() {
             " People  ·  confirm delete ".to_string()
         } else if self.marked.is_empty() {
-            format!(" People ({})  ·  Space mark · I import · Del remove ", self.people.len())
+            format!(" People ({})  ·  Space mark · E encode · I import · Del remove ", self.people.len())
         } else {
             format!(" People  ·  {} marked → [G] multiperson ", self.marked.len())
         };
@@ -700,11 +743,22 @@ impl PeopleState {
         }
         let enc = count_files(&p.dir.join("encoding"));
         lines.push(kv("on disk", format!("{enc} encoding file(s)")));
+        // Interpret the quality score (mean pairwise ArcFace cosine of the refs).
+        if let Some(q) = p.encoding_quality {
+            let note = if q >= 0.5 {
+                ("strong — refs are clearly the same face", Color::Green)
+            } else if q >= 0.3 {
+                ("ok — same person across varied poses", Color::Yellow)
+            } else {
+                ("weak — refs look inconsistent (different people / angles / quality)", Color::Red)
+            };
+            lines.push(Line::from(Span::styled(format!("  {}", note.0), Style::new().fg(note.1))));
+        }
         lines.push(Line::from(""));
-        if p.encoding_quality.is_none() && enc == 0 {
-            lines.push(warn("⚠ no encoding yet — it's computed on first use (re-encode: `E`, planned)"));
+        if p.encoding_quality.is_none() {
+            lines.push(warn("⚠ not scored yet — press `E` to compute the encoding quality from the refs"));
         } else {
-            lines.push(dim("re-encode (`E`) + side-by-side strategy compare are planned."));
+            lines.push(dim("press `E` to recompute · side-by-side strategy compare is planned."));
         }
         lines
     }
@@ -880,10 +934,29 @@ fn load_person(dir: &Path, hjson: &Path) -> Person {
         Ok(mut p) => {
             p.dir = dir.to_path_buf();
             p.source = "people".into();
+            // A computed quality score (the `E` re-encode) is stored in a sidecar so it
+            // survives across runs without rewriting the hand-authored person.hjson; it
+            // fills `encoding_quality` when the hjson didn't set one.
+            if p.encoding_quality.is_none() {
+                p.encoding_quality = read_quality_sidecar(dir);
+            }
             p
         }
         Err(e) => fallback(format!("parse: {e}")),
     }
+}
+
+/// The persisted encoding quality from `<dir>/encoding/quality.txt`, if present.
+fn read_quality_sidecar(dir: &Path) -> Option<f32> {
+    std::fs::read_to_string(dir.join("encoding").join("quality.txt")).ok()?.trim().parse().ok()
+}
+
+/// Persist an encoding quality score to `<dir>/encoding/quality.txt` (App-side, after
+/// the `E` re-encode).
+pub fn write_quality_sidecar(dir: &Path, score: f32) -> std::io::Result<()> {
+    let enc = dir.join("encoding");
+    std::fs::create_dir_all(&enc)?;
+    std::fs::write(enc.join("quality.txt"), format!("{score}\n"))
 }
 
 /// Build a read-only Person from a scenario persona. Photo paths are already absolute
@@ -1170,6 +1243,40 @@ mod tests {
     }
 
     #[test]
+    fn e_requests_an_encode_and_quality_persists_via_sidecar() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("encode");
+        let alice = d.join("people").join("alice");
+        std::fs::create_dir_all(alice.join("refs")).unwrap();
+        std::fs::write(&alice.join("refs/a.jpg"), b"x").unwrap();
+        std::fs::write(
+            alice.join("person.hjson"),
+            r#"{"display_name":"Alice","refs":[{"path":"refs/a.jpg","weight":1.0}]}"#,
+        )
+        .unwrap();
+        let mut s = PeopleState::new(d.join("people"), d.join("scenarios"));
+
+        // E yields an Encode action carrying the person + its resolved refs.
+        match s.handle_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE)) {
+            PeopleAction::Encode { name, dir, photos } => {
+                assert_eq!(name, "Alice");
+                assert_eq!(dir, alice);
+                assert_eq!(photos.len(), 1);
+                assert!(photos[0].ends_with("refs/a.jpg"));
+            }
+            _ => panic!("expected Encode"),
+        }
+
+        // The App delivers a score → in-memory + a sidecar that survives a rescan.
+        write_quality_sidecar(&alice, 0.61).unwrap();
+        s.set_encoding_quality("Alice", 0.61, 1, 1);
+        assert_eq!(s.people[0].encoding_quality, Some(0.61));
+        let reloaded = PeopleState::new(d.join("people"), d.join("scenarios"));
+        assert_eq!(reloaded.people[0].encoding_quality, Some(0.61), "sidecar restores the score");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn malformed_person_is_kept_with_error_flag() {
         let d = tmp("bad");
         let people = d.join("people");
@@ -1188,8 +1295,10 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    fn one_person_state() -> PeopleState {
-        let d = tmp("detail");
+    // Unique dir per caller — tests run in parallel and `tmp()` wipes its dir on entry,
+    // so a shared name would race (one test deleting another's fixture).
+    fn one_person_state(tag: &str) -> PeopleState {
+        let d = tmp(&format!("detail-{tag}"));
         let alice = d.join("people").join("alice");
         std::fs::create_dir_all(alice.join("refs")).unwrap();
         std::fs::write(
@@ -1203,7 +1312,7 @@ mod tests {
     #[test]
     fn detail_tabs_cycle_with_left_and_right() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut s = one_person_state();
+        let mut s = one_person_state("cycle");
         let right = || KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         assert!(matches!(s.detail_tab, DetailTab::Refs));
         s.handle_key(right());
@@ -1221,7 +1330,7 @@ mod tests {
 
     #[test]
     fn refs_tab_lists_photos_and_flags_missing_coverage() {
-        let s = one_person_state();
+        let s = one_person_state("refs");
         let lines = s.tab_refs(&s.people[0]);
         let text: String = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
         assert!(text.contains("a.jpg"), "lists the ref photo");
@@ -1234,7 +1343,7 @@ mod tests {
 
     #[test]
     fn known_good_tab_renders_the_combo_table() {
-        let mut s = one_person_state();
+        let mut s = one_person_state("kg");
         s.people[0].known_good = vec![KnownGood {
             label: "hero shot".into(),
             prompt: "a hero pose".into(),
@@ -1252,7 +1361,7 @@ mod tests {
 
     #[test]
     fn settings_tab_audits_missing_consent() {
-        let s = one_person_state();
+        let s = one_person_state("settings");
         let lines = s.tab_settings(&s.people[0]);
         let text: String = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
         assert!(text.contains("no consent block"));
