@@ -19,6 +19,8 @@ pub struct ModelRow {
     pub gated: bool,
     pub note: String,
     pub repo: String,
+    /// Loadable in the TUI today (SD-family / SD3 / PixArt / Cascade). Flux is CLI-only.
+    pub usable: bool,
 }
 
 /// Live load state, fed by the ModelService over its channel.
@@ -45,17 +47,25 @@ impl Default for ModelsState {
 
 impl ModelsState {
     pub fn new() -> Self {
-        let rows = crate::hf::ALIAS_TABLE
+        let mut rows: Vec<ModelRow> = crate::hf::ALIAS_TABLE
             .iter()
-            .map(|e| ModelRow {
-                alias: e.aliases.first().copied().unwrap_or("?").to_string(),
-                family: e.family.to_string(),
-                kind: e.kind.to_string(),
-                gated: e.gated,
-                note: e.note.to_string(),
-                repo: e.repo.to_string(),
+            .map(|e| {
+                let alias = e.aliases.first().copied().unwrap_or("?").to_string();
+                let usable = crate::ui::tui::services::model_service::t2i_load_check(&alias).is_ok();
+                ModelRow {
+                    alias,
+                    family: e.family.to_string(),
+                    kind: e.kind.to_string(),
+                    gated: e.gated,
+                    note: e.note.to_string(),
+                    repo: e.repo.to_string(),
+                    usable,
+                }
             })
             .collect();
+        // Models you can actually use in the TUI float to the top (CLI-only families like
+        // Flux sink); within each group, sort by name.
+        rows.sort_by(|a, b| b.usable.cmp(&a.usable).then_with(|| a.alias.cmp(&b.alias)));
         Self { rows, selected: 0, load: LoadState::Idle }
     }
 
@@ -137,39 +147,40 @@ impl ModelsState {
     }
 
     fn render_list(&self, f: &mut Frame, area: Rect) {
-        let mut last_family: Option<&str> = None;
+        // Rows are sorted usable-first, then by name (CLI-only families sink), so the
+        // family is shown as a plain column rather than a group header.
         let mut items: Vec<ListItem> = Vec::new();
-        // Track which list index maps to which model row (family headers are
-        // interleaved as non-selectable rows would complicate selection, so we
-        // instead prefix the family only when it changes, inline).
         for row in &self.rows {
-            let fam_changed = last_family != Some(row.family.as_str());
-            last_family = Some(row.family.as_str());
-            let fam = if fam_changed {
-                Span::styled(format!("{:<10}", row.family), Style::new().fg(Color::DarkGray))
+            // Non-usable (CLI-only, e.g. Flux) rows are dimmed + tagged.
+            let alias_style = if row.usable {
+                Style::new().fg(Color::White)
             } else {
-                Span::raw(format!("{:<10}", ""))
+                Style::new().fg(Color::DarkGray)
             };
+            let fam = Span::styled(format!("{:<10}", row.family), Style::new().fg(Color::DarkGray));
             let gated = if row.gated {
                 Span::styled(" 🔒", Style::new().fg(Color::Yellow))
             } else {
                 Span::raw("")
             };
-            let loaded = if self.loaded_alias() == Some(row.alias.as_str()) {
+            let tail = if self.loaded_alias() == Some(row.alias.as_str()) {
                 Span::styled(" ✓ loaded", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else if !row.usable {
+                Span::styled(" CLI-only", Style::new().fg(Color::DarkGray))
             } else {
                 Span::raw("")
             };
             items.push(ListItem::new(Line::from(vec![
                 fam,
-                Span::styled(format!("{:<16}", row.alias), Style::new().fg(Color::White)),
+                Span::styled(format!("{:<16}", row.alias), alias_style),
                 Span::styled(row.kind.clone(), Style::new().fg(Color::DarkGray)),
                 gated,
-                loaded,
+                tail,
             ])));
         }
+        let usable_n = self.rows.iter().filter(|r| r.usable).count();
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(format!(" Models ({}) ", self.rows.len())))
+            .block(Block::default().borders(Borders::ALL).title(format!(" Models · {usable_n} usable / {} ", self.rows.len())))
             .highlight_style(Style::new().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD))
             .highlight_symbol("▶ ");
         let mut ls = ListState::default();
@@ -227,6 +238,26 @@ mod tests {
         assert!(s.rows.len() >= 10, "alias table has many models");
         assert!(s.rows.iter().any(|r| r.alias == "sd15"));
         assert!(s.rows.iter().any(|r| r.family.contains("SD 1.5") || r.family.contains("SDXL")));
+    }
+
+    #[test]
+    fn rows_sort_usable_first_then_by_name() {
+        let s = ModelsState::new();
+        // All usable models precede all non-usable (CLI-only) ones.
+        let first_unusable = s.rows.iter().position(|r| !r.usable);
+        if let Some(i) = first_unusable {
+            assert!(s.rows[..i].iter().all(|r| r.usable), "usable rows float to the top");
+            assert!(s.rows[i..].iter().all(|r| !r.usable), "CLI-only rows sink");
+        }
+        // Within the usable group, aliases are alphabetical.
+        let usable: Vec<&str> = s.rows.iter().filter(|r| r.usable).map(|r| r.alias.as_str()).collect();
+        let mut sorted = usable.clone();
+        sorted.sort();
+        assert_eq!(usable, sorted, "usable models are name-sorted");
+        // Flux (CLI-only) is marked non-usable.
+        assert!(s.rows.iter().any(|r| r.alias.contains("flux") && !r.usable));
+        // sd15 (usable) is near the top.
+        assert!(s.rows.iter().take(usable.len()).any(|r| r.alias == "sd15"));
     }
 
     #[test]

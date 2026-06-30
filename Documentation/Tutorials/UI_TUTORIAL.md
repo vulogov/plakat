@@ -80,9 +80,16 @@ Before you can generate, load a model. Press **`Ctrl-2`**, move with
 + load progress streams into the Output pane; the RAM/Swap gauges at
 the top warn you before a load over-commits memory.
 
-The workspace's `default_model` is pre-selected and, if its weights
-are already cached, auto-loaded on startup. SD-family models
-(sd15 / sd21 / sdxl) are supported in the UI today.
+The list is sorted with the models you can **use in the UI** first
+(SD-family, SD3/3.5, PixArt, Cascade), each name-sorted; CLI-only
+families (Flux) sink to the bottom, dimmed and tagged `CLI-only`. The
+title shows how many are usable. The workspace's `default_model` is
+pre-selected and, if its weights are already cached, auto-loaded on
+startup.
+
+> A model that's already downloaded but won't load (a hang or refusal)
+> is usually a stale download lock left by an interrupted fetch — plakat
+> now sweeps those automatically before each load.
 
 ---
 
