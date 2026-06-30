@@ -46,9 +46,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## D — LoRA Hub (remaining)
 
-- [~] **Download manager depth** — **version-update detection** lands: `U` on a
-      Civitai-sourced LOCAL LoRA (path `…/model-<N>/version-<M>/…`) queries the model's
-      versions and, if a newer one exists, downloads it (reuses the remote-download path);
-      reports up-to-date / updated / not-a-Civitai-download to the Output pane. SHA-256
-      verify + `●` indicator + 1h search caching shipped in 1.17.0. Still deferred: ≤2
-      concurrent downloads + range-resume.
+- [x] **Download manager depth** — the LoRA-Hub download manager is now complete:
+      **version-update detection** (`U` on a Civitai LOCAL LoRA → newer version → download),
+      **≤2 concurrent downloads** with a FIFO queue (the `●` marker covers in-flight +
+      queued; the status line shows the queue depth), and **range-resume** (a leftover
+      `.partial` is continued via an HTTP Range request — `resume_action` maps the
+      response: 206 append · 200 restart · 416 wipe+retry). With the 1.17.0 SHA-256 verify
+      + 1h search caching, the manager covers the full RFC §10 surface.

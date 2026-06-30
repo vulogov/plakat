@@ -372,44 +372,70 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
     }
     let client = builder.build()?;
 
-    let resp = client.get(url).send().await.map_err(|e| {
-        anyhow::anyhow!(
-            "Civitai download request to {url} failed: {e}. {}",
-            civitai_download_hint(token.is_some())
-        )
-    })?;
-    let status = resp.status();
-    if status.as_u16() == 401 {
-        bail!(
-            "Civitai download returned 401 — this asset is gated. Set CIVITAI_API_KEY \
-             from https://civitai.com/user/account → API Keys."
-        );
-    }
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(no body)".to_string());
-        bail!("Civitai download failed: {status}: {body}");
-    }
-
-    let total = resp.content_length();
-    let bar = match total {
-        Some(n) => crate::ui::progress::bytes_bar(n, &format!("⤓ {}", short_name(target))),
-        None => crate::ui::progress::spinner(&format!("⤓ {}", short_name(target))),
-    };
-
-    // Write to a sibling `<target>.partial` and rename on success
-    // so an interrupted download doesn't poison the cache slot.
+    // Write to a sibling `<target>.partial` and rename on success so an interrupted
+    // download doesn't poison the cache slot. A leftover `.partial` from a previous run
+    // is RESUMED via an HTTP Range request rather than re-downloaded from scratch.
     let tmp = target.with_extension(format!(
         "{}partial",
         target.extension().and_then(|e| e.to_str()).map(|e| format!("{e}.")).unwrap_or_default()
     ));
-    let mut file = std::fs::File::create(&tmp)
-        .with_context(|| format!("creating temp file {}", tmp.display()))?;
+
+    // Resume loop: request from the partial's current size; the server's status decides
+    // whether we append, restart, or (range unsatisfiable) wipe + retry from zero.
+    let mut resume_from = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    let (resp, mut written) = loop {
+        let mut req = client.get(url);
+        if resume_from > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        }
+        let resp = req.send().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Civitai download request to {url} failed: {e}. {}",
+                civitai_download_hint(token.is_some())
+            )
+        })?;
+        let code = resp.status().as_u16();
+        match resume_action(code, resume_from) {
+            ResumeAction::Append => break (resp, resume_from),
+            ResumeAction::Restart => break (resp, 0),
+            ResumeAction::WipeAndRetry => {
+                // The partial is >= the served size (416) — start over cleanly.
+                let _ = std::fs::remove_file(&tmp);
+                resume_from = 0;
+                continue;
+            }
+            ResumeAction::Gated => bail!(
+                "Civitai download returned 401 — this asset is gated. Set CIVITAI_API_KEY \
+                 from https://civitai.com/user/account → API Keys."
+            ),
+            ResumeAction::Fail => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_else(|_| "(no body)".to_string());
+                bail!("Civitai download failed: {status}: {body}");
+            }
+        }
+    };
+
+    // `written == resume_from` (the bytes already on disk). Total is what's left plus
+    // what we have, so the bar reflects the whole file even on a resume.
+    let remaining = resp.content_length();
+    let total = remaining.map(|r| r + written);
+    let bar = match total {
+        Some(n) => crate::ui::progress::bytes_bar(n, &format!("⤓ {}", short_name(target))),
+        None => crate::ui::progress::spinner(&format!("⤓ {}", short_name(target))),
+    };
+    bar.set_position(written);
+
+    // Append when resuming (written > 0), else create/truncate.
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(written > 0)
+        .truncate(written == 0)
+        .open(&tmp)
+        .with_context(|| format!("opening temp file {}", tmp.display()))?;
 
     let mut stream = resp.bytes_stream();
-    let mut written = 0u64;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading Civitai response chunk")?;
         file.write_all(&chunk)
@@ -423,6 +449,34 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
         .with_context(|| format!("renaming {} → {}", tmp.display(), target.display()))?;
     bar.finish_with_message(format!("✓ {}", short_name(target)));
     Ok(written)
+}
+
+/// What to do with a download response given the partial-file size we requested from.
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeAction {
+    /// 206 Partial Content — append to the partial (resume).
+    Append,
+    /// 200 OK — the server sent the whole file (ignored our range) — restart from zero.
+    Restart,
+    /// 416 Range Not Satisfiable — the partial is already ≥ the file; wipe + retry fresh.
+    WipeAndRetry,
+    /// 401 — gated asset.
+    Gated,
+    /// Any other non-success status.
+    Fail,
+}
+
+/// Map an HTTP status + the byte offset we asked to resume from to a [`ResumeAction`].
+/// Pure — unit-tested.
+fn resume_action(status: u16, resume_from: u64) -> ResumeAction {
+    match status {
+        206 => ResumeAction::Append,
+        200 => ResumeAction::Restart,
+        416 if resume_from > 0 => ResumeAction::WipeAndRetry,
+        401 => ResumeAction::Gated,
+        s if (200..300).contains(&s) => ResumeAction::Restart, // other 2xx → full body
+        _ => ResumeAction::Fail,
+    }
 }
 
 fn short_name(p: &Path) -> String {
@@ -450,6 +504,23 @@ mod tests {
         // With a token → don't blame the (present) key's absence.
         let with_token = civitai_download_hint(true);
         assert!(!with_token.contains("set CIVITAI_API_KEY"));
+    }
+
+    #[test]
+    fn resume_action_maps_statuses() {
+        // Fresh download (resume_from = 0): a 200 is a full body.
+        assert_eq!(resume_action(200, 0), ResumeAction::Restart);
+        // Partial content → append to the partial.
+        assert_eq!(resume_action(206, 1024), ResumeAction::Append);
+        // Server ignored the range and sent everything → restart from zero.
+        assert_eq!(resume_action(200, 1024), ResumeAction::Restart);
+        // Range not satisfiable on a non-empty partial → wipe + retry.
+        assert_eq!(resume_action(416, 1024), ResumeAction::WipeAndRetry);
+        // 416 with nothing to resume is just a failure.
+        assert_eq!(resume_action(416, 0), ResumeAction::Fail);
+        assert_eq!(resume_action(401, 0), ResumeAction::Gated);
+        assert_eq!(resume_action(404, 0), ResumeAction::Fail);
+        assert_eq!(resume_action(500, 512), ResumeAction::Fail);
     }
 
     #[test]

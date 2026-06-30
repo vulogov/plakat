@@ -47,6 +47,9 @@ const APPLY_LORA_SCALE: f32 = 0.8;
 /// img2img strength for a Canvas inpaint turn — high, so the masked region actually
 /// regenerates (a soft 0.6 only nudges it).
 const INPAINT_STRENGTH: f32 = 0.85;
+/// Max LoRA downloads running at once (the rest queue). Unified memory + a shared CDN
+/// make a small cap saner than unbounded fan-out.
+const MAX_CONCURRENT_DOWNLOADS: usize = 2;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -180,7 +183,9 @@ pub struct App {
     portrait_prompt: String,
     // In-flight remote (Civitai / HF) search + download for the LoRA Hub.
     remote_search: Option<Receiver<Result<Vec<lorahub::RemoteHit>, String>>>,
-    remote_download: Option<Receiver<Result<String, String>>>,
+    // Download pool: ≤2 concurrent, the rest queued (DownloadRef + title).
+    downloads_active: Vec<Receiver<Result<String, String>>>,
+    downloads_queue: std::collections::VecDeque<(lorahub::DownloadRef, String)>,
     // In-flight LLM LoRA assessment: (item key, assessment text).
     lora_assess: Option<Receiver<(String, String)>>,
     // In-flight LLM recommend-for-context (LoRA Hub search tabs).
@@ -286,7 +291,8 @@ impl App {
             portrait_run: None,
             portrait_prompt: String::new(),
             remote_search: None,
-            remote_download: None,
+            downloads_active: Vec::new(),
+            downloads_queue: std::collections::VecDeque::new(),
             lora_assess: None,
             lora_recommend: None,
             lora_combine: None,
@@ -1208,30 +1214,37 @@ impl App {
         self.remote_search = Some(rx);
     }
 
-    /// Download a LoRA (Civitai → its cache; HF → copied into the workspace loras/
-    /// dir) on a background thread; on success rescan LOCAL.
+    /// Queue a LoRA download (Civitai → its cache; HF → the workspace loras/ dir). Up to
+    /// [`MAX_CONCURRENT_DOWNLOADS`] run at once; the rest wait in `downloads_queue`.
     fn remote_download(&mut self, dl: lorahub::DownloadRef, title: String) {
-        if self.remote_download.is_some() {
-            return;
+        self.downloads_queue.push_back((dl, title));
+        self.pump_downloads();
+    }
+
+    /// Start queued downloads until the concurrency cap is reached.
+    fn pump_downloads(&mut self) {
+        while self.downloads_active.len() < MAX_CONCURRENT_DOWNLOADS {
+            let Some((dl, title)) = self.downloads_queue.pop_front() else { break };
+            let loras_dir = self.workspace.loras_dir();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let rt = self.rt.clone();
+            std::thread::spawn(move || {
+                let result = match dl {
+                    lorahub::DownloadRef::Civitai { model_id, version_id } => rt
+                        .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
+                        .map(|_| title)
+                        .map_err(|e| format!("{e:#}")),
+                    lorahub::DownloadRef::Hf { repo } => rt
+                        .block_on(crate::hf::search::download_lora_into(&repo, &loras_dir))
+                        .map(|_| title)
+                        .map_err(|e| format!("{e:#}")),
+                };
+                let _ = tx.send(result);
+            });
+            self.downloads_active.push(rx);
         }
-        let loras_dir = self.workspace.loras_dir();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = match dl {
-                lorahub::DownloadRef::Civitai { model_id, version_id } => rt
-                    .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
-                    .map(|_| title)
-                    .map_err(|e| format!("{e:#}")),
-                lorahub::DownloadRef::Hf { repo } => rt
-                    .block_on(crate::hf::search::download_lora_into(&repo, &loras_dir))
-                    .map(|_| title)
-                    .map_err(|e| format!("{e:#}")),
-            };
-            let _ = tx.send(result);
-        });
-        self.lorahub.set_downloading(true);
-        self.remote_download = Some(rx);
+        // The `●` tab marker reflects anything in flight or waiting.
+        self.lorahub.set_downloading(!self.downloads_active.is_empty() || !self.downloads_queue.is_empty());
     }
 
     /// Drain the in-flight remote search / download into the Hub each tick.
@@ -1250,24 +1263,31 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = &self.remote_download {
-            match rx.try_recv() {
-                Ok(Ok(name)) => {
-                    self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL"));
-                    self.lorahub.rescan();
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
+        // Drain the active download pool: collect completed receivers, report each,
+        // keep the still-running ones, then pump the queue to refill the freed slots.
+        if !self.downloads_active.is_empty() {
+            let mut finished_any = false;
+            let mut still_running = Vec::with_capacity(self.downloads_active.len());
+            for rx in std::mem::take(&mut self.downloads_active) {
+                match rx.try_recv() {
+                    Ok(Ok(name)) => {
+                        let waiting = self.downloads_queue.len();
+                        let tail = if waiting > 0 { format!(" ({waiting} queued)") } else { String::new() };
+                        self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL{tail}"));
+                        self.lorahub.rescan();
+                        finished_any = true;
+                    }
+                    Ok(Err(e)) => {
+                        self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
+                        finished_any = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => finished_any = true,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => still_running.push(rx),
                 }
-                Ok(Err(e)) => {
-                    self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            self.downloads_active = still_running;
+            if finished_any {
+                self.pump_downloads(); // start queued downloads into freed slots + refresh `●`
             }
         }
         if let Some(rx) = &self.lora_assess {
@@ -2885,6 +2905,19 @@ mod tests {
         let mut a = test_app();
         a.apply_lora_by_name("does-not-exist");
         assert!(a.chat.history.last().unwrap().utterance.contains("no local LoRA"));
+    }
+
+    #[test]
+    fn downloads_cap_concurrency_and_queue_the_rest() {
+        let mut a = test_app();
+        // Queue four downloads; only MAX_CONCURRENT_DOWNLOADS start, the rest wait.
+        for i in 0..4u64 {
+            a.remote_download(lorahub::DownloadRef::Civitai { model_id: i, version_id: None }, format!("lora{i}"));
+        }
+        assert_eq!(a.downloads_active.len(), MAX_CONCURRENT_DOWNLOADS);
+        assert_eq!(a.downloads_queue.len(), 4 - MAX_CONCURRENT_DOWNLOADS);
+        // The download indicator reflects in-flight + queued work.
+        // (set_downloading was called true via pump_downloads.)
     }
 
     #[test]
