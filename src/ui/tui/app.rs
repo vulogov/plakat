@@ -189,6 +189,10 @@ pub struct App {
     lora_combine: Option<Receiver<String>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
+    // In-flight Prompt Workspace structural (live) compile: `(src, result)`. Runs on a
+    // worker thread — block_on must NOT run on the event-loop thread (it's inside the
+    // tokio runtime, which would panic).
+    prompt_structural: Option<(String, Receiver<Result<String, String>>)>,
     // In-flight Chat→Scenario summary (Scenarios editor Ctrl-G).
     chat_to_scenario: Option<Receiver<Result<String, String>>>,
     // In-flight Canvas face detection (for the face-aware `B` preset): `(base, boxes)`.
@@ -279,6 +283,7 @@ impl App {
             lora_recommend: None,
             lora_combine: None,
             prompt_compile: None,
+            prompt_structural: None,
             chat_to_scenario: None,
             canvas_faces: None,
             history_decode: None,
@@ -750,18 +755,42 @@ impl App {
     }
 
     /// Deterministic structural compile (no LLM) of the Prompt Workspace buffer,
-    /// recomputed only when the text changed. compile_to_string with no_enhance +
-    /// no_negative does no network, so a `block_on` here is instant.
+    /// recomputed when the text changes. The compile runs on a WORKER thread (the event
+    /// loop is inside the tokio runtime, so `block_on` here would panic); the result is
+    /// drained back into the pane the next tick.
     fn sync_prompts(&mut self) {
         if self.screen != ActiveScreen::PromptWorkspace || self.prompts.compiling {
             return;
+        }
+        // Drain an in-flight structural compile.
+        if let Some((src, rx)) = &self.prompt_structural {
+            match rx.try_recv() {
+                Ok(result) => {
+                    match result {
+                        Ok(hjson) => {
+                            self.prompts.compiled = hjson;
+                            self.prompts.compile_err = None;
+                        }
+                        Err(e) => self.prompts.compile_err = Some(e),
+                    }
+                    self.prompts.last_compiled_src = Some(src.clone());
+                    self.prompt_structural = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return, // still computing
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.prompt_structural = None,
+            }
         }
         let src = self.prompts.editor_text();
         if self.prompts.last_compiled_src.as_deref() == Some(src.as_str()) {
             return;
         }
+        // Already compiling this exact source → wait for it.
+        if self.prompt_structural.as_ref().map(|(s, _)| s == &src).unwrap_or(false) {
+            return;
+        }
         // Tera mode: render the buffer through the Tera pre-pass (with the panel's
-        // variable values) before the structural compile. A Tera error stops here.
+        // variable values) before the structural compile. The Tera render is synchronous
+        // and cheap, so it runs inline; a Tera error stops here.
         let to_compile = if self.prompts.tera_mode {
             let topts = crate::compile::TemplateOpts {
                 vars: self.prompts.tera_var_pairs(),
@@ -779,14 +808,15 @@ impl App {
             src.clone()
         };
         let opts = self.compile_opts(&self.prompts.buffer_name(), true);
-        match self.rt.block_on(crate::compile::compile_to_string(&to_compile, &opts)) {
-            Ok(hjson) => {
-                self.prompts.compiled = hjson;
-                self.prompts.compile_err = None;
-            }
-            Err(e) => self.prompts.compile_err = Some(format!("{e:#}")),
-        }
-        self.prompts.last_compiled_src = Some(src);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            let result = rt
+                .block_on(crate::compile::compile_to_string(&to_compile, &opts))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        self.prompt_structural = Some((src, rx));
     }
 
     /// Build compile options. `structural` → no LLM (deterministic); else the full

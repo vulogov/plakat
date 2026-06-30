@@ -306,7 +306,11 @@ Press **`Ctrl-3`**. Browse the `.hjson` files in `scenarios/`:
   shows each task go pending → running → ✓/✗ while its progress streams
   to the Output pane.
 - **`e`** edits the file in a built-in editor (`Ctrl-S` saves), **`n`**
-  starts a new one from a template.
+  starts a new one from a template. The template is **runnable as-is** —
+  `n` → `Ctrl-S` → `Enter` generates without any API key.
+- **`Ctrl-R`** (in the editor) **names** the scenario — type a file name
+  and press `Enter`; it renames `untitled.hjson` (or an existing file) to
+  `<name>.hjson`.
 
 ### Grab a task from your Chat session (`Ctrl-G`)
 
