@@ -181,6 +181,12 @@ pub struct App {
     // the prompt/seed to seed the Chat continuation when it lands.
     portrait_run: Option<Receiver<Result<std::path::PathBuf, String>>>,
     portrait_prompt: String,
+    // Identity-preserving Chat continuation: while `Some`, a portrait with a known person
+    // is loaded in Chat, so a refine re-runs the IP-Adapter portrait pass (keeps the face)
+    // instead of plain img2img. `pending_identity` is set per-run and adopted by
+    // `drain_portrait` once the image lands.
+    chat_identity: Option<ChatIdentity>,
+    pending_identity: Option<ChatIdentity>,
     // In-flight remote (Civitai / HF) search + download for the LoRA Hub.
     remote_search: Option<Receiver<Result<Vec<lorahub::RemoteHit>, String>>>,
     // Download pool: ≤2 concurrent, the rest queued (DownloadRef + title).
@@ -212,6 +218,21 @@ pub struct App {
     history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
     // In-flight History thumbnail decode (grid view): `(path, decoded thumbnail)`.
     thumb_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
+}
+
+/// The reusable identity context for an IP-Adapter-preserving Chat continuation: the
+/// person's reference photos + strategy + the run parameters, so each refine re-renders
+/// the accumulated prompt with the *same* face at the same seed.
+#[derive(Clone)]
+struct ChatIdentity {
+    photos: Vec<(std::path::PathBuf, f32)>,
+    identity: String,
+    face_strength: Option<f32>,
+    negative: String,
+    model: String,
+    width: u32,
+    height: u32,
+    seed: u64,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -290,6 +311,8 @@ impl App {
             scenario_events: None,
             portrait_run: None,
             portrait_prompt: String::new(),
+            chat_identity: None,
+            pending_identity: None,
             remote_search: None,
             downloads_active: Vec::new(),
             downloads_queue: std::collections::VecDeque::new(),
@@ -1653,6 +1676,74 @@ impl App {
         self.canvas_faces = Some(rx);
     }
 
+    /// Build a `portrait::Request` for an identity context at the given (accumulated)
+    /// prompt. Used for the initial portrait and for every identity-preserving refine.
+    fn identity_portrait_request(&self, prompt: String, id: &ChatIdentity) -> crate::pipelines::portrait::Request {
+        let identity = if id.photos.is_empty() {
+            None
+        } else {
+            Some(
+                id.identity
+                    .parse::<crate::pipelines::ip_adapter::IdentityKind>()
+                    .unwrap_or(crate::pipelines::ip_adapter::IdentityKind::PlusFace),
+            )
+        };
+        let photos = id
+            .photos
+            .iter()
+            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
+            .collect();
+        crate::pipelines::portrait::Request {
+            prompt,
+            negative: id.negative.clone(),
+            photos,
+            model: id.model.clone(),
+            width: id.width,
+            height: id.height,
+            count: 1,
+            steps: 30,
+            guidance: 7.0,
+            seed: Some(id.seed),
+            out_dir: self.workspace.out_dir().join("people"),
+            device: self.device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+            refine: None,
+            refine_strength: 0.0,
+            face_strength: id.face_strength.unwrap_or(0.8),
+            face_bbox: None,
+            face_landmarks: None,
+            identity,
+            shared_clip_h: None,
+            controls: Vec::new(),
+        }
+    }
+
+    /// Identity-preserving Chat refine: re-render the accumulated prompt with the stored
+    /// person's IP-Adapter pass (same face, same seed) instead of plain img2img.
+    fn dispatch_identity_refine(&mut self, edit: String) {
+        if self.portrait_run.is_some() {
+            return;
+        }
+        let Some(id) = self.chat_identity.clone() else { return };
+        let full = if self.refine_prompt.is_empty() { edit.clone() } else { format!("{}, {}", self.refine_prompt, edit) };
+        // The identity path doesn't go through drain_generation, so update the
+        // accumulated prompt here.
+        self.refine_prompt = full.clone();
+        self.active_full_prompt = full.clone();
+        self.chat.push_utterance(edit, true);
+        self.chat.push_system("↻ identity-preserving refine (IP-Adapter) — keeping the face".into());
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
+        let produced = self.workspace.out_dir().join("people").join(format!("plakat-portrait-{}.png", id.seed));
+        let req = self.identity_portrait_request(full.clone(), &id);
+        self.portrait_prompt = full;
+        self.pending_identity = Some(id); // persist across the next refine
+        self.portrait_run = Some(self.model_svc.run_portrait(req, produced));
+    }
+
     /// People `G` — generate a portrait from a person on a background thread (loads
     /// its own model; progress flows to the Output pane). The result opens in Chat.
     fn quick_generate(&mut self, spec: people::QuickGen) {
@@ -1678,44 +1769,28 @@ impl App {
         } else {
             spec.prompt.clone()
         };
-        let photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto> = spec
-            .photos
-            .iter()
-            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
-            .collect();
+        let _ = identity; // kind is recomputed by the helper from the strategy string
         let seed = rand::random::<u32>() as u64;
         let out_dir = self.workspace.out_dir().join("people");
-        let req = crate::pipelines::portrait::Request {
-            prompt: prompt.clone(),
-            negative: spec.negative,
-            photos,
+        // The reusable identity context — refines in Chat re-run this IP-Adapter pass.
+        let ident = ChatIdentity {
+            photos: spec.photos.clone(),
+            identity: spec.identity.clone(),
+            face_strength: spec.face_strength,
+            negative: spec.negative.clone(),
             model,
             width: w,
             height: h,
-            count: 1,
-            steps: 30,
-            guidance: 7.0,
-            seed: Some(seed),
-            out_dir: out_dir.clone(),
-            device: self.device.clone(),
-            loras: Vec::new(),
-            lora_scale: 1.0,
-            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
-            refine: None,
-            refine_strength: 0.0,
-            face_strength: spec.face_strength.unwrap_or(0.8),
-            face_bbox: None,
-            face_landmarks: None,
-            identity,
-            shared_clip_h: None,
-            controls: Vec::new(),
+            seed,
         };
+        let req = self.identity_portrait_request(prompt.clone(), &ident);
 
-        self.chat.push_system(format!("generating portrait of {} — opens in Chat…", spec.label));
+        self.chat.push_system(format!("generating portrait of {} — opens in Chat (refines keep the face)…", spec.label));
         if let Some(alias) = self.models.loaded_alias() {
             self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
         }
         self.portrait_prompt = prompt;
+        self.pending_identity = Some(ident);
         // Run on the model thread (frees the loaded Chat model first — no double-load).
         let produced = out_dir.join(format!("plakat-portrait-{seed}.png"));
         self.portrait_run = Some(self.model_svc.run_portrait(req, produced));
@@ -1805,6 +1880,9 @@ impl App {
             self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
         }
         self.portrait_prompt = scene;
+        // Multiperson isn't a single-identity refine (per-person IP-Adapter would need a
+        // composite) — its continuation is plain.
+        self.pending_identity = None;
         // Run on the model thread (frees the loaded Chat model first — no double-load).
         let produced = out_dir.join(format!("plakat-multiperson-{seed}.png"));
         self.portrait_run = Some(self.model_svc.run_multiperson(req, produced));
@@ -1824,9 +1902,18 @@ impl App {
         };
         if let Some(result) = done {
             self.portrait_run = None;
+            // The identity context this run produced (Some for a single portrait /
+            // identity refine; None for multiperson). `continue_from_image` clears
+            // `chat_identity`, so re-adopt it here.
+            let ident = self.pending_identity.take();
             match result {
-                // Portraits carry no Chat recipe → image-anchored continuation.
-                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone(), None),
+                Ok(path) => {
+                    // A known identity → continue in PROMPT-EVOLVE at its stable seed (so
+                    // refines keep accumulating); else image-anchored.
+                    let seed = ident.as_ref().map(|i| i.seed);
+                    self.continue_from_image(path, self.portrait_prompt.clone(), seed);
+                    self.chat_identity = ident;
+                }
                 Err(e) => self.output.push(format!("✗ portrait failed: {e}")),
             }
         }
@@ -1842,6 +1929,9 @@ impl App {
         self.refine_prompt = prompt;
         self.fixed_seed = None;
         self.chat_mask = None;
+        // Generic continue (History `C` / Canvas) is not identity-aware; the portrait
+        // path re-adopts its identity context after this returns.
+        self.chat_identity = None;
         let mode = match seed {
             Some(s) => {
                 self.base_seed = Some(s);
@@ -2122,6 +2212,16 @@ impl App {
         }
         // Enhancing crafts a fresh detailed prompt, so it never refines.
         let refine = !force_fresh && !enhance && self.base_seed.is_some();
+        // Identity-preserving continuation: a portrait with a known person was loaded in
+        // Chat → a refine re-runs its IP-Adapter pass (keeps the face) instead of img2img.
+        if refine && self.chat_identity.is_some() {
+            self.dispatch_identity_refine(edit);
+            return;
+        }
+        // A fresh / enhanced generation leaves the identity context behind.
+        if !refine {
+            self.chat_identity = None;
+        }
         // Accumulate the prompt so earlier edits persist ("...sea with waves, a sail
         // boat on the horizon"). DEFAULT (prompt-evolve): re-render the accumulated
         // prompt with txt2img at the conversation's stable seed → typed edits reliably
@@ -2905,6 +3005,59 @@ mod tests {
         let mut a = test_app();
         a.apply_lora_by_name("does-not-exist");
         assert!(a.chat.history.last().unwrap().utterance.contains("no local LoRA"));
+    }
+
+    #[test]
+    fn identity_portrait_request_carries_prompt_seed_and_photos() {
+        let a = test_app();
+        let id = ChatIdentity {
+            photos: vec![("/tmp/alice.png".into(), 1.0)],
+            identity: "plus-face".into(),
+            face_strength: Some(0.7),
+            negative: "blurry".into(),
+            model: "sd15".into(),
+            width: 512,
+            height: 640,
+            seed: 1234,
+        };
+        let req = a.identity_portrait_request("a portrait of alice, smiling".into(), &id);
+        assert_eq!(req.prompt, "a portrait of alice, smiling");
+        assert_eq!(req.seed, Some(1234));
+        assert_eq!(req.model, "sd15");
+        assert_eq!(req.photos.len(), 1);
+        assert_eq!(req.face_strength, 0.7);
+        // The strategy string parsed to a concrete IdentityKind.
+        assert!(matches!(req.identity, Some(crate::pipelines::ip_adapter::IdentityKind::PlusFace)));
+    }
+
+    #[test]
+    fn identity_refine_routes_to_the_portrait_pass_not_plain_gen() {
+        let mut a = test_app();
+        a.chat_identity = Some(ChatIdentity {
+            photos: vec![("/tmp/alice.png".into(), 1.0)],
+            identity: "plus-face".into(),
+            face_strength: Some(0.8),
+            negative: String::new(),
+            model: "sd15".into(),
+            width: 512,
+            height: 640,
+            seed: 1234,
+        });
+        a.base_seed = Some(1234);
+        a.refine_prompt = "a portrait of alice".into();
+        // Pre-occupy portrait_run so dispatch_identity_refine short-circuits at its guard
+        // (no real model run in the test) — we only assert the routing decision.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.portrait_run = Some(rx);
+
+        a.dispatch_generation("smiling".into(), false);
+        // Routed to the identity (portrait) path → did NOT start a plain txt2img/img2img.
+        assert!(a.active_gen.is_none(), "identity refine did not use the plain gen path");
+
+        // `/new` with no active run leaves the identity behind (fresh gen path).
+        a.portrait_run = None;
+        a.dispatch_generation("/new a landscape".into(), false);
+        assert!(a.chat_identity.is_none(), "a fresh image drops the identity context");
     }
 
     #[test]

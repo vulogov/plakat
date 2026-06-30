@@ -417,5 +417,9 @@ headlessly with `plakat scenario FILE.hjson`.
   before such a run (you'll see a "freeing … — reload with L after"
   note), so only one model is ever resident — no double-load. Reload the
   Chat model with `L` in Models when you're done.
-- Continuing a portrait in Chat keeps the *look* but not strict face
-  identity (Chat refinement is plain img2img, not identity-aware).
+- Continuing a **portrait** in Chat now keeps the **face identity**: a
+  refine re-runs the person's IP-Adapter pass (same reference photos +
+  seed) with your accumulated prompt, so edits land while the face holds.
+  `/new`, `/enhance`, or continuing a non-portrait image (History `C` /
+  Canvas) drops back to plain refinement. Multiperson scenes continue
+  plainly (not per-person identity-aware).
