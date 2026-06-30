@@ -81,6 +81,12 @@ pub struct ScenarioArgs {
     /// machine-readable shape.
     #[arg(long = "json-summary", value_name = "PATH")]
     pub json_summary: Option<PathBuf>,
+
+    /// Programmatic override for the scenario's `out:` dir (not a CLI flag). The
+    /// `plakat ui` runner sets this to a path under the workspace `out/` so generated
+    /// images land where History scans them, regardless of the scenario's own `out:`.
+    #[arg(skip)]
+    pub out_override: Option<PathBuf>,
 }
 
 // =====================================================================
@@ -1767,7 +1773,13 @@ pub async fn run_with_events(
     let mut steps = s.steps.unwrap_or(28);
     let mut guidance = s.guidance.unwrap_or(7.5);
     let seed = s.seed.unwrap_or(0);
-    let out_root = s.out.clone().unwrap_or_else(|| PathBuf::from("./out"));
+    // The TUI's `out_override` wins so scenario images land under the workspace `out/`
+    // (where History scans); else the scenario's own `out:`; else `./out`.
+    let out_root = args
+        .out_override
+        .clone()
+        .or_else(|| s.out.clone())
+        .unwrap_or_else(|| PathBuf::from("./out"));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -1923,43 +1935,50 @@ pub async fn run_with_events(
     // applicable, with the exact YAML to copy.
     sd_per_task_lora_preflight(&s, &model)?;
 
+    // In the `plakat ui` TUI, raw stdout scribbles over the alternate screen — every
+    // status line must go through the rerouted progress sink (which falls back to
+    // stdout on the CLI). `sout!` is `println!`-shaped but sink-safe.
+    macro_rules! sout {
+        ($($a:tt)*) => { crate::ui::progress::println(&format!($($a)*)) };
+    }
+
     // -------- execution plan summary --------
     let total_images = (s.tasks.len() as u32) * count;
-    println!(
+    sout!(
         "{}  {} task(s) × {} image(s) = {} image(s) to generate",
         style("scenario").yellow().bold(),
         s.tasks.len(),
         count,
         total_images,
     );
-    println!("  model:     {model}");
-    println!("  size:      {width}×{height}");
-    println!("  steps:     {steps}  guidance: {guidance}  scheduler: {scheduler:?}");
-    println!("  out:       {}", out_root.display());
-    println!("  enhancer:  {enhancer}");
+    sout!("  model:     {model}");
+    sout!("  size:      {width}×{height}");
+    sout!("  steps:     {steps}  guidance: {guidance}  scheduler: {scheduler:?}");
+    sout!("  out:       {}", out_root.display());
+    sout!("  enhancer:  {enhancer}");
     if !loras.is_empty() {
-        println!("  loras:     {} (scale {lora_scale})", loras.len());
+        sout!("  loras:     {} (scale {lora_scale})", loras.len());
     }
     if let Some(r) = s.refine {
-        println!("  refine:    {r} steps × strength {refine_strength}");
+        sout!("  refine:    {r} steps × strength {refine_strength}");
     }
     if s.refiner {
         let frac = s.refiner_frac.unwrap_or(0.8);
-        println!(
+        sout!(
             "  refiner:   on (switch at {:.0}% of schedule, SDXL only)",
             frac * 100.0
         );
     }
     if s.upscale.upscale {
         let shown = upscale_method.native_scale().unwrap_or(s.upscale.scale);
-        println!(
+        sout!(
             "  upscale:   {:.2}× {} (post-stylize if `style` is set, else original)",
             shown, s.upscale.method
         );
     }
     // v0.13 phase 10: print effective tiled / GGUF settings when set.
     if let Some(tcfg) = s.tiled {
-        println!(
+        sout!(
             "  tiled:     {}px tiles, stride {}px (MultiDiffusion)",
             tcfg.size, tcfg.stride
         );
@@ -1971,9 +1990,9 @@ pub async fn run_with_events(
         let q = s.quant_level.as_deref().unwrap_or("Q4_K_S");
         if s.quantize_t5 {
             let t5q = s.t5_quant_level.as_deref().unwrap_or("Q4_K_M");
-            println!("  gguf:      Flux={q}, T5={t5q} (quantized T5)");
+            sout!("  gguf:      Flux={q}, T5={t5q} (quantized T5)");
         } else {
-            println!("  gguf:      Flux={q} (T5 stays BF16)");
+            sout!("  gguf:      Flux={q} (T5 stays BF16)");
         }
     }
     if !s.personas.is_empty() {
@@ -1986,7 +2005,7 @@ pub async fn run_with_events(
         let portrait_label = portrait_identity
             .map(|k| k.label())
             .unwrap_or("(unused — no persona tasks)");
-        println!(
+        sout!(
             "  personas:  {} defined [{}], used by {} task(s) — {}",
             s.personas.len(),
             names.join(", "),
@@ -4680,7 +4699,7 @@ pub async fn run_with_events(
     // this, "✓ done N images" misleads — they'd look in the out
     // dir, find it empty, and wonder what happened.
     if args.dry_run {
-        println!(
+        sout!(
             "\n{} would have generated {} image(s) across {} task(s) → {} \
              (no files written — drop --dry-run to actually generate)",
             style("(dry-run)").yellow().bold(),
@@ -4689,7 +4708,7 @@ pub async fn run_with_events(
             out_root.display()
         );
     } else {
-        println!(
+        sout!(
             "\n{} {} task(s), {} image(s) → {}",
             style("✓ done").green().bold(),
             s.tasks.len(),
@@ -7078,6 +7097,40 @@ mod tests {
     }
 
     #[test]
+    fn out_override_supersedes_the_scenario_out_dir() {
+        // The TUI sets `out_override` so images land under the workspace out/ dir (where
+        // History scans) regardless of the scenario's own `out:`. Verified via the
+        // json-summary's recorded out_dir on a dry-run.
+        let d = std::env::temp_dir().join("plakat-scenario-outoverride-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("s.hjson");
+        std::fs::write(
+            &file,
+            r#"{"model":"stable-diffusion-v1-5/stable-diffusion-v1-5","size":"512x512","enhancer":"local","out":"./scenario-own-out","scene":[{"name":"","prompt":"p"}],"weather":[{"name":"","prompt":"c"}],"tasks":[{"name":"alpha","prompt":"a"}]}"#,
+        )
+        .unwrap();
+        let summary = d.join("summary.json");
+        let override_dir = d.join("workspace-out").join("scenarios").join("s");
+        let args = ScenarioArgs {
+            file,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: Some(summary.clone()),
+            out_override: Some(override_dir.clone()),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(run_with_events(args, None)).expect("dry-run should succeed");
+        let written = std::fs::read_to_string(&summary).unwrap();
+        assert!(written.contains(override_dir.to_str().unwrap()), "summary out_dir should be the override: {written}");
+        assert!(!written.contains("scenario-own-out"), "the scenario's own out: must be ignored");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn run_with_events_emits_per_task_events_on_dry_run() {
         // A dry-run iterates every task but loads no model and hits no network
         // (Variant::detect is pure string matching), so it exercises the live
@@ -7107,6 +7160,7 @@ mod tests {
             only: Vec::new(),
             limit: 0,
             json_summary: None,
+            out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(run_with_events(args, Some(tx))).expect("dry-run should succeed");

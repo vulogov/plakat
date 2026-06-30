@@ -1738,6 +1738,11 @@ impl App {
         let names = crate::cli::scenario::task_names(&path).unwrap_or_default();
         self.scenarios.start_run(name, names);
 
+        // Land scenario images under the workspace out/ dir (grouped per scenario) so
+        // History — which scans workspace.out_dir() — picks them up, no matter what the
+        // scenario file's own `out:` says.
+        let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
+        let out_override = Some(self.workspace.out_dir().join("scenarios").join(stem));
         let (tx, rx) = std::sync::mpsc::channel();
         let (etx, erx) = std::sync::mpsc::channel();
         let rt = self.rt.clone();
@@ -1750,6 +1755,7 @@ impl App {
                 only: Vec::new(),
                 limit: 0,
                 json_summary: None,
+                out_override,
             };
             let result = rt.block_on(crate::cli::scenario::run_with_events(args, Some(etx)));
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
@@ -1781,6 +1787,9 @@ impl App {
             self.scenario_run = None;
             self.scenario_events = None;
             self.scenarios.finish_run(result);
+            // The run wrote images under the workspace out/ dir — refresh History so
+            // they show up without the user pressing `r`.
+            self.history.rescan();
         }
     }
 
