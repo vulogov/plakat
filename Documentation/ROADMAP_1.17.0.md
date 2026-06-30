@@ -91,8 +91,11 @@ Reference: [`Documentation/RFC_TUI_1.md`](RFC_TUI_1.md).
 
 ## F — LoRA Hub (smaller follow-ups)
 
-- [ ] **Download manager depth** — ≤2 concurrent, range-resume, explicit SHA-256 verify,
-      version-update detection (progress + a `●` indicator + 1h search caching shipped).
+- [~] **Download manager depth** — **SHA-256 verify** now lands: a Civitai download is
+      hashed against the API's published `SHA256` (chunked read) and, on a mismatch, the
+      corrupt file is deleted so a retry re-fetches (no published hash → skip; cache-hit
+      stays size-based for speed). HF downloads go through hf-hub's own integrity check.
+      Still deferred: ≤2 concurrent, range-resume, version-update detection.
 - [x] **LLM-assessment caching** (24h sidecar) — `R` assessments are cached to a `.txt`
       sidecar under the shared cache (keyed by the LoRA's path, 24h TTL via mtime); a
       fresh one is served without re-billing the LLM. Failed/empty assessments aren't
