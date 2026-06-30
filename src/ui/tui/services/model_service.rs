@@ -17,7 +17,7 @@ use candle_core::Device;
 use tokio::runtime::Handle;
 
 use crate::pipelines::gen_channel::{CancelFlag, ChannelHook, GenMessage};
-use crate::pipelines::{cascade, img2img, pixart, portrait, sd3, t2i};
+use crate::pipelines::{cascade, img2img, multiperson, pixart, portrait, sd3, t2i};
 use crate::pipelines::lora::LoraSpec;
 use crate::preset::discovery::BaseFamily;
 
@@ -49,6 +49,26 @@ pub enum ModelCommand {
     Load { alias: String, loras: Vec<crate::pipelines::lora::LoraSpec> },
     Unload,
     Generate(GenJob),
+    /// In-process scenario run. The model thread **drops the loaded Chat pipeline first**
+    /// (frees memory deterministically — same thread), then runs the scenario, so only
+    /// one model is ever resident (no double-load OOM on unified memory).
+    RunScenario {
+        args: crate::cli::scenario::ScenarioArgs,
+        events: Sender<crate::cli::scenario::ScenarioEvent>,
+        done: Sender<Result<(), String>>,
+    },
+    /// In-process portrait (People `G`) — same free-then-run discipline.
+    RunPortrait {
+        req: portrait::Request,
+        produced: PathBuf,
+        done: Sender<Result<PathBuf, String>>,
+    },
+    /// In-process multiperson scene (People `G` with ≥2 marked).
+    RunMultiperson {
+        req: multiperson::MultipersonRequest,
+        produced: PathBuf,
+        done: Sender<Result<PathBuf, String>>,
+    },
     Shutdown,
 }
 
@@ -163,6 +183,34 @@ impl ModelService {
         };
         let _ = self.cmd_tx.send(ModelCommand::Generate(job));
         (rx, cancel)
+    }
+
+    /// Run a scenario on the model thread (frees the loaded Chat model first). `events`
+    /// receives the live per-task [`ScenarioEvent`]s; the returned receiver yields the
+    /// terminal result.
+    pub fn run_scenario(
+        &self,
+        args: crate::cli::scenario::ScenarioArgs,
+        events: Sender<crate::cli::scenario::ScenarioEvent>,
+    ) -> Receiver<Result<(), String>> {
+        let (done, rx) = channel();
+        let _ = self.cmd_tx.send(ModelCommand::RunScenario { args, events, done });
+        rx
+    }
+
+    /// Run a portrait on the model thread (frees the loaded Chat model first). `produced`
+    /// is the output path returned on success.
+    pub fn run_portrait(&self, req: portrait::Request, produced: PathBuf) -> Receiver<Result<PathBuf, String>> {
+        let (done, rx) = channel();
+        let _ = self.cmd_tx.send(ModelCommand::RunPortrait { req, produced, done });
+        rx
+    }
+
+    /// Run a multiperson scene on the model thread (frees the loaded Chat model first).
+    pub fn run_multiperson(&self, req: multiperson::MultipersonRequest, produced: PathBuf) -> Receiver<Result<PathBuf, String>> {
+        let (done, rx) = channel();
+        let _ = self.cmd_tx.send(ModelCommand::RunMultiperson { req, produced, done });
+        rx
     }
 
     /// Non-blocking drain of one status message (called from the event-loop tick).
@@ -504,8 +552,33 @@ fn model_loop(
                     }
                 }
             }
+            ModelCommand::RunScenario { args, events, done } => {
+                free_loaded(&mut loaded, &msg_tx);
+                let result = rt
+                    .block_on(crate::cli::scenario::run_with_events(args, Some(events)))
+                    .map_err(|e| format!("{e:#}"));
+                let _ = done.send(result);
+            }
+            ModelCommand::RunPortrait { req, produced, done } => {
+                free_loaded(&mut loaded, &msg_tx);
+                let result = rt.block_on(portrait::run(req)).map(|_| produced).map_err(|e| format!("{e:#}"));
+                let _ = done.send(result);
+            }
+            ModelCommand::RunMultiperson { req, produced, done } => {
+                free_loaded(&mut loaded, &msg_tx);
+                let result = rt.block_on(multiperson::run(req)).map(|_| produced).map_err(|e| format!("{e:#}"));
+                let _ = done.send(result);
+            }
             ModelCommand::Shutdown => break,
         }
+    }
+}
+
+/// Drop the resident Chat pipeline (if any) before an in-process heavy run, so only one
+/// model is ever in memory; tell the UI it's now unloaded.
+fn free_loaded(loaded: &mut Option<(String, Loaded)>, msg_tx: &Sender<ModelMessage>) {
+    if loaded.take().is_some() {
+        let _ = msg_tx.send(ModelMessage::Unloaded);
     }
 }
 
@@ -580,6 +653,52 @@ fn embed_chat_recipe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_scenario_executes_on_the_model_thread() {
+        // The in-process runner routes a scenario through the model thread (which frees
+        // any loaded Chat model first). A dry-run exercises the command path end-to-end
+        // without loading a model. Uses a real multi-thread runtime handle.
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let svc = ModelService::spawn(Device::Cpu, rt.handle().clone());
+
+        let d = std::env::temp_dir().join("plakat-modelsvc-scenario-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("s.hjson");
+        std::fs::write(
+            &file,
+            r#"{"model":"stable-diffusion-v1-5/stable-diffusion-v1-5","size":"512x512","enhancer":"local","scene":[{"name":"","prompt":"p"}],"weather":[{"name":"","prompt":"c"}],"tasks":[{"name":"alpha","prompt":"a"}]}"#,
+        )
+        .unwrap();
+        let args = crate::cli::scenario::ScenarioArgs {
+            file,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override: None,
+        };
+        let (etx, erx) = channel();
+        let done = svc.run_scenario(args, etx);
+
+        // Wait (bounded) for the terminal result; the model thread runs run_with_events.
+        let mut result = None;
+        for _ in 0..600 {
+            if let Ok(r) = done.try_recv() {
+                result = Some(r);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(matches!(result, Some(Ok(()))), "dry-run scenario ran on the model thread: {result:?}");
+        // The per-task events flowed back on the events channel.
+        let evs: Vec<_> = std::iter::from_fn(|| erx.try_recv().ok()).collect();
+        assert!(!evs.is_empty(), "scenario events were forwarded");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn keep_unique_increments_per_seed_without_overwriting() {

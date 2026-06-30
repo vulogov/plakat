@@ -408,8 +408,10 @@ headlessly with `plakat scenario FILE.hjson`.
   **Stable Cascade** models. Only **Flux** remains CLI-only for now. PixArt / Cascade
   have no persistent pipeline, so they reload on each generation (slower) and support
   fresh / prompt-evolve generation but not image-anchored refine or Canvas inpaint.
-- People quick-gen and Scenario runs load their **own** model
-  alongside any Chat model — on a 24 GB box, unload the Chat model
-  first if memory is tight.
+- People quick-gen and Scenario runs load their **own** model. To stay
+  within unified memory, plakat **frees the loaded Chat model first**
+  before such a run (you'll see a "freeing … — reload with L after"
+  note), so only one model is ever resident — no double-load. Reload the
+  Chat model with `L` in Models when you're done.
 - Continuing a portrait in Chat keeps the *look* but not strict face
   identity (Chat refinement is plain img2img, not identity-aware).

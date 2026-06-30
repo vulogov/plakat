@@ -1633,17 +1633,13 @@ impl App {
         };
 
         self.chat.push_system(format!("generating portrait of {} — opens in Chat…", spec.label));
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
         self.portrait_prompt = prompt;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::pipelines::portrait::run(req))
-                .map(|_| out_dir.join(format!("plakat-portrait-{seed}.png")))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(result);
-        });
-        self.portrait_run = Some(rx);
+        // Run on the model thread (frees the loaded Chat model first — no double-load).
+        let produced = out_dir.join(format!("plakat-portrait-{seed}.png"));
+        self.portrait_run = Some(self.model_svc.run_portrait(req, produced));
     }
 
     /// People `G` with ≥2 marked — generate a multiperson scene placing each person
@@ -1726,17 +1722,13 @@ impl App {
             labels.join(", "),
             identity.label()
         ));
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
         self.portrait_prompt = scene;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::pipelines::multiperson::run(req))
-                .map(|_| out_dir.join(format!("plakat-multiperson-{seed}.png")))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(result);
-        });
-        self.portrait_run = Some(rx);
+        // Run on the model thread (frees the loaded Chat model first — no double-load).
+        let produced = out_dir.join(format!("plakat-multiperson-{seed}.png"));
+        self.portrait_run = Some(self.model_svc.run_multiperson(req, produced));
     }
 
     /// Poll the in-flight portrait / multiperson gen; on success, open it in Chat.
@@ -1845,24 +1837,25 @@ impl App {
         // scenario file's own `out:` says.
         let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
         let out_override = Some(self.workspace.out_dir().join("scenarios").join(stem));
-        let (tx, rx) = std::sync::mpsc::channel();
+        // If a Chat model is loaded, note that the in-process run will free it (only one
+        // model fits in unified memory; the runner loads the scenario's own).
+        if let Some(alias) = self.models.loaded_alias() {
+            self.scenarios.status = format!("freeing {alias} to run — reload with L in Models after");
+        }
+        let args = crate::cli::scenario::ScenarioArgs {
+            file: path,
+            dry_run: false,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override,
+        };
+        // Run on the model thread so it drops the loaded Chat pipeline first (no
+        // double-load). Events flow on `erx`; the terminal result on the returned rx.
         let (etx, erx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let args = crate::cli::scenario::ScenarioArgs {
-                file: path,
-                dry_run: false,
-                resume: false,
-                force: false,
-                only: Vec::new(),
-                limit: 0,
-                json_summary: None,
-                out_override,
-            };
-            let result = rt.block_on(crate::cli::scenario::run_with_events(args, Some(etx)));
-            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
-        });
-        self.scenario_run = Some(rx);
+        self.scenario_run = Some(self.model_svc.run_scenario(args, etx));
         self.scenario_events = Some(erx);
     }
 

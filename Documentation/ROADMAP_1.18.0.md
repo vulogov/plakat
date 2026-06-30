@@ -15,10 +15,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       GGUF-Metal guard). **Postponed**: can't be verified end-to-end on the current box
       (Flux too large; GGUF-Flux-on-Metal is a known-broken kernel path). Resume when
       verifiable hardware is available.
-- [ ] **In-process scenario / portrait runner** — Scenario runs and People quick-gen
-      load their *own* model alongside any Chat model (double load, memory pressure).
-      **Large refactor**: extract a runner that accepts an already-loaded pipeline +
-      reconcile the scenario's model field. (RFC §0-R0-2)
+- [x] **In-process scenario / portrait runner** — scenario runs + People quick-gen
+      (portrait / multiperson) now execute **on the ModelService thread**, which **drops
+      the loaded Chat pipeline first** (deterministic — same thread) before the run loads
+      its own model. Only one model is ever resident, so no double-load OOM on unified
+      memory. New `ModelCommand::{RunScenario,RunPortrait,RunMultiperson}` + matching
+      `ModelService` methods; the App routes through them instead of spawning competing
+      threads and notes "freeing <alias> — reload with L after". (A true *shared* pipeline
+      — reuse the loaded weights when the scenario's model+LoRAs match — is a further
+      optimization; freeing avoids the OOM either way.)
 
 ## B — People depth (remaining)
 
