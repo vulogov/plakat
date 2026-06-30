@@ -17,35 +17,34 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.16.0 — `plakat ui` grows up
+## What's new in 1.17.0 — `plakat ui`, polished
 
-1.15.0 shipped the eight-screen **`plakat ui`** terminal UI. 1.16.0 pays down its depth
-deferrals — more models, smarter refinement, and the workflow glue that turns *exploring*
-into *producing*.
+1.16.0 broadened the `plakat ui` terminal UI; 1.17.0 makes it *fast and pleasant* — a
+command palette, inline mentions, a thumbnail grid, identity scoring, and a clutch of
+fixes to scenario runs.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **More models in the UI** — **SD3 / 3.5**, **PixArt-Σ**, and **Stable Cascade** now
-  load and generate in Chat alongside SD-family (only Flux stays CLI-only for now). Chat
-  refine / Canvas inpaint get **live preview + mid-denoise cancel** (StepHook-wired
-  img2img), and `/auto` lets an LLM decide **edit-vs-new** for each follow-up.
-- **LoRA Hub completeness** — per-LoRA **weights** (`+`/`-`, shown `★w`), `Ctrl-R` LLM
-  **stack suggestions**, HuggingFace **base-model markers**, 1h **search caching**, and a
-  `●` download indicator.
-- **Chat → Scenario** — `Ctrl-G` in the Scenarios editor distills your whole Chat thread
-  into one coherent prompt and inserts it as a scenario task: explore in Chat, batch as a
-  scenario.
-- **People** — `I` **imports** a scenario persona into your editable `people/` library;
-  `Del` is the **right to be forgotten** (type-name confirmation).
-- **History** — `/` **filter** across filename / tags / recipe, `T` **tag**, `X`
-  **export** the filtered set, and `d` **compares** two recipes (only the changed fields).
-- **Canvas** — `M` **outpaint**: pick an edge + band and extend the image; Chat fills the
-  new region.
-- **Prompt Workspace** — `Ctrl-Tab` cycles buffers, `Ctrl-N` starts a new one.
-- **Chat sessions** — `/save`, `/load`, `/sessions` persist and restore a whole thread
-  (prompt + seed + negative + base image) so you can pick up where you left off.
+- **Command palette** (`Ctrl-K`) — a fuzzy action launcher on every screen (run any
+  command, jump to any screen), even mid-typing.
+- **`@mention`** people and LoRAs inline in the Chat prompt — `@` opens a live completion
+  popup; a person expands to its prompt, a LoRA applies on the spot.
+- **Chat sessions + filmstrip** — a one-line scrubber of every frame this session;
+  `Ctrl-←/→` scrub, `Ctrl-B` roll back / branch, `Ctrl-Y` make a variation.
+- **History thumbnail grid** (`v`) — a lazy, LRU-cached 4-column grid; plus `/` filter,
+  recipe `compare`, and a **background decode** so large PNGs never hitch navigation.
+- **People depth** — six DETAIL sub-tabs (REFS / ENCODING / PORTFOLIO / TEST / KNOWN-GOOD
+  / SETTINGS), **`E` encoding-quality score** (SCRFD + ArcFace ref consistency), and
+  **mixed-family multiperson** routing.
+- **Tera mode** (`Ctrl-T`) — render a prompt through Tera before compiling, with a live
+  variable panel. **Canvas** — face-aware `B` (preserve people) + `g` finer-grid masks.
+- **LoRA Hub** — 24h assessment caching, a two-stage HF LoRA pre-filter, and **SHA-256
+  verified** Civitai downloads.
+- **Fixes** — scenario runs no longer corrupt the TUI or hide their output from History,
+  the Prompt Workspace no longer crashes, and a new scenario is **runnable as-is**
+  (`n` → `Ctrl-S` → run, no API key) and **nameable** (`Ctrl-R`).
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -56,9 +55,9 @@ that a compiled scenario runs headlessly.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
 [`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
-[`Documentation/ROADMAP_1.17.0.md`](Documentation/ROADMAP_1.17.0.md).
+[`Documentation/ROADMAP_1.18.0.md`](Documentation/ROADMAP_1.18.0.md).
 
-**Earlier releases** (v0.13 – v1.15):
+**Earlier releases** (v0.13 – v1.16):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
