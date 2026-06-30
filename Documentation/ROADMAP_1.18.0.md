@@ -30,9 +30,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 - [ ] **Identity-preserving Chat continuation** — an IP-Adapter-aware refine path so a
       continued portrait keeps face identity (Chat refine is plain img2img today). Builds
       on the encoding-quality work (`E`).
-- [ ] **Auto-encode + invalidation** — compute the encoding-quality score automatically
-      on first strategy+model use, and invalidate it on a ref / strategy / model change
-      (today it's explicit via `E`).
+- [x] **Auto-encode + invalidation** — the encoding-quality score now computes
+      **automatically** the first time the ENCODING tab is viewed on an unscored identity
+      (once per identity per session, off-thread), and is **invalidated** when the refs or
+      strategy change: the sidecar is now `quality.json` carrying a `fingerprint` (FNV of
+      the sorted ref path+size set + the identity strategy); on load the score is restored
+      only if the fingerprint still matches, else it's dropped (→ recomputed). `E` still
+      forces a recompute.
 
 ## C — History (remaining)
 

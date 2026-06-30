@@ -221,7 +221,9 @@ tagged `◇`).
   + ArcFace-embeds every reference photo and reports their mean similarity
   (high = the refs are clearly the same face; low = inconsistent refs that
   will muddy the identity). The score shows in the **ENCODING** sub-tab and
-  persists across runs.
+  persists across runs. It also **computes automatically** the first time you
+  open the ENCODING tab, and **re-scores itself** whenever you change the
+  references or the strategy.
 - **`I`** **imports** a scenario-defined persona (`◇`) into your editable
   `people/` library — it copies the reference photos into
   `people/<name>/refs/` and writes a `person.hjson`, so you can encode,

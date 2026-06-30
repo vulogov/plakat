@@ -433,6 +433,13 @@ impl App {
                 .map(|img| self.picker.new_resize_protocol(img));
             self.people.preview_for = sel;
         }
+        // Auto-compute the encoding quality the first time the ENCODING tab is viewed on
+        // an unscored identity (once per identity per session; not while one's running).
+        if self.people_encode.is_none() {
+            if let people::PeopleAction::Encode { name, dir, photos, fingerprint } = self.people.auto_encode_request() {
+                self.encode_person(name, dir, photos, fingerprint);
+            }
+        }
     }
 
     /// Lazily decode the selected History image into a preview (and read its recipe),
@@ -642,7 +649,7 @@ impl App {
             match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
-                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
+                people::PeopleAction::Encode { name, dir, photos, fingerprint } => self.encode_person(name, dir, photos, fingerprint),
                 people::PeopleAction::None => {}
             }
             return;
@@ -699,7 +706,7 @@ impl App {
             ActiveScreen::People => match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
-                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
+                people::PeopleAction::Encode { name, dir, photos, fingerprint } => self.encode_person(name, dir, photos, fingerprint),
                 people::PeopleAction::None => {}
             },
             ActiveScreen::LoraHub => {
@@ -1507,7 +1514,7 @@ impl App {
 
     /// (Re)compute an identity's encoding quality (mean pairwise ArcFace cosine of its
     /// refs) on a background thread, persist it, and reflect it in the People screen.
-    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>) {
+    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>, fingerprint: String) {
         if self.people_encode.is_some() {
             return;
         }
@@ -1520,9 +1527,10 @@ impl App {
                 .and_then(|scorer| scorer.score(&photos))
                 .map(|r| (r.score, r.faces, r.total))
                 .map_err(|e| format!("{e:#}"));
-            // Persist a successful score next to the identity so it survives rescans.
-            if let Ok((score, _, _)) = &result {
-                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score);
+            // Persist a successful score (with the fingerprint that ties it to this ref
+            // set + strategy) so it survives rescans and invalidates on a change.
+            if let Ok((score, faces, total)) = &result {
+                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score, *faces, *total, &fingerprint);
             }
             let _ = tx.send((name, dir, result));
         });
