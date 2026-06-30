@@ -8,6 +8,25 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.17.0 — `plakat ui`, polished
+
+1.16.0 broadened the `plakat ui` terminal UI; 1.17.0 made it *fast and pleasant*:
+
+- **Command palette** (`Ctrl-K`) — a fuzzy action launcher on every screen.
+- **`@mention`** people and LoRAs inline in the Chat prompt.
+- **Chat sessions + filmstrip** — scrub frames (`Ctrl-←/→`), roll back (`Ctrl-B`), vary
+  (`Ctrl-Y`).
+- **History thumbnail grid** (`v`, lazy + LRU) + background decode + `/` filter + recipe
+  compare.
+- **People depth** — six DETAIL sub-tabs, **`E` encoding-quality score** (SCRFD + ArcFace
+  ref consistency), mixed-family multiperson.
+- **Tera mode** (`Ctrl-T`) with a live variable panel; **Canvas** face-aware `B` + `g`
+  finer-grid masks.
+- **LoRA Hub** — 24h assessment caching, two-stage HF pre-filter, SHA-256-verified
+  Civitai downloads.
+- **Fixes** — scenario runs no longer corrupt the TUI or hide outputs from History; the
+  Prompt Workspace crash fixed; a new scenario is runnable as-is + nameable (`Ctrl-R`).
+
 ## What's new in 1.16.0 — `plakat ui` grows up
 
 1.15.0 shipped the eight-screen `plakat ui` terminal UI; 1.16.0 paid down its depth

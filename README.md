@@ -17,34 +17,29 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.17.0 — `plakat ui`, polished
+## What's new in 1.18.0 — `plakat ui`, sturdier
 
-1.16.0 broadened the `plakat ui` terminal UI; 1.17.0 makes it *fast and pleasant* — a
-command palette, inline mentions, a thumbnail grid, identity scoring, and a clutch of
-fixes to scenario runs.
+1.17.0 made the `plakat ui` terminal UI fast and pleasant; 1.18.0 makes it **sturdy** —
+no more double-load OOMs, faces that survive a refine, self-maintaining identities, and a
+finished download manager.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **Command palette** (`Ctrl-K`) — a fuzzy action launcher on every screen (run any
-  command, jump to any screen), even mid-typing.
-- **`@mention`** people and LoRAs inline in the Chat prompt — `@` opens a live completion
-  popup; a person expands to its prompt, a LoRA applies on the spot.
-- **Chat sessions + filmstrip** — a one-line scrubber of every frame this session;
-  `Ctrl-←/→` scrub, `Ctrl-B` roll back / branch, `Ctrl-Y` make a variation.
-- **History thumbnail grid** (`v`) — a lazy, LRU-cached 4-column grid; plus `/` filter,
-  recipe `compare`, and a **background decode** so large PNGs never hitch navigation.
-- **People depth** — six DETAIL sub-tabs (REFS / ENCODING / PORTFOLIO / TEST / KNOWN-GOOD
-  / SETTINGS), **`E` encoding-quality score** (SCRFD + ArcFace ref consistency), and
-  **mixed-family multiperson** routing.
-- **Tera mode** (`Ctrl-T`) — render a prompt through Tera before compiling, with a live
-  variable panel. **Canvas** — face-aware `B` (preserve people) + `g` finer-grid masks.
-- **LoRA Hub** — 24h assessment caching, a two-stage HF LoRA pre-filter, and **SHA-256
-  verified** Civitai downloads.
-- **Fixes** — scenario runs no longer corrupt the TUI or hide their output from History,
-  the Prompt Workspace no longer crashes, and a new scenario is **runnable as-is**
-  (`n` → `Ctrl-S` → run, no API key) and **nameable** (`Ctrl-R`).
+- **In-process runner — no double-load OOM** — Scenario runs and People quick-gen no
+  longer load a *second* model alongside the loaded Chat one. They run on the model
+  thread, which **frees the Chat pipeline first**, so only one model is ever resident on
+  unified memory.
+- **Identity-preserving Chat continuation** — continue a portrait into Chat and your
+  refines now **keep the face**: each edit re-runs the person's IP-Adapter pass (same
+  reference photos + seed) with your accumulated prompt.
+- **People auto-encode + invalidation** — the `E` **encoding-quality score** now computes
+  automatically the first time you view a person's ENCODING tab, and **re-scores itself**
+  when you change the references or the strategy.
+- **Download manager, complete** — `U` checks a Civitai LoRA for a **newer version** (and
+  downloads it); downloads run **≤2 at a time** with a queue; and an interrupted download
+  **resumes** via an HTTP Range request (alongside 1.17.0's SHA-256 verify).
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -55,9 +50,9 @@ that a compiled scenario runs headlessly.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
 [`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
-[`Documentation/ROADMAP_1.18.0.md`](Documentation/ROADMAP_1.18.0.md).
+[`Documentation/ROADMAP_1.19.0.md`](Documentation/ROADMAP_1.19.0.md).
 
-**Earlier releases** (v0.13 – v1.16):
+**Earlier releases** (v0.13 – v1.17):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
