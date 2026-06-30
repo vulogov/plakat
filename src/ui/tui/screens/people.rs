@@ -16,7 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One weighted reference photo.
 #[derive(Deserialize, Default, Clone)]
@@ -198,6 +198,37 @@ impl Person {
             .collect()
     }
 
+    /// A fingerprint of the inputs that determine the encoding quality: the reference
+    /// set (relative path + on-disk size) plus the identity strategy. Adding / removing /
+    /// replacing a ref, or changing the strategy, changes this — invalidating a cached
+    /// score so it gets recomputed.
+    fn encoding_fingerprint(&self) -> String {
+        let mut parts: Vec<String> = self
+            .refs
+            .iter()
+            .filter(|r| !r.path.is_empty())
+            .map(|r| {
+                let size = std::fs::metadata(self.dir.join(&r.path)).map(|m| m.len()).unwrap_or(0);
+                format!("{}:{size}", r.path)
+            })
+            .collect();
+        parts.sort();
+        let mut h: u64 = 1469598103934665603; // FNV-1a
+        let mut mix = |b: &[u8]| {
+            for &x in b {
+                h ^= x as u64;
+                h = h.wrapping_mul(1099511628211);
+            }
+        };
+        mix(self.identity.as_bytes());
+        mix(b"|");
+        for p in &parts {
+            mix(p.as_bytes());
+            mix(b",");
+        }
+        format!("{h:016x}")
+    }
+
     fn quick_gen_spec(&self) -> QuickGen {
         QuickGen {
             label: self.label().to_string(),
@@ -229,9 +260,10 @@ pub enum PeopleAction {
     Generate(QuickGen),
     /// `G` with ≥2 marked (Space) → multiperson scene. Result opens in Chat.
     GenerateMulti(Vec<QuickGen>),
-    /// `E` — (re)compute the selected identity's encoding quality score from its refs.
-    /// `name` identifies the person (its dir slug); `photos` are the resolved refs.
-    Encode { name: String, dir: PathBuf, photos: Vec<PathBuf> },
+    /// `E` (or auto, on first ENCODING view) — (re)compute the selected identity's
+    /// encoding quality from its refs. `fingerprint` ties the score to this exact ref
+    /// set + strategy so it can be invalidated later.
+    Encode { name: String, dir: PathBuf, photos: Vec<PathBuf>, fingerprint: String },
 }
 
 pub struct PeopleState {
@@ -247,6 +279,9 @@ pub struct PeopleState {
     status: String,
     /// Active DETAIL sub-tab (RFC §11).
     detail_tab: DetailTab,
+    /// Identities auto-encode has already been attempted for this session (so a missing
+    /// score auto-computes once, and a failure doesn't loop).
+    auto_encoded: std::collections::HashSet<String>,
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
 }
@@ -262,6 +297,7 @@ impl PeopleState {
             confirm_delete: None,
             status: String::new(),
             detail_tab: DetailTab::Refs,
+            auto_encoded: std::collections::HashSet::new(),
             preview: None,
             preview_for: None,
         };
@@ -483,15 +519,50 @@ impl PeopleState {
             self.status = "can't encode a malformed identity".into();
             return PeopleAction::None;
         }
-        let photos: Vec<PathBuf> = p.resolved_photos().into_iter().map(|(path, _)| path).collect();
-        let name = p.label().to_string();
-        let dir = p.dir.clone();
-        if photos.is_empty() {
+        if p.resolved_photos().is_empty() {
             self.status = "no reference photos to encode".into();
             return PeopleAction::None;
         }
-        self.status = format!("encoding {name} from {} ref(s)…", photos.len());
-        PeopleAction::Encode { name, dir, photos }
+        let label = p.label().to_string();
+        let n = p.refs.iter().filter(|r| !r.path.is_empty()).count();
+        self.auto_encoded.insert(label.clone()); // a manual run also satisfies "auto once"
+        self.status = format!("encoding {label} from {n} ref(s)…");
+        self.encode_action_for(self.selected)
+    }
+
+    /// Build the `Encode` action for the person at index `idx` (with its fingerprint).
+    fn encode_action_for(&self, idx: usize) -> PeopleAction {
+        let Some(p) = self.people.get(idx) else { return PeopleAction::None };
+        let photos: Vec<PathBuf> = p.resolved_photos().into_iter().map(|(path, _)| path).collect();
+        PeopleAction::Encode {
+            name: p.label().to_string(),
+            dir: p.dir.clone(),
+            photos,
+            fingerprint: p.encoding_fingerprint(),
+        }
+    }
+
+    /// Auto-encode hook: when the ENCODING tab is open on a people-dir identity that has
+    /// no (fresh) score and hasn't been auto-attempted this session, return its `Encode`
+    /// action (and mark it attempted so it fires once / doesn't loop on failure). The App
+    /// calls this when no encode is already in flight.
+    pub fn auto_encode_request(&mut self) -> PeopleAction {
+        if self.detail_tab != DetailTab::Encoding {
+            return PeopleAction::None;
+        }
+        let Some(p) = self.people.get(self.selected) else { return PeopleAction::None };
+        if p.source != "people"
+            || p.error.is_some()
+            || p.encoding_quality.is_some()
+            || p.resolved_photos().is_empty()
+            || self.auto_encoded.contains(p.label())
+        {
+            return PeopleAction::None;
+        }
+        let label = p.label().to_string();
+        self.auto_encoded.insert(label.clone());
+        self.status = format!("auto-encoding {label}…");
+        self.encode_action_for(self.selected)
     }
 
     /// The App delivers the computed quality score (in `[-1, 1]`, with the face count)
@@ -756,9 +827,9 @@ impl PeopleState {
         }
         lines.push(Line::from(""));
         if p.encoding_quality.is_none() {
-            lines.push(warn("⚠ not scored yet — press `E` to compute the encoding quality from the refs"));
+            lines.push(warn("⚠ scoring on view (auto) — or press `E`; auto-invalidates on a ref/strategy change"));
         } else {
-            lines.push(dim("press `E` to recompute · side-by-side strategy compare is planned."));
+            lines.push(dim("press `E` to recompute · auto-invalidates on a ref/strategy change"));
         }
         lines
     }
@@ -934,11 +1005,17 @@ fn load_person(dir: &Path, hjson: &Path) -> Person {
         Ok(mut p) => {
             p.dir = dir.to_path_buf();
             p.source = "people".into();
-            // A computed quality score (the `E` re-encode) is stored in a sidecar so it
-            // survives across runs without rewriting the hand-authored person.hjson; it
-            // fills `encoding_quality` when the hjson didn't set one.
+            // A computed quality score (the `E` / auto re-encode) is stored in a sidecar
+            // so it survives across runs without rewriting the hand-authored
+            // person.hjson. It fills `encoding_quality` only when the hjson didn't set one
+            // AND the sidecar's fingerprint still matches the current refs+strategy — a
+            // ref/strategy change invalidates it (→ None → auto-recompute).
             if p.encoding_quality.is_none() {
-                p.encoding_quality = read_quality_sidecar(dir);
+                if let Some((score, fp)) = read_quality_sidecar(dir) {
+                    if fp == p.encoding_fingerprint() {
+                        p.encoding_quality = Some(score);
+                    }
+                }
             }
             p
         }
@@ -946,17 +1023,33 @@ fn load_person(dir: &Path, hjson: &Path) -> Person {
     }
 }
 
-/// The persisted encoding quality from `<dir>/encoding/quality.txt`, if present.
-fn read_quality_sidecar(dir: &Path) -> Option<f32> {
-    std::fs::read_to_string(dir.join("encoding").join("quality.txt")).ok()?.trim().parse().ok()
+/// The persisted encoding sidecar: a quality score tied to the `fingerprint` of the
+/// refs+strategy it was computed for (so it can be invalidated).
+#[derive(Serialize, Deserialize)]
+struct QualitySidecar {
+    score: f32,
+    fingerprint: String,
+    #[serde(default)]
+    faces: usize,
+    #[serde(default)]
+    total: usize,
 }
 
-/// Persist an encoding quality score to `<dir>/encoding/quality.txt` (App-side, after
-/// the `E` re-encode).
-pub fn write_quality_sidecar(dir: &Path, score: f32) -> std::io::Result<()> {
+/// The persisted `(score, fingerprint)` from `<dir>/encoding/quality.json`, if present.
+fn read_quality_sidecar(dir: &Path) -> Option<(f32, String)> {
+    let bytes = std::fs::read(dir.join("encoding").join("quality.json")).ok()?;
+    let s: QualitySidecar = serde_json::from_slice(&bytes).ok()?;
+    Some((s.score, s.fingerprint))
+}
+
+/// Persist an encoding quality score + its fingerprint to `<dir>/encoding/quality.json`
+/// (App-side, after the `E` / auto re-encode).
+pub fn write_quality_sidecar(dir: &Path, score: f32, faces: usize, total: usize, fingerprint: &str) -> std::io::Result<()> {
     let enc = dir.join("encoding");
     std::fs::create_dir_all(&enc)?;
-    std::fs::write(enc.join("quality.txt"), format!("{score}\n"))
+    let sidecar = QualitySidecar { score, fingerprint: fingerprint.to_string(), faces, total };
+    let json = serde_json::to_vec_pretty(&sidecar).map_err(std::io::Error::other)?;
+    std::fs::write(enc.join("quality.json"), json)
 }
 
 /// Build a read-only Person from a scenario persona. Photo paths are already absolute
@@ -1256,23 +1349,58 @@ mod tests {
         .unwrap();
         let mut s = PeopleState::new(d.join("people"), d.join("scenarios"));
 
-        // E yields an Encode action carrying the person + its resolved refs.
-        match s.handle_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE)) {
-            PeopleAction::Encode { name, dir, photos } => {
+        // E yields an Encode action carrying the person + its resolved refs + fingerprint.
+        let fp = match s.handle_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE)) {
+            PeopleAction::Encode { name, dir, photos, fingerprint } => {
                 assert_eq!(name, "Alice");
                 assert_eq!(dir, alice);
                 assert_eq!(photos.len(), 1);
                 assert!(photos[0].ends_with("refs/a.jpg"));
+                assert!(!fingerprint.is_empty());
+                fingerprint
             }
             _ => panic!("expected Encode"),
-        }
+        };
 
-        // The App delivers a score → in-memory + a sidecar that survives a rescan.
-        write_quality_sidecar(&alice, 0.61).unwrap();
+        // The App delivers a score → in-memory + a sidecar (with the fingerprint) that
+        // survives a rescan.
+        write_quality_sidecar(&alice, 0.61, 1, 1, &fp).unwrap();
         s.set_encoding_quality("Alice", 0.61, 1, 1);
         assert_eq!(s.people[0].encoding_quality, Some(0.61));
         let reloaded = PeopleState::new(d.join("people"), d.join("scenarios"));
-        assert_eq!(reloaded.people[0].encoding_quality, Some(0.61), "sidecar restores the score");
+        assert_eq!(reloaded.people[0].encoding_quality, Some(0.61), "matching fingerprint restores the score");
+
+        // Changing a ref (new size) changes the fingerprint → the cached score is stale
+        // (invalidated) and the reload doesn't restore it.
+        std::fs::write(&alice.join("refs/a.jpg"), b"a much larger reference photo now").unwrap();
+        let after_change = PeopleState::new(d.join("people"), d.join("scenarios"));
+        assert_eq!(after_change.people[0].encoding_quality, None, "ref change invalidates the score");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn auto_encode_fires_once_on_the_encoding_tab() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tmp("autoencode");
+        let alice = d.join("people").join("alice");
+        std::fs::create_dir_all(alice.join("refs")).unwrap();
+        std::fs::write(alice.join("refs/a.jpg"), b"x").unwrap();
+        std::fs::write(
+            alice.join("person.hjson"),
+            r#"{"display_name":"Alice","refs":[{"path":"refs/a.jpg","weight":1.0}]}"#,
+        )
+        .unwrap();
+        let mut s = PeopleState::new(d.join("people"), d.join("scenarios"));
+        // On the REFS tab there's no auto-encode.
+        assert!(matches!(s.auto_encode_request(), PeopleAction::None));
+        // Cycle to the ENCODING tab (REFS → ENCODING is one Right).
+        s.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        // First request fires; a second is suppressed (once per session).
+        assert!(matches!(s.auto_encode_request(), PeopleAction::Encode { .. }));
+        assert!(matches!(s.auto_encode_request(), PeopleAction::None), "auto-encode fires once");
+        // Once a score exists, no auto-encode.
+        s.set_encoding_quality("Alice", 0.5, 1, 1);
+        assert!(matches!(s.auto_encode_request(), PeopleAction::None));
         let _ = std::fs::remove_dir_all(&d);
     }
 

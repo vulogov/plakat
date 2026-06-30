@@ -221,7 +221,9 @@ tagged `◇`).
   + ArcFace-embeds every reference photo and reports their mean similarity
   (high = the refs are clearly the same face; low = inconsistent refs that
   will muddy the identity). The score shows in the **ENCODING** sub-tab and
-  persists across runs.
+  persists across runs. It also **computes automatically** the first time you
+  open the ENCODING tab, and **re-scores itself** whenever you change the
+  references or the strategy.
 - **`I`** **imports** a scenario-defined persona (`◇`) into your editable
   `people/` library — it copies the reference photos into
   `people/<name>/refs/` and writes a `person.hjson`, so you can encode,
@@ -246,6 +248,8 @@ Press **`Ctrl-5`**. Three tabs, switched with **`←`/`→`**:
     in (`★` marks applied; an incompatible LoRA is refused with a note).
     Your next Chat generation uses it.
   - **`R`** asks the LLM for a one-sentence **assessment** of the LoRA.
+  - **`U`** checks a Civitai-downloaded LoRA for a **newer version** and,
+    if one exists, downloads it (the result lands back in LOCAL).
 - **CIVITAI** / **HUGGINGFACE** — type a query, **Enter** to search,
   `j`/`k` to browse, **`D`** to download. Civitai LoRAs land in the
   shared cache; HF LoRAs are copied into your `loras/` dir — either way
@@ -408,8 +412,14 @@ headlessly with `plakat scenario FILE.hjson`.
   **Stable Cascade** models. Only **Flux** remains CLI-only for now. PixArt / Cascade
   have no persistent pipeline, so they reload on each generation (slower) and support
   fresh / prompt-evolve generation but not image-anchored refine or Canvas inpaint.
-- People quick-gen and Scenario runs load their **own** model
-  alongside any Chat model — on a 24 GB box, unload the Chat model
-  first if memory is tight.
-- Continuing a portrait in Chat keeps the *look* but not strict face
-  identity (Chat refinement is plain img2img, not identity-aware).
+- People quick-gen and Scenario runs load their **own** model. To stay
+  within unified memory, plakat **frees the loaded Chat model first**
+  before such a run (you'll see a "freeing … — reload with L after"
+  note), so only one model is ever resident — no double-load. Reload the
+  Chat model with `L` in Models when you're done.
+- Continuing a **portrait** in Chat now keeps the **face identity**: a
+  refine re-runs the person's IP-Adapter pass (same reference photos +
+  seed) with your accumulated prompt, so edits land while the face holds.
+  `/new`, `/enhance`, or continuing a non-portrait image (History `C` /
+  Canvas) drops back to plain refinement. Multiperson scenes continue
+  plainly (not per-person identity-aware).

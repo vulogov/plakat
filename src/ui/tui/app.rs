@@ -47,6 +47,9 @@ const APPLY_LORA_SCALE: f32 = 0.8;
 /// img2img strength for a Canvas inpaint turn — high, so the masked region actually
 /// regenerates (a soft 0.6 only nudges it).
 const INPAINT_STRENGTH: f32 = 0.85;
+/// Max LoRA downloads running at once (the rest queue). Unified memory + a shared CDN
+/// make a small cap saner than unbounded fan-out.
+const MAX_CONCURRENT_DOWNLOADS: usize = 2;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -178,15 +181,26 @@ pub struct App {
     // the prompt/seed to seed the Chat continuation when it lands.
     portrait_run: Option<Receiver<Result<std::path::PathBuf, String>>>,
     portrait_prompt: String,
+    // Identity-preserving Chat continuation: while `Some`, a portrait with a known person
+    // is loaded in Chat, so a refine re-runs the IP-Adapter portrait pass (keeps the face)
+    // instead of plain img2img. `pending_identity` is set per-run and adopted by
+    // `drain_portrait` once the image lands.
+    chat_identity: Option<ChatIdentity>,
+    pending_identity: Option<ChatIdentity>,
     // In-flight remote (Civitai / HF) search + download for the LoRA Hub.
     remote_search: Option<Receiver<Result<Vec<lorahub::RemoteHit>, String>>>,
-    remote_download: Option<Receiver<Result<String, String>>>,
+    // Download pool: ≤2 concurrent, the rest queued (DownloadRef + title).
+    downloads_active: Vec<Receiver<Result<String, String>>>,
+    downloads_queue: std::collections::VecDeque<(lorahub::DownloadRef, String)>,
     // In-flight LLM LoRA assessment: (item key, assessment text).
     lora_assess: Option<Receiver<(String, String)>>,
     // In-flight LLM recommend-for-context (LoRA Hub search tabs).
     lora_recommend: Option<Receiver<String>>,
     // In-flight LLM LoRA-combination suggestion (LoRA Hub Ctrl-R).
     lora_combine: Option<Receiver<String>>,
+    // In-flight Civitai update check (LoRA Hub `U`): `(model_id, name, Result<Option<(new_id, new_name)>>)`.
+    #[allow(clippy::type_complexity)]
+    lora_update: Option<Receiver<(u64, String, Result<Option<(u64, String)>, String>)>>,
     // In-flight Prompt Workspace LLM compile.
     prompt_compile: Option<Receiver<Result<String, String>>>,
     // In-flight Prompt Workspace structural (live) compile: `(src, result)`. Runs on a
@@ -204,6 +218,21 @@ pub struct App {
     history_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
     // In-flight History thumbnail decode (grid view): `(path, decoded thumbnail)`.
     thumb_decode: Option<(std::path::PathBuf, Receiver<Option<image::DynamicImage>>)>,
+}
+
+/// The reusable identity context for an IP-Adapter-preserving Chat continuation: the
+/// person's reference photos + strategy + the run parameters, so each refine re-renders
+/// the accumulated prompt with the *same* face at the same seed.
+#[derive(Clone)]
+struct ChatIdentity {
+    photos: Vec<(std::path::PathBuf, f32)>,
+    identity: String,
+    face_strength: Option<f32>,
+    negative: String,
+    model: String,
+    width: u32,
+    height: u32,
+    seed: u64,
 }
 
 /// A persisted Chat session (`/save` / `/load`): the visible thread plus the
@@ -282,11 +311,15 @@ impl App {
             scenario_events: None,
             portrait_run: None,
             portrait_prompt: String::new(),
+            chat_identity: None,
+            pending_identity: None,
             remote_search: None,
-            remote_download: None,
+            downloads_active: Vec::new(),
+            downloads_queue: std::collections::VecDeque::new(),
             lora_assess: None,
             lora_recommend: None,
             lora_combine: None,
+            lora_update: None,
             prompt_compile: None,
             prompt_structural: None,
             chat_to_scenario: None,
@@ -432,6 +465,13 @@ impl App {
                 .and_then(|p| image::open(p).ok())
                 .map(|img| self.picker.new_resize_protocol(img));
             self.people.preview_for = sel;
+        }
+        // Auto-compute the encoding quality the first time the ENCODING tab is viewed on
+        // an unscored identity (once per identity per session; not while one's running).
+        if self.people_encode.is_none() {
+            if let people::PeopleAction::Encode { name, dir, photos, fingerprint } = self.people.auto_encode_request() {
+                self.encode_person(name, dir, photos, fingerprint);
+            }
         }
     }
 
@@ -642,7 +682,7 @@ impl App {
             match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
-                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
+                people::PeopleAction::Encode { name, dir, photos, fingerprint } => self.encode_person(name, dir, photos, fingerprint),
                 people::PeopleAction::None => {}
             }
             return;
@@ -699,7 +739,7 @@ impl App {
             ActiveScreen::People => match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
                 people::PeopleAction::GenerateMulti(specs) => self.quick_generate_multi(specs),
-                people::PeopleAction::Encode { name, dir, photos } => self.encode_person(name, dir, photos),
+                people::PeopleAction::Encode { name, dir, photos, fingerprint } => self.encode_person(name, dir, photos, fingerprint),
                 people::PeopleAction::None => {}
             },
             ActiveScreen::LoraHub => {
@@ -773,6 +813,7 @@ impl App {
             ActiveScreen::LoraHub => {
                 cmds.push(("Apply selected LoRA".into(), k('a')));
                 cmds.push(("Assess selected (LLM)".into(), k('r')));
+                cmds.push(("Check for a newer version".into(), k('u')));
                 cmds.push(("Suggest a LoRA stack (LLM)".into(), kc('r')));
             }
             ActiveScreen::PromptWorkspace => {
@@ -951,7 +992,32 @@ impl App {
             lorahub::LoraHubAction::Recommend { candidates } => self.recommend_loras(candidates),
             lorahub::LoraHubAction::AdjustWeight { path, delta } => self.adjust_lora_weight(path, delta),
             lorahub::LoraHubAction::SuggestCombination { candidates } => self.suggest_combination(candidates),
+            lorahub::LoraHubAction::CheckUpdate { path, name } => self.check_lora_update(path, name),
         }
+    }
+
+    /// `U` — check whether a Civitai-sourced LoRA has a newer version; if so, download it
+    /// (it lands in LOCAL) — reuses the remote-download path. Reports to the Output pane.
+    fn check_lora_update(&mut self, path: std::path::PathBuf, name: String) {
+        let Some((model_id, version_id)) = lorahub::civitai_ids_from_path(&path) else {
+            self.output.push(format!("‘{name}’ isn't a Civitai download — no update check"));
+            return;
+        };
+        if self.lora_update.is_some() {
+            return;
+        }
+        self.output.push(format!("checking ‘{name}’ for a newer version…"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = self.rt.clone();
+        std::thread::spawn(move || {
+            // Query the model's versions; report a newer one (id, name) if present.
+            let result = rt
+                .block_on(crate::civitai::api::get_model(model_id))
+                .map(|model| lorahub::newer_version(version_id, &model.model_versions).map(|v| (v.id, v.name.clone())))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send((model_id, name, result));
+        });
+        self.lora_update = Some(rx);
     }
 
     /// `Ctrl-R` — ask the LLM which compatible LoRAs to STACK for the current Chat
@@ -1171,30 +1237,37 @@ impl App {
         self.remote_search = Some(rx);
     }
 
-    /// Download a LoRA (Civitai → its cache; HF → copied into the workspace loras/
-    /// dir) on a background thread; on success rescan LOCAL.
+    /// Queue a LoRA download (Civitai → its cache; HF → the workspace loras/ dir). Up to
+    /// [`MAX_CONCURRENT_DOWNLOADS`] run at once; the rest wait in `downloads_queue`.
     fn remote_download(&mut self, dl: lorahub::DownloadRef, title: String) {
-        if self.remote_download.is_some() {
-            return;
+        self.downloads_queue.push_back((dl, title));
+        self.pump_downloads();
+    }
+
+    /// Start queued downloads until the concurrency cap is reached.
+    fn pump_downloads(&mut self) {
+        while self.downloads_active.len() < MAX_CONCURRENT_DOWNLOADS {
+            let Some((dl, title)) = self.downloads_queue.pop_front() else { break };
+            let loras_dir = self.workspace.loras_dir();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let rt = self.rt.clone();
+            std::thread::spawn(move || {
+                let result = match dl {
+                    lorahub::DownloadRef::Civitai { model_id, version_id } => rt
+                        .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
+                        .map(|_| title)
+                        .map_err(|e| format!("{e:#}")),
+                    lorahub::DownloadRef::Hf { repo } => rt
+                        .block_on(crate::hf::search::download_lora_into(&repo, &loras_dir))
+                        .map(|_| title)
+                        .map_err(|e| format!("{e:#}")),
+                };
+                let _ = tx.send(result);
+            });
+            self.downloads_active.push(rx);
         }
-        let loras_dir = self.workspace.loras_dir();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = match dl {
-                lorahub::DownloadRef::Civitai { model_id, version_id } => rt
-                    .block_on(crate::civitai::download::download_version(Some(model_id), version_id, None))
-                    .map(|_| title)
-                    .map_err(|e| format!("{e:#}")),
-                lorahub::DownloadRef::Hf { repo } => rt
-                    .block_on(crate::hf::search::download_lora_into(&repo, &loras_dir))
-                    .map(|_| title)
-                    .map_err(|e| format!("{e:#}")),
-            };
-            let _ = tx.send(result);
-        });
-        self.lorahub.set_downloading(true);
-        self.remote_download = Some(rx);
+        // The `●` tab marker reflects anything in flight or waiting.
+        self.lorahub.set_downloading(!self.downloads_active.is_empty() || !self.downloads_queue.is_empty());
     }
 
     /// Drain the in-flight remote search / download into the Hub each tick.
@@ -1213,24 +1286,31 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = &self.remote_download {
-            match rx.try_recv() {
-                Ok(Ok(name)) => {
-                    self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL"));
-                    self.lorahub.rescan();
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
+        // Drain the active download pool: collect completed receivers, report each,
+        // keep the still-running ones, then pump the queue to refill the freed slots.
+        if !self.downloads_active.is_empty() {
+            let mut finished_any = false;
+            let mut still_running = Vec::with_capacity(self.downloads_active.len());
+            for rx in std::mem::take(&mut self.downloads_active) {
+                match rx.try_recv() {
+                    Ok(Ok(name)) => {
+                        let waiting = self.downloads_queue.len();
+                        let tail = if waiting > 0 { format!(" ({waiting} queued)") } else { String::new() };
+                        self.lorahub.set_remote_status(format!("✓ downloaded {name} — see LOCAL{tail}"));
+                        self.lorahub.rescan();
+                        finished_any = true;
+                    }
+                    Ok(Err(e)) => {
+                        self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
+                        finished_any = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => finished_any = true,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => still_running.push(rx),
                 }
-                Ok(Err(e)) => {
-                    self.lorahub.set_remote_status(format!("✗ download failed: {e}"));
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.lorahub.set_downloading(false);
-                    self.remote_download = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            self.downloads_active = still_running;
+            if finished_any {
+                self.pump_downloads(); // start queued downloads into freed slots + refresh `●`
             }
         }
         if let Some(rx) = &self.lora_assess {
@@ -1260,6 +1340,27 @@ impl App {
                     self.lora_combine = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_combine = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.lora_update {
+            match rx.try_recv() {
+                Ok((model_id, name, result)) => {
+                    self.lora_update = None;
+                    match result {
+                        Ok(Some((new_id, new_name))) => {
+                            self.output.push(format!("↑ ‘{name}’: newer version ‘{new_name}’ — downloading…"));
+                            // Reuse the remote-download path; the new version lands in LOCAL.
+                            self.remote_download(
+                                lorahub::DownloadRef::Civitai { model_id, version_id: Some(new_id) },
+                                format!("{name} ({new_name})"),
+                            );
+                        }
+                        Ok(None) => self.output.push(format!("✓ ‘{name}’ is up to date")),
+                        Err(e) => self.output.push(format!("✗ update check for ‘{name}’ failed: {e}")),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lora_update = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
@@ -1507,7 +1608,7 @@ impl App {
 
     /// (Re)compute an identity's encoding quality (mean pairwise ArcFace cosine of its
     /// refs) on a background thread, persist it, and reflect it in the People screen.
-    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>) {
+    fn encode_person(&mut self, name: String, dir: std::path::PathBuf, photos: Vec<std::path::PathBuf>, fingerprint: String) {
         if self.people_encode.is_some() {
             return;
         }
@@ -1520,9 +1621,10 @@ impl App {
                 .and_then(|scorer| scorer.score(&photos))
                 .map(|r| (r.score, r.faces, r.total))
                 .map_err(|e| format!("{e:#}"));
-            // Persist a successful score next to the identity so it survives rescans.
-            if let Ok((score, _, _)) = &result {
-                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score);
+            // Persist a successful score (with the fingerprint that ties it to this ref
+            // set + strategy) so it survives rescans and invalidates on a change.
+            if let Ok((score, faces, total)) = &result {
+                let _ = crate::ui::tui::screens::people::write_quality_sidecar(&dir, *score, *faces, *total, &fingerprint);
             }
             let _ = tx.send((name, dir, result));
         });
@@ -1574,6 +1676,74 @@ impl App {
         self.canvas_faces = Some(rx);
     }
 
+    /// Build a `portrait::Request` for an identity context at the given (accumulated)
+    /// prompt. Used for the initial portrait and for every identity-preserving refine.
+    fn identity_portrait_request(&self, prompt: String, id: &ChatIdentity) -> crate::pipelines::portrait::Request {
+        let identity = if id.photos.is_empty() {
+            None
+        } else {
+            Some(
+                id.identity
+                    .parse::<crate::pipelines::ip_adapter::IdentityKind>()
+                    .unwrap_or(crate::pipelines::ip_adapter::IdentityKind::PlusFace),
+            )
+        };
+        let photos = id
+            .photos
+            .iter()
+            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
+            .collect();
+        crate::pipelines::portrait::Request {
+            prompt,
+            negative: id.negative.clone(),
+            photos,
+            model: id.model.clone(),
+            width: id.width,
+            height: id.height,
+            count: 1,
+            steps: 30,
+            guidance: 7.0,
+            seed: Some(id.seed),
+            out_dir: self.workspace.out_dir().join("people"),
+            device: self.device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+            refine: None,
+            refine_strength: 0.0,
+            face_strength: id.face_strength.unwrap_or(0.8),
+            face_bbox: None,
+            face_landmarks: None,
+            identity,
+            shared_clip_h: None,
+            controls: Vec::new(),
+        }
+    }
+
+    /// Identity-preserving Chat refine: re-render the accumulated prompt with the stored
+    /// person's IP-Adapter pass (same face, same seed) instead of plain img2img.
+    fn dispatch_identity_refine(&mut self, edit: String) {
+        if self.portrait_run.is_some() {
+            return;
+        }
+        let Some(id) = self.chat_identity.clone() else { return };
+        let full = if self.refine_prompt.is_empty() { edit.clone() } else { format!("{}, {}", self.refine_prompt, edit) };
+        // The identity path doesn't go through drain_generation, so update the
+        // accumulated prompt here.
+        self.refine_prompt = full.clone();
+        self.active_full_prompt = full.clone();
+        self.chat.push_utterance(edit, true);
+        self.chat.push_system("↻ identity-preserving refine (IP-Adapter) — keeping the face".into());
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
+        let produced = self.workspace.out_dir().join("people").join(format!("plakat-portrait-{}.png", id.seed));
+        let req = self.identity_portrait_request(full.clone(), &id);
+        self.portrait_prompt = full;
+        self.pending_identity = Some(id); // persist across the next refine
+        self.portrait_run = Some(self.model_svc.run_portrait(req, produced));
+    }
+
     /// People `G` — generate a portrait from a person on a background thread (loads
     /// its own model; progress flows to the Output pane). The result opens in Chat.
     fn quick_generate(&mut self, spec: people::QuickGen) {
@@ -1599,51 +1769,31 @@ impl App {
         } else {
             spec.prompt.clone()
         };
-        let photos: Vec<crate::pipelines::ip_adapter::WeightedPhoto> = spec
-            .photos
-            .iter()
-            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
-            .collect();
+        let _ = identity; // kind is recomputed by the helper from the strategy string
         let seed = rand::random::<u32>() as u64;
         let out_dir = self.workspace.out_dir().join("people");
-        let req = crate::pipelines::portrait::Request {
-            prompt: prompt.clone(),
-            negative: spec.negative,
-            photos,
+        // The reusable identity context — refines in Chat re-run this IP-Adapter pass.
+        let ident = ChatIdentity {
+            photos: spec.photos.clone(),
+            identity: spec.identity.clone(),
+            face_strength: spec.face_strength,
+            negative: spec.negative.clone(),
             model,
             width: w,
             height: h,
-            count: 1,
-            steps: 30,
-            guidance: 7.0,
-            seed: Some(seed),
-            out_dir: out_dir.clone(),
-            device: self.device.clone(),
-            loras: Vec::new(),
-            lora_scale: 1.0,
-            scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
-            refine: None,
-            refine_strength: 0.0,
-            face_strength: spec.face_strength.unwrap_or(0.8),
-            face_bbox: None,
-            face_landmarks: None,
-            identity,
-            shared_clip_h: None,
-            controls: Vec::new(),
+            seed,
         };
+        let req = self.identity_portrait_request(prompt.clone(), &ident);
 
-        self.chat.push_system(format!("generating portrait of {} — opens in Chat…", spec.label));
+        self.chat.push_system(format!("generating portrait of {} — opens in Chat (refines keep the face)…", spec.label));
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
         self.portrait_prompt = prompt;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::pipelines::portrait::run(req))
-                .map(|_| out_dir.join(format!("plakat-portrait-{seed}.png")))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(result);
-        });
-        self.portrait_run = Some(rx);
+        self.pending_identity = Some(ident);
+        // Run on the model thread (frees the loaded Chat model first — no double-load).
+        let produced = out_dir.join(format!("plakat-portrait-{seed}.png"));
+        self.portrait_run = Some(self.model_svc.run_portrait(req, produced));
     }
 
     /// People `G` with ≥2 marked — generate a multiperson scene placing each person
@@ -1726,17 +1876,16 @@ impl App {
             labels.join(", "),
             identity.label()
         ));
+        if let Some(alias) = self.models.loaded_alias() {
+            self.chat.push_system(format!("(freeing {alias} for the run — reload with L after)"));
+        }
         self.portrait_prompt = scene;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let result = rt
-                .block_on(crate::pipelines::multiperson::run(req))
-                .map(|_| out_dir.join(format!("plakat-multiperson-{seed}.png")))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(result);
-        });
-        self.portrait_run = Some(rx);
+        // Multiperson isn't a single-identity refine (per-person IP-Adapter would need a
+        // composite) — its continuation is plain.
+        self.pending_identity = None;
+        // Run on the model thread (frees the loaded Chat model first — no double-load).
+        let produced = out_dir.join(format!("plakat-multiperson-{seed}.png"));
+        self.portrait_run = Some(self.model_svc.run_multiperson(req, produced));
     }
 
     /// Poll the in-flight portrait / multiperson gen; on success, open it in Chat.
@@ -1753,9 +1902,18 @@ impl App {
         };
         if let Some(result) = done {
             self.portrait_run = None;
+            // The identity context this run produced (Some for a single portrait /
+            // identity refine; None for multiperson). `continue_from_image` clears
+            // `chat_identity`, so re-adopt it here.
+            let ident = self.pending_identity.take();
             match result {
-                // Portraits carry no Chat recipe → image-anchored continuation.
-                Ok(path) => self.continue_from_image(path, self.portrait_prompt.clone(), None),
+                Ok(path) => {
+                    // A known identity → continue in PROMPT-EVOLVE at its stable seed (so
+                    // refines keep accumulating); else image-anchored.
+                    let seed = ident.as_ref().map(|i| i.seed);
+                    self.continue_from_image(path, self.portrait_prompt.clone(), seed);
+                    self.chat_identity = ident;
+                }
                 Err(e) => self.output.push(format!("✗ portrait failed: {e}")),
             }
         }
@@ -1771,6 +1929,9 @@ impl App {
         self.refine_prompt = prompt;
         self.fixed_seed = None;
         self.chat_mask = None;
+        // Generic continue (History `C` / Canvas) is not identity-aware; the portrait
+        // path re-adopts its identity context after this returns.
+        self.chat_identity = None;
         let mode = match seed {
             Some(s) => {
                 self.base_seed = Some(s);
@@ -1845,24 +2006,25 @@ impl App {
         // scenario file's own `out:` says.
         let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("scenario").to_string();
         let out_override = Some(self.workspace.out_dir().join("scenarios").join(stem));
-        let (tx, rx) = std::sync::mpsc::channel();
+        // If a Chat model is loaded, note that the in-process run will free it (only one
+        // model fits in unified memory; the runner loads the scenario's own).
+        if let Some(alias) = self.models.loaded_alias() {
+            self.scenarios.status = format!("freeing {alias} to run — reload with L in Models after");
+        }
+        let args = crate::cli::scenario::ScenarioArgs {
+            file: path,
+            dry_run: false,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override,
+        };
+        // Run on the model thread so it drops the loaded Chat pipeline first (no
+        // double-load). Events flow on `erx`; the terminal result on the returned rx.
         let (etx, erx) = std::sync::mpsc::channel();
-        let rt = self.rt.clone();
-        std::thread::spawn(move || {
-            let args = crate::cli::scenario::ScenarioArgs {
-                file: path,
-                dry_run: false,
-                resume: false,
-                force: false,
-                only: Vec::new(),
-                limit: 0,
-                json_summary: None,
-                out_override,
-            };
-            let result = rt.block_on(crate::cli::scenario::run_with_events(args, Some(etx)));
-            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
-        });
-        self.scenario_run = Some(rx);
+        self.scenario_run = Some(self.model_svc.run_scenario(args, etx));
         self.scenario_events = Some(erx);
     }
 
@@ -2050,6 +2212,16 @@ impl App {
         }
         // Enhancing crafts a fresh detailed prompt, so it never refines.
         let refine = !force_fresh && !enhance && self.base_seed.is_some();
+        // Identity-preserving continuation: a portrait with a known person was loaded in
+        // Chat → a refine re-runs its IP-Adapter pass (keeps the face) instead of img2img.
+        if refine && self.chat_identity.is_some() {
+            self.dispatch_identity_refine(edit);
+            return;
+        }
+        // A fresh / enhanced generation leaves the identity context behind.
+        if !refine {
+            self.chat_identity = None;
+        }
         // Accumulate the prompt so earlier edits persist ("...sea with waves, a sail
         // boat on the horizon"). DEFAULT (prompt-evolve): re-render the accumulated
         // prompt with txt2img at the conversation's stable seed → typed edits reliably
@@ -2833,6 +3005,72 @@ mod tests {
         let mut a = test_app();
         a.apply_lora_by_name("does-not-exist");
         assert!(a.chat.history.last().unwrap().utterance.contains("no local LoRA"));
+    }
+
+    #[test]
+    fn identity_portrait_request_carries_prompt_seed_and_photos() {
+        let a = test_app();
+        let id = ChatIdentity {
+            photos: vec![("/tmp/alice.png".into(), 1.0)],
+            identity: "plus-face".into(),
+            face_strength: Some(0.7),
+            negative: "blurry".into(),
+            model: "sd15".into(),
+            width: 512,
+            height: 640,
+            seed: 1234,
+        };
+        let req = a.identity_portrait_request("a portrait of alice, smiling".into(), &id);
+        assert_eq!(req.prompt, "a portrait of alice, smiling");
+        assert_eq!(req.seed, Some(1234));
+        assert_eq!(req.model, "sd15");
+        assert_eq!(req.photos.len(), 1);
+        assert_eq!(req.face_strength, 0.7);
+        // The strategy string parsed to a concrete IdentityKind.
+        assert!(matches!(req.identity, Some(crate::pipelines::ip_adapter::IdentityKind::PlusFace)));
+    }
+
+    #[test]
+    fn identity_refine_routes_to_the_portrait_pass_not_plain_gen() {
+        let mut a = test_app();
+        a.chat_identity = Some(ChatIdentity {
+            photos: vec![("/tmp/alice.png".into(), 1.0)],
+            identity: "plus-face".into(),
+            face_strength: Some(0.8),
+            negative: String::new(),
+            model: "sd15".into(),
+            width: 512,
+            height: 640,
+            seed: 1234,
+        });
+        a.base_seed = Some(1234);
+        a.refine_prompt = "a portrait of alice".into();
+        // Pre-occupy portrait_run so dispatch_identity_refine short-circuits at its guard
+        // (no real model run in the test) — we only assert the routing decision.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        a.portrait_run = Some(rx);
+
+        a.dispatch_generation("smiling".into(), false);
+        // Routed to the identity (portrait) path → did NOT start a plain txt2img/img2img.
+        assert!(a.active_gen.is_none(), "identity refine did not use the plain gen path");
+
+        // `/new` with no active run leaves the identity behind (fresh gen path).
+        a.portrait_run = None;
+        a.dispatch_generation("/new a landscape".into(), false);
+        assert!(a.chat_identity.is_none(), "a fresh image drops the identity context");
+    }
+
+    #[test]
+    fn downloads_cap_concurrency_and_queue_the_rest() {
+        let mut a = test_app();
+        // Queue four downloads; only MAX_CONCURRENT_DOWNLOADS start, the rest wait.
+        for i in 0..4u64 {
+            a.remote_download(lorahub::DownloadRef::Civitai { model_id: i, version_id: None }, format!("lora{i}"));
+        }
+        assert_eq!(a.downloads_active.len(), MAX_CONCURRENT_DOWNLOADS);
+        assert_eq!(a.downloads_queue.len(), 4 - MAX_CONCURRENT_DOWNLOADS);
+        // The download indicator reflects in-flight + queued work.
+        // (set_downloading was called true via pump_downloads.)
     }
 
     #[test]
