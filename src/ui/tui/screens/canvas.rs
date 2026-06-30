@@ -403,7 +403,7 @@ impl CanvasState {
     }
 
     fn render_image(&mut self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title(" Base image ");
+        let block = Block::default().borders(Borders::ALL).title(" Current image ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         match &mut self.preview {

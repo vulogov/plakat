@@ -168,6 +168,10 @@ pub struct App {
     active_loras: Vec<(std::path::PathBuf, f32)>,
     // Inpaint mask from Canvas applied to the next Chat refinement (white = change).
     chat_mask: Option<std::path::PathBuf>,
+    // The exact image a Canvas mask / outpaint was painted over (the LATEST render, not
+    // the prompt-evolve base) — the inpaint runs over THIS so the mask aligns and edits
+    // compound on the current state. One-shot, consumed with the mask.
+    inpaint_base: Option<std::path::PathBuf>,
     // One-time-per-session nudge: prompt-evolve can't reliably ADD an object → point at
     // Canvas inpaint the first time the user types an "add a …"-style edit.
     inpaint_nudged: bool,
@@ -332,6 +336,7 @@ impl App {
             thumb_decode: None,
             active_loras: Vec::new(),
             chat_mask: None,
+            inpaint_base: None,
             inpaint_nudged: false,
             auto_route: false,
             route_rx: None,
@@ -1484,6 +1489,10 @@ impl App {
     /// to whatever it was (prompt-evolve by default), so you're not locked in.
     fn apply_canvas_mask(&mut self, path: std::path::PathBuf) {
         self.chat_mask = Some(path);
+        // Inpaint over the exact image the mask was painted on (the Canvas base = the
+        // latest render), so the mask aligns and the edit compounds on the current state.
+        // Fall back to the prompt-evolve base if the Canvas wasn't synced (e.g. tests).
+        self.inpaint_base = self.canvas.base_path().or_else(|| self.refine_base.clone());
         // A mask needs a base to inpaint over; ensure a refine is triggered.
         if self.base_seed.is_none() {
             self.base_seed = Some(rand::random::<u32>() as u64);
@@ -1496,7 +1505,8 @@ impl App {
     /// Apply a Canvas outpaint: the enlarged grey-padded image becomes the Chat base
     /// and the band mask is a one-shot inpaint, so the next prompt fills the new region.
     fn apply_outpaint(&mut self, base: std::path::PathBuf, mask: std::path::PathBuf) {
-        self.refine_base = Some(base);
+        self.refine_base = Some(base.clone());
+        self.inpaint_base = Some(base); // inpaint over the grey-padded canvas
         self.chat_mask = Some(mask);
         if self.base_seed.is_none() {
             self.base_seed = Some(rand::random::<u32>() as u64);
@@ -1600,11 +1610,15 @@ impl App {
         if self.screen != ActiveScreen::Canvas {
             return;
         }
-        if self.refine_base != self.canvas.base_path() {
-            let dims = self.refine_base.as_ref().and_then(|p| image::open(p).ok()).map(|i| (i.width(), i.height()));
-            self.canvas.set_base(self.refine_base.clone(), dims);
+        // Mask over the LATEST rendered image (not the prompt-evolve base, which stays the
+        // clean original) — so you paint + inpaint the current state and edits compound.
+        // Works for any model (it just reads the produced PNG).
+        let target = self.chat.latest_frame_path().or_else(|| self.refine_base.clone());
+        if target != self.canvas.base_path() {
+            let dims = target.as_ref().and_then(|p| image::open(p).ok()).map(|i| (i.width(), i.height()));
+            self.canvas.set_base(target.clone(), dims);
         }
-        let sel = self.refine_base.clone();
+        let sel = target;
         if sel != self.canvas.preview_for {
             self.canvas.preview = sel
                 .as_ref()
@@ -2250,12 +2264,13 @@ impl App {
         } else {
             edit.clone()
         };
-        // A Canvas mask makes this ONE turn an inpaint (img2img over the base, masked)
-        // regardless of the sticky mode — then it's consumed. Otherwise the mode rules:
-        // anchored (`/strength`) = img2img over the base; prompt-evolve = txt2img.
-        let inpaint = refine && self.chat_mask.is_some() && self.refine_base.is_some();
+        // A Canvas mask makes this ONE turn an inpaint over the masked image (the latest
+        // render — `inpaint_base`), regardless of the sticky mode; then it's consumed.
+        // Otherwise the mode rules: anchored (`/strength`) = img2img over the clean base;
+        // prompt-evolve = txt2img.
+        let inpaint = refine && self.chat_mask.is_some() && self.inpaint_base.is_some();
         let init_image = if inpaint {
-            self.refine_base.clone()
+            self.inpaint_base.clone()
         } else if refine {
             self.refine_strength.and(self.refine_base.clone())
         } else {
@@ -2307,6 +2322,9 @@ impl App {
         // prompt-evolve ignores it (init is None).
         let strength = if inpaint { INPAINT_STRENGTH } else { self.refine_strength.unwrap_or(0.0) };
         let mask = if inpaint { self.chat_mask.take() } else { None }; // one-shot
+        if inpaint {
+            self.inpaint_base = None; // consumed with the mask
+        }
         let enhancer = if enhance { Some(self.workspace.config.enhancer.clone()) } else { None };
         // An img2img/inpaint init image (e.g. a Canvas outpaint's grey-padded base) may
         // be non-square — generate at ITS dimensions (rounded to /8) so the mask aligns,
@@ -3099,6 +3117,28 @@ mod tests {
         a.portrait_run = None;
         a.dispatch_generation("/new a landscape".into(), false);
         assert!(a.chat_identity.is_none(), "a fresh image drops the identity context");
+    }
+
+    #[test]
+    fn canvas_masks_the_latest_image_not_the_original_base() {
+        let mut a = test_app();
+        // A thread: a fresh image (the prompt-evolve base) then a refine (the latest).
+        a.refine_base = Some("/tmp/original.png".into());
+        a.chat.push_utterance("a fox".into(), false);
+        a.chat.finish_last(Ok("/tmp/original.png".into()));
+        a.chat.push_utterance("make it autumn".into(), true);
+        a.chat.finish_last(Ok("/tmp/latest.png".into()));
+        a.base_seed = Some(7);
+
+        // On Canvas, the base tracks the LATEST render, not refine_base (the original).
+        a.screen = ActiveScreen::Canvas;
+        a.sync_canvas();
+        assert_eq!(a.canvas.base_path(), Some("/tmp/latest.png".into()));
+
+        // Applying a mask captures the latest image as the inpaint target.
+        a.apply_canvas_mask("/tmp/mask.png".into());
+        assert_eq!(a.inpaint_base, Some("/tmp/latest.png".into()));
+        assert_ne!(a.inpaint_base, a.refine_base, "inpaint over the latest, not the original");
     }
 
     #[test]
