@@ -8,6 +8,20 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.18.0 — `plakat ui`, sturdier
+
+1.17.0 made the `plakat ui` terminal UI fast and pleasant; 1.18.0 made it **sturdy**:
+
+- **In-process runner — no double-load OOM** — scenario runs + People quick-gen run on
+  the model thread, which frees the loaded Chat pipeline first, so only one model is
+  resident on unified memory.
+- **Identity-preserving Chat continuation** — a continued portrait keeps its face: each
+  refine re-runs the person's IP-Adapter pass (same reference photos + seed).
+- **People auto-encode + invalidation** — the `E` encoding-quality score computes on
+  first ENCODING-tab view and re-scores on a ref/strategy change (fingerprint sidecar).
+- **Download manager, complete** — `U` Civitai version-update detection + ≤2 concurrent
+  downloads (FIFO queue) + range-resume, alongside 1.17.0's SHA-256 verify.
+
 ## What's new in 1.17.0 — `plakat ui`, polished
 
 1.16.0 broadened the `plakat ui` terminal UI; 1.17.0 made it *fast and pleasant*:
