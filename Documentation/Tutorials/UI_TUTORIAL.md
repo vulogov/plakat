@@ -156,9 +156,10 @@ lose an earlier version.
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
 | `/size <WxH>` \| `<N>` \| `native` | Per-model generation size (budget-guarded; each model remembers its own) |
+| `/steps <n>` \| `/cfg <x>` | Override denoise steps / guidance (bare or `default` clears) |
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
-| `/preset save <name>` | Save the current model + LoRA stack + negative as a named preset |
+| `/preset save <name>` | Save the current model + LoRA stack + negative + size/steps/guidance as a named preset |
 | `/preset <name>` \| `/preset list` | Apply a saved preset / list them |
 | `/save [name]` | Save the whole Chat session (thread + prompt + seed + base) |
 | `/load <name>` | Reload a saved session and keep refining where you left off |

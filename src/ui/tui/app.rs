@@ -181,6 +181,10 @@ pub struct App {
     // Per-model generation-size override (`/size`), keyed by alias. Absent = the model's
     // native square (always Metal-safe). Each model remembers its own preferred size.
     gen_sizes: std::collections::HashMap<String, (u32, u32)>,
+    // Session denoise-steps / guidance overrides (`/steps`, `/cfg`); None = workspace
+    // default. Captured into and restored from named presets.
+    steps_override: Option<usize>,
+    guidance_override: Option<f64>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -353,6 +357,8 @@ impl App {
             show_help: false,
             variation_queue: std::collections::VecDeque::new(),
             gen_sizes: std::collections::HashMap::new(),
+            steps_override: None,
+            guidance_override: None,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -1859,8 +1865,9 @@ impl App {
 
     /// `/save [name]` — write the Chat thread + refinement state to
     /// `sessions/<name>.json` so it can be reloaded later.
-    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative under
-    /// a name (workspace `presets.json`). Uses the loaded model, else the Models cursor.
+    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative + the
+    /// model's size/steps/guidance overrides under a name (workspace `presets.json`). Uses
+    /// the loaded model, else the Models cursor.
     fn save_preset(&mut self, name: &str) {
         let model = self
             .models
@@ -1873,9 +1880,12 @@ impl App {
         };
         let preset = crate::ui::tui::presets::Preset {
             name: name.to_string(),
+            size: self.gen_sizes.get(&model).copied(),
             model,
             loras: self.active_loras.clone(),
             negative: self.negative.clone(),
+            steps: self.steps_override,
+            guidance: self.guidance_override,
         };
         let summary = preset.summary();
         match crate::ui::tui::presets::upsert(&self.workspace.root, preset) {
@@ -1907,6 +1917,17 @@ impl App {
         self.active_loras = p.loras.clone();
         self.negative = p.negative.clone();
         self.lorahub.set_applied(&self.active_loras);
+        // Restore the recipe overrides: size (per-model), steps, guidance.
+        match p.size {
+            Some(sz) => {
+                self.gen_sizes.insert(p.model.clone(), sz);
+            }
+            None => {
+                self.gen_sizes.remove(&p.model);
+            }
+        }
+        self.steps_override = p.steps;
+        self.guidance_override = p.guidance;
         self.chat.push_system(format!("applying preset “{}” — {}", p.name, p.summary()));
         self.request_load(p.model);
     }
@@ -2572,6 +2593,34 @@ impl App {
             self.set_gen_size(rest.trim());
             return;
         }
+        // `/steps <n>` | `default` — session denoise-steps override.
+        if let Some(rest) = text.strip_prefix("/steps") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("default") {
+                self.steps_override = None;
+                self.chat.push_system(format!("steps → default ({})", self.workspace.config.default_steps));
+            } else if let Some(n) = arg.parse::<usize>().ok().filter(|n| (1..=200).contains(n)) {
+                self.steps_override = Some(n);
+                self.chat.push_system(format!("steps → {n}"));
+            } else {
+                self.chat.push_system("steps must be 1–200 (or 'default')".into());
+            }
+            return;
+        }
+        // `/cfg <x>` | `default` — session guidance (CFG) override.
+        if let Some(rest) = text.strip_prefix("/cfg") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("default") {
+                self.guidance_override = None;
+                self.chat.push_system(format!("cfg → default ({:.1})", self.workspace.config.default_guidance));
+            } else if let Some(g) = arg.parse::<f64>().ok().filter(|g| (0.0..=30.0).contains(g)) {
+                self.guidance_override = Some(g);
+                self.chat.push_system(format!("cfg → {g:.1}"));
+            } else {
+                self.chat.push_system("cfg must be 0–30 (or 'default')".into());
+            }
+            return;
+        }
         // `/enhance <prompt>` AI-expands the prompt, then generates fresh.
         if let Some(rest) = text.strip_prefix("/enhance") {
             let p = rest.trim().to_string();
@@ -2764,8 +2813,8 @@ impl App {
             .loaded_alias()
             .map(|a| self.resolve_gen_size(a))
             .unwrap_or((768, 768));
-        let steps = self.workspace.config.default_steps;
-        let guidance = self.workspace.config.default_guidance;
+        let steps = self.steps_override.unwrap_or(self.workspace.config.default_steps);
+        let guidance = self.guidance_override.unwrap_or(self.workspace.config.default_guidance);
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
         // Seed priority: an explicit `/seed` pin > the conversation's stable seed (so
@@ -2917,7 +2966,7 @@ impl App {
                 ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
-                ("/size WxH", "per-model generation size (budget-guarded)"),
+                ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
                 ("/new /seed /strength /negative /auto", "session commands"),
             ]),
             ActiveScreen::Models => ("Models", &[
@@ -3376,6 +3425,27 @@ mod tests {
     }
 
     #[test]
+    fn slash_steps_and_cfg_set_and_clear_session_overrides() {
+        let mut a = test_app();
+        a.handle_chat_submit("/steps 30".into());
+        assert_eq!(a.steps_override, Some(30));
+        a.handle_chat_submit("/cfg 6.5".into());
+        assert_eq!(a.guidance_override, Some(6.5));
+        // Out-of-range values are rejected without changing state.
+        a.handle_chat_submit("/steps 999".into());
+        assert_eq!(a.steps_override, Some(30), "invalid steps left intact");
+        a.handle_chat_submit("/cfg 99".into());
+        assert_eq!(a.guidance_override, Some(6.5), "invalid cfg left intact");
+        // 'default' clears back to the workspace value.
+        a.handle_chat_submit("/steps default".into());
+        assert!(a.steps_override.is_none());
+        a.handle_chat_submit("/cfg default".into());
+        assert!(a.guidance_override.is_none());
+        // Neither dispatched a generation.
+        assert!(a.active_gen.is_none());
+    }
+
+    #[test]
     fn parse_gen_size_accepts_wxh_and_square_and_rounds() {
         assert_eq!(parse_gen_size("1024x768"), Some((1024, 768)));
         assert_eq!(parse_gen_size("1024×768"), Some((1024, 768)), "unicode ×");
@@ -3444,13 +3514,22 @@ mod tests {
         a.models.load = LoadState::Loaded { alias: "fake-preset-model".into(), used_gb: 7.0 };
         a.active_loras = vec![(std::path::PathBuf::from("/l/film.safetensors"), 0.8)];
         a.negative = "blurry".into();
+        a.gen_sizes.insert("fake-preset-model".into(), (1024, 768));
+        a.steps_override = Some(30);
+        a.guidance_override = Some(6.5);
         a.save_preset("portrait");
         // Clear the working state, then apply the preset back.
         a.active_loras.clear();
         a.negative.clear();
+        a.gen_sizes.clear();
+        a.steps_override = None;
+        a.guidance_override = None;
         a.apply_preset("portrait");
         assert_eq!(a.active_loras.len(), 1, "LoRA stack restored");
         assert_eq!(a.negative, "blurry", "negative restored");
+        assert_eq!(a.gen_sizes.get("fake-preset-model"), Some(&(1024, 768)), "size restored");
+        assert_eq!(a.steps_override, Some(30), "steps restored");
+        assert_eq!(a.guidance_override, Some(6.5), "guidance restored");
         // A missing preset is a friendly no-op (no panic).
         a.apply_preset("does-not-exist");
         let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));

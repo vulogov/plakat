@@ -14,8 +14,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       resolution-scaled working set) vs free RAM — an over-committing size still sets but warns
       that the memory guard will abort cleanly. Shown in the Chat mode readout (`· 1024×768`).
       *(Persisting the size into presets is the "presets: size + sampler" item below.)*
-- [ ] **Presets: size + sampler** — extend named presets beyond model + LoRA + negative to
-      the full recipe (size, steps, guidance, sampler).
+- [x] **Presets: size + steps + guidance** — named presets now also carry the per-model
+      generation **size**, **steps** (`/steps`), and **guidance** (`/cfg`); save captures the
+      current overrides, apply restores them. `serde(default)` keeps old preset files loadable.
+      *(Sampler isn't included: the Chat path always uses each model's default scheduler —
+      there's no per-session sampler selection to snapshot. A sampler picker would be its own
+      feature.)*
 - [ ] **Linear undo (`Ctrl-Z`)** — if users want a linear undo on top of the filmstrip
       scrub + rollback (deferred in 1.21.0 as redundant; reassess on demand).
 - [ ] **Shared pipeline for scenario runs** — reuse the TUI's loaded model for a scenario

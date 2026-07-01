@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// One saved bundle: a base model plus the LoRA stack (each with its weight) and the
 /// session negative prompt.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Preset {
     pub name: String,
     /// Base-model alias (e.g. `sdxl`).
@@ -18,6 +18,15 @@ pub struct Preset {
     pub loras: Vec<(PathBuf, f32)>,
     #[serde(default)]
     pub negative: String,
+    /// Generation size override (w, h) for this model; `None` = the model's native square.
+    #[serde(default)]
+    pub size: Option<(u32, u32)>,
+    /// Denoise steps override; `None` = the workspace default.
+    #[serde(default)]
+    pub steps: Option<usize>,
+    /// Guidance (CFG) override; `None` = the workspace default.
+    #[serde(default)]
+    pub guidance: Option<f64>,
 }
 
 impl Preset {
@@ -28,7 +37,17 @@ impl Preset {
             1 => "1 LoRA".to_string(),
             n => format!("{n} LoRAs"),
         };
-        format!("{} · {loras}", self.model)
+        let mut s = format!("{} · {loras}", self.model);
+        if let Some((w, h)) = self.size {
+            s.push_str(&format!(" · {w}×{h}"));
+        }
+        if let Some(st) = self.steps {
+            s.push_str(&format!(" · {st} steps"));
+        }
+        if let Some(g) = self.guidance {
+            s.push_str(&format!(" · cfg {g:.1}"));
+        }
+        s
     }
 }
 
@@ -93,6 +112,9 @@ mod tests {
             model: "sdxl".into(),
             loras: vec![(PathBuf::from("/l/film.safetensors"), 0.8)],
             negative: "blurry".into(),
+            size: Some((1024, 768)),
+            steps: Some(30),
+            guidance: Some(6.5),
         };
         let all = upsert(&root, p.clone()).unwrap();
         assert_eq!(all.len(), 1);
@@ -103,10 +125,10 @@ mod tests {
     #[test]
     fn upsert_replaces_same_name_and_sorts() {
         let root = tmp("replace");
-        upsert(&root, Preset { name: "zeta".into(), model: "sd15".into(), loras: vec![], negative: String::new() }).unwrap();
-        upsert(&root, Preset { name: "alpha".into(), model: "sd15".into(), loras: vec![], negative: String::new() }).unwrap();
+        upsert(&root, Preset { name: "zeta".into(), model: "sd15".into(), ..Default::default() }).unwrap();
+        upsert(&root, Preset { name: "alpha".into(), model: "sd15".into(), ..Default::default() }).unwrap();
         // Replace "zeta" with a different model.
-        let all = upsert(&root, Preset { name: "ZETA".into(), model: "sdxl".into(), loras: vec![], negative: String::new() }).unwrap();
+        let all = upsert(&root, Preset { name: "ZETA".into(), model: "sdxl".into(), ..Default::default() }).unwrap();
         assert_eq!(all.len(), 2, "same name (any case) replaces, not appends");
         assert_eq!(all[0].name, "alpha", "sorted by name");
         assert_eq!(all.iter().find(|p| p.name == "ZETA").unwrap().model, "sdxl");
@@ -118,10 +140,14 @@ mod tests {
             name: "x".into(),
             model: "sdxl".into(),
             loras: vec![(PathBuf::from("/a"), 1.0); n],
-            negative: String::new(),
+            ..Default::default()
         };
         assert!(mk(0).summary().ends_with("no LoRAs"));
         assert!(mk(1).summary().ends_with("1 LoRA"));
         assert!(mk(3).summary().ends_with("3 LoRAs"));
+        // Recipe fields append to the summary when present.
+        let full = Preset { name: "y".into(), model: "sdxl".into(), size: Some((1024, 768)), steps: Some(30), guidance: Some(6.5), ..Default::default() };
+        let sum = full.summary();
+        assert!(sum.contains("1024×768") && sum.contains("30 steps") && sum.contains("cfg 6.5"));
     }
 }
