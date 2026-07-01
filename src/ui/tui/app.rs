@@ -175,6 +175,9 @@ pub struct App {
     should_reset: bool,
     // Keyboard cheatsheet overlay (F1) — global keys + the active screen's keys.
     show_help: bool,
+    // Pending `/vary N` variations — the same prompt queued at fresh seeds; the model
+    // thread is serial, so they dispatch one at a time (each lands in the filmstrip).
+    variation_queue: std::collections::VecDeque<String>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -345,6 +348,7 @@ impl App {
             confirm_reset: false,
             should_reset: false,
             show_help: false,
+            variation_queue: std::collections::VecDeque::new(),
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -985,6 +989,7 @@ impl App {
             ActiveScreen::Chat => {
                 cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Fan out 4 variations (fresh seeds)".into(), Cmd::Submit("/vary 4".into())));
                 cmds.push(("Grab this image's recipe → Scenario (exact)".into(), Cmd::Submit("/scenario".into())));
                 cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
@@ -2329,6 +2334,44 @@ impl App {
     }
 
     /// Generate a fresh variation of a filmstrip frame — its prompt at a new seed.
+    /// `/vary [n]` — fan out `n` variations (default 4, clamped 2–8) of the current image
+    /// at fresh seeds. The model thread is serial, so they run one at a time via
+    /// `pump_variations`; each lands in the filmstrip to scrub (Ctrl-←/→) and keep (Ctrl-B).
+    fn start_variations(&mut self, n: usize) {
+        let n = n.clamp(2, 8);
+        let prompt = self
+            .chat
+            .latest_frame_path()
+            .map(|p| recover_recipe(&p).0)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let p = self.refine_prompt.trim();
+                (!p.is_empty()).then(|| p.to_string())
+            });
+        let Some(prompt) = prompt else {
+            self.chat.push_system("nothing to vary yet — generate an image first".into());
+            return;
+        };
+        self.chat.push_system(format!(
+            "fanning out {n} variations at fresh seeds — scrub the filmstrip (Ctrl-←/→), Ctrl-B keeps one"
+        ));
+        for _ in 0..n {
+            self.variation_queue.push_back(prompt.clone());
+        }
+        self.pump_variations();
+    }
+
+    /// Dispatch the next queued variation if the model is free (called on each Done).
+    fn pump_variations(&mut self) {
+        if self.active_gen.is_some() {
+            return;
+        }
+        if let Some(prompt) = self.variation_queue.pop_front() {
+            // `/new` forces a fresh generation at a new random seed (a true variation).
+            self.dispatch_generation(format!("/new {prompt}"), false);
+        }
+    }
+
     fn vary_frame(&mut self, path: std::path::PathBuf) {
         let (prompt, _) = recover_recipe(&path);
         if prompt.trim().is_empty() {
@@ -2493,6 +2536,12 @@ impl App {
         // `/scenario` promotes the current image's exact recipe into a scenario task.
         if text.trim_start().starts_with("/scenario") {
             self.grab_recipe_into_scenario();
+            return;
+        }
+        // `/vary [n]` fans out N variations of the current image at fresh seeds.
+        if let Some(rest) = text.strip_prefix("/vary") {
+            let n = rest.trim().parse::<usize>().unwrap_or(4);
+            self.start_variations(n);
             return;
         }
         // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
@@ -2754,6 +2803,8 @@ impl App {
         }
         if finished {
             self.active_gen = None;
+            // Fire the next queued `/vary` variation, if any.
+            self.pump_variations();
         }
     }
 
@@ -2804,6 +2855,7 @@ impl App {
                 ("Ctrl-P / Ctrl-N", "recall previous / next prompt"),
                 ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
+                ("/vary /scenario /preset", "fan out · grab recipe · presets"),
                 ("/new /seed /strength /negative /auto", "session commands"),
             ]),
             ActiveScreen::Models => ("Models", &[
@@ -3240,6 +3292,29 @@ mod tests {
         a.chat_mask = Some("/tmp/mask.png".into());
         a.inpaint_base = Some("/tmp/base.png".into());
         assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn vary_queues_variations_and_pumps_one_at_a_time() {
+        let mut a = test_app();
+        // No image / prompt yet → a friendly no-op.
+        a.start_variations(4);
+        assert!(a.variation_queue.is_empty() && a.active_gen.is_none(), "no source → no-op");
+        // With a prompt source, one dispatches immediately and the rest queue.
+        a.refine_prompt = "a red fox".into();
+        a.start_variations(4);
+        assert!(a.active_gen.is_some(), "first variation dispatched");
+        assert_eq!(a.variation_queue.len(), 3, "the other three wait (serial model)");
+        // Simulate that generation finishing → the next one pumps.
+        a.active_gen = None;
+        a.pump_variations();
+        assert!(a.active_gen.is_some());
+        assert_eq!(a.variation_queue.len(), 2);
+        // The count clamps to 8.
+        let mut b = test_app();
+        b.refine_prompt = "x".into();
+        b.start_variations(99);
+        assert_eq!(b.variation_queue.len(), 7, "clamped to 8, one already dispatched");
     }
 
     #[test]

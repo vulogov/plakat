@@ -12,8 +12,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       `Chat · evolve · seed 12345` / `anchored 0.60 · seed …` / `inpaint` / `identity` /
       `fresh`, `· auto` when routing is on (`chat_mode_hint`, synced each tick). **Ctrl-T**
       one-key toggles evolve ↔ anchored (also in the palette + input hint).
-- [ ] **Variation grid** — from any frame, fan out N seeds at once (a small parallel batch)
-      and pick the keeper into the filmstrip.
+- [x] **Variation batch** — `/vary [n]` (default 4, clamp 2–8) fans out N variations of the
+      current image at fresh seeds. The model thread is serial, so `pump_variations` runs
+      them one at a time; each lands in the filmstrip to scrub (Ctrl-←/→) and keep (Ctrl-B).
+      (A *parallel* grid isn't possible on one unified-memory device — one model instance.)
 - [ ] **Undo/redo across the filmstrip** — `Ctrl-Z`/`Ctrl-Y` over the frame history (roll
       back is there; make it a proper stack).
 
