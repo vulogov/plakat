@@ -16,8 +16,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       current image at fresh seeds. The model thread is serial, so `pump_variations` runs
       them one at a time; each lands in the filmstrip to scrub (Ctrl-←/→) and keep (Ctrl-B).
       (A *parallel* grid isn't possible on one unified-memory device — one model instance.)
-- [ ] **Undo/redo across the filmstrip** — `Ctrl-Z`/`Ctrl-Y` over the frame history (roll
-      back is there; make it a proper stack).
+- [x] **Undo/redo across the filmstrip** — covered by the existing filmstrip: `Ctrl-←/→`
+      scrub the full frame history and `Ctrl-B` rolls back (branches) to the selected
+      frame. A separate `Ctrl-Z` stack would duplicate this (and `Ctrl-Y` is already
+      vary), so it's documented rather than added. Reassess if users ask for a linear undo.
 
 ## Workflow / power-user
 
@@ -42,7 +44,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 - [x] **Status-line memory readout** — the global status bar now shows, right-aligned and
       headroom-tinted (red < 3 GB / yellow < 6 GB / green), `<loaded-model> · free/total GB
       free` (`mem_readout`), so the memory picture is ambient, not just at load time.
-- [ ] **Tutorial + RFC refresh** — document the 1.20.0 memory model + the loop ergonomics.
+- [x] **Tutorial + RFC refresh** — `UI_TUTORIAL.md` updated: memory-aware loading (budget
+      warning / idle unload / cache doctor / hard reset), the ambient status-bar readout +
+      F1 cheatsheet, the Chat mode readout + `Ctrl-T`, and `/vary` / `/scenario` / `/preset`.
 
 ## Carry
 
