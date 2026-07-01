@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use hf_hub::api::tokio::{Api, ApiBuilder, Progress};
 use hf_hub::{Cache, Repo, RepoType};
 use indicatif::ProgressBar;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -154,6 +154,37 @@ pub fn is_cached(alias: &str) -> bool {
     cached_path(repo, "model_index.json", "main").is_some()
 }
 
+/// hf-hub's cache directory for `repo` (`<root>/models--<org>--<name>`).
+fn repo_cache_dir(repo: &str) -> PathBuf {
+    crate::hf::cache::hf_cache_root().join(format!("models--{}", repo.replace('/', "--")))
+}
+
+/// Remove stale hf-hub `*.lock` files under a repo's cache dir. An interrupted download
+/// (e.g. a Ctrl-C or the OOM-guard hard-exit mid-fetch) can leave a `.lock` behind that
+/// makes a later load of an already-cached model hang or refuse. The locks are advisory
+/// (released on process death), so sweeping them when no download is in flight — the
+/// model thread loads serially — is safe. Returns how many were removed.
+pub fn clean_stale_locks(alias: &str) -> usize {
+    let repo = crate::hf::resolve_alias(alias);
+    clean_locks_in(&repo_cache_dir(repo))
+}
+
+/// Remove `*.lock` files directly under `dir` and `dir/blobs`. Returns the count.
+fn clean_locks_in(dir: &Path) -> usize {
+    let mut removed = 0;
+    for sub in [dir.to_path_buf(), dir.join("blobs")] {
+        if let Ok(rd) = std::fs::read_dir(&sub) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("lock") && std::fs::remove_file(&p).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
 /// Drives a plakat `bytes_bar` from hf-hub's download callbacks → a real `%` /
 /// bytes progress bar (in the CLI, and rerouted into the TUI Output pane).
 #[derive(Clone)]
@@ -266,6 +297,25 @@ mod tests {
     fn is_cached_false_for_unknown_model() {
         // A bogus alias resolves to itself and is never in the cache.
         assert!(!is_cached("definitely-not-a-real-model-xyz-123"));
+    }
+
+    #[test]
+    fn clean_locks_removes_stale_lock_files_only() {
+        let d = std::env::temp_dir().join("plakat-lock-sweep-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("blobs")).unwrap();
+        std::fs::create_dir_all(d.join("snapshots")).unwrap();
+        // Two stale locks (one top-level, one under blobs) + real files that must survive.
+        std::fs::write(d.join("a.lock"), b"").unwrap();
+        std::fs::write(d.join("blobs/deadbeef.lock"), b"").unwrap();
+        std::fs::write(d.join("blobs/deadbeef"), b"weights").unwrap(); // the real blob
+        std::fs::write(d.join("refs"), b"main").unwrap();
+        let removed = clean_locks_in(&d);
+        assert_eq!(removed, 2, "both .lock files swept");
+        assert!(!d.join("a.lock").exists() && !d.join("blobs/deadbeef.lock").exists());
+        assert!(d.join("blobs/deadbeef").exists(), "the real blob is untouched");
+        assert!(d.join("refs").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

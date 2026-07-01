@@ -1,29 +1,36 @@
-# plakat 1.20.0 — roadmap
+# plakat 1.20.0 — roadmap: `plakat ui` robustness
 
-1.19.0 added History semantic search, hardened `plakat ui` against OOM host crashes, and
-fixed the Canvas "where am I masking / mask the latest image" gaps. With that, the **RFC
-TUI-1 surface is complete** — every screen and its depth features are implemented and
-shipped.
+The RFC TUI-1 surface is complete. This cycle (and the next) act on the post-completion
+improvement brainstorm; the user split it across **two releases**:
 
-Only one UI item remains, and it's hardware-blocked. 1.20.0 is otherwise an **open
-cycle** — the next direction (new pipelines, CLI work, training, or polish) is TBD.
+- **1.20.0 — robustness** (this file): memory budget warning, idle auto-unload/reload,
+  TUI hard reset, cache doctor.
+- **1.21.0 — the build-an-image loop + workflow + polish** (see `ROADMAP_1.21.0.md`).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
-## A — generation engine
+## Robustness (1.20.0)
 
-- [⏸] **Flux in the UI** — `flux::run` dispatch (load-per-call ~25-field `Request` + the
-      GGUF-Metal guard). **Postponed**: can't be verified end-to-end on the current box
-      (Flux too large to run here; GGUF-Flux-on-Metal is a known-broken kernel path).
-      Resume when verifiable hardware is available — the `ModelService::Loaded` enum +
-      family dispatch already have the seam for it.
+- [x] **Memory budget warning at load** — `capability::resident_estimate(alias)` (exact
+      from the cached snapshot, else a coarse per-family guess) vs `hw::available_ram_gb()`;
+      Models `[L]` on an over-committing model raises a centered confirm modal ([Y] load
+      anyway / [N]·Esc cancel) instead of firing the download+load. Reloading the resident
+      model never prompts.
+- [x] **Idle auto-unload + auto-reload** — after `IDLE_UNLOAD` (10 min) of no keypresses
+      with a model loaded, `idle_tick` unloads it and records the alias in `suspended`;
+      the next keypress (`resume_if_suspended`) kicks a background reload (current LoRA set
+      persists in `active_loras`). Never fires mid-generation.
+- [x] **TUI hard reset** — palette → "Restart plakat (free all GPU memory)" → centered
+      confirm → `should_reset` breaks the event loop and `run()` restores the terminal
+      then `reexec()`s (Unix `CommandExt::exec`; Windows spawn+exit). A fresh process is
+      the only way to fully return candle's Metal buffer pool. Palette-hosted because
+      Ctrl-R is taken by screen editors (Prompts compile / LoRA assess / Scenarios rename).
+- [x] **Cache doctor in the UI** — palette (Models) → "Cache doctor: sweep locks + report":
+      `run_cache_doctor` sweeps stale download locks (1.19.0 `clean_stale_locks`) and reports
+      cached weight GB (`capability::cached_size_gb`) / partial / not-cached + a gated hint,
+      to the Output pane.
 
-## Possible directions (unprioritised)
+## Carry
 
-The `plakat ui` backlog is drained. Candidate next areas, pending the user's call:
-
-- **Neural semantic search** — upgrade History's TF-IDF ranker to a real text-embedding
-  model behind the existing `services::semantic::rank` seam (weight download + load cost).
-- **Memory** — a TUI "hard reset" that re-execs the process to fully return candle's
-  Metal buffer pool (which has no in-process force-clear), for very long sessions.
-- New model families, CLI ergonomics, or training-surface work — TBD.
+- [⏸] **Flux in the UI** — hardware-blocked (Flux too large to verify here; GGUF-Flux-Metal
+      known broken). The `ModelService::Loaded` enum + family dispatch have the seam.

@@ -1074,7 +1074,6 @@ impl candle_transformers::models::flux::WithForward for Flux {
 mod bf16_lora_tests {
     use super::*;
     use candle_core::Module;
-    use std::collections::HashMap;
 
     fn cpu() -> candle_core::Device {
         candle_core::Device::Cpu

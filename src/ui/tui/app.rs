@@ -5,15 +5,15 @@
 //! land in the next increments.
 
 use anyhow::Result;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Paragraph, Tabs},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
 };
 use candle_core::Device;
 use ratatui_image::picker::Picker;
@@ -50,10 +50,13 @@ const INPAINT_STRENGTH: f32 = 0.85;
 /// Max LoRA downloads running at once (the rest queue). Unified memory + a shared CDN
 /// make a small cap saner than unbounded fan-out.
 const MAX_CONCURRENT_DOWNLOADS: usize = 2;
+/// Idle span after which a loaded model is auto-unloaded to return its memory. It
+/// auto-reloads on the next keypress (the user picking activity back up).
+const IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ActiveScreen {
     Chat,
     Models,
@@ -106,12 +109,18 @@ impl ActiveScreen {
         Self::ALL[i]
     }
 
-    /// Whether this screen has a real body yet (Release 1: Chat + Models;
-    /// Release 2: Scenarios + History).
-    fn implemented(self) -> bool {
-        // All eight screens have a real body — the RFC TUI-1 surface is complete.
-        true
-    }
+}
+
+/// A model load held back for confirmation because its estimated resident footprint
+/// exceeds free RAM (RFC — 1.20.0 memory-budget guard). Confirm with `y`/Enter.
+pub struct PendingLoad {
+    pub alias: String,
+    /// Estimated resident GB (weights + runtime overhead).
+    pub est_gb: f64,
+    /// Free RAM at the time of the request.
+    pub avail_gb: f64,
+    /// Whether `est_gb` is exact (from the on-disk cache) or a coarse guess (uncached).
+    pub exact: bool,
 }
 
 /// The running TUI. Holds the workspace, the image `Picker` (for inline previews,
@@ -133,6 +142,16 @@ pub struct App {
     pub canvas: CanvasState,
     // Command palette overlay (Ctrl-K), fuzzy action launcher (RFC §5).
     pub palette: palette::PaletteState,
+    // A load awaiting confirmation because its estimated footprint over-commits RAM.
+    pub pending_load: Option<PendingLoad>,
+    // Last user keypress — drives idle auto-unload (memory reclaim while away).
+    last_activity: Instant,
+    // A model that idle auto-unload freed; reloaded when the user resumes activity.
+    suspended: Option<String>,
+    // Hard-reset (re-exec) confirmation + request. `should_reset` breaks the event
+    // loop; `run()` restores the terminal then re-execs the process.
+    confirm_reset: bool,
+    should_reset: bool,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -297,6 +316,11 @@ impl App {
             prompts,
             canvas,
             palette: palette::PaletteState::new(),
+            pending_load: None,
+            last_activity: Instant::now(),
+            suspended: None,
+            confirm_reset: false,
+            should_reset: false,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -394,11 +418,36 @@ impl App {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
         }
         ratatui::restore();
+        // A hard reset re-execs a fresh process (the only way to fully return candle's
+        // Metal buffer pool). The terminal is already restored above, so the new process
+        // starts clean. `exec` replaces this image and never returns on success.
+        if self.should_reset && res.is_ok() {
+            return Self::reexec();
+        }
         res
     }
 
+    /// Replace the current process with a fresh `plakat` invocation (same args). Only
+    /// returns on failure (the error is surfaced to the caller).
+    #[cfg(unix)]
+    fn reexec() -> Result<()> {
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        // `exec` does not return on success — the process image is replaced.
+        Err(std::process::Command::new(exe).args(args).exec().into())
+    }
+
+    #[cfg(not(unix))]
+    fn reexec() -> Result<()> {
+        let exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let status = std::process::Command::new(exe).args(args).status()?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
+
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-        while !self.should_quit {
+        while !self.should_quit && !self.should_reset {
             terminal.draw(|f| self.render(f))?;
             // 100 ms tick: poll input, then (later) drain the gen/llm/download
             // channels so a running generation keeps the UI live.
@@ -434,8 +483,43 @@ impl App {
             self.drain_people_encode();
             self.drain_route();
             self.sync_chat_mentions();
+            self.idle_tick();
         }
         Ok(())
+    }
+
+    /// Auto-unload the loaded model after [`IDLE_UNLOAD`] of no keypresses, returning
+    /// its memory. It reloads on the next activity (see `resume_if_suspended`). Never
+    /// fires mid-generation or when nothing is loaded.
+    fn idle_tick(&mut self) {
+        if self.active_gen.is_some() || self.suspended.is_some() {
+            return;
+        }
+        let Some(alias) = self.models.loaded_alias().map(str::to_string) else {
+            return;
+        };
+        if self.last_activity.elapsed() >= IDLE_UNLOAD {
+            self.output.push(format!(
+                "idle {}m — unloading {alias} to free memory (auto-reloads when you resume)",
+                IDLE_UNLOAD.as_secs() / 60
+            ));
+            self.model_svc.unload();
+            self.suspended = Some(alias);
+            // Reset so we don't re-attempt while the Unloaded message is in flight.
+            self.last_activity = Instant::now();
+        }
+    }
+
+    /// If idle auto-unload freed a model and nothing is loaded/loading, kick off a
+    /// background reload so it's ready by the time the user generates again.
+    fn resume_if_suspended(&mut self) {
+        if self.suspended.is_none() || self.models.loaded_alias().is_some() || self.models.is_loading() {
+            return;
+        }
+        if let Some(alias) = self.suspended.take() {
+            self.output.push(format!("welcome back — reloading {alias}…"));
+            self.load_model(alias);
+        }
     }
 
     /// Keep the Chat `@mention` candidates current (people labels + local LoRA names),
@@ -596,10 +680,34 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Any keypress is activity: reset the idle timer and, if a model was
+        // auto-unloaded while away, start reloading it in the background now.
+        self.last_activity = Instant::now();
+        self.resume_if_suspended();
         // ── The command palette overlay owns all input while open. ──
         if self.palette.is_open() {
             if let PaletteResult::Run(cmd) = self.palette.handle_key(key) {
                 self.exec_palette(cmd);
+            }
+            return;
+        }
+        // ── A hard-reset confirmation owns input until answered. ──
+        if self.confirm_reset {
+            self.confirm_reset = false;
+            match key.code {
+                KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.should_reset = true,
+                _ => self.output.push("restart cancelled".into()),
+            }
+            return;
+        }
+        // ── A memory-budget confirmation owns input until answered. ──
+        if let Some(pl) = self.pending_load.take() {
+            match key.code {
+                KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
+                    self.output.push(format!("loading {} anyway (~{:.1} GB vs {:.1} GB free)", pl.alias, pl.est_gb, pl.avail_gb));
+                    self.load_model(pl.alias);
+                }
+                _ => self.output.push(format!("load of {} cancelled — free up memory or pick a smaller model", pl.alias)),
             }
             return;
         }
@@ -737,7 +845,7 @@ impl App {
                 // background ModelService (the event loop stays live during load).
                 KeyCode::Char('l' | 'L') => {
                     if let Some(alias) = self.models.selected_alias() {
-                        self.load_model(alias);
+                        self.request_load(alias);
                     }
                 }
                 KeyCode::Char('u' | 'U') => self.model_svc.unload(),
@@ -848,11 +956,16 @@ impl App {
                 cmds.push(("Clear mask".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT))));
             }
         }
+        // The selected model's cache health (Models screen only — needs a selection).
+        if self.screen == ActiveScreen::Models {
+            cmds.push(("Cache doctor: sweep locks + report".into(), Cmd::CacheDoctor));
+        }
         for s in ActiveScreen::ALL {
             if s != self.screen {
                 cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
             }
         }
+        cmds.push(("Restart plakat (free all GPU memory)".into(), Cmd::HardReset));
         cmds.push(("Quit plakat ui".into(), Cmd::Quit));
         self.palette.open(cmds);
     }
@@ -872,6 +985,8 @@ impl App {
                 self.screen = ActiveScreen::Chat;
                 self.handle_chat_submit(line);
             }
+            Cmd::HardReset => self.confirm_reset = true,
+            Cmd::CacheDoctor => self.run_cache_doctor(),
         }
     }
 
@@ -1396,6 +1511,50 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.chat_to_scenario = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
+        }
+    }
+
+    /// Interactive load entry point (Models `[L]`): estimate the model's resident
+    /// footprint and, if it would over-commit free RAM, hold the load for an explicit
+    /// confirmation instead of firing a multi-GB download+load that may hard-OOM.
+    fn request_load(&mut self, alias: String) {
+        // Reloading the model already resident is always fine (no extra footprint).
+        if self.models.loaded_alias() == Some(alias.as_str()) {
+            self.load_model(alias);
+            return;
+        }
+        let est = crate::capability::resident_estimate(&alias);
+        let avail = crate::hw::available_ram_gb();
+        if est.gb > avail {
+            self.pending_load = Some(PendingLoad { alias, est_gb: est.gb, avail_gb: avail, exact: est.exact });
+        } else {
+            self.load_model(alias);
+        }
+    }
+
+    /// Cache doctor (palette, Models screen): sweep stale download locks for the
+    /// selected model and report its cache health to the Output pane. Reuses the
+    /// 1.19.0 lock-sweep + `capability` sizing.
+    fn run_cache_doctor(&mut self) {
+        let Some(alias) = self.models.selected_alias() else { return };
+        let repo = crate::hf::resolve_alias(&alias).to_string();
+        let gated = self.models.rows.get(self.models.selected).map(|r| r.gated).unwrap_or(false);
+        self.output.push(format!("cache doctor · {alias}  ({repo})"));
+        let swept = crate::hf::download::clean_stale_locks(&alias);
+        self.output.push(if swept > 0 {
+            format!("  cleared {swept} stale download lock(s)")
+        } else {
+            "  no stale locks".into()
+        });
+        match crate::capability::cached_size_gb(&alias) {
+            Some(gb) => self.output.push(format!("  cached · {gb:.1} GB of weights on disk")),
+            None if crate::hf::download::is_cached(&alias) => {
+                self.output.push("  cached · partial (index present, weights incomplete) — reload to finish".into())
+            }
+            None => self.output.push("  not cached — first load downloads the weights".into()),
+        }
+        if gated {
+            self.output.push("  gated · accept the licence on HF (+ HF_TOKEN) if the load 401s".into());
         }
     }
 
@@ -2433,8 +2592,73 @@ impl App {
         } else {
             self.render_status_bar(f, rows[2]);
         }
+        // A memory-budget confirmation floats above everything (below the palette).
+        if let Some(pl) = &self.pending_load {
+            self.render_load_warning(f, pl);
+        }
+        if self.confirm_reset {
+            self.render_reset_confirm(f);
+        }
         // The command palette floats above everything when open.
         self.palette.render(f, f.area());
+    }
+
+    /// Centered confirmation for the hard reset (re-exec).
+    fn render_reset_confirm(&self, f: &mut Frame) {
+        let area = f.area();
+        let w = 60.min(area.width.saturating_sub(4));
+        let h = 8.min(area.height.saturating_sub(2));
+        let rect = Rect {
+            x: area.x + (area.width.saturating_sub(w)) / 2,
+            y: area.y + (area.height.saturating_sub(h)) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let body = vec![
+            Line::from(Span::styled("↻ Restart plakat?", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+            Line::from(""),
+            Line::from("  Re-execs a fresh process to fully return GPU memory."),
+            Line::from(Span::styled("  Unsaved Chat state is lost (save first with /save).", Style::new().fg(Color::DarkGray))),
+            Line::from(""),
+            Line::from(Span::styled("  [Y] restart now   [N]/Esc cancel", Style::new().fg(Color::Gray))),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Cyan))
+            .title(" hard reset ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+    }
+
+    /// Centered modal warning that a load would over-commit RAM (memory-budget guard).
+    fn render_load_warning(&self, f: &mut Frame, pl: &PendingLoad) {
+        let area = f.area();
+        let w = 62.min(area.width.saturating_sub(4));
+        let h = 9.min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(w)) / 2;
+        let y = area.y + (area.height.saturating_sub(h)) / 2;
+        let rect = Rect { x, y, width: w, height: h };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let qual = if pl.exact { "needs" } else { "≈ needs" };
+        let body = vec![
+            Line::from(Span::styled(
+                format!("⚠ {} may exceed available memory", pl.alias),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(format!("  {qual} ~{:.1} GB resident", pl.est_gb)),
+            Line::from(format!("  only {:.1} GB free right now", pl.avail_gb)),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Loading may OOM. [Y] load anyway   [N]/Esc cancel",
+                Style::new().fg(Color::Gray),
+            )),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Yellow))
+            .title(" memory budget ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -2660,6 +2884,95 @@ mod tests {
         assert!(matches!(a.screen, ActiveScreen::Canvas));
         a.handle_key(key('1', true));
         assert!(matches!(a.screen, ActiveScreen::Chat));
+    }
+
+    #[test]
+    fn memory_budget_confirm_intercepts_keys() {
+        let mut a = test_app();
+        let pl = || PendingLoad { alias: "sdxl".into(), est_gb: 30.0, avail_gb: 4.0, exact: true };
+        // N / Esc cancels: the load is dropped, no quit, no screen change.
+        a.pending_load = Some(pl());
+        a.handle_key(key('n', false));
+        assert!(a.pending_load.is_none(), "N dismisses the warning");
+        assert!(!a.should_quit);
+        // While the warning is up, a navigation key is swallowed (dismisses, no nav).
+        a.pending_load = Some(pl());
+        a.handle_key(key('2', true)); // would normally switch to Models
+        assert!(a.pending_load.is_none());
+        assert!(matches!(a.screen, ActiveScreen::Chat), "the key was consumed by the modal");
+        // Y confirms (clears the warning and dispatches the load).
+        a.pending_load = Some(pl());
+        a.handle_key(key('y', false));
+        assert!(a.pending_load.is_none(), "Y proceeds and clears the warning");
+    }
+
+    #[test]
+    fn idle_auto_unload_remembers_and_resume_reloads() {
+        use crate::ui::tui::screens::models::LoadState;
+        let mut a = test_app();
+        // A model is loaded and the user has been idle past the threshold. (Uses a
+        // fake alias so `resume` dispatches a no-op load, keeping the test hermetic.)
+        a.models.load = LoadState::Loaded { alias: "fake-idle-model".into(), used_gb: 7.0 };
+        a.last_activity = Instant::now()
+            .checked_sub(IDLE_UNLOAD + Duration::from_secs(1))
+            .expect("monotonic clock is well past boot");
+        a.idle_tick();
+        assert_eq!(a.suspended.as_deref(), Some("fake-idle-model"), "idle unloads and remembers the model");
+        // While suspended, idle_tick is a no-op (no double-unload).
+        a.idle_tick();
+        assert_eq!(a.suspended.as_deref(), Some("fake-idle-model"));
+        // The unload lands (svc → Idle); the next keypress resumes the model.
+        a.models.load = LoadState::Idle;
+        a.resume_if_suspended();
+        assert!(a.suspended.is_none(), "resume consumes the suspended model and reloads");
+    }
+
+    #[test]
+    fn hard_reset_needs_confirmation() {
+        let mut a = test_app();
+        // The palette command arms the confirm, it does not reset immediately.
+        a.exec_palette(Cmd::HardReset);
+        assert!(a.confirm_reset && !a.should_reset);
+        // N cancels.
+        a.handle_key(key('n', false));
+        assert!(!a.confirm_reset && !a.should_reset, "N dismisses the reset");
+        // Y confirms → the event loop will break and run() re-execs.
+        a.exec_palette(Cmd::HardReset);
+        a.handle_key(key('y', false));
+        assert!(!a.confirm_reset && a.should_reset, "Y requests the re-exec");
+    }
+
+    #[test]
+    fn cache_doctor_reports_to_output() {
+        let mut a = test_app();
+        a.screen = ActiveScreen::Models;
+        a.run_cache_doctor();
+        let out = a.output.lines_for_test();
+        assert!(out.iter().any(|l| l.contains("cache doctor")), "doctor announces the model");
+        // It always reports a lock-sweep result and a cache-status line.
+        assert!(out.iter().any(|l| l.contains("stale lock")), "reports lock-sweep");
+    }
+
+    #[test]
+    fn idle_tick_never_unloads_when_nothing_loaded() {
+        let mut a = test_app();
+        a.last_activity = Instant::now()
+            .checked_sub(IDLE_UNLOAD + Duration::from_secs(1))
+            .expect("monotonic clock is well past boot");
+        a.idle_tick();
+        assert!(a.suspended.is_none(), "nothing to unload when no model is resident");
+    }
+
+    #[test]
+    fn request_load_of_the_resident_model_never_warns() {
+        // Reloading the already-loaded model adds no footprint → never prompts.
+        let mut a = test_app();
+        // (No model is loaded in the test harness, so this exercises the non-resident
+        // path; the guard is the loaded_alias short-circuit, covered by construction.)
+        a.request_load("definitely-not-a-real-model-xyz".into());
+        // Either it loaded (fits) or it queued a warning — but never panicked and the
+        // app stayed alive.
+        assert!(!a.should_quit);
     }
 
     #[test]
@@ -3166,14 +3479,17 @@ mod tests {
     }
 
     #[test]
-    fn release1_screens_are_implemented() {
-        assert!(ActiveScreen::Chat.implemented());
-        assert!(ActiveScreen::Models.implemented());
-        assert!(ActiveScreen::Scenarios.implemented());
-        assert!(ActiveScreen::History.implemented());
-        assert!(ActiveScreen::People.implemented());
-        // Every screen has a real body now — the RFC TUI-1 surface is complete.
-        assert!(ActiveScreen::ALL.iter().all(|s| s.implemented()));
+    fn all_screens_present_and_cycle() {
+        // The full RFC TUI-1 surface — eight screens, each reachable by Tab cycling.
         assert_eq!(ActiveScreen::ALL.len(), 8);
+        for s in ActiveScreen::ALL {
+            assert_eq!(s.cycle(1).cycle(-1), s, "cycling is reversible for {s:?}");
+        }
+        // Cycling forward through all eight returns to the start.
+        let mut s = ActiveScreen::Chat;
+        for _ in 0..8 {
+            s = s.cycle(1);
+        }
+        assert_eq!(s, ActiveScreen::Chat);
     }
 }

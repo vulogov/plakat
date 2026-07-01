@@ -17,30 +17,32 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.19.0 — semantic search + a calmer, clearer UI
+## What's new in 1.20.0 — `plakat ui` won't over-commit your memory
 
-1.18.0 made `plakat ui` sturdy; 1.19.0 adds **semantic search**, hardens it against
-out-of-memory crashes, and fixes two confusing spots in the build-an-image loop.
+On 24 GB unified memory a big model can pin RAM to 100%. 1.20.0 makes `plakat ui`
+**memory-aware**: it warns before a load that won't fit, gives idle memory back on its
+own, and can hand the whole GPU pool back in one keystroke.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **Semantic search in History** (`?`) — rank every image by *relevance* to a query
-  (TF-IDF cosine over filename + tags + recipe), most-related first. "snowy peak"
-  surfaces "a mountain in winter, fresh snow" with no shared substring. Local + instant,
-  no model or network. (`/` stays the plain substring filter.)
-- **Canvas shows the image** — the mask grid now renders the **current** picture (each
-  cell tinted with that region's colour), so you can see *where* you're painting; painted
-  cells get a bright-green overlay. The Canvas masks + inpaints the **latest** render, so
-  you can **gradually build an image** — mask → inpaint → mask again on top — and it's
-  model-agnostic (re-render the result in a scenario under any model).
-- **Add-an-object nudge** — the first time you type "add a …" in Chat, a tip points you at
-  Canvas inpaint (prompt-evolve re-describes the whole scene and can't reliably *insert*
-  an object).
-- **OOM hardening** — the memory watchdog now covers **all** `plakat ui` generations (not
-  just CLI/scenario), so an out-of-memory abort exits plakat cleanly instead of crashing
-  the host — and it now **restores your terminal** on the way out.
+- **Memory-budget warning before a load** — Models `[L]` first estimates the model's
+  resident footprint (exact from the on-disk cache, else a per-family guess) against free
+  RAM. If it would over-commit, a confirm modal appears — `[Y]` load anyway / `[N]` cancel —
+  instead of firing a multi-GB download+load that may hard-OOM. Reloading the resident
+  model never prompts.
+- **Idle auto-unload + resume** — after 10 minutes of no keypresses, the loaded model is
+  unloaded to return its memory; the moment you touch a key it reloads in the background
+  (your applied LoRA set intact), ready by the time you generate again. Never fires
+  mid-generation.
+- **Hard reset (free all GPU memory)** — command palette (`Ctrl-K`) → *Restart plakat* →
+  confirm. candle's Metal buffer pool has no in-process force-clear, so plakat re-execs a
+  fresh process — the one guaranteed way to hand it all back — restoring your terminal on
+  the way.
+- **Cache doctor** — palette on Models → *Cache doctor*: sweeps stale download locks (the
+  interrupted-download culprit) and reports cached weight GB / partial / not-cached + a
+  gated hint.
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -50,10 +52,10 @@ that a compiled scenario runs headlessly.
 > the UI is postponed until it can be verified on capable hardware.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
-[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle deferrals in
-[`Documentation/ROADMAP_1.20.0.md`](Documentation/ROADMAP_1.20.0.md).
+[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle plan in
+[`Documentation/ROADMAP_1.21.0.md`](Documentation/ROADMAP_1.21.0.md).
 
-**Earlier releases** (v0.13 – v1.18):
+**Earlier releases** (v0.13 – v1.19):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

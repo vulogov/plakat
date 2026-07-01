@@ -253,6 +253,13 @@ fn model_loop(
                     }
                 };
                 let _ = msg_tx.send(ModelMessage::LoadStarted(alias.clone()));
+                // Sweep any stale hf-hub `.lock` left by an interrupted download (Ctrl-C
+                // or an OOM-guard hard-exit) — otherwise a cached model can hang/refuse to
+                // load. Safe here: this thread loads serially, no download is in flight.
+                let swept = crate::hf::download::clean_stale_locks(&alias);
+                if swept > 0 {
+                    crate::ui::progress::println(&format!("  cleared {swept} stale download lock(s) for {alias}"));
+                }
                 // Free the current model first — unified memory means we can't hold
                 // two large models at once.
                 loaded = None;

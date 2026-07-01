@@ -585,13 +585,12 @@ mod tests {
         // — if any swap regressed back to candle, the field's
         // initialiser would have failed to compile because candle's
         // builder returns `sdclip::ClipTextTransformer`, not ours.
-        let _ = (_check_sd_core
-            as fn(&crate::pipelines::sd_core::SdCore) -> &ClipTextTransformer);
-        let _ = (_check_animate_sd15
-            as fn(&crate::pipelines::animatediff::AnimateDiffPipeline) -> &ClipTextTransformer);
-        let _ = (_check_animate_sdxl
-            as fn(&crate::pipelines::animatediff::AnimateDiffSdxlPipeline)
-                -> &ClipTextTransformer);
+        let _ = _check_sd_core
+            as fn(&crate::pipelines::sd_core::SdCore) -> &ClipTextTransformer;
+        let _ = _check_animate_sd15
+            as fn(&crate::pipelines::animatediff::AnimateDiffPipeline) -> &ClipTextTransformer;
+        let _ = _check_animate_sdxl
+            as fn(&crate::pipelines::animatediff::AnimateDiffSdxlPipeline) -> &ClipTextTransformer;
     }
 
     #[test]
