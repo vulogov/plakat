@@ -30,8 +30,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 - [ ] **Consistent modal styling** — the 1.20.0 confirm modals (load warning / hard reset)
       established a pattern; fold the older ad-hoc prompts into it.
-- [ ] **Status-line memory readout** — a always-visible free-RAM + loaded-model line so the
-      budget picture is ambient, not just at load time.
+- [x] **Status-line memory readout** — the global status bar now shows, right-aligned and
+      headroom-tinted (red < 3 GB / yellow < 6 GB / green), `<loaded-model> · free/total GB
+      free` (`mem_readout`), so the memory picture is ambient, not just at load time.
 - [ ] **Tutorial + RFC refresh** — document the 1.20.0 memory model + the loop ergonomics.
 
 ## Carry

@@ -2736,6 +2736,21 @@ impl App {
         }
     }
 
+    /// The ambient status-bar memory string + its headroom tint (red < 3 GB, yellow
+    /// < 6 GB, else green). Split out for testing.
+    fn mem_readout(&self, free: f64, total: f64) -> (String, Color) {
+        let model = self.models.loaded_alias().unwrap_or("no model");
+        let s = format!("{model} · {free:.1}/{total:.0} GB free ");
+        let fg = if free < 3.0 {
+            Color::Red
+        } else if free < 6.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        (s, fg)
+    }
+
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         // In a text-input mode (Chat, or the Scenarios editor) plain keys type, so
         // advertise only the input-safe switches.
@@ -2749,8 +2764,20 @@ impl App {
             "Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
         };
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
-        let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
-        f.render_widget(bar, area);
+        // Ambient memory readout (right-aligned): loaded model + free/total RAM, tinted
+        // by headroom — so the 1.20.0 memory budget is visible at a glance, not just at
+        // load time.
+        let (mem, mem_fg) = self.mem_readout(crate::hw::available_ram_gb(), crate::hw::total_ram_gb());
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(mem.len() as u16)])
+            .split(area);
+        let bg = Style::new().bg(Color::DarkGray);
+        f.render_widget(Paragraph::new(txt).style(bg.fg(Color::White)), cols[0]);
+        f.render_widget(
+            Paragraph::new(mem).style(bg.fg(mem_fg)).alignment(ratatui::layout::Alignment::Right),
+            cols[1],
+        );
     }
 }
 
@@ -3000,6 +3027,23 @@ mod tests {
         a.chat_mask = Some("/tmp/mask.png".into());
         a.inpaint_base = Some("/tmp/base.png".into());
         assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn status_bar_memory_readout_tints_by_headroom() {
+        use crate::ui::tui::screens::models::LoadState;
+        let a = test_app();
+        // No model + healthy headroom → green, "no model".
+        let (s, c) = a.mem_readout(12.0, 24.0);
+        assert!(s.starts_with("no model") && s.contains("12.0/24 GB free"));
+        assert_eq!(c, Color::Green);
+        // Tight (< 6) → yellow; critical (< 3) → red.
+        assert_eq!(a.mem_readout(5.0, 24.0).1, Color::Yellow);
+        assert_eq!(a.mem_readout(2.0, 24.0).1, Color::Red);
+        // The loaded model's alias is shown.
+        let mut b = test_app();
+        b.models.load = LoadState::Loaded { alias: "sdxl".into(), used_gb: 7.0 };
+        assert!(b.mem_readout(8.0, 24.0).0.starts_with("sdxl"));
     }
 
     #[test]
