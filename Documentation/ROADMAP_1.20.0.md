@@ -16,9 +16,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       Models `[L]` on an over-committing model raises a centered confirm modal ([Y] load
       anyway / [N]·Esc cancel) instead of firing the download+load. Reloading the resident
       model never prompts.
-- [ ] **Idle auto-unload + auto-reload** — after N minutes idle with a model loaded, unload
-      it (free memory) and remember `(alias, loras)`; reload it automatically when the user
-      resumes an activity that needs it.
+- [x] **Idle auto-unload + auto-reload** — after `IDLE_UNLOAD` (10 min) of no keypresses
+      with a model loaded, `idle_tick` unloads it and records the alias in `suspended`;
+      the next keypress (`resume_if_suspended`) kicks a background reload (current LoRA set
+      persists in `active_loras`). Never fires mid-generation.
 - [ ] **TUI hard reset** — restart plakat in place (re-exec) to fully return candle's Metal
       buffer pool (no in-process force-clear API). Surfaced in the command palette + a
       confirm (Ctrl-R is taken by screen editors, so it can't be a bare global key).

@@ -5,7 +5,7 @@
 //! land in the next increments.
 
 use anyhow::Result;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -50,6 +50,9 @@ const INPAINT_STRENGTH: f32 = 0.85;
 /// Max LoRA downloads running at once (the rest queue). Unified memory + a shared CDN
 /// make a small cap saner than unbounded fan-out.
 const MAX_CONCURRENT_DOWNLOADS: usize = 2;
+/// Idle span after which a loaded model is auto-unloaded to return its memory. It
+/// auto-reloads on the next keypress (the user picking activity back up).
+const IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
@@ -141,6 +144,10 @@ pub struct App {
     pub palette: palette::PaletteState,
     // A load awaiting confirmation because its estimated footprint over-commits RAM.
     pub pending_load: Option<PendingLoad>,
+    // Last user keypress — drives idle auto-unload (memory reclaim while away).
+    last_activity: Instant,
+    // A model that idle auto-unload freed; reloaded when the user resumes activity.
+    suspended: Option<String>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -306,6 +313,8 @@ impl App {
             canvas,
             palette: palette::PaletteState::new(),
             pending_load: None,
+            last_activity: Instant::now(),
+            suspended: None,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -443,8 +452,43 @@ impl App {
             self.drain_people_encode();
             self.drain_route();
             self.sync_chat_mentions();
+            self.idle_tick();
         }
         Ok(())
+    }
+
+    /// Auto-unload the loaded model after [`IDLE_UNLOAD`] of no keypresses, returning
+    /// its memory. It reloads on the next activity (see `resume_if_suspended`). Never
+    /// fires mid-generation or when nothing is loaded.
+    fn idle_tick(&mut self) {
+        if self.active_gen.is_some() || self.suspended.is_some() {
+            return;
+        }
+        let Some(alias) = self.models.loaded_alias().map(str::to_string) else {
+            return;
+        };
+        if self.last_activity.elapsed() >= IDLE_UNLOAD {
+            self.output.push(format!(
+                "idle {}m — unloading {alias} to free memory (auto-reloads when you resume)",
+                IDLE_UNLOAD.as_secs() / 60
+            ));
+            self.model_svc.unload();
+            self.suspended = Some(alias);
+            // Reset so we don't re-attempt while the Unloaded message is in flight.
+            self.last_activity = Instant::now();
+        }
+    }
+
+    /// If idle auto-unload freed a model and nothing is loaded/loading, kick off a
+    /// background reload so it's ready by the time the user generates again.
+    fn resume_if_suspended(&mut self) {
+        if self.suspended.is_none() || self.models.loaded_alias().is_some() || self.models.is_loading() {
+            return;
+        }
+        if let Some(alias) = self.suspended.take() {
+            self.output.push(format!("welcome back — reloading {alias}…"));
+            self.load_model(alias);
+        }
     }
 
     /// Keep the Chat `@mention` candidates current (people labels + local LoRA names),
@@ -605,6 +649,10 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Any keypress is activity: reset the idle timer and, if a model was
+        // auto-unloaded while away, start reloading it in the background now.
+        self.last_activity = Instant::now();
+        self.resume_if_suspended();
         // ── The command palette overlay owns all input while open. ──
         if self.palette.is_open() {
             if let PaletteResult::Run(cmd) = self.palette.handle_key(key) {
@@ -2753,6 +2801,37 @@ mod tests {
         a.pending_load = Some(pl());
         a.handle_key(key('y', false));
         assert!(a.pending_load.is_none(), "Y proceeds and clears the warning");
+    }
+
+    #[test]
+    fn idle_auto_unload_remembers_and_resume_reloads() {
+        use crate::ui::tui::screens::models::LoadState;
+        let mut a = test_app();
+        // A model is loaded and the user has been idle past the threshold. (Uses a
+        // fake alias so `resume` dispatches a no-op load, keeping the test hermetic.)
+        a.models.load = LoadState::Loaded { alias: "fake-idle-model".into(), used_gb: 7.0 };
+        a.last_activity = Instant::now()
+            .checked_sub(IDLE_UNLOAD + Duration::from_secs(1))
+            .expect("monotonic clock is well past boot");
+        a.idle_tick();
+        assert_eq!(a.suspended.as_deref(), Some("fake-idle-model"), "idle unloads and remembers the model");
+        // While suspended, idle_tick is a no-op (no double-unload).
+        a.idle_tick();
+        assert_eq!(a.suspended.as_deref(), Some("fake-idle-model"));
+        // The unload lands (svc → Idle); the next keypress resumes the model.
+        a.models.load = LoadState::Idle;
+        a.resume_if_suspended();
+        assert!(a.suspended.is_none(), "resume consumes the suspended model and reloads");
+    }
+
+    #[test]
+    fn idle_tick_never_unloads_when_nothing_loaded() {
+        let mut a = test_app();
+        a.last_activity = Instant::now()
+            .checked_sub(IDLE_UNLOAD + Duration::from_secs(1))
+            .expect("monotonic clock is well past boot");
+        a.idle_tick();
+        assert!(a.suspended.is_none(), "nothing to unload when no model is resident");
     }
 
     #[test]

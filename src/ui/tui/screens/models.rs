@@ -92,6 +92,12 @@ impl ModelsState {
         };
     }
 
+    /// Whether a load is currently in flight (used to avoid double-dispatching a
+    /// background reload while one is already running).
+    pub fn is_loading(&self) -> bool {
+        matches!(self.load, LoadState::Loading(_))
+    }
+
     /// The currently-loaded model's alias (drives the generation size).
     pub fn loaded_alias(&self) -> Option<&str> {
         match &self.load {
