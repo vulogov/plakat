@@ -32,8 +32,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## Polish
 
-- [ ] **Consistent modal styling** — the 1.20.0 confirm modals (load warning / hard reset)
-      established a pattern; fold the older ad-hoc prompts into it.
+- [x] **Consistent modal styling** — one `centered_modal(f, title, border, body, size)`
+      helper now backs every overlay (load warning, hard reset, F1 cheatsheet), so they
+      share centering/Clear/bordered-block styling instead of three hand-rolled copies.
 - [x] **Status-line memory readout** — the global status bar now shows, right-aligned and
       headroom-tinted (red < 3 GB / yellow < 6 GB / green), `<loaded-model> · free/total GB
       free` (`mem_readout`), so the memory picture is ambient, not just at load time.

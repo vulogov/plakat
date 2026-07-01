@@ -123,6 +123,27 @@ pub struct PendingLoad {
     pub exact: bool,
 }
 
+/// Render a centered, bordered modal box (Clear + titled block) with `body`, clamped to
+/// the frame. The single styling path for every TUI overlay confirm/info popup so they
+/// stay visually consistent. `size` is the desired (width, height).
+fn centered_modal(f: &mut Frame, title: &str, border: Color, body: Vec<Line<'static>>, size: (u16, u16)) {
+    let area = f.area();
+    let w = size.0.min(area.width.saturating_sub(4));
+    let h = size.1.min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(border))
+        .title(title.to_string());
+    f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+}
+
 /// The running TUI. Holds the workspace, the image `Picker` (for inline previews,
 /// used once screens render images), the active screen, and the quit flag. Services
 /// (ModelService / GenQueue / LlmPool) join in the next increment.
@@ -2795,7 +2816,6 @@ impl App {
 
     /// Centered keyboard cheatsheet (F1): global keys + the active screen's keys.
     fn render_help(&self, f: &mut Frame) {
-        let area = f.area();
         let (screen_name, keys) = self.screen_help();
         let globals: &[(&str, &str)] = &[
             ("Ctrl-K", "command palette"),
@@ -2823,31 +2843,12 @@ impl App {
         body.push(Line::from(""));
         body.push(Line::from(Span::styled("  any key to close", Style::new().fg(Color::DarkGray))));
 
-        let w = 60.min(area.width.saturating_sub(4));
-        let h = (body.len() as u16 + 2).min(area.height.saturating_sub(2));
-        let rect = Rect {
-            x: area.x + (area.width.saturating_sub(w)) / 2,
-            y: area.y + (area.height.saturating_sub(h)) / 2,
-            width: w,
-            height: h,
-        };
-        f.render_widget(ratatui::widgets::Clear, rect);
-        let block = Block::default().borders(Borders::ALL).title(" keyboard shortcuts (F1) ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+        let h = body.len() as u16 + 2;
+        centered_modal(f, " keyboard shortcuts (F1) ", Color::Cyan, body, (60, h));
     }
 
     /// Centered confirmation for the hard reset (re-exec).
     fn render_reset_confirm(&self, f: &mut Frame) {
-        let area = f.area();
-        let w = 60.min(area.width.saturating_sub(4));
-        let h = 8.min(area.height.saturating_sub(2));
-        let rect = Rect {
-            x: area.x + (area.width.saturating_sub(w)) / 2,
-            y: area.y + (area.height.saturating_sub(h)) / 2,
-            width: w,
-            height: h,
-        };
-        f.render_widget(ratatui::widgets::Clear, rect);
         let body = vec![
             Line::from(Span::styled("↻ Restart plakat?", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
             Line::from(""),
@@ -2856,22 +2857,11 @@ impl App {
             Line::from(""),
             Line::from(Span::styled("  [Y] restart now   [N]/Esc cancel", Style::new().fg(Color::Gray))),
         ];
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::Cyan))
-            .title(" hard reset ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+        centered_modal(f, " hard reset ", Color::Cyan, body, (60, 8));
     }
 
     /// Centered modal warning that a load would over-commit RAM (memory-budget guard).
     fn render_load_warning(&self, f: &mut Frame, pl: &PendingLoad) {
-        let area = f.area();
-        let w = 62.min(area.width.saturating_sub(4));
-        let h = 9.min(area.height.saturating_sub(2));
-        let x = area.x + (area.width.saturating_sub(w)) / 2;
-        let y = area.y + (area.height.saturating_sub(h)) / 2;
-        let rect = Rect { x, y, width: w, height: h };
-        f.render_widget(ratatui::widgets::Clear, rect);
         let qual = if pl.exact { "needs" } else { "≈ needs" };
         let body = vec![
             Line::from(Span::styled(
@@ -2887,11 +2877,7 @@ impl App {
                 Style::new().fg(Color::Gray),
             )),
         ];
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::Yellow))
-            .title(" memory budget ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+        centered_modal(f, " memory budget ", Color::Yellow, body, (62, 9));
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
