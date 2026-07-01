@@ -54,6 +54,43 @@ pub fn native_res(alias: &str) -> u32 {
         .unwrap_or(768)
 }
 
+/// An estimate of a model's resident memory footprint (weights + runtime overhead).
+pub struct ResidentEstimate {
+    /// Estimated GB the model occupies once loaded.
+    pub gb: f64,
+    /// `true` when derived from the on-disk cached snapshot (exact); `false` when it's
+    /// a coarse family/dtype guess because the model isn't cached yet.
+    pub exact: bool,
+}
+
+/// Estimate what `alias` will cost in RAM once loaded — fast + synchronous (no
+/// network). If the model is already cached we sum its snapshot weights (exact);
+/// otherwise we fall back to a coarse per-family guess so the TUI can still warn
+/// before a multi-GB download. Both add `OVERHEAD_GB` of runtime headroom.
+pub fn resident_estimate(alias: &str) -> ResidentEstimate {
+    let repo = crate::hf::resolve_alias(alias);
+    if let Some(gb) = cached_repo_gb(repo) {
+        return ResidentEstimate { gb: gb + OVERHEAD_GB, exact: true };
+    }
+    let weight = MODELS.iter().find(|m| m.alias == alias).map(rough_weight_gb).unwrap_or(8.0);
+    ResidentEstimate { gb: weight + OVERHEAD_GB, exact: false }
+}
+
+/// A coarse weight-size guess (GB) for an uncached model, by family. Only used when
+/// the exact on-disk size is unavailable; deliberately conservative (rounds up).
+fn rough_weight_gb(m: &ModelMeta) -> f64 {
+    match m.alias {
+        "sd15" | "sd21" => 4.0,
+        "sdxl" | "sdxl-turbo" | "pony" => 7.0,
+        "sd35-medium" => 12.0,
+        "sd35-large" => 20.0,
+        a if a.starts_with("pixart") => 12.0, // T5-XXL dominates
+        "stable-cascade" => 14.0,
+        a if a.starts_with("flux") => 24.0,
+        _ => 8.0,
+    }
+}
+
 /// One model's feasibility on the probed hardware.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelCapability {
@@ -275,6 +312,20 @@ mod tests {
         assert_eq!(native_res("sd21"), 768);
         assert_eq!(native_res("sdxl"), 1024);
         assert_eq!(native_res("totally-unknown"), 768); // safe default
+    }
+
+    #[test]
+    fn resident_estimate_always_adds_overhead_and_scales_by_family() {
+        // Every estimate includes runtime overhead over the bare weights.
+        let sd15 = resident_estimate("sd15");
+        assert!(sd15.gb >= OVERHEAD_GB, "estimate includes overhead");
+        // Larger families estimate larger footprints than SD1.5 (when uncached, the
+        // coarse guess drives this; when cached, the real snapshot does).
+        let flux = resident_estimate("flux-dev");
+        assert!(flux.gb > sd15.gb, "flux is estimated heavier than sd15");
+        // An unknown alias still yields a finite, overhead-inclusive guess.
+        let unknown = resident_estimate("totally-unknown");
+        assert!(unknown.gb > OVERHEAD_GB && !unknown.exact);
     }
 
     fn hw(budget: f64) -> HardwareReport {

@@ -11,9 +11,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## Robustness (1.20.0)
 
-- [ ] **Memory budget warning at load** — before loading, estimate the model's resident
-      footprint (cached size + overhead) vs available RAM; if it would over-commit,
-      require a confirm before the download+load. Reuses `capability` + `hw`.
+- [x] **Memory budget warning at load** — `capability::resident_estimate(alias)` (exact
+      from the cached snapshot, else a coarse per-family guess) vs `hw::available_ram_gb()`;
+      Models `[L]` on an over-committing model raises a centered confirm modal ([Y] load
+      anyway / [N]·Esc cancel) instead of firing the download+load. Reloading the resident
+      model never prompts.
 - [ ] **Idle auto-unload + auto-reload** — after N minutes idle with a model loaded, unload
       it (free memory) and remember `(alias, loras)`; reload it automatically when the user
       resumes an activity that needs it.

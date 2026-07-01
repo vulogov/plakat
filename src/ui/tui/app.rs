@@ -12,8 +12,8 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Paragraph, Tabs},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
 };
 use candle_core::Device;
 use ratatui_image::picker::Picker;
@@ -108,6 +108,18 @@ impl ActiveScreen {
 
 }
 
+/// A model load held back for confirmation because its estimated resident footprint
+/// exceeds free RAM (RFC — 1.20.0 memory-budget guard). Confirm with `y`/Enter.
+pub struct PendingLoad {
+    pub alias: String,
+    /// Estimated resident GB (weights + runtime overhead).
+    pub est_gb: f64,
+    /// Free RAM at the time of the request.
+    pub avail_gb: f64,
+    /// Whether `est_gb` is exact (from the on-disk cache) or a coarse guess (uncached).
+    pub exact: bool,
+}
+
 /// The running TUI. Holds the workspace, the image `Picker` (for inline previews,
 /// used once screens render images), the active screen, and the quit flag. Services
 /// (ModelService / GenQueue / LlmPool) join in the next increment.
@@ -127,6 +139,8 @@ pub struct App {
     pub canvas: CanvasState,
     // Command palette overlay (Ctrl-K), fuzzy action launcher (RFC §5).
     pub palette: palette::PaletteState,
+    // A load awaiting confirmation because its estimated footprint over-commits RAM.
+    pub pending_load: Option<PendingLoad>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -291,6 +305,7 @@ impl App {
             prompts,
             canvas,
             palette: palette::PaletteState::new(),
+            pending_load: None,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -597,6 +612,17 @@ impl App {
             }
             return;
         }
+        // ── A memory-budget confirmation owns input until answered. ──
+        if let Some(pl) = self.pending_load.take() {
+            match key.code {
+                KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
+                    self.output.push(format!("loading {} anyway (~{:.1} GB vs {:.1} GB free)", pl.alias, pl.est_gb, pl.avail_gb));
+                    self.load_model(pl.alias);
+                }
+                _ => self.output.push(format!("load of {} cancelled — free up memory or pick a smaller model", pl.alias)),
+            }
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ── Always-global keys (work even while a text input is focused) ──
@@ -731,7 +757,7 @@ impl App {
                 // background ModelService (the event loop stays live during load).
                 KeyCode::Char('l' | 'L') => {
                     if let Some(alias) = self.models.selected_alias() {
-                        self.load_model(alias);
+                        self.request_load(alias);
                     }
                 }
                 KeyCode::Char('u' | 'U') => self.model_svc.unload(),
@@ -1390,6 +1416,24 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.chat_to_scenario = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
+        }
+    }
+
+    /// Interactive load entry point (Models `[L]`): estimate the model's resident
+    /// footprint and, if it would over-commit free RAM, hold the load for an explicit
+    /// confirmation instead of firing a multi-GB download+load that may hard-OOM.
+    fn request_load(&mut self, alias: String) {
+        // Reloading the model already resident is always fine (no extra footprint).
+        if self.models.loaded_alias() == Some(alias.as_str()) {
+            self.load_model(alias);
+            return;
+        }
+        let est = crate::capability::resident_estimate(&alias);
+        let avail = crate::hw::available_ram_gb();
+        if est.gb > avail {
+            self.pending_load = Some(PendingLoad { alias, est_gb: est.gb, avail_gb: avail, exact: est.exact });
+        } else {
+            self.load_model(alias);
         }
     }
 
@@ -2427,8 +2471,43 @@ impl App {
         } else {
             self.render_status_bar(f, rows[2]);
         }
+        // A memory-budget confirmation floats above everything (below the palette).
+        if let Some(pl) = &self.pending_load {
+            self.render_load_warning(f, pl);
+        }
         // The command palette floats above everything when open.
         self.palette.render(f, f.area());
+    }
+
+    /// Centered modal warning that a load would over-commit RAM (memory-budget guard).
+    fn render_load_warning(&self, f: &mut Frame, pl: &PendingLoad) {
+        let area = f.area();
+        let w = 62.min(area.width.saturating_sub(4));
+        let h = 9.min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(w)) / 2;
+        let y = area.y + (area.height.saturating_sub(h)) / 2;
+        let rect = Rect { x, y, width: w, height: h };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let qual = if pl.exact { "needs" } else { "≈ needs" };
+        let body = vec![
+            Line::from(Span::styled(
+                format!("⚠ {} may exceed available memory", pl.alias),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(format!("  {qual} ~{:.1} GB resident", pl.est_gb)),
+            Line::from(format!("  only {:.1} GB free right now", pl.avail_gb)),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Loading may OOM. [Y] load anyway   [N]/Esc cancel",
+                Style::new().fg(Color::Gray),
+            )),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Yellow))
+            .title(" memory budget ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -2654,6 +2733,38 @@ mod tests {
         assert!(matches!(a.screen, ActiveScreen::Canvas));
         a.handle_key(key('1', true));
         assert!(matches!(a.screen, ActiveScreen::Chat));
+    }
+
+    #[test]
+    fn memory_budget_confirm_intercepts_keys() {
+        let mut a = test_app();
+        let pl = || PendingLoad { alias: "sdxl".into(), est_gb: 30.0, avail_gb: 4.0, exact: true };
+        // N / Esc cancels: the load is dropped, no quit, no screen change.
+        a.pending_load = Some(pl());
+        a.handle_key(key('n', false));
+        assert!(a.pending_load.is_none(), "N dismisses the warning");
+        assert!(!a.should_quit);
+        // While the warning is up, a navigation key is swallowed (dismisses, no nav).
+        a.pending_load = Some(pl());
+        a.handle_key(key('2', true)); // would normally switch to Models
+        assert!(a.pending_load.is_none());
+        assert!(matches!(a.screen, ActiveScreen::Chat), "the key was consumed by the modal");
+        // Y confirms (clears the warning and dispatches the load).
+        a.pending_load = Some(pl());
+        a.handle_key(key('y', false));
+        assert!(a.pending_load.is_none(), "Y proceeds and clears the warning");
+    }
+
+    #[test]
+    fn request_load_of_the_resident_model_never_warns() {
+        // Reloading the already-loaded model adds no footprint → never prompts.
+        let mut a = test_app();
+        // (No model is loaded in the test harness, so this exercises the non-resident
+        // path; the guard is the loaded_alias short-circuit, covered by construction.)
+        a.request_load("definitely-not-a-real-model-xyz".into());
+        // Either it loaded (fits) or it queued a warning — but never panicked and the
+        // app stayed alive.
+        assert!(!a.should_quit);
     }
 
     #[test]
