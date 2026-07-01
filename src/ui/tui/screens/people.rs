@@ -908,6 +908,12 @@ impl PeopleState {
             if !kg.prompt.is_empty() {
                 lines.push(Line::from(Span::styled(format!("    “{}”", kg.prompt), Style::new().fg(Color::White))));
             }
+            if !kg.negative.is_empty() {
+                lines.push(Line::from(Span::styled(format!("    ⊘ {}", kg.negative), Style::new().fg(Color::DarkGray))));
+            }
+            if !kg.notes.is_empty() {
+                lines.push(Line::from(Span::styled(format!("    · {}", kg.notes), Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC))));
+            }
         }
         lines.push(Line::from(""));
         lines.push(dim("[G] generates with this identity (apply-a-specific-combo is planned)."));
@@ -934,6 +940,17 @@ impl PeopleState {
         lines.push(Line::from(Span::styled("privacy audit", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
         lines.push(kv("source", or_dash(&p.source)));
         lines.push(kv("refs", format!("{} photo(s) on disk", p.refs.len())));
+        // Usage stats (recorded in person.hjson `stats{}`).
+        let st = &p.stats;
+        if st.appearances > 0 || st.scenarios > 0 || st.sessions > 0 || !st.last_used.is_empty() {
+            lines.push(kv(
+                "usage",
+                format!("{} render(s) · {} scenario(s) · {} session(s)", st.appearances, st.scenarios, st.sessions),
+            ));
+            if !st.last_used.is_empty() {
+                lines.push(kv("last used", st.last_used.clone()));
+            }
+        }
         let restricted = p.consent.as_ref().map(|c| !c.restrictions.is_empty()).unwrap_or(false);
         lines.push(kv("enforced", if restricted { "yes (at generation time)".into() } else { "none".into() }));
         if p.source == "people" {

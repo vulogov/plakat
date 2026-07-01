@@ -1,29 +1,30 @@
-# plakat 1.20.0 — roadmap
+# plakat 1.20.0 — roadmap: `plakat ui` robustness
 
-1.19.0 added History semantic search, hardened `plakat ui` against OOM host crashes, and
-fixed the Canvas "where am I masking / mask the latest image" gaps. With that, the **RFC
-TUI-1 surface is complete** — every screen and its depth features are implemented and
-shipped.
+The RFC TUI-1 surface is complete. This cycle (and the next) act on the post-completion
+improvement brainstorm; the user split it across **two releases**:
 
-Only one UI item remains, and it's hardware-blocked. 1.20.0 is otherwise an **open
-cycle** — the next direction (new pipelines, CLI work, training, or polish) is TBD.
+- **1.20.0 — robustness** (this file): memory budget warning, idle auto-unload/reload,
+  TUI hard reset, cache doctor.
+- **1.21.0 — the build-an-image loop + workflow + polish** (see `ROADMAP_1.21.0.md`).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
-## A — generation engine
+## Robustness (1.20.0)
 
-- [⏸] **Flux in the UI** — `flux::run` dispatch (load-per-call ~25-field `Request` + the
-      GGUF-Metal guard). **Postponed**: can't be verified end-to-end on the current box
-      (Flux too large to run here; GGUF-Flux-on-Metal is a known-broken kernel path).
-      Resume when verifiable hardware is available — the `ModelService::Loaded` enum +
-      family dispatch already have the seam for it.
+- [ ] **Memory budget warning at load** — before loading, estimate the model's resident
+      footprint (cached size + overhead) vs available RAM; if it would over-commit,
+      require a confirm before the download+load. Reuses `capability` + `hw`.
+- [ ] **Idle auto-unload + auto-reload** — after N minutes idle with a model loaded, unload
+      it (free memory) and remember `(alias, loras)`; reload it automatically when the user
+      resumes an activity that needs it.
+- [ ] **TUI hard reset** — restart plakat in place (re-exec) to fully return candle's Metal
+      buffer pool (no in-process force-clear API). Surfaced in the command palette + a
+      confirm (Ctrl-R is taken by screen editors, so it can't be a bare global key).
+- [ ] **Cache doctor in the UI** — on the Models screen, show each model's cache status
+      (cached GB / not cached / gated) + a repair action (sweep stale locks, report
+      partial state). Reuses the 1.19.0 lock-sweep + `capability` sizing.
 
-## Possible directions (unprioritised)
+## Carry
 
-The `plakat ui` backlog is drained. Candidate next areas, pending the user's call:
-
-- **Neural semantic search** — upgrade History's TF-IDF ranker to a real text-embedding
-  model behind the existing `services::semantic::rank` seam (weight download + load cost).
-- **Memory** — a TUI "hard reset" that re-execs the process to fully return candle's
-  Metal buffer pool (which has no in-process force-clear), for very long sessions.
-- New model families, CLI ergonomics, or training-surface work — TBD.
+- [⏸] **Flux in the UI** — hardware-blocked (Flux too large to verify here; GGUF-Flux-Metal
+      known broken). The `ModelService::Loaded` enum + family dispatch have the seam.

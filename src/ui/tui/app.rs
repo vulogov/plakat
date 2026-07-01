@@ -53,7 +53,7 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 2;
 
 /// The eight screens (RFC §1). Release 1 implements Chat + Models; the rest show a
 /// placeholder until their cycle.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ActiveScreen {
     Chat,
     Models,
@@ -106,12 +106,6 @@ impl ActiveScreen {
         Self::ALL[i]
     }
 
-    /// Whether this screen has a real body yet (Release 1: Chat + Models;
-    /// Release 2: Scenarios + History).
-    fn implemented(self) -> bool {
-        // All eight screens have a real body — the RFC TUI-1 surface is complete.
-        true
-    }
 }
 
 /// The running TUI. Holds the workspace, the image `Picker` (for inline previews,
@@ -3166,14 +3160,17 @@ mod tests {
     }
 
     #[test]
-    fn release1_screens_are_implemented() {
-        assert!(ActiveScreen::Chat.implemented());
-        assert!(ActiveScreen::Models.implemented());
-        assert!(ActiveScreen::Scenarios.implemented());
-        assert!(ActiveScreen::History.implemented());
-        assert!(ActiveScreen::People.implemented());
-        // Every screen has a real body now — the RFC TUI-1 surface is complete.
-        assert!(ActiveScreen::ALL.iter().all(|s| s.implemented()));
+    fn all_screens_present_and_cycle() {
+        // The full RFC TUI-1 surface — eight screens, each reachable by Tab cycling.
         assert_eq!(ActiveScreen::ALL.len(), 8);
+        for s in ActiveScreen::ALL {
+            assert_eq!(s.cycle(1).cycle(-1), s, "cycling is reversible for {s:?}");
+        }
+        // Cycling forward through all eight returns to the start.
+        let mut s = ActiveScreen::Chat;
+        for _ in 0..8 {
+            s = s.cycle(1);
+        }
+        assert_eq!(s, ActiveScreen::Chat);
     }
 }
