@@ -1023,6 +1023,10 @@ impl App {
         if self.screen == ActiveScreen::Models {
             cmds.push(("Cache doctor: sweep locks + report".into(), Cmd::CacheDoctor));
         }
+        // Apply a saved preset (model + LoRA stack + negative) from anywhere.
+        for p in crate::ui::tui::presets::load(&self.workspace.root) {
+            cmds.push((format!("Preset: {} ({})", p.name, p.summary()), Cmd::ApplyPreset(p.name)));
+        }
         for s in ActiveScreen::ALL {
             if s != self.screen {
                 cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
@@ -1051,6 +1055,10 @@ impl App {
             }
             Cmd::HardReset => self.confirm_reset = true,
             Cmd::CacheDoctor => self.run_cache_doctor(),
+            Cmd::ApplyPreset(name) => {
+                self.screen = ActiveScreen::Chat;
+                self.apply_preset(&name);
+            }
         }
     }
 
@@ -1745,6 +1753,58 @@ impl App {
 
     /// `/save [name]` — write the Chat thread + refinement state to
     /// `sessions/<name>.json` so it can be reloaded later.
+    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative under
+    /// a name (workspace `presets.json`). Uses the loaded model, else the Models cursor.
+    fn save_preset(&mut self, name: &str) {
+        let model = self
+            .models
+            .loaded_alias()
+            .map(str::to_string)
+            .or_else(|| self.models.selected_alias());
+        let Some(model) = model else {
+            self.chat.push_system("no model loaded or selected to save".into());
+            return;
+        };
+        let preset = crate::ui::tui::presets::Preset {
+            name: name.to_string(),
+            model,
+            loras: self.active_loras.clone(),
+            negative: self.negative.clone(),
+        };
+        let summary = preset.summary();
+        match crate::ui::tui::presets::upsert(&self.workspace.root, preset) {
+            Ok(_) => self.chat.push_system(format!("✓ saved preset “{name}” — {summary}")),
+            Err(e) => self.chat.push_system(format!("✗ save preset failed: {e}")),
+        }
+    }
+
+    /// `/preset` / `/preset list` — list saved presets.
+    fn list_presets(&mut self) {
+        let all = crate::ui::tui::presets::load(&self.workspace.root);
+        if all.is_empty() {
+            self.chat.push_system("no presets yet — /preset save <name> to make one".into());
+            return;
+        }
+        self.chat.push_system(format!("{} preset(s):", all.len()));
+        for p in all {
+            self.chat.push_system(format!("  {} — {}", p.name, p.summary()));
+        }
+    }
+
+    /// `/preset <name>` (or a palette entry) — apply a saved preset: set the LoRA stack +
+    /// negative, then load the model (through the memory-budget guard).
+    fn apply_preset(&mut self, name: &str) {
+        let Some(p) = crate::ui::tui::presets::find(&self.workspace.root, name) else {
+            self.chat.push_system(format!("no preset “{name}” (/preset list)"));
+            return;
+        };
+        self.active_loras = p.loras.clone();
+        self.negative = p.negative.clone();
+        self.lorahub.set_applied(&self.active_loras);
+        self.chat.push_system(format!("applying preset “{}” — {}", p.name, p.summary()));
+        self.request_load(p.model);
+    }
+
     fn save_session(&mut self, name: &str) {
         let slug = session_slug(name);
         let session = ChatSession {
@@ -2382,6 +2442,19 @@ impl App {
         }
         if let Some(rest) = text.strip_prefix("/load") {
             self.load_session(rest.trim());
+            return;
+        }
+        // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
+        // `/preset list` lists them; `/preset <name>` applies one. Palette entries apply too.
+        if let Some(rest) = text.strip_prefix("/preset") {
+            let arg = rest.trim();
+            if let Some(name) = arg.strip_prefix("save").map(str::trim).filter(|s| !s.is_empty()) {
+                self.save_preset(name);
+            } else if arg.is_empty() || arg.eq_ignore_ascii_case("list") {
+                self.list_presets();
+            } else {
+                self.apply_preset(arg);
+            }
             return;
         }
         // `/auto on|off` — LLM edit/new routing for follow-ups.
@@ -3136,6 +3209,28 @@ mod tests {
         a.chat_mask = Some("/tmp/mask.png".into());
         a.inpaint_base = Some("/tmp/base.png".into());
         assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn preset_save_then_apply_restores_loras_and_negative() {
+        use crate::ui::tui::screens::models::LoadState;
+        let mut a = test_app();
+        std::fs::create_dir_all(&a.workspace.root).unwrap();
+        let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));
+        // A fake loaded model keeps apply's request_load network-free.
+        a.models.load = LoadState::Loaded { alias: "fake-preset-model".into(), used_gb: 7.0 };
+        a.active_loras = vec![(std::path::PathBuf::from("/l/film.safetensors"), 0.8)];
+        a.negative = "blurry".into();
+        a.save_preset("portrait");
+        // Clear the working state, then apply the preset back.
+        a.active_loras.clear();
+        a.negative.clear();
+        a.apply_preset("portrait");
+        assert_eq!(a.active_loras.len(), 1, "LoRA stack restored");
+        assert_eq!(a.negative, "blurry", "negative restored");
+        // A missing preset is a friendly no-op (no panic).
+        a.apply_preset("does-not-exist");
+        let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));
     }
 
     #[test]

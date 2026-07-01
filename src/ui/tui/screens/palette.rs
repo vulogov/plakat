@@ -29,6 +29,8 @@ pub enum Cmd {
     HardReset,
     /// Sweep stale download locks + report cache health for the selected model.
     CacheDoctor,
+    /// Apply a saved generation preset by name (model + LoRA stack + negative).
+    ApplyPreset(String),
 }
 
 /// Outcome of a key while the palette is open.

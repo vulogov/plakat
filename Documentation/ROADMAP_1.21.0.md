@@ -21,8 +21,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 - [ ] **Recipe → scenario in one step** — promote the current Chat frame's embedded recipe
       straight into a scenario task (today it's Chat→summary→scenario; add a direct path).
-- [ ] **Named presets** — save a (model + LoRA stack + size + sampler) bundle and re-apply
-      it by name from the palette.
+- [x] **Named presets** — `/preset save <name>` snapshots the current model + LoRA stack +
+      negative to workspace `presets.json`; `/preset list` lists; `/preset <name>` or a
+      palette *Preset: …* entry re-applies (sets the stack + negative, loads the model
+      through the memory-budget guard). New `ui::tui::presets` module.
 - [x] **Keybinding cheatsheet overlay** (**F1** — never conflicts with text input, unlike a
       bare `?`) — a centered modal listing the global keys + the active screen's keys
       (`screen_help`/`render_help`); any key closes. Also in the palette + the status-bar

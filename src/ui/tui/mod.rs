@@ -8,6 +8,7 @@
 pub mod app;
 pub mod memory;
 pub mod output;
+pub mod presets;
 pub mod screens;
 pub mod services;
 pub mod workspace;
