@@ -155,6 +155,7 @@ lose an earlier version.
 | `/strength <0.1–1>` | Switch refinement to **image-anchored** (img2img) mode |
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
+| `/size <WxH>` \| `<N>` \| `native` | Per-model generation size (budget-guarded; each model remembers its own) |
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
 | `/preset save <name>` | Save the current model + LoRA stack + negative as a named preset |

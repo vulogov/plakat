@@ -8,9 +8,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## Candidate directions
 
-- [ ] **Per-model generation-size override** — Chat generates at the loaded model's native
-      square today; let a workspace/preset choose a larger size (with the memory-budget
-      guard extended to the *generation* footprint, not just weights).
+- [x] **Per-model generation-size override** — `/size <WxH>` \| `<N>` \| `native` sets a
+      per-model generation size (each model remembers its own; absent = native square, always
+      Metal-safe). Guarded by `capability::generation_estimate_gb(alias, w, h)` (the
+      resolution-scaled working set) vs free RAM — an over-committing size still sets but warns
+      that the memory guard will abort cleanly. Shown in the Chat mode readout (`· 1024×768`).
+      *(Persisting the size into presets is the "presets: size + sampler" item below.)*
 - [ ] **Presets: size + sampler** — extend named presets beyond model + LoRA + negative to
       the full recipe (size, steps, guidance, sampler).
 - [ ] **Linear undo (`Ctrl-Z`)** — if users want a linear undo on top of the filmstrip

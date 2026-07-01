@@ -82,6 +82,32 @@ pub fn cached_size_gb(alias: &str) -> Option<f64> {
     cached_repo_gb(crate::hf::resolve_alias(alias))
 }
 
+/// Rough peak *extra* memory (GB) a text-to-image generation at `w`×`h` needs beyond the
+/// already-resident model — latents + UNet/DiT activations + VAE decode, which grow with
+/// resolution. Used to guard a per-model size override before it over-commits (unified
+/// memory has no swap headroom, and Metal's single-buffer VAE decode OOMs at large sizes).
+/// Scales the family's native-resolution working set by the pixel-area multiple.
+pub fn generation_estimate_gb(alias: &str, w: u32, h: u32) -> f64 {
+    let native = native_res(alias).max(1) as f64;
+    let ratio = (w as f64 * h as f64) / (native * native);
+    let base = MODELS.iter().find(|m| m.alias == alias).map(gen_base_gb).unwrap_or(2.5);
+    base * ratio
+}
+
+/// The generation working set (GB) at a family's *native* resolution — activations + VAE,
+/// excluding the resident weights. Coarse per-family constants (no swap on Metal → err high).
+fn gen_base_gb(m: &ModelMeta) -> f64 {
+    match m.alias {
+        "sd15" | "sd21" => 1.5,
+        "sdxl" | "sdxl-turbo" | "pony" => 3.0,
+        "sd35-medium" | "sd35-large" => 4.5,
+        a if a.starts_with("pixart") => 4.0,
+        "stable-cascade" => 4.0,
+        a if a.starts_with("flux") => 6.0,
+        _ => 2.5,
+    }
+}
+
 /// A coarse weight-size guess (GB) for an uncached model, by family. Only used when
 /// the exact on-disk size is unavailable; deliberately conservative (rounds up).
 fn rough_weight_gb(m: &ModelMeta) -> f64 {
@@ -318,6 +344,19 @@ mod tests {
         assert_eq!(native_res("sd21"), 768);
         assert_eq!(native_res("sdxl"), 1024);
         assert_eq!(native_res("totally-unknown"), 768); // safe default
+    }
+
+    #[test]
+    fn generation_estimate_scales_with_pixels_and_family() {
+        // At native resolution the estimate equals the family base.
+        let sd15_native = generation_estimate_gb("sd15", 512, 512);
+        assert!((sd15_native - 1.5).abs() < 1e-6, "sd15 native = base working set");
+        // Doubling each dimension → 4× the pixels → ~4× the working set.
+        let sd15_big = generation_estimate_gb("sd15", 1024, 1024);
+        assert!((sd15_big / sd15_native - 4.0).abs() < 1e-6, "4× pixels → 4× estimate");
+        // Heavier families estimate more at their own native size.
+        assert!(generation_estimate_gb("sdxl", 1024, 1024) > generation_estimate_gb("sd15", 512, 512));
+        assert!(generation_estimate_gb("flux-dev", 1024, 1024) > generation_estimate_gb("sdxl", 1024, 1024));
     }
 
     #[test]
