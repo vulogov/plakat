@@ -25,6 +25,10 @@ pub enum Cmd {
     Key(KeyEvent),
     /// Submit a Chat line (a slash command), as if typed + Enter.
     Submit(String),
+    /// Restart the process in place to fully return the GPU buffer pool.
+    HardReset,
+    /// Sweep stale download locks + report cache health for the selected model.
+    CacheDoctor,
 }
 
 /// Outcome of a key while the palette is open.

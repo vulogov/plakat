@@ -76,6 +76,12 @@ pub fn resident_estimate(alias: &str) -> ResidentEstimate {
     ResidentEstimate { gb: weight + OVERHEAD_GB, exact: false }
 }
 
+/// On-disk GB of a model's cached weight files (None if not cached). Sums the current
+/// snapshot the same way `resident_estimate` does — the cache-doctor's exact figure.
+pub fn cached_size_gb(alias: &str) -> Option<f64> {
+    cached_repo_gb(crate::hf::resolve_alias(alias))
+}
+
 /// A coarse weight-size guess (GB) for an uncached model, by family. Only used when
 /// the exact on-disk size is unavailable; deliberately conservative (rounds up).
 fn rough_weight_gb(m: &ModelMeta) -> f64 {

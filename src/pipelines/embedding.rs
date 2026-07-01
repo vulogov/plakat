@@ -662,7 +662,6 @@ pub async fn resolve(spec: &EmbeddingSpec) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
 
     #[test]
     fn spec_path_only() {

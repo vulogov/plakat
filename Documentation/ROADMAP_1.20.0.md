@@ -20,12 +20,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       with a model loaded, `idle_tick` unloads it and records the alias in `suspended`;
       the next keypress (`resume_if_suspended`) kicks a background reload (current LoRA set
       persists in `active_loras`). Never fires mid-generation.
-- [ ] **TUI hard reset** — restart plakat in place (re-exec) to fully return candle's Metal
-      buffer pool (no in-process force-clear API). Surfaced in the command palette + a
-      confirm (Ctrl-R is taken by screen editors, so it can't be a bare global key).
-- [ ] **Cache doctor in the UI** — on the Models screen, show each model's cache status
-      (cached GB / not cached / gated) + a repair action (sweep stale locks, report
-      partial state). Reuses the 1.19.0 lock-sweep + `capability` sizing.
+- [x] **TUI hard reset** — palette → "Restart plakat (free all GPU memory)" → centered
+      confirm → `should_reset` breaks the event loop and `run()` restores the terminal
+      then `reexec()`s (Unix `CommandExt::exec`; Windows spawn+exit). A fresh process is
+      the only way to fully return candle's Metal buffer pool. Palette-hosted because
+      Ctrl-R is taken by screen editors (Prompts compile / LoRA assess / Scenarios rename).
+- [x] **Cache doctor in the UI** — palette (Models) → "Cache doctor: sweep locks + report":
+      `run_cache_doctor` sweeps stale download locks (1.19.0 `clean_stale_locks`) and reports
+      cached weight GB (`capability::cached_size_gb`) / partial / not-cached + a gated hint,
+      to the Output pane.
 
 ## Carry
 

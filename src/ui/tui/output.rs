@@ -34,6 +34,12 @@ impl OutputPane {
         self.lines.is_empty()
     }
 
+    /// Snapshot of the captured lines (test-only introspection).
+    #[cfg(test)]
+    pub fn lines_for_test(&self) -> Vec<String> {
+        self.lines.iter().cloned().collect()
+    }
+
     /// Append a captured line. If it's a new frame of the same bar/spinner as the
     /// last line (same label after stripping the leading glyph), it replaces the
     /// last line so a live bar animates in place rather than flooding the log.

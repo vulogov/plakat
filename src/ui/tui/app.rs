@@ -148,6 +148,10 @@ pub struct App {
     last_activity: Instant,
     // A model that idle auto-unload freed; reloaded when the user resumes activity.
     suspended: Option<String>,
+    // Hard-reset (re-exec) confirmation + request. `should_reset` breaks the event
+    // loop; `run()` restores the terminal then re-execs the process.
+    confirm_reset: bool,
+    should_reset: bool,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -315,6 +319,8 @@ impl App {
             pending_load: None,
             last_activity: Instant::now(),
             suspended: None,
+            confirm_reset: false,
+            should_reset: false,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -412,11 +418,36 @@ impl App {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
         }
         ratatui::restore();
+        // A hard reset re-execs a fresh process (the only way to fully return candle's
+        // Metal buffer pool). The terminal is already restored above, so the new process
+        // starts clean. `exec` replaces this image and never returns on success.
+        if self.should_reset && res.is_ok() {
+            return Self::reexec();
+        }
         res
     }
 
+    /// Replace the current process with a fresh `plakat` invocation (same args). Only
+    /// returns on failure (the error is surfaced to the caller).
+    #[cfg(unix)]
+    fn reexec() -> Result<()> {
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        // `exec` does not return on success — the process image is replaced.
+        Err(std::process::Command::new(exe).args(args).exec().into())
+    }
+
+    #[cfg(not(unix))]
+    fn reexec() -> Result<()> {
+        let exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let status = std::process::Command::new(exe).args(args).status()?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
+
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-        while !self.should_quit {
+        while !self.should_quit && !self.should_reset {
             terminal.draw(|f| self.render(f))?;
             // 100 ms tick: poll input, then (later) drain the gen/llm/download
             // channels so a running generation keeps the UI live.
@@ -657,6 +688,15 @@ impl App {
         if self.palette.is_open() {
             if let PaletteResult::Run(cmd) = self.palette.handle_key(key) {
                 self.exec_palette(cmd);
+            }
+            return;
+        }
+        // ── A hard-reset confirmation owns input until answered. ──
+        if self.confirm_reset {
+            self.confirm_reset = false;
+            match key.code {
+                KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.should_reset = true,
+                _ => self.output.push("restart cancelled".into()),
             }
             return;
         }
@@ -916,11 +956,16 @@ impl App {
                 cmds.push(("Clear mask".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT))));
             }
         }
+        // The selected model's cache health (Models screen only — needs a selection).
+        if self.screen == ActiveScreen::Models {
+            cmds.push(("Cache doctor: sweep locks + report".into(), Cmd::CacheDoctor));
+        }
         for s in ActiveScreen::ALL {
             if s != self.screen {
                 cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
             }
         }
+        cmds.push(("Restart plakat (free all GPU memory)".into(), Cmd::HardReset));
         cmds.push(("Quit plakat ui".into(), Cmd::Quit));
         self.palette.open(cmds);
     }
@@ -940,6 +985,8 @@ impl App {
                 self.screen = ActiveScreen::Chat;
                 self.handle_chat_submit(line);
             }
+            Cmd::HardReset => self.confirm_reset = true,
+            Cmd::CacheDoctor => self.run_cache_doctor(),
         }
     }
 
@@ -1482,6 +1529,32 @@ impl App {
             self.pending_load = Some(PendingLoad { alias, est_gb: est.gb, avail_gb: avail, exact: est.exact });
         } else {
             self.load_model(alias);
+        }
+    }
+
+    /// Cache doctor (palette, Models screen): sweep stale download locks for the
+    /// selected model and report its cache health to the Output pane. Reuses the
+    /// 1.19.0 lock-sweep + `capability` sizing.
+    fn run_cache_doctor(&mut self) {
+        let Some(alias) = self.models.selected_alias() else { return };
+        let repo = crate::hf::resolve_alias(&alias).to_string();
+        let gated = self.models.rows.get(self.models.selected).map(|r| r.gated).unwrap_or(false);
+        self.output.push(format!("cache doctor · {alias}  ({repo})"));
+        let swept = crate::hf::download::clean_stale_locks(&alias);
+        self.output.push(if swept > 0 {
+            format!("  cleared {swept} stale download lock(s)")
+        } else {
+            "  no stale locks".into()
+        });
+        match crate::capability::cached_size_gb(&alias) {
+            Some(gb) => self.output.push(format!("  cached · {gb:.1} GB of weights on disk")),
+            None if crate::hf::download::is_cached(&alias) => {
+                self.output.push("  cached · partial (index present, weights incomplete) — reload to finish".into())
+            }
+            None => self.output.push("  not cached — first load downloads the weights".into()),
+        }
+        if gated {
+            self.output.push("  gated · accept the licence on HF (+ HF_TOKEN) if the load 401s".into());
         }
     }
 
@@ -2523,8 +2596,38 @@ impl App {
         if let Some(pl) = &self.pending_load {
             self.render_load_warning(f, pl);
         }
+        if self.confirm_reset {
+            self.render_reset_confirm(f);
+        }
         // The command palette floats above everything when open.
         self.palette.render(f, f.area());
+    }
+
+    /// Centered confirmation for the hard reset (re-exec).
+    fn render_reset_confirm(&self, f: &mut Frame) {
+        let area = f.area();
+        let w = 60.min(area.width.saturating_sub(4));
+        let h = 8.min(area.height.saturating_sub(2));
+        let rect = Rect {
+            x: area.x + (area.width.saturating_sub(w)) / 2,
+            y: area.y + (area.height.saturating_sub(h)) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let body = vec![
+            Line::from(Span::styled("↻ Restart plakat?", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+            Line::from(""),
+            Line::from("  Re-execs a fresh process to fully return GPU memory."),
+            Line::from(Span::styled("  Unsaved Chat state is lost (save first with /save).", Style::new().fg(Color::DarkGray))),
+            Line::from(""),
+            Line::from(Span::styled("  [Y] restart now   [N]/Esc cancel", Style::new().fg(Color::Gray))),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Cyan))
+            .title(" hard reset ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
     }
 
     /// Centered modal warning that a load would over-commit RAM (memory-budget guard).
@@ -2822,6 +2925,32 @@ mod tests {
         a.models.load = LoadState::Idle;
         a.resume_if_suspended();
         assert!(a.suspended.is_none(), "resume consumes the suspended model and reloads");
+    }
+
+    #[test]
+    fn hard_reset_needs_confirmation() {
+        let mut a = test_app();
+        // The palette command arms the confirm, it does not reset immediately.
+        a.exec_palette(Cmd::HardReset);
+        assert!(a.confirm_reset && !a.should_reset);
+        // N cancels.
+        a.handle_key(key('n', false));
+        assert!(!a.confirm_reset && !a.should_reset, "N dismisses the reset");
+        // Y confirms → the event loop will break and run() re-execs.
+        a.exec_palette(Cmd::HardReset);
+        a.handle_key(key('y', false));
+        assert!(!a.confirm_reset && a.should_reset, "Y requests the re-exec");
+    }
+
+    #[test]
+    fn cache_doctor_reports_to_output() {
+        let mut a = test_app();
+        a.screen = ActiveScreen::Models;
+        a.run_cache_doctor();
+        let out = a.output.lines_for_test();
+        assert!(out.iter().any(|l| l.contains("cache doctor")), "doctor announces the model");
+        // It always reports a lock-sweep result and a cache-status line.
+        assert!(out.iter().any(|l| l.contains("stale lock")), "reports lock-sweep");
     }
 
     #[test]
