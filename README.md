@@ -17,32 +17,29 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.20.0 — `plakat ui` won't over-commit your memory
+## What's new in 1.21.0 — the build-an-image loop + power-user workflow
 
-On 24 GB unified memory a big model can pin RAM to 100%. 1.20.0 makes `plakat ui`
-**memory-aware**: it warns before a load that won't fit, gives idle memory back on its
-own, and can hand the whole GPU pool back in one keystroke.
+1.20.0 made `plakat ui` memory-aware; 1.21.0 sharpens the **loop** you actually
+work in — always knowing what the next Enter does, fanning out variations, and
+turning any image into a reusable recipe or preset in one step.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **Memory-budget warning before a load** — Models `[L]` first estimates the model's
-  resident footprint (exact from the on-disk cache, else a per-family guess) against free
-  RAM. If it would over-commit, a confirm modal appears — `[Y]` load anyway / `[N]` cancel —
-  instead of firing a multi-GB download+load that may hard-OOM. Reloading the resident
-  model never prompts.
-- **Idle auto-unload + resume** — after 10 minutes of no keypresses, the loaded model is
-  unloaded to return its memory; the moment you touch a key it reloads in the background
-  (your applied LoRA set intact), ready by the time you generate again. Never fires
-  mid-generation.
-- **Hard reset (free all GPU memory)** — command palette (`Ctrl-K`) → *Restart plakat* →
-  confirm. candle's Metal buffer pool has no in-process force-clear, so plakat re-execs a
-  fresh process — the one guaranteed way to hand it all back — restoring your terminal on
-  the way.
-- **Cache doctor** — palette on Models → *Cache doctor*: sweeps stale download locks (the
-  interrupted-download culprit) and reports cached weight GB / partial / not-cached + a
-  gated hint.
+- **Always know what the next Enter does** — the Chat title shows the live mode:
+  `evolve · seed 12345`, `anchored 0.60 · seed …`, `inpaint`, `identity`, or `fresh`.
+  **`Ctrl-T`** toggles evolve ↔ anchored in one key.
+- **Fan out variations** — **`/vary 4`** generates several versions of the current image
+  at fresh seeds (one at a time — a single device runs one model); scrub the filmstrip
+  (`Ctrl-←/→`) and keep the winner (`Ctrl-B`).
+- **Recipe → scenario in one step** — **`/scenario`** grabs *this* image's exact recipe
+  (prompt + negative + seed) into a Scenarios task, no LLM. (`Ctrl-G` still distils the
+  whole conversation into one prompt.)
+- **Named presets** — **`/preset save <name>`** snapshots the model + LoRA stack + negative;
+  re-apply it from the command palette anywhere.
+- **F1 cheatsheet** — a keyboard map of the globals + the active screen, and an ambient,
+  colour-coded **free-RAM + loaded-model** readout in the status bar.
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -52,10 +49,10 @@ that a compiled scenario runs headlessly.
 > the UI is postponed until it can be verified on capable hardware.
 
 See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
-[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the next-cycle plan in
-[`Documentation/ROADMAP_1.21.0.md`](Documentation/ROADMAP_1.21.0.md).
+[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the memory features in
+[`Documentation/ROADMAP_1.20.0.md`](Documentation/ROADMAP_1.20.0.md).
 
-**Earlier releases** (v0.13 – v1.19):
+**Earlier releases** (v0.13 – v1.20):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
