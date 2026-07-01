@@ -22,8 +22,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       feature.)*
 - [ ] **Linear undo (`Ctrl-Z`)** — if users want a linear undo on top of the filmstrip
       scrub + rollback (deferred in 1.21.0 as redundant; reassess on demand).
-- [ ] **Shared pipeline for scenario runs** — reuse the TUI's loaded model for a scenario
-      run instead of the runner loading its own (RFC §0-R0-2), saving a reload.
+- [x] **Shared pipeline for scenario runs** — the ModelService now hands a *vanilla* resident
+      SD pipeline to the scenario runner, which reuses it as the run's SD base when the models
+      match, there are no scenario-level LoRAs, and no refiner (`can_reuse_sd_pipeline`) — so a
+      matching all-SD scenario skips the reload. Any mismatch (different model, LoRA'd Chat
+      pipeline, non-SD family, mixed/animate run) drops the handoff up front and loads fresh, so
+      reuse can never change output. RFC §0-R0-2.
 
 ## Carry
 

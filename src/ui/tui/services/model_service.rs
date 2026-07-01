@@ -242,9 +242,13 @@ fn model_loop(
     let _mem_guard = crate::memwatch::MemoryGuard::start(&device, "plakat ui");
     // The loaded pipeline lives here and never leaves this thread.
     let mut loaded: Option<(String, Loaded)> = None;
+    // Whether the resident pipeline was loaded with NO LoRAs — only a vanilla base can be
+    // safely handed to a scenario run for reuse (a LoRA'd pipeline would generate wrong).
+    let mut loaded_vanilla = false;
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             ModelCommand::Load { alias, loras } => {
+                let is_vanilla = loras.is_empty();
                 let family = match ui_family(&alias) {
                     Ok(f) => f,
                     Err(msg) => {
@@ -296,6 +300,7 @@ fn model_loop(
                     Ok(p) => {
                         let used = (crate::hw::total_ram_gb() - crate::hw::available_ram_gb()).max(0.0);
                         loaded = Some((alias.clone(), p));
+                        loaded_vanilla = is_vanilla;
                         let _ = msg_tx.send(ModelMessage::Loaded { alias, used_gb: used });
                     }
                     Err(e) => {
@@ -566,9 +571,26 @@ fn model_loop(
                 }
             }
             ModelCommand::RunScenario { args, events, done } => {
-                free_loaded(&mut loaded, &msg_tx);
+                // Hand a *vanilla* resident SD pipeline to the runner so a matching
+                // all-SD scenario reuses it instead of reloading the same weights (saves
+                // a full load). The runner drops it if the scenario's model/LoRAs/refiner
+                // don't match — so this can never change output. Any other resident model
+                // (LoRA'd, or a non-SD family) is just freed, as before.
+                let preloaded = match loaded.take() {
+                    Some((alias, Loaded::Sd(pipe))) if loaded_vanilla => {
+                        let _ = msg_tx.send(ModelMessage::Unloaded);
+                        Some((alias, pipe))
+                    }
+                    other => {
+                        if other.is_some() {
+                            let _ = msg_tx.send(ModelMessage::Unloaded);
+                        }
+                        None
+                    }
+                };
+                loaded_vanilla = false;
                 let result = rt
-                    .block_on(crate::cli::scenario::run_with_events(args, Some(events)))
+                    .block_on(crate::cli::scenario::run_with_events(args, Some(events), preloaded))
                     .map_err(|e| format!("{e:#}"));
                 let _ = done.send(result);
             }
