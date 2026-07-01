@@ -8,6 +8,26 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.19.0 — semantic search + a calmer, clearer UI
+
+1.18.0 made `plakat ui` sturdy; 1.19.0 added **semantic search**, hardened it against
+out-of-memory crashes, and fixed two confusing spots in the build-an-image loop.
+
+- **Semantic search in History** (`?`) — rank every image by *relevance* to a query
+  (TF-IDF cosine over filename + tags + recipe), most-related first. "snowy peak"
+  surfaces "a mountain in winter, fresh snow" with no shared substring. Local + instant,
+  no model or network. (`/` stays the plain substring filter.)
+- **Canvas shows the image** — the mask grid renders the **current** picture (each cell
+  tinted with that region's colour), so you can see *where* you're painting; painted cells
+  get a bright-green overlay. The Canvas masks + inpaints the **latest** render, so you can
+  **gradually build an image** — mask → inpaint → mask again on top — model-agnostic.
+- **Add-an-object nudge** — the first time you type "add a …" in Chat, a tip points you at
+  Canvas inpaint (prompt-evolve re-describes the whole scene and can't reliably *insert*
+  an object).
+- **OOM hardening** — the memory watchdog now covers **all** `plakat ui` generations, so an
+  out-of-memory abort exits plakat cleanly instead of crashing the host — and it restores
+  your terminal on the way out.
+
 ## What's new in 1.18.0 — `plakat ui`, sturdier
 
 1.17.0 made the `plakat ui` terminal UI fast and pleasant; 1.18.0 made it **sturdy**:
