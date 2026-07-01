@@ -123,6 +123,27 @@ pub struct PendingLoad {
     pub exact: bool,
 }
 
+/// Render a centered, bordered modal box (Clear + titled block) with `body`, clamped to
+/// the frame. The single styling path for every TUI overlay confirm/info popup so they
+/// stay visually consistent. `size` is the desired (width, height).
+fn centered_modal(f: &mut Frame, title: &str, border: Color, body: Vec<Line<'static>>, size: (u16, u16)) {
+    let area = f.area();
+    let w = size.0.min(area.width.saturating_sub(4));
+    let h = size.1.min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(border))
+        .title(title.to_string());
+    f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+}
+
 /// The running TUI. Holds the workspace, the image `Picker` (for inline previews,
 /// used once screens render images), the active screen, and the quit flag. Services
 /// (ModelService / GenQueue / LlmPool) join in the next increment.
@@ -152,6 +173,11 @@ pub struct App {
     // loop; `run()` restores the terminal then re-execs the process.
     confirm_reset: bool,
     should_reset: bool,
+    // Keyboard cheatsheet overlay (F1) — global keys + the active screen's keys.
+    show_help: bool,
+    // Pending `/vary N` variations — the same prompt queued at fresh seeds; the model
+    // thread is serial, so they dispatch one at a time (each lands in the filmstrip).
+    variation_queue: std::collections::VecDeque<String>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -321,6 +347,8 @@ impl App {
             suspended: None,
             confirm_reset: false,
             should_reset: false,
+            show_help: false,
+            variation_queue: std::collections::VecDeque::new(),
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -483,6 +511,7 @@ impl App {
             self.drain_people_encode();
             self.drain_route();
             self.sync_chat_mentions();
+            self.sync_chat_mode();
             self.idle_tick();
         }
         Ok(())
@@ -529,6 +558,54 @@ impl App {
             return;
         }
         self.chat.set_mention_candidates(self.people.names(), self.lorahub.local_names());
+    }
+
+    /// Summarize what the next Enter will do (mode + strength + seed) for the Chat pane
+    /// title, so the build-an-image loop's current behaviour is always visible.
+    fn chat_mode_hint(&self) -> String {
+        // No base image yet → the next Enter starts a fresh generation.
+        if self.base_seed.is_none() {
+            return "fresh".into();
+        }
+        let mut mode = if self.chat_mask.is_some() && self.inpaint_base.is_some() {
+            "inpaint".to_string()
+        } else if self.chat_identity.is_some() {
+            "identity".to_string()
+        } else if let Some(s) = self.refine_strength {
+            format!("anchored {s:.2}")
+        } else {
+            "evolve".to_string()
+        };
+        if let Some(seed) = self.fixed_seed.or(self.base_seed) {
+            mode.push_str(&format!(" · seed {seed}"));
+        }
+        if self.auto_route {
+            mode.push_str(" · auto");
+        }
+        mode
+    }
+
+    /// Ctrl-T in Chat: flip the refine mode between prompt-evolve (`None`) and
+    /// image-anchored img2img at [`DEFAULT_ANCHOR_STRENGTH`]. A no-op hint until an
+    /// image exists to anchor to.
+    fn toggle_anchor(&mut self) {
+        self.refine_strength = match self.refine_strength {
+            Some(_) => None,
+            None => Some(DEFAULT_ANCHOR_STRENGTH),
+        };
+        let msg = match self.refine_strength {
+            Some(s) => format!("anchored img2img at strength {s:.2} (Ctrl-T to switch back)"),
+            None => "prompt-evolve (txt2img at the stable seed)".to_string(),
+        };
+        self.chat.push_system(msg);
+    }
+
+    fn sync_chat_mode(&mut self) {
+        if self.screen != ActiveScreen::Chat {
+            return;
+        }
+        let hint = self.chat_mode_hint();
+        self.chat.set_mode_hint(hint);
     }
 
     fn drain_prompt_compile(&mut self) {
@@ -691,6 +768,15 @@ impl App {
             }
             return;
         }
+        // ── The keyboard cheatsheet (F1) owns input while open: any key dismisses. ──
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+        if key.code == KeyCode::F(1) {
+            self.show_help = true;
+            return;
+        }
         // ── A hard-reset confirmation owns input until answered. ──
         if self.confirm_reset {
             self.confirm_reset = false;
@@ -768,6 +854,7 @@ impl App {
                 ChatAction::SelectFrame(path) => self.show_chat_frame(path),
                 ChatAction::Rollback(path) => self.rollback_to_frame(path),
                 ChatAction::Vary(path) => self.vary_frame(path),
+                ChatAction::ToggleAnchor => self.toggle_anchor(),
                 ChatAction::None => {}
             }
             return;
@@ -902,6 +989,9 @@ impl App {
             ActiveScreen::Chat => {
                 cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Fan out 4 variations (fresh seeds)".into(), Cmd::Submit("/vary 4".into())));
+                cmds.push(("Grab this image's recipe → Scenario (exact)".into(), Cmd::Submit("/scenario".into())));
+                cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
                 if self.chat.frames().len() > 1 {
@@ -960,11 +1050,16 @@ impl App {
         if self.screen == ActiveScreen::Models {
             cmds.push(("Cache doctor: sweep locks + report".into(), Cmd::CacheDoctor));
         }
+        // Apply a saved preset (model + LoRA stack + negative) from anywhere.
+        for p in crate::ui::tui::presets::load(&self.workspace.root) {
+            cmds.push((format!("Preset: {} ({})", p.name, p.summary()), Cmd::ApplyPreset(p.name)));
+        }
         for s in ActiveScreen::ALL {
             if s != self.screen {
                 cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
             }
         }
+        cmds.push(("Keyboard shortcuts (F1)".into(), Cmd::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE))));
         cmds.push(("Restart plakat (free all GPU memory)".into(), Cmd::HardReset));
         cmds.push(("Quit plakat ui".into(), Cmd::Quit));
         self.palette.open(cmds);
@@ -987,6 +1082,10 @@ impl App {
             }
             Cmd::HardReset => self.confirm_reset = true,
             Cmd::CacheDoctor => self.run_cache_doctor(),
+            Cmd::ApplyPreset(name) => {
+                self.screen = ActiveScreen::Chat;
+                self.apply_preset(&name);
+            }
         }
     }
 
@@ -1214,6 +1313,30 @@ impl App {
             let _ = tx.send(result);
         });
         self.chat_to_scenario = Some(rx);
+    }
+
+    /// `/scenario` — promote the CURRENT Chat image's embedded recipe into a scenario
+    /// task in one step (exact prompt + negative + seed, no LLM), then jump to Scenarios.
+    fn grab_recipe_into_scenario(&mut self) {
+        let Some(path) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image yet — generate one first, then /scenario".into());
+            return;
+        };
+        let params = crate::imaging::io::read_parameters_chunk(&path).ok().flatten();
+        let Some(params) = params else {
+            self.chat.push_system("this image has no embedded recipe to grab".into());
+            return;
+        };
+        let prompt = recipe_positive(&params);
+        if prompt.trim().is_empty() {
+            self.chat.push_system("the recipe has no prompt to grab".into());
+            return;
+        }
+        let negative = recipe_negative(&params);
+        let seed = recipe_seed(&params);
+        self.scenarios.insert_recipe_task("from-chat", &prompt, &negative, seed);
+        self.screen = ActiveScreen::Scenarios;
+        self.chat.push_system("✓ recipe → Scenarios (exact prompt + seed)".into());
     }
 
     fn suggest_combination(&mut self, candidates: Vec<String>) {
@@ -1681,6 +1804,58 @@ impl App {
 
     /// `/save [name]` — write the Chat thread + refinement state to
     /// `sessions/<name>.json` so it can be reloaded later.
+    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative under
+    /// a name (workspace `presets.json`). Uses the loaded model, else the Models cursor.
+    fn save_preset(&mut self, name: &str) {
+        let model = self
+            .models
+            .loaded_alias()
+            .map(str::to_string)
+            .or_else(|| self.models.selected_alias());
+        let Some(model) = model else {
+            self.chat.push_system("no model loaded or selected to save".into());
+            return;
+        };
+        let preset = crate::ui::tui::presets::Preset {
+            name: name.to_string(),
+            model,
+            loras: self.active_loras.clone(),
+            negative: self.negative.clone(),
+        };
+        let summary = preset.summary();
+        match crate::ui::tui::presets::upsert(&self.workspace.root, preset) {
+            Ok(_) => self.chat.push_system(format!("✓ saved preset “{name}” — {summary}")),
+            Err(e) => self.chat.push_system(format!("✗ save preset failed: {e}")),
+        }
+    }
+
+    /// `/preset` / `/preset list` — list saved presets.
+    fn list_presets(&mut self) {
+        let all = crate::ui::tui::presets::load(&self.workspace.root);
+        if all.is_empty() {
+            self.chat.push_system("no presets yet — /preset save <name> to make one".into());
+            return;
+        }
+        self.chat.push_system(format!("{} preset(s):", all.len()));
+        for p in all {
+            self.chat.push_system(format!("  {} — {}", p.name, p.summary()));
+        }
+    }
+
+    /// `/preset <name>` (or a palette entry) — apply a saved preset: set the LoRA stack +
+    /// negative, then load the model (through the memory-budget guard).
+    fn apply_preset(&mut self, name: &str) {
+        let Some(p) = crate::ui::tui::presets::find(&self.workspace.root, name) else {
+            self.chat.push_system(format!("no preset “{name}” (/preset list)"));
+            return;
+        };
+        self.active_loras = p.loras.clone();
+        self.negative = p.negative.clone();
+        self.lorahub.set_applied(&self.active_loras);
+        self.chat.push_system(format!("applying preset “{}” — {}", p.name, p.summary()));
+        self.request_load(p.model);
+    }
+
     fn save_session(&mut self, name: &str) {
         let slug = session_slug(name);
         let session = ChatSession {
@@ -2159,6 +2334,44 @@ impl App {
     }
 
     /// Generate a fresh variation of a filmstrip frame — its prompt at a new seed.
+    /// `/vary [n]` — fan out `n` variations (default 4, clamped 2–8) of the current image
+    /// at fresh seeds. The model thread is serial, so they run one at a time via
+    /// `pump_variations`; each lands in the filmstrip to scrub (Ctrl-←/→) and keep (Ctrl-B).
+    fn start_variations(&mut self, n: usize) {
+        let n = n.clamp(2, 8);
+        let prompt = self
+            .chat
+            .latest_frame_path()
+            .map(|p| recover_recipe(&p).0)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let p = self.refine_prompt.trim();
+                (!p.is_empty()).then(|| p.to_string())
+            });
+        let Some(prompt) = prompt else {
+            self.chat.push_system("nothing to vary yet — generate an image first".into());
+            return;
+        };
+        self.chat.push_system(format!(
+            "fanning out {n} variations at fresh seeds — scrub the filmstrip (Ctrl-←/→), Ctrl-B keeps one"
+        ));
+        for _ in 0..n {
+            self.variation_queue.push_back(prompt.clone());
+        }
+        self.pump_variations();
+    }
+
+    /// Dispatch the next queued variation if the model is free (called on each Done).
+    fn pump_variations(&mut self) {
+        if self.active_gen.is_some() {
+            return;
+        }
+        if let Some(prompt) = self.variation_queue.pop_front() {
+            // `/new` forces a fresh generation at a new random seed (a true variation).
+            self.dispatch_generation(format!("/new {prompt}"), false);
+        }
+    }
+
     fn vary_frame(&mut self, path: std::path::PathBuf) {
         let (prompt, _) = recover_recipe(&path);
         if prompt.trim().is_empty() {
@@ -2318,6 +2531,30 @@ impl App {
         }
         if let Some(rest) = text.strip_prefix("/load") {
             self.load_session(rest.trim());
+            return;
+        }
+        // `/scenario` promotes the current image's exact recipe into a scenario task.
+        if text.trim_start().starts_with("/scenario") {
+            self.grab_recipe_into_scenario();
+            return;
+        }
+        // `/vary [n]` fans out N variations of the current image at fresh seeds.
+        if let Some(rest) = text.strip_prefix("/vary") {
+            let n = rest.trim().parse::<usize>().unwrap_or(4);
+            self.start_variations(n);
+            return;
+        }
+        // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
+        // `/preset list` lists them; `/preset <name>` applies one. Palette entries apply too.
+        if let Some(rest) = text.strip_prefix("/preset") {
+            let arg = rest.trim();
+            if let Some(name) = arg.strip_prefix("save").map(str::trim).filter(|s| !s.is_empty()) {
+                self.save_preset(name);
+            } else if arg.is_empty() || arg.eq_ignore_ascii_case("list") {
+                self.list_presets();
+            } else {
+                self.apply_preset(arg);
+            }
             return;
         }
         // `/auto on|off` — LLM edit/new routing for follow-ups.
@@ -2566,6 +2803,8 @@ impl App {
         }
         if finished {
             self.active_gen = None;
+            // Fire the next queued `/vary` variation, if any.
+            self.pump_variations();
         }
     }
 
@@ -2599,22 +2838,99 @@ impl App {
         if self.confirm_reset {
             self.render_reset_confirm(f);
         }
+        if self.show_help {
+            self.render_help(f);
+        }
         // The command palette floats above everything when open.
         self.palette.render(f, f.area());
     }
 
+    /// The active screen's key bindings (label, keys) for the cheatsheet. Globals are
+    /// listed separately by `render_help`.
+    fn screen_help(&self) -> (&'static str, &'static [(&'static str, &'static str)]) {
+        match self.screen {
+            ActiveScreen::Chat => ("Chat", &[
+                ("Enter", "generate / refine"),
+                ("Ctrl-T", "toggle evolve ↔ anchored"),
+                ("Ctrl-P / Ctrl-N", "recall previous / next prompt"),
+                ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
+                ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
+                ("/vary /scenario /preset", "fan out · grab recipe · presets"),
+                ("/new /seed /strength /negative /auto", "session commands"),
+            ]),
+            ActiveScreen::Models => ("Models", &[
+                ("L / U", "load / unload selected"),
+                ("j / k", "move selection"),
+                ("(palette) Cache doctor", "sweep locks + cache report"),
+            ]),
+            ActiveScreen::Scenarios => ("Scenarios", &[
+                ("Enter", "run selected"),
+                ("e / n", "edit / new scenario"),
+            ]),
+            ActiveScreen::History => ("History", &[
+                ("v", "toggle thumbnail grid"),
+                ("/ , ?", "substring filter , semantic search"),
+                ("t / x / d", "tag / export / compare baseline"),
+                ("c", "continue selected in Chat"),
+            ]),
+            ActiveScreen::LoraHub => ("LoRA Hub", &[
+                ("a", "apply selected LoRA"),
+                ("r / Ctrl-R", "assess selected / suggest a stack (LLM)"),
+                ("u", "check for a newer version"),
+            ]),
+            ActiveScreen::People => ("People", &[
+                ("g", "generate selected → Chat"),
+                ("← / →", "cycle detail tab"),
+                ("e / i", "encode / import persona"),
+            ]),
+            ActiveScreen::PromptWorkspace => ("Prompts", &[
+                ("Ctrl-N / Ctrl-S", "new / save buffer"),
+                ("Ctrl-T", "toggle Tera mode"),
+                ("Ctrl-R / Ctrl-O", "LLM compile / open in Scenarios"),
+            ]),
+            ActiveScreen::Canvas => ("Canvas", &[
+                ("m", "outpaint mode"),
+                ("Enter", "rasterize mask → Chat"),
+                ("Shift-C", "clear mask"),
+            ]),
+        }
+    }
+
+    /// Centered keyboard cheatsheet (F1): global keys + the active screen's keys.
+    fn render_help(&self, f: &mut Frame) {
+        let (screen_name, keys) = self.screen_help();
+        let globals: &[(&str, &str)] = &[
+            ("Ctrl-K", "command palette"),
+            ("Ctrl-1..8 / Tab", "switch screen"),
+            ("F1", "this help"),
+            ("Ctrl-C", "cancel generation / quit"),
+            ("Ctrl-Q", "quit"),
+        ];
+        let mut body: Vec<Line> = Vec::new();
+        body.push(Line::from(Span::styled("Global", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        for (k, d) in globals {
+            body.push(Line::from(vec![
+                Span::styled(format!("  {k:<20}"), Style::new().fg(Color::Cyan)),
+                Span::styled(d.to_string(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled(screen_name.to_string(), Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        for (k, d) in keys {
+            body.push(Line::from(vec![
+                Span::styled(format!("  {k:<20}"), Style::new().fg(Color::Cyan)),
+                Span::styled(d.to_string(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled("  any key to close", Style::new().fg(Color::DarkGray))));
+
+        let h = body.len() as u16 + 2;
+        centered_modal(f, " keyboard shortcuts (F1) ", Color::Cyan, body, (60, h));
+    }
+
     /// Centered confirmation for the hard reset (re-exec).
     fn render_reset_confirm(&self, f: &mut Frame) {
-        let area = f.area();
-        let w = 60.min(area.width.saturating_sub(4));
-        let h = 8.min(area.height.saturating_sub(2));
-        let rect = Rect {
-            x: area.x + (area.width.saturating_sub(w)) / 2,
-            y: area.y + (area.height.saturating_sub(h)) / 2,
-            width: w,
-            height: h,
-        };
-        f.render_widget(ratatui::widgets::Clear, rect);
         let body = vec![
             Line::from(Span::styled("↻ Restart plakat?", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
             Line::from(""),
@@ -2623,22 +2939,11 @@ impl App {
             Line::from(""),
             Line::from(Span::styled("  [Y] restart now   [N]/Esc cancel", Style::new().fg(Color::Gray))),
         ];
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::Cyan))
-            .title(" hard reset ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+        centered_modal(f, " hard reset ", Color::Cyan, body, (60, 8));
     }
 
     /// Centered modal warning that a load would over-commit RAM (memory-budget guard).
     fn render_load_warning(&self, f: &mut Frame, pl: &PendingLoad) {
-        let area = f.area();
-        let w = 62.min(area.width.saturating_sub(4));
-        let h = 9.min(area.height.saturating_sub(2));
-        let x = area.x + (area.width.saturating_sub(w)) / 2;
-        let y = area.y + (area.height.saturating_sub(h)) / 2;
-        let rect = Rect { x, y, width: w, height: h };
-        f.render_widget(ratatui::widgets::Clear, rect);
         let qual = if pl.exact { "needs" } else { "≈ needs" };
         let body = vec![
             Line::from(Span::styled(
@@ -2654,11 +2959,7 @@ impl App {
                 Style::new().fg(Color::Gray),
             )),
         ];
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::Yellow))
-            .title(" memory budget ");
-        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
+        centered_modal(f, " memory budget ", Color::Yellow, body, (62, 9));
     }
 
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
@@ -2685,6 +2986,21 @@ impl App {
         }
     }
 
+    /// The ambient status-bar memory string + its headroom tint (red < 3 GB, yellow
+    /// < 6 GB, else green). Split out for testing.
+    fn mem_readout(&self, free: f64, total: f64) -> (String, Color) {
+        let model = self.models.loaded_alias().unwrap_or("no model");
+        let s = format!("{model} · {free:.1}/{total:.0} GB free ");
+        let fg = if free < 3.0 {
+            Color::Red
+        } else if free < 6.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        (s, fg)
+    }
+
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         // In a text-input mode (Chat, or the Scenarios editor) plain keys type, so
         // advertise only the input-safe switches.
@@ -2693,13 +3009,25 @@ impl App {
             || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input())
             || (self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input());
         let nav = if input_mode {
-            "Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
+            "F1 help · Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
-            "Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
+            "F1 help · Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
         };
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
-        let bar = Paragraph::new(txt).style(Style::new().bg(Color::DarkGray).fg(Color::White));
-        f.render_widget(bar, area);
+        // Ambient memory readout (right-aligned): loaded model + free/total RAM, tinted
+        // by headroom — so the 1.20.0 memory budget is visible at a glance, not just at
+        // load time.
+        let (mem, mem_fg) = self.mem_readout(crate::hw::available_ram_gb(), crate::hw::total_ram_gb());
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(mem.len() as u16)])
+            .split(area);
+        let bg = Style::new().bg(Color::DarkGray);
+        f.render_widget(Paragraph::new(txt).style(bg.fg(Color::White)), cols[0]);
+        f.render_widget(
+            Paragraph::new(mem).style(bg.fg(mem_fg)).alignment(ratatui::layout::Alignment::Right),
+            cols[1],
+        );
     }
 }
 
@@ -2786,6 +3114,21 @@ fn recipe_positive(params: &str) -> String {
     for line in params.lines() {
         let t = line.trim_start();
         if t.starts_with("Negative prompt:") || t.starts_with("Steps:") {
+            break;
+        }
+        out.push(line);
+    }
+    out.join(" ").trim().to_string()
+}
+
+/// The negative prompt of an A1111 recipe: the text after `Negative prompt:` up to the
+/// first `Steps:` parameter line. Empty when absent.
+fn recipe_negative(params: &str) -> String {
+    let Some(idx) = params.find("Negative prompt:") else { return String::new() };
+    let rest = &params[idx + "Negative prompt:".len()..];
+    let mut out = Vec::new();
+    for line in rest.lines() {
+        if line.trim_start().starts_with("Steps:") {
             break;
         }
         out.push(line);
@@ -2925,6 +3268,120 @@ mod tests {
         a.models.load = LoadState::Idle;
         a.resume_if_suspended();
         assert!(a.suspended.is_none(), "resume consumes the suspended model and reloads");
+    }
+
+    #[test]
+    fn chat_mode_hint_reflects_the_loop_state() {
+        let mut a = test_app();
+        // No base image → the next Enter is a fresh generation.
+        assert_eq!(a.chat_mode_hint(), "fresh");
+        // With a stable seed and default strength → prompt-evolve.
+        a.base_seed = Some(12345);
+        assert_eq!(a.chat_mode_hint(), "evolve · seed 12345");
+        // Anchored img2img shows the strength.
+        a.refine_strength = Some(0.6);
+        assert_eq!(a.chat_mode_hint(), "anchored 0.60 · seed 12345");
+        // A pinned seed overrides the stable seed in the readout.
+        a.fixed_seed = Some(999);
+        assert_eq!(a.chat_mode_hint(), "anchored 0.60 · seed 999");
+        // Auto-routing appends a marker.
+        a.auto_route = true;
+        assert!(a.chat_mode_hint().ends_with("· auto"));
+        // A pending Canvas mask + base → inpaint takes precedence.
+        a.refine_strength = None;
+        a.chat_mask = Some("/tmp/mask.png".into());
+        a.inpaint_base = Some("/tmp/base.png".into());
+        assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn vary_queues_variations_and_pumps_one_at_a_time() {
+        let mut a = test_app();
+        // No image / prompt yet → a friendly no-op.
+        a.start_variations(4);
+        assert!(a.variation_queue.is_empty() && a.active_gen.is_none(), "no source → no-op");
+        // With a prompt source, one dispatches immediately and the rest queue.
+        a.refine_prompt = "a red fox".into();
+        a.start_variations(4);
+        assert!(a.active_gen.is_some(), "first variation dispatched");
+        assert_eq!(a.variation_queue.len(), 3, "the other three wait (serial model)");
+        // Simulate that generation finishing → the next one pumps.
+        a.active_gen = None;
+        a.pump_variations();
+        assert!(a.active_gen.is_some());
+        assert_eq!(a.variation_queue.len(), 2);
+        // The count clamps to 8.
+        let mut b = test_app();
+        b.refine_prompt = "x".into();
+        b.start_variations(99);
+        assert_eq!(b.variation_queue.len(), 7, "clamped to 8, one already dispatched");
+    }
+
+    #[test]
+    fn preset_save_then_apply_restores_loras_and_negative() {
+        use crate::ui::tui::screens::models::LoadState;
+        let mut a = test_app();
+        std::fs::create_dir_all(&a.workspace.root).unwrap();
+        let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));
+        // A fake loaded model keeps apply's request_load network-free.
+        a.models.load = LoadState::Loaded { alias: "fake-preset-model".into(), used_gb: 7.0 };
+        a.active_loras = vec![(std::path::PathBuf::from("/l/film.safetensors"), 0.8)];
+        a.negative = "blurry".into();
+        a.save_preset("portrait");
+        // Clear the working state, then apply the preset back.
+        a.active_loras.clear();
+        a.negative.clear();
+        a.apply_preset("portrait");
+        assert_eq!(a.active_loras.len(), 1, "LoRA stack restored");
+        assert_eq!(a.negative, "blurry", "negative restored");
+        // A missing preset is a friendly no-op (no panic).
+        a.apply_preset("does-not-exist");
+        let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));
+    }
+
+    #[test]
+    fn f1_toggles_the_help_overlay_and_any_key_closes_it() {
+        let mut a = test_app();
+        assert!(!a.show_help);
+        a.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(a.show_help, "F1 opens the cheatsheet");
+        // While open, any key closes it (and is swallowed — no screen change).
+        a.handle_key(key('2', true));
+        assert!(!a.show_help, "any key closes the cheatsheet");
+        assert!(matches!(a.screen, ActiveScreen::Chat), "the closing key was consumed");
+        // Every screen has a non-empty help table.
+        for s in ActiveScreen::ALL {
+            a.screen = s;
+            let (name, keys) = a.screen_help();
+            assert!(!name.is_empty() && !keys.is_empty(), "{s:?} has help entries");
+        }
+    }
+
+    #[test]
+    fn status_bar_memory_readout_tints_by_headroom() {
+        use crate::ui::tui::screens::models::LoadState;
+        let a = test_app();
+        // No model + healthy headroom → green, "no model".
+        let (s, c) = a.mem_readout(12.0, 24.0);
+        assert!(s.starts_with("no model") && s.contains("12.0/24 GB free"));
+        assert_eq!(c, Color::Green);
+        // Tight (< 6) → yellow; critical (< 3) → red.
+        assert_eq!(a.mem_readout(5.0, 24.0).1, Color::Yellow);
+        assert_eq!(a.mem_readout(2.0, 24.0).1, Color::Red);
+        // The loaded model's alias is shown.
+        let mut b = test_app();
+        b.models.load = LoadState::Loaded { alias: "sdxl".into(), used_gb: 7.0 };
+        assert!(b.mem_readout(8.0, 24.0).0.starts_with("sdxl"));
+    }
+
+    #[test]
+    fn ctrl_t_toggles_evolve_and_anchor() {
+        let mut a = test_app();
+        assert!(a.refine_strength.is_none(), "prompt-evolve by default");
+        a.toggle_anchor();
+        assert_eq!(a.refine_strength, Some(DEFAULT_ANCHOR_STRENGTH), "→ anchored");
+        a.toggle_anchor();
+        assert!(a.refine_strength.is_none(), "→ back to evolve");
     }
 
     #[test]
@@ -3370,6 +3827,10 @@ mod tests {
         assert_eq!(recipe_positive(params), "a red fox in a forest");
         assert_eq!(recipe_seed(params), Some(4242));
         assert_eq!(recipe_seed("no seed"), None);
+        // The negative is everything after "Negative prompt:" up to "Steps:".
+        assert_eq!(recipe_negative(params), "blurry");
+        assert_eq!(recipe_negative("a fox\nSteps: 20"), "", "no negative → empty");
+        assert_eq!(recipe_negative("no params here"), "");
     }
 
     #[test]

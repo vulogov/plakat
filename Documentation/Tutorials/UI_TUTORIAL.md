@@ -62,14 +62,20 @@ Eight screens, switched with **`Ctrl-1`…`Ctrl-8`** or **`Tab`** /
 | 7 | **Prompts** | Prompt Workspace — compile prose → scenario |
 | 8 | **Canvas** | Paint an inpaint mask, hand it to Chat |
 
+- **`F1`** opens a **keyboard cheatsheet** — the global keys plus the
+  active screen's keys. Any key closes it. (`F1` never collides with
+  typing, so it works even in the Chat prompt.)
 - **`Ctrl-K`** opens the **command palette** — a fuzzy launcher for every
-  action available on the current screen (plus jump-to-any-screen and
-  quit). Type to filter, `↑/↓` to move, `Enter` to run, `Esc` to dismiss.
-  It works from anywhere, even mid-typing.
+  action available on the current screen (plus jump-to-any-screen,
+  *Restart plakat*, and quit). Type to filter, `↑/↓` to move, `Enter` to
+  run, `Esc` to dismiss. It works from anywhere, even mid-typing.
 - **`Ctrl-Q`** quits from anywhere.
 - **`Ctrl-C`** cancels a running generation (or quits if none).
 - A shared **Output pane** at the bottom shows live download / denoise
   progress for whatever is running, on every screen.
+- The **status bar** shows, right-aligned and colour-coded (red < 3 GB,
+  yellow < 6 GB, green otherwise), the loaded model and free/total RAM —
+  so you always know your memory headroom.
 
 ---
 
@@ -90,6 +96,24 @@ startup.
 > A model that's already downloaded but won't load (a hang or refusal)
 > is usually a stale download lock left by an interrupted fetch — plakat
 > now sweeps those automatically before each load.
+
+**Memory-aware loading.** On a 24 GB machine a big model can pin RAM to
+100%, so `plakat ui` guards your memory:
+
+- **Budget warning** — if the model you're loading would over-commit free
+  RAM (estimated exactly from the on-disk cache, else per family), a
+  confirm appears — **`Y`** load anyway / **`N`** cancel — before the
+  download+load. Reloading the model that's already resident never asks.
+- **Idle auto-unload** — after 10 minutes with no keypresses the loaded
+  model is unloaded to give the memory back; the moment you touch a key
+  it reloads in the background (your LoRA stack intact), ready by the time
+  you generate again.
+- **Cache doctor** (palette on Models) — sweeps stale download locks and
+  reports each model's cache state (cached GB / partial / not-cached /
+  gated).
+- **Hard reset** (palette → *Restart plakat*) — if memory stays high after
+  unloading, this re-execs a fresh process, the one guaranteed way to
+  fully return the GPU buffer pool. Save your Chat session (`/save`) first.
 
 ---
 
@@ -131,9 +155,18 @@ lose an earlier version.
 | `/strength <0.1–1>` | Switch refinement to **image-anchored** (img2img) mode |
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
+| `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
+| `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
+| `/preset save <name>` | Save the current model + LoRA stack + negative as a named preset |
+| `/preset <name>` \| `/preset list` | Apply a saved preset / list them |
 | `/save [name]` | Save the whole Chat session (thread + prompt + seed + base) |
 | `/load <name>` | Reload a saved session and keep refining where you left off |
 | `/sessions` | List your saved sessions |
+
+**What the next Enter will do** is always shown in the Chat pane title —
+`Chat · evolve · seed 12345` (prompt-evolve), `anchored 0.60 · seed …`
+(img2img), `inpaint`, `identity`, or `fresh`. **`Ctrl-T`** toggles
+evolve ↔ anchored in one key (the same as `/strength` / `/strength off`).
 
 `/enhance` uses your configured enhancer (`auto` by default) — set a
 `DEEPSEEK_API_KEY` (env or `~/.config/plakat/config.toml`) and it
@@ -162,7 +195,9 @@ pane — one numbered cell per generated frame this session.
   base (its prompt + seed recovered), so your next prompt **branches**
   from there instead of the latest.
 - **`Ctrl-Y`** makes a **variation** of the selected frame: its prompt
-  re-rendered at a new seed.
+  re-rendered at a new seed. For several at once, **`/vary 4`** fans out a
+  batch (one at a time — a single unified-memory device runs one model);
+  scrub with `Ctrl-←/→` and keep the winner with `Ctrl-B`.
 
 ### Other keys
 
@@ -370,6 +405,13 @@ It runs in the background (the editor stays live); the prompt value is
 quoted and escaped so commas and quotes survive. `Ctrl-S` to save. This
 is the fast path from *exploring* an image in Chat to *batching* it
 (seeds, weather, scene variants) as a scenario.
+
+**Exact recipe, no LLM (`/scenario`).** When you want to reproduce the
+*specific* image you're looking at rather than distil the conversation,
+type **`/scenario`** in Chat: it reads that image's embedded recipe and
+inserts an exactly-reproducing task — prompt **plus its negative and
+seed** — then jumps you to Scenarios. `Ctrl-G` distils *intent*;
+`/scenario` captures *this frame*.
 
 See [`SCENARIOS_TUTORIAL.md`](SCENARIOS_TUTORIAL.md) for the scenario
 format itself.

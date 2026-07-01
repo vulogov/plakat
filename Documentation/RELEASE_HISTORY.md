@@ -8,6 +8,25 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.20.0 — memory-aware `plakat ui`
+
+On 24 GB unified memory a big model can pin RAM to 100%. 1.20.0 made `plakat ui`
+**memory-aware**: it warns before a load that won't fit, gives idle memory back on its
+own, and can hand the whole GPU pool back in one keystroke.
+
+- **Memory-budget warning before a load** — Models `[L]` estimates the model's resident
+  footprint (exact from the on-disk cache, else a per-family guess) vs free RAM; if it
+  would over-commit, a confirm modal appears instead of firing a multi-GB download+load
+  that may hard-OOM. Reloading the resident model never prompts.
+- **Idle auto-unload + resume** — after 10 min of no keypresses the model unloads to return
+  its memory; the next keypress reloads it in the background (LoRAs intact).
+- **Hard reset (free all GPU memory)** — palette → *Restart plakat* → confirm → plakat
+  re-execs a fresh process, the only way to fully return candle's Metal buffer pool.
+- **Cache doctor** — palette on Models → sweeps stale download locks + reports cached weight
+  GB / partial / not-cached + a gated hint.
+
+Also cleaned every build warning (release + test) by *using* the dead fields.
+
 ## What's new in 1.19.0 — semantic search + a calmer, clearer UI
 
 1.18.0 made `plakat ui` sturdy; 1.19.0 added **semantic search**, hardened it against
