@@ -19,8 +19,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## Workflow / power-user
 
-- [ ] **Recipe → scenario in one step** — promote the current Chat frame's embedded recipe
-      straight into a scenario task (today it's Chat→summary→scenario; add a direct path).
+- [x] **Recipe → scenario in one step** — `/scenario` (or a palette entry) reads the current
+      Chat image's embedded A1111 recipe and inserts an **exactly-reproducing** task
+      (prompt + negative + seed, no LLM) via `insert_recipe_task`, then jumps to Scenarios.
+      Complements the existing Chat→LLM-summary→scenario path (`Ctrl-G`).
 - [x] **Named presets** — `/preset save <name>` snapshots the current model + LoRA stack +
       negative to workspace `presets.json`; `/preset list` lists; `/preset <name>` or a
       palette *Preset: …* entry re-applies (sets the stack + negative, loads the model

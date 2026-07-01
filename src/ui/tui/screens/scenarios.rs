@@ -439,6 +439,27 @@ impl ScenariosState {
         self.status = format!("✓ inserted task ‘{name}’ from Chat — Ctrl-S to save");
     }
 
+    /// Insert an exactly-reproducing task from an image's embedded recipe: prompt plus
+    /// (when present) negative and seed — no LLM. Complements `insert_task` (the LLM
+    /// summary path).
+    pub fn insert_recipe_task(&mut self, name: &str, prompt: &str, negative: &str, seed: Option<u64>) {
+        if self.mode != Mode::Editor {
+            self.new_scenario();
+        }
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut block = format!("\n    {{\n      name: {name}\n      prompt: \"{}\"", esc(prompt));
+        if !negative.trim().is_empty() {
+            block.push_str(&format!("\n      negative: \"{}\"", esc(negative)));
+        }
+        if let Some(s) = seed {
+            block.push_str(&format!("\n      seed: {s}"));
+        }
+        block.push_str("\n    }");
+        self.editor.insert_str(&block);
+        self.dirty = true;
+        self.status = format!("✓ inserted recipe task ‘{name}’ from Chat — Ctrl-S to save");
+    }
+
     /// App-facing status setter (e.g. to report a failed Chat summary).
     pub fn set_status(&mut self, status: impl Into<String>) {
         self.status = status.into();
@@ -857,6 +878,27 @@ mod tests {
         // Ctrl-G bubbles GrabFromChat (the App runs the LLM) + sets a working status.
         assert!(matches!(s.handle_key(ctrl('g')), ScenariosAction::GrabFromChat));
         assert!(s.status.contains("summarizing"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn insert_recipe_task_emits_prompt_negative_and_seed() {
+        let d = tmp_dir("recipe");
+        std::fs::write(d.join("z.hjson"), "{\n  tasks: [\n  ]\n}\n").unwrap();
+        let mut s = ScenariosState::new(d.clone());
+        s.handle_key(ch('e'));
+        s.insert_recipe_task("from-chat", "a red fox", "blurry, low quality", Some(4242));
+        let body = s.editor.lines().join("\n");
+        assert!(body.contains("name: from-chat"));
+        assert!(body.contains(r#"prompt: "a red fox""#), "got: {body}");
+        assert!(body.contains(r#"negative: "blurry, low quality""#));
+        assert!(body.contains("seed: 4242"));
+        // Empty negative / no seed are omitted (not emitted as blank fields).
+        s.insert_recipe_task("plain", "just a prompt", "", None);
+        let body2 = s.editor.lines().join("\n");
+        assert!(body2.contains(r#"name: plain"#));
+        let plain_block = &body2[body2.find("name: plain").unwrap()..];
+        assert!(!plain_block.contains("negative:") && !plain_block.contains("seed:"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

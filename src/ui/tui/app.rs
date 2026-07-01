@@ -985,6 +985,7 @@ impl App {
             ActiveScreen::Chat => {
                 cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Grab this image's recipe → Scenario (exact)".into(), Cmd::Submit("/scenario".into())));
                 cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
@@ -1307,6 +1308,30 @@ impl App {
             let _ = tx.send(result);
         });
         self.chat_to_scenario = Some(rx);
+    }
+
+    /// `/scenario` — promote the CURRENT Chat image's embedded recipe into a scenario
+    /// task in one step (exact prompt + negative + seed, no LLM), then jump to Scenarios.
+    fn grab_recipe_into_scenario(&mut self) {
+        let Some(path) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image yet — generate one first, then /scenario".into());
+            return;
+        };
+        let params = crate::imaging::io::read_parameters_chunk(&path).ok().flatten();
+        let Some(params) = params else {
+            self.chat.push_system("this image has no embedded recipe to grab".into());
+            return;
+        };
+        let prompt = recipe_positive(&params);
+        if prompt.trim().is_empty() {
+            self.chat.push_system("the recipe has no prompt to grab".into());
+            return;
+        }
+        let negative = recipe_negative(&params);
+        let seed = recipe_seed(&params);
+        self.scenarios.insert_recipe_task("from-chat", &prompt, &negative, seed);
+        self.screen = ActiveScreen::Scenarios;
+        self.chat.push_system("✓ recipe → Scenarios (exact prompt + seed)".into());
     }
 
     fn suggest_combination(&mut self, candidates: Vec<String>) {
@@ -2465,6 +2490,11 @@ impl App {
             self.load_session(rest.trim());
             return;
         }
+        // `/scenario` promotes the current image's exact recipe into a scenario task.
+        if text.trim_start().starts_with("/scenario") {
+            self.grab_recipe_into_scenario();
+            return;
+        }
         // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
         // `/preset list` lists them; `/preset <name>` applies one. Palette entries apply too.
         if let Some(rest) = text.strip_prefix("/preset") {
@@ -3032,6 +3062,21 @@ fn recipe_positive(params: &str) -> String {
     for line in params.lines() {
         let t = line.trim_start();
         if t.starts_with("Negative prompt:") || t.starts_with("Steps:") {
+            break;
+        }
+        out.push(line);
+    }
+    out.join(" ").trim().to_string()
+}
+
+/// The negative prompt of an A1111 recipe: the text after `Negative prompt:` up to the
+/// first `Steps:` parameter line. Empty when absent.
+fn recipe_negative(params: &str) -> String {
+    let Some(idx) = params.find("Negative prompt:") else { return String::new() };
+    let rest = &params[idx + "Negative prompt:".len()..];
+    let mut out = Vec::new();
+    for line in rest.lines() {
+        if line.trim_start().starts_with("Steps:") {
             break;
         }
         out.push(line);
@@ -3707,6 +3752,10 @@ mod tests {
         assert_eq!(recipe_positive(params), "a red fox in a forest");
         assert_eq!(recipe_seed(params), Some(4242));
         assert_eq!(recipe_seed("no seed"), None);
+        // The negative is everything after "Negative prompt:" up to "Steps:".
+        assert_eq!(recipe_negative(params), "blurry");
+        assert_eq!(recipe_negative("a fox\nSteps: 20"), "", "no negative → empty");
+        assert_eq!(recipe_negative("no params here"), "");
     }
 
     #[test]
