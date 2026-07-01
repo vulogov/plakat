@@ -23,8 +23,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       straight into a scenario task (today it's Chat→summary→scenario; add a direct path).
 - [ ] **Named presets** — save a (model + LoRA stack + size + sampler) bundle and re-apply
       it by name from the palette.
-- [ ] **Keybinding cheatsheet overlay** (`?` global) — a discoverable map of every screen's
-      keys, since the palette is the only current discovery surface.
+- [x] **Keybinding cheatsheet overlay** (**F1** — never conflicts with text input, unlike a
+      bare `?`) — a centered modal listing the global keys + the active screen's keys
+      (`screen_help`/`render_help`); any key closes. Also in the palette + the status-bar
+      hint.
 
 ## Polish
 

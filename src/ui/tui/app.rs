@@ -152,6 +152,8 @@ pub struct App {
     // loop; `run()` restores the terminal then re-execs the process.
     confirm_reset: bool,
     should_reset: bool,
+    // Keyboard cheatsheet overlay (F1) — global keys + the active screen's keys.
+    show_help: bool,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -321,6 +323,7 @@ impl App {
             suspended: None,
             confirm_reset: false,
             should_reset: false,
+            show_help: false,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -740,6 +743,15 @@ impl App {
             }
             return;
         }
+        // ── The keyboard cheatsheet (F1) owns input while open: any key dismisses. ──
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+        if key.code == KeyCode::F(1) {
+            self.show_help = true;
+            return;
+        }
         // ── A hard-reset confirmation owns input until answered. ──
         if self.confirm_reset {
             self.confirm_reset = false;
@@ -1016,6 +1028,7 @@ impl App {
                 cmds.push((format!("Go to {}", s.title()), Cmd::Goto(s.index())));
             }
         }
+        cmds.push(("Keyboard shortcuts (F1)".into(), Cmd::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE))));
         cmds.push(("Restart plakat (free all GPU memory)".into(), Cmd::HardReset));
         cmds.push(("Quit plakat ui".into(), Cmd::Quit));
         self.palette.open(cmds);
@@ -2650,8 +2663,104 @@ impl App {
         if self.confirm_reset {
             self.render_reset_confirm(f);
         }
+        if self.show_help {
+            self.render_help(f);
+        }
         // The command palette floats above everything when open.
         self.palette.render(f, f.area());
+    }
+
+    /// The active screen's key bindings (label, keys) for the cheatsheet. Globals are
+    /// listed separately by `render_help`.
+    fn screen_help(&self) -> (&'static str, &'static [(&'static str, &'static str)]) {
+        match self.screen {
+            ActiveScreen::Chat => ("Chat", &[
+                ("Enter", "generate / refine"),
+                ("Ctrl-T", "toggle evolve ↔ anchored"),
+                ("Ctrl-P / Ctrl-N", "recall previous / next prompt"),
+                ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
+                ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
+                ("/new /seed /strength /negative /auto", "session commands"),
+            ]),
+            ActiveScreen::Models => ("Models", &[
+                ("L / U", "load / unload selected"),
+                ("j / k", "move selection"),
+                ("(palette) Cache doctor", "sweep locks + cache report"),
+            ]),
+            ActiveScreen::Scenarios => ("Scenarios", &[
+                ("Enter", "run selected"),
+                ("e / n", "edit / new scenario"),
+            ]),
+            ActiveScreen::History => ("History", &[
+                ("v", "toggle thumbnail grid"),
+                ("/ , ?", "substring filter , semantic search"),
+                ("t / x / d", "tag / export / compare baseline"),
+                ("c", "continue selected in Chat"),
+            ]),
+            ActiveScreen::LoraHub => ("LoRA Hub", &[
+                ("a", "apply selected LoRA"),
+                ("r / Ctrl-R", "assess selected / suggest a stack (LLM)"),
+                ("u", "check for a newer version"),
+            ]),
+            ActiveScreen::People => ("People", &[
+                ("g", "generate selected → Chat"),
+                ("← / →", "cycle detail tab"),
+                ("e / i", "encode / import persona"),
+            ]),
+            ActiveScreen::PromptWorkspace => ("Prompts", &[
+                ("Ctrl-N / Ctrl-S", "new / save buffer"),
+                ("Ctrl-T", "toggle Tera mode"),
+                ("Ctrl-R / Ctrl-O", "LLM compile / open in Scenarios"),
+            ]),
+            ActiveScreen::Canvas => ("Canvas", &[
+                ("m", "outpaint mode"),
+                ("Enter", "rasterize mask → Chat"),
+                ("Shift-C", "clear mask"),
+            ]),
+        }
+    }
+
+    /// Centered keyboard cheatsheet (F1): global keys + the active screen's keys.
+    fn render_help(&self, f: &mut Frame) {
+        let area = f.area();
+        let (screen_name, keys) = self.screen_help();
+        let globals: &[(&str, &str)] = &[
+            ("Ctrl-K", "command palette"),
+            ("Ctrl-1..8 / Tab", "switch screen"),
+            ("F1", "this help"),
+            ("Ctrl-C", "cancel generation / quit"),
+            ("Ctrl-Q", "quit"),
+        ];
+        let mut body: Vec<Line> = Vec::new();
+        body.push(Line::from(Span::styled("Global", Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        for (k, d) in globals {
+            body.push(Line::from(vec![
+                Span::styled(format!("  {k:<20}"), Style::new().fg(Color::Cyan)),
+                Span::styled(d.to_string(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled(screen_name.to_string(), Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        for (k, d) in keys {
+            body.push(Line::from(vec![
+                Span::styled(format!("  {k:<20}"), Style::new().fg(Color::Cyan)),
+                Span::styled(d.to_string(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled("  any key to close", Style::new().fg(Color::DarkGray))));
+
+        let w = 60.min(area.width.saturating_sub(4));
+        let h = (body.len() as u16 + 2).min(area.height.saturating_sub(2));
+        let rect = Rect {
+            x: area.x + (area.width.saturating_sub(w)) / 2,
+            y: area.y + (area.height.saturating_sub(h)) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let block = Block::default().borders(Borders::ALL).title(" keyboard shortcuts (F1) ");
+        f.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: true }), rect);
     }
 
     /// Centered confirmation for the hard reset (re-exec).
@@ -2759,9 +2868,9 @@ impl App {
             || (self.screen == ActiveScreen::LoraHub && self.lorahub.captures_input())
             || (self.screen == ActiveScreen::PromptWorkspace && self.prompts.captures_input());
         let nav = if input_mode {
-            "Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
+            "F1 help · Ctrl-K palette · Ctrl-1..8 / Tab switch · Ctrl-Q quit"
         } else {
-            "Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
+            "F1 help · Ctrl-K palette · 1-8 / Tab switch · Ctrl-Q quit"
         };
         let txt = format!(" {} · {nav} ", self.workspace.config.name);
         // Ambient memory readout (right-aligned): loaded model + free/total RAM, tinted
@@ -3027,6 +3136,24 @@ mod tests {
         a.chat_mask = Some("/tmp/mask.png".into());
         a.inpaint_base = Some("/tmp/base.png".into());
         assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn f1_toggles_the_help_overlay_and_any_key_closes_it() {
+        let mut a = test_app();
+        assert!(!a.show_help);
+        a.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(a.show_help, "F1 opens the cheatsheet");
+        // While open, any key closes it (and is swallowed — no screen change).
+        a.handle_key(key('2', true));
+        assert!(!a.show_help, "any key closes the cheatsheet");
+        assert!(matches!(a.screen, ActiveScreen::Chat), "the closing key was consumed");
+        // Every screen has a non-empty help table.
+        for s in ActiveScreen::ALL {
+            a.screen = s;
+            let (name, keys) = a.screen_help();
+            assert!(!name.is_empty() && !keys.is_empty(), "{s:?} has help entries");
+        }
     }
 
     #[test]
