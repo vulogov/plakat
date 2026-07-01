@@ -483,6 +483,7 @@ impl App {
             self.drain_people_encode();
             self.drain_route();
             self.sync_chat_mentions();
+            self.sync_chat_mode();
             self.idle_tick();
         }
         Ok(())
@@ -529,6 +530,54 @@ impl App {
             return;
         }
         self.chat.set_mention_candidates(self.people.names(), self.lorahub.local_names());
+    }
+
+    /// Summarize what the next Enter will do (mode + strength + seed) for the Chat pane
+    /// title, so the build-an-image loop's current behaviour is always visible.
+    fn chat_mode_hint(&self) -> String {
+        // No base image yet → the next Enter starts a fresh generation.
+        if self.base_seed.is_none() {
+            return "fresh".into();
+        }
+        let mut mode = if self.chat_mask.is_some() && self.inpaint_base.is_some() {
+            "inpaint".to_string()
+        } else if self.chat_identity.is_some() {
+            "identity".to_string()
+        } else if let Some(s) = self.refine_strength {
+            format!("anchored {s:.2}")
+        } else {
+            "evolve".to_string()
+        };
+        if let Some(seed) = self.fixed_seed.or(self.base_seed) {
+            mode.push_str(&format!(" · seed {seed}"));
+        }
+        if self.auto_route {
+            mode.push_str(" · auto");
+        }
+        mode
+    }
+
+    /// Ctrl-T in Chat: flip the refine mode between prompt-evolve (`None`) and
+    /// image-anchored img2img at [`DEFAULT_ANCHOR_STRENGTH`]. A no-op hint until an
+    /// image exists to anchor to.
+    fn toggle_anchor(&mut self) {
+        self.refine_strength = match self.refine_strength {
+            Some(_) => None,
+            None => Some(DEFAULT_ANCHOR_STRENGTH),
+        };
+        let msg = match self.refine_strength {
+            Some(s) => format!("anchored img2img at strength {s:.2} (Ctrl-T to switch back)"),
+            None => "prompt-evolve (txt2img at the stable seed)".to_string(),
+        };
+        self.chat.push_system(msg);
+    }
+
+    fn sync_chat_mode(&mut self) {
+        if self.screen != ActiveScreen::Chat {
+            return;
+        }
+        let hint = self.chat_mode_hint();
+        self.chat.set_mode_hint(hint);
     }
 
     fn drain_prompt_compile(&mut self) {
@@ -768,6 +817,7 @@ impl App {
                 ChatAction::SelectFrame(path) => self.show_chat_frame(path),
                 ChatAction::Rollback(path) => self.rollback_to_frame(path),
                 ChatAction::Vary(path) => self.vary_frame(path),
+                ChatAction::ToggleAnchor => self.toggle_anchor(),
                 ChatAction::None => {}
             }
             return;
@@ -902,6 +952,7 @@ impl App {
             ActiveScreen::Chat => {
                 cmds.push(("Save Chat session".into(), Cmd::Submit("/save".into())));
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
+                cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
                 if self.chat.frames().len() > 1 {
@@ -2925,6 +2976,40 @@ mod tests {
         a.models.load = LoadState::Idle;
         a.resume_if_suspended();
         assert!(a.suspended.is_none(), "resume consumes the suspended model and reloads");
+    }
+
+    #[test]
+    fn chat_mode_hint_reflects_the_loop_state() {
+        let mut a = test_app();
+        // No base image → the next Enter is a fresh generation.
+        assert_eq!(a.chat_mode_hint(), "fresh");
+        // With a stable seed and default strength → prompt-evolve.
+        a.base_seed = Some(12345);
+        assert_eq!(a.chat_mode_hint(), "evolve · seed 12345");
+        // Anchored img2img shows the strength.
+        a.refine_strength = Some(0.6);
+        assert_eq!(a.chat_mode_hint(), "anchored 0.60 · seed 12345");
+        // A pinned seed overrides the stable seed in the readout.
+        a.fixed_seed = Some(999);
+        assert_eq!(a.chat_mode_hint(), "anchored 0.60 · seed 999");
+        // Auto-routing appends a marker.
+        a.auto_route = true;
+        assert!(a.chat_mode_hint().ends_with("· auto"));
+        // A pending Canvas mask + base → inpaint takes precedence.
+        a.refine_strength = None;
+        a.chat_mask = Some("/tmp/mask.png".into());
+        a.inpaint_base = Some("/tmp/base.png".into());
+        assert!(a.chat_mode_hint().starts_with("inpaint"));
+    }
+
+    #[test]
+    fn ctrl_t_toggles_evolve_and_anchor() {
+        let mut a = test_app();
+        assert!(a.refine_strength.is_none(), "prompt-evolve by default");
+        a.toggle_anchor();
+        assert_eq!(a.refine_strength, Some(DEFAULT_ANCHOR_STRENGTH), "→ anchored");
+        a.toggle_anchor();
+        assert!(a.refine_strength.is_none(), "→ back to evolve");
     }
 
     #[test]

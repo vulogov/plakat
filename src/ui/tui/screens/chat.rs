@@ -57,6 +57,9 @@ pub enum ChatAction {
     Rollback(PathBuf),
     /// Generate a fresh variation of this frame (its prompt at a new random seed).
     Vary(PathBuf),
+    /// Toggle the refine mode between prompt-evolve and image-anchored (Ctrl-T). The
+    /// App owns `refine_strength`, so it performs the flip.
+    ToggleAnchor,
 }
 
 /// A `@mention` completion candidate.
@@ -88,6 +91,10 @@ pub struct ChatState {
     mention_dismissed_at: Option<usize>,
     /// Session filmstrip: the selected frame (index into `frames()`); `None` = live latest.
     strip_sel: Option<usize>,
+    /// What the next Enter will do — mode + strength + seed, fed by the App each tick
+    /// (e.g. "evolve · seed 12345", "anchored 0.60 · seed 12345", "inpaint"). Shown in
+    /// the Chat pane title so the loop's current behaviour is always visible.
+    mode_hint: String,
 }
 
 impl ChatState {
@@ -104,6 +111,7 @@ impl ChatState {
             mention_sel: 0,
             mention_dismissed_at: None,
             strip_sel: None,
+            mode_hint: String::new(),
         }
     }
 
@@ -186,6 +194,12 @@ impl ChatState {
         self.mention_loras = loras;
     }
 
+    /// The App feeds the current refine-loop mode summary here each tick (shown in the
+    /// pane title when idle).
+    pub fn set_mode_hint(&mut self, hint: String) {
+        self.mode_hint = hint;
+    }
+
     /// The filtered `@mention` candidates for the active token (people first, then
     /// LoRAs), capped. Empty when no token is active / it was dismissed / nothing matches.
     pub fn mention_items(&self) -> Vec<(MentionKind, String)> {
@@ -258,6 +272,7 @@ impl ChatState {
             KeyCode::Right if ctrl => return self.strip_right(),
             KeyCode::Char('b') if ctrl => return self.rollback(),
             KeyCode::Char('y') if ctrl => return self.vary(),
+            KeyCode::Char('t') if ctrl => return ChatAction::ToggleAnchor,
             KeyCode::Char('p') if ctrl => {
                 self.recall_prev();
                 return ChatAction::None;
@@ -530,6 +545,7 @@ impl ChatState {
                 format!(" Chat  ⟳ {verb} {step}/{total} ")
             }
             ChatStatus::Error(e) => format!(" Chat  ✗ {e} "),
+            _ if !self.mode_hint.is_empty() => format!(" Chat · {} ", self.mode_hint),
             _ => " Chat ".to_string(),
         };
         f.render_widget(
@@ -542,7 +558,7 @@ impl ChatState {
         // Once an image exists, the next prompt refines it; advertise that + the
         // /new escape hatch. (The editor wraps + scrolls within the 2-row box.)
         let title = if self.refine_armed {
-            " prompt · Enter refine · /new fresh · Ctrl-P/N recall "
+            " prompt · Enter refine · Ctrl-T evolve/anchor · /new fresh · Ctrl-P/N recall "
         } else {
             " prompt · Enter generate · Ctrl-P/N recall "
         };

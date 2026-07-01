@@ -8,9 +8,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
 
 ## The build-an-image loop
 
-- [ ] **Tighter refine loop** — surface the current mode (prompt-evolve / anchored /
-      inpaint) + strength/seed in a compact status line so the user always knows what the
-      next Enter will do; one-key toggle between evolve and anchored.
+- [x] **Tighter refine loop** — the Chat pane title now shows what the next Enter does —
+      `Chat · evolve · seed 12345` / `anchored 0.60 · seed …` / `inpaint` / `identity` /
+      `fresh`, `· auto` when routing is on (`chat_mode_hint`, synced each tick). **Ctrl-T**
+      one-key toggles evolve ↔ anchored (also in the palette + input hint).
 - [ ] **Variation grid** — from any frame, fan out N seeds at once (a small parallel batch)
       and pick the keeper into the filmstrip.
 - [ ] **Undo/redo across the filmstrip** — `Ctrl-Z`/`Ctrl-Y` over the frame history (roll
