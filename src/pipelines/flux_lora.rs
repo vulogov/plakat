@@ -771,11 +771,14 @@ pub fn precompute_quantized_overrides(
             let updated = apply_delta(&base_dense, &delta, target.slice).with_context(
                 || format!("applying Flux LoRA delta for {logical} into {}", target.base_key),
             )?;
-            // Cast to BF16 — runtime dtype on GPU. F32 storage would
-            // double memory per merged Linear with no quality win, and
-            // candle's `QMatMul::Tensor` forward is dtype-agnostic.
-            let bf16 = updated.to_dtype(DType::BF16)?;
-            overrides.insert(target.base_key.clone(), bf16);
+            // Store F32 to match the quantized transformer body, which runs in F32 on
+            // EVERY backend (flux_quantized_inner forces `DType::F32`). candle's
+            // `QMatMul::Tensor` forward does a bare `x.matmul(w)` with NO dtype coercion,
+            // so a BF16 override against the F32 activations was an `F32.matmul(BF16)`
+            // dtype-error crash after the ~10 GB load — the "dtype-agnostic" comment was
+            // wrong. (F32 costs a little more memory per merged Linear; correctness wins.)
+            let merged = updated.to_dtype(DType::F32)?;
+            overrides.insert(target.base_key.clone(), merged);
             modified += 1;
         }
         if total_groups > 0 {
