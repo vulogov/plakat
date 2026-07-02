@@ -12,6 +12,20 @@
 
 use anyhow::{Result, bail};
 
+/// Subcommands that hold a model / do heavy compute — mirrors `Command::is_heavy`. Only
+/// these contend for unified memory, so only these should trip the guard.
+const HEAVY_SUBCOMMANDS: &[&str] = &[
+    "generate", "portrait", "img2img", "outpaint", "stylize", "relight", "multiperson",
+    "segment", "upscale", "scenario", "compose", "animate", "run", "style", "embedding",
+];
+
+/// Whether another process's command line names a heavy subcommand. Light instances
+/// (`gallery`, `doctor`, `models list`, …) hold no model and must NOT trigger a false
+/// "already running". A hidden/empty command line is treated as heavy (can't rule it out).
+fn cmd_looks_heavy(cmd: &str) -> bool {
+    cmd.is_empty() || cmd.split_whitespace().any(|t| HEAVY_SUBCOMMANDS.contains(&t))
+}
+
 /// One other plakat process found on the host.
 #[derive(Debug, Clone)]
 pub struct OtherInstance {
@@ -62,6 +76,12 @@ pub fn find_other_plakat_instances() -> Vec<OtherInstance> {
             .map(|s| s.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ");
+        // Only a HEAVY run contends for memory. Skip a light plakat instance (a
+        // backgrounded `gallery`, a `doctor`, a `models list` in a pager, a zombie) so it
+        // doesn't falsely block a real generate.
+        if !cmd_looks_heavy(&cmd) {
+            continue;
+        }
         found.push(OtherInstance {
             pid: p,
             uid: proc.user_id().map(|u| u.to_string()),
@@ -111,6 +131,20 @@ mod tests {
     fn allow_flag_short_circuits_without_scanning() {
         // With the override on, it must return Ok regardless of host state.
         assert!(enforce_single_instance(true).is_ok());
+    }
+
+    #[test]
+    fn cmd_heavy_detection_skips_light_subcommands() {
+        // Heavy subcommands trip the guard…
+        assert!(cmd_looks_heavy("/usr/bin/plakat generate --model sdxl --prompt a fox"));
+        assert!(cmd_looks_heavy("plakat scenario s.hjson"));
+        assert!(cmd_looks_heavy("plakat --cache-dir /x style train")); // subcommand after a global flag+value
+        // …light ones do not.
+        assert!(!cmd_looks_heavy("plakat gallery"));
+        assert!(!cmd_looks_heavy("plakat doctor --capability"));
+        assert!(!cmd_looks_heavy("plakat models list"));
+        // A hidden command line can't be ruled out → treated as heavy (conservative).
+        assert!(cmd_looks_heavy(""));
     }
 
     #[test]
