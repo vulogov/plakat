@@ -80,25 +80,25 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 4.1 | Medium | `pipelines/sd_train/trainer.rs` | **`--resume` discards AdamW state** → cold moments + full LR → loss spike. | ✅ LR warm-up (1/N→full over 50 steps) + warning, both SD + SDXL trainers (candle can't persist AdamW state; sd3/pixart/cascade share the pattern — follow-up) |
 | 4.2 | Low | `pipelines/sd_train/unet.rs` | Training timestep in **BF16** quantizes large `t`. | ✅ built in F32, cast after the sinusoidal projection |
 
-## P5 — Low-severity hardening (batch these)
+## P5 — Low-severity hardening — ✅ 12 done, 1 deferred, 1 subsumed, 1 retracted
 
-| # | Sev | Site | Bug | Fix |
-|---|-----|------|-----|-----|
-| 5.1 | Low | `pipelines/lora.rs` (merge store) | F16 merge cast can overflow → inf/NaN → noise patches. | Detect non-finite after cast; warn/skip or keep component in F32. |
-| 5.2 | Low | `pipelines/sdxl_unet.rs:734` | `forward_with_additional_residuals` lacks the CN-count guard its motion sibling has → OOB/underflow on a mismatched CN. | Add `if additional.len()!=down.len() { bail! }`. |
-| 5.3 | Low | `pipelines/controlnet.rs:1135` | `per_frame_tensors[0]` on an empty pick (frames 0) panics. | `ensure!(n_frames>0)` before indexing. |
-| 5.4 | ~~Low~~ | `pipelines/cascade_scheduler.rs:106` | ~~Single-step blow-up~~ **RETRACTED on re-audit** — `mu_scale≈100×` at n=1 is finite in BF16, the `[1e-4,1-1e-4]` clamp keeps endpoints finite; degenerate but not a defect. | — |
-| 5.5 | Low | `pipelines/flux.rs:1914` | `animate_frame` silently drops pipeline ControlNets (`&[]` conditioning). | Assert `controlnets.is_empty()` (loud) or thread real conditioning. |
-| 5.6 | Low | `pipelines/lora.rs:1032` | compvis→diffusers output-block mapping mis-maps attention-less up-blocks (fail-safe under-apply). | Treat the last sub-index as the upsampler regardless of numbering. |
-| 5.7 | Low | `pipelines/stylize.rs:113` | Blurred-ref temp path keyed only by PID → concurrent race. | Add a unique token; remove after encoding. |
-| 5.8 | Low | `imaging/io.rs:88` | JSON sidecar collides across formats (`a.png`/`a.webp`→`a.json`). | Include the extension in the sidecar stem. |
-| 5.9 | Low | `imaging/sizes.rs:33`, `scripting/config.rs:704`, `words/outpaint.rs:234` | Unbounded aspect/outpaint dims → gigapixel OOM. | Clamp resolved `(w,h)` to a max / reject extreme ratios. |
-| 5.10 | Low | `imaging/grid.rs:71` | `cell_w*cols+pad` u32 overflow → truncated canvas. | Compute in u64, validate a ceiling. |
-| 5.11 | Low | `cli/scenario.rs:3107` | Dry-run seed-range prints `count-1` underflow on count 0. | Guard / `saturating_sub`. |
-| 5.12 | Low | `cli/scenario.rs:2787,5288` | Colliding `safe_name` + equal explicit seed → silent overwrite. | Reject duplicate `safe_name`, or disambiguate by task index. |
-| 5.13 | Low | `compile/resolver.rs` (`parse_opt`) | `guidance` accepts `inf`/`NaN` → invalid HJSON number. | Reject non-finite. |
-| 5.14 | Low | `civitai/download.rs:146-165` | No download size cap; SHA re-verified only on fresh fetch, not cache hits. | Add a size ceiling; verify SHA on cache reuse. |
-| 5.15 | Low | `ui/tui/app.rs:768,809` | History decode thread spawned per tick under fast scroll → decode pile-up. | Skip a new decode while one is in flight (or debounce). |
+| # | Sev | Site | Bug | Status |
+|---|-----|------|-----|--------|
+| 5.1 | Low | `pipelines/lora.rs` | F16 merge cast → inf/NaN. | ✅ clamp merged to F16 range before the cast |
+| 5.2 | Low | `pipelines/sdxl_unet.rs` | Missing CN-count guard → OOB/underflow. | ✅ `bail!` on count mismatch (like the motion sibling) |
+| 5.3 | Low | `pipelines/controlnet.rs` | `per_frame_tensors[0]` empty panic. | ✅ `ensure!(!empty)` |
+| 5.4 | ~~Low~~ | `cascade_scheduler.rs` | ~~Single-step blow-up~~ **RETRACTED** (finite in BF16). | ✂ |
+| 5.5 | Low | `pipelines/flux.rs` | `animate_frame` silently drops CN. | ✅ `ensure!(controlnets.is_empty())` (loud) |
+| 5.6 | Low | `pipelines/lora.rs:1032` | compvis→diffusers output-block mapping under-applies attention-less up-blocks. | ⏸ DEFERRED — **fail-safe** (under-applies boundary resnet/upsample; style-carrying attention layers map correctly). A correct fix needs delicate SD1.5-specific attention-less-block detection, unverifiable on-box; not worth the mis-map risk. |
+| 5.7 | Low | `pipelines/stylize.rs` | PID-only temp path race. | ✅ pid + monotonic counter (unique per call) |
+| 5.8 | Low | `imaging/io.rs` | JSON sidecar collides across formats. | ✅ `<image>.json` naming + reader back-compat |
+| 5.9 | Low | `imaging/sizes.rs` | Unbounded aspect dims → gigapixel OOM. | ✅ reject > 32:1 + test |
+| 5.10 | Low | `imaging/grid.rs` | grid `total_w` u32 overflow. | ✅ u64 math + 32768px ceiling |
+| 5.11 | Low | `cli/scenario.rs:3107` | Dry-run seed-range underflow on count 0. | ✅ SUBSUMED — count:0 now rejected up front (P1 1.8), so unreachable |
+| 5.12 | Low | `cli/scenario.rs` | Colliding `safe_name` → silent overwrite. | ✅ reject duplicate output dirs up front |
+| 5.13 | Low | `compile/resolver.rs` | `guidance` accepts `inf`/`NaN`. | ✅ `parse_finite_f64` |
+| 5.14 | Low | `civitai/download.rs` | No download size cap. | ✅ 30 GB ceiling (SHA-on-cache-hit skipped: expensive, marginal) |
+| 5.15 | Low | `ui/tui/app.rs` | History decode pile-up under fast scroll. | ✅ serialize to one decode in flight |
 
 ## Non-bug: contract wording
 

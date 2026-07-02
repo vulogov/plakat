@@ -774,8 +774,8 @@ mod tests {
         let params = crate::imaging::io::read_parameters_chunk(&p).unwrap().expect("recipe embedded");
         assert!(params.contains("a red fox"), "prompt round-trips: {params:?}");
         assert!(params.contains("blurry"), "negative round-trips: {params:?}");
-        // The JSON sidecar is written too.
-        assert!(p.with_extension("json").exists(), "sidecar written");
+        // The JSON sidecar is written too (named `<image>.json`).
+        assert!(crate::imaging::io::sidecar_path(&p).exists(), "sidecar written");
         let _ = std::fs::remove_dir_all(&d);
     }
 
