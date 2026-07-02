@@ -567,7 +567,7 @@ pub fn merge_embeddings_into_te_weights(
     debug_assert_eq!(extended.dim(0)?, new_vocab_size);
 
     weights.insert(token_emb_key.to_string(), extended);
-    candle_core::safetensors::save(&weights, out_path)
+    crate::pipelines::atomic_safetensors_save(&weights, out_path)
         .with_context(|| format!("writing extended text encoder to {}", out_path.display()))?;
     tracing::info!(
         target: "plakat",

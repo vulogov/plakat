@@ -511,7 +511,7 @@ fn save_kohya_lora(adapters: &[(String, Var, Var)], rank: usize, out: &Path) -> 
         tensors.insert(format!("{slug}.lora_up.weight"), b_t);
         tensors.insert(format!("{slug}.alpha"), alpha.clone());
     }
-    candle_core::safetensors::save(&tensors, out)?;
+    crate::pipelines::atomic_safetensors_save(&tensors, out)?;
     Ok(())
 }
 

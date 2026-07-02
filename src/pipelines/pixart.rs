@@ -730,7 +730,7 @@ fn save_pixart_peft_lora(
             std::fs::create_dir_all(parent).ok();
         }
     }
-    candle_core::safetensors::save(&tensors, out)
+    crate::pipelines::atomic_safetensors_save(&tensors, out)
         .with_context(|| format!("writing PixArt LoRA {}", out.display()))?;
     Ok(())
 }
