@@ -455,12 +455,22 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
         .open(&tmp)
         .with_context(|| format!("opening temp file {}", tmp.display()))?;
 
+    // Cap the download so a hostile/misreported response can't stream unbounded bytes to
+    // disk. 30 GB is well above any real LoRA/checkpoint.
+    const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024 * 1024;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading Civitai response chunk")?;
         file.write_all(&chunk)
             .with_context(|| format!("writing to {}", tmp.display()))?;
         written += chunk.len() as u64;
+        if written > MAX_DOWNLOAD_BYTES {
+            let _ = std::fs::remove_file(&tmp);
+            anyhow::bail!(
+                "Civitai download exceeded the {} GB cap — aborting",
+                MAX_DOWNLOAD_BYTES / (1024 * 1024 * 1024)
+            );
+        }
         bar.set_position(written);
     }
     file.sync_all()?;
