@@ -47,20 +47,20 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 1.8 | Medium | `cli/scenario.rs` / `animate.rs` | **`count:0` / `--frames 0` silent success** (zero output). | ✅ up-front `count≥1` reject; `run_flux` frames guard + test |
 | **1.2** | Medium | `pipelines/pixart.rs`, `sd3.rs` | **T5 encoded without a pad attention mask** — pad tokens leak into T5 self-attn + DiT/MMDiT cross-attn; short prompts subtly off (not noise). | **⏸ DEFERRED** — needs the diffusers reference-comparison harness. Pixart/SD3 use candle's `t5::T5EncoderModel` (no mask arg), so a correct fix means switching to the vendored T5 **and** threading a pad mask through every DiT/MMDiT cross-attention block — invasive changes to two **currently-correct** models that can't be verified for correctness on this hardware. Blind-fixing risks regressing a working path for a subtle short-prompt gain. Schedule with real weights + reference dumps. |
 
-## P2 — Crashes / panics from user input (aborts the render)
+## P2 — Crashes / panics from user input — 9/10 DONE, 1 open
 
-| # | Sev | Site | Bug | Fix | Eff |
-|---|-----|------|-----|-----|-----|
-| 2.1 | High | `ui/tui/app.rs:2867` (`drain_generation`) | **Soft-lock**: it's the one drain that ignores a *disconnected* channel — if the model-svc thread panics mid-gen, `active_gen` stays `Some` forever (Chat stuck "Generating", `/vary` frozen, `idle_tick` disabled, OOM guard gone). | Match `try_recv()` explicitly; on `Disconnected` with no terminal message synthesize `GenMessage::Error` + `finished=true` (as `drain_portrait`/`drain_scenario` already do). | S |
-| 2.2 | High | `pipelines/portrait.rs:1133` | **Portrait inpaint + ControlNet crash** — the 9-channel inpaint latent is fed to the CN `conv_in` (expects 4). Any portrait run combining an inpaint base + `--control-spec` errors mid-denoise. | Compute CN residuals from the pre-concat 4-channel latent. | S |
-| 2.3 | High | `pipelines/flux_quantized_inner.rs:862` (`flux_lora.rs:777`) | **GGUF Flux + LoRA dtype crash** — F32 quantized body vs BF16-cast LoRA/override tensor → `F32.matmul(BF16)` aborts after the ~10 GB load. Documented CPU combo. | Cast override/LoRA tensors to the body dtype before the matmul. | S |
-| 2.4 | High | `scripting/config.rs:1074` (`parse_pos_int`) | **`steps=0` accepted** → `train_timesteps / 0` divide-by-zero panic in `pick_timesteps`. Pure user-config path. | Give `parse_pos_int` a caller-supplied minimum, or `bail!` on 0 for the step keys (as `refine_steps` already does). | S |
-| 2.5 | High | `prompt/a1111.rs:188` | **Nested `(…)`/`[…]` recursion has no depth cap** → stack overflow (SIGABRT) from any prompt (incl. downloaded PNG metadata / prompt packs). | Thread a `depth`, fall back to literal past ~32 (mirror the wildcard `MAX_DEPTH`). | S |
-| 2.6 | High | `prompt/wildcards.rs:217` | **Nested `{a\|b}` alternation recursion has no depth cap** → stack overflow. | Pass a depth counter into `expand_inline`; emit literally past a cap. | S |
-| 2.7 | Medium | `pipelines/cascade.rs:790` | **Cascade img2img `--stage-b-steps 0`** indexes an empty timestep Vec → OOB panic (re-audit **verified**). | `ensure!(stage_b_steps≥1 && stage_c_steps≥1)` at the top of `generate_at_size`. | S |
-| 2.8 | Medium | `map/engine.rs:33` | **`tile_grid.cols/rows` unclamped** on the `--map-spec`/LLM path (bypasses `parse_tiles`' `1..=8`) → `cols*PX` overflow panic / `RgbImage::new(0,0)` corrupt output. | `clamp(1,8)` inside `from_spec`. | S |
-| 2.9 | Low | `hf/download.rs:115`, `pipelines/lora.rs:328` | **Multibyte revision byte-slice** `&r[..8]` panics on a non-ASCII char boundary. | Batch fix: `r.chars().take(8).collect::<String>()`. | S |
-| 2.10 | Low | `capability.rs:263` (`walk_files`) | **Symlink recursion** — follows symlinks via `metadata`; a circular cache symlink → stack overflow in `plakat doctor --capability` / TUI estimate. | Use `symlink_metadata` for the dir/file decision. | S |
+| # | Sev | Site | Bug | Status |
+|---|-----|------|-----|--------|
+| 2.1 | High | `ui/tui/app.rs` | **Soft-lock** — the one drain ignoring a disconnected channel; a panicked render thread wedged `active_gen` forever. | ✅ Empty vs Disconnected split → synthesize Error + clear; test drives a dropped sender |
+| 2.2 | High | `pipelines/portrait.rs` | **Portrait inpaint + ControlNet crash** — 9-ch latent → 4-ch CN `conv_in`. | ✅ CN takes the pre-concat 4-ch latent (`cn_latent`); UNet keeps 9-ch |
+| 2.3 | High | `pipelines/flux_quantized_inner.rs` / `flux_lora.rs` | **GGUF Flux + LoRA dtype crash** — F32 body vs BF16 override/slots. | ✅ overrides stored F32; slots coerced to activation dtype at forward + test |
+| 2.4 | High | `scripting/config.rs` | **`steps=0`** → divide-by-zero in `pick_timesteps`. | ✅ `parse_positive_int` on steps + stage_c/b_steps + test |
+| 2.7 | Medium | `pipelines/cascade.rs` | **Cascade img2img `stage_b_steps=0`** empty-Vec index panic. | ✅ `ensure!(stage_c/b ≥ 1)` up front |
+| 2.8 | Medium | `map/engine.rs` | **`tile_grid` unclamped** on the `--map-spec`/LLM path → `cols*PX` overflow. | ✅ `clamp(1, 8)` in `from_spec` + 4e9 test |
+| 2.9 | Low | `hf/download.rs`, `pipelines/lora.rs` | **Multibyte revision byte-slice** panic. | ✅ `chars().take(8)` both sites |
+| 2.10 | Low | `capability.rs` | **Symlink recursion** in `walk_files` → stack overflow. | ✅ `symlink_metadata` decides dir-vs-file + Unix circular-link test |
+| **2.5** | High | `prompt/a1111.rs:188` | **Nested `(…)`/`[…]` recursion, no depth cap** → stack overflow from any prompt. | ⬜ OPEN — thread a `depth`, fall back to literal past a cap |
+| **2.6** | High | `prompt/wildcards.rs:217` | **Nested `{a\|b}` alternation recursion, no depth cap** → stack overflow. | ⬜ OPEN — same pattern (depth counter in `expand_inline`) |
 
 ## P3 — Memory / OOM on 24 GB, and resource races
 
