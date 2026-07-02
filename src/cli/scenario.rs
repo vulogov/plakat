@@ -1903,6 +1903,21 @@ pub async fn run_with_events(
             format!("validating image inputs for task {:?}", task.name)
         })?;
     }
+    // Task outputs land under `safe_name(task.name)`, which collapses every non-alnum char
+    // to `_`, so names differing only in punctuation (e.g. "a b" and "a/b") share a dir and
+    // — with the same explicit seed — overwrite each other's images. Reject the collision.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for task in &s.tasks {
+            let dir = safe_name(&task.name);
+            if !seen.insert(dir.clone()) {
+                anyhow::bail!(
+                    "two tasks map to the same output dir {dir:?} (names differ only in \
+                     punctuation) — rename one so their images don't overwrite"
+                );
+            }
+        }
+    }
 
     // -------- style detection / transfer --------
     // A single `StyleSession` is constructed when any task (or the
