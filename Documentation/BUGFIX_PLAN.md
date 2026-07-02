@@ -12,6 +12,12 @@ quality regression on a feature intersection, OOM lever), **Low** (latent / narr
 
 Effort: **S** ≤ ~30 min · **M** a few hours · **L** a day+.
 
+> **Audit integrity.** Findings are agent-identified from source reads — treat them as
+> leads, not gospel: **reproduce each before fixing.** A re-audit already retracted two
+> Cascade findings (3.1 Stage-C-resident, 5.4 single-step) as unverified/refuted and
+> re-confirmed one (2.7 img2img `steps=0`). The P0 fixes below were each reproduced +
+> tested before shipping.
+
 Cleared by the audit (no action): the new **shared-pipeline scenario reuse**
 (`can_reuse_sd_pipeline`) was independently confirmed provably safe — no wrong-output or
 double-residency path exists. The TUI has no `block_on` on the event loop; SD3/PixArt/
@@ -19,14 +25,14 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 
 ---
 
-## P0 — Security, data loss, host crash (do first)
+## P0 — Security, data loss, host crash — ✅ DONE (shipped)
 
-| # | Sev | Site | Bug | Fix | Eff |
-|---|-----|------|-----|-----|-----|
-| 0.1 | Critical | `civitai/download.rs:140` (`version_file_path:43`) | **Path traversal**: untrusted Civitai `file.name` joined into the cache path — `"/…/.ssh/authorized_keys"` or `"../.."` overwrites arbitrary files. Reachable from `civitai download` and `--look`/`--genre` auto-discovery. | Reduce to `Path::new(&name).file_name()`; bail if `None`/absolute/contains `/ \ ..`; join only the basename. | S |
-| 0.2 | High | `memwatch.rs:73-83,164` | OOM watchdog's ≥1.5 s sustained window is too slow to catch a fast single-buffer VAE/ESRGAN allocation — the host can crash before it fires. | Add a two-signal fast path: abort on the *first* `Critical` sample when free RAM is also below a hard floor; shorten `INTERVAL` to ~100 ms; keep the sustained window only for borderline/Warning. | M |
-| 0.3 | High | `memwatch.rs:132-139`, `hw.rs:132-141` | Watchdog aborts on **system-wide** pressure it didn't cause (exit 137, loses work), is armed even for small CPU jobs, and on macOS falls back to the discredited free-RAM guard when the pressure sysctl returns 0/`Unknown` → false self-terminate on a healthy box. | Attribute pressure to plakat (own RSS is a large share, or free RAM fell since arm) before aborting; make the guard inert for small CPU-device runs; on macOS treat `Unknown` as "no signal → don't abort". | M |
-| 0.4 | Medium | `pipelines/sd_train/trainer.rs:514,481` (+ sd3/pixart/cascade) | **Non-atomic checkpoint write** — `safetensors::save` writes straight to `--out`; a mid-write OOM-abort/Ctrl-C (a *designed-for* event in the memory-bound trainers) truncates it, and `PLAKAT_TRAIN_SINGLE_FILE=1` destroys the only artifact. | Write to `out.with_extension("tmp")` then `rename`; keep the prior file until the new one is complete. | S |
+| # | Sev | Site | Bug | Fix | Status |
+|---|-----|------|-----|-----|--------|
+| 0.1 | Critical | `civitai/download.rs` | **Path traversal**: untrusted Civitai `file.name` joined into the cache path — `"/…/.ssh/authorized_keys"` or `"../.."` overwrites arbitrary files. | `safe_basename()` reduces to `Path::file_name`, rejects empty/./../separator; applied before `version_file_path`. + test. | ✅ |
+| 0.2 | High | `memwatch.rs` | OOM watchdog's ≥1.5 s window too slow for a fast single-buffer allocation → host can crash first. | Acute fast-path (abort on first Critical + free-below-floor sample); `INTERVAL` 300→100 ms; sustained window kept for ride-out-able pressure. | ✅ |
+| 0.3 | High | `memwatch.rs` | Aborts on system-wide pressure it didn't cause; armed for CPU jobs; macOS `Unknown`→discredited free-RAM guard. | `plakat_is_culprit()` attribution gate (RSS share OR free-drop-since-arm); armed **only on Metal**; macOS `Unknown`→no signal. + test. | ✅ |
+| 0.4 | Medium | trainer + sd3/pixart/cascade/embedding | **Non-atomic checkpoint write** truncates on a mid-write abort; single-file mode destroys the only artifact. | New `pipelines::atomic_safetensors_save` (temp-then-rename), applied to all 6 trained-artifact saves. + test. | ✅ |
 
 ## P1 — Silently-wrong output (user gets bad results, no error)
 
@@ -51,7 +57,7 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 2.4 | High | `scripting/config.rs:1074` (`parse_pos_int`) | **`steps=0` accepted** → `train_timesteps / 0` divide-by-zero panic in `pick_timesteps`. Pure user-config path. | Give `parse_pos_int` a caller-supplied minimum, or `bail!` on 0 for the step keys (as `refine_steps` already does). | S |
 | 2.5 | High | `prompt/a1111.rs:188` | **Nested `(…)`/`[…]` recursion has no depth cap** → stack overflow (SIGABRT) from any prompt (incl. downloaded PNG metadata / prompt packs). | Thread a `depth`, fall back to literal past ~32 (mirror the wildcard `MAX_DEPTH`). | S |
 | 2.6 | High | `prompt/wildcards.rs:217` | **Nested `{a\|b}` alternation recursion has no depth cap** → stack overflow. | Pass a depth counter into `expand_inline`; emit literally past a cap. | S |
-| 2.7 | Medium | `pipelines/cascade.rs:790` | **Cascade img2img `--stage-b-steps 0`** indexes an empty timestep Vec → OOB panic. | `ensure!(!all_b_timesteps.is_empty())`, or clamp steps ≥ 1 at the CLI boundary. | S |
+| 2.7 | Medium | `pipelines/cascade.rs:790` | **Cascade img2img `--stage-b-steps 0`** indexes an empty timestep Vec → OOB panic (re-audit **verified**). | `ensure!(stage_b_steps≥1 && stage_c_steps≥1)` at the top of `generate_at_size`. | S |
 | 2.8 | Medium | `map/engine.rs:33` | **`tile_grid.cols/rows` unclamped** on the `--map-spec`/LLM path (bypasses `parse_tiles`' `1..=8`) → `cols*PX` overflow panic / `RgbImage::new(0,0)` corrupt output. | `clamp(1,8)` inside `from_spec`. | S |
 | 2.9 | Low | `hf/download.rs:115`, `pipelines/lora.rs:328` | **Multibyte revision byte-slice** `&r[..8]` panics on a non-ASCII char boundary. | Batch fix: `r.chars().take(8).collect::<String>()`. | S |
 | 2.10 | Low | `capability.rs:263` (`walk_files`) | **Symlink recursion** — follows symlinks via `metadata`; a circular cache symlink → stack overflow in `plakat doctor --capability` / TUI estimate. | Use `symlink_metadata` for the dir/file decision. | S |
@@ -60,7 +66,7 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 
 | # | Sev | Site | Bug | Fix | Eff |
 |---|-----|------|-----|-----|-----|
-| 3.1 | Medium | `pipelines/cascade.rs:695-853` | **Stage C prior (~7 GB) stays resident** through Stage B + Stage A decode (non-`Option` fields) → OOM lever on 24 GB. | Make heavy stages `Option`/`take()`; free Stage C after its loop. | M |
+| 3.1 | ~~Medium~~ | `pipelines/cascade.rs` | ~~Stage C prior stays resident → OOM~~ **RETRACTED on re-audit** — Stage C/B/A/CLIP-G total ~12 GB (within 24 GB) and Stage C runs on a fixed 24×24 latent (tiny activations). Not a defect. | — | ✂ |
 | 3.2 | Medium | `cli/scenario.rs:2160-2201` | **`style:`+`personas:` SDXL scenario** holds SDXL + stylize(SD1.5) + portrait(SDXL) + shared-CLIP co-resident for the whole run → OOM. | Lazy-load stylize/portrait on first use and drop when leaving that task kind, or preflight-warn. | M |
 | 3.3 | Medium | `hf/download.rs:167-186` | **Lock-sweep race** — `clean_stale_locks` unconditionally removes every `.lock`, incl. an in-flight concurrent TUI download's → corrupt blob. | Only remove locks older than an mtime threshold (or whose tmp/blob is absent). | S |
 | 3.4 | Medium | `prompt/wildcards.rs:159-181` | **"Billion-laughs"** — `MAX_DEPTH` caps depth, not *width*; a line with ≥2 self-refs grows ×N per pass → GBs before the cap. | Track a cumulative expansion budget (total replacements / output length); bail to literals. | S |
@@ -81,7 +87,7 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 5.1 | Low | `pipelines/lora.rs` (merge store) | F16 merge cast can overflow → inf/NaN → noise patches. | Detect non-finite after cast; warn/skip or keep component in F32. |
 | 5.2 | Low | `pipelines/sdxl_unet.rs:734` | `forward_with_additional_residuals` lacks the CN-count guard its motion sibling has → OOB/underflow on a mismatched CN. | Add `if additional.len()!=down.len() { bail! }`. |
 | 5.3 | Low | `pipelines/controlnet.rs:1135` | `per_frame_tensors[0]` on an empty pick (frames 0) panics. | `ensure!(n_frames>0)` before indexing. |
-| 5.4 | Low | `pipelines/cascade_scheduler.rs:106` | Single-step (`steps 1`) → `mu_scale≈100` → garbage decode. | Enforce steps ≥ 2 at the request boundary. |
+| 5.4 | ~~Low~~ | `pipelines/cascade_scheduler.rs:106` | ~~Single-step blow-up~~ **RETRACTED on re-audit** — `mu_scale≈100×` at n=1 is finite in BF16, the `[1e-4,1-1e-4]` clamp keeps endpoints finite; degenerate but not a defect. | — |
 | 5.5 | Low | `pipelines/flux.rs:1914` | `animate_frame` silently drops pipeline ControlNets (`&[]` conditioning). | Assert `controlnets.is_empty()` (loud) or thread real conditioning. |
 | 5.6 | Low | `pipelines/lora.rs:1032` | compvis→diffusers output-block mapping mis-maps attention-less up-blocks (fail-safe under-apply). | Treat the last sub-index as the upsampler regardless of numbering. |
 | 5.7 | Low | `pipelines/stylize.rs:113` | Blurred-ref temp path keyed only by PID → concurrent race. | Add a unique token; remove after encoding. |
