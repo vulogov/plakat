@@ -20,8 +20,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked.
       *(Sampler isn't included: the Chat path always uses each model's default scheduler —
       there's no per-session sampler selection to snapshot. A sampler picker would be its own
       feature.)*
-- [ ] **Linear undo (`Ctrl-Z`)** — if users want a linear undo on top of the filmstrip
-      scrub + rollback (deferred in 1.21.0 as redundant; reassess on demand).
+- [x] **Linear undo (`Ctrl-Z`)** — `Ctrl-Z` / `Ctrl-Shift-Z` step the live image one frame
+      back / forward through the session history (one key, no scrub-then-rollback), tracked by
+      a `live_idx` cursor in `ChatState`; a new generation or a filmstrip rollback resets it.
+      Reuses the existing `Rollback` action, so it branches like the filmstrip (nothing lost).
+      Also in the palette + F1 help + tutorial.
 - [x] **Shared pipeline for scenario runs** — the ModelService now hands a *vanilla* resident
       SD pipeline to the scenario runner, which reuses it as the run's SD base when the models
       match, there are no scenario-level LoRAs, and no refiner (`can_reuse_sd_pipeline`) — so a

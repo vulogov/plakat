@@ -200,6 +200,9 @@ pane — one numbered cell per generated frame this session.
   re-rendered at a new seed. For several at once, **`/vary 4`** fans out a
   batch (one at a time — a single unified-memory device runs one model);
   scrub with `Ctrl-←/→` and keep the winner with `Ctrl-B`.
+- **`Ctrl-Z`** / **`Ctrl-Shift-Z`** are **undo** / **redo** — step the live
+  image one frame back / forward through the session's history (no scrubbing
+  first). A new generation resets the cursor to the newest frame.
 
 ### Other keys
 

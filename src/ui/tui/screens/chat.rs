@@ -45,6 +45,7 @@ pub enum ChatStatus {
 }
 
 /// What the App should do after a key (so the screen stays dispatch-free).
+#[derive(Debug)]
 pub enum ChatAction {
     None,
     Submit(String),
@@ -91,6 +92,10 @@ pub struct ChatState {
     mention_dismissed_at: Option<usize>,
     /// Session filmstrip: the selected frame (index into `frames()`); `None` = live latest.
     strip_sel: Option<usize>,
+    /// Linear undo/redo cursor: the live position in `frames()`; `None` = the newest frame.
+    /// Undo (Ctrl-Z) steps it back, redo (Ctrl-Shift-Z) forward; a new generation or a
+    /// filmstrip rollback resets it.
+    live_idx: Option<usize>,
     /// What the next Enter will do — mode + strength + seed, fed by the App each tick
     /// (e.g. "evolve · seed 12345", "anchored 0.60 · seed 12345", "inpaint"). Shown in
     /// the Chat pane title so the loop's current behaviour is always visible.
@@ -111,6 +116,7 @@ impl ChatState {
             mention_sel: 0,
             mention_dismissed_at: None,
             strip_sel: None,
+            live_idx: None,
             mode_hint: String::new(),
         }
     }
@@ -168,13 +174,50 @@ impl ChatState {
 
     /// Roll back / branch from the selected frame (Ctrl-B).
     fn rollback(&mut self) -> ChatAction {
-        match self.selected_frame() {
-            Some(p) => {
+        match self.strip_sel {
+            Some(i) => {
+                let frames = self.frames();
+                let Some((_, p)) = frames.into_iter().nth(i) else { return ChatAction::None };
+                self.live_idx = Some(i); // the branched frame is now the live position
                 self.strip_sel = None; // back to live after branching
                 ChatAction::Rollback(p)
             }
             None => ChatAction::None,
         }
+    }
+
+    /// Undo (Ctrl-Z): step the live position one frame earlier and roll back to it, so the
+    /// next prompt continues from the previous image. No-op at the oldest frame.
+    fn undo(&mut self) -> ChatAction {
+        let frames = self.frames();
+        if frames.is_empty() {
+            return ChatAction::None;
+        }
+        let cur = self.live_idx.unwrap_or(frames.len() - 1);
+        if cur == 0 {
+            return ChatAction::None; // nothing earlier
+        }
+        let target = cur - 1;
+        self.live_idx = Some(target);
+        self.strip_sel = None;
+        ChatAction::Rollback(frames[target].1.clone())
+    }
+
+    /// Redo (Ctrl-Shift-Z): step the live position one frame later and roll back to it.
+    /// No-op once back at the newest frame.
+    fn redo(&mut self) -> ChatAction {
+        let frames = self.frames();
+        let Some(cur) = self.live_idx else {
+            return ChatAction::None; // already at the newest
+        };
+        let target = cur + 1;
+        if target >= frames.len() {
+            return ChatAction::None;
+        }
+        // Reaching the newest frame returns the cursor to the "live latest" sentinel.
+        self.live_idx = if target + 1 == frames.len() { None } else { Some(target) };
+        self.strip_sel = None;
+        ChatAction::Rollback(frames[target].1.clone())
     }
 
     /// New variation of the selected frame (Ctrl-Y).
@@ -247,6 +290,7 @@ impl ChatState {
     /// prompts into the editor; everything else goes to the editor; Enter submits.
     pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ── `@mention` completion popup owns a few keys while it's showing. ──
         if self.mention_open() && !ctrl {
             match key.code {
@@ -272,6 +316,10 @@ impl ChatState {
             KeyCode::Right if ctrl => return self.strip_right(),
             KeyCode::Char('b') if ctrl => return self.rollback(),
             KeyCode::Char('y') if ctrl => return self.vary(),
+            // Linear undo/redo over the frame history. Shift-first so Ctrl-Shift-Z (redo)
+            // isn't swallowed by the Ctrl-Z (undo) arm.
+            KeyCode::Char('z') if ctrl && shift => return self.redo(),
+            KeyCode::Char('z') if ctrl => return self.undo(),
             KeyCode::Char('t') if ctrl => return ChatAction::ToggleAnchor,
             KeyCode::Char('p') if ctrl => {
                 self.recall_prev();
@@ -338,6 +386,7 @@ impl ChatState {
     /// Record a submitted utterance (the App calls this when dispatching it).
     pub fn push_utterance(&mut self, utterance: String, refine: bool) {
         self.strip_sel = None; // a new turn returns the filmstrip to live
+        self.live_idx = None; // …and the new frame becomes the live undo position
         self.history.push(ChatEntry {
             utterance,
             result: None,
@@ -780,6 +829,35 @@ mod tests {
             ChatAction::SelectFrame(None) => {}
             _ => panic!("expected back-to-live"),
         }
+    }
+
+    #[test]
+    fn ctrl_z_undo_and_redo_walk_the_frame_history() {
+        let mut s = ChatState::new();
+        for i in 1..=3 {
+            s.push_utterance(format!("turn {i}"), i > 1);
+            s.finish_last(Ok(format!("/out/plakat-1-{i}.png")));
+        }
+        let z = |shift: bool| {
+            let m = if shift { KeyModifiers::CONTROL | KeyModifiers::SHIFT } else { KeyModifiers::CONTROL };
+            KeyEvent::new(KeyCode::Char('z'), m)
+        };
+        let rolled = |a: ChatAction| match a {
+            ChatAction::Rollback(p) => p.file_name().unwrap().to_string_lossy().into_owned(),
+            other => panic!("expected Rollback, got {other:?}"),
+        };
+        // Undo steps back: latest(3) → 2 → 1, then no-op at the oldest.
+        assert_eq!(rolled(s.handle_key(z(false))), "plakat-1-2.png");
+        assert_eq!(rolled(s.handle_key(z(false))), "plakat-1-1.png");
+        assert!(matches!(s.handle_key(z(false)), ChatAction::None), "no undo past the oldest");
+        // Redo steps forward: 1 → 2 → 3, then no-op at the newest.
+        assert_eq!(rolled(s.handle_key(z(true))), "plakat-1-2.png");
+        assert_eq!(rolled(s.handle_key(z(true))), "plakat-1-3.png");
+        assert!(matches!(s.handle_key(z(true)), ChatAction::None), "no redo past the newest");
+        // A new generation resets the cursor: undo now steps from the new newest.
+        s.push_utterance("turn 4".into(), true);
+        s.finish_last(Ok("/out/plakat-1-4.png".into()));
+        assert_eq!(rolled(s.handle_key(z(false))), "plakat-1-3.png");
     }
 
     #[test]

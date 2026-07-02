@@ -1060,6 +1060,8 @@ impl App {
                     cmds.push(("Filmstrip: next frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL))));
                     cmds.push(("Roll back to selected frame".into(), kc('b')));
                     cmds.push(("New variation of selected frame".into(), kc('y')));
+                    cmds.push(("Undo (previous image)".into(), kc('z')));
+                    cmds.push(("Redo (next image)".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT))));
                 }
             }
             ActiveScreen::Models => {
@@ -2965,6 +2967,7 @@ impl App {
                 ("Ctrl-P / Ctrl-N", "recall previous / next prompt"),
                 ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
+                ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
                 ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
                 ("/new /seed /strength /negative /auto", "session commands"),
