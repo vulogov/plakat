@@ -411,9 +411,12 @@ impl UNet2DConditionModel {
         } else {
             xs.clone()
         };
-        // 1. time
-        let emb = (Tensor::ones(bsize, xs.dtype(), device)? * timestep)?;
-        let emb = self.time_proj.forward(&emb)?;
+        // 1. time — build the timestep in F32 so a large value (e.g. 999) isn't quantized
+        // by BF16's ~8-bit mantissa (which would condition the model on a slightly-wrong
+        // noise level vs the actual x_t). Cast to the model dtype AFTER the sinusoidal
+        // projection, matching diffusers.
+        let emb = (Tensor::ones(bsize, candle_core::DType::F32, device)? * timestep)?;
+        let emb = self.time_proj.forward(&emb)?.to_dtype(xs.dtype())?;
         let emb = self.time_embedding.forward(&emb)?;
         // 1b. SDXL add-embedding (text_time) aug_emb, if provided.
         let emb = match aug_emb {
