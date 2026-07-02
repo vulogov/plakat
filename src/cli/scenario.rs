@@ -1886,7 +1886,16 @@ pub async fn run_with_events(
     // Surface schema errors (mutually-exclusive control/controls,
     // outpaint without init-image, etc.) before we burn time on model
     // loads. Same loop applies the validators across every task.
+    // An explicit `count: 0` (scenario or task) would run the generate loop `0..0`,
+    // write nothing, and still record `✓ done` — a task that produced no output looking
+    // like success. Reject it up front. (Absent = defaults to 1.)
+    if s.count == Some(0) {
+        anyhow::bail!("scenario `count` must be >= 1 (0 produces no images)");
+    }
     for task in &s.tasks {
+        if task.count == Some(0) {
+            anyhow::bail!("task {:?}: `count` must be >= 1 (0 produces no images)", task.name);
+        }
         task_effective_controls(task).with_context(|| {
             format!("validating ControlNet config for task {:?}", task.name)
         })?;
@@ -7171,6 +7180,36 @@ mod tests {
         let written = std::fs::read_to_string(&summary).unwrap();
         assert!(written.contains(override_dir.to_str().unwrap()), "summary out_dir should be the override: {written}");
         assert!(!written.contains("scenario-own-out"), "the scenario's own out: must be ignored");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn count_zero_is_rejected_up_front_not_silently_successful() {
+        // A `count: 0` task used to run the generate loop `0..0`, write nothing, and still
+        // record ✓ done. It must now bail with a clear message (checked on a dry-run, which
+        // reaches the up-front validation before any model load).
+        let d = std::env::temp_dir().join("plakat-scenario-count0-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("s.hjson");
+        std::fs::write(
+            &file,
+            r#"{"model":"stable-diffusion-v1-5/stable-diffusion-v1-5","size":"512x512","enhancer":"local","scene":[{"name":"","prompt":"p"}],"weather":[{"name":"","prompt":"c"}],"tasks":[{"name":"alpha","prompt":"a","count":0}]}"#,
+        )
+        .unwrap();
+        let args = ScenarioArgs {
+            file,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override: None,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt.block_on(run_with_events(args, None, None)).unwrap_err();
+        assert!(err.to_string().contains("count"), "should reject count:0, got: {err}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

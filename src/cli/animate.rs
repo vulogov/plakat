@@ -1076,6 +1076,13 @@ async fn run_flux(
 ) -> Result<()> {
     use crate::pipelines::flux;
 
+    // Guard the frame count (the other animate paths do — run:279, :917, V3:1272 — but
+    // run_flux was missing it). Without this, `--frames 0` renders nothing and then
+    // encodes an empty/invalid gif/mp4.
+    if args.frames < 2 {
+        anyhow::bail!("--frames must be ≥ 2 (got {})", args.frames);
+    }
+
     let (width, height) = parse_size(&args.size)?;
 
     if !args.negative.is_empty() {
