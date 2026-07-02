@@ -43,7 +43,12 @@ pub async fn run(args: MetadataArgs) -> Result<()> {
     if !args.path.exists() {
         anyhow::bail!("{}: no such file", args.path.display());
     }
-    let sidecar = args.path.with_extension("json");
+    // New naming is `<image>.json` (e.g. `a.png.json`); fall back to the old
+    // `with_extension("json")` (`a.json`) so pre-existing sidecars still resolve.
+    let sidecar = {
+        let new = crate::imaging::io::sidecar_path(&args.path);
+        if new.exists() { new } else { args.path.with_extension("json") }
+    };
     let params = crate::imaging::io::read_parameters_chunk(&args.path)?;
 
     let want_params = !args.json_only;

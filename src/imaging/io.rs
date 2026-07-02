@@ -60,6 +60,16 @@ pub fn save_rgb_u8(buf: &[u8], width: u32, height: u32, path: &Path) -> Result<(
 /// non-plakat PNGs) or fails to decode. Used by
 /// `plakat metadata <FILE>` and any future tooling that wants to
 /// inspect a v0.17+ output's embedded recipe.
+/// The JSON-sidecar path for an image: the FULL filename plus `.json` (e.g.
+/// `a.png` → `a.png.json`). Appending — rather than `with_extension("json")`, which drops
+/// the image extension — keeps `a.png` and `a.webp` sidecars distinct when both formats
+/// share a stem. Writer and reader must agree, so both use this.
+pub fn sidecar_path(image_path: &Path) -> std::path::PathBuf {
+    let mut s = image_path.as_os_str().to_owned();
+    s.push(".json");
+    std::path::PathBuf::from(s)
+}
+
 pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
@@ -85,7 +95,7 @@ pub fn save_rgb_u8_with_metadata(
 ) -> Result<()> {
     save_rgb_u8_inner(buf, width, height, path, Some(metadata))?;
     // Write the JSON sidecar. Best-effort.
-    let json_path = path.with_extension("json");
+    let json_path = sidecar_path(path);
     match metadata.to_json_pretty() {
         Ok(json) => {
             if let Err(e) = std::fs::write(&json_path, json) {
@@ -213,7 +223,7 @@ mod tests {
     fn save_with_metadata_writes_parameters_chunk_and_sidecar() {
         let tmp = tempfile::tempdir().unwrap();
         let png_path = tmp.path().join("test.png");
-        let json_path = tmp.path().join("test.json");
+        let json_path = tmp.path().join("test.png.json");
 
         // 2×2 solid-red image.
         let buf = vec![255u8, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
@@ -317,7 +327,7 @@ mod tests {
     fn save_with_metadata_skips_chunk_for_webp_writes_sidecar() {
         let tmp = tempfile::tempdir().unwrap();
         let webp_path = tmp.path().join("test.webp");
-        let sidecar = tmp.path().join("test.json");
+        let sidecar = tmp.path().join("test.webp.json");
         let buf: Vec<u8> = (0..4).flat_map(|_| [0u8, 128, 255]).collect();
         let meta = GenerationMetadata::new(
             "a fox",

@@ -68,8 +68,17 @@ pub fn compose_images(
     let cols = cols.max(1);
     let rows = images.len().div_ceil(cols);
 
-    let total_w = (cell_w * cols as u32) + padding * (cols as u32 + 1);
-    let total_h = (cell_h * rows as u32) + padding * (rows as u32 + 1);
+    // Compute canvas dims in u64 and bail past a ceiling — a big grid of large cells can
+    // exceed u32 (release wrap → a truncated/garbled canvas rather than an error).
+    let total_w_u64 = cell_w as u64 * cols as u64 + padding as u64 * (cols as u64 + 1);
+    let total_h_u64 = cell_h as u64 * rows as u64 + padding as u64 * (rows as u64 + 1);
+    const MAX_GRID_DIM: u64 = 32_768;
+    anyhow::ensure!(
+        total_w_u64 <= MAX_GRID_DIM && total_h_u64 <= MAX_GRID_DIM,
+        "grid canvas {total_w_u64}×{total_h_u64} exceeds the {MAX_GRID_DIM}px limit \
+         (too many / too large cells)"
+    );
+    let (total_w, total_h) = (total_w_u64 as u32, total_h_u64 as u32);
 
     let mut canvas: RgbImage =
         ImageBuffer::from_pixel(total_w, total_h, Rgb([255u8, 255, 255]));

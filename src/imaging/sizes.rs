@@ -30,6 +30,13 @@ pub fn resolve(size: Option<Size>, aspect: Option<&str>, base: u32) -> Result<(u
     }
     if let Some(a) = aspect {
         let (an, ad) = parse_aspect(a)?;
+        // Reject absurd ratios: without this, `--aspect 100000:1` at base 1024 computes a
+        // ~100-megapixel dimension → a multi-GB allocation / OOM far downstream. 32:1 is
+        // already far beyond any real composition.
+        let ratio = (an.max(ad) as f32) / (an.min(ad).max(1) as f32);
+        if ratio > 32.0 {
+            anyhow::bail!("aspect ratio {an}:{ad} is too extreme (max 32:1)");
+        }
         let (w, h) = if an >= ad {
             (
                 ((base as f32) * (an as f32 / ad as f32)).round() as u32,
@@ -76,5 +83,19 @@ pub fn warn_large_for_metal(width: u32, height: u32, device: &candle_core::Devic
              limit), retry with a smaller --size (e.g. 768×768 / 1024×768).",
             console::style("!").yellow().bold()
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extreme_aspect_ratio_is_rejected_not_gigapixel() {
+        // A sane ratio resolves normally…
+        assert!(resolve(None, Some("16:9"), 1024).is_ok());
+        // …but an absurd one is rejected rather than allocating ~100 megapixels.
+        assert!(resolve(None, Some("100000:1"), 1024).is_err());
+        assert!(resolve(None, Some("1:100000"), 1024).is_err());
     }
 }
