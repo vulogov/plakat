@@ -1295,6 +1295,15 @@ fn apply_one_lora(
             Some(dora) => apply_dora(&base_f32, &delta_shaped, dora)?,
             None => (base_f32 + delta_shaped)?,
         };
+        // On an F16 base, a hot LoRA (large alpha/scale, or many stacked on one key) can
+        // push a merged weight past F16's max (65504) → inf → NaN → noise/black patches
+        // (the F32 merge hides it until this cast). Clamp to the representable range so the
+        // cast stays finite. No-op for the overwhelming majority of weights.
+        let merged_weight = if base_dtype == DType::F16 {
+            merged_weight.clamp(-65504f32, 65504f32)?
+        } else {
+            merged_weight
+        };
         merged.insert(diffusers_key, merged_weight.to_dtype(base_dtype)?);
         count += 1;
     }
