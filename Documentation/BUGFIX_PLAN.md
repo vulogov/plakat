@@ -34,18 +34,18 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 0.3 | High | `memwatch.rs` | Aborts on system-wide pressure it didn't cause; armed for CPU jobs; macOS `Unknown`→discredited free-RAM guard. | `plakat_is_culprit()` attribution gate (RSS share OR free-drop-since-arm); armed **only on Metal**; macOS `Unknown`→no signal. + test. | ✅ |
 | 0.4 | Medium | trainer + sd3/pixart/cascade/embedding | **Non-atomic checkpoint write** truncates on a mid-write abort; single-file mode destroys the only artifact. | New `pipelines::atomic_safetensors_save` (temp-then-rename), applied to all 6 trained-artifact saves. + test. | ✅ |
 
-## P1 — Silently-wrong output (user gets bad results, no error)
+## P1 — Silently-wrong output — 7/8 DONE, 1 deferred
 
-| # | Sev | Site | Bug | Fix | Eff |
-|---|-----|------|-----|-----|-----|
-| 1.1 | Critical | `pipelines/animatediff.rs:1131-1132` (+1149) | **SDXL AnimateDiff CFG scramble**: text embeds `cat([uncond,cond]).repeat(frames)` → *interleaved* layout, but latents/`chunk(2,0)` use *blocked* — every frame ≥ 2 pairs a latent with the wrong embedding → silently incoherent video on the default `plakat animate` SDXL path. SD1.5 does it right. | Mirror SD1.5: `cat([uncond.repeat(frames), cond.repeat(frames)])` for embeds + pooled + time_ids. Add a regression test vs a reference dump. | M |
-| 1.2 | Medium | `pipelines/pixart.rs:361`, `sd3.rs:1768` | **T5 encoded without a pad attention mask** — pad tokens participate in T5 self-attn and DiT/MMDiT cross-attn; diffusers masks them. Any prompt shorter than the pad length is subtly off (not noise). | Build a pad mask from the ids; thread it through T5 self-attention and the cross-attention softmax (−inf on masked columns). | M |
-| 1.3 | Medium | `pipelines/t2i.rs:1980` | **Regional SDXL passes (width,height) where the fn wants (h,w)** → swapped `original/target_size` micro-conditioning ids on non-square `--region` renders. | Swap to `build_add_time_ids_base(req.height, req.width, …)`. | S |
-| 1.4 | Medium | `pipelines/lora.rs:1233` | **LoKr alpha** uses `w1.dim(0)` (full-factor rows) instead of the decomposition rank → wrong merge strength when a LoKr ships `.alpha` + decomposed `w2`. | Derive `dim` from the low-rank factor (`w2`'s rank). | S |
-| 1.5 | Medium | `pipelines/sdxl_clip.rs:96` | **argmax EOT pooling** breaks once SDXL dual-TI extends CLIP-G's vocab (ids ≥ 49408) — a TI trigger makes argmax pick the trigger row, not EOS → wrong pooled `add_embedding`. | Locate EOS by the tokenizer's eos id / last content token, not `argmax`. | S |
-| 1.6 | Medium | `pipelines/flux.rs:1787` | **Flux CLIP-L pooled read at BOS** for prompts > 77 tokens — blind `resize(77)` drops the real EOT, `position(...).unwrap_or(0)` falls back to index 0. Subtle (T5 dominates). | Compute the EOT position from the pre-resize ids (or clamp to `len-1`). | S |
-| 1.7 | Medium | `compile/emitter.rs:34,37,52,127` | `model`/`size`/`scheduler` emitted **unquoted** into HJSON — a `prompts.txt` scalar like `size: "1024` yields an unloadable compiled scenario (asymmetry vs the `q()`-escaped fields). | Route these through `q()` too. | S |
-| 1.8 | Medium | `cli/scenario.rs:3315,4708` / `animate.rs:1204` | **`count:0` / `--frames 0` "succeed" with zero output** — the batch reports `✓ done` having produced nothing. | Validate `eff_count ≥ 1` per task up front (like the animate validate); validate `frames ≥ 1` on the direct animate path. | S |
+| # | Sev | Site | Bug | Status |
+|---|-----|------|-----|--------|
+| 1.1 | Critical | `pipelines/animatediff.rs` | **SDXL AnimateDiff CFG scramble** — interleaved embeds vs blocked latents mispaired every frame ≥ 2 → incoherent video. | ✅ blocked layout for hidden/pooled/time_ids (mirrors SD1.5) + layout regression test |
+| 1.3 | Medium | `pipelines/t2i.rs` | **Regional SDXL (w,h) vs (h,w)** swap in micro-conditioning ids. | ✅ now matches the main path |
+| 1.4 | Medium | `pipelines/lora.rs` | **LoKr alpha** used w1's rows not the decomposition rank. | ✅ rank from whichever factor is decomposed |
+| 1.5 | Medium | `pipelines/sdxl_clip.rs` | **argmax EOT pooling** picked a TI trigger (id > EOS) instead of EOS. | ✅ `eot_rows()` finds the explicit EOS id (all 3 sites) + test |
+| 1.6 | Medium | `pipelines/flux.rs` | **Flux CLIP-L pooled at BOS** for >77-token prompts. | ✅ `clip_pool_pos()` on pre-resize ids, clamped + test |
+| 1.7 | Medium | `compile/emitter.rs` | `model`/`size`/`scheduler` emitted **unquoted** → unloadable scenario. | ✅ routed through `q()` (global + per-task) + hostile-value test |
+| 1.8 | Medium | `cli/scenario.rs` / `animate.rs` | **`count:0` / `--frames 0` silent success** (zero output). | ✅ up-front `count≥1` reject; `run_flux` frames guard + test |
+| **1.2** | Medium | `pipelines/pixart.rs`, `sd3.rs` | **T5 encoded without a pad attention mask** — pad tokens leak into T5 self-attn + DiT/MMDiT cross-attn; short prompts subtly off (not noise). | **⏸ DEFERRED** — needs the diffusers reference-comparison harness. Pixart/SD3 use candle's `t5::T5EncoderModel` (no mask arg), so a correct fix means switching to the vendored T5 **and** threading a pad mask through every DiT/MMDiT cross-attention block — invasive changes to two **currently-correct** models that can't be verified for correctness on this hardware. Blind-fixing risks regressing a working path for a subtle short-prompt gain. Schedule with real weights + reference dumps. |
 
 ## P2 — Crashes / panics from user input (aborts the render)
 
