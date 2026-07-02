@@ -2138,6 +2138,20 @@ pub async fn run_with_events(
         .iter()
         .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
 
+    // A scenario using BOTH style and personas holds several pipelines co-resident for
+    // the whole run — the main model + stylize (SD1.5) + the persona portrait model
+    // (SDXL for plus-face-sdxl) + shared CLIP-H — which can exceed a 24 GB budget (they
+    // aren't evicted between tasks; a lazy per-kind lifecycle is a future refactor).
+    // Warn up front so the OOM is expected + actionable; the memory guard is the backstop.
+    if !args.dry_run && any_style && any_persona {
+        let msg = "scenario uses both `style` and `personas` — the main model + stylize \
+             (SD1.5) + the persona portrait model + shared CLIP-H stay co-resident for the \
+             whole run and may exceed unified memory. If it OOMs, split style and persona \
+             tasks into separate scenarios, or use a smaller base / --size.";
+        tracing::warn!(target: "plakat", "{msg}");
+        crate::ui::progress::println(&format!("⚠ {msg}"));
+    }
+
     // Phase 7f: pre-load a single CLIP-H image encoder when both
     // stylize and a Plus-Face portrait identity are going to run.
     // FaceID strategies don't touch CLIP-H, so they don't trigger the
