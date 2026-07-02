@@ -1227,13 +1227,18 @@ fn apply_one_lora(
                     lokr_w2_b.as_ref(),
                     "w2",
                 )?;
-                // The "dim" for LoKr alpha scaling is the rank of the inner
-                // decomposition. When w1 is full, use its number of rows; when
-                // decomposed, use w1_b.dim(1) (= w1_a.dim(0)) which is the rank.
-                let dim = match (lokr_w1.is_some(), lokr_w1_b.as_ref()) {
-                    (true, _) => w1.dim(0).unwrap_or(1) as f32,
-                    (false, Some(b)) => b.dim(1).unwrap_or(1) as f32,
-                    _ => w1.dim(0).unwrap_or(1) as f32,
+                // The "dim" for LoKr alpha scaling is the rank of the LOW-RANK factor
+                // (`b.dim(1)` == `a.dim(0)`) — which may be w1 OR w2. The common layout
+                // ships `lokr_w1` FULL + `lokr_w2` decomposed, so keying only off w1's
+                // decomposition (and falling back to w1's row count) used the wrong
+                // denominator and merged at the wrong strength. Prefer whichever factor is
+                // decomposed; only when BOTH are full is there no rank (alpha/dim collapses).
+                let dim = if let Some(b) = lokr_w1_b.as_ref() {
+                    b.dim(1).unwrap_or(1) as f32
+                } else if let Some(b) = lokr_w2_b.as_ref() {
+                    b.dim(1).unwrap_or(1) as f32
+                } else {
+                    w1.dim(0).unwrap_or(1) as f32
                 };
                 let alpha_val = extract_alpha(alpha.as_ref(), dim)?;
                 let coeff = (alpha_val / dim) * scale;
