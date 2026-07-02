@@ -116,6 +116,13 @@ const MAX_DEPTH: usize = 8;
 /// wildcard pack. 64 is far past any legitimate nesting.
 const MAX_INLINE_DEPTH: usize = 64;
 
+/// Cumulative output-length budget for file-wildcard expansion. `MAX_DEPTH` bounds the
+/// number of passes but not their WIDTH — a wildcard file whose line self-references
+/// twice (`__a__ __a__`) multiplies the token count every pass ("billion laughs"),
+/// allocating gigabytes before the depth cap fires. Once a pass exceeds this, expansion
+/// stops. 1 MiB is orders of magnitude beyond any real prompt.
+const MAX_EXPANDED_LEN: usize = 1 << 20;
+
 /// Expand both inline `{a|b|c}` alternation AND `__file__` wildcards
 /// in `prompt`. `wildcard_dir` is the directory file wildcards
 /// resolve against (typically `wildcards/` next to the user's
@@ -177,6 +184,16 @@ fn expand_inner<R: Rng + ?Sized>(
     // wildcards that get resolved on the next pass.
     let after_inline = expand_inline(prompt, rng, 0)?;
     let after_files = expand_files(&after_inline, wildcard_dir, rng)?;
+    // Width guard: a self-multiplying wildcard grows the string each pass. Once it blows
+    // past the budget, stop expanding (leave the rest literal) rather than OOM.
+    if after_files.len() > MAX_EXPANDED_LEN {
+        tracing::warn!(
+            target: "plakat",
+            "wildcard expansion exceeded {MAX_EXPANDED_LEN} bytes (likely a \
+             self-multiplying wildcard file); leaving remaining wildcards as literals."
+        );
+        return Ok(after_files);
+    }
     // If the second pass introduced new wildcards (file content with
     // inline alternation or further file refs), recurse.
     if has_wildcards(&after_files) && after_files != prompt {
@@ -462,6 +479,18 @@ mod tests {
             valid.contains(&out.as_str()),
             "got {out:?}, expected one of {valid:?}"
         );
+    }
+
+    #[test]
+    fn self_multiplying_wildcard_is_bounded_not_billion_laughs() {
+        let mut r = rng();
+        let dir = tempfile::tempdir().unwrap();
+        // `a.txt` references itself TWICE → each pass ~doubles the token count. Without
+        // the length budget this OOMs (gigabytes) before MAX_DEPTH fires.
+        std::fs::write(dir.path().join("a.txt"), "__a__ __a__").unwrap();
+        let out = expand("__a__", Some(dir.path()), &mut r).unwrap(); // must return, bounded
+        // Bounded to roughly the budget (well under a gigabyte).
+        assert!(out.len() < 8 * MAX_EXPANDED_LEN, "expansion is bounded, got {} bytes", out.len());
     }
 
     #[test]
