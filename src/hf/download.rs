@@ -161,24 +161,39 @@ fn repo_cache_dir(repo: &str) -> PathBuf {
     crate::hf::cache::hf_cache_root().join(format!("models--{}", repo.replace('/', "--")))
 }
 
+/// A lock untouched for at least this long is treated as stale (left by a crashed/OOM'd
+/// process). Younger locks may belong to a download in flight RIGHT NOW (e.g. the TUI
+/// download manager fetching into the same repo cache concurrently) — removing one would
+/// let two writers race the same blob and corrupt it. Generous enough that even a slow
+/// large fetch's lock is younger.
+const STALE_LOCK_AGE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Remove stale hf-hub `*.lock` files under a repo's cache dir. An interrupted download
 /// (e.g. a Ctrl-C or the OOM-guard hard-exit mid-fetch) can leave a `.lock` behind that
-/// makes a later load of an already-cached model hang or refuse. The locks are advisory
-/// (released on process death), so sweeping them when no download is in flight — the
-/// model thread loads serially — is safe. Returns how many were removed.
+/// makes a later load of an already-cached model hang or refuse. Only locks older than
+/// [`STALE_LOCK_AGE`] are swept, so a concurrent in-flight download's fresh lock survives.
+/// Returns how many were removed.
 pub fn clean_stale_locks(alias: &str) -> usize {
     let repo = crate::hf::resolve_alias(alias);
-    clean_locks_in(&repo_cache_dir(repo))
+    clean_locks_older_than(&repo_cache_dir(repo), STALE_LOCK_AGE)
 }
 
-/// Remove `*.lock` files directly under `dir` and `dir/blobs`. Returns the count.
-fn clean_locks_in(dir: &Path) -> usize {
+/// Remove `*.lock` files under `dir` and `dir/blobs` whose mtime is at least `min_age`
+/// old. Returns the count. Locks whose mtime can't be read are left alone (conservative).
+fn clean_locks_older_than(dir: &Path, min_age: std::time::Duration) -> usize {
     let mut removed = 0;
     for sub in [dir.to_path_buf(), dir.join("blobs")] {
         if let Ok(rd) = std::fs::read_dir(&sub) {
             for e in rd.flatten() {
                 let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("lock") && std::fs::remove_file(&p).is_ok() {
+                if p.extension().and_then(|x| x.to_str()) != Some("lock") {
+                    continue;
+                }
+                let stale = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .map(|t| t.elapsed().map(|age| age >= min_age).unwrap_or(false))
+                    .unwrap_or(false);
+                if stale && std::fs::remove_file(&p).is_ok() {
                     removed += 1;
                 }
             }
@@ -312,7 +327,12 @@ mod tests {
         std::fs::write(d.join("blobs/deadbeef.lock"), b"").unwrap();
         std::fs::write(d.join("blobs/deadbeef"), b"weights").unwrap(); // the real blob
         std::fs::write(d.join("refs"), b"main").unwrap();
-        let removed = clean_locks_in(&d);
+        // A fresh lock (age ~0) is NOT swept with the real threshold — it may belong to a
+        // concurrent in-flight download (removing it would race the blob).
+        assert_eq!(clean_locks_older_than(&d, std::time::Duration::from_secs(300)), 0, "fresh locks preserved");
+        assert!(d.join("a.lock").exists(), "fresh lock kept");
+        // With a zero threshold every lock is stale → both swept; real files survive.
+        let removed = clean_locks_older_than(&d, std::time::Duration::ZERO);
         assert_eq!(removed, 2, "both .lock files swept");
         assert!(!d.join("a.lock").exists() && !d.join("blobs/deadbeef.lock").exists());
         assert!(d.join("blobs/deadbeef").exists(), "the real blob is untouched");
