@@ -112,7 +112,9 @@ pub async fn get_file_at(repo: &str, file: &str, revision: &str) -> Result<PathB
     let rev_note = if revision == "main" {
         String::new()
     } else {
-        format!(" @ {}", &revision[..revision.len().min(8)])
+        // char-based, not byte-slice: a revision (branch/tag) with a multibyte char
+        // crossing byte 8 would panic `[..8]` ("not a char boundary").
+        format!(" @ {}", revision.chars().take(8).collect::<String>())
     };
 
     // Fast path: already in the local cache → no network, no bar (instant).

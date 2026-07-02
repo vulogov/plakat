@@ -325,7 +325,8 @@ impl LoraSpec {
                         format!("downloading LoRA {repo}/{filename} @ {revision_str}")
                     })?;
                 let rev_note = match revision.as_deref() {
-                    Some(r) if r != "main" => format!(" @ {}", &r[..r.len().min(8)]),
+                    // char-based to avoid a panic on a multibyte revision (see hf/download.rs).
+                    Some(r) if r != "main" => format!(" @ {}", r.chars().take(8).collect::<String>()),
                     _ => String::new(),
                 };
                 Ok(ResolvedLora {
