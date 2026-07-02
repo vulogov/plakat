@@ -1880,6 +1880,14 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
     ) -> Result<(Vec<u8>, u32, u32)> {
+        // animate_frame denoises with EMPTY CN conditioning, so a CN-loaded pipeline reused
+        // here would silently drop every ControlNet (the internal `zip` against `&[]`).
+        // Fail loudly rather than produce unconditioned frames with no warning.
+        anyhow::ensure!(
+            self.controlnets.is_empty(),
+            "animate_frame does not support ControlNets ({} loaded) — reload without them for animation",
+            self.controlnets.len()
+        );
         let (w, h) = (width as usize, height as usize);
         if w % 16 != 0 || h % 16 != 0 {
             bail!(

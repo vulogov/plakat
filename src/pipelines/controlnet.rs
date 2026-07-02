@@ -1132,6 +1132,10 @@ pub async fn load_control_stack(
                 })?;
                 per_frame_tensors.push(t);
             }
+            anyhow::ensure!(
+                !per_frame_tensors.is_empty(),
+                "control-video produced no frames (need >= 1)"
+            );
             let first = per_frame_tensors[0].clone();
             // `frame_tmp` drops here, deleting the extracted PNGs — but
             // every tensor is already on-device, so the on-disk files
