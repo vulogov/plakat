@@ -2864,9 +2864,22 @@ impl App {
     /// image (built here because it needs the Picker), and history.
     fn drain_generation(&mut self) {
         let mut msgs = Vec::new();
+        // Distinguish "no message yet" (Empty) from "the sender was dropped"
+        // (Disconnected). If the model-service thread PANICS mid-generation it drops the
+        // sender with no terminal Done/Error — every peer drain handles this, but this one
+        // used `while let Ok(..)` and silently swallowed it, wedging `active_gen` on
+        // "Generating" forever (Chat stuck, /vary frozen, idle_tick disabled).
+        let mut disconnected = false;
         if let Some((rx, _)) = &self.active_gen {
-            while let Ok(m) = rx.try_recv() {
-                msgs.push(m);
+            loop {
+                match rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
             }
         }
         let mut finished = false;
@@ -2912,6 +2925,15 @@ impl App {
                     finished = true;
                 }
             }
+        }
+        // The channel closed without a terminal Done/Error → the generation thread died
+        // (a panic deep in a pipeline). Surface it as an error instead of wedging forever.
+        // (A normal completion also disconnects, but sets `finished` via Done/Error first.)
+        if disconnected && !finished {
+            let message = "generation ended unexpectedly (the render thread stopped)".to_string();
+            self.chat.finish_last(Err(message.clone()));
+            self.chat.status = ChatStatus::Error(message);
+            finished = true;
         }
         if finished {
             self.active_gen = None;
@@ -3667,6 +3689,22 @@ mod tests {
         // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps).
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Canvas));
+    }
+
+    #[test]
+    fn drain_generation_recovers_from_a_dead_render_thread() {
+        let mut a = test_app();
+        // A generation is in flight with a history entry awaiting its result…
+        a.chat.push_utterance("a fox".into(), false);
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        a.active_gen = Some((rx, CancelFlag::new()));
+        // …then the render thread dies with no terminal message (drop the sender).
+        drop(tx);
+        a.drain_generation();
+        // The soft-lock is gone: active_gen cleared and the turn marked failed.
+        assert!(a.active_gen.is_none(), "a disconnected channel unwedges the gen loop");
+        assert!(matches!(a.chat.status, ChatStatus::Error(_)), "surfaced as an error");
+        assert!(a.chat.history.last().unwrap().error.is_some());
     }
 
     #[test]
