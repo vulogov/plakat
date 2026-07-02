@@ -110,6 +110,12 @@ fn weighted_pick<'a, R: Rng + ?Sized>(
 
 const MAX_DEPTH: usize = 8;
 
+/// Max nesting of inline `{a|b}` alternation the expander recurses into (distinct from
+/// the file-wildcard `MAX_DEPTH`). Beyond this the picked option is emitted literally — a
+/// stack-overflow guard against pathological brace nesting in an untrusted prompt /
+/// wildcard pack. 64 is far past any legitimate nesting.
+const MAX_INLINE_DEPTH: usize = 64;
+
 /// Expand both inline `{a|b|c}` alternation AND `__file__` wildcards
 /// in `prompt`. `wildcard_dir` is the directory file wildcards
 /// resolve against (typically `wildcards/` next to the user's
@@ -169,7 +175,7 @@ fn expand_inner<R: Rng + ?Sized>(
     }
     // Inline `{...}` expansion first — choices can name file
     // wildcards that get resolved on the next pass.
-    let after_inline = expand_inline(prompt, rng)?;
+    let after_inline = expand_inline(prompt, rng, 0)?;
     let after_files = expand_files(&after_inline, wildcard_dir, rng)?;
     // If the second pass introduced new wildcards (file content with
     // inline alternation or further file refs), recurse.
@@ -185,7 +191,7 @@ fn expand_inner<R: Rng + ?Sized>(
 /// only `|` at depth 1 splits the current group. A `{` with no
 /// matching `}` is left literal (no bail — robustness over
 /// strictness, same way A1111 handles malformed wildcards).
-fn expand_inline<R: Rng + ?Sized>(s: &str, rng: &mut R) -> Result<String> {
+fn expand_inline<R: Rng + ?Sized>(s: &str, rng: &mut R, depth: usize) -> Result<String> {
     let mut out = String::with_capacity(s.len());
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -211,10 +217,15 @@ fn expand_inline<R: Rng + ?Sized>(s: &str, rng: &mut R) -> Result<String> {
         let body: String = chars[i + 1..group_end].iter().collect();
         let options = parse_options(&body);
         let pick = weighted_pick(&options, rng)?;
-        // Recurse so nested `{...}` inside the picked option also
-        // expand. Pure recursion on `expand_inline` only — file
-        // wildcards are handled by the outer `expand_inner` pass.
-        out.push_str(&expand_inline(pick, rng)?);
+        // Recurse so nested `{...}` inside the picked option also expand. Pure recursion
+        // on `expand_inline` only — file wildcards are handled by the outer `expand_inner`
+        // pass. Past MAX_INLINE_DEPTH stop recursing (stack-overflow guard) and emit the
+        // picked option literally.
+        if depth >= MAX_INLINE_DEPTH {
+            out.push_str(pick);
+        } else {
+            out.push_str(&expand_inline(pick, rng, depth + 1)?);
+        }
         i = group_end + 1;
     }
     Ok(out)
@@ -373,6 +384,17 @@ mod tests {
     fn rng() -> StdRng {
         // Deterministic for assertions.
         StdRng::seed_from_u64(42)
+    }
+
+    #[test]
+    fn deeply_nested_alternation_does_not_overflow_the_stack() {
+        let mut r = rng();
+        // Pathological brace nesting from an untrusted prompt / wildcard pack used to
+        // recurse per level → SIGABRT. The inline depth cap keeps it bounded.
+        let n = 50_000;
+        let prompt = format!("{}core{}", "{".repeat(n), "}".repeat(n));
+        let out = expand(&prompt, None, &mut r).unwrap(); // must return, not blow the stack
+        assert!(out.contains("core"), "inner content survives");
     }
 
     #[test]
