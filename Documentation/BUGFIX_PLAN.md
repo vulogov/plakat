@@ -47,7 +47,7 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 1.8 | Medium | `cli/scenario.rs` / `animate.rs` | **`count:0` / `--frames 0` silent success** (zero output). | ✅ up-front `count≥1` reject; `run_flux` frames guard + test |
 | **1.2** | Medium | `pipelines/pixart.rs`, `sd3.rs` | **T5 encoded without a pad attention mask** — pad tokens leak into T5 self-attn + DiT/MMDiT cross-attn; short prompts subtly off (not noise). | **⏸ DEFERRED** — needs the diffusers reference-comparison harness. Pixart/SD3 use candle's `t5::T5EncoderModel` (no mask arg), so a correct fix means switching to the vendored T5 **and** threading a pad mask through every DiT/MMDiT cross-attention block — invasive changes to two **currently-correct** models that can't be verified for correctness on this hardware. Blind-fixing risks regressing a working path for a subtle short-prompt gain. Schedule with real weights + reference dumps. |
 
-## P2 — Crashes / panics from user input — 9/10 DONE, 1 open
+## P2 — Crashes / panics from user input — ✅ 10/10 DONE
 
 | # | Sev | Site | Bug | Status |
 |---|-----|------|-----|--------|
@@ -59,8 +59,8 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 2.8 | Medium | `map/engine.rs` | **`tile_grid` unclamped** on the `--map-spec`/LLM path → `cols*PX` overflow. | ✅ `clamp(1, 8)` in `from_spec` + 4e9 test |
 | 2.9 | Low | `hf/download.rs`, `pipelines/lora.rs` | **Multibyte revision byte-slice** panic. | ✅ `chars().take(8)` both sites |
 | 2.10 | Low | `capability.rs` | **Symlink recursion** in `walk_files` → stack overflow. | ✅ `symlink_metadata` decides dir-vs-file + Unix circular-link test |
-| **2.5** | High | `prompt/a1111.rs:188` | **Nested `(…)`/`[…]` recursion, no depth cap** → stack overflow from any prompt. | ⬜ OPEN — thread a `depth`, fall back to literal past a cap |
-| **2.6** | High | `prompt/wildcards.rs:217` | **Nested `{a\|b}` alternation recursion, no depth cap** → stack overflow. | ⬜ OPEN — same pattern (depth counter in `expand_inline`) |
+| 2.5 | High | `prompt/a1111.rs` | **Nested `(…)`/`[…]` recursion, no depth cap** → stack overflow from any prompt. | ✅ `MAX_NEST_DEPTH=64`, literal past the cap + 50k-deep test |
+| 2.6 | High | `prompt/wildcards.rs` | **Nested `{a\|b}` alternation recursion, no depth cap** → stack overflow. | ✅ `MAX_INLINE_DEPTH=64` in `expand_inline` + 50k-deep test |
 
 ## P3 — Memory / OOM on 24 GB, and resource races
 
