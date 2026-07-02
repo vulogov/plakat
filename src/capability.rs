@@ -265,9 +265,21 @@ fn walk_files(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, u64)>)
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-        match std::fs::metadata(e.path()) {
-            Ok(m) if m.is_dir() => walk_files(&e.path(), &rel, out),
-            Ok(m) => out.push((rel, m.len())),
+        // Decide dir-vs-file with `symlink_metadata` (does NOT follow), so only REAL
+        // directories recurse. HF snapshots symlink to blobs; following those with plain
+        // `metadata` meant a symlink resolving to a directory (or a circular link to an
+        // ancestor) recursed forever → stack overflow. Symlinks are sized via the
+        // following `metadata` (the blob's real size) but never recursed into.
+        match std::fs::symlink_metadata(e.path()) {
+            Ok(sm) if sm.is_dir() => walk_files(&e.path(), &rel, out),
+            Ok(sm) if sm.file_type().is_symlink() => {
+                if let Ok(m) = std::fs::metadata(e.path()) {
+                    if m.is_file() {
+                        out.push((rel, m.len()));
+                    }
+                }
+            }
+            Ok(sm) => out.push((rel, sm.len())),
             Err(_) => {}
         }
     }
@@ -337,6 +349,24 @@ async fn hf_repo_gb(repo: &str, token: Option<&str>) -> anyhow::Result<f64> {
 mod tests {
     use super::*;
     use crate::hw::HardwareReport;
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_files_sizes_symlinks_without_recursing_through_them() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("plakat-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.bin"), [0u8; 100]).unwrap();
+        symlink(dir.join("real.bin"), dir.join("link.bin")).unwrap(); // symlink → file (size it)
+        symlink(&dir, dir.join("loop")).unwrap(); // circular symlink → dir (must NOT recurse)
+        let mut out = Vec::new();
+        walk_files(&dir, "", &mut out); // must terminate (no stack overflow)
+        // Counts the real file + the file-symlink's resolved size, skips the dir-symlink.
+        assert_eq!(out.iter().filter(|(_, sz)| *sz == 100).count(), 2);
+        assert!(!out.iter().any(|(p, _)| p.contains("loop")), "dir symlink not recursed/sized");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn native_res_per_alias() {
