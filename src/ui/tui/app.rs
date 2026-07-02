@@ -752,16 +752,19 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        // No decode in flight for the current selection → start one on a worker so a
-        // large (upscaled) PNG never hitches j/k navigation on the event-loop tick.
-        let decoding_current = self.history_decode.as_ref().map(|(p, _)| Some(p) == sel.as_ref()).unwrap_or(false);
+        // Start a decode only when NONE is in flight — not merely when the current
+        // selection isn't being decoded. Holding j/k over large (upscaled) PNGs otherwise
+        // spawned a fresh full-image decode every 100 ms tick (each replacing the tracked
+        // rx but leaving its thread running detached) → a pile-up of concurrent decodes.
+        // Serializing to one at a time bounds the work; a stale result is dropped above and
+        // the next tick starts the current selection's decode.
         match &sel {
             None => {
                 self.history.preview = None;
                 self.history.preview_for = None;
                 self.history_decode = None;
             }
-            Some(path) if !decoding_current => {
+            Some(path) if self.history_decode.is_none() => {
                 let path = path.clone();
                 let (tx, rx) = std::sync::mpsc::channel();
                 let worker_path = path.clone();

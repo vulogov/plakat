@@ -109,6 +109,19 @@ where
     }
 }
 
+/// Parse an optional finite f64. `"inf"`/`"NaN"` parse fine as f64 but emit an invalid
+/// HJSON/JSON number (no inf/NaN literal) that makes the compiled scenario fail to load,
+/// so reject them here.
+fn parse_finite_f64(v: Option<&str>, what: &str) -> Result<Option<f64>> {
+    let parsed: Option<f64> = parse_opt(v, what)?;
+    if let Some(f) = parsed {
+        if !f.is_finite() {
+            anyhow::bail!("compile: `{what}` must be a finite number (got {f})");
+        }
+    }
+    Ok(parsed)
+}
+
 /// Auto scene name from the first 6 words of the description, slugified.
 fn auto_name(free_text: &str, idx: usize) -> String {
     let slug: String = free_text
@@ -144,7 +157,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         count: parse_opt(last_wins(&[], &vals(g, "count")), "count")?,
         size: last_wins(&[], &vals(g, "size")).map(str::to_string),
         steps: parse_opt(last_wins(&[], &vals(g, "steps")), "steps")?,
-        guidance: parse_opt(last_wins(&[], &vals(g, "guidance")), "guidance")?,
+        guidance: parse_finite_f64(last_wins(&[], &vals(g, "guidance")), "guidance")?,
         scheduler: last_wins(&[], &vals(g, "scheduler")).map(str::to_string),
         refine: parse_opt(last_wins(&[], &vals(g, "refine")), "refine")?,
         negative_seeds: concat(&[], &vals(g, "negative")),
@@ -175,7 +188,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             count: parse_opt(last_wins(&[], &vals(Some(s), "count")), "count")?,
             size: last_wins(&[], &vals(Some(s), "size")).map(str::to_string),
             steps: parse_opt(last_wins(&[], &vals(Some(s), "steps")), "steps")?,
-            guidance: parse_opt(last_wins(&[], &vals(Some(s), "guidance")), "guidance")?,
+            guidance: parse_finite_f64(last_wins(&[], &vals(Some(s), "guidance")), "guidance")?,
             scheduler: last_wins(&[], &vals(Some(s), "scheduler")).map(str::to_string),
             refine: parse_opt(last_wins(&[], &vals(Some(s), "refine")), "refine")?,
             tags: list(&[], &vals(Some(s), "tag")),
