@@ -62,23 +62,23 @@ Cascade/Flux happy paths and the historic "silent noise" surfaces are verified c
 | 2.5 | High | `prompt/a1111.rs` | **Nested `(…)`/`[…]` recursion, no depth cap** → stack overflow from any prompt. | ✅ `MAX_NEST_DEPTH=64`, literal past the cap + 50k-deep test |
 | 2.6 | High | `prompt/wildcards.rs` | **Nested `{a\|b}` alternation recursion, no depth cap** → stack overflow. | ✅ `MAX_INLINE_DEPTH=64` in `expand_inline` + 50k-deep test |
 
-## P3 — Memory / OOM on 24 GB, and resource races
+## P3 — Memory / OOM + races — ✅ DONE (3.1 retracted, 3.2 mitigated)
 
-| # | Sev | Site | Bug | Fix | Eff |
-|---|-----|------|-----|-----|-----|
-| 3.1 | ~~Medium~~ | `pipelines/cascade.rs` | ~~Stage C prior stays resident → OOM~~ **RETRACTED on re-audit** — Stage C/B/A/CLIP-G total ~12 GB (within 24 GB) and Stage C runs on a fixed 24×24 latent (tiny activations). Not a defect. | — | ✂ |
-| 3.2 | Medium | `cli/scenario.rs:2160-2201` | **`style:`+`personas:` SDXL scenario** holds SDXL + stylize(SD1.5) + portrait(SDXL) + shared-CLIP co-resident for the whole run → OOM. | Lazy-load stylize/portrait on first use and drop when leaving that task kind, or preflight-warn. | M |
-| 3.3 | Medium | `hf/download.rs:167-186` | **Lock-sweep race** — `clean_stale_locks` unconditionally removes every `.lock`, incl. an in-flight concurrent TUI download's → corrupt blob. | Only remove locks older than an mtime threshold (or whose tmp/blob is absent). | S |
-| 3.4 | Medium | `prompt/wildcards.rs:159-181` | **"Billion-laughs"** — `MAX_DEPTH` caps depth, not *width*; a line with ≥2 self-refs grows ×N per pass → GBs before the cap. | Track a cumulative expansion budget (total replacements / output length); bail to literals. | S |
-| 3.5 | Medium | `instance_guard.rs:28-74` | **Over-broad instance guard** — any `plakat` process (idle `gallery &`, `doctor`, a zombie) triggers a false "already running" for a heavy run. | Match only *heavy* subcommands in the scanner (inspect the other process's `cmd()`). | S |
-| 3.6 | Low | `pipelines/pixart_dit.rs:179` | **PixArt 2K KV-compression fallthrough** — a renamed/forked 2K repo misses the literal-substring match → full O(T²) attention on 16384 tokens → wrong output + ~34 GB OOM. | Auto-detect from the `…kv_proj_conv2d.weight` tensor's presence (like `AdaLnSingleEmb`). | S |
+| # | Sev | Site | Bug | Status |
+|---|-----|------|-----|--------|
+| 3.1 | ~~Medium~~ | `pipelines/cascade.rs` | ~~Stage C resident → OOM~~ **RETRACTED** (re-audit: ~12 GB total, fixed 24×24 latent). | ✂ |
+| 3.2 | Medium | `cli/scenario.rs` | **`style:`+`personas:` co-residency** (~18 GB on SDXL) → OOM. | 🟡 MITIGATED — preflight warning (full lazy per-kind load/evict deferred as a risky, unverifiable refactor; the P0-hardened OOM guard is the backstop) |
+| 3.3 | Medium | `hf/download.rs` | **Lock-sweep race** — removed every `.lock`, incl. an in-flight download's → corrupt blob. | ✅ only sweep locks ≥ 5 min old (fresh in-flight lock survives) + test |
+| 3.4 | Medium | `prompt/wildcards.rs` | **"Billion-laughs"** — width unbounded → GBs. | ✅ `MAX_EXPANDED_LEN` budget, stop past 1 MiB + test |
+| 3.5 | Medium | `instance_guard.rs` | **Over-broad guard** — any `plakat` process → false "already running". | ✅ scanner skips non-heavy subcommands + test |
+| 3.6 | Low | `pipelines/pixart_dit.rs` | **PixArt 2K KV-compression fallthrough** on a renamed repo → wrong + ~34 GB OOM. | ✅ auto-detect from the `kv_proj_conv2d` tensor (weights authoritative) |
 
-## P4 — Training robustness
+## P4 — Training robustness — ✅ DONE
 
-| # | Sev | Site | Bug | Fix | Eff |
-|---|-----|------|-----|-----|-----|
-| 4.1 | Medium | `pipelines/sd_train/trainer.rs:259,554` (+ sd3/pixart/cascade) | **`--resume` discards AdamW state** — fresh `AdamW::new` every run resets moments + step while LR is full → loss spike, degraded LoRA, no warning. | Persist/reload the AdamW moments + step count, or at minimum warm-up/lower LR for the first N resumed steps + document. | M |
-| 4.2 | Low | `pipelines/sd_train/unet.rs:415` | Training timestep materialized in **BF16** quantizes large `t` → model conditioned on a slightly-off timestep vs `x_t`'s actual noise level. | Keep `t` in F32 for the embedding path. | S |
+| # | Sev | Site | Bug | Status |
+|---|-----|------|-----|--------|
+| 4.1 | Medium | `pipelines/sd_train/trainer.rs` | **`--resume` discards AdamW state** → cold moments + full LR → loss spike. | ✅ LR warm-up (1/N→full over 50 steps) + warning, both SD + SDXL trainers (candle can't persist AdamW state; sd3/pixart/cascade share the pattern — follow-up) |
+| 4.2 | Low | `pipelines/sd_train/unet.rs` | Training timestep in **BF16** quantizes large `t`. | ✅ built in F32, cast after the sinusoidal projection |
 
 ## P5 — Low-severity hardening (batch these)
 
