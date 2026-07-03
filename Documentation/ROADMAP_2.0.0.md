@@ -44,9 +44,15 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
       `[--tier N] [--json]`; Tier 0 structural/determinism checks (CFG batch-layout invariant
       guarding BUGFIX 1.1, map byte-stability); higher tiers report as skipped. Green offline
       + in CI, no external data.
-- [ ] **Phase 1 — comparison core + `TensorTap` capture + HF-dataset fetch.**
-- [ ] **Phase 2 — offline diffusers authoring harness + pilot goldens** (sd15/sdxl/sd35/
-      pixart/cascade/animatediff) on HF; Tier 1 passes vs the diffusers oracle.
+- [x] **Phase 1 — comparison engine + capture abstraction (self-contained, tested).**
+      `compare` (corr/cosine/max-abs + thresholds), the `Manifest` format + loader, golden
+      safetensors loading, the `tier1` runner (`compare_against_goldens`), and the
+      `TensorTap`/`CaptureBag` capture abstraction — 13 unit/integration tests, no model
+      needed. `verify --tier 1` reports the pilot set as *ready, awaiting goldens*.
+- [ ] **Phase 1b/2 — wire `TensorTap` capture points into the pipelines + author goldens.**
+      Naturally coupled: each capture point is wired and its golden authored together
+      (offline diffusers harness → HF), so the capture is verified against the reference the
+      moment it lands. Pilot: sd15/sdxl/sd35/pixart/cascade/animatediff.
 - [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.

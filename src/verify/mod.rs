@@ -8,7 +8,13 @@
 //! Self-containment invariant: this is pure Rust. It never shells out to python/diffusers;
 //! its only external touch (in later tiers) is Hugging Face, exactly like model weights.
 
+pub mod capture;
+pub mod compare;
+pub mod manifest;
 pub mod tier0;
+pub mod tier1;
+
+pub use capture::{CaptureBag, TensorTap};
 
 use anyhow::Result;
 
@@ -41,8 +47,8 @@ impl Status {
 /// One verification check's result.
 #[derive(Clone, Debug)]
 pub struct Check {
-    /// Stable identifier, e.g. `tier0.cfg_batch_layout`.
-    pub name: &'static str,
+    /// Stable identifier, e.g. `tier0.cfg_batch_layout` or `tier1.sd15.clip_l.penultimate`.
+    pub name: String,
     pub tier: u8,
     pub status: Status,
     /// One-line human detail (what was checked / why it failed).
@@ -50,14 +56,17 @@ pub struct Check {
 }
 
 impl Check {
-    pub fn pass(name: &'static str, tier: u8, detail: impl Into<String>) -> Self {
-        Self { name, tier, status: Status::Pass, detail: detail.into() }
+    pub fn pass(name: impl Into<String>, tier: u8, detail: impl Into<String>) -> Self {
+        Self { name: name.into(), tier, status: Status::Pass, detail: detail.into() }
     }
-    pub fn fail(name: &'static str, tier: u8, detail: impl Into<String>) -> Self {
-        Self { name, tier, status: Status::Fail, detail: detail.into() }
+    pub fn fail(name: impl Into<String>, tier: u8, detail: impl Into<String>) -> Self {
+        Self { name: name.into(), tier, status: Status::Fail, detail: detail.into() }
+    }
+    pub fn skip(name: impl Into<String>, tier: u8, detail: impl Into<String>) -> Self {
+        Self { name: name.into(), tier, status: Status::Skip, detail: detail.into() }
     }
     /// From a `Result<()>` producer: `Ok` → pass with `ok_detail`, `Err` → fail with the error.
-    pub fn from_result(name: &'static str, tier: u8, ok_detail: &str, r: Result<()>) -> Self {
+    pub fn from_result(name: impl Into<String>, tier: u8, ok_detail: &str, r: Result<()>) -> Self {
         match r {
             Ok(()) => Check::pass(name, tier, ok_detail),
             Err(e) => Check::fail(name, tier, format!("{e:#}")),
@@ -129,6 +138,8 @@ impl Report {
 pub struct VerifyConfig {
     /// Run only this tier (0/1/2); `None` = all applicable.
     pub tier: Option<u8>,
+    /// Restrict Tier 1+ to a single model alias; `None` = the pilot set.
+    pub model: Option<String>,
     pub json: bool,
 }
 
@@ -140,24 +151,18 @@ pub fn run(cfg: &VerifyConfig) -> Result<()> {
     if want(0) {
         tier0::run(&mut report);
     }
-    // Tier 1 (per-module correctness vs golden tensors) and Tier 2 (end-to-end perceptual)
-    // need HF-hosted goldens — landing in later phases. Record them as skipped so the
-    // report is honest about coverage rather than silently omitting them.
+    // Tier 1 — per-module correctness. The comparison engine is complete; capture-point
+    // wiring (phase 1b) + hosted goldens (phase 2) make it verify real models.
     if want(1) {
-        report.push(Check {
-            name: "tier1.module_correctness",
-            tier: 1,
-            status: Status::Skip,
-            detail: "golden-tensor comparison not yet available (RFC_VERIFY phase 1+)".into(),
-        });
+        tier1::run(&mut report, cfg);
     }
+    // Tier 2 — end-to-end perceptual gate (phase 3).
     if want(2) {
-        report.push(Check {
-            name: "tier2.end_to_end_perceptual",
-            tier: 2,
-            status: Status::Skip,
-            detail: "golden-image comparison not yet available (RFC_VERIFY phase 3)".into(),
-        });
+        report.push(Check::skip(
+            "tier2.end_to_end_perceptual",
+            2,
+            "golden-image comparison not yet available (RFC_VERIFY phase 3)",
+        ));
     }
 
     if cfg.json {
