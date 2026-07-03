@@ -49,10 +49,19 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
       safetensors loading, the `tier1` runner (`compare_against_goldens`), and the
       `TensorTap`/`CaptureBag` capture abstraction — 13 unit/integration tests, no model
       needed. `verify --tier 1` reports the pilot set as *ready, awaiting goldens*.
-- [ ] **Phase 1b/2 — wire `TensorTap` capture points into the pipelines + author goldens.**
+- [~] **Phase 1b/2 — wire `TensorTap` capture points into the pipelines + author goldens.**
       Naturally coupled: each capture point is wired and its golden authored together
       (offline diffusers harness → HF), so the capture is verified against the reference the
       moment it lands. Pilot: sd15/sdxl/sd35/pixart/cascade/animatediff.
+      - [x] **Authoring harness scaffolded** — `tools/reference/` (excluded from the crate):
+        `dump.py` + per-family dumpers (sd15 worked example, others stubbed), `fixtures.py`,
+        and `correspondence.md` (the diffusers↔plakat module map). Emits the exact
+        `goldens.safetensors` + `manifest.json` the Rust side parses.
+      - [ ] **Wire the SD-family `TensorTap` capture points** (t2i/sd_core: `clip_l.penultimate`,
+        `unet.mid`, `vae.decoded`) — needs weights to verify against a fresh golden.
+      - [ ] **Author + host the pilot goldens** on the HF dataset repo; `verify --tier 1`
+        passes vs the diffusers oracle.
+      - [ ] **`--golden-dir` local source** + HF-dataset fetch in the Rust verifier.
 - [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.
