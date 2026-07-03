@@ -1,0 +1,7 @@
+# Authoring venv + outputs + model caches — never committed. Golden artifacts live on HF,
+# not in the repo (and tools/ is excluded from the crate anyway).
+.venv/
+__pycache__/
+out/
+*.safetensors
+*.pyc

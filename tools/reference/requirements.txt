@@ -1,0 +1,10 @@
+# Authoring-only dependencies (offline, maintainer). NOT plakat dependencies — plakat is
+# pure Rust and never installs or runs any of this. See README.md.
+#
+# Loosely pinned to a diffusers line that plakat's pipelines were reference-matched against;
+# record the exact resolved version in each manifest's `provenance` field.
+torch>=2.2
+diffusers>=0.27,<0.31
+transformers>=4.38
+safetensors>=0.4
+numpy>=1.24
