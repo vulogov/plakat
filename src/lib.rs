@@ -28,3 +28,4 @@ pub mod prompt;
 pub mod scripting;
 pub mod style;
 pub mod ui;
+pub mod verify;

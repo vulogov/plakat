@@ -33,16 +33,26 @@ Concrete, already-scoped — the honest backlog to clear early in 2.0.
       done for the bitmap font). Decide before spending effort.
 - [?] **What makes it 2.0** — the theme. Candidates below; pick with the user.
 
-## Candidate major themes (pick 1–2)
+## Chosen theme — `plakat verify` (RFC_VERIFY.md)
 
-- [ ] **Library / API stabilization** — a documented, semver-stable Rust crate API (not just
-      the CLI/UI), so plakat can be embedded. A real 2.0 signal.
-- [ ] **Performance pass** — profile the hot paths (VAE decode, attention, weight load),
-      reduce peak memory, faster first-token-to-image.
-- [ ] **Flux in the UI** — unblock when capable hardware is available (currently the only
-      standing UI carry; GGUF-Flux-Metal still broken upstream).
-- [ ] **Verification harness as a first-class tool** — promote the diffusers
-      reference-comparison method (used to fix the silent-noise bugs) into a repeatable
-      `plakat verify` that guards every model against regressions.
+Promote the diffusers reference-comparison method (which fixed every silent-noise bug)
+into a first-class, **self-contained** subcommand. Shipped tool stays pure-Rust/HF-only;
+diffusers lives only in an offline authoring step whose golden tensors are frozen on HF.
+Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
 
-> Nothing here is committed. This is the menu for the 2.0 conversation.
+- [x] **Phase 0 — framework + Tier 0 (zero downloads).** `src/verify/` + `plakat verify`
+      `[--tier N] [--json]`; Tier 0 structural/determinism checks (CFG batch-layout invariant
+      guarding BUGFIX 1.1, map byte-stability); higher tiers report as skipped. Green offline
+      + in CI, no external data.
+- [ ] **Phase 1 — comparison core + `TensorTap` capture + HF-dataset fetch.**
+- [ ] **Phase 2 — offline diffusers authoring harness + pilot goldens** (sd15/sdxl/sd35/
+      pixart/cascade/animatediff) on HF; Tier 1 passes vs the diffusers oracle.
+- [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
+- [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
+      decision cheap to verify.
+
+## Other candidate themes (deferred / secondary)
+
+- [ ] **Library / API stabilization** — a documented, semver-stable Rust crate API.
+- [ ] **Performance pass** — profile hot paths (VAE decode, attention, weight load).
+- [ ] **Flux in the UI** — unblock when capable hardware is available.
