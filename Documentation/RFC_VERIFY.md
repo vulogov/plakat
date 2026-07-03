@@ -149,6 +149,67 @@ Exit non-zero on any failure; `--json` emits per-tensor correlations for triage.
 - All reference data is HF-hosted and fetched through the same client as models. A user with
   only `plakat` + network to HF can run every tier.
 
+## Impact on existing plakat
+
+### Unchanged — the self-containment guarantee holds at the code level too
+- **No new runtime/build deps.** `verify`'s HF fetch reuses `hf/download` + `hf/cache`; the
+  comparators are `candle` tensor ops already in-tree. `Cargo.toml` gains nothing.
+- **No hot-path behavior change.** Capture is an `Option<&mut dyn TensorTap>` that is `None`
+  in every production path (`generate` / `scenario` / `ui`), so the branch is elided — the
+  exact pattern `StepHook` already uses (`step_hook.rs`: samplers take
+  `Option<&mut dyn StepHook>`). Normal generation is byte-for-byte and speed-for-speed the
+  same.
+
+### Purely additive
+- New `src/verify/` (fixtures, manifest loader, comparators, tier runners).
+- New `Command::Verify` + dispatch + `is_heavy` (tier-1 loads models → heavy, so the
+  1.22.0 instance-guard fix already covers it).
+- A small `hf` extension to resolve the reference **dataset** repo (the cache layout is
+  already repo-agnostic).
+
+### Instrumented — the one real ripple (broad but low-risk)
+The 7 pipelines that already thread `Option<&mut dyn StepHook>` — `t2i`/`sd_core`,
+`sdxl_unet`, `sd3`/`mmdit_inner`, `pixart_dit`, `cascade`, `flux`, `animatediff` (+ the VAE) —
+gain **named capture points** at the checkpoints the fixtures reference (encoder penultimate,
+`unet.mid`, `mmdit.pooled_y`, `vae.decoded`, the CFG batch layout). This is the largest code
+footprint, but it is the **same mechanism already in place** — a `TensorTap` capability added
+to / alongside `StepHook`, guarded by the same `None` check. No new architecture; more taps.
+
+### Refactored / folded (behavior preserved)
+- `doctor --reproducibility-check` → Tier 0 (moved to `src/verify/`, `doctor` delegates).
+- `corpus/*.hjson` become Tier-2 fixtures — they must be **frozen** (fixed seed/size/steps;
+  already true for the 12 that pin a seed). `plakat gallery`'s regenerate step gains a
+  compare-against-golden mode. The PNG-embedded recipe (`parameters` chunk) is the fixture's
+  source of truth.
+
+### New discipline (process, not code)
+Every pipeline change acquires a correctness gate: a refactor that shifts a module's output
+must keep goldens green **or** bump `plakat_arch` in the manifest and re-author. That is the
+point — but it is a real, recurring cost on future pipeline PRs, and it needs the authoring
+harness to stay maintained.
+
+### The forcing function — verify surfaces latent issues in *current* code
+Building verify is itself an audit; Tier 0/1 will likely **fail on things that hide today**,
+turning them into required fixes:
+- **Determinism gaps** — the map libm-transcendental cross-platform ULP drift (already an
+  open 2.0 decision), any `HashMap`-iteration order leaking into a weight remapper
+  (LoRA key maps, the diffusers→SAI MMDiT remapper) or into output, RNG/thread-schedule
+  leaks. Tier 0 makes these pass/fail instead of latent.
+- **Dtype honesty** — comparing plakat (BF16/F16 on Metal) against F32 diffusers goldens
+  forces every tap to record its dtype and the comparator to carry BF16-vs-F32 tolerances —
+  re-surfacing exactly the F16-VAE / BF16-T5 class where dtype choices silently mattered.
+- **Backend drift** — Metal vs CPU numerics differ; verify must be backend-aware (per-backend
+  thresholds, or a CPU reference for tier 1). This documents plakat's cross-backend
+  correctness explicitly for the first time.
+- **Input reproducibility** — reproducing plakat's exact tokenization + seed→latent +
+  scheduler inside the offline diffusers harness may expose an undocumented quirk in plakat's
+  input path; a mismatch there is itself a finding.
+
+Net: the shipped functions gain no dependencies and no behavior change, but building verify
+(a) lays a broad, low-risk instrumentation layer across the pipelines and (b) acts as a
+forcing function that surfaces and fixes latent nondeterminism / dtype / backend issues in
+the current code — which is the whole reason to do it.
+
 ## Non-goals (initially)
 
 - Not a *training* verifier (loss curves / LoRA quality) — that's a separate axis.
