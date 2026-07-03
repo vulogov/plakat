@@ -30,11 +30,14 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
     o.push_str("{\n");
 
     // ---- global generation parameters ----
+    // model / size / scheduler are verbatim user strings — quote+escape them like the
+    // other string scalars, or a value such as `size: "1024` (open quote / brace) emits an
+    // HJSON value that runs to EOL and makes the whole compiled scenario fail to load.
     if let Some(m) = &globals.model {
-        o.push_str(&format!("  model: {m}\n"));
+        o.push_str(&format!("  model: {}\n", q(m)));
     }
     if let Some(s) = &globals.size {
-        o.push_str(&format!("  size: {s}\n"));
+        o.push_str(&format!("  size: {}\n", q(s)));
     }
     if let Some(n) = globals.steps {
         o.push_str(&format!("  steps: {n}\n"));
@@ -49,7 +52,7 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         o.push_str(&format!("  count: {c}\n"));
     }
     if let Some(s) = &globals.scheduler {
-        o.push_str(&format!("  scheduler: {s}\n"));
+        o.push_str(&format!("  scheduler: {}\n", q(s)));
     }
     if let Some(r) = globals.refine {
         o.push_str(&format!("  refine: {r}\n"));
@@ -99,7 +102,7 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
             o.push_str(&format!("      count: {c}\n"));
         }
         if let Some(sz) = &s.size {
-            o.push_str(&format!("      size: {sz}\n"));
+            o.push_str(&format!("      size: {}\n", q(sz)));
         }
         if let Some(n) = s.steps {
             o.push_str(&format!("      steps: {n}\n"));
@@ -108,7 +111,7 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
             o.push_str(&format!("      guidance: {g}\n"));
         }
         if let Some(sc) = &s.scheduler {
-            o.push_str(&format!("      scheduler: {sc}\n"));
+            o.push_str(&format!("      scheduler: {}\n", q(sc)));
         }
         if let Some(r) = s.refine {
             o.push_str(&format!("      refine: {r}\n"));
@@ -203,10 +206,25 @@ mod tests {
         assert!(a.contains("name: tundra_rider"), "name sanitized");
         assert!(a.contains("enhance: false"));
         assert!(a.contains("seed: 42"));
-        assert!(a.contains("model: sdxl"));
+        assert!(a.contains(r#"model: "sdxl""#), "string scalars are quoted");
         // It must round-trip through the same HJSON parser scenario uses.
         let _: serde_json::Value = deser_hjson::from_str(&a)
             .unwrap_or_else(|e| panic!("emitted HJSON did not parse: {e}\n---\n{a}"));
+    }
+
+    #[test]
+    fn hostile_scalar_values_stay_parseable() {
+        // A `size`/`scheduler`/`model` value with an unbalanced quote or brace used to emit
+        // an HJSON value that ran to EOL and broke the whole file. Quoting keeps it valid.
+        let (mut g, scenes) = compiled();
+        g.size = Some(r#"1024","injected": true,"x": "#.into());
+        g.scheduler = Some("{euler".into());
+        let out = emit(&g, &scenes, "prompts.txt", "deepseek");
+        let v: serde_json::Value = deser_hjson::from_str(&out)
+            .unwrap_or_else(|e| panic!("hostile scalars broke HJSON: {e}\n---\n{out}"));
+        // The value is a single string, not a smuggled second key.
+        assert!(v.get("injected").is_none(), "no key injection via the size value");
+        assert_eq!(v["scheduler"], "{euler", "scheduler kept as a literal string");
     }
 
     #[test]

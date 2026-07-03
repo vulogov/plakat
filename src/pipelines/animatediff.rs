@@ -1123,14 +1123,21 @@ impl AnimateDiffSdxlPipeline {
         let (cond_hidden, cond_pooled) = self.encode_branch(prompt)?;
         let (text_embeds, pooled_embeds) = if do_cfg {
             let (uncond_hidden, uncond_pooled) = self.encode_branch(negative)?;
-            // (2, 77, 2048) — row 0 = uncond, row 1 = cond.
-            let hidden = Tensor::cat(&[&uncond_hidden, &cond_hidden], 0)?;
-            // (2, 1280)
-            let pooled = Tensor::cat(&[&uncond_pooled, &cond_pooled], 0)?;
-            (
-                hidden.repeat((frames, 1, 1))?,
-                pooled.repeat((frames, 1))?,
-            )
+            // The latents are BLOCKED `[uncond×F, cond×F]` (`cat([latents, latents])`) and
+            // split back with `chunk(2, 0)`, so the conditioning must match that layout.
+            // candle's `repeat` TILES the whole tensor, so `cat([uncond,cond]).repeat(F)`
+            // would interleave `[u,c,u,c,…]` and mispair every frame's conditioning
+            // (see the SD 1.5 path above). Replicate each branch across all frames FIRST,
+            // then stack.
+            let hidden = Tensor::cat(
+                &[&uncond_hidden.repeat((frames, 1, 1))?, &cond_hidden.repeat((frames, 1, 1))?],
+                0,
+            )?;
+            let pooled = Tensor::cat(
+                &[&uncond_pooled.repeat((frames, 1))?, &cond_pooled.repeat((frames, 1))?],
+                0,
+            )?;
+            (hidden, pooled)
         } else {
             (
                 cond_hidden.repeat((frames, 1, 1))?,
@@ -1138,15 +1145,19 @@ impl AnimateDiffSdxlPipeline {
             )
         };
 
-        // ---- add_time_ids: (1, 6) → (2, 6) for CFG → (2F, 6) ----
+        // ---- add_time_ids: (1, 6) → blocked (2F, 6) for CFG ----
+        // Same blocked layout as the embeds/latents (uncond/cond time-ids are identical
+        // today, but keep the layout correct so it stays right if they ever diverge).
         let time_ids_one =
             build_add_time_ids_base(height, width, &self.device, self.dtype)?;
         let time_ids = if do_cfg {
-            Tensor::cat(&[&time_ids_one, &time_ids_one], 0)?
+            Tensor::cat(
+                &[&time_ids_one.repeat((frames, 1))?, &time_ids_one.repeat((frames, 1))?],
+                0,
+            )?
         } else {
-            time_ids_one
+            time_ids_one.repeat((frames, 1))?
         };
-        let time_ids = time_ids.repeat((frames, 1))?;
 
         // ---- scheduler ----
         let mut scheduler =
@@ -1484,6 +1495,36 @@ impl AnimateDiffSdxlPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for the SDXL AnimateDiff CFG-layout bug: the conditioning batch must be
+    /// BLOCKED `[uncond×F, cond×F]` to match the latents (`cat([latents, latents])`, split
+    /// with `chunk(2, 0)`). The old `cat([uncond,cond]).repeat(F)` produced an INTERLEAVED
+    /// `[u,c,u,c,…]` batch that mispaired every frame ≥ 2. This asserts the layout the fix
+    /// builds, using the same tensor ops as the pipeline.
+    #[test]
+    fn sdxl_cfg_conditioning_is_blocked_not_interleaved() {
+        let dev = Device::Cpu;
+        let frames = 3usize;
+        // uncond rows carry 0.0, cond rows carry 1.0 (shape (1, 2, 4) like (1, seq, dim)).
+        let uncond = Tensor::zeros((1usize, 2, 4), DType::F32, &dev).unwrap();
+        let cond = Tensor::ones((1usize, 2, 4), DType::F32, &dev).unwrap();
+        // The FIX's construction.
+        let blocked = Tensor::cat(
+            &[&uncond.repeat((frames, 1, 1)).unwrap(), &cond.repeat((frames, 1, 1)).unwrap()],
+            0,
+        )
+        .unwrap();
+        assert_eq!(blocked.dim(0).unwrap(), 2 * frames);
+        // Row-0 mean over each batch row: first F rows must be uncond (0.0), next F cond (1.0).
+        let means = blocked.mean(2).unwrap().mean(1).unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(means, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], "blocked [uncond×F, cond×F]");
+        // The OLD buggy construction interleaves — prove it differs (guards a regression).
+        let two = Tensor::cat(&[&uncond, &cond], 0).unwrap();
+        let interleaved = two.repeat((frames, 1, 1)).unwrap();
+        let i_means = interleaved.mean(2).unwrap().mean(1).unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(i_means, vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0], "old interleaved layout");
+        assert_ne!(means, i_means, "the fix must not reproduce the interleaved layout");
+    }
 
     /// Network-required end-to-end test: builds the full
     /// AnimateDiff V3 stack, asserts 16 motion modules + the

@@ -25,10 +25,30 @@
 //! swap is transparent to callers. AnimateDiff and SdCore both use
 //! this wrapper for SDXL CLIP-G.
 
-use candle_core::{D, Result, Tensor};
+use candle_core::{Result, Tensor};
 use candle_nn as nn;
 use candle_nn::Module;
 use crate::pipelines::vendored_clip::{ClipTextTransformer, Config};
+
+/// CLIP end-of-text token id — the row diffusers pools for the SDXL/Cascade `add_embedding`.
+const CLIP_EOS_ID: u32 = 49407;
+
+/// Per-batch pooling row: the FIRST EOS(49407) position (diffusers' post-added-token
+/// convention). A plain `argmax(-1)` assumes EOS is the highest id in the vocab — but SDXL
+/// dual-encoder Textual Inversion appends trigger tokens at ids > EOS, so a prompt with a
+/// TI trigger would make `argmax` select the trigger's position and pool the WRONG row.
+/// Falls back to the highest-id token only when no EOS is present (unexpected).
+fn eot_rows(ids: &Tensor) -> Result<Vec<usize>> {
+    let rows: Vec<Vec<u32>> = ids.to_dtype(candle_core::DType::U32)?.to_vec2()?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            row.iter().position(|&t| t == CLIP_EOS_ID).unwrap_or_else(|| {
+                row.iter().enumerate().max_by_key(|(_, v)| **v).map(|(i, _)| i).unwrap_or(0)
+            })
+        })
+        .collect())
+}
 
 /// SDXL CLIP-G text encoder = candle's CLIP + a top-level
 /// `text_projection` Linear (no bias) for the pooled output path.
@@ -93,13 +113,11 @@ impl SdxlClipGTextTransformer {
         let (final_hidden, penultimate) =
             self.inner.forward_until_encoder_layer(ids, usize::MAX, -2)?;
         let (b, _seq_len) = ids.dims2()?;
-        let argmax = ids.argmax(D::Minus1)?;
-        // Pull each batch's EOT row out one at a time. B is 1 or 2
-        // (CFG), so the tiny loop here is dwarfed by everything else.
-        let argmax_v: Vec<u32> = argmax.to_dtype(candle_core::DType::U32)?.to_vec1()?;
+        // EOT row via the explicit EOS id (TI-safe — see `eot_rows`). B is 1 or 2 (CFG).
+        let eot = eot_rows(ids)?;
         let mut rows = Vec::with_capacity(b);
-        for (bi, &idx) in argmax_v.iter().enumerate() {
-            rows.push(final_hidden.i((bi, idx as usize))?);
+        for (bi, &idx) in eot.iter().enumerate() {
+            rows.push(final_hidden.i((bi, idx))?);
         }
         let pooled = Tensor::stack(&rows, 0)?;
         let pooled = self.text_projection.forward(&pooled)?;
@@ -127,11 +145,10 @@ impl SdxlClipGTextTransformer {
             .inner
             .forward_until_encoder_layer_from_embeds(token_embeds, usize::MAX, -2)?;
         let (b, _seq_len) = ids.dims2()?;
-        let argmax = ids.argmax(D::Minus1)?;
-        let argmax_v: Vec<u32> = argmax.to_dtype(candle_core::DType::U32)?.to_vec1()?;
+        let eot = eot_rows(ids)?;
         let mut rows = Vec::with_capacity(b);
-        for (bi, &idx) in argmax_v.iter().enumerate() {
-            rows.push(final_hidden.i((bi, idx as usize))?);
+        for (bi, &idx) in eot.iter().enumerate() {
+            rows.push(final_hidden.i((bi, idx))?);
         }
         let pooled = Tensor::stack(&rows, 0)?;
         let pooled = self.text_projection.forward(&pooled)?;
@@ -156,11 +173,10 @@ impl SdxlClipGTextTransformer {
         let (final_hidden, last_hidden) =
             self.inner.forward_until_encoder_layer(ids, usize::MAX, -1)?;
         let (b, _seq_len) = ids.dims2()?;
-        let argmax = ids.argmax(D::Minus1)?;
-        let argmax_v: Vec<u32> = argmax.to_dtype(candle_core::DType::U32)?.to_vec1()?;
+        let eot = eot_rows(ids)?;
         let mut rows = Vec::with_capacity(b);
-        for (bi, &idx) in argmax_v.iter().enumerate() {
-            rows.push(final_hidden.i((bi, idx as usize))?);
+        for (bi, &idx) in eot.iter().enumerate() {
+            rows.push(final_hidden.i((bi, idx))?);
         }
         let pooled = Tensor::stack(&rows, 0)?;
         let pooled = self.text_projection.forward(&pooled)?;
@@ -170,3 +186,23 @@ impl SdxlClipGTextTransformer {
 
 // Local import alias — keeps the `i(...)` indexing call above terse.
 use candle_core::IndexOp;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    #[test]
+    fn eot_rows_picks_eos_not_a_higher_ti_trigger() {
+        let dev = Device::Cpu;
+        // Row 0: EOS(49407) at index 2, then pad. Row 1: a TI trigger (49408, HIGHER than
+        // EOS) sits around the EOS — plain argmax would wrongly select the trigger's row;
+        // eot_rows must return the first real EOS position (index 3).
+        let ids = Tensor::new(
+            &[[49406u32, 10, 49407, 0, 0], [49406, 49408, 11, 49407, 49408]],
+            &dev,
+        )
+        .unwrap();
+        assert_eq!(eot_rows(&ids).unwrap(), vec![2, 3], "first EOS per row, not the max-id token");
+    }
+}

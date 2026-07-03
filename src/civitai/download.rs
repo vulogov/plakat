@@ -47,6 +47,23 @@ pub fn version_file_path(model_id: u64, version_id: u64, filename: &str) -> Path
         .join(filename)
 }
 
+/// Reduce an untrusted Civitai `file.name` (verbatim from the API JSON) to a safe
+/// basename confined to the version directory. `Path::join` treats an absolute or
+/// `../`-laden component as a fresh root, so without this a hostile version could
+/// overwrite arbitrary files (`"/Users/…/.ssh/authorized_keys"`, `"../../.zshrc"`).
+/// `Path::file_name` already strips every leading directory component (including
+/// traversal); we additionally reject the degenerate cases and any residual separator.
+fn safe_basename(name: &str) -> Result<String> {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Civitai file name has no usable basename: {name:?}"))?;
+    if base.is_empty() || base == "." || base == ".." || base.contains('/') || base.contains('\\') {
+        bail!("Civitai file name is not a safe basename: {name:?}");
+    }
+    Ok(base.to_string())
+}
+
 fn ensure_dir(p: &Path) -> Result<()> {
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)
@@ -137,7 +154,10 @@ pub async fn download_version(
     // (cache hit + fresh download) so the info surfaces every run.
     log_trigger_words(resolved_model_id, version.id, &version.trained_words);
     let file = pick_file(&version, file_name)?;
-    let target = version_file_path(resolved_model_id, version.id, &file.name);
+    // Confine the untrusted API-supplied file name to the version dir (path-traversal /
+    // arbitrary-overwrite guard) before it ever reaches `Path::join`.
+    let safe_name = safe_basename(&file.name)?;
+    let target = version_file_path(resolved_model_id, version.id, &safe_name);
 
     // Cache hit check: file present AND on-disk size matches the
     // version's reported `sizeKB`. Civitai stores it as a float
@@ -435,12 +455,22 @@ async fn stream_to_file(url: &str, target: &Path) -> Result<u64> {
         .open(&tmp)
         .with_context(|| format!("opening temp file {}", tmp.display()))?;
 
+    // Cap the download so a hostile/misreported response can't stream unbounded bytes to
+    // disk. 30 GB is well above any real LoRA/checkpoint.
+    const MAX_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024 * 1024;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading Civitai response chunk")?;
         file.write_all(&chunk)
             .with_context(|| format!("writing to {}", tmp.display()))?;
         written += chunk.len() as u64;
+        if written > MAX_DOWNLOAD_BYTES {
+            let _ = std::fs::remove_file(&tmp);
+            anyhow::bail!(
+                "Civitai download exceeded the {} GB cap — aborting",
+                MAX_DOWNLOAD_BYTES / (1024 * 1024 * 1024)
+            );
+        }
         bar.set_position(written);
     }
     file.sync_all()?;
@@ -489,6 +519,22 @@ fn short_name(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_basename_confines_untrusted_names_to_the_version_dir() {
+        // Ordinary names pass through unchanged (no cache regression).
+        assert_eq!(safe_basename("model.safetensors").unwrap(), "model.safetensors");
+        assert_eq!(safe_basename("My LoRA v2.ckpt").unwrap(), "My LoRA v2.ckpt");
+        // Traversal + absolute paths are reduced to their basename…
+        assert_eq!(safe_basename("../../.zshrc").unwrap(), ".zshrc");
+        assert_eq!(safe_basename("/Users/x/.ssh/authorized_keys").unwrap(), "authorized_keys");
+        assert_eq!(safe_basename("a/b/c.safetensors").unwrap(), "c.safetensors");
+        // …and the degenerate cases are rejected outright.
+        assert!(safe_basename("").is_err());
+        assert!(safe_basename("..").is_err());
+        assert!(safe_basename(".").is_err());
+        assert!(safe_basename("dir/").is_err() || safe_basename("dir/").unwrap() == "dir");
+    }
 
     #[test]
     fn version_file_path_is_under_cache_root() {

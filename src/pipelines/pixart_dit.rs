@@ -812,6 +812,23 @@ impl PixArtSigmaXL {
     pub fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
         let dtype = vb.dtype();
         let device = vb.device().clone();
+        // Make the WEIGHTS authoritative for KV-compression, not the repo name.
+        // `for_pixart_repo` matches a literal `sigma-xl-2-2k-ms` substring; a renamed/
+        // forked 2K checkpoint falls through to the 1024 config (compression None) and then
+        // runs full self-attention on the 16384-token grid — numerically wrong (trained
+        // `kv_proj_conv2d` ignored) AND an O(T²) ~34 GB OOM. Detect the compression conv
+        // directly (same `contains_tensor` pattern as the size-cond detection).
+        let mut cfg = cfg;
+        let has_kv = vb
+            .pp("transformer_blocks")
+            .pp("0")
+            .pp("attn1")
+            .contains_tensor("kv_proj_conv2d.weight");
+        match (has_kv, cfg.kv_compression.is_some()) {
+            (true, false) => cfg.kv_compression = Some(KvCompressionConfig { scale_factor: 2 }),
+            (false, true) => cfg.kv_compression = None, // name said 2K but no compression weights
+            _ => {}
+        }
         let patch_embed = PatchEmbed::new(
             cfg.in_channels,
             cfg.hidden_size,

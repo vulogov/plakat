@@ -777,7 +777,7 @@ mod tests {
             out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(crate::cli::scenario::run_with_events(args, Some(tx)))
+        rt.block_on(crate::cli::scenario::run_with_events(args, Some(tx), None))
             .expect("the new-scenario template must dry-run cleanly");
         let _ = std::fs::remove_dir_all(&d);
     }

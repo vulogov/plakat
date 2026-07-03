@@ -1977,8 +1977,10 @@ impl Pipeline {
 
         // SDXL micro-conditioning (full canvas), CFG-batched. SD 1.5/2.1 → None.
         let add_time_ids = if is_xl {
+            // (target_h, target_w) — must match the main path (1325); passing (w, h)
+            // swaps the SDXL micro-conditioning ids and biases non-square composition.
             let cond = crate::pipelines::sdxl_unet::build_add_time_ids_base(
-                req.width, req.height, &device, dtype,
+                req.height, req.width, &device, dtype,
             )?;
             Some(if do_cfg {
                 Tensor::cat(&[&cond, &cond], 0)?

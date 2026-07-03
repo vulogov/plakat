@@ -1099,6 +1099,12 @@ impl Pipeline {
             latents.clone()
         };
         let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
+        // The ControlNet's `conv_in` is Conv2d(4 → …), so it must ALWAYS see the
+        // 4-channel latent — not the 9-channel inpaint input built below. Keep the
+        // pre-concat latent for the CN (matches diffusers, where the ControlNet takes the
+        // plain latent). Without this, an inpaint-base portrait + `--control-spec` fed the
+        // 9-channel tensor to the CN and crashed mid-denoise on a shape mismatch.
+        let cn_latent = latent_in.clone();
         // Inpaint UNet: concat the 9-channel input. Caller has already
         // built the mask + masked-image latents at latent resolution.
         let latent_in = match (inpaint_mask, inpaint_masked_latents) {
@@ -1132,7 +1138,7 @@ impl Pipeline {
         } else {
             let (down, mid) = crate::pipelines::controlnet::sum_controlnet_residuals(
                 active_controls,
-                &latent_in,
+                &cn_latent,
                 timestep,
                 encoder_hidden_states,
                 do_cfg,

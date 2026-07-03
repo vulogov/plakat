@@ -108,8 +108,13 @@ impl Module for Linear {
             candle_core::Error::Msg("Flux GGUF Linear slots poisoned".into())
         })?;
         for slot in slots.iter() {
-            let lo = x.broadcast_matmul(&slot.a.t()?)?;
-            let delta = lo.broadcast_matmul(&slot.b.t()?)?;
+            // Coerce the LoRA factors to the activation dtype: the quantized body runs in
+            // F32 but slots may have been built at the pipeline dtype (BF16), which would
+            // make `x.matmul(a)` an F32×BF16 dtype-error crash.
+            let a = slot.a.to_dtype(x.dtype())?;
+            let b = slot.b.to_dtype(x.dtype())?;
+            let lo = x.broadcast_matmul(&a.t()?)?;
+            let delta = lo.broadcast_matmul(&b.t()?)?;
             let delta = (delta * slot.scale as f64)?;
             y = y.broadcast_add(&delta)?;
         }
@@ -948,9 +953,26 @@ impl candle_transformers::models::flux::WithForward for Flux {
 mod gguf_lora_tests {
     use super::*;
     use crate::pipelines::lora_linear::LoraSlot;
+    use candle_core::DType;
 
     fn cpu() -> candle_core::Device {
         candle_core::Device::Cpu
+    }
+
+    #[test]
+    fn forward_coerces_a_bf16_lora_slot_to_the_f32_activation_dtype() {
+        let dev = cpu();
+        // Dense F32 override weight (matches the quantized body, which runs F32 everywhere).
+        let w = Tensor::zeros((4usize, 3), DType::F32, &dev).unwrap();
+        let lin = Linear::new(QMatMul::Tensor(w), None, 4, 3);
+        // A runtime LoRA slot built at the pipeline dtype (BF16) — the mismatch case.
+        let a = Tensor::zeros((2usize, 3), DType::BF16, &dev).unwrap(); // (rank, in)
+        let b = Tensor::zeros((4usize, 2), DType::BF16, &dev).unwrap(); // (out, rank)
+        lin.slots.write().unwrap().push(LoraSlot { a, b, scale: 0.8 });
+        // F32 activations: before the fix this crashed on F32 × BF16 in the slot matmul.
+        let x = Tensor::zeros((1usize, 5, 3), DType::F32, &dev).unwrap();
+        let y = lin.forward(&x).expect("F32 activations + BF16 slot must not dtype-crash");
+        assert_eq!(y.dims(), &[1, 5, 4]);
     }
 
     /// Build a 2x2 GGUF Linear with an identity dense override (so the

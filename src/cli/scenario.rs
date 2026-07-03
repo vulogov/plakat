@@ -1443,14 +1443,21 @@ fn emit(events: &Option<std::sync::mpsc::Sender<ScenarioEvent>>, ev: ScenarioEve
 /// Run a scenario, dispatching CLI-side (no structured event sink). The
 /// task-by-task progress still streams to `ui::progress` as before.
 pub async fn run(args: ScenarioArgs) -> Result<()> {
-    run_with_events(args, None).await
+    run_with_events(args, None, None).await
 }
 
 /// Run a scenario, optionally streaming [`ScenarioEvent`]s to `events` for a live
-/// status board. Passing `None` is byte-identical to [`run`].
+/// status board. Passing `None, None` is byte-identical to [`run`].
+///
+/// `preloaded_sd` is a `(model_alias, Pipeline)` a caller (the TUI) already has resident
+/// and offers for reuse. It is used ONLY when the scenario is an all-generate SD-family
+/// run whose model matches `model_alias`, has no scenario-level LoRAs, and no refiner —
+/// i.e. exactly the vanilla base the runner would otherwise load. In every other case it
+/// is dropped up front (before any other pipeline loads), so reuse can never alter output.
 pub async fn run_with_events(
     args: ScenarioArgs,
     events: Option<std::sync::mpsc::Sender<ScenarioEvent>>,
+    preloaded_sd: Option<(String, Pipeline)>,
 ) -> Result<()> {
     // `-` reads the scenario from stdin (pipe integration: `plakat compile … --out -
     // | plakat scenario -`).
@@ -1879,13 +1886,37 @@ pub async fn run_with_events(
     // Surface schema errors (mutually-exclusive control/controls,
     // outpaint without init-image, etc.) before we burn time on model
     // loads. Same loop applies the validators across every task.
+    // An explicit `count: 0` (scenario or task) would run the generate loop `0..0`,
+    // write nothing, and still record `✓ done` — a task that produced no output looking
+    // like success. Reject it up front. (Absent = defaults to 1.)
+    if s.count == Some(0) {
+        anyhow::bail!("scenario `count` must be >= 1 (0 produces no images)");
+    }
     for task in &s.tasks {
+        if task.count == Some(0) {
+            anyhow::bail!("task {:?}: `count` must be >= 1 (0 produces no images)", task.name);
+        }
         task_effective_controls(task).with_context(|| {
             format!("validating ControlNet config for task {:?}", task.name)
         })?;
         task_validate_image_inputs(task).with_context(|| {
             format!("validating image inputs for task {:?}", task.name)
         })?;
+    }
+    // Task outputs land under `safe_name(task.name)`, which collapses every non-alnum char
+    // to `_`, so names differing only in punctuation (e.g. "a b" and "a/b") share a dir and
+    // — with the same explicit seed — overwrite each other's images. Reject the collision.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for task in &s.tasks {
+            let dir = safe_name(&task.name);
+            if !seen.insert(dir.clone()) {
+                anyhow::bail!(
+                    "two tasks map to the same output dir {dir:?} (names differ only in \
+                     punctuation) — rename one so their images don't overwrite"
+                );
+            }
+        }
     }
 
     // -------- style detection / transfer --------
@@ -2046,19 +2077,28 @@ pub async fn run_with_events(
             Ok(TaskKind::Animate)
         )
     });
-    let mut pipeline: Option<Pipeline> = if args.dry_run
+    let will_use_sd_base = !(args.dry_run
         || variant.is_flux()
         || variant.is_sd3()
         || variant.is_pixart()
         || variant.is_cascade()
         || !has_generate_tasks
-        || any_animate_tasks
-    {
+        || any_animate_tasks);
+    // A handed-off Chat pipeline may be reused only when it IS the exact base this run
+    // would load: same model, no scenario-level LoRAs, no refiner (per-task LoRAs then
+    // apply identically on top). Anything else → drop it now, before other pipelines load.
+    let preloaded_sd = preloaded_sd
+        .filter(|(a, _)| can_reuse_sd_pipeline(will_use_sd_base, a, &model, &loras, s.refiner));
+    let mut pipeline: Option<Pipeline> = if !will_use_sd_base {
         // Mixed-kind (or all-animate, or non-SD-family) → defer. PixArt
         // and Stable Cascade have their own pre-loaded pipelines
         // (`pixart_pipeline` / `cascade_pipeline`) and must NOT hit the
         // SD-only `load_sd_pipeline_for_scenario`, which bails on them.
         None
+    } else if let Some((_, pipe)) = preloaded_sd {
+        // Reuse the resident Chat pipeline — no reload.
+        crate::ui::progress::println(&format!("  reusing the loaded {model} — no reload"));
+        Some(pipe)
     } else {
         // All-generate SD-family scenario — pre-load as before so
         // the user sees the "Loading SD core" spinner up front.
@@ -2112,6 +2152,20 @@ pub async fn run_with_events(
         .tasks
         .iter()
         .any(|t| t.personas.as_deref().map(|v| !v.is_empty()).unwrap_or(false));
+
+    // A scenario using BOTH style and personas holds several pipelines co-resident for
+    // the whole run — the main model + stylize (SD1.5) + the persona portrait model
+    // (SDXL for plus-face-sdxl) + shared CLIP-H — which can exceed a 24 GB budget (they
+    // aren't evicted between tasks; a lazy per-kind lifecycle is a future refactor).
+    // Warn up front so the OOM is expected + actionable; the memory guard is the backstop.
+    if !args.dry_run && any_style && any_persona {
+        let msg = "scenario uses both `style` and `personas` — the main model + stylize \
+             (SD1.5) + the persona portrait model + shared CLIP-H stay co-resident for the \
+             whole run and may exceed unified memory. If it OOMs, split style and persona \
+             tasks into separate scenarios, or use a smaller base / --size.";
+        tracing::warn!(target: "plakat", "{msg}");
+        crate::ui::progress::println(&format!("⚠ {msg}"));
+    }
 
     // Phase 7f: pre-load a single CLIP-H image encoder when both
     // stylize and a Plus-Face portrait identity are going to run.
@@ -5008,6 +5062,20 @@ fn run_style_pass(
 /// first SD-family pipeline load and pass it on every subsequent
 /// reload, skipping ~330 MB SDXL VAE rebuild per kind switch.
 #[allow(clippy::too_many_arguments)]
+/// Whether a caller-supplied resident pipeline (for `loaded_model`) can be reused as this
+/// scenario's SD base. Safe only when the run actually uses an SD base, the models match,
+/// and there are no scenario-level LoRAs or refiner — so the reused pipeline is byte-for-byte
+/// the base the runner would have loaded. Per-task LoRAs (applied later) don't affect this.
+fn can_reuse_sd_pipeline(
+    will_use_sd_base: bool,
+    loaded_model: &str,
+    scenario_model: &str,
+    scenario_loras: &[crate::pipelines::lora::LoraSpec],
+    use_refiner: bool,
+) -> bool {
+    will_use_sd_base && loaded_model == scenario_model && scenario_loras.is_empty() && !use_refiner
+}
+
 async fn load_sd_pipeline_for_scenario(
     model: &str,
     device: &candle_core::Device,
@@ -5988,6 +6056,20 @@ async fn run_animate_task_inline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuse_sd_pipeline_only_for_the_exact_vanilla_base() {
+        use crate::pipelines::lora::{LoraSource, LoraSpec};
+        let none: &[LoraSpec] = &[];
+        // Exact match: same model, no LoRAs, no refiner, and the run uses an SD base.
+        assert!(can_reuse_sd_pipeline(true, "sdxl", "sdxl", none, false));
+        // Any mismatch forbids reuse (→ safe reload).
+        assert!(!can_reuse_sd_pipeline(false, "sdxl", "sdxl", none, false), "non-SD-base run");
+        assert!(!can_reuse_sd_pipeline(true, "sdxl", "sd15", none, false), "different model");
+        assert!(!can_reuse_sd_pipeline(true, "sdxl", "sdxl", none, true), "refiner differs");
+        let with_lora = &[LoraSpec { source: LoraSource::Local("/l/x.safetensors".into()), scale: 0.8 }];
+        assert!(!can_reuse_sd_pipeline(true, "sdxl", "sdxl", with_lora, false), "scenario-level LoRA");
+    }
 
     // v0.15 phase 7a — schema parsing for the new task/scenario fields.
 
@@ -7123,10 +7205,40 @@ mod tests {
             out_override: Some(override_dir.clone()),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(run_with_events(args, None)).expect("dry-run should succeed");
+        rt.block_on(run_with_events(args, None, None)).expect("dry-run should succeed");
         let written = std::fs::read_to_string(&summary).unwrap();
         assert!(written.contains(override_dir.to_str().unwrap()), "summary out_dir should be the override: {written}");
         assert!(!written.contains("scenario-own-out"), "the scenario's own out: must be ignored");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn count_zero_is_rejected_up_front_not_silently_successful() {
+        // A `count: 0` task used to run the generate loop `0..0`, write nothing, and still
+        // record ✓ done. It must now bail with a clear message (checked on a dry-run, which
+        // reaches the up-front validation before any model load).
+        let d = std::env::temp_dir().join("plakat-scenario-count0-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("s.hjson");
+        std::fs::write(
+            &file,
+            r#"{"model":"stable-diffusion-v1-5/stable-diffusion-v1-5","size":"512x512","enhancer":"local","scene":[{"name":"","prompt":"p"}],"weather":[{"name":"","prompt":"c"}],"tasks":[{"name":"alpha","prompt":"a","count":0}]}"#,
+        )
+        .unwrap();
+        let args = ScenarioArgs {
+            file,
+            dry_run: true,
+            resume: false,
+            force: false,
+            only: Vec::new(),
+            limit: 0,
+            json_summary: None,
+            out_override: None,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt.block_on(run_with_events(args, None, None)).unwrap_err();
+        assert!(err.to_string().contains("count"), "should reject count:0, got: {err}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -7163,7 +7275,7 @@ mod tests {
             out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(run_with_events(args, Some(tx))).expect("dry-run should succeed");
+        rt.block_on(run_with_events(args, Some(tx), None)).expect("dry-run should succeed");
 
         let evs: Vec<ScenarioEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(matches!(evs.first(), Some(ScenarioEvent::Started { total: 2 })), "first is Started{{2}}");

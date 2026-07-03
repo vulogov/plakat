@@ -2537,7 +2537,7 @@ pub async fn train_textual_inversion(
         "t5".into(),
         ph_t5.as_tensor().to_dtype(DType::F16)?.to_device(&Device::Cpu)?,
     );
-    candle_core::safetensors::save(&tensors, &req.out)?;
+    crate::pipelines::atomic_safetensors_save(&tensors, &req.out)?;
     tracing::info!(
         "ti-train(sd35): wrote {} (clip_l+clip_g+t5) — use it with  --embedding {}:{}",
         req.out.display(),
@@ -2618,7 +2618,7 @@ fn save_peft_lora(
             tensors.insert(format!("{name}.alpha"), alpha.clone());
         }
     }
-    candle_core::safetensors::save(&tensors, out)?;
+    crate::pipelines::atomic_safetensors_save(&tensors, out)?;
     Ok(())
 }
 

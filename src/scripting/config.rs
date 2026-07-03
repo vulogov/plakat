@@ -423,7 +423,7 @@ impl GenerationConfig {
     pub fn set_str(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "steps" => {
-                self.steps = parse_pos_int(value, key)? as usize;
+                self.steps = parse_positive_int(value, key)? as usize;
             }
             "guidance" => {
                 self.guidance = parse_finite_float(value, key)?;
@@ -836,14 +836,14 @@ impl GenerationConfig {
                 if value.is_empty() {
                     self.stage_c_steps = None;
                 } else {
-                    self.stage_c_steps = Some(parse_pos_int(value, key)? as usize);
+                    self.stage_c_steps = Some(parse_positive_int(value, key)? as usize);
                 }
             }
             "stage_b_steps" => {
                 if value.is_empty() {
                     self.stage_b_steps = None;
                 } else {
-                    self.stage_b_steps = Some(parse_pos_int(value, key)? as usize);
+                    self.stage_b_steps = Some(parse_positive_int(value, key)? as usize);
                 }
             }
             other => {
@@ -1081,6 +1081,17 @@ fn parse_pos_int(s: &str, key: &str) -> Result<u64> {
     Ok(n as u64)
 }
 
+/// Like [`parse_pos_int`] but rejects 0 — for keys the pipeline divides or indexes by
+/// (`steps` → `train_timesteps / steps`; cascade stage-step counts index the schedule),
+/// where 0 would be a divide-by-zero / out-of-bounds panic rather than a clean error.
+fn parse_positive_int(s: &str, key: &str) -> Result<u64> {
+    let n = parse_pos_int(s, key)?;
+    if n == 0 {
+        bail!("plakat.config.set: {key} must be >= 1 (0 is not a valid step count)");
+    }
+    Ok(n)
+}
+
 fn parse_finite_float(s: &str, key: &str) -> Result<f64> {
     let f: f64 = s
         .parse()
@@ -1217,6 +1228,21 @@ mod tests {
         // size_explicit starts false so script_entry picks the
         // model-family default at generate time.
         assert!(!cfg.size_explicit);
+    }
+
+    #[test]
+    fn steps_zero_is_rejected_not_a_divide_by_zero() {
+        let mut cfg = GenerationConfig::default();
+        // `steps = 0` used to be accepted, then panicked in pick_timesteps
+        // (train_timesteps / 0). Now a clean error, on every entry point.
+        assert!(cfg.set_str("steps", "0").is_err());
+        assert!(cfg.set_int("steps", 0).is_err());
+        assert!(cfg.set_str("stage_c_steps", "0").is_err());
+        assert!(cfg.set_str("stage_b_steps", "0").is_err());
+        // A positive value still works, and steps stays at its default after the reject.
+        assert_eq!(cfg.steps, 28);
+        cfg.set_str("steps", "20").unwrap();
+        assert_eq!(cfg.steps, 20);
     }
 
     #[test]

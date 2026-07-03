@@ -110,7 +110,12 @@ fn maybe_blur_ref(path: &std::path::Path, sigma: f32) -> Result<std::path::PathB
     };
     let resized = image::imageops::resize(&img, rw, rh, image::imageops::FilterType::Triangle);
     let blurred = image::imageops::blur(&resized, sigma);
-    let tmp = std::env::temp_dir().join(format!("plakat-stylize-ref-{}.png", std::process::id()));
+    // Unique per call (pid + a monotonic counter): a PID-only name would race between two
+    // concurrent stylize_one calls with different references — one would CLIP-encode the
+    // other's blurred reference (wrong style transferred).
+    static REF_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = REF_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("plakat-stylize-ref-{}-{seq}.png", std::process::id()));
     blurred
         .save(&tmp)
         .with_context(|| format!("writing blurred reference {}", tmp.display()))?;

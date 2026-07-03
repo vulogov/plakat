@@ -155,9 +155,11 @@ lose an earlier version.
 | `/strength <0.1–1>` | Switch refinement to **image-anchored** (img2img) mode |
 | `/strength off` | Back to the default prompt-evolve mode |
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
+| `/size <WxH>` \| `<N>` \| `native` | Per-model generation size (budget-guarded; each model remembers its own) |
+| `/steps <n>` \| `/cfg <x>` | Override denoise steps / guidance (bare or `default` clears) |
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
-| `/preset save <name>` | Save the current model + LoRA stack + negative as a named preset |
+| `/preset save <name>` | Save the current model + LoRA stack + negative + size/steps/guidance as a named preset |
 | `/preset <name>` \| `/preset list` | Apply a saved preset / list them |
 | `/save [name]` | Save the whole Chat session (thread + prompt + seed + base) |
 | `/load <name>` | Reload a saved session and keep refining where you left off |
@@ -198,6 +200,9 @@ pane — one numbered cell per generated frame this session.
   re-rendered at a new seed. For several at once, **`/vary 4`** fans out a
   batch (one at a time — a single unified-memory device runs one model);
   scrub with `Ctrl-←/→` and keep the winner with `Ctrl-B`.
+- **`Ctrl-Z`** / **`Ctrl-Shift-Z`** are **undo** / **redo** — step the live
+  image one frame back / forward through the session's history (no scrubbing
+  first). A new generation resets the cursor to the newest frame.
 
 ### Other keys
 
@@ -469,11 +474,11 @@ headlessly with `plakat scenario FILE.hjson`.
   **Stable Cascade** models. Only **Flux** remains CLI-only for now. PixArt / Cascade
   have no persistent pipeline, so they reload on each generation (slower) and support
   fresh / prompt-evolve generation but not image-anchored refine or Canvas inpaint.
-- People quick-gen and Scenario runs load their **own** model. To stay
-  within unified memory, plakat **frees the loaded Chat model first**
-  before such a run (you'll see a "freeing … — reload with L after"
-  note), so only one model is ever resident — no double-load. Reload the
-  Chat model with `L` in Models when you're done.
+- People quick-gen and Scenario runs use the model thread, so only one
+  model is ever resident — no double-load. A **Scenario run reuses the
+  loaded Chat model** when it matches (same SD model, no LoRAs, no
+  refiner) — no reload; otherwise the Chat model is freed and the run
+  loads its own (reload it with `L` when you're done).
 - Continuing a **portrait** in Chat now keeps the **face identity**: a
   refine re-runs the person's IP-Adapter pass (same reference photos +
   seed) with your accumulated prompt, so edits land while the face holds.

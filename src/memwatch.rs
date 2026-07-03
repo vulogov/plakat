@@ -8,20 +8,31 @@
 //! into a clean exit: the OS reclaims every allocation (including Metal buffers)
 //! on process death, relieving pressure immediately so the host survives.
 //!
-//! **Signal:** on macOS we read the kernel's own memory-pressure level
-//! ([`crate::hw::mem_pressure`]) and abort only on *sustained critical*. This is
-//! deliberately NOT a free-RAM threshold: `sysinfo`'s "available" under-reports
-//! reclaimable inactive / compressed pages on macOS, so a big-but-reclaimable
-//! load (e.g. the SD3.5 T5 encoders) reads as ~0 GB free yet loads fine — a
-//! free-RAM guard cried wolf on exactly that. Critical pressure means the kernel
-//! is genuinely out of road. Elsewhere we fall back to a free-RAM floor.
+//! **Signal:** we read the kernel's own memory-pressure level
+//! ([`crate::hw::mem_pressure`]), deliberately NOT a free-RAM threshold —
+//! `sysinfo`'s "available" under-reports reclaimable inactive / compressed pages
+//! on macOS, so a big-but-reclaimable load (the SD3.5 T5 encoders) reads as ~0 GB
+//! free yet loads fine (a free-RAM guard cried wolf on exactly that). On macOS an
+//! `Unknown` reading (sysctl gave no answer) carries no signal and never aborts.
+//!
+//! Aborting only helps if plakat is the culprit, so before exiting the guard
+//! checks **attribution** ([`plakat_is_culprit`]): plakat's own RSS is a large
+//! share of RAM, or free RAM fell sharply since the guard armed. That stops it
+//! self-terminating (and discarding work) when another app drives the *system* to
+//! critical pressure while plakat is small.
+//!
+//! **Two triggers:** an *acute* fast-path — Critical + free RAM already below the
+//! floor — aborts on the first sample (a fast single-buffer VAE / upscale
+//! allocation can cross the cliff between samples); otherwise Critical must be
+//! *sustained* (the OS may reclaim / swap through a transient spike).
 //!
 //! This is the during-generation complement to [`crate::hw::memory_preflight`]
 //! (which only warns up-front). The durable fix for *batch* OOM is still one
 //! in-process run (`plakat scenario`) rather than N `generate` processes.
 //!
 //! Tuning: `PLAKAT_OOM_GUARD_GB` `0` disables the guard; any value > 0 enables it
-//! (and sets the free-RAM floor on non-macOS platforms). No-op on CUDA.
+//! (and sets the floor). Armed **only on Metal** — CPU / CUDA OOM is handled
+//! cleanly by the OS killing the process, so the guard is inert there.
 
 use candle_core::{Device, DeviceLocation};
 use std::sync::Arc;
@@ -49,12 +60,21 @@ fn run_abort_hook() {
     }
 }
 
-/// Default critical floor (GB free) below which a host crash is imminent.
+/// Default critical floor (GB free) below which a host crash is imminent. Doubles as the
+/// "acute" trigger: Critical pressure with free RAM already this low aborts on the FIRST
+/// sample (a fast single-buffer VAE/upscale allocation can cross the cliff in well under
+/// the sustained window).
 const DEFAULT_FLOOR_GB: f64 = 1.5;
-/// Sample period.
-const INTERVAL: Duration = Duration::from_millis(300);
+/// Sample period. Short so the acute fast-path can catch a near-instant allocation before
+/// the host hangs (the sustained window is expressed in samples below).
+const INTERVAL: Duration = Duration::from_millis(100);
 /// Exit code on guard abort (128 + SIGKILL(9), mirroring an OS "Killed: 9").
 const ABORT_CODE: i32 = 137;
+/// plakat is treated as the culprit (so aborting it will actually relieve pressure) when
+/// its RSS is at least this share of total RAM, OR free RAM fell by [`FREE_DROP_GB`] since
+/// the guard armed. Otherwise another app owns the pressure and we must not self-terminate.
+const CULPRIT_SHARE: f64 = 0.25;
+const FREE_DROP_GB: f64 = 4.0;
 
 /// Workload kind — sets how long critical pressure must be sustained before the
 /// guard aborts. Training's first backward / optimizer step spikes are larger and
@@ -77,9 +97,21 @@ fn sustained_samples(mode: Mode) -> u32 {
         }
     }
     match mode {
-        Mode::Inference => 5,  // ~1.5 s
-        Mode::Training => 12,  // ~3.6 s
+        Mode::Inference => 15, // ~1.5 s at 100 ms
+        Mode::Training => 36,  // ~3.6 s at 100 ms
     }
+}
+
+/// Whether aborting plakat would actually relieve the memory pressure it observes — i.e.
+/// plakat is a meaningful contributor. This prevents the guard from self-terminating (and
+/// discarding in-flight work) when another application drives the *system* to critical
+/// pressure while plakat's own footprint is small. Culprit if plakat's RSS is a large
+/// share of RAM, or free RAM dropped sharply since the guard armed (its own load consumed
+/// it). Pure fn for testing.
+fn plakat_is_culprit(rss_gb: f64, total_gb: f64, baseline_free_gb: f64, free_gb: f64) -> bool {
+    let big_share = total_gb > 0.0 && rss_gb >= CULPRIT_SHARE * total_gb;
+    let consumed = (baseline_free_gb - free_gb) >= FREE_DROP_GB;
+    big_share || consumed
 }
 
 /// Resolve the floor from `PLAKAT_OOM_GUARD_GB` (default 1.5; `0` disables).
@@ -110,8 +142,12 @@ impl MemoryGuard {
     pub fn start_mode(device: &Device, label: &str, mode: Mode) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let floor = floor_gb();
-        let cuda = matches!(device.location(), DeviceLocation::Cuda { .. });
-        if floor <= 0.0 || cuda {
+        // The host-crash this guard exists to prevent is specific to Apple-Silicon Metal
+        // (GPU shares the OS memory pool). CPU / CUDA OOM is handled cleanly by the OS
+        // killing the process, so arming there only risks false self-aborts on pressure
+        // plakat didn't cause — keep the guard inert for them.
+        let armed = matches!(device.location(), DeviceLocation::Metal { .. });
+        if floor <= 0.0 || !armed {
             return Self { stop, handle: None };
         }
         let sustained = sustained_samples(mode);
@@ -120,46 +156,76 @@ impl MemoryGuard {
         let handle = thread::Builder::new()
             .name("plakat-memwatch".into())
             .spawn(move || {
+                use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
                 let mut sys = sysinfo::System::new();
+                let self_pid = Pid::from_u32(std::process::id());
+                // Baseline free RAM at arm time (before the heavy load) — a sharp drop
+                // since now attributes the pressure to plakat's own work.
+                sys.refresh_memory();
+                let total_gb = sys.total_memory() as f64 / 1e9;
+                let baseline_free_gb = sys.available_memory() as f64 / 1e9;
                 let mut breaches = 0u32;
                 while !stop_t.load(Ordering::Relaxed) {
-                    // On macOS trust the kernel pressure level — it accounts for
-                    // reclaimable pages, so a big-but-reclaimable load (e.g. the
-                    // T5 encoders) does NOT read as danger the way free-RAM does.
-                    // Only sustained CRITICAL means the OS is out of road and a
-                    // host crash is imminent. Elsewhere (Unknown) fall back to the
-                    // free-RAM floor, which is accurate on Linux.
-                    let danger = match crate::hw::mem_pressure() {
+                    // Trust the kernel pressure level: it accounts for reclaimable pages,
+                    // so a big-but-reclaimable load (the T5 encoders) does NOT read as
+                    // danger the way free-RAM does. On macOS, `Unknown` (sysctl gave no
+                    // answer) carries NO signal — never fall back to the discredited
+                    // free-RAM guard there. The guard only arms on Metal (⇒ macOS), so
+                    // the non-macOS `Unknown`→free-RAM branch is effectively dead.
+                    let critical = match crate::hw::mem_pressure() {
                         crate::hw::Pressure::Critical => true,
-                        crate::hw::Pressure::Unknown => {
+                        crate::hw::Pressure::Unknown if !cfg!(target_os = "macos") => {
                             sys.refresh_memory();
                             (sys.available_memory() as f64 / 1e9) < floor
                         }
-                        crate::hw::Pressure::Normal | crate::hw::Pressure::Warning => false,
+                        _ => false,
                     };
-                    if danger {
-                        breaches += 1;
-                        if breaches >= sustained {
-                            eprintln!(
-                                "\n{} OOM GUARD — sustained critical memory pressure while \
-                                 generating '{}'; aborting plakat now to avoid crashing the \
-                                 host. Free RAM (close apps / `sudo purge`), use a smaller \
-                                 model or --device cpu, or run one `plakat scenario` for \
-                                 batches. (PLAKAT_OOM_GUARD_GB=0 disables; on non-macOS it \
-                                 sets the free-RAM floor.)",
-                                console::style("⛔").red().bold(),
-                                label,
-                            );
-                            // Restore the terminal (TUI) before the hard exit — `exit`
-                            // skips Drop, so the alt-screen / raw mode would otherwise
-                            // leak into the user's shell.
-                            run_abort_hook();
-                            // Hard exit: the OS reclaims all memory (incl. Metal
-                            // buffers) on process death, relieving pressure fast.
-                            std::process::exit(ABORT_CODE);
-                        }
-                    } else {
+                    if !critical {
                         breaches = 0;
+                        thread::sleep(INTERVAL);
+                        continue;
+                    }
+                    // Critical (rare) → attribute + decide. The extra process refresh is
+                    // only paid under real pressure, not every tick.
+                    sys.refresh_memory();
+                    let free_gb = sys.available_memory() as f64 / 1e9;
+                    sys.refresh_processes_specifics(
+                        ProcessesToUpdate::Some(&[self_pid]),
+                        true,
+                        ProcessRefreshKind::everything(),
+                    );
+                    let rss_gb = sys.process(self_pid).map(|p| p.memory() as f64 / 1e9).unwrap_or(0.0);
+                    // Only abort if killing plakat would actually relieve the pressure —
+                    // otherwise another app owns it and we'd just discard our own work.
+                    if !plakat_is_culprit(rss_gb, total_gb, baseline_free_gb, free_gb) {
+                        breaches = 0;
+                        thread::sleep(INTERVAL);
+                        continue;
+                    }
+                    breaches += 1;
+                    // Fast path: Critical AND free RAM already below the floor → a host
+                    // crash is imminent (a fast single-buffer allocation can cross the
+                    // cliff between samples), so abort on the FIRST such sample. Otherwise
+                    // ride out the sustained window (the OS may reclaim / swap through it).
+                    let acute = free_gb < floor;
+                    if acute || breaches >= sustained {
+                        eprintln!(
+                            "\n{} OOM GUARD — critical memory pressure attributable to plakat \
+                             while generating '{}' ({:.1} GB resident, {:.1} GB free); aborting \
+                             now to avoid crashing the host. Free RAM (close apps / `sudo purge`), \
+                             use a smaller model / --size / --device cpu, or run one `plakat \
+                             scenario` for batches. (PLAKAT_OOM_GUARD_GB=0 disables.)",
+                            console::style("⛔").red().bold(),
+                            label,
+                            rss_gb,
+                            free_gb,
+                        );
+                        // Restore the terminal (TUI) before the hard exit — `exit` skips
+                        // Drop, so the alt-screen / raw mode would otherwise leak.
+                        run_abort_hook();
+                        // Hard exit: the OS reclaims all memory (incl. Metal buffers) on
+                        // process death, relieving pressure fast.
+                        std::process::exit(ABORT_CODE);
                     }
                     thread::sleep(INTERVAL);
                 }
@@ -187,6 +253,20 @@ mod tests {
         // (env is process-global; just exercise the parse paths via defaults)
         assert_eq!(DEFAULT_FLOOR_GB, 1.5);
         assert!(sustained_samples(Mode::Inference) >= 2 && sustained_samples(Mode::Training) > sustained_samples(Mode::Inference));
+    }
+
+    #[test]
+    fn attribution_gates_the_abort_to_plakat_caused_pressure() {
+        let total = 24.0;
+        // plakat holds a big share → culprit (aborting relieves pressure).
+        assert!(plakat_is_culprit(8.0, total, 20.0, 19.0));
+        // free RAM fell sharply since arm (plakat's load consumed it) → culprit.
+        assert!(plakat_is_culprit(1.0, total, 20.0, 15.0));
+        // plakat is small AND free RAM barely moved → NOT the culprit (another app owns
+        // the pressure); the guard must not self-terminate.
+        assert!(!plakat_is_culprit(1.0, total, 20.0, 19.0));
+        // Degenerate total (0) doesn't yield a false "big share".
+        assert!(!plakat_is_culprit(0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]

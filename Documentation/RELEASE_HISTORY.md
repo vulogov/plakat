@@ -8,6 +8,15 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.21.0 — the build-an-image loop + power-user workflow
+
+1.20.0 made `plakat ui` memory-aware; 1.21.0 sharpened the **loop**: the Chat title shows
+the live mode (`evolve · seed …` / `anchored 0.60` / `inpaint` / `identity` / `fresh`) and
+**Ctrl-T** toggles evolve ↔ anchored; **/vary N** fans out variations at fresh seeds into
+the filmstrip; **/scenario** grabs an image's exact recipe (prompt+negative+seed) into a
+Scenarios task; **named presets** (`/preset save`) snapshot the model + LoRA stack +
+negative; and an **F1 cheatsheet** + ambient free-RAM/loaded-model status readout.
+
 ## What's new in 1.20.0 — memory-aware `plakat ui`
 
 On 24 GB unified memory a big model can pin RAM to 100%. 1.20.0 made `plakat ui`

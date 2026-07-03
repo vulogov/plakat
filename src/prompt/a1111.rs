@@ -41,6 +41,12 @@ pub struct WeightedSegment {
 /// brackets.
 pub const ATTENTION_MULTIPLIER: f32 = 1.1;
 
+/// Max `(…)`/`[…]` nesting the weight parser will recurse into. Beyond this the inner
+/// text is kept literal — a guard against a stack overflow from pathological nesting in
+/// an untrusted prompt (e.g. downloaded PNG metadata / community prompt packs). Real
+/// prompts nest a handful of levels; 64 is far beyond legitimate use.
+const MAX_NEST_DEPTH: usize = 64;
+
 /// Parse an A1111-style prompt into a sequence of weighted segments.
 /// Adjacent segments with the same weight are coalesced so the
 /// caller doesn't tokenize trivially-fragmented prompts.
@@ -103,6 +109,7 @@ fn parse_inner(prompt: &str) -> Vec<WeightedSegment> {
                         let inner_segments = parse_inner_with_initial_weight(
                             &inner.iter().collect::<String>(),
                             new_weight,
+                            1,
                         );
                         out.extend(inner_segments);
                         weight_stack.pop();
@@ -146,7 +153,7 @@ fn flush_segment(out: &mut Vec<WeightedSegment>, buf: &mut String, weight: f32) 
 /// nested parens compound. (The outer `parse_inner` always seeds
 /// with `1.0`; this helper lets a `(a (b) c)` group give `b` a
 /// weight of `1.1 * 1.1` rather than just `1.1`.)
-fn parse_inner_with_initial_weight(prompt: &str, initial: f32) -> Vec<WeightedSegment> {
+fn parse_inner_with_initial_weight(prompt: &str, initial: f32, depth: usize) -> Vec<WeightedSegment> {
     let chars: Vec<char> = prompt.chars().collect();
     let mut out = Vec::new();
     let mut weight_stack: Vec<f32> = vec![initial];
@@ -183,10 +190,16 @@ fn parse_inner_with_initial_weight(prompt: &str, initial: f32) -> Vec<WeightedSe
                         };
                         let new_weight = weight_stack.last().unwrap() * factor;
                         weight_stack.push(new_weight);
-                        let inner_text: String = inner.iter().collect();
-                        let inner_segments =
-                            parse_inner_with_initial_weight(&inner_text, new_weight);
-                        out.extend(inner_segments);
+                        let mut inner_text: String = inner.iter().collect();
+                        if depth >= MAX_NEST_DEPTH {
+                            // Too deep — stop recursing (stack-overflow guard). Keep the
+                            // inner text as one literal segment at the accumulated weight.
+                            flush_segment(&mut out, &mut inner_text, new_weight);
+                        } else {
+                            let inner_segments =
+                                parse_inner_with_initial_weight(&inner_text, new_weight, depth + 1);
+                            out.extend(inner_segments);
+                        }
                         weight_stack.pop();
                         i = end + 1;
                         continue;
@@ -312,6 +325,16 @@ pub fn has_attention_syntax(prompt: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_groups_do_not_overflow_the_stack() {
+        // Pathological nesting from an untrusted prompt (community pack / PNG metadata)
+        // used to recurse once per level → SIGABRT. The depth cap keeps it bounded.
+        let n = 50_000;
+        let prompt = format!("{}core{}", "(".repeat(n), ")".repeat(n));
+        let out = parse(&prompt); // must return, not blow the stack
+        assert!(out.iter().any(|s| s.text.contains("core")), "inner content survives as a segment");
+    }
 
     fn segs(prompt: &str) -> Vec<(String, f32)> {
         parse(prompt)

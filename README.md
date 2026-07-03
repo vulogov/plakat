@@ -17,29 +17,41 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.21.0 — the build-an-image loop + power-user workflow
+## What's new in 1.22.0 — power-user polish + a source-wide stability pass
 
-1.20.0 made `plakat ui` memory-aware; 1.21.0 sharpens the **loop** you actually
-work in — always knowing what the next Enter does, fanning out variations, and
-turning any image into a reusable recipe or preset in one step.
+1.22.0 finishes the power-user loop **and** hardens the whole codebase: a six-part
+source audit found ~45 issues, and this release fixes **40 of them** (plus one
+mitigated) — security, host-crash, silently-wrong-output, and input-driven-panic
+bugs across the UI, pipelines, scenario runner, and training.
 
 ```bash
 plakat ui            # the interactive terminal UI
 ```
 
-- **Always know what the next Enter does** — the Chat title shows the live mode:
-  `evolve · seed 12345`, `anchored 0.60 · seed …`, `inpaint`, `identity`, or `fresh`.
-  **`Ctrl-T`** toggles evolve ↔ anchored in one key.
-- **Fan out variations** — **`/vary 4`** generates several versions of the current image
-  at fresh seeds (one at a time — a single device runs one model); scrub the filmstrip
-  (`Ctrl-←/→`) and keep the winner (`Ctrl-B`).
-- **Recipe → scenario in one step** — **`/scenario`** grabs *this* image's exact recipe
-  (prompt + negative + seed) into a Scenarios task, no LLM. (`Ctrl-G` still distils the
-  whole conversation into one prompt.)
-- **Named presets** — **`/preset save <name>`** snapshots the model + LoRA stack + negative;
-  re-apply it from the command palette anywhere.
-- **F1 cheatsheet** — a keyboard map of the globals + the active screen, and an ambient,
-  colour-coded **free-RAM + loaded-model** readout in the status bar.
+**Power-user loop**
+- **Per-model generation size** — **`/size 1024x768`** (or `native`) sets a size each model
+  remembers, budget-guarded against free RAM. **`/steps`** / **`/cfg`** override denoise
+  steps / guidance; all three fold into named **presets**.
+- **`/vary` into presets** — a preset now carries the model + LoRA stack + negative + size +
+  steps + guidance.
+- **Undo / redo** — **`Ctrl-Z`** / **`Ctrl-Shift-Z`** step the live image back / forward
+  through the session history.
+- **Faster scenario runs** — a matching all-SD scenario **reuses the loaded Chat model** (no
+  reload) when it's provably the same base.
+
+**Stability pass — the headline fixes**
+- **Security** — the Civitai downloader could be tricked into overwriting arbitrary files
+  (path traversal) by a hostile file name; now confined to the cache.
+- **Won't crash your host, won't false-abort** — the OOM watchdog now catches a fast
+  single-buffer allocation *and* only aborts when plakat itself is the memory culprit
+  (no more self-terminating on another app's pressure).
+- **No more silent garbage** — fixed **SDXL AnimateDiff** (every frame past the first paired
+  with the wrong prompt → incoherent video), regional-SDXL conditioning, LoKr/Flux/SDXL
+  pooling, and more.
+- **No more input-driven panics** — deeply-nested prompts, `steps=0`, oversized maps, and a
+  dead render thread used to crash or wedge the UI; all handled cleanly now.
+- **Safer training** — atomic checkpoint writes (a mid-write OOM can't destroy your only
+  LoRA) + an LR warm-up on `--resume`.
 
 Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
 that a compiled scenario runs headlessly.
@@ -48,11 +60,10 @@ that a compiled scenario runs headlessly.
 > the UI runs without one (placeholders). It's behind the default-on `ui` feature. Flux in
 > the UI is postponed until it can be verified on capable hardware.
 
-See [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md),
-[`Documentation/RFC_TUI_1.md`](Documentation/RFC_TUI_1.md), and the memory features in
-[`Documentation/ROADMAP_1.20.0.md`](Documentation/ROADMAP_1.20.0.md).
+See [`Documentation/BUGFIX_PLAN.md`](Documentation/BUGFIX_PLAN.md) for the full audit +
+every fix, and [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md).
 
-**Earlier releases** (v0.13 – v1.20):
+**Earlier releases** (v0.13 – v1.21):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

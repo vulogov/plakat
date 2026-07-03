@@ -82,6 +82,32 @@ pub fn cached_size_gb(alias: &str) -> Option<f64> {
     cached_repo_gb(crate::hf::resolve_alias(alias))
 }
 
+/// Rough peak *extra* memory (GB) a text-to-image generation at `w`×`h` needs beyond the
+/// already-resident model — latents + UNet/DiT activations + VAE decode, which grow with
+/// resolution. Used to guard a per-model size override before it over-commits (unified
+/// memory has no swap headroom, and Metal's single-buffer VAE decode OOMs at large sizes).
+/// Scales the family's native-resolution working set by the pixel-area multiple.
+pub fn generation_estimate_gb(alias: &str, w: u32, h: u32) -> f64 {
+    let native = native_res(alias).max(1) as f64;
+    let ratio = (w as f64 * h as f64) / (native * native);
+    let base = MODELS.iter().find(|m| m.alias == alias).map(gen_base_gb).unwrap_or(2.5);
+    base * ratio
+}
+
+/// The generation working set (GB) at a family's *native* resolution — activations + VAE,
+/// excluding the resident weights. Coarse per-family constants (no swap on Metal → err high).
+fn gen_base_gb(m: &ModelMeta) -> f64 {
+    match m.alias {
+        "sd15" | "sd21" => 1.5,
+        "sdxl" | "sdxl-turbo" | "pony" => 3.0,
+        "sd35-medium" | "sd35-large" => 4.5,
+        a if a.starts_with("pixart") => 4.0,
+        "stable-cascade" => 4.0,
+        a if a.starts_with("flux") => 6.0,
+        _ => 2.5,
+    }
+}
+
 /// A coarse weight-size guess (GB) for an uncached model, by family. Only used when
 /// the exact on-disk size is unavailable; deliberately conservative (rounds up).
 fn rough_weight_gb(m: &ModelMeta) -> f64 {
@@ -239,9 +265,21 @@ fn walk_files(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, u64)>)
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-        match std::fs::metadata(e.path()) {
-            Ok(m) if m.is_dir() => walk_files(&e.path(), &rel, out),
-            Ok(m) => out.push((rel, m.len())),
+        // Decide dir-vs-file with `symlink_metadata` (does NOT follow), so only REAL
+        // directories recurse. HF snapshots symlink to blobs; following those with plain
+        // `metadata` meant a symlink resolving to a directory (or a circular link to an
+        // ancestor) recursed forever → stack overflow. Symlinks are sized via the
+        // following `metadata` (the blob's real size) but never recursed into.
+        match std::fs::symlink_metadata(e.path()) {
+            Ok(sm) if sm.is_dir() => walk_files(&e.path(), &rel, out),
+            Ok(sm) if sm.file_type().is_symlink() => {
+                if let Ok(m) = std::fs::metadata(e.path()) {
+                    if m.is_file() {
+                        out.push((rel, m.len()));
+                    }
+                }
+            }
+            Ok(sm) => out.push((rel, sm.len())),
             Err(_) => {}
         }
     }
@@ -312,12 +350,43 @@ mod tests {
     use super::*;
     use crate::hw::HardwareReport;
 
+    #[cfg(unix)]
+    #[test]
+    fn walk_files_sizes_symlinks_without_recursing_through_them() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("plakat-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.bin"), [0u8; 100]).unwrap();
+        symlink(dir.join("real.bin"), dir.join("link.bin")).unwrap(); // symlink → file (size it)
+        symlink(&dir, dir.join("loop")).unwrap(); // circular symlink → dir (must NOT recurse)
+        let mut out = Vec::new();
+        walk_files(&dir, "", &mut out); // must terminate (no stack overflow)
+        // Counts the real file + the file-symlink's resolved size, skips the dir-symlink.
+        assert_eq!(out.iter().filter(|(_, sz)| *sz == 100).count(), 2);
+        assert!(!out.iter().any(|(p, _)| p.contains("loop")), "dir symlink not recursed/sized");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn native_res_per_alias() {
         assert_eq!(native_res("sd15"), 512);
         assert_eq!(native_res("sd21"), 768);
         assert_eq!(native_res("sdxl"), 1024);
         assert_eq!(native_res("totally-unknown"), 768); // safe default
+    }
+
+    #[test]
+    fn generation_estimate_scales_with_pixels_and_family() {
+        // At native resolution the estimate equals the family base.
+        let sd15_native = generation_estimate_gb("sd15", 512, 512);
+        assert!((sd15_native - 1.5).abs() < 1e-6, "sd15 native = base working set");
+        // Doubling each dimension → 4× the pixels → ~4× the working set.
+        let sd15_big = generation_estimate_gb("sd15", 1024, 1024);
+        assert!((sd15_big / sd15_native - 4.0).abs() < 1e-6, "4× pixels → 4× estimate");
+        // Heavier families estimate more at their own native size.
+        assert!(generation_estimate_gb("sdxl", 1024, 1024) > generation_estimate_gb("sd15", 512, 512));
+        assert!(generation_estimate_gb("flux-dev", 1024, 1024) > generation_estimate_gb("sdxl", 1024, 1024));
     }
 
     #[test]

@@ -53,6 +53,17 @@ use crate::ui::progress;
 
 const CLIP_EOT: u32 = 49407;
 
+/// CLIP-L pooling position: the last `eot` token the tokenizer emitted, clamped to the
+/// model's max sequence (`max`-1). Computed on the pre-`resize` ids so a prompt longer
+/// than `max` (whose appended EOT is about to be truncated away) still pools at the last
+/// real position instead of falling back to BOS (index 0).
+fn clip_pool_pos(ids: &[u32], eot: u32, max: usize) -> usize {
+    ids.iter()
+        .rposition(|&t| t == eot)
+        .unwrap_or(ids.len().saturating_sub(1))
+        .min(max.saturating_sub(1))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     Schnell,
@@ -1784,8 +1795,12 @@ impl Pipeline {
             .map_err(|e| anyhow!("CLIP encode: {e}"))?
             .get_ids()
             .to_vec();
-        clip_ids.resize(self.clip_cfg.max_position_embeddings, CLIP_EOT);
-        let clip_eot_pos = clip_ids.iter().position(|&t| t == CLIP_EOT).unwrap_or(0);
+        // EOT position for pooling: the tokenizer appends EOT, so it's the LAST emitted
+        // token. Capture it BEFORE `resize` truncates a >max prompt (which would drop the
+        // EOT and make `position` fall back to index 0 = BOS → the wrong pooled vector).
+        let max_pos = self.clip_cfg.max_position_embeddings;
+        let clip_eot_pos = clip_pool_pos(&clip_ids, CLIP_EOT, max_pos);
+        clip_ids.resize(max_pos, CLIP_EOT);
         let clip_ids_t = Tensor::new(clip_ids.as_slice(), &self.device)?.unsqueeze(0)?;
         let clip_seq = self.clip_text.forward(&clip_ids_t)?;
         let clip_pooled = clip_seq.i((.., clip_eot_pos, ..))?.to_dtype(self.dtype)?;
@@ -1865,6 +1880,14 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
     ) -> Result<(Vec<u8>, u32, u32)> {
+        // animate_frame denoises with EMPTY CN conditioning, so a CN-loaded pipeline reused
+        // here would silently drop every ControlNet (the internal `zip` against `&[]`).
+        // Fail loudly rather than produce unconditioned frames with no warning.
+        anyhow::ensure!(
+            self.controlnets.is_empty(),
+            "animate_frame does not support ControlNets ({} loaded) — reload without them for animation",
+            self.controlnets.len()
+        );
         let (w, h) = (width as usize, height as usize);
         if w % 16 != 0 || h % 16 != 0 {
             bail!(
@@ -2997,6 +3020,19 @@ pub async fn run(req: Request) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_pool_pos_finds_eot_and_survives_truncation() {
+        // Short prompt: [BOS, a, b, EOT] → pool at the EOT (index 3).
+        assert_eq!(clip_pool_pos(&[49406, 10, 11, CLIP_EOT], CLIP_EOT, 77), 3);
+        // Long prompt whose EOT sits past `max`: clamp to max-1 (last real position),
+        // NOT 0 (the old bug — no EOT in the truncated window → position() → BOS).
+        let mut long: Vec<u32> = (0..90).collect();
+        long.push(CLIP_EOT); // EOT at index 90, well past max=77
+        assert_eq!(clip_pool_pos(&long, CLIP_EOT, 77), 76);
+        // No EOT at all → last token, clamped.
+        assert_eq!(clip_pool_pos(&[1, 2, 3], CLIP_EOT, 77), 2);
+    }
 
     #[test]
     fn gguf_metal_blocked_only_blocks_gguf_on_metal_without_override() {

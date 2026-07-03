@@ -73,3 +73,46 @@ pub mod sd3_lora;
 pub mod stylize;
 pub mod t2i;
 pub mod ti_train;
+
+/// Atomically write a safetensors map: serialize to a sibling temp file, then rename it
+/// into place (atomic on the same filesystem). Training is memory-bound and the OOM guard
+/// self-aborts mid-run, so a straight `safetensors::save` to the destination can truncate
+/// a checkpoint — and in single-file mode (`PLAKAT_TRAIN_SINGLE_FILE=1`) that would be the
+/// only artifact. The temp-then-rename keeps the previous file intact until the new one is
+/// complete. Use for every training-checkpoint / trained-artifact save.
+pub(crate) fn atomic_safetensors_save(
+    tensors: &std::collections::HashMap<String, candle_core::Tensor>,
+    out: &std::path::Path,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let tmp = out.with_extension("safetensors.tmp");
+    candle_core::safetensors::save(tensors, &tmp)
+        .with_context(|| format!("writing checkpoint temp {}", tmp.display()))?;
+    std::fs::rename(&tmp, out)
+        .with_context(|| format!("finalizing checkpoint {}", out.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod atomic_save_tests {
+    use candle_core::{Device, Tensor};
+    use std::collections::HashMap;
+
+    #[test]
+    fn atomic_save_writes_the_file_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("plakat-atomic-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("ckpt.safetensors");
+        let _ = std::fs::remove_file(&out);
+        let mut m: HashMap<String, Tensor> = HashMap::new();
+        m.insert("w".into(), Tensor::new(&[1f32, 2., 3.], &Device::Cpu).unwrap());
+        super::atomic_safetensors_save(&m, &out).unwrap();
+        // The destination exists and the sibling temp was renamed away (not left behind).
+        assert!(out.exists(), "checkpoint written");
+        assert!(!out.with_extension("safetensors.tmp").exists(), "temp cleaned up by rename");
+        // It round-trips.
+        let loaded = candle_core::safetensors::load(&out, &Device::Cpu).unwrap();
+        assert!(loaded.contains_key("w"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

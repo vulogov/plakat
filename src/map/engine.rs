@@ -28,10 +28,16 @@ pub struct GeoCanvas {
 
 impl GeoCanvas {
     pub fn from_spec(spec: &MapSpec, seed: u64) -> Self {
-        let cols = spec.tile_grid.cols.max(1);
-        let rows = spec.tile_grid.rows.max(1);
-        let width = (cols * GEO_PX_PER_TILE).min(GEO_MAX);
-        let height = (rows * GEO_PX_PER_TILE).min(GEO_MAX);
+        // Clamp to 1..=(GEO_MAX/GEO_PX_PER_TILE) = 1..=8 — the same bound `parse_tiles`
+        // enforces on the CLI, but the `--map-spec` file and LLM-emitted specs deserialize
+        // straight in and bypass it. Without the UPPER clamp, `cols * GEO_PX_PER_TILE`
+        // overflows u32 for a hostile `cols` (panic in debug; wrap → `RgbImage::new(0,0)`
+        // corrupt/empty output in release), and the raw cols/rows would drive huge loops.
+        let max_tiles = GEO_MAX / GEO_PX_PER_TILE;
+        let cols = spec.tile_grid.cols.clamp(1, max_tiles);
+        let rows = spec.tile_grid.rows.clamp(1, max_tiles);
+        let width = cols * GEO_PX_PER_TILE;
+        let height = rows * GEO_PX_PER_TILE;
         // Bigger extents carry more octaves of detail.
         let noise_octaves = (5 + cols.max(rows) as usize).min(10);
         GeoCanvas { width, height, tile_cols: cols, tile_rows: rows, seed, noise_octaves }
@@ -609,6 +615,11 @@ mod tests {
         assert_eq!((c.width, c.height), (512, 512));
         let big = GeoCanvas::from_spec(&MapSpec::minimal("X", 8, 8, 5), 1);
         assert_eq!((big.width, big.height), (2048, 2048), "capped at GEO_MAX");
+        // A hostile out-of-range tile grid (bypasses parse_tiles on the --map-spec/LLM
+        // path) is clamped, not overflowed: no panic, dims capped, tile counts bounded.
+        let hostile = GeoCanvas::from_spec(&MapSpec::minimal("H", 4_000_000_000, 1, 5), 1);
+        assert_eq!((hostile.width, hostile.height), (2048, 256));
+        assert_eq!((hostile.tile_cols, hostile.tile_rows), (8, 1));
     }
 
     #[test]

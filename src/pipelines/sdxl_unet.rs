@@ -733,6 +733,16 @@ impl SdxlUNet2DConditionModel {
 
         let new_down_block_res_xs =
             if let Some(additional) = down_block_additional_residuals {
+                // Guard the residual count (the motion sibling `forward_with_motion` does):
+                // a mismatch would OOB-panic on `[i]` (too many) or silently truncate the
+                // skip list and misalign the up-path (too few).
+                if additional.len() != down_block_res_xs.len() {
+                    candle_core::bail!(
+                        "ControlNet down residuals: expected {} entries, got {}",
+                        down_block_res_xs.len(),
+                        additional.len()
+                    );
+                }
                 let mut v = Vec::with_capacity(down_block_res_xs.len());
                 for (i, residuals) in additional.iter().enumerate() {
                     v.push((&down_block_res_xs[i] + residuals)?)

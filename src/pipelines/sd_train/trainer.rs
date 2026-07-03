@@ -156,6 +156,11 @@ pub(crate) fn sdxl_unet_config() -> UNet2DConditionModelConfig {
     }
 }
 
+/// Steps over which the learning rate ramps back to full after a `--resume`. Softens the
+/// loss spike from candle's AdamW restarting with cold (zeroed) moment estimates — see the
+/// resume block in the training loops.
+const RESUME_WARMUP_STEPS: usize = 50;
+
 /// Train a style LoRA on the SD UNet attention; write a kohya safetensors.
 pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     if req.model.contains("sdxl") {
@@ -263,12 +268,31 @@ pub async fn train_style_lora_sd(req: SdStyleTrainRequest) -> Result<()> {
     let n = latents.len().max(1);
     let start_step =
         resume_start_step(&req.resume_from, &adapters, &device, req.steps, tag)?;
+    // On `--resume` only the LoRA weights are reloaded; candle's AdamW doesn't expose its
+    // moment/step state to persist, so the optimizer restarts COLD. Applying full-LR,
+    // cold-moment updates to already-trained weights spikes the loss. Warm the LR up over
+    // the first steps after a resume to soften that (the honest "at minimum" mitigation —
+    // true state persistence would need a vendored optimizer).
+    let resuming = start_step > 0;
+    if resuming {
+        tracing::warn!(
+            "sd-style-train: resuming at step {start_step} — AdamW optimizer state restarts \
+             cold (candle can't persist it); LR-warming the first {RESUME_WARMUP_STEPS} steps \
+             to {:.2e} to avoid a loss spike.",
+            req.lr
+        );
+    }
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
     for step in start_step..req.steps {
+        // Resume LR warm-up: linear ramp 1/N → full over the first RESUME_WARMUP_STEPS.
+        if resuming && (step - start_step) <= RESUME_WARMUP_STEPS {
+            let into = (step - start_step + 1).min(RESUME_WARMUP_STEPS);
+            opt.set_learning_rate(req.lr * into as f64 / RESUME_WARMUP_STEPS as f64);
+        }
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
@@ -421,12 +445,26 @@ async fn train_sdxl(req: SdStyleTrainRequest) -> Result<()> {
     let n = latents.len().max(1);
     let start_step =
         resume_start_step(&req.resume_from, &adapters, &device, req.steps, "sdxl-style-train")?;
+    // See train_style_lora_sd: warm the LR after a resume so cold AdamW moments don't spike.
+    let resuming = start_step > 0;
+    if resuming {
+        tracing::warn!(
+            "sdxl-style-train: resuming at step {start_step} — AdamW state restarts cold; \
+             LR-warming the first {RESUME_WARMUP_STEPS} steps to {:.2e}.",
+            req.lr
+        );
+    }
     let mut progress = crate::pipelines::train_progress::TrainProgress::new(
         req.steps,
         req.lr,
         checkpoint_interval(req.checkpoint_every, req.steps),
     );
     for step in start_step..req.steps {
+        // Resume LR warm-up: linear ramp 1/N → full over the first RESUME_WARMUP_STEPS.
+        if resuming && (step - start_step) <= RESUME_WARMUP_STEPS {
+            let into = (step - start_step + 1).min(RESUME_WARMUP_STEPS);
+            opt.set_learning_rate(req.lr * into as f64 / RESUME_WARMUP_STEPS as f64);
+        }
         let x0 = &latents[step % n];
         let noise = Tensor::randn(0f32, 1f32, x0.dims(), &device)?.to_dtype(dtype)?;
         let t = (Tensor::rand(0f32, 1f32, (1usize,), &device)?.to_vec1::<f32>()?[0] * 999.0) as usize;
@@ -511,7 +549,7 @@ fn save_kohya_lora(adapters: &[(String, Var, Var)], rank: usize, out: &Path) -> 
         tensors.insert(format!("{slug}.lora_up.weight"), b_t);
         tensors.insert(format!("{slug}.alpha"), alpha.clone());
     }
-    candle_core::safetensors::save(&tensors, out)?;
+    crate::pipelines::atomic_safetensors_save(&tensors, out)?;
     Ok(())
 }
 

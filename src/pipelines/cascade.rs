@@ -593,6 +593,14 @@ impl Pipeline {
         use crate::pipelines::cascade_vae::stage_b_spatial_for_image;
         use candle_core::IndexOp;
 
+        // Both stages need at least one step. In particular img2img indexes the Stage B
+        // schedule (`all_b_timesteps[start]`), so `stage_b_steps == 0` builds an empty
+        // Vec and panics with a raw out-of-bounds instead of a clean error.
+        anyhow::ensure!(
+            stage_c_steps >= 1 && stage_b_steps >= 1,
+            "Stable Cascade needs stage_c_steps >= 1 and stage_b_steps >= 1 (got {stage_c_steps} / {stage_b_steps})"
+        );
+
         // v0.41 phase 0: scheduler_kind is ignored for Stable Cascade.
         // The model is trained against `DDPMWuerstchenScheduler` (ratio
         // timesteps + cosine α-cumprod) which doesn't fit candle's
@@ -1578,7 +1586,7 @@ fn save_cascade_c_lora(
             std::fs::create_dir_all(parent).ok();
         }
     }
-    candle_core::safetensors::save(&tensors, out)
+    crate::pipelines::atomic_safetensors_save(&tensors, out)
         .with_context(|| format!("writing Cascade Stage-C LoRA {}", out.display()))?;
     Ok(())
 }

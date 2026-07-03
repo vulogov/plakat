@@ -178,6 +178,13 @@ pub struct App {
     // Pending `/vary N` variations — the same prompt queued at fresh seeds; the model
     // thread is serial, so they dispatch one at a time (each lands in the filmstrip).
     variation_queue: std::collections::VecDeque<String>,
+    // Per-model generation-size override (`/size`), keyed by alias. Absent = the model's
+    // native square (always Metal-safe). Each model remembers its own preferred size.
+    gen_sizes: std::collections::HashMap<String, (u32, u32)>,
+    // Session denoise-steps / guidance overrides (`/steps`, `/cfg`); None = workspace
+    // default. Captured into and restored from named presets.
+    steps_override: Option<usize>,
+    guidance_override: Option<f64>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -349,6 +356,9 @@ impl App {
             should_reset: false,
             show_help: false,
             variation_queue: std::collections::VecDeque::new(),
+            gen_sizes: std::collections::HashMap::new(),
+            steps_override: None,
+            guidance_override: None,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -579,6 +589,10 @@ impl App {
         if let Some(seed) = self.fixed_seed.or(self.base_seed) {
             mode.push_str(&format!(" · seed {seed}"));
         }
+        // Show a non-native generation size when one is set for the loaded model.
+        if let Some((w, h)) = self.models.loaded_alias().and_then(|a| self.gen_sizes.get(a)) {
+            mode.push_str(&format!(" · {w}×{h}"));
+        }
         if self.auto_route {
             mode.push_str(" · auto");
         }
@@ -597,6 +611,53 @@ impl App {
             Some(s) => format!("anchored img2img at strength {s:.2} (Ctrl-T to switch back)"),
             None => "prompt-evolve (txt2img at the stable seed)".to_string(),
         };
+        self.chat.push_system(msg);
+    }
+
+    /// The model whose generation size `/size` acts on: the loaded model, else the
+    /// Models cursor (so you can pre-set a size before loading).
+    fn size_target_alias(&self) -> Option<String> {
+        self.models.loaded_alias().map(str::to_string).or_else(|| self.models.selected_alias())
+    }
+
+    /// The generation dimensions for `alias`: its per-model override, else the native
+    /// square (always Metal-safe).
+    fn resolve_gen_size(&self, alias: &str) -> (u32, u32) {
+        match self.gen_sizes.get(alias) {
+            Some(&(w, h)) => (w, h),
+            None => {
+                let n = crate::capability::native_res(alias);
+                (n, n)
+            }
+        }
+    }
+
+    /// `/size <spec>` — set (or clear) the loaded/selected model's generation size, with a
+    /// memory-budget check against the generation's estimated working set. `spec` is
+    /// `WxH`, a single `N` (square), or `native`/`off`/`auto`/empty to clear the override.
+    fn set_gen_size(&mut self, spec: &str) {
+        let Some(alias) = self.size_target_alias() else {
+            self.chat.push_system("load or select a model first, then /size".into());
+            return;
+        };
+        if spec.is_empty() || matches!(spec.to_lowercase().as_str(), "native" | "off" | "auto" | "reset") {
+            self.gen_sizes.remove(&alias);
+            let n = crate::capability::native_res(&alias);
+            self.chat.push_system(format!("{alias} size → native {n}×{n}"));
+            return;
+        }
+        let Some((w, h)) = parse_gen_size(spec) else {
+            self.chat.push_system("size must be WxH or N (e.g. 1024x768 or 1024), or 'native'".into());
+            return;
+        };
+        // Budget guard: estimate the generation's extra working set vs free RAM.
+        let est = crate::capability::generation_estimate_gb(&alias, w, h);
+        let free = crate::hw::available_ram_gb();
+        self.gen_sizes.insert(alias.clone(), (w, h));
+        let mut msg = format!("{alias} size → {w}×{h} (≈{est:.1} GB working set, {free:.1} GB free)");
+        if est > free {
+            msg.push_str(" ⚠ may OOM — the memory guard will abort cleanly if it does");
+        }
         self.chat.push_system(msg);
     }
 
@@ -691,16 +752,19 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        // No decode in flight for the current selection → start one on a worker so a
-        // large (upscaled) PNG never hitches j/k navigation on the event-loop tick.
-        let decoding_current = self.history_decode.as_ref().map(|(p, _)| Some(p) == sel.as_ref()).unwrap_or(false);
+        // Start a decode only when NONE is in flight — not merely when the current
+        // selection isn't being decoded. Holding j/k over large (upscaled) PNGs otherwise
+        // spawned a fresh full-image decode every 100 ms tick (each replacing the tracked
+        // rx but leaving its thread running detached) → a pile-up of concurrent decodes.
+        // Serializing to one at a time bounds the work; a stale result is dropped above and
+        // the next tick starts the current selection's decode.
         match &sel {
             None => {
                 self.history.preview = None;
                 self.history.preview_for = None;
                 self.history_decode = None;
             }
-            Some(path) if !decoding_current => {
+            Some(path) if self.history_decode.is_none() => {
                 let path = path.clone();
                 let (tx, rx) = std::sync::mpsc::channel();
                 let worker_path = path.clone();
@@ -999,6 +1063,8 @@ impl App {
                     cmds.push(("Filmstrip: next frame".into(), Cmd::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL))));
                     cmds.push(("Roll back to selected frame".into(), kc('b')));
                     cmds.push(("New variation of selected frame".into(), kc('y')));
+                    cmds.push(("Undo (previous image)".into(), kc('z')));
+                    cmds.push(("Redo (next image)".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT))));
                 }
             }
             ActiveScreen::Models => {
@@ -1804,8 +1870,9 @@ impl App {
 
     /// `/save [name]` — write the Chat thread + refinement state to
     /// `sessions/<name>.json` so it can be reloaded later.
-    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative under
-    /// a name (workspace `presets.json`). Uses the loaded model, else the Models cursor.
+    /// `/preset save <name>` — snapshot the current model + LoRA stack + negative + the
+    /// model's size/steps/guidance overrides under a name (workspace `presets.json`). Uses
+    /// the loaded model, else the Models cursor.
     fn save_preset(&mut self, name: &str) {
         let model = self
             .models
@@ -1818,9 +1885,12 @@ impl App {
         };
         let preset = crate::ui::tui::presets::Preset {
             name: name.to_string(),
+            size: self.gen_sizes.get(&model).copied(),
             model,
             loras: self.active_loras.clone(),
             negative: self.negative.clone(),
+            steps: self.steps_override,
+            guidance: self.guidance_override,
         };
         let summary = preset.summary();
         match crate::ui::tui::presets::upsert(&self.workspace.root, preset) {
@@ -1852,6 +1922,17 @@ impl App {
         self.active_loras = p.loras.clone();
         self.negative = p.negative.clone();
         self.lorahub.set_applied(&self.active_loras);
+        // Restore the recipe overrides: size (per-model), steps, guidance.
+        match p.size {
+            Some(sz) => {
+                self.gen_sizes.insert(p.model.clone(), sz);
+            }
+            None => {
+                self.gen_sizes.remove(&p.model);
+            }
+        }
+        self.steps_override = p.steps;
+        self.guidance_override = p.guidance;
         self.chat.push_system(format!("applying preset “{}” — {}", p.name, p.summary()));
         self.request_load(p.model);
     }
@@ -2511,6 +2592,40 @@ impl App {
             }
             return;
         }
+        // `/size <WxH>` | `<N>` | `native`/`off` — per-model generation-size override,
+        // budget-guarded. Each model remembers its own size.
+        if let Some(rest) = text.strip_prefix("/size") {
+            self.set_gen_size(rest.trim());
+            return;
+        }
+        // `/steps <n>` | `default` — session denoise-steps override.
+        if let Some(rest) = text.strip_prefix("/steps") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("default") {
+                self.steps_override = None;
+                self.chat.push_system(format!("steps → default ({})", self.workspace.config.default_steps));
+            } else if let Some(n) = arg.parse::<usize>().ok().filter(|n| (1..=200).contains(n)) {
+                self.steps_override = Some(n);
+                self.chat.push_system(format!("steps → {n}"));
+            } else {
+                self.chat.push_system("steps must be 1–200 (or 'default')".into());
+            }
+            return;
+        }
+        // `/cfg <x>` | `default` — session guidance (CFG) override.
+        if let Some(rest) = text.strip_prefix("/cfg") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("default") {
+                self.guidance_override = None;
+                self.chat.push_system(format!("cfg → default ({:.1})", self.workspace.config.default_guidance));
+            } else if let Some(g) = arg.parse::<f64>().ok().filter(|g| (0.0..=30.0).contains(g)) {
+                self.guidance_override = Some(g);
+                self.chat.push_system(format!("cfg → {g:.1}"));
+            } else {
+                self.chat.push_system("cfg must be 0–30 (or 'default')".into());
+            }
+            return;
+        }
         // `/enhance <prompt>` AI-expands the prompt, then generates fresh.
         if let Some(rest) = text.strip_prefix("/enhance") {
             let p = rest.trim().to_string();
@@ -2695,16 +2810,16 @@ impl App {
                     .into(),
             );
         }
-        // Generate at the LOADED model's native square resolution (sd15=512,
-        // sd21=768, sdxl=1024) — always Metal-safe, unlike a fixed workspace size
-        // which OOMs SD1.5. A per-model size override is a future item.
-        let n = self
+        // Generate at the loaded model's per-model size override (`/size`), else its
+        // native square (sd15=512, sd21=768, sdxl=1024) — always Metal-safe, unlike a
+        // fixed workspace size which OOMs SD1.5.
+        let (nw, nh) = self
             .models
             .loaded_alias()
-            .map(crate::capability::native_res)
-            .unwrap_or(768);
-        let steps = self.workspace.config.default_steps;
-        let guidance = self.workspace.config.default_guidance;
+            .map(|a| self.resolve_gen_size(a))
+            .unwrap_or((768, 768));
+        let steps = self.steps_override.unwrap_or(self.workspace.config.default_steps);
+        let guidance = self.guidance_override.unwrap_or(self.workspace.config.default_guidance);
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
         // Seed priority: an explicit `/seed` pin > the conversation's stable seed (so
@@ -2727,7 +2842,7 @@ impl App {
         // rather than squishing it into the native square. txt2img stays native-square.
         let (gen_w, gen_h) = match init_image.as_ref().and_then(|p| image::image_dimensions(p).ok()) {
             Some((iw, ih)) => ((iw / 8 * 8).max(8), (ih / 8 * 8).max(8)),
-            None => (n, n),
+            None => (nw, nh),
         };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
@@ -2752,9 +2867,22 @@ impl App {
     /// image (built here because it needs the Picker), and history.
     fn drain_generation(&mut self) {
         let mut msgs = Vec::new();
+        // Distinguish "no message yet" (Empty) from "the sender was dropped"
+        // (Disconnected). If the model-service thread PANICS mid-generation it drops the
+        // sender with no terminal Done/Error — every peer drain handles this, but this one
+        // used `while let Ok(..)` and silently swallowed it, wedging `active_gen` on
+        // "Generating" forever (Chat stuck, /vary frozen, idle_tick disabled).
+        let mut disconnected = false;
         if let Some((rx, _)) = &self.active_gen {
-            while let Ok(m) = rx.try_recv() {
-                msgs.push(m);
+            loop {
+                match rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
             }
         }
         let mut finished = false;
@@ -2800,6 +2928,15 @@ impl App {
                     finished = true;
                 }
             }
+        }
+        // The channel closed without a terminal Done/Error → the generation thread died
+        // (a panic deep in a pipeline). Surface it as an error instead of wedging forever.
+        // (A normal completion also disconnects, but sets `finished` via Done/Error first.)
+        if disconnected && !finished {
+            let message = "generation ended unexpectedly (the render thread stopped)".to_string();
+            self.chat.finish_last(Err(message.clone()));
+            self.chat.status = ChatStatus::Error(message);
+            finished = true;
         }
         if finished {
             self.active_gen = None;
@@ -2855,7 +2992,9 @@ impl App {
                 ("Ctrl-P / Ctrl-N", "recall previous / next prompt"),
                 ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
+                ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
+                ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
                 ("/new /seed /strength /negative /auto", "session commands"),
             ]),
             ActiveScreen::Models => ("Models", &[
@@ -3121,6 +3260,25 @@ fn recipe_positive(params: &str) -> String {
     out.join(" ").trim().to_string()
 }
 
+/// Parse a `/size` spec into (w, h) rounded to multiples of 8 (the latent stride), each
+/// clamped to a sane 256–2048 range. Accepts `WxH` (also `W×H`, `W*H`) or a single `N`
+/// (square). Returns None on garbage or out-of-range values.
+fn parse_gen_size(spec: &str) -> Option<(u32, u32)> {
+    let norm = spec.to_lowercase().replace(['×', '*'], "x");
+    let (w, h) = match norm.split_once('x') {
+        Some((a, b)) => (a.trim().parse::<u32>().ok()?, b.trim().parse::<u32>().ok()?),
+        None => {
+            let n = norm.trim().parse::<u32>().ok()?;
+            (n, n)
+        }
+    };
+    let round = |v: u32| -> Option<u32> {
+        let r = (v / 8) * 8;
+        (256..=2048).contains(&r).then_some(r)
+    };
+    Some((round(w)?, round(h)?))
+}
+
 /// The negative prompt of an A1111 recipe: the text after `Negative prompt:` up to the
 /// first `Steps:` parameter line. Empty when absent.
 fn recipe_negative(params: &str) -> String {
@@ -3295,6 +3453,63 @@ mod tests {
     }
 
     #[test]
+    fn slash_steps_and_cfg_set_and_clear_session_overrides() {
+        let mut a = test_app();
+        a.handle_chat_submit("/steps 30".into());
+        assert_eq!(a.steps_override, Some(30));
+        a.handle_chat_submit("/cfg 6.5".into());
+        assert_eq!(a.guidance_override, Some(6.5));
+        // Out-of-range values are rejected without changing state.
+        a.handle_chat_submit("/steps 999".into());
+        assert_eq!(a.steps_override, Some(30), "invalid steps left intact");
+        a.handle_chat_submit("/cfg 99".into());
+        assert_eq!(a.guidance_override, Some(6.5), "invalid cfg left intact");
+        // 'default' clears back to the workspace value.
+        a.handle_chat_submit("/steps default".into());
+        assert!(a.steps_override.is_none());
+        a.handle_chat_submit("/cfg default".into());
+        assert!(a.guidance_override.is_none());
+        // Neither dispatched a generation.
+        assert!(a.active_gen.is_none());
+    }
+
+    #[test]
+    fn parse_gen_size_accepts_wxh_and_square_and_rounds() {
+        assert_eq!(parse_gen_size("1024x768"), Some((1024, 768)));
+        assert_eq!(parse_gen_size("1024×768"), Some((1024, 768)), "unicode ×");
+        assert_eq!(parse_gen_size("768"), Some((768, 768)), "single N → square");
+        assert_eq!(parse_gen_size("1000x1000"), Some((1000, 1000)), "1000 is /8-aligned");
+        assert_eq!(parse_gen_size("1023x769"), Some((1016, 768)), "rounds down to /8");
+        assert_eq!(parse_gen_size("100"), None, "below the 256 floor");
+        assert_eq!(parse_gen_size("4096"), None, "above the 2048 ceiling");
+        assert_eq!(parse_gen_size("big"), None);
+    }
+
+    #[test]
+    fn size_override_is_per_model_and_budget_reported() {
+        use crate::ui::tui::screens::models::LoadState;
+        let mut a = test_app();
+        a.models.load = LoadState::Loaded { alias: "sd15".into(), used_gb: 4.0 };
+        // Default is the native square.
+        assert_eq!(a.resolve_gen_size("sd15"), (512, 512));
+        // Setting an override changes only that model; a report line is emitted.
+        a.set_gen_size("1024x768");
+        assert_eq!(a.resolve_gen_size("sd15"), (1024, 768));
+        assert_eq!(a.resolve_gen_size("sdxl"), (1024, 1024), "override is per-model");
+        assert!(a.chat.history.last().unwrap().utterance.contains("1024×768"));
+        // The mode readout surfaces the non-native size.
+        a.base_seed = Some(7);
+        assert!(a.chat_mode_hint().contains("1024×768"));
+        // Clearing returns to native.
+        a.set_gen_size("native");
+        assert_eq!(a.resolve_gen_size("sd15"), (512, 512));
+        // Garbage is rejected without changing state.
+        a.set_gen_size("1024x768");
+        a.set_gen_size("nonsense");
+        assert_eq!(a.resolve_gen_size("sd15"), (1024, 768), "bad spec left the override intact");
+    }
+
+    #[test]
     fn vary_queues_variations_and_pumps_one_at_a_time() {
         let mut a = test_app();
         // No image / prompt yet → a friendly no-op.
@@ -3327,13 +3542,22 @@ mod tests {
         a.models.load = LoadState::Loaded { alias: "fake-preset-model".into(), used_gb: 7.0 };
         a.active_loras = vec![(std::path::PathBuf::from("/l/film.safetensors"), 0.8)];
         a.negative = "blurry".into();
+        a.gen_sizes.insert("fake-preset-model".into(), (1024, 768));
+        a.steps_override = Some(30);
+        a.guidance_override = Some(6.5);
         a.save_preset("portrait");
         // Clear the working state, then apply the preset back.
         a.active_loras.clear();
         a.negative.clear();
+        a.gen_sizes.clear();
+        a.steps_override = None;
+        a.guidance_override = None;
         a.apply_preset("portrait");
         assert_eq!(a.active_loras.len(), 1, "LoRA stack restored");
         assert_eq!(a.negative, "blurry", "negative restored");
+        assert_eq!(a.gen_sizes.get("fake-preset-model"), Some(&(1024, 768)), "size restored");
+        assert_eq!(a.steps_override, Some(30), "steps restored");
+        assert_eq!(a.guidance_override, Some(6.5), "guidance restored");
         // A missing preset is a friendly no-op (no panic).
         a.apply_preset("does-not-exist");
         let _ = std::fs::remove_file(a.workspace.root.join("presets.json"));
@@ -3468,6 +3692,22 @@ mod tests {
         // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps).
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Canvas));
+    }
+
+    #[test]
+    fn drain_generation_recovers_from_a_dead_render_thread() {
+        let mut a = test_app();
+        // A generation is in flight with a history entry awaiting its result…
+        a.chat.push_utterance("a fox".into(), false);
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        a.active_gen = Some((rx, CancelFlag::new()));
+        // …then the render thread dies with no terminal message (drop the sender).
+        drop(tx);
+        a.drain_generation();
+        // The soft-lock is gone: active_gen cleared and the turn marked failed.
+        assert!(a.active_gen.is_none(), "a disconnected channel unwedges the gen loop");
+        assert!(matches!(a.chat.status, ChatStatus::Error(_)), "surfaced as an error");
+        assert!(a.chat.history.last().unwrap().error.is_some());
     }
 
     #[test]
