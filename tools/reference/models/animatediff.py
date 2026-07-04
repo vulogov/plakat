@@ -23,7 +23,11 @@ DEFAULT_THRESHOLDS = {
 
 
 def dump(fx, device: str):
+    # AnimateDiff's headline bug (the SDXL CFG BLOCKED batch layout) is already guarded
+    # structurally by `plakat verify` Tier 0 (no weights). A numerical motion-module tap
+    # needs the flag-based load path threaded on the plakat side — a follow-up. Until then
+    # there's no alias-loadable pipeline to author against.
     raise NotImplementedError(
-        "author AnimateDiff goldens following models/sd15.py — DreamShaper base, verify the "
-        "BLOCKED CFG layout on the SDXL path (see ../correspondence.md)"
+        "AnimateDiff Tier-1 authoring pending the plakat motion-tap wiring; the CFG-layout "
+        "bug is already guarded in Tier 0 (see ../correspondence.md)"
     )

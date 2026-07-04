@@ -159,6 +159,17 @@ pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<C
     // reuses the real encode/forward internals. A load failure → clean skip (weights /
     // gating), a capture failure → fail.
     let wanted: std::collections::HashSet<String> = manifest.tensors.keys().cloned().collect();
+    // AnimateDiff isn't alias-loadable (a base + motion adapter, loaded via flags), so it
+    // doesn't fit this alias dispatch. Its headline bug — the CFG BLOCKED batch layout — is
+    // already guarded structurally in Tier 0 (`tier0.cfg_batch_layout`); a numerical
+    // motion-module tap needs threading into the flag-based load path (a follow-up).
+    if model.contains("animatediff") {
+        return vec![Check::skip(
+            format!("tier1.{model}"),
+            1,
+            "AnimateDiff CFG layout is guarded in Tier 0; a numerical motion tap needs the flag-based load path (follow-up)",
+        )];
+    }
     let variant = crate::pipelines::t2i::Variant::detect(model);
     let load_skip = |e: anyhow::Error| vec![Check::skip(format!("tier1.{model}"), 1, format!("load failed (weights/gating?): {e:#}"))];
     let cap_fail = |e: anyhow::Error| vec![Check::fail(format!("tier1.{model}"), 1, format!("capture failed: {e:#}"))];
@@ -197,6 +208,23 @@ pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<C
             },
             Err(e) => return load_skip(e),
         }
+    } else if variant.is_cascade() {
+        match crate::pipelines::cascade::Pipeline::load(crate::pipelines::cascade::LoadRequest {
+            repo: crate::hf::resolve_alias(model).to_string(),
+            device: device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            controlnet_weights: None,
+            image_encoder_weights: None,
+        })
+        .await
+        {
+            Ok(p) => match p.capture_intermediates(fx.prompt, &wanted) {
+                Ok(c) => c,
+                Err(e) => return cap_fail(e),
+            },
+            Err(e) => return load_skip(e),
+        }
     } else {
         // SD-family (SD 1.5 / 2.1 / SDXL) via t2i.
         match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
@@ -210,7 +238,7 @@ pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<C
         })
         .await
         {
-            Ok(p) => match p.capture_intermediates(fx.prompt, &wanted) {
+            Ok(p) => match p.capture_intermediates(fx.prompt, fx.width, fx.height, &wanted) {
                 Ok(c) => c,
                 Err(e) => return cap_fail(e),
             },

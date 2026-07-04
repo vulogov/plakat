@@ -12,8 +12,8 @@ A `–` in the plakat column means the capture point is **not yet wired** (Phase
 | name | diffusers module / value | plakat module | notes |
 |---|---|---|---|
 | `clip_l.penultimate` | `text_encoder(..., output_hidden_states=True).hidden_states[-2]` | `pipelines/sd_core.rs` text encode (clip-skip layer) | **The SD clip-skip noise bug lived here** — plakat must return the penultimate hidden state (pre-final-layernorm), matching `[-2]`. |
-| `unet.mid` | `unet.mid_block` forward output at t=500 | `pipelines/sd_core.rs` / `sdxl_unet.rs` mid block | timestep must match plakat's tap. |
-| `vae.decoded` | `vae.decode(latents / scaling_factor).sample` | `pipelines` VAE decode | the F16-VAE class; author in F32, compare plakat's (possibly F16) cast to F32. |
+| `unet.mid` | `unet.mid_block` forward output at t=500 | `pipelines/sd_core.rs` / `sdxl_unet.rs` mid block | – timestep must match plakat's tap. |
+| `vae.decoded` | `vae.decode(deterministic_latent).sample` (the **shared LCG** latent, NOT a seeded RNG) | `t2i::capture_intermediates` → `core.vae.decode(deterministic_latent())` | ✅ wired. Both decode the SAME LCG latent (`fixtures.deterministic_latent` ↔ `verify::deterministic_latent`), so no RNG-matching problem. F16-VAE class. |
 
 ## SDXL (`sdxl_unet@1`)
 
@@ -47,9 +47,9 @@ A `–` in the plakat column means the capture point is **not yet wired** (Phase
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `clip_g.pooled` | CLIP-G pooled | `cascade.rs` | |
-| `effnet` | EfficientNetV2-S image embedding | `cascade_cn.rs` effnet | Stage-C conditioning. |
-| `stage_c.block0` | first Stage-C prior block | `cascade_prior.rs` | FiLM time injection, sca/crp, Wuerstchen scheduler. |
+| `clip_g.pooled` | `StableCascadePriorPipeline.encode_prompt(...)` → pooled | `cascade::capture_intermediates` → `encode_prompt().1` | ✅ wired. Stage C's `clip_txt_pooled_mapper` + Stage B's only conditioning. |
+| `effnet` | EfficientNetV2-S image embedding | `cascade_cn.rs` effnet | – Stage-C conditioning. |
+| `stage_c.block0` | first Stage-C prior block | `cascade_prior.rs` | – FiLM time injection, sca/crp, Wuerstchen scheduler. |
 
 ## AnimateDiff (`animatediff@1`)
 

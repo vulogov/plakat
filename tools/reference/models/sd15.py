@@ -25,12 +25,14 @@ PLAKAT_ARCH = "sd_core@1"
 # Correlation must be near-perfect for correctness; max_abs loose enough for BF16 rounding.
 DEFAULT_THRESHOLDS = {
     "clip.encoded": (0.9995, 0.03),
+    "vae.decoded": (0.999, 0.03),
 }
 
 
 def dump(fx, device: str):
     import torch
     from diffusers import StableDiffusionPipeline
+    import fixtures
 
     dtype = torch.float32  # author goldens in F32; plakat's capture is cast to F32 to compare
     pipe = StableDiffusionPipeline.from_pretrained(REPO, torch_dtype=dtype).to(device)
@@ -50,6 +52,10 @@ def dump(fx, device: str):
         prompt_embeds = pipe.text_encoder(tok.input_ids)[0]  # (1, 77, 768), post-final-layernorm
     captured["clip.encoded"] = prompt_embeds
 
-    # unet.mid / vae.decoded: author once the plakat side wires those taps (a UNet-internal
-    # tap and a matching seed→latent). See ../correspondence.md.
+    # --- vae.decoded: decode the SHARED deterministic latent (no seeded RNG; matches plakat) ---
+    latent = fixtures.deterministic_latent(4, fx.height // 8, fx.width // 8).to(device)
+    with torch.no_grad():
+        captured["vae.decoded"] = pipe.vae.decode(latent).sample  # decode the RAW latent (both sides)
+
+    # unet.mid: author once the plakat side wires a UNet-internal tap. See ../correspondence.md.
     return captured

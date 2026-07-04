@@ -46,3 +46,21 @@ def get(fixture_id: str) -> Fixture:
             f"unknown fixture {fixture_id!r}; known: {', '.join(sorted(FIXTURES))}"
         )
     return FIXTURES[fixture_id]
+
+
+def deterministic_latent(channels: int, lh: int, lw: int):
+    """A DETERMINISTIC latent (1, channels, lh, lw) via a tiny LCG — NOT a seeded RNG.
+
+    Byte-for-byte identical to plakat's `verify::deterministic_latent` (same LCG, same
+    C-order flattening), so both sides decode the SAME input for the `vae.decoded` golden.
+    Values in [-1, 1). Returns a torch.Tensor (float32).
+    """
+    import torch
+
+    n = channels * lh * lw
+    x = 1
+    vals = [0.0] * n
+    for i in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        vals[i] = (x % 2000) / 1000.0 - 1.0
+    return torch.tensor(vals, dtype=torch.float32).reshape(1, channels, lh, lw)

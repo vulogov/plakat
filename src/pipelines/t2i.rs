@@ -1011,9 +1011,15 @@ impl Pipeline {
     ///   of the EOS-pooling bug (argmax picked a higher-id TI trigger instead of EOS);
     ///   corresponds to diffusers' `pooled_prompt_embeds`. `None` on SD 1.5/2.1 (no pooled),
     ///   so it's simply not captured there.
+    /// - `vae.decoded` — the VAE decode of a DETERMINISTIC latent (built by a shared LCG, not
+    ///   a random seed — candle and torch RNGs diverge, so a seeded latent can't correspond).
+    ///   The dumper builds the identical latent; both decode the same input. Home of the
+    ///   F16-VAE bug class.
     pub fn capture_intermediates(
         &self,
         prompt: &str,
+        width: u32,
+        height: u32,
         wanted: &std::collections::HashSet<String>,
     ) -> Result<std::collections::HashMap<String, Tensor>> {
         let mut out = std::collections::HashMap::new();
@@ -1030,6 +1036,12 @@ impl Pipeline {
                 // SD 1.5/2.1: no pooled embedding → leave it absent (a manifest for those
                 // models must not request `clip_g.pooled`).
             }
+        }
+        if wanted.contains("vae.decoded") {
+            let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
+            let latent = crate::verify::deterministic_latent(4, lh, lw, &self.core.device, self.core.dtype)?;
+            let decoded = self.core.vae.decode(&latent)?;
+            out.insert("vae.decoded".to_string(), decoded);
         }
         Ok(out)
     }

@@ -19,6 +19,28 @@ pub use capture::{CaptureBag, TensorTap};
 
 use anyhow::Result;
 
+/// Build a DETERMINISTIC latent `(1, channels, lh, lw)` via a tiny LCG — NOT a seeded RNG.
+/// candle's and torch's RNGs diverge for the same seed, so a seeded latent can't correspond
+/// between plakat and the diffusers golden. This pure-integer generator is reproduced
+/// byte-for-byte in `tools/reference/fixtures.py::deterministic_latent`, so both sides decode
+/// the SAME input. Values land in `[-1, 1)`.
+pub fn deterministic_latent(
+    channels: usize,
+    lh: usize,
+    lw: usize,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<candle_core::Tensor> {
+    let n = channels * lh * lw;
+    let mut x: u64 = 1;
+    let mut vals = Vec::with_capacity(n);
+    for _ in 0..n {
+        x = (x.wrapping_mul(1103515245).wrapping_add(12345)) & 0x7fff_ffff;
+        vals.push((x % 2000) as f32 / 1000.0 - 1.0);
+    }
+    Ok(candle_core::Tensor::from_vec(vals, (1, channels, lh, lw), device)?.to_dtype(dtype)?)
+}
+
 /// Outcome of a single check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -191,4 +213,23 @@ pub async fn run(cfg: &VerifyConfig) -> Result<()> {
         anyhow::bail!("verification failed ({} check(s))", report.counts().1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_latent_is_reproducible_shaped_and_bounded() {
+        let dev = candle_core::Device::Cpu;
+        let a = deterministic_latent(4, 8, 8, &dev, candle_core::DType::F32).unwrap();
+        let b = deterministic_latent(4, 8, 8, &dev, candle_core::DType::F32).unwrap();
+        assert_eq!(a.dims(), &[1, 4, 8, 8]);
+        let (va, vb) = (a.flatten_all().unwrap().to_vec1::<f32>().unwrap(), b.flatten_all().unwrap().to_vec1::<f32>().unwrap());
+        assert_eq!(va, vb, "same LCG → identical latent (the cross-language contract)");
+        assert!(va.iter().all(|&v| (-1.0..1.0).contains(&v)), "values in [-1, 1)");
+        // First LCG value: x = (1*1103515245 + 12345) & 0x7fffffff = 1103527590;
+        // 1103527590 % 2000 = 1590 → 1590/1000 - 1 = 0.59. Pins the Python mirror.
+        assert!((va[0] - 0.59).abs() < 1e-6, "first value pins the shared LCG: {}", va[0]);
+    }
 }

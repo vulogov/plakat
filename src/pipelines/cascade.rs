@@ -461,6 +461,24 @@ impl Pipeline {
     }
 
     /// v0.40 phase 4: tokenize a prompt + forward through CLIP-G.
+    /// Capture named intermediate tensors for `plakat verify` Tier 1 (RFC_VERIFY). Additive —
+    /// reuses the real `encode_prompt`.
+    ///
+    /// - `clip_g.pooled` — the CLIP-G pooled text vector (Stage C's `clip_txt_pooled_mapper` +
+    ///   Stage B's only conditioning). Corresponds to diffusers' cascade text pooling.
+    pub fn capture_intermediates(
+        &self,
+        prompt: &str,
+        wanted: &std::collections::HashSet<String>,
+    ) -> Result<std::collections::HashMap<String, Tensor>> {
+        let mut out = std::collections::HashMap::new();
+        if wanted.contains("clip_g.pooled") {
+            let (_penult, pooled) = self.encode_prompt(prompt)?;
+            out.insert("clip_g.pooled".to_string(), pooled);
+        }
+        Ok(out)
+    }
+
     /// Returns `(penult, pooled)` where:
     /// - `penult` is the penultimate hidden states `(1, 77, 1280)` for
     ///   cross-attention into Stage C `AttnBlock`s.
