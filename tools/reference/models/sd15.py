@@ -1,10 +1,16 @@
 """SD 1.5 golden dumper — the WORKED REFERENCE EXAMPLE other families copy.
 
-Captures three load-bearing intermediates (the historically bug-prone surfaces):
-  clip_l.penultimate  — CLIP text-encoder penultimate hidden state (the clip-skip layer;
-                        plakat's SD clip-skip bug lived exactly here).
-  unet.mid            — UNet mid-block output for one forward at a fixed timestep.
-  vae.decoded         — VAE decode of the fixture's initial latent (the F16-VAE class).
+Captures the load-bearing intermediates (the historically bug-prone surfaces):
+  clip.encoded        — the text conditioning fed to the UNet cross-attention = diffusers'
+                        `prompt_embeds` (last_hidden_state, POST final-layernorm). This is
+                        what plakat's `encode_prompt` returns at the default clip-skip, and
+                        the home of the SD clip-skip noise bug. (NOTE: this is the FINAL
+                        hidden state, not the penultimate — the clip-skip FIX made plakat's
+                        default return the final, matching diffusers.)
+  unet.mid            — UNet mid-block output for one forward at a fixed timestep. (Not yet
+                        wired on the plakat side — needs a UNet-internal tap.)
+  vae.decoded         — VAE decode of the fixture's initial latent (the F16-VAE class). (Not
+                        yet wired — needs a matching seed→latent.)
 
 ⚠ SCAFFOLD: the hook points + the seed→latent construction below must be validated against
 plakat's own capture points when authoring (see ../correspondence.md). A mismatch in EITHER
@@ -18,9 +24,7 @@ PLAKAT_ARCH = "sd_core@1"
 
 # Correlation must be near-perfect for correctness; max_abs loose enough for BF16 rounding.
 DEFAULT_THRESHOLDS = {
-    "clip_l.penultimate": (0.9995, 0.03),
-    "unet.mid": (0.999, 0.05),
-    "vae.decoded": (0.999, 0.02),
+    "clip.encoded": (0.9995, 0.03),
 }
 
 
@@ -29,13 +33,12 @@ def dump(fx, device: str):
     from diffusers import StableDiffusionPipeline
 
     dtype = torch.float32  # author goldens in F32; plakat's capture is cast to F32 to compare
-    pipe = StableDiffusionPipeline.from_pretrained(REPO, torch_dtype=dtype)
-    pipe = pipe.to(device)
+    pipe = StableDiffusionPipeline.from_pretrained(REPO, torch_dtype=dtype).to(device)
     captured = {}
 
-    # --- clip_l.penultimate: hidden_states[-2] of the CLIP text encoder ---
-    # plakat's clip-skip returns the PENULTIMATE hidden state (before the final layer norm);
-    # matching that here is the whole point (the SD clip-skip noise bug was this row).
+    # --- clip.encoded: diffusers `prompt_embeds` = last_hidden_state (POST final-layernorm) ---
+    # This is exactly what plakat's `encode_prompt` returns at the default clip-skip and feeds
+    # the UNet cross-attention. `text_encoder(ids)[0]` is the post-layernorm last hidden state.
     tok = pipe.tokenizer(
         fx.prompt,
         padding="max_length",
@@ -44,27 +47,9 @@ def dump(fx, device: str):
         return_tensors="pt",
     ).to(device)
     with torch.no_grad():
-        enc = pipe.text_encoder(tok.input_ids, output_hidden_states=True)
-    captured["clip_l.penultimate"] = enc.hidden_states[-2]
-    text_embeds = enc.hidden_states[-1]  # the encoder-hidden-states fed to the UNet's cross-attn
+        prompt_embeds = pipe.text_encoder(tok.input_ids)[0]  # (1, 77, 768), post-final-layernorm
+    captured["clip.encoded"] = prompt_embeds
 
-    # --- unet.mid: one UNet forward at a fixed timestep, tap the mid block ---
-    g = torch.Generator(device=device).manual_seed(fx.seed)
-    latents = torch.randn(
-        (1, pipe.unet.config.in_channels, fx.height // 8, fx.width // 8),
-        generator=g, device=device, dtype=dtype,
-    )
-    mid_out = {}
-    h = pipe.unet.mid_block.register_forward_hook(lambda m, i, o: mid_out.__setitem__("t", o))
-    t = torch.tensor([500], device=device)  # a mid-schedule timestep; must match plakat's tap
-    with torch.no_grad():
-        pipe.unet(latents, t, encoder_hidden_states=text_embeds)
-    h.remove()
-    captured["unet.mid"] = mid_out["t"]
-
-    # --- vae.decoded: decode the initial latent ---
-    with torch.no_grad():
-        dec = pipe.vae.decode(latents / pipe.vae.config.scaling_factor).sample
-    captured["vae.decoded"] = dec
-
+    # unet.mid / vae.decoded: author once the plakat side wires those taps (a UNet-internal
+    # tap and a matching seed→latent). See ../correspondence.md.
     return captured

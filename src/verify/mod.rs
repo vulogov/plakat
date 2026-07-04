@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod compare;
+pub mod fixtures;
 pub mod manifest;
 pub mod tier0;
 pub mod tier1;
@@ -140,21 +141,36 @@ pub struct VerifyConfig {
     pub tier: Option<u8>,
     /// Restrict Tier 1+ to a single model alias; `None` = the pilot set.
     pub model: Option<String>,
+    /// Local golden source: `<dir>/<model>/<fixture>/{manifest.json, goldens.safetensors}`.
+    /// When set, Tier 1 loads the model and actually compares; when `None`, it reports
+    /// coverage (skips). HF-dataset fetch replaces this default in a later phase.
+    pub golden_dir: Option<std::path::PathBuf>,
+    /// Device Tier 1 loads models on (Metal/CUDA/CPU).
+    pub device: candle_core::Device,
     pub json: bool,
 }
 
 /// Execute verification. Returns `Ok(())` only when nothing failed.
-pub fn run(cfg: &VerifyConfig) -> Result<()> {
+pub async fn run(cfg: &VerifyConfig) -> Result<()> {
     let mut report = Report::default();
     let want = |t: u8| cfg.tier.map(|x| x == t).unwrap_or(true);
 
     if want(0) {
         tier0::run(&mut report);
     }
-    // Tier 1 — per-module correctness. The comparison engine is complete; capture-point
-    // wiring (phase 1b) + hosted goldens (phase 2) make it verify real models.
+    // Tier 1 — per-module correctness. With a golden source, load each model + compare its
+    // captured intermediates; without one, report coverage.
     if want(1) {
-        tier1::run(&mut report, cfg);
+        match &cfg.golden_dir {
+            Some(dir) => {
+                for model in tier1::models(cfg) {
+                    for c in tier1::run_model(&model, dir, &cfg.device).await {
+                        report.push(c);
+                    }
+                }
+            }
+            None => tier1::run(&mut report, cfg),
+        }
     }
     // Tier 2 — end-to-end perceptual gate (phase 3).
     if want(2) {

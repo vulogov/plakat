@@ -87,25 +87,88 @@ pub fn compare_against_goldens(
     checks
 }
 
-/// CLI Tier-1 entry. Resolves goldens for the requested model(s); until the pipelines are
-/// instrumented (Phase 1b) and the goldens are authored + hosted (Phase 2), this reports the
-/// state honestly rather than pretending to verify. The comparison ENGINE above is complete
-/// and tested — capture points plug straight into it.
-pub fn run(report: &mut Report, cfg: &VerifyConfig) {
-    let models: Vec<String> = match &cfg.model {
+/// The model set for Tier 1: an explicit `--model`, else the pilot set.
+pub fn models(cfg: &VerifyConfig) -> Vec<String> {
+    match &cfg.model {
         Some(m) => vec![m.clone()],
-        // The Phase-2 pilot set; listed so `verify --tier 1` is explicit about coverage.
         None => ["sd15", "sdxl", "sd35-medium", "pixart", "stable-cascade", "animatediff"]
             .iter()
             .map(|s| s.to_string())
             .collect(),
-    };
-    for model in models {
+    }
+}
+
+/// CLI Tier-1 entry WITHOUT a golden source — report coverage honestly (the comparison
+/// engine is ready; goldens + capture wiring land in later phases).
+pub fn run(report: &mut Report, cfg: &VerifyConfig) {
+    for model in models(cfg) {
         report.push(Check::skip(
             format!("tier1.{model}"),
             1,
-            "no golden tensors yet (authored + hosted in RFC_VERIFY phase 2) and pipeline capture points land in phase 1b — comparison engine is ready",
+            "no --golden-dir given; supply authored goldens to verify (engine ready)",
         ));
+    }
+}
+
+/// Run a model against local goldens: load the pipeline, capture the fixture's intermediates,
+/// and compare. Only SD-family models are instrumented so far (via `t2i::Pipeline`); others
+/// report a skip. Goldens live at `<golden_dir>/<model>/<fixture>/{manifest.json,
+/// goldens.safetensors}`.
+pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<Check> {
+    // Resolve the manifest (pilot fixture) + goldens.
+    let fixture = "portrait_v1";
+    let dir = golden_dir.join(model).join(fixture);
+    let manifest = match Manifest::from_file(&dir.join("manifest.json")) {
+        Ok(m) => m,
+        Err(_) => {
+            return vec![Check::skip(
+                format!("tier1.{model}"),
+                1,
+                format!("no goldens at {} (author with tools/reference/dump.py)", dir.display()),
+            )];
+        }
+    };
+    let goldens = match load_goldens(&dir.join("goldens.safetensors")) {
+        Ok(g) => g,
+        Err(e) => return vec![Check::fail(format!("tier1.{model}"), 1, format!("{e:#}"))],
+    };
+    let fx = match crate::verify::fixtures::get(&manifest.fixture) {
+        Some(f) => f,
+        None => {
+            return vec![Check::fail(
+                format!("tier1.{model}"),
+                1,
+                format!("unknown fixture {:?} — add it to src/verify/fixtures.rs", manifest.fixture),
+            )];
+        }
+    };
+
+    // Load the SD-family pipeline. Non-SD models aren't instrumented yet → skip cleanly.
+    let load = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+        model: model.to_string(),
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        use_refiner: false,
+        embeddings: Vec::new(),
+        vae_cache: None,
+    })
+    .await;
+    let pipeline = match load {
+        Ok(p) => p,
+        Err(e) => {
+            return vec![Check::skip(
+                format!("tier1.{model}"),
+                1,
+                format!("not an instrumented SD-family model (load: {e:#})"),
+            )];
+        }
+    };
+
+    let wanted: std::collections::HashSet<String> = manifest.tensors.keys().cloned().collect();
+    match pipeline.capture_intermediates(fx.prompt, &wanted) {
+        Ok(captured) => compare_against_goldens(&manifest, &captured, &goldens),
+        Err(e) => vec![Check::fail(format!("tier1.{model}"), 1, format!("capture failed: {e:#}"))],
     }
 }
 

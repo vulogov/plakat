@@ -998,6 +998,28 @@ impl Pipeline {
         }
     }
 
+    /// Capture named intermediate tensors for `plakat verify` Tier 1 (RFC_VERIFY). PURELY
+    /// ADDITIVE — it does not touch the generation path; it reuses the *real* building blocks
+    /// (here, `encode_prompt`) so the captured tensor is exactly what generation produces.
+    /// `wanted` filters which captures to build (skip the work for unrequested names).
+    ///
+    /// Wired capture points (SD-family):
+    /// - `clip.encoded` — the text conditioning fed to the UNet cross-attention at the
+    ///   default clip-skip (no CFG → just the cond prompt embedding). This is the home of the
+    ///   SD clip-skip noise bug; it corresponds to diffusers' `prompt_embeds`.
+    pub fn capture_intermediates(
+        &self,
+        prompt: &str,
+        wanted: &std::collections::HashSet<String>,
+    ) -> Result<std::collections::HashMap<String, Tensor>> {
+        let mut out = std::collections::HashMap::new();
+        if wanted.contains("clip.encoded") {
+            let (hidden, _pooled) = self.encode_prompt(prompt, "", false, 1)?;
+            out.insert("clip.encoded".to_string(), hidden);
+        }
+        Ok(out)
+    }
+
     fn encode_single(
         &self,
         prompt: &str,
