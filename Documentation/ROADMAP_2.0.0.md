@@ -57,11 +57,16 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         `dump.py` + per-family dumpers (sd15 worked example, others stubbed), `fixtures.py`,
         and `correspondence.md` (the diffusers↔plakat module map). Emits the exact
         `goldens.safetensors` + `manifest.json` the Rust side parses.
-      - [ ] **Wire the SD-family `TensorTap` capture points** (t2i/sd_core: `clip_l.penultimate`,
-        `unet.mid`, `vae.decoded`) — needs weights to verify against a fresh golden.
-      - [ ] **Author + host the pilot goldens** on the HF dataset repo; `verify --tier 1`
-        passes vs the diffusers oracle.
-      - [ ] **`--golden-dir` local source** + HF-dataset fetch in the Rust verifier.
+      - [x] **SD-family capture wired + Tier-1 loop closed** — `t2i::capture_intermediates`
+        (`clip.encoded`, additive), `src/verify/fixtures.rs`, `tier1::run_model` (async load →
+        capture → compare), `--golden-dir` + `--device`. Offline stays green; the load+compare
+        path is ready for authored goldens (needs weights, run locally).
+      - [ ] **Run locally + validate** — `python tools/reference/dump.py --model sd15` then
+        `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out`; confirm
+        `clip.encoded` matches (or chase the finding). Then extend capture to `unet.mid` /
+        `vae.decoded` + the other families.
+      - [ ] **Author + host the pilot goldens** on the HF dataset repo; add HF-dataset fetch
+        (replacing the `--golden-dir` default) so `verify --tier 1` works without local files.
 - [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.
