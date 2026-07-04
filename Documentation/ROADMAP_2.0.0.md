@@ -57,10 +57,11 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         `dump.py` + per-family dumpers (sd15 worked example, others stubbed), `fixtures.py`,
         and `correspondence.md` (the diffusers↔plakat module map). Emits the exact
         `goldens.safetensors` + `manifest.json` the Rust side parses.
-      - [x] **SD-family capture wired + Tier-1 loop closed** — `t2i::capture_intermediates`
-        (`clip.encoded`, additive), `src/verify/fixtures.rs`, `tier1::run_model` (async load →
-        capture → compare), `--golden-dir` + `--device`. Offline stays green; the load+compare
-        path is ready for authored goldens (needs weights, run locally).
+      - [x] **Capture wired across 3 families + Tier-1 loop closed** — `capture_intermediates`
+        on `t2i` (`clip.encoded`, `clip_g.pooled`), `sd3` (`pooled_y`), `pixart`
+        (`dit.pos_embed`); `tier1::run_model` dispatches by variant. `src/verify/fixtures.rs`,
+        `--golden-dir` + `--device`. All additive; offline stays green; load+compare ready for
+        authored goldens (needs weights, run locally). Real dumpers for sd15/sdxl/sd35/pixart.
       - [ ] **Run locally + validate** — `python tools/reference/dump.py --model sd15` then
         `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out`; confirm
         `clip.encoded` matches (or chase the finding). Then extend capture to `unet.mid` /
