@@ -1007,15 +1007,29 @@ impl Pipeline {
     /// - `clip.encoded` — the text conditioning fed to the UNet cross-attention at the
     ///   default clip-skip (no CFG → just the cond prompt embedding). This is the home of the
     ///   SD clip-skip noise bug; it corresponds to diffusers' `prompt_embeds`.
+    /// - `clip_g.pooled` (SDXL) — the pooled CLIP-G `add_embedding` vector. This is the home
+    ///   of the EOS-pooling bug (argmax picked a higher-id TI trigger instead of EOS);
+    ///   corresponds to diffusers' `pooled_prompt_embeds`. `None` on SD 1.5/2.1 (no pooled),
+    ///   so it's simply not captured there.
     pub fn capture_intermediates(
         &self,
         prompt: &str,
         wanted: &std::collections::HashSet<String>,
     ) -> Result<std::collections::HashMap<String, Tensor>> {
         let mut out = std::collections::HashMap::new();
-        if wanted.contains("clip.encoded") {
-            let (hidden, _pooled) = self.encode_prompt(prompt, "", false, 1)?;
-            out.insert("clip.encoded".to_string(), hidden);
+        // Both come from one text-encode (no CFG → the cond branch only), so encode once.
+        if wanted.contains("clip.encoded") || wanted.contains("clip_g.pooled") {
+            let (hidden, pooled) = self.encode_prompt(prompt, "", false, 1)?;
+            if wanted.contains("clip.encoded") {
+                out.insert("clip.encoded".to_string(), hidden);
+            }
+            if wanted.contains("clip_g.pooled") {
+                if let Some(p) = pooled {
+                    out.insert("clip_g.pooled".to_string(), p);
+                }
+                // SD 1.5/2.1: no pooled embedding → leave it absent (a manifest for those
+                // models must not request `clip_g.pooled`).
+            }
         }
         Ok(out)
     }

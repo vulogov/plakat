@@ -19,10 +19,10 @@ A `–` in the plakat column means the capture point is **not yet wired** (Phase
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `clip_l.penultimate` / `clip_g.penultimate` | each encoder's `hidden_states[-2]` | `sdxl_clip.rs` | dual encoders concatenated. |
-| `clip_g.pooled` | CLIP-G pooled (EOS-token row of the projected final hidden) | `sdxl_clip.rs::forward_for_sdxl` | **pool at the EOS id, not argmax** (TI-vocab bug). |
-| `add_time_ids` | `(orig_h, orig_w, crop_top, crop_left, target_h, target_w)` | `sdxl_unet::build_add_time_ids_base(h, w, …)` | order is **(h, w)** (regional-swap bug). |
-| `unet.mid`, `vae.decoded` | as SD1.5 | | |
+| `clip.encoded` | `encode_prompt(...)` → `prompt_embeds` (concatenated dual-encoder penultimate, `(1,77,2048)`) | `t2i::capture_intermediates` → `encode_prompt().0` | ✅ wired. The text conditioning fed to cross-attn. |
+| `clip_g.pooled` | `encode_prompt(...)` → `pooled_prompt_embeds` (CLIP-G pooled, `(1,1280)`) | `t2i::capture_intermediates` → `encode_prompt().1` (via `sdxl_clip::forward_for_sdxl`) | ✅ wired. **Pooled at the EOS id, not argmax** (TI-vocab bug, BUGFIX 1.5). |
+| `add_time_ids` | `(orig_h, orig_w, crop_top, crop_left, target_h, target_w)` | `sdxl_unet::build_add_time_ids_base(h, w, …)` | – order is **(h, w)** (regional-swap bug). |
+| `unet.mid`, `vae.decoded` | as SD1.5 | – | |
 
 ## SD 3.5-medium — MMDiT (`mmdit_inner@1`)
 
