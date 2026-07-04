@@ -57,11 +57,13 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         `dump.py` + per-family dumpers (sd15 worked example, others stubbed), `fixtures.py`,
         and `correspondence.md` (the diffusers↔plakat module map). Emits the exact
         `goldens.safetensors` + `manifest.json` the Rust side parses.
-      - [x] **Capture wired across 3 families + Tier-1 loop closed** — `capture_intermediates`
-        on `t2i` (`clip.encoded`, `clip_g.pooled`), `sd3` (`pooled_y`), `pixart`
-        (`dit.pos_embed`); `tier1::run_model` dispatches by variant. `src/verify/fixtures.rs`,
-        `--golden-dir` + `--device`. All additive; offline stays green; load+compare ready for
-        authored goldens (needs weights, run locally). Real dumpers for sd15/sdxl/sd35/pixart.
+      - [x] **Capture wired across the families + Tier-1 loop closed** — `capture_intermediates`
+        on `t2i` (`clip.encoded`, `clip_g.pooled`, `vae.decoded`), `sd3` (`pooled_y`), `pixart`
+        (`dit.pos_embed`), `cascade` (`clip_g.pooled`); `tier1::run_model` dispatches by variant
+        (SD / SD3 / PixArt / Cascade). `vae.decoded` uses a shared LCG latent (no RNG-matching).
+        AnimateDiff: CFG-layout guarded in Tier 0; a numerical motion tap is a follow-up (not
+        alias-loadable). `--golden-dir` + `--device`; all additive; offline green. Real dumpers
+        for sd15/sdxl/sd35/pixart/cascade.
       - [ ] **Run locally + validate** — `python tools/reference/dump.py --model sd15` then
         `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out`; confirm
         `clip.encoded` matches (or chase the finding). Then extend capture to `unet.mid` /
