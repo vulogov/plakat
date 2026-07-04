@@ -1,13 +1,11 @@
-"""SD 3.5-medium (MMDiT) golden dumper — STUB. Follow models/sd15.py.
+"""SD 3.5-medium (MMDiT) golden dumper.
 
-Capture points (the MMDiT bug surfaces — all real past fixes):
-  pooled_y            — the pooled conditioning, order [CLIP-L, CLIP-G] (the killer bug was
-                        the swapped order).
-  t5.hidden           — T5 caption embedding, encoded in BF16 (F16 overflowed → inf captions).
-  timestep_embed      — timestep × 1000 scaling.
-  mmdit.block0        — first joint block output (AdaLayerNormContinuous scale/shift order,
-                        QK-norm).
-  vae.decoded.
+Wired capture point (matching sd3::capture_intermediates):
+  pooled_y  — diffusers `pooled_prompt_embeds` = the concat of the two CLIP pooled vectors
+              fed to the MMDiT. **The concat ORDER was the killer SD3 bug** — this golden is
+              diffusers' authoritative order; the comparison proves plakat's `pooled_y` matches.
+
+Still to wire (see ../correspondence.md): t5.hidden (BF16), mmdit.block0.
 """
 
 REPO = "stabilityai/stable-diffusion-3.5-medium"
@@ -15,14 +13,22 @@ REVISION = ""
 PLAKAT_ARCH = "mmdit_inner@1"
 DEFAULT_THRESHOLDS = {
     "pooled_y": (0.999, 0.05),
-    "t5.hidden": (0.999, 0.05),
-    "mmdit.block0": (0.998, 0.08),
-    "vae.decoded": (0.999, 0.02),
 }
 
 
 def dump(fx, device: str):
-    raise NotImplementedError(
-        "author SD3.5 goldens following models/sd15.py — verify pooled_y is [CLIP-L, CLIP-G] "
-        "and T5 runs in BF16 (see ../correspondence.md)"
-    )
+    import torch
+    from diffusers import StableDiffusion3Pipeline
+
+    dtype = torch.float32
+    pipe = StableDiffusion3Pipeline.from_pretrained(REPO, torch_dtype=dtype).to(device)
+
+    # No CFG → take the cond pooled. diffusers SD3 encode_prompt returns
+    # (prompt_embeds, neg_prompt_embeds, pooled_prompt_embeds, neg_pooled_prompt_embeds).
+    with torch.no_grad():
+        _, _, pooled, _ = pipe.encode_prompt(
+            prompt=fx.prompt, prompt_2=None, prompt_3=None,
+            device=device, num_images_per_prompt=1, do_classifier_free_guidance=False,
+        )
+    # `pooled` is the concat of the two CLIP pooled vectors — the ORDER is what we verify.
+    return {"pooled_y": pooled}

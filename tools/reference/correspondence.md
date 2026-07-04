@@ -28,18 +28,18 @@ A `–` in the plakat column means the capture point is **not yet wired** (Phase
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `pooled_y` | concat of the two CLIP pooled vectors | `pipelines/sd3.rs` | **order `[CLIP-L, CLIP-G]`** — the swapped order was the killer bug. |
-| `t5.hidden` | T5 caption embedding | `vendored_t5.rs` | **BF16** (F16 overflowed → inf captions). |
-| `mmdit.block0` | first joint transformer block output | `mmdit_inner.rs` | AdaLayerNormContinuous (scale, shift) order; QK-norm; timestep ×1000. |
-| `vae.decoded` | | | |
+| `pooled_y` | `encode_prompt(...)` → `pooled_prompt_embeds` (concat of the two CLIP pooled) | `sd3::capture_intermediates` → `encode_prompt().0` | ✅ wired. The concat **ORDER** was the killer bug — the golden is diffusers' authoritative order; the comparison decides. |
+| `t5.hidden` | T5 caption embedding | `vendored_t5.rs` | – **BF16** (F16 overflowed → inf captions). |
+| `mmdit.block0` | first joint transformer block output | `mmdit_inner.rs` | – AdaLayerNormContinuous (scale, shift) order; QK-norm; timestep ×1000. |
+| `vae.decoded` | | – | |
 
 ## PixArt-Σ — DiT (`pixart_dit@1`)
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `t5.hidden` | T5 caption | `vendored_t5.rs` | BF16 (overflow bug). |
-| `dit.pos_embed` | patch pos-embed grid | `pixart_dit.rs::PatchEmbed` | H/W half-swap + base_size/interp scaling (past bug). |
-| `adaln.embedded_timestep` | `adaln_single` embedded timestep | `pixart_dit.rs::AdaLnSingle` | final-adaLN uses the *embedded* timestep. |
+| `dit.pos_embed` | `get_2d_sincos_pos_embed(embed, grid, base_size, interpolation_scale)` | `pixart::capture_intermediates` → `build_2d_sincos_pos_embed(...)` | ✅ wired. H/W half-swap + base_size/interp scaling (past bug). Prompt-independent. |
+| `t5.hidden` | T5 caption | `vendored_t5.rs` | – BF16 (overflow bug). |
+| `adaln.embedded_timestep` | `adaln_single` embedded timestep | `pixart_dit.rs::AdaLnSingle` | – final-adaLN uses the *embedded* timestep. |
 | `dit.block0` | first block; **detect 2K KV-compression from `attn1.kv_proj_conv2d.weight`**, not the repo name | `pixart_dit.rs::PixArtBlock` | plakat now auto-detects this (BUGFIX 3.6). |
 | `vae.decoded` | | | |
 

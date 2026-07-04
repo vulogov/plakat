@@ -355,6 +355,38 @@ impl Pipeline {
         })
     }
 
+    /// Capture named intermediate tensors for `plakat verify` Tier 1 (RFC_VERIFY). Additive.
+    ///
+    /// - `dit.pos_embed` — the 2D sin-cos patch positional embedding for `(width, height)`,
+    ///   computed exactly as the DiT forward does. **The pos-embed scaling (H/W half-swap +
+    ///   `base_size`/interpolation) was a real DiT bug**; comparing this to the diffusers
+    ///   golden pins the formula. Prompt-independent.
+    pub fn capture_intermediates(
+        &self,
+        width: u32,
+        height: u32,
+        wanted: &std::collections::HashSet<String>,
+    ) -> Result<std::collections::HashMap<String, Tensor>> {
+        let mut out = std::collections::HashMap::new();
+        if wanted.contains("dit.pos_embed") {
+            let cfg = &self.dit_cfg;
+            let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
+            let (gh, gw) = self.dit.patch_embed.grid_dims(lh, lw);
+            let interp = (((cfg.sample_size * cfg.patch_size) as f32) / 64.0).floor().max(1.0);
+            let pe = crate::pipelines::pixart_dit::build_2d_sincos_pos_embed(
+                cfg.hidden_size,
+                gh,
+                gw,
+                cfg.sample_size,
+                interp,
+                &self.device,
+                self.dtype,
+            )?;
+            out.insert("dit.pos_embed".to_string(), pe);
+        }
+        Ok(out)
+    }
+
     /// Tokenize a prompt + forward through T5. Returns `(1,
     /// max_caption_tokens, 4096)` left-padded with zeros to match
     /// the model's training-time sequence length.

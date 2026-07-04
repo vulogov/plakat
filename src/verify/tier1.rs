@@ -87,6 +87,18 @@ pub fn compare_against_goldens(
     checks
 }
 
+/// Map a detected t2i variant to the sd3 loader's variant (mirrors the UI's `sd3_variant`).
+fn sd3_variant(v: crate::pipelines::t2i::Variant) -> crate::pipelines::sd3::Variant {
+    use crate::pipelines::{sd3, t2i::Variant};
+    match v {
+        Variant::Sd3Medium => sd3::Variant::Sd3Medium,
+        Variant::Sd35Medium => sd3::Variant::Sd35Medium,
+        Variant::Sd35Large => sd3::Variant::Sd35Large,
+        Variant::Sd35LargeTurbo => sd3::Variant::Sd35LargeTurbo,
+        _ => sd3::Variant::Sd35Medium,
+    }
+}
+
 /// The model set for Tier 1: an explicit `--model`, else the pilot set.
 pub fn models(cfg: &VerifyConfig) -> Vec<String> {
     match &cfg.model {
@@ -143,33 +155,70 @@ pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<C
         }
     };
 
-    // Load the SD-family pipeline. Non-SD models aren't instrumented yet → skip cleanly.
-    let load = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
-        model: model.to_string(),
-        device: device.clone(),
-        loras: Vec::new(),
-        lora_scale: 1.0,
-        use_refiner: false,
-        embeddings: Vec::new(),
-        vae_cache: None,
-    })
-    .await;
-    let pipeline = match load {
-        Ok(p) => p,
-        Err(e) => {
-            return vec![Check::skip(
-                format!("tier1.{model}"),
-                1,
-                format!("not an instrumented SD-family model (load: {e:#})"),
-            )];
+    // Dispatch by family to the right instrumented pipeline. Each capture is additive and
+    // reuses the real encode/forward internals. A load failure → clean skip (weights /
+    // gating), a capture failure → fail.
+    let wanted: std::collections::HashSet<String> = manifest.tensors.keys().cloned().collect();
+    let variant = crate::pipelines::t2i::Variant::detect(model);
+    let load_skip = |e: anyhow::Error| vec![Check::skip(format!("tier1.{model}"), 1, format!("load failed (weights/gating?): {e:#}"))];
+    let cap_fail = |e: anyhow::Error| vec![Check::fail(format!("tier1.{model}"), 1, format!("capture failed: {e:#}"))];
+
+    let captured = if variant.is_sd3() {
+        match crate::pipelines::sd3::Pipeline::load(crate::pipelines::sd3::LoadRequest {
+            variant: sd3_variant(variant),
+            repo: crate::hf::resolve_alias(model).to_string(),
+            device: device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            controlnets: Vec::new(),
+            embeddings: Vec::new(),
+        })
+        .await
+        {
+            Ok(mut p) => match p.capture_intermediates(fx.prompt, &wanted) {
+                Ok(c) => c,
+                Err(e) => return cap_fail(e),
+            },
+            Err(e) => return load_skip(e),
+        }
+    } else if variant.is_pixart() {
+        match crate::pipelines::pixart::Pipeline::load(crate::pipelines::pixart::LoadRequest {
+            repo: crate::hf::resolve_alias(model).to_string(),
+            device: device.clone(),
+            vae_cache: None,
+            loras: Vec::new(),
+            lora_scale: 1.0,
+        })
+        .await
+        {
+            Ok(p) => match p.capture_intermediates(fx.width, fx.height, &wanted) {
+                Ok(c) => c,
+                Err(e) => return cap_fail(e),
+            },
+            Err(e) => return load_skip(e),
+        }
+    } else {
+        // SD-family (SD 1.5 / 2.1 / SDXL) via t2i.
+        match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+            model: model.to_string(),
+            device: device.clone(),
+            loras: Vec::new(),
+            lora_scale: 1.0,
+            use_refiner: false,
+            embeddings: Vec::new(),
+            vae_cache: None,
+        })
+        .await
+        {
+            Ok(p) => match p.capture_intermediates(fx.prompt, &wanted) {
+                Ok(c) => c,
+                Err(e) => return cap_fail(e),
+            },
+            Err(e) => return load_skip(e),
         }
     };
 
-    let wanted: std::collections::HashSet<String> = manifest.tensors.keys().cloned().collect();
-    match pipeline.capture_intermediates(fx.prompt, &wanted) {
-        Ok(captured) => compare_against_goldens(&manifest, &captured, &goldens),
-        Err(e) => vec![Check::fail(format!("tier1.{model}"), 1, format!("capture failed: {e:#}"))],
-    }
+    compare_against_goldens(&manifest, &captured, &goldens)
 }
 
 #[cfg(test)]

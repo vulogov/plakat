@@ -1628,6 +1628,25 @@ impl Pipeline {
         Ok((buf, ow as u32, oh as u32))
     }
 
+    /// Capture named intermediate tensors for `plakat verify` Tier 1 (RFC_VERIFY). Additive —
+    /// reuses the real `encode_prompt`, so the captured tensor is exactly what generation uses.
+    ///
+    /// - `pooled_y` — the pooled conditioning `y` fed to the MMDiT, a concat of the two CLIP
+    ///   pooled vectors. **The order was the killer SD3 bug** — this capture, compared to the
+    ///   diffusers golden, proves plakat's order matches.
+    pub fn capture_intermediates(
+        &mut self,
+        prompt: &str,
+        wanted: &std::collections::HashSet<String>,
+    ) -> Result<std::collections::HashMap<String, Tensor>> {
+        let mut out = std::collections::HashMap::new();
+        if wanted.contains("pooled_y") {
+            let (pooled_y, _joint_context) = self.encode_prompt(prompt)?;
+            out.insert("pooled_y".to_string(), pooled_y);
+        }
+        Ok(out)
+    }
+
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
         // v1.10.0: when any Textual Inversion is loaded, take the splice path
         // (it registers + locates the trigger token and overrides its embedding
