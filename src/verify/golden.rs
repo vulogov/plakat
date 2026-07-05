@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 /// Default HF dataset repo hosting the golden artifacts. Override with the
 /// `PLAKAT_VERIFY_DATASET` env var (e.g. to point at a fork or a staging repo).
-const DEFAULT_DATASET: &str = "vulogov/plakat-verify";
+const DEFAULT_DATASET: &str = "vulogov98/plakat-verify";
 
 /// The dataset repo to fetch goldens from.
 pub fn dataset_repo() -> String {

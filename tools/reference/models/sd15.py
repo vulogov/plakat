@@ -18,7 +18,7 @@ side means the golden doesn't correspond to what plakat taps — chase it before
 numbers. This file shows the *pattern*; treat the specifics as a starting point.
 """
 
-REPO = "runwayml/stable-diffusion-v1-5"
+REPO = "stable-diffusion-v1-5/stable-diffusion-v1-5"  # matches plakat's `sd15` alias (runwayml removed theirs)
 REVISION = ""  # pin the resolved commit sha when authoring
 PLAKAT_ARCH = "sd_core@1"
 
