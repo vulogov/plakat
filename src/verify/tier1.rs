@@ -14,7 +14,7 @@ use candle_core::{Device, Tensor};
 
 use super::compare::compare;
 use super::manifest::Manifest;
-use super::{Check, Report, VerifyConfig};
+use super::{Check, VerifyConfig};
 
 /// Load a goldens safetensors (name → tensor) onto CPU.
 pub fn load_goldens(path: &Path) -> Result<HashMap<String, Tensor>> {
@@ -110,37 +110,22 @@ pub fn models(cfg: &VerifyConfig) -> Vec<String> {
     }
 }
 
-/// CLI Tier-1 entry WITHOUT a golden source — report coverage honestly (the comparison
-/// engine is ready; goldens + capture wiring land in later phases).
-pub fn run(report: &mut Report, cfg: &VerifyConfig) {
-    for model in models(cfg) {
-        report.push(Check::skip(
-            format!("tier1.{model}"),
-            1,
-            "no --golden-dir given; supply authored goldens to verify (engine ready)",
-        ));
-    }
-}
-
-/// Run a model against local goldens: load the pipeline, capture the fixture's intermediates,
-/// and compare. Only SD-family models are instrumented so far (via `t2i::Pipeline`); others
-/// report a skip. Goldens live at `<golden_dir>/<model>/<fixture>/{manifest.json,
-/// goldens.safetensors}`.
-pub async fn run_model(model: &str, golden_dir: &Path, device: &Device) -> Vec<Check> {
-    // Resolve the manifest (pilot fixture) + goldens.
+/// Run a model against its goldens (local `--golden-dir` or the HF dataset): load the
+/// pipeline, capture the fixture's intermediates, and compare. Missing goldens or an
+/// un-instrumented family report a clean skip.
+pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) -> Vec<Check> {
     let fixture = "portrait_v1";
-    let dir = golden_dir.join(model).join(fixture);
-    let manifest = match Manifest::from_file(&dir.join("manifest.json")) {
+    // Resolve the manifest + goldens from the local dir or the HF dataset. Absent → skip.
+    let (manifest_path, goldens_path) =
+        match crate::verify::golden::resolve_golden_files(model, fixture, golden_dir).await {
+            Ok(paths) => paths,
+            Err(e) => return vec![Check::skip(format!("tier1.{model}"), 1, format!("{e:#}"))],
+        };
+    let manifest = match Manifest::from_file(&manifest_path) {
         Ok(m) => m,
-        Err(_) => {
-            return vec![Check::skip(
-                format!("tier1.{model}"),
-                1,
-                format!("no goldens at {} (author with tools/reference/dump.py)", dir.display()),
-            )];
-        }
+        Err(e) => return vec![Check::fail(format!("tier1.{model}"), 1, format!("{e:#}"))],
     };
-    let goldens = match load_goldens(&dir.join("goldens.safetensors")) {
+    let goldens = match load_goldens(&goldens_path) {
         Ok(g) => g,
         Err(e) => return vec![Check::fail(format!("tier1.{model}"), 1, format!("{e:#}"))],
     };

@@ -139,6 +139,30 @@ pub async fn get_file_at(repo: &str, file: &str, revision: &str) -> Result<PathB
     }
 }
 
+/// Fetch a file from a Hugging Face **dataset** repo (as opposed to a model repo). Used by
+/// `plakat verify` to pull golden reference artifacts (RFC_VERIFY). `repo` is a literal
+/// `org/name` (no alias resolution); `file` may be a subpath (e.g. `sd15/portrait_v1/
+/// manifest.json`). Returns the local cache path. Cached files return instantly.
+pub async fn get_dataset_file(repo: &str, file: &str) -> Result<PathBuf> {
+    let api = api()?.repo(Repo::with_revision(
+        repo.to_string(),
+        RepoType::Dataset,
+        "main".to_string(),
+    ));
+    let bar = crate::ui::progress::bytes_bar(0, &format!("⤓ dataset {repo}  {file}"));
+    let progress = BarProgress { bar: bar.clone(), done: Arc::new(AtomicU64::new(0)) };
+    match api.download_with_progress(file, progress).await {
+        Ok(path) => {
+            bar.finish_and_clear();
+            Ok(path)
+        }
+        Err(e) => {
+            bar.finish_with_message(format!("✗ dataset {repo}  {file}"));
+            Err(friendly_error(repo, file, e))
+        }
+    }
+}
+
 /// Look up a file in the local HF cache without downloading. `Some(path)` → cached
 /// (return instantly, no progress bar); `None` → must download.
 fn cached_path(repo: &str, file: &str, revision: &str) -> Option<PathBuf> {

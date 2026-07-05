@@ -11,6 +11,7 @@
 pub mod capture;
 pub mod compare;
 pub mod fixtures;
+pub mod golden;
 pub mod manifest;
 pub mod tier0;
 pub mod tier1;
@@ -180,18 +181,15 @@ pub async fn run(cfg: &VerifyConfig) -> Result<()> {
     if want(0) {
         tier0::run(&mut report);
     }
-    // Tier 1 — per-module correctness. With a golden source, load each model + compare its
-    // captured intermediates; without one, report coverage.
+    // Tier 1 — per-module correctness. Load each model + compare its captured intermediates
+    // against goldens from the local `--golden-dir` or (default) the HF dataset. Missing
+    // goldens / un-instrumented families skip cleanly.
     if want(1) {
-        match &cfg.golden_dir {
-            Some(dir) => {
-                for model in tier1::models(cfg) {
-                    for c in tier1::run_model(&model, dir, &cfg.device).await {
-                        report.push(c);
-                    }
-                }
+        let src = cfg.golden_dir.as_deref();
+        for model in tier1::models(cfg) {
+            for c in tier1::run_model(&model, src, &cfg.device).await {
+                report.push(c);
             }
-            None => tier1::run(&mut report, cfg),
         }
     }
     // Tier 2 — end-to-end perceptual gate (phase 3).
