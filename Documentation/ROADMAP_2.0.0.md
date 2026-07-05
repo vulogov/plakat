@@ -64,12 +64,15 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         AnimateDiff: CFG-layout guarded in Tier 0; a numerical motion tap is a follow-up (not
         alias-loadable). `--golden-dir` + `--device`; all additive; offline green. Real dumpers
         for sd15/sdxl/sd35/pixart/cascade.
-      - [ ] **Run locally + validate** — `python tools/reference/dump.py --model sd15` then
-        `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out`; confirm
-        `clip.encoded` matches (or chase the finding). Then extend capture to `unet.mid` /
-        `vae.decoded` + the other families.
-      - [ ] **Author + host the pilot goldens** on the HF dataset repo; add HF-dataset fetch
-        (replacing the `--golden-dir` default) so `verify --tier 1` works without local files.
+      - [x] **HF-dataset fetch** — `verify --tier 1` fetches goldens from the HF dataset
+        (default `vulogov/plakat-verify`, `PLAKAT_VERIFY_DATASET` override) when no
+        `--golden-dir`; 404s → clean skip until hosted. `hf::get_dataset_file` +
+        `verify::golden`. Pure-Rust, no new deps.
+      - [ ] **Run locally + validate + host** — `python tools/reference/dump.py --model sd15`
+        → `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out` (confirm each
+        capture matches, or chase the finding) → push the goldens to the HF dataset so
+        `verify --tier 1` works for everyone. Then the deeper taps (UNet-internal `unet.mid`,
+        AnimateDiff motion) + Tier 2 (phase 3).
 - [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.
