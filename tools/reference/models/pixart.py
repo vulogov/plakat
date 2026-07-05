@@ -23,18 +23,20 @@ DEFAULT_THRESHOLDS = {
 
 def dump(fx, device: str):
     import torch
-    from diffusers import PixArtSigmaPipeline
+    from diffusers import PixArtTransformer2DModel
     from diffusers.models.embeddings import get_2d_sincos_pos_embed
 
-    pipe = PixArtSigmaPipeline.from_pretrained(REPO, torch_dtype=torch.float32)
-    tf = pipe.transformer.config
-    hidden = tf.num_attention_heads * tf.attention_head_dim
-    grid = fx.height // 8 // tf.patch_size  # square fixture → grid_h == grid_w
-    base = tf.sample_size // tf.patch_size
-    interp = max(1.0, (tf.sample_size * tf.patch_size) / 64.0)  # mirror plakat's interp factor
+    # pos_embed is a pure function of (config, resolution) — no weights, no tokenizer/T5
+    # (which needs tiktoken under transformers 5). Load ONLY the transformer config.
+    cfg = PixArtTransformer2DModel.load_config(REPO, subfolder="transformer")
+    hidden = cfg["num_attention_heads"] * cfg["attention_head_dim"]
+    grid = fx.height // 8 // cfg["patch_size"]  # square fixture → grid_h == grid_w
+    interp = max(1.0, (cfg["sample_size"] * cfg["patch_size"]) / 64.0)  # mirror plakat's interp
 
-    pe = get_2d_sincos_pos_embed(
-        embed_dim=hidden, grid_size=grid, base_size=base, interpolation_scale=interp,
-    )
-    pe = torch.from_numpy(pe).float().unsqueeze(0)  # (1, tokens, hidden)
+    pe = get_2d_sincos_pos_embed(  # diffusers >=0.33: torch tensor, output_type='pt'
+        embed_dim=hidden, grid_size=grid, base_size=cfg["sample_size"],
+        interpolation_scale=interp, output_type="pt",
+    ).float()
+    if pe.dim() == 2:
+        pe = pe.unsqueeze(0)  # → (1, tokens, hidden)
     return {"dit.pos_embed": pe}

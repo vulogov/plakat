@@ -27,4 +27,7 @@ def dump(fx, device: str):
             device=device, batch_size=1, num_images_per_prompt=1,
             do_classifier_free_guidance=False, prompt=fx.prompt,
         )
+    # diffusers returns (1, 1, 1280); plakat's cascade pooled is (1, 1280) → squeeze the seq dim.
+    if pooled.dim() == 3:
+        pooled = pooled.squeeze(1)
     return {"clip_g.pooled": pooled}
