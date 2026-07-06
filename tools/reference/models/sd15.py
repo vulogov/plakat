@@ -26,6 +26,7 @@ PLAKAT_ARCH = "sd_core@1"
 DEFAULT_THRESHOLDS = {
     "clip.encoded": (0.9995, 0.03),
     "vae.decoded": (0.999, 0.03),
+    "unet.out": (0.999, 0.05),  # full noise prediction ε (down+mid+up); O(1) scale
 }
 
 
@@ -57,5 +58,10 @@ def dump(fx, device: str):
     with torch.no_grad():
         captured["vae.decoded"] = pipe.vae.decode(latent).sample  # decode the RAW latent (both sides)
 
-    # unet.mid: author once the plakat side wires a UNet-internal tap. See ../correspondence.md.
+    # --- unet.out: the full noise prediction ε on the SHARED latent at a FIXED timestep ---
+    # Same (latent, t, conditioning) plakat drives in `capture_intermediates`. This is the first
+    # tap that exercises the UNet CORE (down + mid + up), not just conditioning / VAE.
+    with torch.no_grad():
+        eps = pipe.unet(latent, 500, encoder_hidden_states=prompt_embeds).sample  # (1,4,64,64)
+    captured["unet.out"] = eps
     return captured

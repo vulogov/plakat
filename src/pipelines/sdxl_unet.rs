@@ -436,6 +436,62 @@ impl SdxlUNet2DConditionModel {
         )
     }
 
+    /// Verify tap (`plakat verify` Tier 1, `unet.mid`): run the forward up to and
+    /// including the mid block and return that activation — the denoiser's internal
+    /// checkpoint. Additive: reuses the exact conv_in / time+add embedding / down /
+    /// mid path of [`Self::forward_with_motion`] (no motion, no CN residuals), so a
+    /// mismatch here localizes a UNet-core bug the way the full `unet.out` can't.
+    /// Corresponds to a diffusers forward hook on `unet.mid_block`.
+    pub fn capture_mid(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: &Tensor,
+        add_time_ids: &Tensor,
+    ) -> Result<Tensor> {
+        let (bsize, _channels, _height, _width) = xs.dims4()?;
+        let device = xs.device();
+
+        // 0. center input if necessary
+        let xs = if self.config.center_input_sample {
+            ((xs * 2.0)? - 1.0)?
+        } else {
+            xs.clone()
+        };
+        // 1. time embedding
+        let t_emb = (Tensor::ones(bsize, xs.dtype(), device)? * timestep)?;
+        let t_emb = self.time_proj.forward(&t_emb)?;
+        let emb = self.time_embedding.forward(&t_emb)?;
+        // 1b. SDXL add_embedding
+        let (b_a, n_ids) = add_time_ids.dims2()?;
+        let flat_ids = add_time_ids.reshape((b_a * n_ids,))?;
+        let time_ids_emb = self.add_time_proj.forward(&flat_ids)?;
+        let time_ids_emb =
+            time_ids_emb.reshape((b_a, n_ids * self.add_cfg.addition_time_embed_dim))?;
+        let add_in = Tensor::cat(
+            &[&add_text_embeds.to_dtype(time_ids_emb.dtype())?, &time_ids_emb],
+            1,
+        )?;
+        let aug_emb = self.add_embedding.forward(&add_in)?;
+        let emb = emb.broadcast_add(&aug_emb.to_dtype(emb.dtype())?)?;
+        // 2. pre-process
+        let mut xs = self.conv_in.forward(&xs)?;
+        // 3. down
+        for down_block in self.down_blocks.iter() {
+            let (next_xs, _res_xs) = match down_block {
+                UNetDownBlock::Basic(b) => b.forward(&xs, Some(&emb))?,
+                UNetDownBlock::CrossAttn(b) => {
+                    b.forward(&xs, Some(&emb), Some(encoder_hidden_states))?
+                }
+            };
+            xs = next_xs;
+        }
+        // 4. mid
+        self.mid_block
+            .forward(&xs, Some(&emb), Some(encoder_hidden_states))
+    }
+
     /// v0.27 phase 1 (+ phase 4): SDXL forward with AnimateDiff
     /// motion-module splice at block boundaries plus optional
     /// ControlNet residuals. Mirrors
@@ -1044,6 +1100,36 @@ mod tests {
             .forward_with_motion(&xs, 500.0, &ehs, &pooled, &time_ids, None, 1, None, None)
             .expect("forward_with_motion None");
         assert_eq!(out.dims(), &[1, 4, 16, 16]);
+    }
+
+    /// Verify tap (`unet.mid`): `capture_mid` runs the SDXL forward up to the mid block
+    /// and returns that activation. Asserts it reaches mid-block channel depth (1280) at
+    /// the twice-downsampled spatial size (16→4 for a 3-block SDXL UNet) — i.e. it really
+    /// ran through the down stack, not just conv_in.
+    #[test]
+    fn capture_mid_returns_midblock_activation_shape() {
+        use crate::pipelines::controlnet::sdxl_unet_config;
+        use candle_core::{DType, Device};
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let dtype = DType::F32;
+        let vs = VarBuilder::zeros(dtype, &device);
+        let unet = SdxlUNet2DConditionModel::new(
+            vs, 4, 4, false, sdxl_unet_config(), SdxlAddEmbedConfig::base(),
+        )
+        .expect("build SDXL UNet");
+
+        let xs = Tensor::randn(0.0f32, 1.0, (1, 4, 16, 16), &device).unwrap();
+        let ehs = Tensor::randn(0.0f32, 1.0, (1, 77, 2048), &device).unwrap();
+        let pooled = Tensor::randn(0.0f32, 1.0, (1, 1280), &device).unwrap();
+        let time_ids = Tensor::zeros((1, 6), dtype, &device).unwrap();
+
+        let mid = unet
+            .capture_mid(&xs, 500.0, &ehs, &pooled, &time_ids)
+            .expect("capture_mid");
+        // 3-block SDXL UNet: two downsamples (16→8→4); mid runs at the deepest channel width.
+        assert_eq!(mid.dims(), &[1, 1280, 4, 4]);
     }
 
     /// v0.27 phase 4: passing zero-filled ControlNet residuals to

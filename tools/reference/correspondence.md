@@ -12,7 +12,8 @@ A `–` in the plakat column means the capture point is **not yet wired** (Phase
 | name | diffusers module / value | plakat module | notes |
 |---|---|---|---|
 | `clip_l.penultimate` | `text_encoder(..., output_hidden_states=True).hidden_states[-2]` | `pipelines/sd_core.rs` text encode (clip-skip layer) | **The SD clip-skip noise bug lived here** — plakat must return the penultimate hidden state (pre-final-layernorm), matching `[-2]`. |
-| `unet.mid` | `unet.mid_block` forward output at t=500 | `pipelines/sd_core.rs` / `sdxl_unet.rs` mid block | – timestep must match plakat's tap. |
+| `unet.out` | `unet(latent, 500, encoder_hidden_states=prompt_embeds).sample` — full ε | `t2i::capture_intermediates` → `core.unet.forward(deterministic_latent, 500.0, hidden, …)` | ✅ wired, corr 1.0. **First tap exercising the UNet CORE (down+mid+up), not just conditioning.** Shared LCG latent + fixed t=500 + golden-verified `clip.encoded`. |
+| `unet.mid` | forward hook on `unet.mid_block` (same forward) | SDXL-only: `sdxl_unet::capture_mid` (candle's stock SD UNet has no exposed mid) | ✅ wired (SDXL). Localizes a UNet-core bug the full ε can't. |
 | `vae.decoded` | `vae.decode(deterministic_latent).sample` (the **shared LCG** latent, NOT a seeded RNG) | `t2i::capture_intermediates` → `core.vae.decode(deterministic_latent())` | ✅ wired. Both decode the SAME LCG latent (`fixtures.deterministic_latent` ↔ `verify::deterministic_latent`), so no RNG-matching problem. F16-VAE class. |
 
 ## SD 2.1 (`sd_core@1`)
@@ -39,8 +40,9 @@ shows as a *padding-only* divergence while content tokens still match:
 |---|---|---|---|
 | `clip.encoded` | `encode_prompt(...)` → `prompt_embeds` (concatenated dual-encoder penultimate, `(1,77,2048)`) | `t2i::capture_intermediates` → `encode_prompt().0` | ✅ wired. The text conditioning fed to cross-attn. **FINDING (this harness): CLIP-L was padded with `"!"`/id 0 instead of `<|endoftext|>`/49407** — content+EOS matched but padding rows diverged → corr 0.991. Fixed in `sd_core.rs::config` (`clip.pad_with = None`); now corr 1.0. See the pad-token rule under SD 2.1. |
 | `clip_g.pooled` | `encode_prompt(...)` → `pooled_prompt_embeds` (CLIP-G pooled, `(1,1280)`) | `t2i::capture_intermediates` → `encode_prompt().1` (via `sdxl_clip::forward_for_sdxl`) | ✅ wired. **Pooled at the EOS id, not argmax** (TI-vocab bug, BUGFIX 1.5). |
-| `add_time_ids` | `(orig_h, orig_w, crop_top, crop_left, target_h, target_w)` | `sdxl_unet::build_add_time_ids_base(h, w, …)` | – order is **(h, w)** (regional-swap bug). |
-| `unet.mid`, `vae.decoded` | as SD1.5 | – | |
+| `add_time_ids` | `(orig_h, orig_w, crop_top, crop_left, target_h, target_w)` | `sdxl_unet::build_add_time_ids_base(h, w, …)` | order is **(h, w)** (regional-swap bug). Fed to the `unet.out`/`unet.mid` taps below. |
+| `unet.out` | `unet(latent, 500, …, added_cond_kwargs={text_embeds, time_ids}).sample` | `core.unet.forward(latent, 500.0, hidden, Some(pooled), Some(add_time_ids))` | ✅ wired. Full SDXL ε incl. `add_embedding`. |
+| `unet.mid` | forward hook on `unet.mid_block` | `sdxl_unet::capture_mid` | ✅ wired. SDXL mid-block activation. |
 
 ## SD 3.5-medium — MMDiT (`mmdit_inner@1`)
 

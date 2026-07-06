@@ -1043,6 +1043,39 @@ impl Pipeline {
             let decoded = self.core.vae.decode(&latent)?;
             out.insert("vae.decoded".to_string(), decoded);
         }
+        // Denoiser core tap (`unet.out` = full noise prediction; `unet.mid` = SDXL mid-block).
+        // One forward on the SHARED deterministic latent at a FIXED timestep, with the (already
+        // golden-verified) text conditioning — no CFG. The dumper drives the identical inputs
+        // (same LCG latent, same t, same add_time_ids), so the capture corresponds exactly.
+        if wanted.contains("unet.out") || wanted.contains("unet.mid") {
+            const FIXED_T: f64 = 500.0;
+            let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
+            let latent = crate::verify::deterministic_latent(4, lh, lw, &self.core.device, self.core.dtype)?;
+            let (hidden, pooled) = self.encode_prompt(prompt, "", false, 1)?;
+            // SDXL needs add_text_embeds (pooled) + add_time_ids; SD 1.5/2.1 pass None.
+            let ti = if pooled.is_some() {
+                Some(crate::pipelines::sdxl_unet::build_add_time_ids_base(
+                    height, width, &self.core.device, self.core.dtype,
+                )?)
+            } else {
+                None
+            };
+            if wanted.contains("unet.out") {
+                let eps = self.core.unet.forward(
+                    &latent, FIXED_T, &hidden, pooled.as_ref(), ti.as_ref(),
+                )?;
+                out.insert("unet.out".to_string(), eps);
+            }
+            if wanted.contains("unet.mid") {
+                // Mid-block tap is SDXL-only (candle's stock SD 1.5/2.1 UNet has a monolithic
+                // forward with no exposed mid block). Absent → the manifest just won't request it.
+                if let crate::pipelines::sdxl_unet::SdUNet::Sdxl(u) = &self.core.unet {
+                    let (te, ti) = (pooled.as_ref().unwrap(), ti.as_ref().unwrap());
+                    let mid = u.capture_mid(&latent, FIXED_T, &hidden, te, ti)?;
+                    out.insert("unet.mid".to_string(), mid);
+                }
+            }
+        }
         Ok(out)
     }
 
