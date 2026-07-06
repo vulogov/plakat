@@ -49,10 +49,14 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
       safetensors loading, the `tier1` runner (`compare_against_goldens`), and the
       `TensorTap`/`CaptureBag` capture abstraction — 13 unit/integration tests, no model
       needed. `verify --tier 1` reports the pilot set as *ready, awaiting goldens*.
-- [~] **Phase 1b/2 — wire `TensorTap` capture points into the pipelines + author goldens.**
+- [x] **Phase 1b/2 — wire `TensorTap` capture points into the pipelines + author goldens.**
       Naturally coupled: each capture point is wired and its golden authored together
       (offline diffusers harness → HF), so the capture is verified against the reference the
-      moment it lands. Pilot: sd15/sdxl/sd35/pixart/cascade/animatediff.
+      moment it lands. Pilot: sd15/sd21/sdxl/sd35/pixart/cascade (+ animatediff, Tier-0 only).
+      **All six authored, verified vs diffusers 0.38, and hosted on `vulogov98/plakat-verify`.**
+      The harness earned its keep: it caught the **SDXL CLIP-L pad-token bug** (padded `"!"`/id 0
+      instead of EOS → `clip.encoded` corr 0.991; fixed `3a28f67`, now 1.0). See
+      `tools/reference/correspondence.md` for the CLIP pad-token rule.
       - [x] **Authoring harness scaffolded** — `tools/reference/` (excluded from the crate):
         `dump.py` + per-family dumpers (sd15 worked example, others stubbed), `fixtures.py`,
         and `correspondence.md` (the diffusers↔plakat module map). Emits the exact
@@ -65,14 +69,18 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         alias-loadable). `--golden-dir` + `--device`; all additive; offline green. Real dumpers
         for sd15/sdxl/sd35/pixart/cascade.
       - [x] **HF-dataset fetch** — `verify --tier 1` fetches goldens from the HF dataset
-        (default `vulogov/plakat-verify`, `PLAKAT_VERIFY_DATASET` override) when no
+        (default `vulogov98/plakat-verify`, `PLAKAT_VERIFY_DATASET` override) when no
         `--golden-dir`; 404s → clean skip until hosted. `hf::get_dataset_file` +
         `verify::golden`. Pure-Rust, no new deps.
-      - [ ] **Run locally + validate + host** — `python tools/reference/dump.py --model sd15`
-        → `plakat verify --tier 1 --model sd15 --golden-dir tools/reference/out` (confirm each
-        capture matches, or chase the finding) → push the goldens to the HF dataset so
-        `verify --tier 1` works for everyone. Then the deeper taps (UNet-internal `unet.mid`,
-        AnimateDiff motion) + Tier 2 (phase 3).
+      - [x] **Run locally + validate + host** — authored all six via `dump.py`, validated each
+        against plakat (`--golden-dir`), and pushed to `vulogov98/plakat-verify`. Results:
+        sd15 `clip.encoded`/`vae.decoded` corr 1.0; sd21 0.99999/1.0; **sdxl** `clip.encoded`
+        1.0 (after the pad-token fix)/`clip_g.pooled` 0.99997; **pixart** `dit.pos_embed` 1.0;
+        **stable-cascade** `clip_g.pooled` 0.99997; **sd35-medium** `pooled_y` 0.99998 (concat
+        order correct). Pooled vectors use max_abs 0.15 (CLIP-G accumulation noise; corr carries
+        correctness). `verify --tier 1 --model <m>` now passes for everyone, self-contained.
+        Remaining follow-ups: deeper taps (UNet-internal `unet.mid`, AnimateDiff motion) + Tier 2
+        (phase 3).
 - [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.
