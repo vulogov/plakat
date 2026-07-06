@@ -1280,6 +1280,26 @@ impl MMDiT {
         let x = self.unpatchifier.unpatchify(&x, h, w)?;
         x.narrow(2, 0, h)?.narrow(3, 0, w)
     }
+
+    /// Verify tap (`plakat verify` Tier 1, `mmdit.block0`): run the embed prologue
+    /// (patch+pos, timestep+vector → c, context_embedder) and the FIRST joint block,
+    /// returning the **x-stream** (image tokens) `(B, tokens, hidden)`. Additive — reuses
+    /// the exact prologue of [`Self::forward_with_residuals`] and `core.joint_blocks[0]`.
+    /// Corresponds to a diffusers hook on `transformer.transformer_blocks[0]` (its
+    /// `hidden_states` output). The dumper feeds DETERMINISTIC `y`/`context` (shared LCG),
+    /// isolating the MMDiT joint-block math from the CLIP/T5 encoders.
+    pub fn capture_block0(&self, x: &Tensor, t: &Tensor, y: &Tensor, context: &Tensor) -> Result<Tensor> {
+        let h = x.dim(D::Minus2)?;
+        let w = x.dim(D::Minus1)?;
+        let cropped_pos_embed = self.pos_embedder.get_cropped_pos_embed(h, w)?;
+        let x = self.patch_embedder.forward(x)?.broadcast_add(&cropped_pos_embed)?;
+        let c = self.timestep_embedder.forward(t)?;
+        let y = self.vector_embedder.forward(y)?;
+        let c = (c + y)?;
+        let context = self.context_embedder.forward(context)?;
+        let (_context, x) = self.core.joint_blocks[0].forward(&context, &x, &c)?;
+        Ok(x)
+    }
 }
 
 pub struct MMDiTCore {

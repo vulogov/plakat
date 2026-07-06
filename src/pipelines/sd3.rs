@@ -1644,6 +1644,24 @@ impl Pipeline {
             let (pooled_y, _joint_context) = self.encode_prompt(prompt)?;
             out.insert("pooled_y".to_string(), pooled_y);
         }
+        // MMDiT joint-block-0 tap: run the embed prologue + joint_blocks[0] on a shared
+        // deterministic latent (16-ch) + FIXED timestep + DETERMINISTIC y/context (LCG). The
+        // y/context are synthetic (not CLIP/T5) so this isolates the MMDiT joint-block math;
+        // the dumper feeds byte-identical inputs via `fixtures.deterministic_tensor`.
+        if wanted.contains("mmdit.block0") {
+            let cfg = self.variant.mmdit_config();
+            // Fixture 512 → 16-ch latent (1,16,64,64). Context seq is arbitrary but must match
+            // the dumper — pin it here as the shared contract.
+            const CONTEXT_SEQ: usize = 154;
+            let latent = crate::verify::deterministic_latent(cfg.in_channels, 64, 64, &self.device, self.dtype)?;
+            let y = crate::verify::deterministic_tensor(&[1, cfg.adm_in_channels], 3, &self.device, self.dtype)?;
+            let context = crate::verify::deterministic_tensor(
+                &[1, CONTEXT_SEQ, cfg.context_embed_size], 2, &self.device, self.dtype,
+            )?;
+            let t = Tensor::full(500.0f32, (1usize,), &self.device)?.to_dtype(self.dtype)?;
+            let b0 = self.mmdit_model.capture_block0(&latent, &t, &y, &context)?;
+            out.insert("mmdit.block0".to_string(), b0);
+        }
         Ok(out)
     }
 

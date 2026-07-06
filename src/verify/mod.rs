@@ -32,14 +32,27 @@ pub fn deterministic_latent(
     device: &candle_core::Device,
     dtype: candle_core::DType,
 ) -> Result<candle_core::Tensor> {
-    let n = channels * lh * lw;
-    let mut x: u64 = 1;
+    deterministic_tensor(&[1, channels, lh, lw], 1, device, dtype)
+}
+
+/// Shared LCG value stream — the byte-identical source both `deterministic_latent` and any
+/// deterministic conditioning input (caption / context) draw from, mirrored on the Python
+/// side by `fixtures.deterministic_tensor`. Values in [-1, 1). `seed` selects an independent
+/// stream (latent = 1) so distinct inputs to the same forward don't alias.
+pub fn deterministic_tensor(
+    dims: &[usize],
+    seed: u64,
+    device: &candle_core::Device,
+    dtype: candle_core::DType,
+) -> Result<candle_core::Tensor> {
+    let n: usize = dims.iter().product();
+    let mut x: u64 = seed;
     let mut vals = Vec::with_capacity(n);
     for _ in 0..n {
         x = (x.wrapping_mul(1103515245).wrapping_add(12345)) & 0x7fff_ffff;
         vals.push((x % 2000) as f32 / 1000.0 - 1.0);
     }
-    Ok(candle_core::Tensor::from_vec(vals, (1, channels, lh, lw), device)?.to_dtype(dtype)?)
+    Ok(candle_core::Tensor::from_vec(vals, dims.to_vec(), device)?.to_dtype(dtype)?)
 }
 
 /// Outcome of a single check.

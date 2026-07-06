@@ -384,6 +384,27 @@ impl Pipeline {
             )?;
             out.insert("dit.pos_embed".to_string(), pe);
         }
+        // DiT block-0 tap: run patch-embed + adaLN + caption-proj + block[0] on a shared
+        // deterministic latent + FIXED timestep + DETERMINISTIC caption (LCG). The caption is
+        // synthetic (not T5) so this isolates the DiT block math and needs no T5 — the dumper
+        // feeds the byte-identical caption via `fixtures.deterministic_tensor`.
+        if wanted.contains("dit.block0") {
+            let cfg = &self.dit_cfg;
+            let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
+            let latent = crate::verify::deterministic_latent(4, lh, lw, &self.device, self.dtype)?;
+            // Deterministic T5-caption stand-in (seed 2): (1, max_caption_tokens, caption_channels).
+            let caption = crate::verify::deterministic_tensor(
+                &[1, cfg.max_caption_tokens, cfg.caption_channels], 2, &self.device, self.dtype,
+            )?;
+            let timestep = Tensor::full(500.0f32, (1usize,), &self.device)?.to_dtype(self.dtype)?;
+            // Σ micro-conditioning at the fixture resolution (square → aspect 1). Matches the
+            // real forward's `res` (1,2)=[h,w] and `asp` (1,2)=[1,1].
+            let res = Tensor::new(&[height as f32, width as f32], &self.device)?
+                .reshape((1, 2))?.to_dtype(self.dtype)?;
+            let asp = Tensor::new(&[1.0f32, 1.0f32], &self.device)?.reshape((1, 2))?.to_dtype(self.dtype)?;
+            let b0 = self.dit.capture_block0(&latent, &timestep, &caption, &res, &asp)?;
+            out.insert("dit.block0".to_string(), b0);
+        }
         Ok(out)
     }
 

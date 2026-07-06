@@ -18,6 +18,7 @@ REVISION = ""
 PLAKAT_ARCH = "pixart_dit@1"
 DEFAULT_THRESHOLDS = {
     "dit.pos_embed": (0.9999, 0.01),
+    "dit.block0": (0.999, 0.1),  # first transformer block output (patch+adaLN+caption+block)
 }
 
 
@@ -39,4 +40,31 @@ def dump(fx, device: str):
     ).float()
     if pe.dim() == 2:
         pe = pe.unsqueeze(0)  # → (1, tokens, hidden)
-    return {"dit.pos_embed": pe}
+    captured = {"dit.pos_embed": pe}
+
+    # --- dit.block0: first transformer block on DETERMINISTIC inputs -------------------
+    # Load ONLY the transformer (no T5/VAE). Feed a deterministic latent + deterministic
+    # caption (LCG, same as plakat) + fixed t=500 + the fixture's resolution/aspect. Hook
+    # transformer_blocks[0] to grab its output. This exercises patch-embed + adaLN +
+    # caption-projection + the first block — the DiT block math, isolated from T5.
+    import fixtures
+    tf = PixArtTransformer2DModel.from_pretrained(REPO, subfolder="transformer", torch_dtype=torch.float32)
+    tf.eval()
+    max_tokens = cfg.get("max_caption_tokens") or 300
+    caption_channels = cfg.get("caption_channels", 4096)
+    latent = fixtures.deterministic_latent(cfg["in_channels"], fx.height // 8, fx.width // 8)
+    caption = fixtures.deterministic_tensor((1, max_tokens, caption_channels), seed=2)
+    timestep = torch.tensor([500.0])
+    added_cond = {
+        "resolution": torch.tensor([[float(fx.height), float(fx.width)]]),
+        "aspect_ratio": torch.tensor([[1.0]]),
+    }
+    holder = {}
+    h = tf.transformer_blocks[0].register_forward_hook(lambda m, i, o: holder.__setitem__("b0", o))
+    with torch.no_grad():
+        tf(hidden_states=latent, encoder_hidden_states=caption, timestep=timestep,
+           added_cond_kwargs=added_cond, return_dict=False)
+    h.remove()
+    b0 = holder["b0"]
+    captured["dit.block0"] = b0[0] if isinstance(b0, tuple) else b0  # (1, tokens, hidden)
+    return captured

@@ -990,6 +990,35 @@ impl PixArtSigmaXL {
         let x = x.permute((0, 5, 1, 3, 2, 4))?;
         Ok(x.reshape((b, self.cfg.out_channels, out_h, out_w))?)
     }
+
+    /// Verify tap (`plakat verify` Tier 1, `dit.block0`): run patch-embed + pos-embed +
+    /// adaLN + caption-projection and the FIRST transformer block, returning its output
+    /// `(B, tokens, hidden)`. Additive — reuses the exact prologue of [`Self::forward`]
+    /// and `blocks[0]`. Corresponds to a diffusers forward hook on
+    /// `transformer.transformer_blocks[0]`. The dumper feeds a DETERMINISTIC caption
+    /// (shared LCG) so this isolates the DiT block math from T5 (no T5 load, no
+    /// caption-correspondence confound) — same trick as the deterministic latent.
+    pub fn capture_block0(
+        &self,
+        latent: &Tensor,
+        timestep: &Tensor,
+        caption: &Tensor,
+        resolution: &Tensor,
+        aspect_ratio: &Tensor,
+    ) -> Result<Tensor> {
+        let (_b, _c, lh, lw) = latent.dims4()?;
+        let x = self.patch_embed.forward(latent)?;
+        let (grid_h, grid_w) = self.patch_embed.grid_dims(lh, lw);
+        let interp = (((self.cfg.sample_size * self.cfg.patch_size) as f32) / 64.0).floor().max(1.0);
+        let pe = build_2d_sincos_pos_embed(
+            self.cfg.hidden_size, grid_h, grid_w, self.cfg.sample_size, interp,
+            x.device(), x.dtype(),
+        )?;
+        let x = x.broadcast_add(&pe)?;
+        let (t_block, _embedded) = self.adaln_single.forward(timestep, resolution, aspect_ratio)?;
+        let kv = self.caption_projection.forward(caption)?;
+        self.blocks[0].forward(&x, &t_block, &kv, Some((grid_h, grid_w)))
+    }
 }
 
 // =====================================================================

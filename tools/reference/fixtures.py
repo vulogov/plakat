@@ -48,19 +48,29 @@ def get(fixture_id: str) -> Fixture:
     return FIXTURES[fixture_id]
 
 
-def deterministic_latent(channels: int, lh: int, lw: int):
-    """A DETERMINISTIC latent (1, channels, lh, lw) via a tiny LCG — NOT a seeded RNG.
+def deterministic_tensor(shape, seed: int = 1):
+    """A DETERMINISTIC tensor of `shape` via a tiny LCG — NOT a seeded RNG.
 
-    Byte-for-byte identical to plakat's `verify::deterministic_latent` (same LCG, same
-    C-order flattening), so both sides decode the SAME input for the `vae.decoded` golden.
-    Values in [-1, 1). Returns a torch.Tensor (float32).
+    Byte-for-byte identical to plakat's `verify::deterministic_tensor` (same LCG, same
+    C-order flattening, same `seed` stream selector). Values in [-1, 1). float32.
+    Used to feed identical synthetic conditioning (caption / context / pooled) to both
+    sides so a transformer-block tap isolates the block math from the text encoders.
     """
     import torch
 
-    n = channels * lh * lw
-    x = 1
+    n = 1
+    for d in shape:
+        n *= d
+    x = seed
     vals = [0.0] * n
     for i in range(n):
         x = (x * 1103515245 + 12345) & 0x7FFFFFFF
         vals[i] = (x % 2000) / 1000.0 - 1.0
-    return torch.tensor(vals, dtype=torch.float32).reshape(1, channels, lh, lw)
+    return torch.tensor(vals, dtype=torch.float32).reshape(*shape)
+
+
+def deterministic_latent(channels: int, lh: int, lw: int):
+    """A DETERMINISTIC latent (1, channels, lh, lw) — LCG seed 1. See `deterministic_tensor`.
+    Byte-identical to plakat's `verify::deterministic_latent`; both sides decode/denoise the
+    SAME input. Values in [-1, 1). Returns a torch.Tensor (float32)."""
+    return deterministic_tensor((1, channels, lh, lw), seed=1)

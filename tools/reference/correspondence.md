@@ -50,7 +50,7 @@ shows as a *padding-only* divergence while content tokens still match:
 |---|---|---|---|
 | `pooled_y` | `encode_prompt(...)` → `pooled_prompt_embeds` (concat of the two CLIP pooled) | `sd3::capture_intermediates` → `encode_prompt().0` | ✅ wired. The concat **ORDER** was the killer bug — the golden is diffusers' authoritative order; the comparison decides. |
 | `t5.hidden` | T5 caption embedding | `vendored_t5.rs` | – **BF16** (F16 overflowed → inf captions). |
-| `mmdit.block0` | first joint transformer block output | `mmdit_inner.rs` | – AdaLayerNormContinuous (scale, shift) order; QK-norm; timestep ×1000. |
+| `mmdit.block0` | forward hook on `transformer.transformer_blocks[0]` (x-stream) on DETERMINISTIC latent/`y`/`context` | `mmdit_inner.rs::MMDiT::capture_block0` | ✅ wired, corr 1.0. Embed prologue (patch+pos, t+y, context-embed) + joint block 0. `y`/`context` are shared-LCG synthetic → isolates the joint-block math (QK-norm, timestep, (scale,shift)) from CLIP/T5. |
 | `vae.decoded` | | – | |
 
 ## PixArt-Σ — DiT (`pixart_dit@1`)
@@ -60,7 +60,7 @@ shows as a *padding-only* divergence while content tokens still match:
 | `dit.pos_embed` | `get_2d_sincos_pos_embed(embed, grid, base_size, interpolation_scale)` | `pixart::capture_intermediates` → `build_2d_sincos_pos_embed(...)` | ✅ wired. H/W half-swap + base_size/interp scaling (past bug). Prompt-independent. |
 | `t5.hidden` | T5 caption | `vendored_t5.rs` | – BF16 (overflow bug). |
 | `adaln.embedded_timestep` | `adaln_single` embedded timestep | `pixart_dit.rs::AdaLnSingle` | – final-adaLN uses the *embedded* timestep. |
-| `dit.block0` | first block; **detect 2K KV-compression from `attn1.kv_proj_conv2d.weight`**, not the repo name | `pixart_dit.rs::PixArtBlock` | plakat now auto-detects this (BUGFIX 3.6). |
+| `dit.block0` | forward hook on `transformer.transformer_blocks[0]` on DETERMINISTIC latent/caption | `pixart_dit.rs::PixArtSigmaXL::capture_block0` | ✅ wired, corr 1.0. Patch+pos + adaLN (t+resolution+aspect) + caption-projection + block 0. Confirms plakat's res/aspect conditioning matches diffusers (the DiT-fix 0.987 gap was T5-BF16, not this). Deterministic caption isolates from T5. **2K KV-compression auto-detected from `attn1.kv_proj_conv2d.weight`.** |
 | `vae.decoded` | | | |
 
 ## Stable Cascade (`cascade_prior@1`)

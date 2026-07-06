@@ -16,6 +16,9 @@ DEFAULT_THRESHOLDS = {
     # max_abs 0.15 headroom matches SDXL/Cascade clip_g.pooled: the CLIP-G pooled half
     # carries large-magnitude elements where candle-vs-torch differ by ~0.085 abs (~0.1%).
     "pooled_y": (0.999, 0.15),
+    # first joint block x-stream: corr 1.0 (block math correct); max_abs headroom for the
+    # 1536-d activations where candle-vs-torch accumulation differs by ~0.29 (~sub-%).
+    "mmdit.block0": (0.999, 0.5),
 }
 
 
@@ -42,5 +45,38 @@ def dump(fx, device: str):
             prompt=fx.prompt, prompt_2=None, prompt_3=None,
             device=device, num_images_per_prompt=1, do_classifier_free_guidance=False,
         )
-    # `pooled` is the concat of the two CLIP pooled vectors — the ORDER is what we verify.
-    return {"pooled_y": pooled}
+    captured = {"pooled_y": pooled}
+    del pipe  # free the CLIP encoders before loading the MMDiT
+
+    # --- mmdit.block0: first joint block on DETERMINISTIC inputs -----------------------
+    # Load ONLY the MMDiT (no CLIP/T5/VAE — y/context are synthetic). Feed a deterministic
+    # 16-ch latent + fixed t=500 + deterministic pooled `y` (seed 3) + deterministic
+    # `context` (seed 2). Hook transformer_blocks[0]; take its x-stream (image tokens,
+    # 1024 = 32×32). Exercises patch/pos + timestep+vector embed + context-embed + block.
+    import fixtures
+    from diffusers import SD3Transformer2DModel
+
+    tf = SD3Transformer2DModel.from_pretrained(REPO, subfolder="transformer", torch_dtype=torch.float32)
+    tf.eval()
+    CONTEXT_SEQ = 154  # arbitrary but must match plakat's capture (the shared contract)
+    in_ch = tf.config.in_channels
+    pooled_dim = tf.config.pooled_projection_dim
+    ctx_dim = tf.config.joint_attention_dim
+    latent = fixtures.deterministic_latent(in_ch, fx.height // 8, fx.width // 8)  # (1,16,64,64)
+    y = fixtures.deterministic_tensor((1, pooled_dim), seed=3)
+    context = fixtures.deterministic_tensor((1, CONTEXT_SEQ, ctx_dim), seed=2)
+    timestep = torch.tensor([500.0])
+
+    holder = {}
+    h = tf.transformer_blocks[0].register_forward_hook(lambda m, i, o: holder.__setitem__("b0", o))
+    with torch.no_grad():
+        tf(hidden_states=latent, encoder_hidden_states=context, pooled_projections=y,
+           timestep=timestep, return_dict=False)
+    h.remove()
+    o = holder["b0"]
+    # diffusers JointTransformerBlock returns (encoder_hidden_states, hidden_states); pick the
+    # image (x) stream by token count (1024 = 32×32) rather than relying on tuple order.
+    parts = list(o) if isinstance(o, (tuple, list)) else [o]
+    x_stream = max(parts, key=lambda t: t.shape[1])
+    captured["mmdit.block0"] = x_stream  # (1, 1024, hidden)
+    return captured
