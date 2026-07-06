@@ -20,7 +20,7 @@ from pathlib import Path
 import fixtures
 
 # Per-family dumpers live in models/<name>.py. Add entries as families are authored.
-KNOWN_MODELS = ["sd15", "sdxl", "sd35-medium", "pixart", "stable-cascade", "animatediff"]
+KNOWN_MODELS = ["sd15", "sd21", "sdxl", "sd35-medium", "pixart", "stable-cascade", "animatediff"]
 
 # Fallback thresholds when a dumper doesn't specify per-tensor ones. Correlation must be
 # high (structural correctness); max_abs is loose enough for BF16-vs-F32 rounding but tight

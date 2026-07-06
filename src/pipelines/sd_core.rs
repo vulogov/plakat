@@ -121,7 +121,18 @@ impl SdVariant {
         match self {
             Self::Sd15 => StableDiffusionConfig::v1_5(None, Some(h), Some(w)),
             Self::Sd21 => StableDiffusionConfig::v2_1(None, Some(h), Some(w)),
-            Self::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
+            Self::Sdxl => {
+                let mut c = StableDiffusionConfig::sdxl(None, Some(h), Some(w));
+                // Candle defaults SDXL CLIP-L (`text_encoder`) padding to "!"
+                // (id 0), but diffusers pads `text_encoder` with `<|endoftext|>`
+                // (id 49407) — only `tokenizer_2` (CLIP-G, `clip2`) pads with
+                // "!". `tokenize_padded` reads THIS config's `pad_with`, so the
+                // mispadding lived here: SDXL `clip.encoded` padding rows carried
+                // id-0 embeddings, dropping the golden correspondence to corr
+                // ~0.991. Caught by `plakat verify --tier 1`; leave clip2 as-is.
+                c.clip.pad_with = None;
+                c
+            }
         }
     }
 }

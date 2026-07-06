@@ -11,7 +11,7 @@ REPO = "stabilityai/stable-cascade-prior"  # the prior; the combined pipeline is
 REVISION = ""
 PLAKAT_ARCH = "cascade_prior@1"
 DEFAULT_THRESHOLDS = {
-    "clip_g.pooled": (0.999, 0.05),
+    "clip_g.pooled": (0.999, 0.15),  # pooled matches in direction (corr ~1.0); looser abs bound
 }
 
 

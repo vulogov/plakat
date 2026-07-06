@@ -231,6 +231,19 @@ pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) 
         }
     };
 
+    // Debugging aid (dormant unless `PLAKAT_VERIFY_DUMP_DIR` is set): persist the captured
+    // intermediates so a finding can be localized element-wise against the golden offline.
+    if let Ok(dir) = std::env::var("PLAKAT_VERIFY_DUMP_DIR") {
+        let out = Path::new(&dir).join(format!("{model}_{fixture}_captured.safetensors"));
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match candle_core::safetensors::save(&captured, &out) {
+            Ok(()) => eprintln!("verify: dumped {} captured tensors → {}", captured.len(), out.display()),
+            Err(e) => eprintln!("verify: capture dump failed: {e:#}"),
+        }
+    }
+
     compare_against_goldens(&manifest, &captured, &goldens)
 }
 

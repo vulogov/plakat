@@ -107,13 +107,21 @@ impl Config {
     }
 
     /// SDXL CLIP-L (text_encoder). 768d, 12 layers.
+    ///
+    /// Pads with `<|endoftext|>` (id 49407) — the openai CLIP-L tokenizer's
+    /// `pad_token`, which is what diffusers uses for `text_encoder`. (Only the
+    /// laion bigG `tokenizer_2` — see [`Config::sdxl2`] — pads with `"!"`/id 0.)
+    /// Historically this used `pad_with: Some("!")`, which mispadded every SDXL
+    /// (and SD3) CLIP-L forward: content + EOS matched diffusers but the padding
+    /// rows carried id-0 embeddings instead of EOS, dropping the `clip.encoded`
+    /// correspondence to corr ~0.991. Caught by `plakat verify --tier 1`.
     pub fn sdxl() -> Self {
         Self {
             vocab_size: 49408,
             embed_dim: 768,
             intermediate_size: 3072,
             max_position_embeddings: 77,
-            pad_with: Some("!".to_string()),
+            pad_with: None,
             num_hidden_layers: 12,
             num_attention_heads: 12,
             projection_dim: 768,
