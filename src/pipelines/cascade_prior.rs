@@ -984,6 +984,34 @@ impl StableCascadePrior {
         )
     }
 
+    /// Verify tap (`plakat verify` Tier 1, `stage_c.block0`): the input embedding
+    /// (conv + norm) followed by the FIRST `Res` + `Time` sub-blocks of down level 0 —
+    /// the conditioned-conv core, tapped BEFORE the first `Attn`. Corresponds to a diffusers
+    /// forward hook on `down_blocks[0][1]` (the first `SDCascadeTimestepBlock`).
+    ///
+    /// Stops before `Attn` deliberately: the attention self-attends over 24×24 = 576
+    /// near-uniform tokens of the synthetic white-noise verify latent, which is numerically
+    /// ill-conditioned (candle-vs-torch softmax/matmul accumulation diverges on OOD input —
+    /// the same effect that made the deep `stage_c.out` a coarse 0.989 gate). Res (conv) +
+    /// Time (conditioning modulation) are well-conditioned on any input → fine corr 1.0.
+    /// Additive; Stage C has no effnet/pixels path.
+    pub fn capture_block0(
+        &self,
+        x: &Tensor,
+        t_emb: &Tensor,
+        sca_emb: Option<&Tensor>,
+        crp_emb: Option<&Tensor>,
+        clip: &Tensor,
+    ) -> Result<Tensor> {
+        let mut h = self.embedding_conv.forward(x)?;
+        h = self.embedding_norm.forward(&h)?;
+        // Strict [Res, Time, Attn] repeat — take the first Res + Time (stop before Attn).
+        for block in self.down_blocks[0].iter().take(2) {
+            h = block.forward(&h, t_emb, sca_emb, crp_emb, clip)?;
+        }
+        Ok(h)
+    }
+
     /// v0.41 phase 2f: forward that also collects named intermediate
     /// activations (emb, per-down-level, per-up-level, clf) for
     /// reference comparison against the diffusers dump. Test-only.

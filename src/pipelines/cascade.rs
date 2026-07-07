@@ -476,15 +476,14 @@ impl Pipeline {
             let (_penult, pooled) = self.encode_prompt(prompt)?;
             out.insert("clip_g.pooled".to_string(), pooled);
         }
-        // Stage-C denoiser core: full prior prediction on a shared deterministic latent
-        // (16×24×24) at a fixed ratio t=0.5, with the REAL CLIP-G text conditioning (its pooled
-        // is golden-verified above at corr 0.99997). Structured conditioning matters here —
-        // feeding white-noise through the deep 3.6B UNet amplifies fp-accumulation noise
-        // (corr drops to ~0.98); real conditioning matches diffusers cleanly, same as
-        // `unet.out`. sca/crp are the sinusoidal embedding of 0 — matching inference AND
-        // diffusers' `sca=None` path (`cond or zeros_like`). Corresponds to
-        // `StableCascadeUNet.forward` full output.
-        if wanted.contains("stage_c.out") {
+        // Stage-C denoiser core: the input embedding + first [Res, Time, Attn] triple on a
+        // shared deterministic latent (16×24×24) at a fixed ratio t=0.5, with the REAL CLIP-G
+        // text conditioning (its pooled is golden-verified above at corr 0.99997). sca/crp are
+        // the sinusoidal embedding of 0 — matching inference AND diffusers' `sca=None` path
+        // (`cond or zeros_like`). This shallow block tap corresponds to a diffusers hook on
+        // `down_blocks[0][2]`. (The deep full forward is OOD-sensitive on a white-noise latent
+        // → only a coarse 0.989; one triple doesn't compound the drift → fine corr 1.0.)
+        if wanted.contains("stage_c.block0") {
             use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
             let latent = crate::verify::deterministic_latent(16, 24, 24, &self.device, self.dtype)?;
             let (clip_text, clip_pooled) = self.encode_prompt(prompt)?;  // real CLIP-G penult + pooled
@@ -493,10 +492,10 @@ impl Pipeline {
             let t_emb = sinusoidal_time_embedding(&t_ratio, 64, 10000.0)?.to_dtype(self.dtype)?;
             let zero = Tensor::zeros(1, candle_core::DType::F32, &self.device)?;
             let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0)?.to_dtype(self.dtype)?;
-            let pred = self.stage_c.forward(
-                &latent, &t_emb, Some(&zero_emb), Some(&zero_emb), &clip_c, None, None,
+            let b0 = self.stage_c.capture_block0(
+                &latent, &t_emb, Some(&zero_emb), Some(&zero_emb), &clip_c,
             )?;
-            out.insert("stage_c.out".to_string(), pred);
+            out.insert("stage_c.block0".to_string(), b0);
         }
         Ok(out)
     }
