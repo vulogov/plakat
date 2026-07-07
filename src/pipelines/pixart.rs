@@ -62,7 +62,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use candle_core::{DType, Device, IndexOp, Tensor, Var};
 use candle_nn::VarBuilder;
 use candle_transformers::models::stable_diffusion::{StableDiffusionConfig, vae::AutoEncoderKL};
-use candle_transformers::models::t5;
+// v2.1: route PixArt's T5 through the vendored copy (drop-in for candle's `t5`, proven
+// equivalent by `vendored_t5::tests::vendored_matches_candle_t5`). Needed for the padding
+// attention mask + an immutable `&self` encode — candle's `T5EncoderModel::forward` is `&mut`
+// and takes no mask, so captions were encoded WITHOUT masking pad tokens (a real bug).
+use crate::pipelines::vendored_t5 as t5;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
@@ -363,11 +367,18 @@ impl Pipeline {
     ///   golden pins the formula. Prompt-independent.
     pub fn capture_intermediates(
         &self,
+        prompt: &str,
         width: u32,
         height: u32,
         wanted: &std::collections::HashSet<String>,
     ) -> Result<std::collections::HashMap<String, Tensor>> {
         let mut out = std::collections::HashMap::new();
+        // T5 caption embedding WITH the padding attention mask (the v2.1 fix). Corresponds to
+        // diffusers `text_encoder(ids, attention_mask=mask)[0]`. Real prompt (not deterministic)
+        // — this is where the missing-mask bug lived (real tokens attending to pad).
+        if wanted.contains("t5.hidden") {
+            out.insert("t5.hidden".to_string(), self.encode_prompt(prompt)?);
+        }
         if wanted.contains("dit.pos_embed") {
             let cfg = &self.dit_cfg;
             let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
@@ -408,10 +419,14 @@ impl Pipeline {
         Ok(out)
     }
 
-    /// Tokenize a prompt + forward through T5. Returns `(1,
-    /// max_caption_tokens, 4096)` left-padded with zeros to match
-    /// the model's training-time sequence length.
-    fn encode_prompt(&mut self, prompt: &str) -> Result<Tensor> {
+    /// Tokenize a prompt + forward through T5 **with a padding attention mask**. Returns
+    /// `(1, max_caption_tokens, 4096)` right-padded with zeros to the training sequence length.
+    ///
+    /// The mask (`1` for the real tokens incl. EOS, `0` for padding) is the fix for the
+    /// caption-without-mask bug: without it T5 self-attention lets real tokens attend to the
+    /// (many) pad tokens, drifting the real-token embeddings to corr ~0.7 vs the correct
+    /// masked output — matching diffusers, which always passes `attention_mask`.
+    fn encode_prompt(&self, prompt: &str) -> Result<Tensor> {
         let max_tokens = self.dit_cfg.max_caption_tokens;
         let mut ids = self
             .t5_tok
@@ -420,11 +435,16 @@ impl Pipeline {
             .get_ids()
             .to_vec();
         ids.truncate(max_tokens);
+        let real = ids.len(); // real tokens incl. EOS, before pad
         ids.resize(max_tokens, 0);
         let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        // attention_mask: 1.0 for [0, real), 0.0 for pad — F32 like the T5 forward.
+        let mut mask: Vec<f32> = vec![1.0; real];
+        mask.resize(max_tokens, 0.0);
+        let mask_t = Tensor::new(mask.as_slice(), &self.device)?.unsqueeze(0)?;
         // Keep the T5 output in F32 (the DiT runs F32 and the BF16→F16
         // round-trip would re-overflow the large embedding values).
-        let hidden = self.t5_enc.forward(&ids_t)?.to_dtype(DType::F32)?;
+        let hidden = self.t5_enc.forward_with_mask(&ids_t, &mask_t)?.to_dtype(DType::F32)?;
         Ok(hidden)
     }
 

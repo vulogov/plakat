@@ -18,7 +18,8 @@ REVISION = ""
 PLAKAT_ARCH = "pixart_dit@1"
 DEFAULT_THRESHOLDS = {
     "dit.pos_embed": (0.9999, 0.01),
-    "dit.block0": (0.999, 0.1),  # first transformer block output (patch+adaLN+caption+block)
+    "dit.block0": (0.999, 0.1),   # first transformer block output (patch+adaLN+caption+block)
+    "t5.hidden": (0.999, 0.5),    # T5 caption embedding WITH pad attention mask (large activations)
 }
 
 
@@ -67,4 +68,17 @@ def dump(fx, device: str):
     h.remove()
     b0 = holder["b0"]
     captured["dit.block0"] = b0[0] if isinstance(b0, tuple) else b0  # (1, tokens, hidden)
+    del tf  # free the DiT (~2.4GB) before loading T5-XXL (F32 ~19GB)
+
+    # --- t5.hidden: caption embedding WITH the padding attention mask ------------------
+    # diffusers ALWAYS passes attention_mask to T5; plakat previously didn't (the bug).
+    # Use the flan-t5-base tokenizer (matches plakat's drop-in; the PixArt spiece tokenizer
+    # needs tiktoken/sentencepiece which aren't installed). F32 to match plakat's CPU T5.
+    from transformers import T5EncoderModel, AutoTokenizer
+    tok = AutoTokenizer.from_pretrained("google/flan-t5-base")
+    t5 = T5EncoderModel.from_pretrained(REPO, subfolder="text_encoder", torch_dtype=torch.float32).eval()
+    ti = tok(fx.prompt, padding="max_length", max_length=max_tokens, truncation=True, return_tensors="pt")
+    with torch.no_grad():
+        t5_hidden = t5(ti.input_ids, attention_mask=ti.attention_mask)[0].float()  # (1, max_tokens, 4096)
+    captured["t5.hidden"] = t5_hidden
     return captured

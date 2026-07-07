@@ -210,7 +210,7 @@ pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) 
         })
         .await
         {
-            Ok(p) => match p.capture_intermediates(fx.width, fx.height, &wanted) {
+            Ok(p) => match p.capture_intermediates(fx.prompt, fx.width, fx.height, &wanted) {
                 Ok(c) => c,
                 Err(e) => return cap_fail(e),
             },

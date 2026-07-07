@@ -754,9 +754,10 @@ impl T5Block {
         &self,
         xs: &Tensor,
         position_bias: Option<&Tensor>,
+        attn_bias: Option<&Tensor>,
     ) -> Result<(Tensor, Option<Tensor>)> {
         let _enter = self.span.enter();
-        let (xs, position_bias) = self.self_attn_forward_encoder(xs, position_bias)?;
+        let (xs, position_bias) = self.self_attn_forward_encoder(xs, position_bias, attn_bias)?;
         let xs = self.ff.forward(&xs)?;
         Ok((xs, position_bias))
     }
@@ -765,13 +766,14 @@ impl T5Block {
         &self,
         xs: &Tensor,
         position_bias: Option<&Tensor>,
+        attn_bias: Option<&Tensor>,
     ) -> Result<(Tensor, Option<Tensor>)> {
         let _enter = self.self_attn.span.enter();
         let normed_xs = self.self_attn.layer_norm.forward(xs)?;
         let (ys, position_bias) =
             self.self_attn
                 .self_attention
-                .forward_encoder(&normed_xs, position_bias)?;
+                .forward_encoder(&normed_xs, position_bias, attn_bias)?;
         let ys = (xs + ys)?;
         Ok((ys, position_bias))
     }
@@ -790,6 +792,7 @@ impl T5Attention {
         &self,
         xs: &Tensor,
         position_bias: Option<&Tensor>,
+        attn_bias: Option<&Tensor>,
     ) -> Result<(Tensor, Option<Tensor>)> {
         let _enter = self.span.enter();
         let (b_sz, q_len) = (xs.dim(0)?, xs.dim(1)?);
@@ -870,6 +873,15 @@ impl T5Attention {
             },
         };
 
+        // Padding mask: `attn_bias` is an additive `(B,1,1,kv_len)` bias — 0 for real key
+        // positions, a large negative for pad keys — so softmax gives ~0 weight to pad.
+        // This is the fix for T5 encoding captions without masking pad tokens: without it,
+        // real tokens attend to the (many) pad tokens and their embeddings drift (corr ~0.7
+        // vs the correct masked output on the real-token rows).
+        let scores = match attn_bias {
+            Some(bias) => scores.broadcast_add(bias)?,
+            None => scores,
+        };
         let attn_weights = {
             let _enter = self.span_sm.enter();
             candle_nn::ops::softmax_last_dim(&scores)?
@@ -945,13 +957,13 @@ impl T5Stack {
     // (which embeds ids first) and `forward_from_input_embeds` (which is
     // handed the embeddings directly). Bit-identical to `forward_dt` along
     // the encoder branch: no cross-attn, no decoder mask, no kv_cache.
-    fn encode_from_embeds(&self, input_embeds: Tensor) -> Result<Tensor> {
+    fn encode_from_embeds(&self, input_embeds: Tensor, attn_bias: Option<&Tensor>) -> Result<Tensor> {
         let _enter = self.span.enter();
         let mut hidden_states = input_embeds;
         let mut position_bias = None;
         for block in self.block.iter() {
             (hidden_states, position_bias) =
-                block.forward_encoder(&hidden_states, position_bias.as_ref())?
+                block.forward_encoder(&hidden_states, position_bias.as_ref(), attn_bias)?
         }
         self.final_layer_norm.forward(&hidden_states)
     }
@@ -1000,7 +1012,27 @@ impl T5EncoderModel {
     pub fn forward(&mut self, input_ids: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
         let input_embeds = self.encoder.embed_tokens(input_ids)?;
-        self.encoder.encode_from_embeds(input_embeds)
+        self.encoder.encode_from_embeds(input_embeds, None)
+    }
+
+    /// Encoder forward with a **padding attention mask** — the fix for encoding captions
+    /// without masking pad tokens. `attention_mask` is `(B, L)` with `1.0` for real tokens
+    /// and `0.0` for padding (exactly the HF/diffusers `attention_mask`). Pad key positions
+    /// are given a large-negative additive bias so T5 self-attention ignores them; without
+    /// this, real tokens attend to pad and their embeddings drift (corr ~0.7 vs correct).
+    /// `&self` (the encoder path never mutates) — usable from immutable capture code.
+    pub fn forward_with_mask(&self, input_ids: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
+        let _enter = self.span.enter();
+        let input_embeds = self.encoder.embed_tokens(input_ids)?;
+        // (B, L) → additive bias (B, 1, 1, L): 0 where real, f32::MIN where pad. Cast to the
+        // embedding dtype so it broadcast-adds onto the attention scores regardless of the
+        // model's load dtype (F32 on CPU, BF16 on GPU).
+        let (b, l) = attention_mask.dims2()?;
+        let am = attention_mask.to_dtype(input_embeds.dtype())?;
+        let one = Tensor::ones((b, l), am.dtype(), am.device())?;
+        let inv = (one - &am)?; // 1 where pad, 0 where real
+        let bias = (inv * (f32::MIN as f64))?.reshape((b, 1, 1, l))?;
+        self.encoder.encode_from_embeds(input_embeds, Some(&bias))
     }
 
     /// Shared token-embedding lookup for `input_ids` `(B, L)` → `(B, L, d_model)`.
@@ -1018,7 +1050,7 @@ impl T5EncoderModel {
     /// `forward(ids) == forward_from_input_embeds(embed_tokens(ids))`.
     pub fn forward_from_input_embeds(&self, inputs_embeds: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
-        self.encoder.encode_from_embeds(inputs_embeds.clone())
+        self.encoder.encode_from_embeds(inputs_embeds.clone(), None)
     }
 
     pub fn device(&self) -> &Device {
@@ -1091,6 +1123,41 @@ mod tests {
             .to_scalar::<f32>()
             .unwrap();
         assert!(diff < 1e-4, "vendored T5 diverged from candle T5 by {diff}");
+    }
+
+    /// Padding-mask semantics: an all-ones mask is identical to the unmasked `forward`
+    /// (nothing to mask), and a mask that zeros out some positions changes the real-token
+    /// output (real tokens stop attending to the masked-out ones — the caption-mask fix).
+    #[test]
+    fn forward_with_mask_all_ones_matches_forward_and_masking_changes_output() {
+        let dev = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
+        let cfg: Config = serde_json::from_str(TINY_CFG).unwrap();
+        let mut m = T5EncoderModel::load(vb, &cfg).unwrap();
+        {
+            let data = varmap.data().lock().unwrap();
+            for var in data.values() {
+                let r = Tensor::randn(0f32, 0.5f32, var.shape().dims(), &dev).unwrap();
+                var.set(&r).unwrap();
+            }
+        }
+        // 3 real tokens + 3 pad.
+        let ids = Tensor::new(&[[5u32, 9, 12, 0, 0, 0]], &dev).unwrap();
+        let plain = m.forward(&ids).unwrap();
+
+        let ones = Tensor::ones((1, 6), DType::F32, &dev).unwrap();
+        let masked_ones = m.forward_with_mask(&ids, &ones).unwrap();
+        let d0 = (&plain - &masked_ones).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert!(d0 < 1e-5, "all-ones mask must equal plain forward, diverged by {d0}");
+
+        // Mask out the 3 pad positions → the real-token rows must change vs unmasked.
+        let am = Tensor::new(&[[1f32, 1., 1., 0., 0., 0.]], &dev).unwrap();
+        let masked = m.forward_with_mask(&ids, &am).unwrap();
+        let real_plain = plain.narrow(1, 0, 3).unwrap();
+        let real_masked = masked.narrow(1, 0, 3).unwrap();
+        let d1 = (&real_plain - &real_masked).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert!(d1 > 1e-4, "masking pad positions must change the real-token output, but diff was {d1}");
     }
 
     /// The new TI methods must agree with the normal path:

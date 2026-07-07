@@ -58,7 +58,7 @@ shows as a *padding-only* divergence while content tokens still match:
 | name | diffusers | plakat | notes |
 |---|---|---|---|
 | `dit.pos_embed` | `get_2d_sincos_pos_embed(embed, grid, base_size, interpolation_scale)` | `pixart::capture_intermediates` → `build_2d_sincos_pos_embed(...)` | ✅ wired. H/W half-swap + base_size/interp scaling (past bug). Prompt-independent. |
-| `t5.hidden` | T5 caption | `vendored_t5.rs` | – BF16 (overflow bug). |
+| `t5.hidden` | `text_encoder(ids, attention_mask=mask)[0]` — masked T5 caption | `pixart::encode_prompt` → `vendored_t5::forward_with_mask` | ✅ wired, corr 1.0. **FINDING (v2.1): captions were encoded WITHOUT the pad attention mask** — real tokens attended to pad, drifting the caption to corr ~0.70 vs correct. Fixed: PixArt now routes T5 through the vendored copy + passes the mask. BF16 on GPU / F32 on CPU. |
 | `adaln.embedded_timestep` | `adaln_single` embedded timestep | `pixart_dit.rs::AdaLnSingle` | – final-adaLN uses the *embedded* timestep. |
 | `dit.block0` | forward hook on `transformer.transformer_blocks[0]` on DETERMINISTIC latent/caption | `pixart_dit.rs::PixArtSigmaXL::capture_block0` | ✅ wired, corr 1.0. Patch+pos + adaLN (t+resolution+aspect) + caption-projection + block 0. Confirms plakat's res/aspect conditioning matches diffusers (the DiT-fix 0.987 gap was T5-BF16, not this). Deterministic caption isolates from T5. **2K KV-compression auto-detected from `attn1.kv_proj_conv2d.weight`.** |
 | `vae.decoded` | | | |
