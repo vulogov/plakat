@@ -51,6 +51,24 @@ pub async fn resolve_golden_files(
     Ok((manifest, goldens))
 }
 
+/// Resolve the Tier-2 golden PNG for `(model, fixture)` — the frozen regression reference.
+/// Local `--golden-dir/<model>/<fixture>/golden.png` or the HF dataset. Errors → caller skips.
+pub async fn resolve_golden_image(
+    model: &str,
+    fixture: &str,
+    local_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(dir) = local_dir {
+        let p = dir.join(model).join(fixture).join("golden.png");
+        anyhow::ensure!(p.exists(), "no golden image at {} (author with the Tier-2 freeze step)", p.display());
+        return Ok(p);
+    }
+    let repo = dataset_repo();
+    crate::hf::download::get_dataset_file(&repo, &dataset_file_path(model, fixture, "golden.png"))
+        .await
+        .with_context(|| format!("fetching golden.png for {model}/{fixture} from HF dataset {repo}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,7 @@ pub mod golden;
 pub mod manifest;
 pub mod tier0;
 pub mod tier1;
+pub mod tier2;
 
 pub use capture::{CaptureBag, TensorTap};
 
@@ -205,13 +206,19 @@ pub async fn run(cfg: &VerifyConfig) -> Result<()> {
             }
         }
     }
-    // Tier 2 — end-to-end perceptual gate (phase 3).
+    // Tier 2 — end-to-end perceptual gate: render the fixture via the REAL generate path
+    // (deterministic LCG init) and compare to a frozen golden PNG (regression gate).
     if want(2) {
-        report.push(Check::skip(
-            "tier2.end_to_end_perceptual",
-            2,
-            "golden-image comparison not yet available (RFC_VERIFY phase 3)",
-        ));
+        let src = cfg.golden_dir.as_deref();
+        let ran = tier2::models(cfg);
+        if ran.is_empty() {
+            report.push(Check::skip("tier2.end_to_end", 2, "no Tier-2 fixture for this model"));
+        }
+        for model in ran {
+            for c in tier2::run_model(&model, src, &cfg.device).await {
+                report.push(c);
+            }
+        }
     }
 
     if cfg.json {

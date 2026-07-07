@@ -1480,9 +1480,16 @@ impl Pipeline {
                 crate::pipelines::scheduler::build(req.scheduler, &self.core.cfg, req.steps)?;
             let timesteps = scheduler.timesteps().to_vec();
 
-            let mut latents =
+            // Verify Tier 2 (env-gated, dormant otherwise): candle's CPU RNG isn't
+            // seed-reproducible, so an end-to-end regression golden needs a deterministic
+            // init. `PLAKAT_VERIFY_DET_INIT` swaps the random init for the shared LCG latent —
+            // making the WHOLE real denoise+decode path reproducible run-to-run.
+            let mut latents = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+                crate::verify::deterministic_latent(4, latent_h, latent_w, &self.core.device, self.core.dtype)?
+            } else {
                 Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
-                    .to_dtype(self.core.dtype)?;
+                    .to_dtype(self.core.dtype)?
+            };
             latents = (latents * scheduler.init_noise_sigma())?;
 
             // Compute the index where to switch from base UNet to the
