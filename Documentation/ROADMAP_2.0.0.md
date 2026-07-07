@@ -79,9 +79,18 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
         **stable-cascade** `clip_g.pooled` 0.99997; **sd35-medium** `pooled_y` 0.99998 (concat
         order correct). Pooled vectors use max_abs 0.15 (CLIP-G accumulation noise; corr carries
         correctness). `verify --tier 1 --model <m>` now passes for everyone, self-contained.
-        Remaining follow-ups: deeper taps (UNet-internal `unet.mid`, AnimateDiff motion) + Tier 2
-        (phase 3).
-- [ ] **Phase 3 — Tier 2 end-to-end perceptual gate** (golden corpus PNGs).
+      - [x] **Denoiser/transformer-core + motion taps (all 7 families)** — beyond conditioning:
+        `unet.out` (SD1.5/SDXL) + `unet.mid` (SDXL), `dit.block0` (PixArt), `mmdit.block0`
+        (SD3.5), `stage_c.out` (Cascade — coarse, OOD-sensitive deep UNet), `motion.block0`
+        (AnimateDiff, via the flag-load path). All corr 1.0 vs diffusers 0.38 except Cascade
+        (0.989 coarse). Block taps use a shared deterministic caption/context
+        (`verify::deterministic_tensor`). Hosted on `vulogov98/plakat-verify`.
+- [x] **Phase 3 — Tier 2 end-to-end perceptual gate.** Renders the fixture via the REAL
+      generate path (encode→denoise→VAE→PNG) and compares to a frozen golden PNG (regression
+      gate = plakat's own deterministic output). Determinism via `PLAKAT_VERIFY_DET_INIT` (LCG
+      init, candle CPU RNG isn't seed-reproducible) + DDIM → byte-identical run-to-run.
+      Self-contained metrics (mean-abs + global SSIM, no torch). sd15 256²: SSIM 1.0 / mean_abs
+      0.0. `src/verify/tier2.rs` + `golden::resolve_golden_image`.
 - [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
       decision cheap to verify.
 
