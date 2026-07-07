@@ -91,8 +91,13 @@ Full design + impact analysis: [`RFC_VERIFY.md`](RFC_VERIFY.md).
       init, candle CPU RNG isn't seed-reproducible) + DDIM → byte-identical run-to-run.
       Self-contained metrics (mean-abs + global SSIM, no torch). sd15 256²: SSIM 1.0 / mean_abs
       0.0. `src/verify/tier2.rs` + `golden::resolve_golden_image`.
-- [ ] **Phase 4 — CI, regression baselines, docs**; makes BUGFIX 1.2 + the map-determinism
-      decision cheap to verify.
+- [x] **Phase 4 — CI, regression baselines, docs.** `.github/workflows/ci.yml` runs Tier 0
+      (`plakat verify --tier 0`) on every push/PR (zero downloads, ~0.2s, non-zero exit fails);
+      an opt-in `verify-models` job (workflow_dispatch, `model` input) runs the weight-backed
+      Tier 1/2 fetching goldens from HF. The hosted goldens ARE the regression baselines.
+      Operator guide in `Documentation/VERIFY.md` (running, authoring/hosting, adding a capture
+      point, threshold calibration). Makes the map-determinism invariant + every capture point
+      cheap to re-verify. **RFC_VERIFY complete — the 2.0.0 theme is delivered end-to-end.**
 
 ## Other candidate themes (deferred / secondary)
 
