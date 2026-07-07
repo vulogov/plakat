@@ -17,53 +17,45 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 1.22.0 — power-user polish + a source-wide stability pass
+## What's new in 2.0.0 — `plakat verify`: proof the models are right
 
-1.22.0 finishes the power-user loop **and** hardens the whole codebase: a six-part
-source audit found ~45 issues, and this release fixes **40 of them** (plus one
-mitigated) — security, host-crash, silently-wrong-output, and input-driven-panic
-bugs across the UI, pipelines, scenario runner, and training.
+Every prior cycle has, at some point, rescued a *silently-wrong* model by hand-comparing
+plakat's math against a reference implementation. 2.0.0 turns that method into a
+**committed, repeatable subcommand** — and it earned its keep by catching a real SDXL bug
+on its very first run.
 
 ```bash
-plakat ui            # the interactive terminal UI
+plakat verify                        # run the whole harness
+plakat verify --tier 0               # structural checks — zero downloads, ~0.2s
+plakat verify --tier 1 --model sdxl  # per-module correctness vs a frozen reference
 ```
 
-**Power-user loop**
-- **Per-model generation size** — **`/size 1024x768`** (or `native`) sets a size each model
-  remembers, budget-guarded against free RAM. **`/steps`** / **`/cfg`** override denoise
-  steps / guidance; all three fold into named **presets**.
-- **`/vary` into presets** — a preset now carries the model + LoRA stack + negative + size +
-  steps + guidance.
-- **Undo / redo** — **`Ctrl-Z`** / **`Ctrl-Shift-Z`** step the live image back / forward
-  through the session history.
-- **Faster scenario runs** — a matching all-SD scenario **reuses the loaded Chat model** (no
-  reload) when it's provably the same base.
+**A self-contained correctness harness.** `plakat verify` checks that each model's *real*
+internals match a frozen reference — the text encoders, the pooled conditioning, the VAE,
+and the **denoiser / transformer core** of all seven families (SD 1.5, SD 2.1, SDXL,
+PixArt-Σ, Stable Cascade, SD 3.5, AnimateDiff). Three tiers: **structural** (no downloads —
+a fast, always-on gate), **per-module** (correlation vs golden tensors), and **end-to-end**
+(render a fixture, compare to a golden image). Every core tap matches the reference at
+correlation 1.0.
 
-**Stability pass — the headline fixes**
-- **Security** — the Civitai downloader could be tricked into overwriting arbitrary files
-  (path traversal) by a hostile file name; now confined to the cache.
-- **Won't crash your host, won't false-abort** — the OOM watchdog now catches a fast
-  single-buffer allocation *and* only aborts when plakat itself is the memory culprit
-  (no more self-terminating on another app's pressure).
-- **No more silent garbage** — fixed **SDXL AnimateDiff** (every frame past the first paired
-  with the wrong prompt → incoherent video), regional-SDXL conditioning, LoKr/Flux/SDXL
-  pooling, and more.
-- **No more input-driven panics** — deeply-nested prompts, `steps=0`, oversized maps, and a
-  dead render thread used to crash or wedge the UI; all handled cleanly now.
-- **Safer training** — atomic checkpoint writes (a mid-write OOM can't destroy your only
-  LoRA) + an LR warm-up on `--resume`.
+**Pure Rust — nothing new to install.** The shipped binary never touches Python or torch:
+it fetches the golden reference tensors from Hugging Face exactly like it fetches model
+weights. The reference authoring (which *does* use diffusers) runs offline, once, and is
+excluded from the crate. plakat stays self-contained.
 
-Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
-that a compiled scenario runs headlessly.
+**It found a real bug.** On its first run it flagged SDXL's `clip.encoded` at correlation
+0.991: SDXL's CLIP-L text encoder was padding with the wrong token (`"!"` instead of
+end-of-text). Fixed — every SDXL (and SD 3.5) render now matches the reference exactly.
 
-> Inline images use the terminal's graphics protocol (Kitty/Ghostty/WezTerm/iTerm2/Sixel);
-> the UI runs without one (placeholders). It's behind the default-on `ui` feature. Flux in
-> the UI is postponed until it can be verified on capable hardware.
+**Wired into CI.** Every push runs the structural tier; a one-click Actions job runs the
+full weight-backed verification. See [`Documentation/VERIFY.md`](Documentation/VERIFY.md)
+for the operator guide and [`Documentation/RFC_VERIFY.md`](Documentation/RFC_VERIFY.md) for
+the design.
 
-See [`Documentation/BUGFIX_PLAN.md`](Documentation/BUGFIX_PLAN.md) for the full audit +
-every fix, and [`Documentation/Tutorials/UI_TUTORIAL.md`](Documentation/Tutorials/UI_TUTORIAL.md).
+Everything else is unchanged: one loop, and every output is a normal plakat PNG (recipe
+embedded) that a compiled scenario runs headlessly.
 
-**Earlier releases** (v0.13 – v1.21):
+**Earlier releases** (v0.13 – 1.22):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -358,6 +350,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `models {search,recommend,size,pull,ls,rm,aliases}` | Browse HuggingFace and manage the local cache. v0.20 adds **`aliases`** — enumerate every `--model` short-name plakat understands, grouped by family. `--family flux`, `--repo` (bare ids for piping), `--gated`. |
 | `init [DIR]` | **v0.20**. Bootstrap a runnable starter project — `scenario.hjson` + `wildcards/` + `.gitignore`. Targets `sd15` + `enhancer: local` so first-run users with no HF token / no API key can generate end-to-end. `--minimal` writes only the scenario; `--force` overwrites. |
 | `doctor` | Health-check FaceID / SCRFD setup, plus (v0.18) build/runtime device match, libcuda driver shim, HF cache disk usage. v0.19 adds `--json` for structured CI / scripting output. |
+| `verify` | **v2.0**. Model-correctness harness (pure Rust — no python/torch). `--tier 0` structural/determinism (no downloads), `--tier 1` per-module correctness vs frozen reference tensors fetched from HF, `--tier 2` end-to-end perceptual. `--model`, `--golden-dir`, `--json`. See [`VERIFY.md`](Documentation/VERIFY.md). |
 | `inspect <FILE>` | List every tensor in a `.safetensors` file. |
 | `metadata <FILE.png>` | Read the v0.17 Auto1111 `parameters` PNG tEXt chunk + sibling `.json` sidecar. Reverse of the metadata write path. `--json-only` / `--params-only` to filter. |
 | `clone <FILE.png>` | v0.19. Translate a PNG's metadata into a re-runnable `plakat generate` shell command. JSON sidecar preferred; falls back to parsing the Auto1111 chunk (works on Civitai uploads + A1111 Web UI outputs). `--one-line` for piping. |

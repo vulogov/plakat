@@ -8,6 +8,52 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 1.22.0 — power-user polish + a source-wide stability pass
+
+1.22.0 finishes the power-user loop **and** hardens the whole codebase: a six-part
+source audit found ~45 issues, and this release fixes **40 of them** (plus one
+mitigated) — security, host-crash, silently-wrong-output, and input-driven-panic
+bugs across the UI, pipelines, scenario runner, and training.
+
+```bash
+plakat ui            # the interactive terminal UI
+```
+
+**Power-user loop**
+- **Per-model generation size** — **`/size 1024x768`** (or `native`) sets a size each model
+  remembers, budget-guarded against free RAM. **`/steps`** / **`/cfg`** override denoise
+  steps / guidance; all three fold into named **presets**.
+- **`/vary` into presets** — a preset now carries the model + LoRA stack + negative + size +
+  steps + guidance.
+- **Undo / redo** — **`Ctrl-Z`** / **`Ctrl-Shift-Z`** step the live image back / forward
+  through the session history.
+- **Faster scenario runs** — a matching all-SD scenario **reuses the loaded Chat model** (no
+  reload) when it's provably the same base.
+
+**Stability pass — the headline fixes**
+- **Security** — the Civitai downloader could be tricked into overwriting arbitrary files
+  (path traversal) by a hostile file name; now confined to the cache.
+- **Won't crash your host, won't false-abort** — the OOM watchdog now catches a fast
+  single-buffer allocation *and* only aborts when plakat itself is the memory culprit
+  (no more self-terminating on another app's pressure).
+- **No more silent garbage** — fixed **SDXL AnimateDiff** (every frame past the first paired
+  with the wrong prompt → incoherent video), regional-SDXL conditioning, LoKr/Flux/SDXL
+  pooling, and more.
+- **No more input-driven panics** — deeply-nested prompts, `steps=0`, oversized maps, and a
+  dead render thread used to crash or wedge the UI; all handled cleanly now.
+- **Safer training** — atomic checkpoint writes (a mid-write OOM can't destroy your only
+  LoRA) + an LR warm-up on `--resume`.
+
+Everything is still one loop, and every output is a normal plakat PNG (recipe embedded)
+that a compiled scenario runs headlessly.
+
+> Inline images use the terminal's graphics protocol (Kitty/Ghostty/WezTerm/iTerm2/Sixel);
+> the UI runs without one (placeholders). It's behind the default-on `ui` feature. Flux in
+> the UI is postponed until it can be verified on capable hardware.
+
+See [`BUGFIX_PLAN.md`](BUGFIX_PLAN.md) for the full audit + every fix, and
+[`Tutorials/UI_TUTORIAL.md`](Tutorials/UI_TUTORIAL.md).
+
 ## What's new in 1.21.0 — the build-an-image loop + power-user workflow
 
 1.20.0 made `plakat ui` memory-aware; 1.21.0 sharpened the **loop**: the Chat title shows
