@@ -46,14 +46,14 @@ CPU RNG isn't seed-reproducible) + a non-ancestral scheduler.
 | SD 2.1 | `clip.encoded`, `vae.decoded` | — | — |
 | SDXL | `clip.encoded`, `clip_g.pooled` | `unet.out`, `unet.mid` (1.0) | — |
 | PixArt-Σ | `dit.pos_embed` | `dit.block0` (1.0) | — |
-| Stable Cascade | `clip_g.pooled` | `stage_c.out` (0.989, coarse¹) | — |
+| Stable Cascade | `clip_g.pooled` | `stage_c.block0` (1.0¹) | — |
 | SD 3.5-medium | `pooled_y` | `mmdit.block0` (1.0) | — |
 | AnimateDiff | — | `motion.block0` (1.0) | — |
 
-¹ Cascade's `stage_c.out` is a **coarse gross-regression gate**: a single forward of the deep
-3.6B Stage-C UNet on a white-noise deterministic latent is out-of-distribution (~1.15× scale
-compounding), holding corr 0.989. Real generation is pinned <0.001 by the v0.41
-`forward_collect` suite + the corpus. A shallow block tap would give a fine 1.0 check (future).
+¹ Cascade's `stage_c.block0` taps the conditioned-conv core (embedding + first Res + Time)
+**before** the first Attn block — self-attention over the 576 white-noise verify tokens is
+OOD-ill-conditioned (a *deep* full-forward gave only a coarse 0.989). Res + Time are
+well-conditioned → corr 1.0. Attention coverage stays with the v0.41 reference suite + corpus.
 
 ## Authoring + hosting goldens (maintainer, offline)
 
