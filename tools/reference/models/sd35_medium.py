@@ -19,6 +19,7 @@ DEFAULT_THRESHOLDS = {
     # first joint block x-stream: corr 1.0 (block math correct); max_abs headroom for the
     # 1536-d activations where candle-vs-torch accumulation differs by ~0.29 (~sub-%).
     "mmdit.block0": (0.999, 0.5),
+    "t5.hidden": (0.999, 0.5),  # T5 caption embedding WITH pad attention mask (large activations)
 }
 
 
@@ -79,4 +80,21 @@ def dump(fx, device: str):
     parts = list(o) if isinstance(o, (tuple, list)) else [o]
     x_stream = max(parts, key=lambda t: t.shape[1])
     captured["mmdit.block0"] = x_stream  # (1, 1024, hidden)
+    del tf  # free the MMDiT before loading T5-XXL (F32 ~19GB)
+
+    # --- t5.hidden: T5 caption embedding WITH the padding attention mask ---------------
+    # diffusers ALWAYS passes attention_mask to text_encoder_3; plakat previously didn't.
+    # 256-token budget (SD3 paper). Use the SD3.5 tokenizer_3 (fast tokenizer.json — no
+    # tiktoken); fall back to flan-t5-base (same T5 v1.1 vocab). F32 to match plakat's CPU T5.
+    from transformers import T5EncoderModel, AutoTokenizer
+    try:
+        tok = AutoTokenizer.from_pretrained(REPO, subfolder="tokenizer_3")
+    except Exception:
+        tok = AutoTokenizer.from_pretrained("google/flan-t5-base")
+    t5 = T5EncoderModel.from_pretrained(REPO, subfolder="text_encoder_3", torch_dtype=torch.float32).eval()
+    T5_SEQ = 256
+    ti = tok(fx.prompt, padding="max_length", max_length=T5_SEQ, truncation=True, return_tensors="pt")
+    with torch.no_grad():
+        t5_hidden = t5(ti.input_ids, attention_mask=ti.attention_mask)[0].float()  # (1, 256, 4096)
+    captured["t5.hidden"] = t5_hidden
     return captured

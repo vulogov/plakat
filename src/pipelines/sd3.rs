@@ -1644,6 +1644,24 @@ impl Pipeline {
             let (pooled_y, _joint_context) = self.encode_prompt(prompt)?;
             out.insert("pooled_y".to_string(), pooled_y);
         }
+        // T5 caption embedding WITH the padding attention mask (the v2.1 fix). Plain (non-
+        // weighted) path — the fixture prompt has no attention syntax — matching what
+        // `encode_prompt` runs. Corresponds to diffusers `text_encoder_3(ids, attention_mask)`.
+        if wanted.contains("t5.hidden") {
+            let t5_seq = self.variant.t5_seq_len();
+            let mut ids = self
+                .t5_tok
+                .encode(prompt, true)
+                .map_err(|e| anyhow!("T5 encode: {e}"))?
+                .get_ids()
+                .to_vec();
+            ids.truncate(t5_seq);
+            ids.resize(t5_seq, 0);
+            let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+            let mask = ids_t.ne(0u32)?.to_dtype(candle_core::DType::F32)?;
+            let hidden = self.t5_enc.forward_with_mask(&ids_t, &mask)?.to_dtype(candle_core::DType::F32)?;
+            out.insert("t5.hidden".to_string(), hidden);
+        }
         // MMDiT joint-block-0 tap: run the embed prologue + joint_blocks[0] on a shared
         // deterministic latent (16-ch) + FIXED timestep + DETERMINISTIC y/context (LCG). The
         // y/context are synthetic (not CLIP/T5) so this isolates the MMDiT joint-block math;
@@ -1814,8 +1832,13 @@ impl Pipeline {
             (t, None)
         };
 
-        // ---------- T5 forward ----------
-        let mut t5_hidden = self.t5_enc.forward(&t5_ids_t)?.to_dtype(self.dtype)?;
+        // ---------- T5 forward (with pad attention mask) ----------
+        // v2.1: mask pad tokens so real tokens don't attend to padding in T5 self-attention
+        // (diffusers always passes attention_mask). T5 `<pad>` = id 0, so the mask is simply
+        // (ids != 0): 1 for real tokens incl. EOS, 0 for pad. Without it the caption drifts
+        // (corr ~0.7 vs correct) — the same bug fixed for PixArt.
+        let t5_mask = t5_ids_t.ne(0u32)?.to_dtype(candle_core::DType::F32)?;
+        let mut t5_hidden = self.t5_enc.forward_with_mask(&t5_ids_t, &t5_mask)?.to_dtype(self.dtype)?;
         if let Some(w) = &t5_weights {
             t5_hidden = t5_hidden.broadcast_mul(&w.to_dtype(self.dtype)?)?;
         }

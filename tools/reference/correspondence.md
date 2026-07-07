@@ -49,7 +49,7 @@ shows as a *padding-only* divergence while content tokens still match:
 | name | diffusers | plakat | notes |
 |---|---|---|---|
 | `pooled_y` | `encode_prompt(...)` → `pooled_prompt_embeds` (concat of the two CLIP pooled) | `sd3::capture_intermediates` → `encode_prompt().0` | ✅ wired. The concat **ORDER** was the killer bug — the golden is diffusers' authoritative order; the comparison decides. |
-| `t5.hidden` | T5 caption embedding | `vendored_t5.rs` | – **BF16** (F16 overflowed → inf captions). |
+| `t5.hidden` | `text_encoder_3(ids, attention_mask=mask)[0]` — masked T5 caption | `sd3::encode_prompt` → `vendored_t5::forward_with_mask` | ✅ wired, corr 1.0. Same v2.1 pad-mask fix as PixArt: SD3 forwarded T5 with no mask (real tokens attend to pad). Mask = `(ids != 0)`. **BF16** (F16 overflowed → inf captions). |
 | `mmdit.block0` | forward hook on `transformer.transformer_blocks[0]` (x-stream) on DETERMINISTIC latent/`y`/`context` | `mmdit_inner.rs::MMDiT::capture_block0` | ✅ wired, corr 1.0. Embed prologue (patch+pos, t+y, context-embed) + joint block 0. `y`/`context` are shared-LCG synthetic → isolates the joint-block math (QK-norm, timestep, (scale,shift)) from CLIP/T5. |
 | `vae.decoded` | | – | |
 
