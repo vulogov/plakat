@@ -14,10 +14,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 The harness exists specifically so these can be done *safely* — each has a reference-comparison
 gate to prove it doesn't regress a currently-correct model.
 
-- [?] **T5 pad attention mask** (BUGFIX 1.2, carried from 2.0.0) — PixArt/SD3 encode captions
-      without masking pad tokens. A correct fix threads a mask through every DiT/MMDiT
-      cross-attention block; the `t5.hidden` capture point + `dit.block0`/`mmdit.block0` taps
-      now make it verifiable. Biggest concrete correctness item on the backlog.
+- [x] **T5 pad attention mask** (BUGFIX 1.2, carried from 2.0.0) — PixArt/SD3 encoded captions
+      without masking pad tokens; measured at corr **0.70** vs the correct masked output on the
+      real-token rows (a genuine image-affecting bug). Fixed: `vendored_t5::forward_with_mask`
+      threads a `(B,1,1,L)` pad bias into the encoder self-attention; PixArt now routes T5
+      through the vendored copy, SD3 derives the mask from `(ids != 0)`. New `t5.hidden` capture
+      point on both → **corr 0.70 → 1.00000** vs diffusers. *(T5 SELF-attention done; DiT/MMDiT
+      CROSS-attention masking — image tokens not attending to pad caption positions — is the
+      remaining half, below.)*
+- [ ] **DiT/MMDiT cross-attention pad mask** — the second half of the T5-mask fix: thread the
+      caption `attention_mask` into the DiT (PixArt) / MMDiT (SD3) cross-attention so image
+      tokens don't attend to pad-position caption embeddings. Verifiable via the block taps.
 
 ## Verify follow-ups (breadth / depth)
 
