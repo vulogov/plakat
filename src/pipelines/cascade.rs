@@ -476,6 +476,28 @@ impl Pipeline {
             let (_penult, pooled) = self.encode_prompt(prompt)?;
             out.insert("clip_g.pooled".to_string(), pooled);
         }
+        // Stage-C denoiser core: full prior prediction on a shared deterministic latent
+        // (16×24×24) at a fixed ratio t=0.5, with the REAL CLIP-G text conditioning (its pooled
+        // is golden-verified above at corr 0.99997). Structured conditioning matters here —
+        // feeding white-noise through the deep 3.6B UNet amplifies fp-accumulation noise
+        // (corr drops to ~0.98); real conditioning matches diffusers cleanly, same as
+        // `unet.out`. sca/crp are the sinusoidal embedding of 0 — matching inference AND
+        // diffusers' `sca=None` path (`cond or zeros_like`). Corresponds to
+        // `StableCascadeUNet.forward` full output.
+        if wanted.contains("stage_c.out") {
+            use crate::pipelines::cascade_prior::sinusoidal_time_embedding;
+            let latent = crate::verify::deterministic_latent(16, 24, 24, &self.device, self.dtype)?;
+            let (clip_text, clip_pooled) = self.encode_prompt(prompt)?;  // real CLIP-G penult + pooled
+            let clip_c = self.stage_c.build_clip_conditioning(&clip_text, &clip_pooled, None)?;
+            let t_ratio = Tensor::new(&[0.5f32], &self.device)?.to_dtype(self.dtype)?;
+            let t_emb = sinusoidal_time_embedding(&t_ratio, 64, 10000.0)?.to_dtype(self.dtype)?;
+            let zero = Tensor::zeros(1, candle_core::DType::F32, &self.device)?;
+            let zero_emb = sinusoidal_time_embedding(&zero, 64, 10000.0)?.to_dtype(self.dtype)?;
+            let pred = self.stage_c.forward(
+                &latent, &t_emb, Some(&zero_emb), Some(&zero_emb), &clip_c, None, None,
+            )?;
+            out.insert("stage_c.out".to_string(), pred);
+        }
         Ok(out)
     }
 

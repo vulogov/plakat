@@ -67,7 +67,8 @@ shows as a *padding-only* divergence while content tokens still match:
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `clip_g.pooled` | `StableCascadePriorPipeline.encode_prompt(...)` → pooled | `cascade::capture_intermediates` → `encode_prompt().1` | ✅ wired. Stage C's `clip_txt_pooled_mapper` + Stage B's only conditioning. |
+| `clip_g.pooled` | `StableCascadePriorPipeline.encode_prompt(...)` → pooled | `cascade::capture_intermediates` → `encode_prompt().1` | ✅ wired, corr 0.99997. Stage C's `clip_txt_pooled_mapper` + Stage B's only conditioning. |
+| `stage_c.out` | `StableCascadeUNet.forward(sample, timestep_ratio=0.5, clip_text_pooled, clip_text, sca=None, crp=None)` — full ε | `cascade::capture_intermediates` → `stage_c.forward(det_latent, sinusoidal(0.5), sinusoidal(0)×2, build_clip_conditioning(real))` | ✅ wired, corr 0.989. **COARSE gate** (deep 3.6B UNet + white-noise latent is OOD → ~1.15× scale compounding; corr carries direction). Real generation pinned <0.001 by the v0.41 `forward_collect` suite + corpus. `sca=None`→zeros matches plakat's `sinusoidal(0)`. |
 | `effnet` | EfficientNetV2-S image embedding | `cascade_cn.rs` effnet | – Stage-C conditioning. |
 | `stage_c.block0` | first Stage-C prior block | `cascade_prior.rs` | – FiLM time injection, sca/crp, Wuerstchen scheduler. |
 
