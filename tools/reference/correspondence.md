@@ -76,7 +76,7 @@ shows as a *padding-only* divergence while content tokens still match:
 
 | name | diffusers | plakat | notes |
 |---|---|---|---|
-| `motion.block0` | first motion module output | `animatediff.rs` / `motion_module.rs` | pos-embed placement was the dominant bug. |
+| `motion.block0` | `MotionAdapter.down_blocks[0].motion_modules[0]` (`AnimateDiffTransformer3D`) on a DETERMINISTIC per-frame input (16, 320, 8, 8) | `tier1::run_model` AnimateDiff branch → `modules.modules[0].forward(det, F=16)` | ✅ wired, corr 1.0. Loaded via the flag path (`load_v3`), not the alias dispatch. Motion weights are base-independent → SD 1.5 base only builds the pipeline. Both add the residual internally. pos-embed placement was the dominant v0.43 bug. |
 | `cfg_batch.layout` | a synthetic layout probe | `animatediff.rs` | **BLOCKED `[uncond×F, cond×F]`** on the SDXL path (the frame ≥ 2 scramble, BUGFIX 1.1). Structurally guarded in verify Tier 0; the golden confirms the real motion forward respects it. |
 | `unet.mid`, `vae.decoded` | | | |
 

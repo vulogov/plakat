@@ -145,15 +145,38 @@ pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) 
     // gating), a capture failure → fail.
     let wanted: std::collections::HashSet<String> = manifest.tensors.keys().cloned().collect();
     // AnimateDiff isn't alias-loadable (a base + motion adapter, loaded via flags), so it
-    // doesn't fit this alias dispatch. Its headline bug — the CFG BLOCKED batch layout — is
-    // already guarded structurally in Tier 0 (`tier0.cfg_batch_layout`); a numerical
-    // motion-module tap needs threading into the flag-based load path (a follow-up).
+    // doesn't fit the alias dispatch below — handle it here. `motion.block0` taps the first
+    // temporal-transformer motion module (down_blocks.0.motion_modules.0) on a deterministic
+    // per-frame input. The motion weights come from the adapter (base-independent), so the
+    // SD 1.5 base is loaded only to build the pipeline. (The CFG BLOCKED-batch layout bug is
+    // separately guarded in Tier 0.)
     if model.contains("animatediff") {
-        return vec![Check::skip(
-            format!("tier1.{model}"),
-            1,
-            "AnimateDiff CFG layout is guarded in Tier 0; a numerical motion tap needs the flag-based load path (follow-up)",
-        )];
+        use candle_core::DType;
+        let dtype = if matches!(device, Device::Cpu) { DType::F32 } else { DType::BF16 };
+        let pipe = match crate::pipelines::animatediff::AnimateDiffPipeline::load_v3(
+            device, dtype, &[], 1.0, None, "sd15",
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return vec![Check::skip(format!("tier1.{model}"), 1, format!("load failed (weights?): {e:#}"))],
+        };
+        let mut captured: HashMap<String, Tensor> = HashMap::new();
+        if wanted.contains("motion.block0") {
+            // First motion module (down_blocks.0.motion_modules.0). Deterministic per-frame
+            // input (F=16 = V3 window, C=module channels, 8×8 spatial), seed 4.
+            let module = &pipe.modules.modules[0].1;
+            let (f, c) = (pipe.max_frames.min(16).max(1), module.channels);
+            let input = match crate::verify::deterministic_tensor(&[f, c, 8, 8], 4, device, dtype) {
+                Ok(t) => t,
+                Err(e) => return vec![Check::fail(format!("tier1.{model}"), 1, format!("{e:#}"))],
+            };
+            match module.forward(&input, f) {
+                Ok(out) => { captured.insert("motion.block0".to_string(), out); }
+                Err(e) => return vec![Check::fail(format!("tier1.{model}"), 1, format!("capture failed: {e:#}"))],
+            }
+        }
+        return compare_against_goldens(&manifest, &captured, &goldens);
     }
     let variant = crate::pipelines::t2i::Variant::detect(model);
     let load_skip = |e: anyhow::Error| vec![Check::skip(format!("tier1.{model}"), 1, format!("load failed (weights/gating?): {e:#}"))];

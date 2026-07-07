@@ -1,33 +1,40 @@
-"""AnimateDiff (SD1.5 + SDXL motion) golden dumper — STUB. Follow models/sd15.py.
+"""AnimateDiff (SD1.5 V3 motion) golden dumper.
 
-Capture points (the motion + CFG surfaces):
-  motion.block0       — first motion-module output (pos-embed placement was the dominant
-                        AnimateDiff bug; corr here catches a regression).
-  cfg_batch.layout    — a tiny tensor asserting the CFG conditioning is BLOCKED
-                        [uncond×F, cond×F] for the SDXL path (the frame ≥ 2 scramble bug —
-                        already guarded structurally in verify Tier 0; a golden confirms the
-                        real motion forward uses it).
-  unet.mid, vae.decoded.
+Capture point (matching the AnimateDiff branch in verify::tier1::run_model):
+  motion.block0  — the first temporal-transformer motion module
+                   (`down_blocks[0].motion_modules[0]`) on a DETERMINISTIC per-frame input.
+                   The pos-embed placement was the dominant AnimateDiff bug (v0.43); a corr
+                   check here catches a regression. The module weights come from the adapter
+                   (base-independent), so no base model is needed to author.
 
-Use an AESTHETIC base (DreamShaper), not vanilla SD1.5 — vanilla mosaics in diffusers too.
+The CFG BLOCKED-batch-layout bug is separately guarded in verify Tier 0 (no weights).
 """
 
-REPO = "guoyww/animatediff-motion-adapter-v1-5-3"  # motion adapter; pair with a DreamShaper base
+REPO = "guoyww/animatediff-motion-adapter-v1-5-3"  # the V3 motion adapter
 REVISION = ""
 PLAKAT_ARCH = "animatediff@1"
 DEFAULT_THRESHOLDS = {
-    "motion.block0": (0.998, 0.08),
-    "unet.mid": (0.999, 0.06),
-    "vae.decoded": (0.999, 0.02),
+    "motion.block0": (0.999, 0.05),  # one temporal transformer; shallow → tight bound
 }
 
 
 def dump(fx, device: str):
-    # AnimateDiff's headline bug (the SDXL CFG BLOCKED batch layout) is already guarded
-    # structurally by `plakat verify` Tier 0 (no weights). A numerical motion-module tap
-    # needs the flag-based load path threaded on the plakat side — a follow-up. Until then
-    # there's no alias-loadable pipeline to author against.
-    raise NotImplementedError(
-        "AnimateDiff Tier-1 authoring pending the plakat motion-tap wiring; the CFG-layout "
-        "bug is already guarded in Tier 0 (see ../correspondence.md)"
-    )
+    import torch
+    from diffusers import MotionAdapter
+    import fixtures
+
+    adapter = MotionAdapter.from_pretrained(REPO, torch_dtype=torch.float32).to(device)
+    adapter.eval()
+    # First motion module: down_blocks[0].motion_modules[0], 320-channel (SD 1.5 block 0).
+    mm0 = adapter.down_blocks[0].motion_modules[0]
+    channels = mm0.proj_in.in_features  # 320
+
+    # Deterministic per-frame input (B*F, C, H, W): B=1, F=16 (V3 window), 8×8 spatial. seed 4
+    # matches plakat's `verify::deterministic_tensor(&[16, C, 8, 8], 4, ...)`.
+    num_frames = 16
+    inp = fixtures.deterministic_tensor((num_frames, channels, 8, 8), seed=4).to(device)
+    with torch.no_grad():
+        out = mm0(inp, num_frames=num_frames)
+    # AnimateDiffTransformer3D.forward returns the residual-added tensor (matches plakat).
+    out = out[0] if isinstance(out, (tuple, list)) else getattr(out, "sample", out)
+    return {"motion.block0": out}  # (16, 320, 8, 8)
