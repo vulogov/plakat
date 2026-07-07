@@ -3,7 +3,19 @@ name: CI
 # Continuous build + test on the CPU path (no GPU backend). Deliberately
 # simple/reliable — no cross-compile or apt-mirror splicing (that complexity
 # lives only in release.yml's arm64 job). Runs on every push + PR.
-on: [push, pull_request]
+#
+# `verify-models` is a heavier, weight-backed correctness gate (RFC_VERIFY Tier 1/2):
+# it downloads model weights + fetches goldens from the HF dataset, so it's opt-in
+# via the Actions "Run workflow" button (workflow_dispatch), not every push.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Tier-1 model alias to verify (verify-models job)"
+        required: false
+        default: "sd15"
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,3 +47,33 @@ jobs:
       # GPU-dependent integration tests are excluded here for reliability.
       - name: test (CPU, lib)
         run: cargo test --no-default-features --lib
+
+      # RFC_VERIFY Tier 0 — structural / determinism invariants (CFG batch layout,
+      # map-render determinism). Zero downloads, ~0.2s, deterministic → a reliable
+      # correctness gate on every push. Non-zero exit fails the job.
+      - name: verify (Tier 0 — structural, no downloads)
+        run: cargo run --no-default-features --bin plakat -- verify --tier 0
+
+  verify-models:
+    name: verify Tier 1/2 (${{ github.event.inputs.model || 'sd15' }}, weights)
+    # Opt-in only: downloads multi-GB weights + HF goldens, runs CPU inference.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: system deps (fontconfig / freetype)
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+      - name: build (release, CPU)
+        run: cargo build --release --no-default-features --bin plakat
+      # Tier 1 fetches goldens from the HF dataset (vulogov98/plakat-verify) and the
+      # model weights from HF — no local --golden-dir. Override the dataset with
+      # PLAKAT_VERIFY_DATASET if verifying against a fork/staging repo.
+      - name: verify Tier 1 (per-module, ${{ github.event.inputs.model || 'sd15' }})
+        run: ./target/release/plakat verify --tier 1 --model "${{ github.event.inputs.model || 'sd15' }}" --device cpu
+      # Tier 2 end-to-end perceptual regression (sd15 only for now).
+      - name: verify Tier 2 (end-to-end, sd15)
+        if: ${{ (github.event.inputs.model || 'sd15') == 'sd15' }}
+        run: ./target/release/plakat verify --tier 2 --model sd15 --device cpu
