@@ -56,6 +56,10 @@ def dump(fx, device: str):
     latent = fixtures.deterministic_latent(cfg["in_channels"], fx.height // 8, fx.width // 8)
     caption = fixtures.deterministic_tensor((1, max_tokens, caption_channels), seed=2)
     timestep = torch.tensor([500.0])
+    # Deterministic caption mask (encoder_attention_mask): first half real (1), second half
+    # pad (0). Exercises the v2.1 cross-attention pad masking — must match plakat's synthetic mask.
+    enc_mask = torch.cat([torch.ones(1, max_tokens // 2),
+                          torch.zeros(1, max_tokens - max_tokens // 2)], dim=1)
     added_cond = {
         "resolution": torch.tensor([[float(fx.height), float(fx.width)]]),
         "aspect_ratio": torch.tensor([[1.0]]),
@@ -64,7 +68,7 @@ def dump(fx, device: str):
     h = tf.transformer_blocks[0].register_forward_hook(lambda m, i, o: holder.__setitem__("b0", o))
     with torch.no_grad():
         tf(hidden_states=latent, encoder_hidden_states=caption, timestep=timestep,
-           added_cond_kwargs=added_cond, return_dict=False)
+           encoder_attention_mask=enc_mask, added_cond_kwargs=added_cond, return_dict=False)
     h.remove()
     b0 = holder["b0"]
     captured["dit.block0"] = b0[0] if isinstance(b0, tuple) else b0  # (1, tokens, hidden)

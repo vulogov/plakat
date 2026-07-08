@@ -576,7 +576,13 @@ impl Attention {
     /// Cross-attention path: `kv` is taken as-is (the T5 sequence
     /// in PixArt's case). No grid dims required.
     pub fn forward(&self, x: &Tensor, kv: &Tensor) -> Result<Tensor> {
-        self.forward_inner(x, kv, None)
+        self.forward_inner(x, kv, None, None)
+    }
+
+    /// Cross-attention with an optional additive caption key mask (`(B,1,1,lkv)`) — pad-position
+    /// caption keys get a large-negative bias so image queries don't attend to them.
+    pub fn forward_masked(&self, x: &Tensor, kv: &Tensor, kv_mask: Option<&Tensor>) -> Result<Tensor> {
+        self.forward_inner(x, kv, None, kv_mask)
     }
 
     /// v0.36 phase 3: self-attention path with optional KV
@@ -589,7 +595,7 @@ impl Attention {
         x: &Tensor,
         grid_dims: Option<(usize, usize)>,
     ) -> Result<Tensor> {
-        self.forward_inner(x, x, grid_dims)
+        self.forward_inner(x, x, grid_dims, None)
     }
 
     fn forward_inner(
@@ -597,6 +603,7 @@ impl Attention {
         x: &Tensor,
         kv_in: &Tensor,
         grid_dims: Option<(usize, usize)>,
+        kv_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (b, lq, hidden) = x.dims3()?;
 
@@ -645,6 +652,13 @@ impl Attention {
             .contiguous()?
             .matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)?
             .affine(scale, 0.)?;
+        // Cross-attention caption mask (v2.1): image queries must not attend to pad-position
+        // caption keys. `kv_mask` is an additive `(B,1,1,lkv)` bias — 0 for real caption keys,
+        // large-negative for pad — added before softmax. Matches diffusers `encoder_attention_mask`.
+        let scores = match kv_mask {
+            Some(bias) => scores.broadcast_add(bias)?,
+            None => scores,
+        };
         let probs = nn::ops::softmax(&scores, D::Minus1)?;
         let out = probs.matmul(&v.contiguous()?)?;
         let out = out
@@ -739,6 +753,7 @@ impl PixArtBlock {
         t_block: &Tensor,
         kv: &Tensor,
         grid_dims: Option<(usize, usize)>,
+        kv_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (b, _t, hidden) = x.dims3()?;
         // (6, hidden) + (B, 6*hidden) → broadcast → (B, 6, hidden).
@@ -764,7 +779,7 @@ impl PixArtBlock {
         let attn1_out = self.attn1.forward_self_attn(&modulated_x, grid_dims)?;
         let x = x.add(&attn1_out.broadcast_mul(&gate_msa.unsqueeze(1)?)?)?;
 
-        let attn2_out = self.attn2.forward(&x, kv)?;
+        let attn2_out = self.attn2.forward_masked(&x, kv, kv_mask)?;
         let x = x.add(&attn2_out)?;
 
         let norm_x2 = layernorm_no_affine(&x, self.eps_ln)?;
@@ -921,6 +936,10 @@ impl PixArtSigmaXL {
         Ok(out)
     }
 
+    /// `caption_mask`: optional `(B, lkv)` attention mask over the caption tokens (1 real,
+    /// 0 pad). When `Some`, image queries don't attend to pad-position caption keys in every
+    /// block's cross-attention (matches diffusers `encoder_attention_mask`). `None` = the
+    /// legacy unmasked behaviour. See [`caption_mask_to_bias`].
     pub fn forward(
         &self,
         latent: &Tensor,
@@ -928,6 +947,7 @@ impl PixArtSigmaXL {
         caption: &Tensor,
         resolution: &Tensor,
         aspect_ratio: &Tensor,
+        caption_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (b, _c, lh, lw) = latent.dims4()?;
         let x = self.patch_embed.forward(latent)?;
@@ -950,13 +970,15 @@ impl PixArtSigmaXL {
         let (t_block, embedded) =
             self.adaln_single.forward(timestep, resolution, aspect_ratio)?;
         let kv = self.caption_projection.forward(caption)?;
+        // Caption cross-attention mask → additive `(B,1,1,lkv)` bias, computed once + shared.
+        let kv_bias = caption_mask.map(caption_mask_to_bias).transpose()?;
 
         // v0.36 phase 3: pass the image-token grid through to each
         // block so its self-attn KV-compression Conv2d (if any) can
         // reshape spatially. Same `grid_dims` shared by every layer.
         let mut x = x;
         for block in &self.blocks {
-            x = block.forward(&x, &t_block, &kv, Some((grid_h, grid_w)))?;
+            x = block.forward(&x, &t_block, &kv, Some((grid_h, grid_w)), kv_bias.as_ref())?;
         }
 
         // Final adaLN + proj_out. diffusers uses the raw `embedded_timestep`
@@ -1005,6 +1027,7 @@ impl PixArtSigmaXL {
         caption: &Tensor,
         resolution: &Tensor,
         aspect_ratio: &Tensor,
+        caption_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (_b, _c, lh, lw) = latent.dims4()?;
         let x = self.patch_embed.forward(latent)?;
@@ -1017,8 +1040,19 @@ impl PixArtSigmaXL {
         let x = x.broadcast_add(&pe)?;
         let (t_block, _embedded) = self.adaln_single.forward(timestep, resolution, aspect_ratio)?;
         let kv = self.caption_projection.forward(caption)?;
-        self.blocks[0].forward(&x, &t_block, &kv, Some((grid_h, grid_w)))
+        let kv_bias = caption_mask.map(caption_mask_to_bias).transpose()?;
+        self.blocks[0].forward(&x, &t_block, &kv, Some((grid_h, grid_w)), kv_bias.as_ref())
     }
+}
+
+/// Convert a `(B, lkv)` caption attention mask (1.0 real / 0.0 pad) into the additive
+/// `(B, 1, 1, lkv)` cross-attention bias — 0 for real keys, `f32::MIN` for pad — that
+/// [`MultiHeadCrossAttention::forward_masked`] adds to the scores before softmax.
+pub fn caption_mask_to_bias(mask: &Tensor) -> Result<Tensor> {
+    let (b, l) = mask.dims2()?;
+    let one = Tensor::ones((b, l), mask.dtype(), mask.device())?;
+    let inv = (one - mask)?; // 1 where pad, 0 where real
+    Ok((inv * (f32::MIN as f64))?.reshape((b, 1, 1, l))?)
 }
 
 // =====================================================================
@@ -1101,11 +1135,11 @@ mod tests {
         let (t_block, _) = dit.adaln_single.forward(&t, &res, &asp).unwrap();
         write("/tmp/dit_tblock.f32", &t_block);
         let blk0 = dit.blocks[0]
-            .forward(&x_input, &t_block, &cap_proj, Some((gh, gw)))
+            .forward(&x_input, &t_block, &cap_proj, Some((gh, gw)), None)
             .unwrap();
         write("/tmp/dit_blk0.f32", &blk0);
 
-        let out = dit.forward(&latent, &t, &caption, &res, &asp).expect("DiT forward");
+        let out = dit.forward(&latent, &t, &caption, &res, &asp, None).expect("DiT forward");
         let out_v = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         write("/tmp/dit_out.f32", &out);
         let (mn, mx) = out_v
@@ -1230,7 +1264,7 @@ mod tests {
         let cap = Tensor::randn(0f32, 1f32, (1, 12, 96), device).unwrap();
         let res = Tensor::new(&[1024f32, 1024.0], device).unwrap().reshape((1, 2)).unwrap();
         let asp = Tensor::new(&[1f32, 1.0], device).unwrap().reshape((1, 2)).unwrap();
-        let out = model.forward(&latent, &t, &cap, &res, &asp).unwrap();
+        let out = model.forward(&latent, &t, &cap, &res, &asp, None).unwrap();
         // learn_sigma=True doubles channels: 4 → 8.
         assert_eq!(out.dims(), &[1, 8, 8, 8]);
     }
@@ -1437,7 +1471,7 @@ mod tests {
         let cap = Tensor::randn(0f32, 1f32, (1, 12, 96), &device).unwrap();
         let res = Tensor::new(&[1024f32, 1024.0], &device).unwrap().reshape((1, 2)).unwrap();
         let asp = Tensor::new(&[1f32, 1.0], &device).unwrap().reshape((1, 2)).unwrap();
-        let out = model.forward(&latent, &t, &cap, &res, &asp).unwrap();
+        let out = model.forward(&latent, &t, &cap, &res, &asp, None).unwrap();
         assert_eq!(out.dims(), &[1, 8, 8, 8]);
     }
 }

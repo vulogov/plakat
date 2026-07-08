@@ -377,7 +377,7 @@ impl Pipeline {
         // diffusers `text_encoder(ids, attention_mask=mask)[0]`. Real prompt (not deterministic)
         // — this is where the missing-mask bug lived (real tokens attending to pad).
         if wanted.contains("t5.hidden") {
-            out.insert("t5.hidden".to_string(), self.encode_prompt(prompt)?);
+            out.insert("t5.hidden".to_string(), self.encode_prompt(prompt)?.0);
         }
         if wanted.contains("dit.pos_embed") {
             let cfg = &self.dit_cfg;
@@ -396,9 +396,11 @@ impl Pipeline {
             out.insert("dit.pos_embed".to_string(), pe);
         }
         // DiT block-0 tap: run patch-embed + adaLN + caption-proj + block[0] on a shared
-        // deterministic latent + FIXED timestep + DETERMINISTIC caption (LCG). The caption is
-        // synthetic (not T5) so this isolates the DiT block math and needs no T5 — the dumper
-        // feeds the byte-identical caption via `fixtures.deterministic_tensor`.
+        // deterministic latent + FIXED timestep + DETERMINISTIC caption (LCG) + a DETERMINISTIC
+        // caption MASK (first half real, second half "pad"). The caption is synthetic (not T5)
+        // so this isolates the DiT block math; the mask exercises the v2.1 cross-attention pad
+        // masking (image tokens must not attend to the masked keys). The dumper feeds the
+        // byte-identical caption + mask (encoder_attention_mask on the diffusers side).
         if wanted.contains("dit.block0") {
             let cfg = &self.dit_cfg;
             let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
@@ -407,13 +409,18 @@ impl Pipeline {
             let caption = crate::verify::deterministic_tensor(
                 &[1, cfg.max_caption_tokens, cfg.caption_channels], 2, &self.device, self.dtype,
             )?;
+            // Deterministic caption mask: 1 for the first half, 0 for the second (synthetic pad).
+            let half = cfg.max_caption_tokens / 2;
+            let mut m: Vec<f32> = vec![1.0; half];
+            m.resize(cfg.max_caption_tokens, 0.0);
+            let cap_mask = Tensor::new(m.as_slice(), &self.device)?.unsqueeze(0)?.to_dtype(self.dtype)?;
             let timestep = Tensor::full(500.0f32, (1usize,), &self.device)?.to_dtype(self.dtype)?;
             // Σ micro-conditioning at the fixture resolution (square → aspect 1). Matches the
             // real forward's `res` (1,2)=[h,w] and `asp` (1,2)=[1,1].
             let res = Tensor::new(&[height as f32, width as f32], &self.device)?
                 .reshape((1, 2))?.to_dtype(self.dtype)?;
             let asp = Tensor::new(&[1.0f32, 1.0f32], &self.device)?.reshape((1, 2))?.to_dtype(self.dtype)?;
-            let b0 = self.dit.capture_block0(&latent, &timestep, &caption, &res, &asp)?;
+            let b0 = self.dit.capture_block0(&latent, &timestep, &caption, &res, &asp, Some(&cap_mask))?;
             out.insert("dit.block0".to_string(), b0);
         }
         Ok(out)
@@ -426,7 +433,10 @@ impl Pipeline {
     /// caption-without-mask bug: without it T5 self-attention lets real tokens attend to the
     /// (many) pad tokens, drifting the real-token embeddings to corr ~0.7 vs the correct
     /// masked output — matching diffusers, which always passes `attention_mask`.
-    fn encode_prompt(&self, prompt: &str) -> Result<Tensor> {
+    /// Returns `(t5_hidden (1, max_tokens, 4096), attention_mask (1, max_tokens))`. The mask
+    /// (F32, 1 real / 0 pad) is reused for the DiT cross-attention (image tokens must not
+    /// attend to pad-position caption keys either — diffusers `encoder_attention_mask`).
+    fn encode_prompt(&self, prompt: &str) -> Result<(Tensor, Tensor)> {
         let max_tokens = self.dit_cfg.max_caption_tokens;
         let mut ids = self
             .t5_tok
@@ -445,7 +455,7 @@ impl Pipeline {
         // Keep the T5 output in F32 (the DiT runs F32 and the BF16→F16
         // round-trip would re-overflow the large embedding values).
         let hidden = self.t5_enc.forward_with_mask(&ids_t, &mask_t)?.to_dtype(DType::F32)?;
-        Ok(hidden)
+        Ok((hidden, mask_t))
     }
 
     /// End-to-end CFG denoise loop + VAE decode. Returns the raw
@@ -479,8 +489,8 @@ impl Pipeline {
 
         // ---- T5 encoding for CFG (positive + negative). ----
         let s = progress::spinner("Encoding T5 caption embeddings");
-        let pos_caption = self.encode_prompt(prompt)?;
-        let neg_caption = self.encode_prompt(negative)?;
+        let (pos_caption, pos_mask) = self.encode_prompt(prompt)?;
+        let (neg_caption, neg_mask) = self.encode_prompt(negative)?;
         s.finish_with_message("✓ captions ready");
 
         // ---- Scheduler. ----
@@ -508,6 +518,9 @@ impl Pipeline {
         let res_cfg = Tensor::cat(&[&res, &res], 0)?;
         let asp_cfg = Tensor::cat(&[&asp, &asp], 0)?;
         let caption_cfg = Tensor::cat(&[&neg_caption, &pos_caption], 0)?;
+        // v2.1: caption cross-attention mask (CFG-batched like the caption) — image tokens
+        // don't attend to pad-position caption keys (matches diffusers encoder_attention_mask).
+        let mask_cfg = Tensor::cat(&[&neg_mask, &pos_mask], 0)?;
 
         // ---- Denoise loop. ----
         let bar = crate::ui::progress::step_bar(timesteps.len() as u64, "pixart");
@@ -529,6 +542,7 @@ impl Pipeline {
                     &caption_cfg.to_dtype(DType::F32)?,
                     &res_cfg.to_dtype(DType::F32)?,
                     &asp_cfg.to_dtype(DType::F32)?,
+                    Some(&mask_cfg.to_dtype(DType::F32)?),
                 )?
                 .to_dtype(self.dtype)?;
             // learn_sigma=True → first 4 channels are noise; the
@@ -890,7 +904,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
             }
             Ok(v)
         };
-        let caption = pipe.encode_prompt(&req.trigger)?; // (1, max_tokens, 4096) F32
+        let caption = pipe.encode_prompt(&req.trigger)?.0; // (1, max_tokens, 4096) F32
         let latents = encode_imgs(&mut pipe, &req.images)?;
         let class_data = if req.class_images.is_empty() {
             None
@@ -898,7 +912,7 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
             let cp = req.class_prompt.as_deref().ok_or_else(|| {
                 anyhow!("prior preservation: --class-prompt is required when class images are given")
             })?;
-            let ccap = pipe.encode_prompt(cp)?;
+            let ccap = pipe.encode_prompt(cp)?.0;
             let clats = encode_imgs(&mut pipe, &req.class_images)?;
             Some((clats, ccap))
         };
@@ -974,7 +988,9 @@ pub async fn train_style_lora(req: StyleTrainRequest) -> Result<()> {
         let a = abar[t];
         let x_t = ((x0 * a.sqrt())? + (&noise * (1.0 - a).sqrt())?)?;
         let t_vec = Tensor::full(t as f32, (1usize,), &device)?;
-        let pred = dit.forward(&x_t, &t_vec, cap, &res, &asp)?;
+        // Training forwards without a caption mask (short trigger prompt; the LoRA/DreamBooth
+        // trainers are a separate path). Inference masks — see `generate`.
+        let pred = dit.forward(&x_t, &t_vec, cap, &res, &asp, None)?;
         // learn_sigma=True → first 4 channels are the ε prediction.
         let eps = pred.narrow(1, 0, 4)?;
         Ok((&eps - &noise)?.sqr()?.mean_all()?)
