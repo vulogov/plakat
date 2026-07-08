@@ -7,6 +7,7 @@
 //! the same module surface the binary uses, without duplicating
 //! non-trivial code like CLIP-H preprocessing or model loading.
 
+pub mod api;
 pub mod artefacts;
 pub mod capability;
 pub mod civitai;

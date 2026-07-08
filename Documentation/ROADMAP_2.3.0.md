@@ -17,17 +17,23 @@ technically `use plakat::pipelines::t2i::…`, but against the full churny inter
 
 The work is to carve out a small, documented, **semver-stable public API** and hide the rest.
 
-- [?] **Decide the surface** — what does "use plakat as a library" mean? Likely a thin facade:
-      load a model → generate an image → get pixels/PNG (the `generate` / `img2img` / `verify`
-      cores), plus the value types (`GenRequest`-like, device, scheduler, output). NOT the 22
-      internal modules. Needs a decision on scope + the semver promise.
-- [ ] **Facade module** — a curated `plakat::api` (or top-level re-exports) with a stable,
-      ergonomic entry point independent of the CLI plumbing. Internals move behind
-      `#[doc(hidden)]` / a `internals` feature so they can still churn.
-- [ ] **Docs + examples** — rustdoc on the public surface, a docs.rs landing page, and
-      `examples/` that compile in CI (generate an image from a few lines of Rust).
-- [ ] **Semver hygiene** — a public-API test (e.g. `cargo public-api` / a doc-test snapshot) so
-      breaking changes are caught; document the stability tier.
+Decision (2026-07-08, with the user): cover **all CLI features except the UI**, via a
+**simple builder facade** (`plakat::api`) that returns images in-memory. Every non-UI command
+is `async` + a `(device, request) → result` call, so the facade wraps those request structs
+ergonomically. Design confirmed by a full CLI→lib-entry-point map (see below).
+
+- [~] **Facade module `plakat::api`** — builder-per-feature-area returning `Image`s in memory
+      (render-to-temp + read-back hidden inside). **Done so far:** `Generate` (t2i, all
+      families), `Img2img` (+ inpaint via `.mask()`), `Upscale` (classical + Real-ESRGAN),
+      `Image` (save/open/pixels), `device()`, re-exported `SchedulerKind`/`UpscaleMethod`.
+      **Remaining builders:** portrait, stylize, relight, multiperson, segment, animate, map,
+      compose, transparent, style-train, embedding-train, verify — plus knobs
+      (controlnet/embeddings/refiner/tiled/regions/flux-quant).
+- [ ] **Hide internals** — move the 22 accidental `pub mod`s behind `#[doc(hidden)]` / an
+      `internals` feature so only `plakat::api` is the promised surface.
+- [x] **Docs + examples** — module rustdoc + a runnable doctest + `examples/library.rs`
+      (generate → img2img → upscale) compiling in CI.
+- [ ] **Semver hygiene** — a public-API snapshot test so breaking changes are caught.
 
 ## Verify track — status (asked 2026-07-08)
 
