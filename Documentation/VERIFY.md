@@ -114,6 +114,10 @@ for well-conditioned taps.
 
 - **Every push/PR** runs Tier 0 (`.github/workflows/ci.yml`, the `test` job) — zero downloads,
   ~0.2s, a reliable structural gate.
-- **On demand** (Actions → "Run workflow" → CI): the `verify-models` job builds release +
-  runs Tier 1/2 for a chosen `model` input (default `sd15`), fetching weights + goldens from
-  HF. Opt-in because it downloads multi-GB weights and runs CPU inference.
+- **On demand** (Actions → "Run workflow" → CI): the `verify-models` job runs the weight-backed
+  gate for a chosen `model` (default `sd15`, cheapest) and `tier` (default `1` = per-module, one
+  forward each; `2` = end-to-end; `all` = both), fetching weights + goldens from HF. The HF
+  cache is **persisted across runs** (`actions/cache`, keyed on the model), so after the first
+  run the multi-GB download is skipped and the job is just build + CPU inference — cheap enough
+  to gate a release on. (sd15 ~4 GB / sdxl ~7 GB fit the 10 GB Actions cache cap; larger models
+  miss the cache and re-download.)

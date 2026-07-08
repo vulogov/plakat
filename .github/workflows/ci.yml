@@ -13,9 +13,15 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Tier-1 model alias to verify (verify-models job)"
+        description: "Model alias to verify (verify-models job). sd15 is cheapest (~4 GB)."
         required: false
         default: "sd15"
+      tier:
+        description: "Which tier(s): 1 (per-module, fast), 2 (end-to-end, slow), or all"
+        required: false
+        default: "1"
+        type: choice
+        options: ["1", "2", "all"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -55,25 +61,39 @@ jobs:
         run: cargo run --no-default-features --bin plakat -- verify --tier 0
 
   verify-models:
-    name: verify Tier 1/2 (${{ github.event.inputs.model || 'sd15' }}, weights)
-    # Opt-in only: downloads multi-GB weights + HF goldens, runs CPU inference.
+    name: verify (${{ github.event.inputs.model || 'sd15' }}, tier ${{ github.event.inputs.tier || '1' }})
+    # Opt-in only: weight-backed correctness gate. The model weights are CACHED across runs
+    # (below), so after the first run the ~4 GB sd15 download is skipped and the job is just
+    # build + CPU inference. sd15 (cheapest) + Tier 1 (per-module, one forward each) is the
+    # practical default; Tier 2 (end-to-end generate) is slower — request it explicitly.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      HF_HUB_CACHE: /home/runner/.cache/huggingface/hub
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Cache the HF weights + goldens across runs — the multi-GB model download is the job's
+      # dominant cost, and it's identical run-to-run for a given model. Keyed on the model so
+      # each model gets its own cache (sd15 ~4 GB, sdxl ~7 GB fit the 10 GB Actions cap; larger
+      # models simply miss the cache and re-download). Restore-keys share a prefix for reuse.
+      - name: cache HF weights + goldens
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-${{ github.event.inputs.model || 'sd15' }}-v1
+          restore-keys: hf-${{ github.event.inputs.model || 'sd15' }}-
       - name: system deps (fontconfig / freetype)
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
       - name: build (release, CPU)
         run: cargo build --release --no-default-features --bin plakat
-      # Tier 1 fetches goldens from the HF dataset (vulogov98/plakat-verify) and the
-      # model weights from HF — no local --golden-dir. Override the dataset with
-      # PLAKAT_VERIFY_DATASET if verifying against a fork/staging repo.
-      - name: verify Tier 1 (per-module, ${{ github.event.inputs.model || 'sd15' }})
+      # Goldens come from the HF dataset (vulogov98/plakat-verify); override with
+      # PLAKAT_VERIFY_DATASET for a fork/staging repo. No local --golden-dir.
+      - name: verify Tier 1 (per-module)
+        if: ${{ (github.event.inputs.tier || '1') != '2' }}
         run: ./target/release/plakat verify --tier 1 --model "${{ github.event.inputs.model || 'sd15' }}" --device cpu
-      # Tier 2 end-to-end perceptual regression (sd15 only for now).
-      - name: verify Tier 2 (end-to-end, sd15)
-        if: ${{ (github.event.inputs.model || 'sd15') == 'sd15' }}
-        run: ./target/release/plakat verify --tier 2 --model sd15 --device cpu
+      - name: verify Tier 2 (end-to-end)
+        if: ${{ github.event.inputs.tier == '2' || github.event.inputs.tier == 'all' }}
+        run: ./target/release/plakat verify --tier 2 --model "${{ github.event.inputs.model || 'sd15' }}" --device cpu

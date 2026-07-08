@@ -21,8 +21,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **Third fixture** — `emblem_v1`, a tokenization-edge-case prompt (numbers/hyphens/
       ampersand/punctuation). A1111 weighting was avoided (no diffusers reference). Verified
       corr 1.0 across all six models × the conditioning taps. Broader tokenization coverage.
-- [ ] **Phase-4 hardening** — the opt-in `verify-models` CI job downloads multi-GB weights; a
-      smaller cached/quantized fixture model would make a full-correctness gate cheaper to run.
+- [x] **Phase-4 hardening** — the `verify-models` CI job now **caches the HF weights across runs**
+      (`actions/cache`, keyed on the model), so after the first run the multi-GB download is
+      skipped and it's just build + CPU inference. Added a `tier` input (default `1` per-module —
+      one forward each, the cheap gate; `2`/`all` for end-to-end) and defaulted to sd15 (~4 GB,
+      the cheapest). Practical enough to gate a release on.
 
 ## Candidate themes (bigger, standalone — pick one to anchor 2.2)
 
