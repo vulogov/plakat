@@ -8,6 +8,34 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.1.0 — the harness pays off: a real caption bug, fixed
+
+2.0.0 shipped `plakat verify`, a self-contained model-correctness harness. 2.1.0 is that
+harness earning its keep: it found and fixed a **real, image-affecting bug** in PixArt-Σ and
+SD 3.5 — and grew broader coverage across the board.
+
+**The bug: unmasked T5 captions.** PixArt and SD 3/3.5 encode your prompt through a T5 text
+encoder, then pad it to a fixed length. plakat wasn't masking those padding tokens — so the
+actual prompt words were attending to *hundreds* of pad tokens inside T5, drifting the
+caption. Measured against the reference, the caption for your real words was only **~70%
+correlated** with the correct output; every PixArt / SD 3.5 image was subtly off-prompt.
+
+2.1.0 masks the pad tokens in T5 self-attention **and** stops image tokens from attending to
+pad-position captions in the DiT cross-attention — matching the reference **exactly** (corr
+0.70 → 1.0). Your PixArt and SD 3.5 prompts now land as intended. Nothing about how you use
+plakat changes; the output is just correct.
+
+**Broader verification.** The harness grew a second prompt fixture (conditioning is now
+checked at two very different prompt lengths), a new PixArt tap (the final-adaLN timestep),
+and **end-to-end** perceptual regression gates for **SDXL and PixArt** on top of SD 1.5 — a
+whole-pipeline safety net across two rendering families. It also learned its own limits: a
+full-DiT tap and an SD 1.5 mid-block tap were evaluated and honestly dropped (documented) as
+not worth their cost.
+
+**Still pure Rust, still self-contained.** No new dependencies; `plakat verify` fetches its
+golden reference tensors from Hugging Face exactly like model weights. See
+[`VERIFY.md`](VERIFY.md).
+
 ## What's new in 2.0.0 — `plakat verify`: proof the models are right
 
 Every prior cycle has, at some point, rescued a *silently-wrong* model by hand-comparing

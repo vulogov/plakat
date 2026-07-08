@@ -17,35 +17,30 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.1.0 — the harness pays off: a real caption bug, fixed
+## What's new in 2.2.0 — every model, end-to-end regression-gated
 
-2.0.0 shipped `plakat verify`, a self-contained model-correctness harness. 2.1.0 is that
-harness earning its keep: it found and fixed a **real, image-affecting bug** in PixArt-Σ and
-SD 3.5 — and grew broader coverage across the board.
+2.0.0 built `plakat verify`; 2.1.0 used it to fix a real caption bug. 2.2.0 takes the harness
+to **full coverage** — every rendering model now has a whole-pipeline regression gate, and
+that gate is cheap enough to run in CI.
 
-**The bug: unmasked T5 captions.** PixArt and SD 3/3.5 encode your prompt through a T5 text
-encoder, then pad it to a fixed length. plakat wasn't masking those padding tokens — so the
-actual prompt words were attending to *hundreds* of pad tokens inside T5, drifting the
-caption. Measured against the reference, the caption for your real words was only **~70%
-correlated** with the correct output; every PixArt / SD 3.5 image was subtly off-prompt.
+**End-to-end gates for all six rendering models.** The Tier-2 perceptual gate — render a
+fixture through the *entire* real pipeline and compare to a frozen reference image — now
+covers SD 1.5, SD 2.1, SDXL, PixArt-Σ, Stable Cascade, and SD 3.5, across **four different
+rendering architectures**. If any change ever perturbs a model's output, the gate catches it.
 
-2.1.0 masks the pad tokens in T5 self-attention **and** stops image tokens from attending to
-pad-position captions in the DiT cross-attention — matching the reference **exactly** (corr
-0.70 → 1.0). Your PixArt and SD 3.5 prompts now land as intended. Nothing about how you use
-plakat changes; the output is just correct.
+**Finishing the coverage found two more determinism bugs** — exactly what the harness is for:
+SD 3.5's text-to-image path and Stable Cascade's (stochastic) sampler weren't fully
+reproducible; both are now pinned. A third prompt fixture (tokenization edge cases — numbers,
+punctuation) rounds out the per-module checks at three prompt lengths.
 
-**Broader verification.** The harness grew a second prompt fixture (conditioning is now
-checked at two very different prompt lengths), a new PixArt tap (the final-adaLN timestep),
-and **end-to-end** perceptual regression gates for **SDXL and PixArt** on top of SD 1.5 — a
-whole-pipeline safety net across two rendering families. It also learned its own limits: a
-full-DiT tap and an SD 1.5 mid-block tap were evaluated and honestly dropped (documented) as
-not worth their cost.
+**Cheaper CI.** The weight-backed verification job now caches model weights across runs, so
+after the first run it's just build + inference — practical enough to gate a release on. The
+zero-download structural tier still runs on every push.
 
-**Still pure Rust, still self-contained.** No new dependencies; `plakat verify` fetches its
-golden reference tensors from Hugging Face exactly like model weights. See
-[`Documentation/VERIFY.md`](Documentation/VERIFY.md).
+Day-to-day use is unchanged — this is a confidence release: the same one loop, now with a
+safety net under every model. See [`Documentation/VERIFY.md`](Documentation/VERIFY.md).
 
-**Earlier releases** (v0.13 – 2.0):
+**Earlier releases** (v0.13 – 2.1):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
