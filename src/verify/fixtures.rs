@@ -26,10 +26,30 @@ pub const PORTRAIT_V1: Fixture = Fixture {
     steps: 4,
 };
 
+/// A second, deliberately DIFFERENT-shaped fixture — mirrors `fixtures.py::FIXTURES["still_life_v1"]`.
+/// A much shorter prompt (~7 tokens vs portrait's ~15) means far more padding, which stresses
+/// the pad attention masking (the class of bug found in v2.1) with a different prompt length.
+pub const STILL_LIFE_V1: Fixture = Fixture {
+    id: "still_life_v1",
+    prompt: "a red apple on a wooden table",
+    negative: "blurry",
+    seed: 43,
+    width: 512,
+    height: 512,
+    steps: 4,
+};
+
+/// Every canonical fixture, in a stable order. Tier 1 iterates these per model (a missing
+/// golden for a (model, fixture) pair simply skips).
+pub fn all() -> &'static [&'static Fixture] {
+    &[&PORTRAIT_V1, &STILL_LIFE_V1]
+}
+
 /// Look up a fixture by id.
 pub fn get(id: &str) -> Option<&'static Fixture> {
     match id {
         "portrait_v1" => Some(&PORTRAIT_V1),
+        "still_life_v1" => Some(&STILL_LIFE_V1),
         _ => None,
     }
 }

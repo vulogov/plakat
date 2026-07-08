@@ -113,8 +113,7 @@ pub fn models(cfg: &VerifyConfig) -> Vec<String> {
 /// Run a model against its goldens (local `--golden-dir` or the HF dataset): load the
 /// pipeline, capture the fixture's intermediates, and compare. Missing goldens or an
 /// un-instrumented family report a clean skip.
-pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) -> Vec<Check> {
-    let fixture = "portrait_v1";
+pub async fn run_model(model: &str, fixture: &str, golden_dir: Option<&Path>, device: &Device) -> Vec<Check> {
     // Resolve the manifest + goldens from the local dir or the HF dataset. Absent → skip.
     let (manifest_path, goldens_path) =
         match crate::verify::golden::resolve_golden_files(model, fixture, golden_dir).await {

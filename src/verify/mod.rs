@@ -201,8 +201,11 @@ pub async fn run(cfg: &VerifyConfig) -> Result<()> {
     if want(1) {
         let src = cfg.golden_dir.as_deref();
         for model in tier1::models(cfg) {
-            for c in tier1::run_model(&model, src, &cfg.device).await {
-                report.push(c);
+            // Each (model, fixture) pair with a hosted golden runs; missing pairs skip cleanly.
+            for fx in fixtures::all() {
+                for c in tier1::run_model(&model, fx.id, src, &cfg.device).await {
+                    report.push(c);
+                }
             }
         }
     }

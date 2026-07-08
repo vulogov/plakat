@@ -37,6 +37,18 @@ FIXTURES = {
         height=512,
         steps=4,  # a few steps is enough — Tier 1 taps ENCODER / one UNet forward / VAE, not final quality
     ),
+    # A deliberately SHORTER prompt (~7 tokens) → far more padding, which stresses the pad
+    # attention masking (the v2.1 bug class) at a different prompt length. Mirrors
+    # src/verify/fixtures.rs::STILL_LIFE_V1 exactly (the fixture id is the contract).
+    "still_life_v1": Fixture(
+        id="still_life_v1",
+        prompt="a red apple on a wooden table",
+        negative="blurry",
+        seed=43,
+        width=512,
+        height=512,
+        steps=4,
+    ),
 }
 
 
