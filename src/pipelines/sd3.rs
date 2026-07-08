@@ -1591,9 +1591,12 @@ impl Pipeline {
                 "set_seed not supported ({e}); using global RNG"
             );
         }
-        let mut x =
-            Tensor::randn(0.0f32, 1.0f32, (1, 16, lat_h, lat_w), &self.device)?
-                .to_dtype(self.dtype)?;
+        // Verify Tier 2 (env-gated): deterministic LCG init (candle CPU RNG isn't seed-repro).
+        let mut x = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            crate::verify::deterministic_latent(16, lat_h, lat_w, &self.device, self.dtype)?
+        } else {
+            Tensor::randn(0.0f32, 1.0f32, (1, 16, lat_h, lat_w), &self.device)?.to_dtype(self.dtype)?
+        };
 
         // Rectified-flow schedule.
         let time_shift = self.variant.default_time_shift();

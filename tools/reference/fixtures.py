@@ -49,6 +49,18 @@ FIXTURES = {
         height=512,
         steps=4,
     ),
+    # Tokenization edge cases — numbers, hyphens, an ampersand, mixed punctuation — a
+    # distinctly different token stream. No A1111 weighting syntax (no diffusers reference).
+    # Mirrors src/verify/fixtures.rs::EMBLEM_V1 exactly.
+    "emblem_v1": Fixture(
+        id="emblem_v1",
+        prompt="a neon-lit 1980s arcade, 8-bit sprites & CRT glow",
+        negative="blurry, low-res",
+        seed=44,
+        width=512,
+        height=512,
+        steps=4,
+    ),
 }
 
 

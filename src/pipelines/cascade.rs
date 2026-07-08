@@ -744,8 +744,12 @@ impl Pipeline {
         // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
         let c_scheduler = CascadeScheduler::new(stage_c_steps);
         let c_timesteps: Vec<f64> = c_scheduler.timesteps().to_vec();
-        let noise_c = Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?
-            .to_dtype(self.dtype)?;
+        // Verify Tier 2 (env-gated): deterministic LCG init for a reproducible end-to-end.
+        let noise_c = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            crate::verify::deterministic_latent(16, 24, 24, &self.device, self.dtype)?
+        } else {
+            Tensor::randn(0f32, 1f32, (1, 16, 24, 24), &self.device)?.to_dtype(self.dtype)?
+        };
         let mut latent_c = noise_c;
         let bar = crate::ui::progress::step_bar(
             c_timesteps.len() as u64,
@@ -816,13 +820,12 @@ impl Pipeline {
         let cfg_effnet = Tensor::cat(&[&zero_c, &latent_c], 0)?;
         let b_scheduler = CascadeScheduler::new(stage_b_steps);
         let all_b_timesteps: Vec<f64> = b_scheduler.timesteps().to_vec();
-        let noise_b = Tensor::randn(
-            0f32,
-            1f32,
-            (1, 16, stage_b_dim, stage_b_dim),
-            &self.device,
-        )?
-        .to_dtype(self.dtype)?;
+        // Verify Tier 2 (env-gated): deterministic Stage-B init (seed 5, distinct from Stage C).
+        let noise_b = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            crate::verify::deterministic_tensor(&[1, 16, stage_b_dim, stage_b_dim], 5, &self.device, self.dtype)?
+        } else {
+            Tensor::randn(0f32, 1f32, (1, 16, stage_b_dim, stage_b_dim), &self.device)?.to_dtype(self.dtype)?
+        };
         // v0.41 phase 4c: img2img seeds Stage B from the noised init
         // latent at a strength-truncated schedule; t2i starts from
         // pure noise over the full schedule.

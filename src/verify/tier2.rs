@@ -33,8 +33,12 @@ const MEAN_ABS_MAX: f64 = 4.0;
 enum Family {
     /// SD 1.5 / 2.1 / SDXL — the shared `t2i` pipeline + `GenRequest` (det-init already wired).
     T2i,
-    /// PixArt-Σ — its own pipeline + `generate` signature.
+    /// PixArt-Σ — its own pipeline + `generate` (returns an RGB buffer).
     PixArt,
+    /// SD 3 / 3.5 — the `sd3` pipeline + its own `GenRequest` (flow-matching; renders a PNG).
+    Sd3,
+    /// Stable Cascade — 3-stage pipeline; `generate` returns an RGB buffer.
+    Cascade,
 }
 struct GenSpec {
     size: u32,
@@ -49,13 +53,15 @@ fn gen_spec(model: &str) -> Option<GenSpec> {
         "sd15" | "sd21" => Some(GenSpec { size: 256, steps: 8, guidance: 7.0, family: Family::T2i }),
         "sdxl" => Some(GenSpec { size: 512, steps: 8, guidance: 7.0, family: Family::T2i }),
         "pixart" => Some(GenSpec { size: 256, steps: 8, guidance: 4.5, family: Family::PixArt }),
+        "sd35-medium" => Some(GenSpec { size: 256, steps: 8, guidance: 4.5, family: Family::Sd3 }),
+        "stable-cascade" => Some(GenSpec { size: 256, steps: 10, guidance: 4.0, family: Family::Cascade }),
         _ => None,
     }
 }
 
 /// Models Tier 2 covers.
 pub fn models(cfg: &VerifyConfig) -> Vec<String> {
-    let covered = ["sd15", "sdxl", "pixart"];
+    let covered = ["sd15", "sd21", "sdxl", "pixart", "sd35-medium", "stable-cascade"];
     match &cfg.model {
         Some(m) if covered.contains(&m.as_str()) => vec![m.clone()],
         Some(_) => vec![], // a model Tier 2 doesn't cover → nothing to run
@@ -174,6 +180,76 @@ async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>
             let rendered = pipe.generate(
                 fx.prompt, fx.negative, spec.size, spec.size, spec.steps, spec.guidance, 0,
                 crate::pipelines::scheduler::SchedulerKind::Ddim, &mut no_hook,
+            );
+            unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
+            rendered // (Vec<u8> RGB, w, h)
+        }
+        Family::Sd3 => {
+            let mut pipe = crate::pipelines::sd3::Pipeline::load(crate::pipelines::sd3::LoadRequest {
+                variant: crate::pipelines::sd3::Variant::Sd35Medium,
+                repo: crate::hf::resolve_alias(model).to_string(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                controlnets: Vec::new(),
+                embeddings: Vec::new(),
+            })
+            .await?;
+            let tmp = std::env::temp_dir().join(format!("plakat-tier2-{}-{model}", std::process::id()));
+            std::fs::create_dir_all(&tmp)?;
+            let req = crate::pipelines::sd3::GenRequest {
+                prompt: fx.prompt.to_string(),
+                negative: fx.negative.to_string(),
+                width: spec.size,
+                height: spec.size,
+                count: 1,
+                steps: Some(spec.steps),
+                guidance: Some(spec.guidance),
+                seed: Some(0),
+                out_dir: tmp.clone(),
+                init_image: None,
+                mask: None,
+                mask_feather: 0,
+                mask_invert: false,
+                strength: None,
+                tiled: None,
+                regions: Vec::new(),
+                controlnet_conditioning: Vec::new(),
+                output_format: crate::imaging::io::OutputFormat::Png,
+            };
+            unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
+            let gen_result = pipe.generate(&req);
+            unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
+            gen_result?;
+            let png = std::fs::read_dir(&tmp)
+                .ok()
+                .and_then(|rd| {
+                    rd.filter_map(|e| e.ok().map(|e| e.path()))
+                        .find(|p| p.extension().map(|x| x == "png").unwrap_or(false))
+                })
+                .ok_or_else(|| anyhow::anyhow!("no PNG produced in {}", tmp.display()))?;
+            let out = load_rgb(&png);
+            let _ = std::fs::remove_dir_all(&tmp);
+            out
+        }
+        Family::Cascade => {
+            let mut pipe = crate::pipelines::cascade::Pipeline::load(crate::pipelines::cascade::LoadRequest {
+                repo: crate::hf::resolve_alias(model).to_string(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                controlnet_weights: None,
+                image_encoder_weights: None,
+            })
+            .await?;
+            // Split the step budget across Stage C (2/3) + Stage B (1/3), the CLI default.
+            let stage_c = (spec.steps * 2).div_ceil(3).max(1);
+            let stage_b = spec.steps.saturating_sub(stage_c).max(1);
+            unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
+            let mut no_hook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
+            let rendered = pipe.generate(
+                fx.prompt, fx.negative, spec.size, stage_c, stage_b, spec.guidance, 1.1, 0,
+                crate::pipelines::scheduler::SchedulerKind::Ddim, None, &mut no_hook,
             );
             unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
             rendered // (Vec<u8> RGB, w, h)
