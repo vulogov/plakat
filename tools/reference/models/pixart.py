@@ -21,6 +21,8 @@ DEFAULT_THRESHOLDS = {
     "dit.block0": (0.999, 0.1),   # first transformer block output (patch+adaLN+caption+block)
     "t5.hidden": (0.999, 0.5),    # T5 caption embedding WITH pad attention mask (large activations)
     "adaln.embedded_timestep": (0.999, 0.05),  # final-adaLN embedded timestep (1, hidden)
+    # (A full-DiT `dit.out` tap was tried + dropped: PixArt is a pure transformer, so a forward
+    #  on a white-noise deterministic latent is severely OOD — corr 0.64 vs diffusers, not a bug.)
 }
 
 

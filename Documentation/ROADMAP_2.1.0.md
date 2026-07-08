@@ -39,10 +39,13 @@ gate to prove it doesn't regress a currently-correct model.
       new bug, broader coverage. A third fixture (attention syntax / BREAK / special chars) is a
       cheap future add.
 - [ ] **Tier-2 breadth** — extend the end-to-end perceptual gate beyond sd15 (SDXL/PixArt/…).
-- [ ] **Deeper taps** — the remaining unwired correspondence rows (`t5.hidden`,
-      `adaln.embedded_timestep`, UNet-internal mid for SD 1.5 via candle). Cascade attention
-      coverage (the `stage_c.block0` tap stops before the OOD-sensitive Attn; a structured-input
-      variant could cover it).
+- [~] **Deeper taps** — `t5.hidden` ✅ (the pad-mask fix), `adaln.embedded_timestep` ✅ (PixArt
+      final-adaLN input, corr 1.0). **Finding: a full-DiT `dit.out` tap is NOT viable** — PixArt
+      is a pure transformer, so a forward on a white-noise deterministic latent is severely OOD
+      (corr 0.64 vs diffusers; block0 is 1.0). Unlike SD's conv-heavy `unet.out` (1.0), the DiT
+      full-forward can't be verified with synthetic input — dropped, documented. Still open:
+      SD 1.5 UNet-internal `unet.mid` (needs vendoring candle's UNet); Cascade attention (the
+      `stage_c.block0` tap stops before the OOD-sensitive Attn).
 - [ ] **Phase 4 hardening** — the opt-in `verify-models` CI job downloads multi-GB weights;
       a smaller cached/quantized fixture model would make a full-correctness gate cheaper.
 

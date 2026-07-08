@@ -401,6 +401,11 @@ impl Pipeline {
         // so this isolates the DiT block math; the mask exercises the v2.1 cross-attention pad
         // masking (image tokens must not attend to the masked keys). The dumper feeds the
         // byte-identical caption + mask (encoder_attention_mask on the diffusers side).
+        // NOTE: a full-DiT `dit.out` tap was tried and dropped — PixArt is a pure transformer
+        // (self- + cross-attention in all 28 blocks), so a forward on a white-noise deterministic
+        // latent is severely out-of-distribution (corr 0.64 vs diffusers; block0 is 1.0). Unlike
+        // SD's conv-heavy UNet (`unet.out` = 1.0), the DiT full-forward isn't verifiable with
+        // synthetic input. The DiT is covered by pos_embed + block0 + adaln + t5.hidden instead.
         if wanted.contains("dit.block0") {
             let cfg = &self.dit_cfg;
             let (lh, lw) = ((height / 8) as usize, (width / 8) as usize);
