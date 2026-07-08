@@ -38,7 +38,11 @@ gate to prove it doesn't regress a currently-correct model.
       non-trivial models (animatediff's `motion.block0` is prompt-independent). All corr 1.0 — no
       new bug, broader coverage. A third fixture (attention syntax / BREAK / special chars) is a
       cheap future add.
-- [ ] **Tier-2 breadth** — extend the end-to-end perceptual gate beyond sd15 (SDXL/PixArt/…).
+- [x] **Tier-2 breadth** — extended the end-to-end perceptual gate to **SDXL + PixArt** (was
+      sd15 only). Generalized `tier2::run_model` with a per-model `GenSpec` + a `Family` dispatch
+      (t2i pipeline vs PixArt's own `generate`); wired `PLAKAT_VERIFY_DET_INIT` into PixArt's
+      noise init. Frozen golden PNGs authored for all three; SSIM 1.0 / mean_abs 0.0 each. Now
+      three models across two pipeline families.
 - [~] **Deeper taps** — `t5.hidden` ✅ (the pad-mask fix), `adaln.embedded_timestep` ✅ (PixArt
       final-adaLN input, corr 1.0). **Finding: a full-DiT `dit.out` tap is NOT viable** — PixArt
       is a pure transformer, so a forward on a white-noise deterministic latent is severely OOD

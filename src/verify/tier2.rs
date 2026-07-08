@@ -21,22 +21,45 @@ use candle_core::Device;
 use super::{Check, VerifyConfig};
 
 /// The Tier-2 fixture render: small + few steps so it's a fast, deterministic smoke.
-const T2_MODEL: &str = "sd15";
 const T2_FIXTURE: &str = "portrait_v1";
-const T2_STEPS: usize = 8;
-const T2_SIZE: u32 = 256;
-const T2_GUIDANCE: f64 = 7.0;
 /// Pass bounds. Same-build runs match near-exactly; the headroom absorbs cross-build /
 /// cross-platform fp drift (a real regression tanks SSIM well below this).
 const SSIM_MIN: f64 = 0.97;
 const MEAN_ABS_MAX: f64 = 4.0;
 
-/// Models Tier 2 covers (just sd15 for now — the cheapest deterministic end-to-end).
+/// Which generate path + params to drive for a Tier-2 model. Sizes/steps are arbitrary (a
+/// regression gate, not a quality target) but chosen small for speed; SDXL wants a bit more
+/// than SD 1.5's native 512-halved 256.
+enum Family {
+    /// SD 1.5 / 2.1 / SDXL — the shared `t2i` pipeline + `GenRequest` (det-init already wired).
+    T2i,
+    /// PixArt-Σ — its own pipeline + `generate` signature.
+    PixArt,
+}
+struct GenSpec {
+    size: u32,
+    steps: usize,
+    guidance: f64,
+    family: Family,
+}
+
+/// Per-model Tier-2 generation spec, or `None` if Tier 2 doesn't cover the model.
+fn gen_spec(model: &str) -> Option<GenSpec> {
+    match model {
+        "sd15" | "sd21" => Some(GenSpec { size: 256, steps: 8, guidance: 7.0, family: Family::T2i }),
+        "sdxl" => Some(GenSpec { size: 512, steps: 8, guidance: 7.0, family: Family::T2i }),
+        "pixart" => Some(GenSpec { size: 256, steps: 8, guidance: 4.5, family: Family::PixArt }),
+        _ => None,
+    }
+}
+
+/// Models Tier 2 covers.
 pub fn models(cfg: &VerifyConfig) -> Vec<String> {
+    let covered = ["sd15", "sdxl", "pixart"];
     match &cfg.model {
-        Some(m) if m == T2_MODEL => vec![m.clone()],
-        Some(_) => vec![], // a specific non-sd15 model → nothing to run at Tier 2 yet
-        None => vec![T2_MODEL.to_string()],
+        Some(m) if covered.contains(&m.as_str()) => vec![m.clone()],
+        Some(_) => vec![], // a model Tier 2 doesn't cover → nothing to run
+        None => covered.iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -83,13 +106,89 @@ fn load_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32)> {
     Ok((img.into_raw(), w, h))
 }
 
+/// Deterministically render the fixture for `model` via the REAL pipeline (det-init env on),
+/// returning the RGB buffer + dims. Dispatches by family (t2i writes a PNG we read back; PixArt
+/// returns the buffer directly).
+async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>, u32, u32)> {
+    let fx = crate::verify::fixtures::get(T2_FIXTURE).expect("portrait_v1 fixture");
+    match spec.family {
+        Family::T2i => {
+            let pipe = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+                model: model.to_string(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                use_refiner: false,
+                embeddings: Vec::new(),
+                vae_cache: None,
+            })
+            .await?;
+            let tmp = std::env::temp_dir().join(format!("plakat-tier2-{}-{model}", std::process::id()));
+            std::fs::create_dir_all(&tmp)?;
+            let req = crate::pipelines::t2i::GenRequest {
+                prompt: fx.prompt.to_string(),
+                negative: fx.negative.to_string(),
+                width: spec.size,
+                height: spec.size,
+                count: 1,
+                steps: spec.steps,
+                guidance: spec.guidance,
+                seed: Some(0),
+                out_dir: tmp.clone(),
+                scheduler: crate::pipelines::scheduler::SchedulerKind::Ddim,
+                refine: None,
+                refine_strength: 0.0,
+                refiner_frac: None,
+                clip_skip: 1,
+                metadata: None,
+                preview_every: None,
+                preview_size: None,
+                output_format: crate::imaging::io::OutputFormat::Png,
+            };
+            unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
+            let gen_result = pipe.generate(&req, &[]);
+            unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
+            gen_result?;
+            let png = std::fs::read_dir(&tmp)
+                .ok()
+                .and_then(|rd| {
+                    rd.filter_map(|e| e.ok().map(|e| e.path()))
+                        .find(|p| p.extension().map(|x| x == "png").unwrap_or(false))
+                })
+                .ok_or_else(|| anyhow::anyhow!("no PNG produced in {}", tmp.display()))?;
+            let out = load_rgb(&png);
+            let _ = std::fs::remove_dir_all(&tmp);
+            out
+        }
+        Family::PixArt => {
+            let mut pipe = crate::pipelines::pixart::Pipeline::load(crate::pipelines::pixart::LoadRequest {
+                repo: crate::hf::resolve_alias(model).to_string(),
+                device: device.clone(),
+                vae_cache: None,
+                loras: Vec::new(),
+                lora_scale: 1.0,
+            })
+            .await?;
+            unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
+            let mut no_hook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
+            let rendered = pipe.generate(
+                fx.prompt, fx.negative, spec.size, spec.size, spec.steps, spec.guidance, 0,
+                crate::pipelines::scheduler::SchedulerKind::Ddim, &mut no_hook,
+            );
+            unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
+            rendered // (Vec<u8> RGB, w, h)
+        }
+    }
+}
+
 /// Run Tier 2 for one model: deterministically render the fixture via the real pipeline and
 /// compare to its golden PNG (local `--golden-dir` or the HF dataset). Missing golden → skip.
 pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) -> Vec<Check> {
     let name = format!("tier2.{model}.end_to_end");
-    if model != T2_MODEL {
-        return vec![Check::skip(name, 2, format!("Tier 2 covers {T2_MODEL} only for now"))];
-    }
+    let spec = match gen_spec(model) {
+        Some(s) => s,
+        None => return vec![Check::skip(name, 2, "Tier 2 doesn't cover this model".to_string())],
+    };
     // Resolve the golden PNG (regression reference = plakat's frozen prior output).
     let golden_png = match super::golden::resolve_golden_image(model, T2_FIXTURE, golden_dir).await {
         Ok(p) => p,
@@ -100,73 +199,9 @@ pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) 
         Err(e) => return vec![Check::fail(name, 2, format!("{e:#}"))],
     };
 
-    // Load the pipeline + render deterministically to a temp dir.
-    let pipe = match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
-        model: model.to_string(),
-        device: device.clone(),
-        loras: Vec::new(),
-        lora_scale: 1.0,
-        use_refiner: false,
-        embeddings: Vec::new(),
-        vae_cache: None,
-    })
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => return vec![Check::skip(name, 2, format!("load failed (weights?): {e:#}"))],
-    };
-
-    let tmp = std::env::temp_dir().join(format!("plakat-tier2-{}", std::process::id()));
-    if let Err(e) = std::fs::create_dir_all(&tmp) {
-        return vec![Check::fail(name, 2, format!("temp dir: {e}"))];
-    }
-    let fx = crate::verify::fixtures::get(T2_FIXTURE).expect("portrait_v1 fixture");
-    let req = crate::pipelines::t2i::GenRequest {
-        prompt: fx.prompt.to_string(),
-        negative: fx.negative.to_string(),
-        width: T2_SIZE,
-        height: T2_SIZE,
-        count: 1,
-        steps: T2_STEPS,
-        guidance: T2_GUIDANCE,
-        seed: Some(0), // stable filename; the LCG env override drives the actual latent
-        out_dir: tmp.clone(),
-        scheduler: crate::pipelines::scheduler::SchedulerKind::Ddim, // deterministic (non-ancestral)
-        refine: None,
-        refine_strength: 0.0,
-        refiner_frac: None,
-        clip_skip: 1,
-        metadata: None,
-        preview_every: None,
-        preview_size: None,
-        output_format: crate::imaging::io::OutputFormat::Png,
-    };
-
-    // Deterministic init for the duration of this render (scoped, then cleared).
-    // SAFETY: verify runs single-threaded through the tiers; no concurrent generate.
-    unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
-    let gen_result = pipe.generate(&req, &[]);
-    unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
-    if let Err(e) = gen_result {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return vec![Check::fail(name, 2, format!("generate failed: {e:#}"))];
-    }
-
-    // Read back the single rendered PNG.
-    let rendered = std::fs::read_dir(&tmp)
-        .ok()
-        .and_then(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .find(|p| p.extension().map(|x| x == "png").unwrap_or(false))
-        });
-    let result = match rendered {
-        Some(p) => load_rgb(&p),
-        None => Err(anyhow::anyhow!("no PNG produced in {}", tmp.display())),
-    };
-    let _ = std::fs::remove_dir_all(&tmp);
-    let (rpix, rw, rh) = match result {
+    let (rpix, rw, rh) = match render(model, &spec, device).await {
         Ok(v) => v,
-        Err(e) => return vec![Check::fail(name, 2, format!("{e:#}"))],
+        Err(e) => return vec![Check::skip(name, 2, format!("render failed (weights?): {e:#}"))],
     };
     if (rw, rh) != (gw, gh) || rpix.len() != gpix.len() {
         return vec![Check::fail(

@@ -518,8 +518,13 @@ impl Pipeline {
         let lh = (height / 8) as usize;
         let lw = (width / 8) as usize;
         let init_sigma = scheduler.init_noise_sigma();
-        let noise = Tensor::randn(0f32, 1f32, (1, 4, lh, lw), &self.device)?
-            .to_dtype(self.dtype)?;
+        // Verify Tier 2 (env-gated, dormant otherwise): candle's CPU RNG isn't seed-reproducible,
+        // so the end-to-end regression golden uses the shared LCG latent for a deterministic init.
+        let noise = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            crate::verify::deterministic_latent(4, lh, lw, &self.device, self.dtype)?
+        } else {
+            Tensor::randn(0f32, 1f32, (1, 4, lh, lw), &self.device)?.to_dtype(self.dtype)?
+        };
         let mut latents = (noise * init_sigma)?;
 
         // ---- Resolution + aspect conditioning (Σ-specific). ----

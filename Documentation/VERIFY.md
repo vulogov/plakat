@@ -44,10 +44,10 @@ CPU RNG isn't seed-reproducible) + a non-ancestral scheduler.
 |---|---|---|---|
 | SD 1.5 | `clip.encoded`, `vae.decoded` | `unet.out` (1.0) | SSIM 1.0 |
 | SD 2.1 | `clip.encoded`, `vae.decoded` | — | — |
-| SDXL | `clip.encoded`, `clip_g.pooled` | `unet.out`, `unet.mid` (1.0) | — |
-| PixArt-Σ | `dit.pos_embed` | `dit.block0` (1.0) | — |
+| SDXL | `clip.encoded`, `clip_g.pooled` | `unet.out`, `unet.mid` (1.0) | SSIM 1.0 |
+| PixArt-Σ | `dit.pos_embed`, `t5.hidden`, `adaln.embedded_timestep` | `dit.block0` (1.0) | SSIM 1.0 |
 | Stable Cascade | `clip_g.pooled` | `stage_c.block0` (1.0¹) | — |
-| SD 3.5-medium | `pooled_y` | `mmdit.block0` (1.0) | — |
+| SD 3.5-medium | `pooled_y`, `t5.hidden` | `mmdit.block0` (1.0) | — |
 | AnimateDiff | — | `motion.block0` (1.0) | — |
 
 ¹ Cascade's `stage_c.block0` taps the conditioned-conv core (embedding + first Res + Time)
