@@ -423,6 +423,18 @@ impl Pipeline {
             let b0 = self.dit.capture_block0(&latent, &timestep, &caption, &res, &asp, Some(&cap_mask))?;
             out.insert("dit.block0".to_string(), b0);
         }
+        // adaLN embedded timestep: the (1, hidden) vector the FINAL adaLN consumes (NOT the
+        // 6-way `t_block` the blocks use — `adaln_single` returns both; this is the 2nd). The
+        // final-adaLN using the *embedded* timestep was a real PixArt bug surface; block0 tests
+        // t_block but never this. Prompt-independent (timestep + resolution + aspect only).
+        if wanted.contains("adaln.embedded_timestep") {
+            let timestep = Tensor::full(500.0f32, (1usize,), &self.device)?.to_dtype(self.dtype)?;
+            let res = Tensor::new(&[height as f32, width as f32], &self.device)?
+                .reshape((1, 2))?.to_dtype(self.dtype)?;
+            let asp = Tensor::new(&[1.0f32, 1.0f32], &self.device)?.reshape((1, 2))?.to_dtype(self.dtype)?;
+            let (_t_block, embedded) = self.dit.adaln_single.forward(&timestep, &res, &asp)?;
+            out.insert("adaln.embedded_timestep".to_string(), embedded);
+        }
         Ok(out)
     }
 

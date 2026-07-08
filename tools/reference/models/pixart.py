@@ -20,6 +20,7 @@ DEFAULT_THRESHOLDS = {
     "dit.pos_embed": (0.9999, 0.01),
     "dit.block0": (0.999, 0.1),   # first transformer block output (patch+adaLN+caption+block)
     "t5.hidden": (0.999, 0.5),    # T5 caption embedding WITH pad attention mask (large activations)
+    "adaln.embedded_timestep": (0.999, 0.05),  # final-adaLN embedded timestep (1, hidden)
 }
 
 
@@ -72,6 +73,14 @@ def dump(fx, device: str):
     h.remove()
     b0 = holder["b0"]
     captured["dit.block0"] = b0[0] if isinstance(b0, tuple) else b0  # (1, tokens, hidden)
+
+    # --- adaln.embedded_timestep: the (1, hidden) vector the FINAL adaLN consumes -------
+    # diffusers AdaLayerNormSingle returns (t_block, embedded_timestep); we want the 2nd.
+    with torch.no_grad():
+        _t_block, embedded = tf.adaln_single(
+            timestep, added_cond, batch_size=1, hidden_dtype=torch.float32
+        )
+    captured["adaln.embedded_timestep"] = embedded  # (1, hidden)
     del tf  # free the DiT (~2.4GB) before loading T5-XXL (F32 ~19GB)
 
     # --- t5.hidden: caption embedding WITH the padding attention mask ------------------
