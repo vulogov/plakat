@@ -32,8 +32,12 @@ gate to prove it doesn't regress a currently-correct model.
 
 ## Verify follow-ups (breadth / depth)
 
-- [ ] **Tier-1 breadth** — more fixtures/prompts (currently one `portrait_v1`); a second fixture
-      would catch prompt-dependent bugs the single fixture can't.
+- [x] **Tier-1 breadth** — added a second fixture `still_life_v1` (a much shorter prompt → heavier
+      padding) + multi-fixture Tier-1 iteration (`fixtures::all()`, `run_model` per fixture, missing
+      pairs skip). Every prompt-dependent tap now verified at two prompt lengths across all 6
+      non-trivial models (animatediff's `motion.block0` is prompt-independent). All corr 1.0 — no
+      new bug, broader coverage. A third fixture (attention syntax / BREAK / special chars) is a
+      cheap future add.
 - [ ] **Tier-2 breadth** — extend the end-to-end perceptual gate beyond sd15 (SDXL/PixArt/…).
 - [ ] **Deeper taps** — the remaining unwired correspondence rows (`t5.hidden`,
       `adaln.embedded_timestep`, UNet-internal mid for SD 1.5 via candle). Cascade attention
