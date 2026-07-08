@@ -43,12 +43,17 @@ CPU RNG isn't seed-reproducible) + a non-ancestral scheduler.
 | family | conditioning | denoiser / core | tier 2 |
 |---|---|---|---|
 | SD 1.5 | `clip.encoded`, `vae.decoded` | `unet.out` (1.0) | SSIM 1.0 |
-| SD 2.1 | `clip.encoded`, `vae.decoded` | — | — |
+| SD 2.1 | `clip.encoded`, `vae.decoded` | — | SSIM 1.0 |
 | SDXL | `clip.encoded`, `clip_g.pooled` | `unet.out`, `unet.mid` (1.0) | SSIM 1.0 |
 | PixArt-Σ | `dit.pos_embed`, `t5.hidden`, `adaln.embedded_timestep` | `dit.block0` (1.0) | SSIM 1.0 |
-| Stable Cascade | `clip_g.pooled` | `stage_c.block0` (1.0¹) | — |
-| SD 3.5-medium | `pooled_y`, `t5.hidden` | `mmdit.block0` (1.0) | — |
+| Stable Cascade | `clip_g.pooled` | `stage_c.block0` (1.0¹) | SSIM 1.0² |
+| SD 3.5-medium | `pooled_y`, `t5.hidden` | `mmdit.block0` (1.0) | SSIM 1.0 |
 | AnimateDiff | — | `motion.block0` (1.0) | — |
+
+Tier 1 runs at **three fixtures** (`portrait_v1`, `still_life_v1`, `emblem_v1` — long / short /
+tokenization-edge-case prompts) so prompt-dependent taps are checked at three token lengths.
+² Cascade's Wuerstchen scheduler is stochastic (fresh noise each step); the Tier-2 gate makes it
+byte-reproducible via the deterministic-init env (a plakat-self regression reference).
 
 ¹ Cascade's `stage_c.block0` taps the conditioned-conv core (embedding + first Res + Time)
 **before** the first Attn block — self-attention over the 576 white-noise verify tokens is

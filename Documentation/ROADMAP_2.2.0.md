@@ -13,10 +13,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Carried-over verify follow-ups (cheap, incremental)
 
-- [ ] **Tier-2 breadth (finish)** — end-to-end perceptual gates for the remaining families:
-      SD 3.5 (heavy, T5) and Stable Cascade (3-stage). SD 2.1 is trivial (same t2i path).
-- [ ] **Third fixture** — an attention-syntax / `BREAK` / special-chars prompt to stress the
-      weighted-tokenization path across the conditioning taps. Cheap — reuses `fixtures::all()`.
+- [x] **Tier-2 breadth (finish)** — end-to-end gates now cover **all six** rendering models
+      (sd15/sd21/sdxl/pixart/cascade/sd35), 4 pipeline families, each SSIM 1.0. Finishing SD 3.5
+      + Cascade exposed two real determinism gaps the gate fixed: SD3 was gating the wrong
+      noise site (plain-t2i `eps` was still random), and Cascade's Wuerstchen scheduler is
+      **stochastic** (fresh N(0,1) every step) — both now env-gated deterministic under verify.
+- [x] **Third fixture** — `emblem_v1`, a tokenization-edge-case prompt (numbers/hyphens/
+      ampersand/punctuation). A1111 weighting was avoided (no diffusers reference). Verified
+      corr 1.0 across all six models × the conditioning taps. Broader tokenization coverage.
 - [ ] **Phase-4 hardening** — the opt-in `verify-models` CI job downloads multi-GB weights; a
       smaller cached/quantized fixture model would make a full-correctness gate cheaper to run.
 
