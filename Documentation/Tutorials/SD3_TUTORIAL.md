@@ -76,6 +76,15 @@ Practical effect: **SD3 follows detailed prompts much better than
 SD 1.5 / SDXL**. You can write paragraphs of description and SD3
 will respect them. Don't fight this — write longer prompts.
 
+> **v2.1 correctness fix.** T5 pads your prompt to 256 tokens, and
+> plakat now **masks those pad tokens** in T5's self-attention (and in
+> the MMDiT/DiT cross-attention) so your real words don't attend to
+> padding. Before 2.1 the caption for the actual prompt words was only
+> ~70% correlated with the reference — subtly off-prompt on every SD 3.5
+> and PixArt render. Verified exact (`plakat verify --tier 1 --model
+> sd35-medium`, the `t5.hidden` check). Short prompts benefit most (more
+> padding to mask).
+
 ### Attention syntax (v0.18)
 
 A1111 / NovelAI-style emphasis works on SD3 too: `(token:1.4)`,

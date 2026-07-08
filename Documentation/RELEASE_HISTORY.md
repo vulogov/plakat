@@ -8,6 +8,40 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.0.0 — `plakat verify`: proof the models are right
+
+Every prior cycle has, at some point, rescued a *silently-wrong* model by hand-comparing
+plakat's math against a reference implementation. 2.0.0 turns that method into a
+**committed, repeatable subcommand** — and it earned its keep by catching a real SDXL bug
+on its very first run.
+
+```bash
+plakat verify                        # run the whole harness
+plakat verify --tier 0               # structural checks — zero downloads, ~0.2s
+plakat verify --tier 1 --model sdxl  # per-module correctness vs a frozen reference
+```
+
+**A self-contained correctness harness.** `plakat verify` checks that each model's *real*
+internals match a frozen reference — the text encoders, the pooled conditioning, the VAE,
+and the **denoiser / transformer core** of all seven families (SD 1.5, SD 2.1, SDXL,
+PixArt-Σ, Stable Cascade, SD 3.5, AnimateDiff). Three tiers: **structural** (no downloads —
+a fast, always-on gate), **per-module** (correlation vs golden tensors), and **end-to-end**
+(render a fixture, compare to a golden image). Every core tap matches the reference at
+correlation 1.0.
+
+**Pure Rust — nothing new to install.** The shipped binary never touches Python or torch:
+it fetches the golden reference tensors from Hugging Face exactly like it fetches model
+weights. The reference authoring (which *does* use diffusers) runs offline, once, and is
+excluded from the crate. plakat stays self-contained.
+
+**It found a real bug.** On its first run it flagged SDXL's `clip.encoded` at correlation
+0.991: SDXL's CLIP-L text encoder was padding with the wrong token (`"!"` instead of
+end-of-text). Fixed — every SDXL (and SD 3.5) render now matches the reference exactly.
+
+**Wired into CI.** Every push runs the structural tier; a one-click Actions job runs the
+full weight-backed verification. See [`VERIFY.md`](VERIFY.md) for the operator guide and
+[`RFC_VERIFY.md`](RFC_VERIFY.md) for the design.
+
 ## What's new in 1.22.0 — power-user polish + a source-wide stability pass
 
 1.22.0 finishes the power-user loop **and** hardens the whole codebase: a six-part

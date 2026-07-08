@@ -17,45 +17,35 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.0.0 — `plakat verify`: proof the models are right
+## What's new in 2.1.0 — the harness pays off: a real caption bug, fixed
 
-Every prior cycle has, at some point, rescued a *silently-wrong* model by hand-comparing
-plakat's math against a reference implementation. 2.0.0 turns that method into a
-**committed, repeatable subcommand** — and it earned its keep by catching a real SDXL bug
-on its very first run.
+2.0.0 shipped `plakat verify`, a self-contained model-correctness harness. 2.1.0 is that
+harness earning its keep: it found and fixed a **real, image-affecting bug** in PixArt-Σ and
+SD 3.5 — and grew broader coverage across the board.
 
-```bash
-plakat verify                        # run the whole harness
-plakat verify --tier 0               # structural checks — zero downloads, ~0.2s
-plakat verify --tier 1 --model sdxl  # per-module correctness vs a frozen reference
-```
+**The bug: unmasked T5 captions.** PixArt and SD 3/3.5 encode your prompt through a T5 text
+encoder, then pad it to a fixed length. plakat wasn't masking those padding tokens — so the
+actual prompt words were attending to *hundreds* of pad tokens inside T5, drifting the
+caption. Measured against the reference, the caption for your real words was only **~70%
+correlated** with the correct output; every PixArt / SD 3.5 image was subtly off-prompt.
 
-**A self-contained correctness harness.** `plakat verify` checks that each model's *real*
-internals match a frozen reference — the text encoders, the pooled conditioning, the VAE,
-and the **denoiser / transformer core** of all seven families (SD 1.5, SD 2.1, SDXL,
-PixArt-Σ, Stable Cascade, SD 3.5, AnimateDiff). Three tiers: **structural** (no downloads —
-a fast, always-on gate), **per-module** (correlation vs golden tensors), and **end-to-end**
-(render a fixture, compare to a golden image). Every core tap matches the reference at
-correlation 1.0.
+2.1.0 masks the pad tokens in T5 self-attention **and** stops image tokens from attending to
+pad-position captions in the DiT cross-attention — matching the reference **exactly** (corr
+0.70 → 1.0). Your PixArt and SD 3.5 prompts now land as intended. Nothing about how you use
+plakat changes; the output is just correct.
 
-**Pure Rust — nothing new to install.** The shipped binary never touches Python or torch:
-it fetches the golden reference tensors from Hugging Face exactly like it fetches model
-weights. The reference authoring (which *does* use diffusers) runs offline, once, and is
-excluded from the crate. plakat stays self-contained.
+**Broader verification.** The harness grew a second prompt fixture (conditioning is now
+checked at two very different prompt lengths), a new PixArt tap (the final-adaLN timestep),
+and **end-to-end** perceptual regression gates for **SDXL and PixArt** on top of SD 1.5 — a
+whole-pipeline safety net across two rendering families. It also learned its own limits: a
+full-DiT tap and an SD 1.5 mid-block tap were evaluated and honestly dropped (documented) as
+not worth their cost.
 
-**It found a real bug.** On its first run it flagged SDXL's `clip.encoded` at correlation
-0.991: SDXL's CLIP-L text encoder was padding with the wrong token (`"!"` instead of
-end-of-text). Fixed — every SDXL (and SD 3.5) render now matches the reference exactly.
+**Still pure Rust, still self-contained.** No new dependencies; `plakat verify` fetches its
+golden reference tensors from Hugging Face exactly like model weights. See
+[`Documentation/VERIFY.md`](Documentation/VERIFY.md).
 
-**Wired into CI.** Every push runs the structural tier; a one-click Actions job runs the
-full weight-backed verification. See [`Documentation/VERIFY.md`](Documentation/VERIFY.md)
-for the operator guide and [`Documentation/RFC_VERIFY.md`](Documentation/RFC_VERIFY.md) for
-the design.
-
-Everything else is unchanged: one loop, and every output is a normal plakat PNG (recipe
-embedded) that a compiled scenario runs headlessly.
-
-**Earlier releases** (v0.13 – 1.22):
+**Earlier releases** (v0.13 – 2.0):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
