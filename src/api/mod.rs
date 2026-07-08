@@ -34,6 +34,10 @@ use anyhow::{Context, Result};
 use candle_core::Device;
 
 pub use crate::imaging::upscale::Method as UpscaleMethod;
+pub use crate::map::spec::MapSpec;
+pub use crate::pipelines::ip_adapter::IdentityKind;
+pub use crate::pipelines::multiperson::placement::{Distance, Facing, Position};
+pub use crate::pipelines::multiperson::Placement;
 pub use crate::pipelines::scheduler::SchedulerKind;
 
 /// Resolve a device spec (`"auto"`, `"metal"`, `"cuda"`, `"cpu"`) to a [`Device`]. `"auto"`
@@ -448,6 +452,811 @@ impl Upscale {
         let image = result.and_then(|_| Image::open(&out));
         let _ = std::fs::remove_dir_all(&tmp);
         image
+    }
+}
+
+/// IC-Light relighting — re-illuminate a cut-out subject under a described lighting condition.
+/// The subject should be an RGBA cut-out (see [`Transparent`]). Returns the relit image.
+pub struct Relight {
+    subject: PathBuf,
+    prompt: String,
+    negative: String,
+    width: u32,
+    height: u32,
+    steps: usize,
+    guidance: f64,
+    seed: u64,
+    device: Option<Device>,
+}
+
+impl Relight {
+    /// Relight `subject` (an RGBA cut-out PNG). Defaults: 512×512, 20 steps, guidance 2.0.
+    pub fn new(subject: impl Into<PathBuf>) -> Self {
+        Relight {
+            subject: subject.into(),
+            prompt: String::new(),
+            negative: String::new(),
+            width: 512,
+            height: 512,
+            steps: 20,
+            guidance: 2.0,
+            seed: 0,
+            device: None,
+        }
+    }
+    /// The lighting/scene prompt (e.g. "warm sunset light from the left").
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+    /// The negative prompt.
+    pub fn negative(mut self, negative: impl Into<String>) -> Self {
+        self.negative = negative.into();
+        self
+    }
+    /// Output size.
+    pub fn size(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+    /// Denoise steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Guidance scale (IC-Light works best low, ~2.0).
+    pub fn guidance(mut self, guidance: f64) -> Self {
+        self.guidance = guidance;
+        self
+    }
+    /// RNG seed.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run relighting, returning the image in memory.
+    pub async fn run(self) -> Result<Image> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let pipe = crate::pipelines::ic_light::Pipeline::load(device)
+            .await
+            .context("loading IC-Light pipeline")?;
+        let (pixels, width, height) = pipe.relight(
+            &self.subject,
+            &self.prompt,
+            &self.negative,
+            self.width,
+            self.height,
+            self.steps,
+            self.guidance,
+            self.seed,
+        )?;
+        Ok(Image { pixels, width, height })
+    }
+}
+
+/// Style transfer — render `input` in the artistic style of a `reference` image (IP-Adapter /
+/// InstantStyle). Returns the stylized image.
+pub struct Stylize {
+    input: PathBuf,
+    reference: PathBuf,
+    model: String,
+    strength: f32,
+    steps: usize,
+    seed: Option<u64>,
+    ref_blur: f32,
+    ref_weight: f32,
+    instantstyle: bool,
+    style_scale: f32,
+    device: Option<Device>,
+}
+
+impl Stylize {
+    /// Style-transfer `input` toward the look of `reference`. Defaults: sdxl, strength 0.6,
+    /// 30 steps, InstantStyle off, style_scale 1.0.
+    pub fn new(input: impl Into<PathBuf>, reference: impl Into<PathBuf>) -> Self {
+        Stylize {
+            input: input.into(),
+            reference: reference.into(),
+            model: "sdxl".into(),
+            strength: 0.6,
+            steps: 30,
+            seed: None,
+            ref_blur: 0.0,
+            ref_weight: 1.0,
+            instantstyle: false,
+            style_scale: 1.0,
+            device: None,
+        }
+    }
+    /// The base model (default `sdxl`).
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+    /// How strongly to restyle (0 = keep input, 1 = full restyle).
+    pub fn strength(mut self, strength: f32) -> Self {
+        self.strength = strength;
+        self
+    }
+    /// Denoise steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// RNG seed.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// Gaussian blur applied to the reference before encoding (softens style transfer).
+    pub fn ref_blur(mut self, ref_blur: f32) -> Self {
+        self.ref_blur = ref_blur;
+        self
+    }
+    /// Reference image conditioning weight.
+    pub fn ref_weight(mut self, ref_weight: f32) -> Self {
+        self.ref_weight = ref_weight;
+        self
+    }
+    /// Enable InstantStyle (style-only IP-Adapter layer targeting).
+    pub fn instantstyle(mut self, on: bool) -> Self {
+        self.instantstyle = on;
+        self
+    }
+    /// InstantStyle scale.
+    pub fn style_scale(mut self, style_scale: f32) -> Self {
+        self.style_scale = style_scale;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run style transfer, returning the image in memory.
+    pub async fn run(self) -> Result<Image> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let tmp = scratch_dir()?;
+        let out = tmp.join("stylized.png");
+        let req = crate::pipelines::stylize::Request {
+            input: self.input,
+            reference: self.reference,
+            out: out.clone(),
+            strength: self.strength,
+            model: self.model,
+            steps: self.steps,
+            seed: self.seed,
+            ref_blur: self.ref_blur,
+            ref_weight: self.ref_weight,
+            instantstyle: self.instantstyle,
+            style_scale: self.style_scale,
+            device,
+        };
+        let result = crate::pipelines::stylize::run(req).await;
+        let image = result.and_then(|_| Image::open(&out));
+        let _ = std::fs::remove_dir_all(&tmp);
+        image
+    }
+}
+
+/// Cut out the salient subject to a transparent (RGBA) background via U2Net matting. Because
+/// the result carries an alpha channel, it is written straight to `out_path` (a `.png`/`.webp`).
+pub struct Transparent {
+    input: PathBuf,
+    crop: bool,
+    device: Option<Device>,
+}
+
+impl Transparent {
+    /// Cut out the subject of `input`. Default: no crop (keep original canvas).
+    pub fn new(input: impl Into<PathBuf>) -> Self {
+        Transparent { input: input.into(), crop: false, device: None }
+    }
+    /// Crop the output to the subject's bounding box.
+    pub fn crop(mut self, crop: bool) -> Self {
+        self.crop = crop;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+    /// Write the RGBA cut-out to `out_path` (must be `.png` or `.webp` — alpha needs it).
+    pub async fn run(self, out_path: impl AsRef<Path>) -> Result<()> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        crate::pipelines::matting::cutout(&self.input, out_path.as_ref(), self.crop, &device).await
+    }
+}
+
+/// A click point for [`Segment`]: normalized-or-pixel `(x, y)` and whether it marks foreground
+/// (include) or background (exclude).
+#[derive(Clone, Copy)]
+pub struct Point {
+    /// X coordinate (pixels).
+    pub x: f64,
+    /// Y coordinate (pixels).
+    pub y: f64,
+    /// `true` = foreground (select), `false` = background (exclude).
+    pub foreground: bool,
+}
+
+/// Segment a subject with SAM/MobileSAM from click points, producing a binary mask PNG
+/// (255 = selected) at the input's resolution — ready to feed [`Img2img::mask`].
+pub struct Segment {
+    input: PathBuf,
+    points: Vec<Point>,
+    invert: bool,
+    grow: u32,
+    feather: u32,
+    device: Option<Device>,
+}
+
+impl Segment {
+    /// Segment `input`. Add at least one [`point`](Segment::point).
+    pub fn new(input: impl Into<PathBuf>) -> Self {
+        Segment { input: input.into(), points: Vec::new(), invert: false, grow: 0, feather: 0, device: None }
+    }
+    /// Add a click point. `foreground = true` selects, `false` excludes.
+    pub fn point(mut self, x: f64, y: f64, foreground: bool) -> Self {
+        self.points.push(Point { x, y, foreground });
+        self
+    }
+    /// Invert the mask (select everything except the subject).
+    pub fn invert(mut self, invert: bool) -> Self {
+        self.invert = invert;
+        self
+    }
+    /// Grow the mask outward by this many pixels.
+    pub fn grow(mut self, px: u32) -> Self {
+        self.grow = px;
+        self
+    }
+    /// Feather (soften) the mask edge by this many pixels.
+    pub fn feather(mut self, px: u32) -> Self {
+        self.feather = px;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+    /// Write the mask PNG to `out_path`.
+    pub async fn run(self, out_path: impl AsRef<Path>) -> Result<()> {
+        anyhow::ensure!(!self.points.is_empty(), "Segment needs at least one point()");
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let points: Vec<crate::pipelines::sam::PointPrompt> = self
+            .points
+            .iter()
+            .map(|p| crate::pipelines::sam::PointPrompt { x: p.x, y: p.y, foreground: p.foreground })
+            .collect();
+        crate::pipelines::sam::segment(
+            &self.input,
+            out_path.as_ref(),
+            &points,
+            self.invert,
+            self.grow,
+            self.feather,
+            &device,
+        )
+        .await
+    }
+}
+
+/// Identity-preserving portrait generation from one or more reference photos (IP-Adapter).
+/// Add `.photo(...)` + an [`identity`](Portrait::identity) kind to carry a face across renders.
+pub struct Portrait {
+    model: String,
+    prompt: String,
+    negative: String,
+    photos: Vec<(PathBuf, f32)>,
+    identity: Option<IdentityKind>,
+    width: u32,
+    height: u32,
+    steps: usize,
+    guidance: f64,
+    seed: Option<u64>,
+    count: u32,
+    face_strength: f32,
+    scheduler: SchedulerKind,
+    device: Option<Device>,
+    loras: Vec<Lora>,
+}
+
+impl Portrait {
+    /// Start a portrait build for `model`. Defaults: 512×512, 30 steps, guidance 7.5,
+    /// face_strength 1.0, one image.
+    pub fn new(model: impl Into<String>) -> Self {
+        Portrait {
+            model: model.into(),
+            prompt: String::new(),
+            negative: String::new(),
+            photos: Vec::new(),
+            identity: None,
+            width: 512,
+            height: 512,
+            steps: 30,
+            guidance: 7.5,
+            seed: None,
+            count: 1,
+            face_strength: 1.0,
+            scheduler: SchedulerKind::default(),
+            device: None,
+            loras: Vec::new(),
+        }
+    }
+    /// The positive prompt.
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+    /// The negative prompt.
+    pub fn negative(mut self, negative: impl Into<String>) -> Self {
+        self.negative = negative.into();
+        self
+    }
+    /// Add a reference photo at `weight` (relative influence). Chainable for several photos.
+    pub fn photo(mut self, path: impl Into<PathBuf>, weight: f32) -> Self {
+        self.photos.push((path.into(), weight));
+        self
+    }
+    /// Which IP-Adapter identity variant to use (matches the model family).
+    pub fn identity(mut self, kind: IdentityKind) -> Self {
+        self.identity = Some(kind);
+        self
+    }
+    /// Output size.
+    pub fn size(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+    /// Denoise steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Guidance scale.
+    pub fn guidance(mut self, guidance: f64) -> Self {
+        self.guidance = guidance;
+        self
+    }
+    /// RNG seed.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// How many images. Default 1.
+    pub fn count(mut self, count: u32) -> Self {
+        self.count = count.max(1);
+        self
+    }
+    /// FaceID identity strength (how hard to push the reference identity).
+    pub fn face_strength(mut self, face_strength: f32) -> Self {
+        self.face_strength = face_strength;
+        self
+    }
+    /// Sampler / scheduler.
+    pub fn scheduler(mut self, scheduler: SchedulerKind) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+    /// Add a LoRA (path or repo id) at `scale`.
+    pub fn lora(mut self, source: impl Into<String>, scale: f32) -> Self {
+        self.loras.push(Lora { source: source.into(), scale });
+        self
+    }
+
+    /// Run generation, returning the images in memory.
+    pub async fn run(self) -> Result<Vec<Image>> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let tmp = scratch_dir()?;
+        let loras = build_loras(&self.loras)?;
+        let photos = self
+            .photos
+            .iter()
+            .map(|(p, w)| crate::pipelines::ip_adapter::WeightedPhoto { path: p.clone(), weight: Some(*w) })
+            .collect();
+        let req = crate::pipelines::portrait::Request {
+            prompt: self.prompt,
+            negative: self.negative,
+            photos,
+            model: self.model,
+            width: self.width,
+            height: self.height,
+            count: self.count,
+            steps: self.steps,
+            guidance: self.guidance,
+            seed: self.seed,
+            out_dir: tmp.clone(),
+            device,
+            loras,
+            lora_scale: 1.0,
+            scheduler: self.scheduler,
+            refine: None,
+            refine_strength: 0.3,
+            face_strength: self.face_strength,
+            face_bbox: None,
+            face_landmarks: None,
+            identity: self.identity,
+            shared_clip_h: None,
+            controls: Vec::new(),
+        };
+        let gen_result = crate::pipelines::portrait::run(req).await;
+        let images = collect_images(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+        gen_result?;
+        images
+    }
+}
+
+/// One person in a [`Multiperson`] scene: a label, reference photo(s), and optional per-person
+/// prompt + placement.
+pub struct Person {
+    label: String,
+    photos: Vec<(PathBuf, f32)>,
+    prompt: Option<String>,
+    placement: Option<Placement>,
+}
+
+impl Person {
+    /// A person identified by `label` (used to bind the identity to a figure in the scene).
+    pub fn new(label: impl Into<String>) -> Self {
+        Person { label: label.into(), photos: Vec::new(), prompt: None, placement: None }
+    }
+    /// Add a reference photo at `weight`.
+    pub fn photo(mut self, path: impl Into<PathBuf>, weight: f32) -> Self {
+        self.photos.push((path.into(), weight));
+        self
+    }
+    /// A per-person prompt fragment.
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
+        self
+    }
+    /// Where this person stands / how they face the camera.
+    pub fn place(mut self, position: Position, distance: Distance, facing: Facing) -> Self {
+        self.placement = Some(Placement { position, distance, facing });
+        self
+    }
+}
+
+/// Place two or more identities into one coherent scene. Add [`Person`]s, describe the scene,
+/// and run. Returns the composed image(s).
+pub struct Multiperson {
+    scene: String,
+    people: Vec<Person>,
+    model: String,
+    identity: IdentityKind,
+    negative: String,
+    style: Option<String>,
+    width: u32,
+    height: u32,
+    steps: usize,
+    guidance: f64,
+    seed: Option<u64>,
+    count: u32,
+    composite: bool,
+    relight: bool,
+    pose: bool,
+    swap: bool,
+    device: Option<Device>,
+}
+
+impl Multiperson {
+    /// Start a multi-person scene described by `scene`. Defaults: sdxl, PlusFace identity,
+    /// 768×768, 30 steps, guidance 7.0, composite mode on.
+    pub fn new(scene: impl Into<String>) -> Self {
+        Multiperson {
+            scene: scene.into(),
+            people: Vec::new(),
+            model: "sdxl".into(),
+            identity: IdentityKind::PlusFace,
+            negative: String::new(),
+            style: None,
+            width: 768,
+            height: 768,
+            steps: 30,
+            guidance: 7.0,
+            seed: None,
+            count: 1,
+            composite: true,
+            relight: false,
+            pose: false,
+            swap: false,
+            device: None,
+        }
+    }
+    /// Add a [`Person`] to the scene.
+    pub fn person(mut self, person: Person) -> Self {
+        self.people.push(person);
+        self
+    }
+    /// The base model.
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+    /// IP-Adapter identity variant.
+    pub fn identity(mut self, identity: IdentityKind) -> Self {
+        self.identity = identity;
+        self
+    }
+    /// Negative prompt.
+    pub fn negative(mut self, negative: impl Into<String>) -> Self {
+        self.negative = negative.into();
+        self
+    }
+    /// A named style preset to apply.
+    pub fn style(mut self, style: impl Into<String>) -> Self {
+        self.style = Some(style.into());
+        self
+    }
+    /// Output size.
+    pub fn size(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+    /// Denoise steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Guidance scale.
+    pub fn guidance(mut self, guidance: f64) -> Self {
+        self.guidance = guidance;
+        self
+    }
+    /// RNG seed.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// How many images. Default 1.
+    pub fn count(mut self, count: u32) -> Self {
+        self.count = count.max(1);
+        self
+    }
+    /// Composite mode (per-person render → matte → place; recommended for strong identity).
+    pub fn composite(mut self, on: bool) -> Self {
+        self.composite = on;
+        self
+    }
+    /// Relight the composited figures to match the scene lighting.
+    pub fn relight(mut self, on: bool) -> Self {
+        self.relight = on;
+        self
+    }
+    /// Apply pose transfer.
+    pub fn pose(mut self, on: bool) -> Self {
+        self.pose = on;
+        self
+    }
+    /// Apply face-swap for extra identity fidelity.
+    pub fn swap(mut self, on: bool) -> Self {
+        self.swap = on;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run the scene, returning the composed image(s) in memory.
+    pub async fn run(self) -> Result<Vec<Image>> {
+        anyhow::ensure!(!self.people.is_empty(), "Multiperson needs at least one person()");
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let tmp = scratch_dir()?;
+        let people = self
+            .people
+            .into_iter()
+            .map(|p| crate::pipelines::multiperson::Person {
+                label: p.label,
+                photos: p
+                    .photos
+                    .iter()
+                    .map(|(path, w)| crate::pipelines::ip_adapter::WeightedPhoto {
+                        path: path.clone(),
+                        weight: Some(*w),
+                    })
+                    .collect(),
+                placement: p.placement,
+                bbox: None,
+                prompt: p.prompt,
+                face_strength: None,
+                face_bbox: None,
+                face_landmarks: None,
+                scale: None,
+            })
+            .collect();
+        let req = crate::pipelines::multiperson::MultipersonRequest {
+            scene: self.scene,
+            people,
+            model: self.model,
+            identity: self.identity,
+            style: self.style,
+            negative: self.negative,
+            layout_provider: "none".into(),
+            enhancer: None,
+            width: self.width,
+            height: self.height,
+            steps: self.steps,
+            guidance: self.guidance,
+            seed: self.seed,
+            count: self.count,
+            out_dir: tmp.clone(),
+            scheduler: SchedulerKind::default(),
+            device,
+            dry_run: false,
+            composite: self.composite,
+            relight: self.relight,
+            harmonize: None,
+            pose: self.pose,
+            swap: self.swap,
+            restore_faces: false,
+            refine_faces: false,
+            refine_face_strength: 0.85,
+            refine_denoise: 0.3,
+        };
+        let gen_result = crate::pipelines::multiperson::run(req).await;
+        let images = collect_images(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+        gen_result?;
+        images
+    }
+}
+
+/// Render a fantasy/world map. Build from a [`MapSpec`] (deterministic) or from a prose
+/// description (LLM-parsed), pick a `style`, and [`render`](Map::render) to an image.
+pub struct Map {
+    source: MapSource,
+    seed: u64,
+    style: String,
+    season: Option<String>,
+    grid: Option<u32>,
+    provider: String,
+    tier: Option<u8>,
+}
+
+enum MapSource {
+    Spec(Box<MapSpec>),
+    Prose(String),
+}
+
+impl Map {
+    /// Build from an explicit [`MapSpec`] (no LLM). Default style `parchment`, seed 0.
+    pub fn from_spec(spec: MapSpec) -> Self {
+        Map {
+            source: MapSource::Spec(Box::new(spec)),
+            seed: 0,
+            style: "parchment".into(),
+            season: None,
+            grid: None,
+            provider: "none".into(),
+            tier: None,
+        }
+    }
+    /// Build from a prose world description; the spec is parsed by an LLM `provider`
+    /// (set via [`provider`](Map::provider)). Default style `parchment`.
+    pub fn from_prose(description: impl Into<String>) -> Self {
+        Map {
+            source: MapSource::Prose(description.into()),
+            seed: 0,
+            style: "parchment".into(),
+            season: None,
+            grid: None,
+            provider: "none".into(),
+            tier: None,
+        }
+    }
+    /// RNG seed (drives terrain/hydrology generation).
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+    /// Render style: `parchment`, `inked`, or `blueprint`.
+    pub fn style(mut self, style: impl Into<String>) -> Self {
+        self.style = style.into();
+        self
+    }
+    /// Season tint: `spring`/`summer`/`autumn`/`winter`.
+    pub fn season(mut self, season: impl Into<String>) -> Self {
+        self.season = Some(season.into());
+        self
+    }
+    /// Overlay a coordinate grid every N cells.
+    pub fn grid(mut self, cells: u32) -> Self {
+        self.grid = Some(cells);
+        self
+    }
+    /// LLM provider for `from_prose` (e.g. a configured enhancer provider).
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self
+    }
+    /// Scale tier hint for prose parsing (0–5 geographic, 10–12 urban).
+    pub fn tier(mut self, tier: u8) -> Self {
+        self.tier = Some(tier);
+        self
+    }
+
+    async fn resolve_spec(&self) -> Result<MapSpec> {
+        match &self.source {
+            MapSource::Spec(s) => Ok((**s).clone()),
+            MapSource::Prose(text) => crate::map::parser::parse(
+                text,
+                &crate::map::parser::ParseOpts {
+                    provider: self.provider.clone(),
+                    system_override: None,
+                    tile_grid: None,
+                    scale_tier: self.tier,
+                    cache: true,
+                },
+            )
+            .await
+            .context("parsing map description"),
+        }
+    }
+
+    fn build_style(&self) -> Result<crate::map::render::Style> {
+        let mut style = crate::map::render::Style::named(&self.style)?;
+        if let Some(season) = &self.season {
+            style = style.with_season(crate::map::render::Season::parse(season)?);
+        }
+        if let Some(grid) = self.grid {
+            style = style.with_grid(grid);
+        }
+        Ok(style)
+    }
+
+    /// Render the map to a single image in memory.
+    pub async fn render(self) -> Result<Image> {
+        let spec = self.resolve_spec().await?;
+        let style = self.build_style()?;
+        let rgb = crate::map::render_map_image(&spec, self.seed, style)?;
+        let (width, height) = rgb.dimensions();
+        Ok(Image { pixels: rgb.into_raw(), width, height })
+    }
+
+    /// Render the world plus per-tile images into `dir`; returns the tile count.
+    pub async fn render_tiles(self, dir: impl AsRef<Path>, furniture: bool) -> Result<usize> {
+        let spec = self.resolve_spec().await?;
+        let style = self.build_style()?;
+        crate::map::save_world_tiles(&spec, self.seed, style, dir.as_ref(), furniture)
     }
 }
 
