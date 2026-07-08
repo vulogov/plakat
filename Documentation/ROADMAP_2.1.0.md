@@ -43,9 +43,11 @@ gate to prove it doesn't regress a currently-correct model.
       final-adaLN input, corr 1.0). **Finding: a full-DiT `dit.out` tap is NOT viable** — PixArt
       is a pure transformer, so a forward on a white-noise deterministic latent is severely OOD
       (corr 0.64 vs diffusers; block0 is 1.0). Unlike SD's conv-heavy `unet.out` (1.0), the DiT
-      full-forward can't be verified with synthetic input — dropped, documented. Still open:
-      SD 1.5 UNet-internal `unet.mid` (needs vendoring candle's UNet); Cascade attention (the
-      `stage_c.block0` tap stops before the OOD-sensitive Attn).
+      full-forward can't be verified with synthetic input — dropped, documented. **SD 1.5
+      `unet.mid`: decided AGAINST** — candle's stock SD UNet has private blocks, so it needs
+      vendoring the whole UNet (a load-bearing swap of a working backbone) for
+      localization-only value, since `unet.out` already verifies SD 1.5's full UNet at corr 1.0.
+      Not worth it. Cascade attention (OOD) remains a theoretical open item.
 - [ ] **Phase 4 hardening** — the opt-in `verify-models` CI job downloads multi-GB weights;
       a smaller cached/quantized fixture model would make a full-correctness gate cheaper.
 
