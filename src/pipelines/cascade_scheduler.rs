@@ -190,8 +190,17 @@ impl CascadeScheduler {
         let one_minus_alpha_cumprod_prev = 1.0 - alpha_cumprod_prev;
         let sigma =
             (one_minus_alpha * one_minus_alpha_cumprod_prev / one_minus_alpha_cumprod).sqrt();
-        let noise = Tensor::randn(0f32, 1f32, sample.shape(), sample.device())?
-            .to_dtype(sample.dtype())?;
+        // This is a STOCHASTIC (Wuerstchen DDPM) sampler — it adds fresh N(0,1) noise every
+        // step, so generation is non-deterministic run-to-run. Verify Tier 2 (env-gated,
+        // dormant otherwise) swaps in a fixed deterministic-LCG noise so the end-to-end
+        // render is byte-reproducible for the regression gate. It's the same tensor each step
+        // (a plakat-self regression reference, not a physically-faithful sample).
+        let noise = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            let dims = sample.dims();
+            crate::verify::deterministic_tensor(dims, 6, sample.device(), sample.dtype())?
+        } else {
+            Tensor::randn(0f32, 1f32, sample.shape(), sample.device())?.to_dtype(sample.dtype())?
+        };
         let noise_term = noise.affine(sigma, 0.0)?;
         Ok(mu.add(&noise_term)?)
     }

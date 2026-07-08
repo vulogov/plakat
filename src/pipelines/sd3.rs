@@ -1085,9 +1085,12 @@ impl Pipeline {
 
             // Fresh per-image noise. Cached for inpaint mode below so
             // the unmasked-region resampling uses the same noise the
-            // start latent was built from.
-            let eps = Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?
-                .to_dtype(self.dtype)?;
+            // start latent was built from. Verify Tier 2 (env-gated): deterministic LCG init.
+            let eps = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+                crate::verify::deterministic_latent(16, lat_h, lat_w, &self.device, self.dtype)?
+            } else {
+                Tensor::randn(0f32, 1.0_f32, (1, 16, lat_h, lat_w), &self.device)?.to_dtype(self.dtype)?
+            };
 
             // Initial latent + schedule.
             //
