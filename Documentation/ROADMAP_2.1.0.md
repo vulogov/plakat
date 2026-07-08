@@ -22,9 +22,13 @@ gate to prove it doesn't regress a currently-correct model.
       point on both → **corr 0.70 → 1.00000** vs diffusers. *(T5 SELF-attention done; DiT/MMDiT
       CROSS-attention masking — image tokens not attending to pad caption positions — is the
       remaining half, below.)*
-- [ ] **DiT/MMDiT cross-attention pad mask** — the second half of the T5-mask fix: thread the
-      caption `attention_mask` into the DiT (PixArt) / MMDiT (SD3) cross-attention so image
-      tokens don't attend to pad-position caption embeddings. Verifiable via the block taps.
+- [x] **DiT cross-attention pad mask** — the second half of the T5-mask fix. Threaded the caption
+      mask into PixArt's DiT cross-attention (`MultiHeadCrossAttention::forward_masked` +
+      `caption_mask_to_bias`; `encode_prompt` returns `(hidden, mask)`; `generate` CFG-batches it).
+      `dit.block0` now carries a deterministic mask → corr 1.0 (max_abs 0.0563→0.0278, the mask
+      changes the output and still matches diffusers `encoder_attention_mask`). **SD3 needs
+      nothing** — diffusers applies no mask to the MMDiT joint attention (verified from source);
+      adding one would break correspondence. **The full T5 pad-mask fix (self + cross) is done.**
 
 ## Verify follow-ups (breadth / depth)
 
