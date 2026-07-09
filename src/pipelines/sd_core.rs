@@ -224,6 +224,37 @@ pub fn detect_inpaint(base_repo: &str) -> bool {
     m.contains("inpaint") || m.contains("inpainting")
 }
 
+/// Warm the OS page cache by streaming each file sequentially, **in parallel** (best-effort).
+///
+/// Phase-1 of the 2.4 perf pass found cold model load is dominated by the weight mmap
+/// page-faulting at ~230 MB/s (random access, no read-ahead). Pre-reading the big files
+/// sequentially first turns that into an SSD-speed streaming read, so the subsequent mmap
+/// construct faults hit warm pages. A no-op when the file is already cached (fast re-read).
+/// Errors are ignored — the real load surfaces any genuine problem. `PLAKAT_NO_PREFETCH=1`
+/// disables it (for A/B measurement). Reusable across the other pipeline loaders.
+pub fn prefetch_files(paths: &[std::path::PathBuf]) {
+    if std::env::var("PLAKAT_NO_PREFETCH").is_ok() {
+        return;
+    }
+    let handles: Vec<_> = paths
+        .iter()
+        .filter(|p| p.exists())
+        .cloned()
+        .map(|p| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                if let Ok(mut f) = std::fs::File::open(&p) {
+                    let mut buf = vec![0u8; 8 << 20]; // 8 MiB streaming window
+                    while matches!(f.read(&mut buf), Ok(n) if n > 0) {}
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
 impl SdCore {
     /// Resolve the model id, download weights, build the UNet / VAE
     /// / text encoder(s), and merge any user-supplied LoRAs.
@@ -399,6 +430,18 @@ impl SdCore {
         };
         dl.finish_with_message("✓ base weights ready");
         prof.mark("download-resolve");
+
+        // Phase-2 (a): warm the page cache with a parallel sequential pre-read of the big weight
+        // files, so the build's mmap faults hit warm pages (Phase-1 found cold load is an
+        // I/O-bound ~230 MB/s random-fault read of the UNet). Best-effort; env-disable for A/B.
+        {
+            let mut warm = vec![text_enc_l_path.clone(), unet_path.clone(), vae_path.clone()];
+            if let Some(p) = text_enc_g_path.as_ref() {
+                warm.push(p.clone());
+            }
+            prefetch_files(&warm);
+            prof.mark("prefetch");
+        }
 
         // LoRAs arrive pre-resolved. Temp-file handles for merged
         // weights are accumulated below.

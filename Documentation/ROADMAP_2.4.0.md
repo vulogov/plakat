@@ -65,13 +65,23 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Phase 2 — Optimize (reordered by the Phase-0 data; each verified-safe)
 
-1. [ ] **Weight load** *(the ~60–200 s elephant — Phase-1 proved it's I/O, UNet-dominated,
-       ~230 MB/s random-fault read)*. In priority order: **(a) sequential prefetch** — `madvise`
-       `WILLNEED`/`SEQUENTIAL` or an explicit streaming read-ahead over the mmap'd weight files
-       (biggest single lever: 230 MB/s → SSD speed); **(b) parallel sub-file loads** (unet ∥ vae ∥
-       text encoders — currently sequential in `sd_core::load`); **(c)** avoid redundant dtype
-       conversions at load. The persistent model (deferred `serve` daemon) captures the warm-load
-       win; do the in-process wins here. Verify each with `plakat bench` before/after.
+1. [x] **Weight load** — implemented `sd_core::prefetch_files`: a parallel sequential pre-read of
+       the big weight files before the build, so the mmap faults hit warm pages. Correctness-safe
+       by construction (only warms the page cache; compute is byte-identical). Env-disable
+       `PLAKAT_NO_PREFETCH=1`. **Measured (sd15, cache evicted): 22.3 s → 20.1 s (~10%).**
+
+       **BUT the number reframed the whole load problem — the disk is the wall, not the access
+       pattern.** Raw `dd` of the UNet = **127 MB/s** single-stream; random mmap-fault ~116 MB/s;
+       parallel prefetch ~152 MB/s. This box's weight reads top out ~130–250 MB/s (a ~1.7 GB F16
+       UNet takes ~14 s to read). So **in-process load optimization is capped at ~10–30%** — the
+       parallelism win is real but small, because the storage, not the code, is the bottleneck.
+       The high-leverage load wins are therefore **out of the read path**: (i) the persistent
+       daemon (deferred, user's RFC) — don't re-read at all; (ii) **read fewer bytes** — quantized
+       weights (a Q4 model is ¼ the file → ~4× faster load), tying into the quant direction.
+       *(Note: 127 MB/s is slow for a Mac NVMe — the HF cache volume may be a bottleneck worth
+       checking, but it's the user's environment.)*
+   → **Strategic pivot:** load is disk-bound with little in-process headroom; the remaining
+     leverage is in the **compute** phases (below), which are not I/O-bound.
 2. [ ] **VAE decode** *(SDXL 1024² = 17.8 s)* — tiled + F16 decode (memory *and* the latency tail).
 3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
        into the bench + cache the encode across a batch; measure the quality/speed trade.
