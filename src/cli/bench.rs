@@ -82,9 +82,65 @@ fn parse_size(s: &str) -> Result<(u32, u32)> {
     Ok((w.trim().parse().context("width")?, h.trim().parse().context("height")?))
 }
 
+/// The pipeline family a model alias maps to (each has its own load + hook-capable generate).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Family {
+    Sd,
+    PixArt,
+    Sd3,
+    Cascade,
+    Flux,
+}
+
+fn family_of(model: &str) -> Family {
+    let m = model.to_lowercase();
+    if m.contains("flux") {
+        Family::Flux
+    } else if m.contains("cascade") {
+        Family::Cascade
+    } else if m.contains("sd3") || m.contains("sd35") {
+        Family::Sd3
+    } else if m.contains("pixart") {
+        Family::PixArt
+    } else {
+        Family::Sd
+    }
+}
+
+fn sd3_variant(model: &str) -> crate::pipelines::sd3::Variant {
+    use crate::pipelines::sd3::Variant;
+    let m = model.to_lowercase();
+    if m.contains("large") && m.contains("turbo") {
+        Variant::Sd35LargeTurbo
+    } else if m.contains("large") {
+        Variant::Sd35Large
+    } else if m.contains("sd3-medium") || m == "sd3" {
+        Variant::Sd3Medium
+    } else {
+        Variant::Sd35Medium
+    }
+}
+
+/// Run `repeat` timed generations, decomposing each from the per-step stamps `gen` records.
+fn time_runs<F>(load_ms: f64, repeat: usize, peak: &AtomicU64, mut gen_fn: F) -> Result<Vec<Sample>>
+where
+    F: FnMut(&mut TimingHook) -> Result<()>,
+{
+    let mut samples = Vec::with_capacity(repeat.max(1));
+    for _ in 0..repeat.max(1) {
+        let mut hook = TimingHook::default();
+        let t_gen = Instant::now();
+        gen_fn(&mut hook)?;
+        let gen_ms = t_gen.elapsed().as_secs_f64() * 1e3;
+        samples.push(decompose(load_ms, gen_ms, t_gen, &hook.stamps, peak.load(Ordering::Relaxed)));
+    }
+    Ok(samples)
+}
+
 pub async fn run(args: BenchArgs) -> Result<()> {
     let device = crate::device::select(&args.device)?;
     let (width, height) = parse_size(&args.size)?;
+    let family = family_of(&args.model);
 
     // Background peak-RSS sampler (poll every 40ms; store max bytes).
     let stop = Arc::new(AtomicBool::new(false));
@@ -109,54 +165,120 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         })
     };
 
-    // ---- load (timed, cold) ----
-    let t_load = Instant::now();
-    let pipeline = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
-        model: args.model.clone(),
-        device: device.clone(),
-        loras: Vec::new(),
-        lora_scale: 1.0,
-        use_refiner: false,
-        embeddings: Vec::new(),
-        vae_cache: None,
-    })
-    .await
-    .with_context(|| {
-        format!("loading {:?} for bench (SD family only for now)", args.model)
-    })?;
-    let load_ms = t_load.elapsed().as_secs_f64() * 1e3;
-
     let tmp = std::env::temp_dir().join(format!("plakat-bench-{}", std::process::id()));
+    let prompt = "a portrait of a red fox in a sunlit forest, detailed fur";
+    let repo = crate::hf::resolve_alias(&args.model).to_string();
 
-    // ---- generate (timed, repeatable) ----
-    let mut samples = Vec::with_capacity(args.repeat.max(1));
-    for _ in 0..args.repeat.max(1) {
-        let mut hook = TimingHook::default();
-        let req = crate::pipelines::t2i::GenRequest {
-            prompt: "a portrait of a red fox in a sunlit forest, detailed fur".into(),
-            negative: "blurry".into(),
-            width,
-            height,
-            count: 1,
-            steps: args.steps,
-            guidance: args.guidance,
-            seed: Some(42),
-            out_dir: tmp.clone(),
-            scheduler: SchedulerKind::default(),
-            refine: None,
-            refine_strength: 0.3,
-            refiner_frac: None,
-            clip_skip: 1,
-            metadata: None,
-            preview_every: None,
-            preview_size: None,
-            output_format: crate::imaging::io::OutputFormat::Png,
-        };
-        let t_gen = Instant::now();
-        pipeline.generate_hooked(&req, &[], Some(&mut hook))?;
-        let gen_ms = t_gen.elapsed().as_secs_f64() * 1e3;
-        samples.push(decompose(load_ms, gen_ms, t_gen, &hook.stamps, peak.load(Ordering::Relaxed)));
-    }
+    // ---- load (timed, cold) + generate (timed), dispatched by family ----
+    let samples = match family {
+        Family::Sd => {
+            let t = Instant::now();
+            let pipeline = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+                model: args.model.clone(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                use_refiner: false,
+                embeddings: Vec::new(),
+                vae_cache: None,
+            })
+            .await
+            .with_context(|| format!("loading {:?}", args.model))?;
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+            time_runs(load_ms, args.repeat, &peak, |hook| {
+                let req = crate::pipelines::t2i::GenRequest {
+                    prompt: prompt.into(),
+                    negative: "blurry".into(),
+                    width,
+                    height,
+                    count: 1,
+                    steps: args.steps,
+                    guidance: args.guidance,
+                    seed: Some(42),
+                    out_dir: tmp.clone(),
+                    scheduler: SchedulerKind::default(),
+                    refine: None,
+                    refine_strength: 0.3,
+                    refiner_frac: None,
+                    clip_skip: 1,
+                    metadata: None,
+                    preview_every: None,
+                    preview_size: None,
+                    output_format: crate::imaging::io::OutputFormat::Png,
+                };
+                pipeline.generate_hooked(&req, &[], Some(hook))
+            })?
+        }
+        Family::PixArt => {
+            let t = Instant::now();
+            let mut pipeline = crate::pipelines::pixart::Pipeline::load(
+                crate::pipelines::pixart::LoadRequest {
+                    repo: repo.clone(),
+                    device: device.clone(),
+                    vae_cache: None,
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                },
+            )
+            .await
+            .with_context(|| format!("loading PixArt {:?}", args.model))?;
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+            time_runs(load_ms, args.repeat, &peak, |hook| {
+                let mut opt: Option<&mut dyn StepHook> = Some(hook);
+                pipeline
+                    .generate(prompt, "blurry", width, height, args.steps, args.guidance, 42,
+                        SchedulerKind::default(), &mut opt)
+                    .map(|_| ())
+            })?
+        }
+        Family::Sd3 => {
+            let t = Instant::now();
+            let mut pipeline = crate::pipelines::sd3::Pipeline::load(crate::pipelines::sd3::LoadRequest {
+                variant: sd3_variant(&args.model),
+                repo: repo.clone(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                controlnets: Vec::new(),
+                embeddings: Vec::new(),
+            })
+            .await
+            .with_context(|| format!("loading SD3 {:?}", args.model))?;
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+            time_runs(load_ms, args.repeat, &peak, |hook| {
+                let req = crate::pipelines::sd3::GenRequest {
+                    prompt: prompt.into(),
+                    negative: "blurry".into(),
+                    width,
+                    height,
+                    count: 1,
+                    steps: Some(args.steps),
+                    guidance: Some(args.guidance),
+                    seed: Some(42),
+                    out_dir: tmp.clone(),
+                    init_image: None,
+                    mask: None,
+                    mask_feather: 0,
+                    mask_invert: false,
+                    strength: None,
+                    tiled: None,
+                    regions: Vec::new(),
+                    controlnet_conditioning: Vec::new(),
+                    output_format: crate::imaging::io::OutputFormat::Png,
+                };
+                pipeline.generate_hooked(&req, Some(hook))
+            })?
+        }
+        Family::Cascade | Family::Flux => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = sampler.join();
+            anyhow::bail!(
+                "plakat bench doesn't cover {:?} yet — wired for SD / PixArt / SD3. \
+                 (Cascade's 3-stage sampler and Flux's variant+quant paths land in a later phase.)",
+                family
+            );
+        }
+    };
 
     stop.store(true, Ordering::Relaxed);
     let _ = sampler.join();
@@ -227,6 +349,26 @@ fn report(args: &BenchArgs, device: &candle_core::Device, w: u32, h: u32, s: &Sa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn family_of_dispatches_by_alias() {
+        assert_eq!(family_of("sd15"), Family::Sd);
+        assert_eq!(family_of("sdxl"), Family::Sd);
+        assert_eq!(family_of("pixart"), Family::PixArt);
+        assert_eq!(family_of("sd35-medium"), Family::Sd3);
+        assert_eq!(family_of("sd3-medium"), Family::Sd3);
+        assert_eq!(family_of("stable-cascade"), Family::Cascade);
+        assert_eq!(family_of("flux-schnell"), Family::Flux);
+    }
+
+    #[test]
+    fn sd3_variant_maps_aliases() {
+        use crate::pipelines::sd3::Variant;
+        assert!(matches!(sd3_variant("sd35-medium"), Variant::Sd35Medium));
+        assert!(matches!(sd3_variant("sd35-large"), Variant::Sd35Large));
+        assert!(matches!(sd3_variant("sd35-large-turbo"), Variant::Sd35LargeTurbo));
+        assert!(matches!(sd3_variant("sd3-medium"), Variant::Sd3Medium));
+    }
 
     #[test]
     fn parse_size_accepts_wxh() {
