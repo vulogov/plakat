@@ -29,6 +29,7 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
   | sdxl | 1024² | 67194 | 1421 | 4278 | **17800** | 100499 | **167.7 s** | 10.4 GB |
   | pixart | 512² | **174832** | 1759 | 1560 | 4037 | 35442 | **210.3 s** | 13.5 GB |
   | sd35-medium | 512² | 137027 | **14408** | 1537 | 3413 | 47024 | **184.1 s** | 9.4 GB |
+  | stable-cascade | 512² | **198429** | 6467 | 5133 | 1172 | 105174 | **303.6 s** | 7.3 GB |
 
   **Findings that redirect the pass:**
   1. **Cold weight-load dominates** — 61–175 s, dwarfing generation. sd15 warm-load 0.8 s vs its
@@ -42,16 +43,35 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Phase 1 — Profile the hot paths
 
-- [ ] Instrument load / text-encode / per-step denoise / VAE decode; attribute wall-clock.
-      Expected culprits to confirm (not assume): weight load (cold), attention (per-step),
-      VAE decode (tail), needless F16↔F32 casts.
+- [x] **Load path profiled** — env-gated `PLAKAT_PROFILE_LOAD=1` prints per-phase deltas in
+      `sd_core::SdCore::load` (download-resolve / tokenizers+vae / **unet** / text-enc+rest).
+      **Findings (sd15, Metal/CPU):**
+      - **The UNet phase is 70–76% of load** (sd15 14.7 s of 19.3 s; sdxl 46.5 s of 66 s).
+        download-resolve is negligible (<0.6 s) — it's not the network/cache-lookup.
+      - **It's pure disk I/O, not compute.** Back-to-back runs: the UNet phase collapses
+        **14.7 s → 0.42 s (35×)** once the page cache is warm. Construct is ~0.4 s; the rest is
+        reading the weights.
+      - **The read is inefficient** — sd15's ~3.4 GB UNet in 14.7 s ≈ **230 MB/s**, far below SSD
+        sequential (1–3 GB/s). The lazy-mmap **random page-fault** pattern is the culprit; there's
+        no sequential prefetch.
+      - Load time swings 0.8 s ↔ 21 s with cache state; loading big models evicts the cache
+        (memory pressure), so cold re-reads recur in real use.
+- [x] **Conclusion → Phase-2 weight-load approach:** (1) **sequential prefetch** — `madvise`
+      `WILLNEED`/`SEQUENTIAL` (or an explicit read-ahead pass) to turn the 230 MB/s random-fault
+      read into a 1–3 GB/s streaming read; (2) **parallel sub-file loads** (unet ∥ vae ∥ text
+      encoders — currently sequential); (3) the persistent daemon (deferred, user's RFC) keeps
+      weights resident and sidesteps reload entirely. Per-step/VAE profiling deferred (already
+      bounded by the baselines).
 
 ## Phase 2 — Optimize (reordered by the Phase-0 data; each verified-safe)
 
-1. [ ] **Weight load** *(the ~60–175 s elephant)* — parallel mmap, lazy/on-demand submodules,
-       warm-cache reuse across a batch, avoid redundant dtype conversions at load. The persistent
-       model (deferred `serve` daemon, user's RFC) captures the warm-load win; do the in-process
-       wins here.
+1. [ ] **Weight load** *(the ~60–200 s elephant — Phase-1 proved it's I/O, UNet-dominated,
+       ~230 MB/s random-fault read)*. In priority order: **(a) sequential prefetch** — `madvise`
+       `WILLNEED`/`SEQUENTIAL` or an explicit streaming read-ahead over the mmap'd weight files
+       (biggest single lever: 230 MB/s → SSD speed); **(b) parallel sub-file loads** (unet ∥ vae ∥
+       text encoders — currently sequential in `sd_core::load`); **(c)** avoid redundant dtype
+       conversions at load. The persistent model (deferred `serve` daemon) captures the warm-load
+       win; do the in-process wins here. Verify each with `plakat bench` before/after.
 2. [ ] **VAE decode** *(SDXL 1024² = 17.8 s)* — tiled + F16 decode (memory *and* the latency tail).
 3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
        into the bench + cache the encode across a batch; measure the quality/speed trade.

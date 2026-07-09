@@ -232,6 +232,35 @@ impl SdCore {
     /// Task-specific load (identity encoder, refiner, etc.) happens
     /// on the wrapping pipeline that owns the `Arc<SdCore>`.
     pub async fn load(mut req: SdLoadRequest) -> Result<Self> {
+        // Load-path profiler (Phase 1 of the 2.4 perf pass). Env-gated (dormant otherwise):
+        // `PLAKAT_PROFILE_LOAD=1` prints per-phase deltas to stderr, so we can see whether the
+        // cold-load cost is download-resolve, weight read+build (which module), or construct.
+        struct LoadProf {
+            on: bool,
+            start: std::time::Instant,
+            last: std::cell::Cell<std::time::Instant>,
+        }
+        impl LoadProf {
+            fn new() -> Self {
+                let now = std::time::Instant::now();
+                LoadProf {
+                    on: std::env::var("PLAKAT_PROFILE_LOAD").is_ok(),
+                    start: now,
+                    last: std::cell::Cell::new(now),
+                }
+            }
+            fn mark(&self, name: &str) {
+                if !self.on {
+                    return;
+                }
+                let now = std::time::Instant::now();
+                let d = now.duration_since(self.last.get()).as_secs_f64() * 1e3;
+                let t = now.duration_since(self.start).as_secs_f64() * 1e3;
+                eprintln!("[load-prof] {name:<16} +{d:>8.1} ms   (total {t:>8.1} ms)");
+                self.last.set(now);
+            }
+        }
+        let prof = LoadProf::new();
         let base_repo = if req.model.contains('/') {
             req.model.clone()
         } else {
@@ -369,6 +398,7 @@ impl SdCore {
             .await?
         };
         dl.finish_with_message("✓ base weights ready");
+        prof.mark("download-resolve");
 
         // LoRAs arrive pre-resolved. Temp-file handles for merged
         // weights are accumulated below.
@@ -427,6 +457,7 @@ impl SdCore {
         // v0.12: inpainting checkpoints (SD 1.5 / SD 2.1 / SDXL) carry
         // 9 input channels instead of 4 — same UNet architecture
         // otherwise, only `conv_in` changes shape.
+        prof.mark("tokenizers+vae");
         let unet_in_channels = if is_inpaint { 9 } else { 4 };
         let unet = match variant {
             // SD 1.5 / SD 2.1 — candle's stock UNet (no add_embedding).
@@ -497,6 +528,7 @@ impl SdCore {
         // v0.30 phase 0: pick the matching vendored CLIP-L config.
         // Numerically identical to candle's `cfg.clip` for the variant,
         // but with a public `vocab_size` we can override for TI.
+        prof.mark("unet");
         let base_clip_l_cfg = match variant {
             SdVariant::Sd15 => crate::pipelines::vendored_clip::Config::v1_5(),
             SdVariant::Sd21 => crate::pipelines::vendored_clip::Config::v2_1(),
@@ -705,6 +737,7 @@ impl SdCore {
 
         build.finish_with_message("✓ SD core loaded");
 
+        prof.mark("text-enc+rest");
         Ok(Self {
             variant,
             cfg,
