@@ -1,0 +1,11 @@
+## sd15 512x512
+{"model":"sd15","device":"Metal(MetalDevice(DeviceId(1)))","width":512,"height":512,"steps":20,"load_ms":796.7,"encode_first_ms":22.8,"per_step_ms":711.03,"steps_span_ms":13509.7,"vae_tail_ms":3153.5,"gen_ms":16686.0,"total_ms":17482.7,"peak_rss_gb":3.53}
+## sd21 512x512
+{"model":"sd21","device":"Metal(MetalDevice(DeviceId(1)))","width":512,"height":512,"steps":20,"load_ms":61385.2,"encode_first_ms":68.9,"per_step_ms":659.57,"steps_span_ms":12531.9,"vae_tail_ms":3118.3,"gen_ms":15719.0,"total_ms":77104.2,"peak_rss_gb":3.82}
+## sdxl 1024x1024
+{"model":"sdxl","device":"Metal(MetalDevice(DeviceId(1)))","width":1024,"height":1024,"steps":20,"load_ms":67194.0,"encode_first_ms":1420.9,"per_step_ms":4277.81,"steps_span_ms":81278.4,"vae_tail_ms":17799.8,"gen_ms":100499.0,"total_ms":167693.1,"peak_rss_gb":10.35}
+## pixart 512x512
+{"model":"pixart","device":"Metal(MetalDevice(DeviceId(1)))","width":512,"height":512,"steps":20,"load_ms":174832.4,"encode_first_ms":1758.8,"per_step_ms":1560.34,"steps_span_ms":29646.4,"vae_tail_ms":4036.8,"gen_ms":35441.9,"total_ms":210274.2,"peak_rss_gb":13.47}
+## sd35-medium 512x512
+{"model":"sd35-medium","device":"Metal(MetalDevice(DeviceId(1)))","width":512,"height":512,"steps":20,"load_ms":137026.7,"encode_first_ms":14408.0,"per_step_ms":1536.99,"steps_span_ms":29202.9,"vae_tail_ms":3413.0,"gen_ms":47023.9,"total_ms":184050.6,"peak_rss_gb":9.41}
+# DONE

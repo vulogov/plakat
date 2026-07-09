@@ -19,10 +19,25 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       **load / encode+first-step / per-step (mean) / VAE-decode tail / total** + **peak RSS**
       (background sampler). Fixed prompt+seed; `--json` for CI; `--repeat K` reports the best.
       SD family wired (sd15/sd21/sdxl/pony/turbo); PixArt/SD3.5/Cascade/Flux in a later phase.
-- [~] **Freeze baselines** — first data point: **sd15 CPU 256² 4-step → total 29.9 s, of which
-      _load is 21.8 s (73%)_**, VAE tail 2.1 s, per-step 1.47 s, peak 5.6 GB. → confirms the
-      hypothesis: **cold load dominates**; weight-load + a persistent model (the deferred daemon)
-      are the top prize, not per-step micro-tuning. Still to freeze: Metal + the other families.
+- [x] **Metal baselines frozen** (`--size` pinned per model, 20 steps, F32 Metal). `load` is the
+      first cold load this session (page-cache empty) except sd15 (warm):
+
+  | model | size | load (ms) | encode+first | per-step | VAE tail | gen | **total** | peak RSS |
+  |---|---|---|---|---|---|---|---|---|
+  | sd15 | 512² | 797 *(warm)* | 23 | 711 | 3154 | 16686 | **17.5 s** | 3.5 GB |
+  | sd21 | 512² | 61385 | 69 | 660 | 3118 | 15719 | **77.1 s** | 3.8 GB |
+  | sdxl | 1024² | 67194 | 1421 | 4278 | **17800** | 100499 | **167.7 s** | 10.4 GB |
+  | pixart | 512² | **174832** | 1759 | 1560 | 4037 | 35442 | **210.3 s** | 13.5 GB |
+  | sd35-medium | 512² | 137027 | **14408** | 1537 | 3413 | 47024 | **184.1 s** | 9.4 GB |
+
+  **Findings that redirect the pass:**
+  1. **Cold weight-load dominates** — 61–175 s, dwarfing generation. sd15 warm-load 0.8 s vs its
+     own 21.5 s cold ⇒ it's largely I/O + page cache. → biggest prize (load + persistent model).
+  2. **VAE decode is a fat tail at high-res** — SDXL 1024² spends **17.8 s** just decoding.
+  3. **T5-XXL text-encode is a one-time monster** — SD3.5's encode+first is **14.4 s** (the T5-XXL
+     forward), separate from per-step.
+  4. Per-step only dominates on SDXL@1024 (4.3 s/step); step-caching's payoff is real but #4, not #1.
+- [ ] **Still to freeze**: Cascade + Flux (once the bench covers them), and CPU parity.
 - [x] **No optimization lands without a before/after number** from this harness.
 
 ## Phase 1 — Profile the hot paths
@@ -31,17 +46,20 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       Expected culprits to confirm (not assume): weight load (cold), attention (per-step),
       VAE decode (tail), needless F16↔F32 casts.
 
-## Phase 2 — Optimize (highest-leverage first; each verified-safe)
+## Phase 2 — Optimize (reordered by the Phase-0 data; each verified-safe)
 
-- [ ] **Step-caching** — TeaCache / DeepCache / first-block caching for the DiT/MMDiT/Flux
-      models. Algorithmic 1.5–2× with near-zero quality drift. (Direction #2.) Gate: Tier-2 SSIM
-      stays within the perceptual bound; expose as an opt-in knob (quality↔speed).
-- [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
-- [ ] **VAE decode** — tiled + F16 decode (memory *and* the latency tail).
-- [ ] **Weight load** — parallel mmap, lazy/on-demand submodules, warm-cache reuse across a batch.
-- [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
-      they stop being rejected on Metal (`scheduler.rs check_device_support`). Removes a
-      correctness-forced fallback *and* speeds sampling. (Direction #4.)
+1. [ ] **Weight load** *(the ~60–175 s elephant)* — parallel mmap, lazy/on-demand submodules,
+       warm-cache reuse across a batch, avoid redundant dtype conversions at load. The persistent
+       model (deferred `serve` daemon, user's RFC) captures the warm-load win; do the in-process
+       wins here.
+2. [ ] **VAE decode** *(SDXL 1024² = 17.8 s)* — tiled + F16 decode (memory *and* the latency tail).
+3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
+       into the bench + cache the encode across a batch; measure the quality/speed trade.
+4. [ ] **Step-caching** — TeaCache / DeepCache / first-block caching for DiT/MMDiT/Flux. Algorithmic
+       1.5–2×; opt-in knob (quality↔speed). (Direction #2.) Biggest per-step win, esp. SDXL@1024.
+5. [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
+6. [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
+       they stop being rejected on Metal (`scheduler.rs check_device_support`). (Direction #4.)
 
 ## Phase 3 — Lock it in
 
