@@ -34,6 +34,7 @@ use anyhow::{Context, Result};
 use candle_core::Device;
 
 pub use crate::imaging::upscale::Method as UpscaleMethod;
+pub use crate::imaging::video::Format as VideoFormat;
 pub use crate::map::spec::MapSpec;
 pub use crate::pipelines::ip_adapter::IdentityKind;
 pub use crate::pipelines::multiperson::placement::{Distance, Facing, Position};
@@ -1260,6 +1261,474 @@ impl Map {
     }
 }
 
+/// Train a **style LoRA** from a handful of images. Works across families (SD 1.5/2.1/SDXL →
+/// kohya LoRA; Stable Cascade / PixArt / SD 3.5 → PEFT LoRA). Writes a `.safetensors` to `out`.
+///
+/// Note: the transformer families (cascade/pixart/sd3) are memory-hungry — training them needs
+/// substantially more than 24 GB. SD 1.5/2.1/SDXL train comfortably.
+pub struct StyleTrain {
+    model: String,
+    images: Vec<PathBuf>,
+    trigger: String,
+    rank: usize,
+    steps: usize,
+    lr: f64,
+    size: u32,
+    out: PathBuf,
+    log_every: usize,
+    device: Option<Device>,
+}
+
+impl StyleTrain {
+    /// Train a style LoRA for `model` from `images`, writing to `out`.
+    /// Defaults: trigger "style", rank 16, 800 steps, lr 1e-4, 512px, log every 25.
+    pub fn new(model: impl Into<String>, images: Vec<PathBuf>, out: impl Into<PathBuf>) -> Self {
+        StyleTrain {
+            model: model.into(),
+            images,
+            trigger: "style".into(),
+            rank: 16,
+            steps: 800,
+            lr: 1e-4,
+            size: 512,
+            out: out.into(),
+            log_every: 25,
+            device: None,
+        }
+    }
+    /// The trigger word that will invoke the style.
+    pub fn trigger(mut self, trigger: impl Into<String>) -> Self {
+        self.trigger = trigger.into();
+        self
+    }
+    /// LoRA rank.
+    pub fn rank(mut self, rank: usize) -> Self {
+        self.rank = rank;
+        self
+    }
+    /// Training steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Learning rate.
+    pub fn lr(mut self, lr: f64) -> Self {
+        self.lr = lr;
+        self
+    }
+    /// Training resolution.
+    pub fn size(mut self, size: u32) -> Self {
+        self.size = size;
+        self
+    }
+    /// Log every N steps.
+    pub fn log_every(mut self, n: usize) -> Self {
+        self.log_every = n.max(1);
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run training; writes the LoRA to `out`.
+    pub async fn run(self) -> Result<()> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let m = self.model.to_lowercase();
+        if m.contains("cascade") || m.contains("stage-c") {
+            crate::pipelines::cascade::train_style_lora(crate::pipelines::cascade::StyleTrainRequest {
+                repo: self.model,
+                device,
+                images: self.images,
+                trigger: self.trigger,
+                rank: self.rank,
+                steps: self.steps,
+                lr: self.lr,
+                size: self.size,
+                out: self.out,
+                checkpoint_every: None,
+                log_every: self.log_every,
+                resume_from: None,
+            })
+            .await
+        } else if m.contains("pixart") {
+            crate::pipelines::pixart::train_style_lora(crate::pipelines::pixart::StyleTrainRequest {
+                repo: self.model,
+                device,
+                images: self.images,
+                trigger: self.trigger,
+                rank: self.rank,
+                steps: self.steps,
+                lr: self.lr,
+                size: self.size,
+                out: self.out,
+                checkpoint_every: None,
+                log_every: self.log_every,
+                resume_from: None,
+                class_images: Vec::new(),
+                class_prompt: None,
+                prior_weight: 1.0,
+            })
+            .await
+        } else if m.contains("sd3") || m.contains("sd35") {
+            crate::pipelines::sd3::train_style_lora(crate::pipelines::sd3::StyleTrainRequest {
+                variant: crate::pipelines::sd3::Variant::Sd35Medium,
+                repo: self.model,
+                device,
+                images: self.images,
+                trigger: self.trigger,
+                rank: self.rank,
+                steps: self.steps,
+                lr: self.lr,
+                size: self.size,
+                out: self.out,
+                checkpoint_every: None,
+                log_every: self.log_every,
+                resume_from: None,
+                class_images: Vec::new(),
+                class_prompt: None,
+                prior_weight: 1.0,
+            })
+            .await
+        } else {
+            // SD 1.5 / 2.1 / SDXL — the kohya LoRA trainer.
+            crate::pipelines::sd_train::trainer::train_style_lora_sd(
+                crate::pipelines::sd_train::trainer::SdStyleTrainRequest {
+                    model: self.model,
+                    device,
+                    images: self.images,
+                    trigger: self.trigger,
+                    rank: self.rank,
+                    steps: self.steps,
+                    lr: self.lr,
+                    size: self.size,
+                    out: self.out,
+                    checkpoint_every: None,
+                    log_every: self.log_every,
+                    resume_from: None,
+                    class_images: Vec::new(),
+                    class_prompt: None,
+                    prior_weight: 1.0,
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// Train a **Textual Inversion** embedding (a new token) from a few images. Writes a
+/// `.safetensors` embedding to `out`. Supported on SDXL and SD 3.5.
+pub struct EmbeddingTrain {
+    model: String,
+    images: Vec<PathBuf>,
+    token: String,
+    init_word: String,
+    steps: usize,
+    lr: f64,
+    size: u32,
+    out: PathBuf,
+    log_every: usize,
+    device: Option<Device>,
+}
+
+impl EmbeddingTrain {
+    /// Train a TI embedding for `token` from `images`, writing to `out`.
+    /// Defaults: init word "object", 1000 steps, lr 5e-4, 512px, log every 25.
+    pub fn new(
+        model: impl Into<String>,
+        images: Vec<PathBuf>,
+        token: impl Into<String>,
+        out: impl Into<PathBuf>,
+    ) -> Self {
+        EmbeddingTrain {
+            model: model.into(),
+            images,
+            token: token.into(),
+            init_word: "object".into(),
+            steps: 1000,
+            lr: 5e-4,
+            size: 512,
+            out: out.into(),
+            log_every: 25,
+            device: None,
+        }
+    }
+    /// The word to initialize the new token's embedding from.
+    pub fn init_word(mut self, init_word: impl Into<String>) -> Self {
+        self.init_word = init_word.into();
+        self
+    }
+    /// Training steps.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Learning rate.
+    pub fn lr(mut self, lr: f64) -> Self {
+        self.lr = lr;
+        self
+    }
+    /// Training resolution.
+    pub fn size(mut self, size: u32) -> Self {
+        self.size = size;
+        self
+    }
+    /// Log every N steps.
+    pub fn log_every(mut self, n: usize) -> Self {
+        self.log_every = n.max(1);
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run training; writes the embedding to `out`.
+    pub async fn run(self) -> Result<()> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        crate::pipelines::ti_train::train_textual_inversion(crate::pipelines::ti_train::TiTrainRequest {
+            model: self.model,
+            device,
+            images: self.images,
+            token: self.token,
+            init_word: self.init_word,
+            steps: self.steps,
+            lr: self.lr,
+            size: self.size,
+            out: self.out,
+            log_every: self.log_every,
+        })
+        .await
+    }
+}
+
+/// Run the model-correctness harness (`plakat verify`) programmatically. Returns `Ok(())` if
+/// every check passed, `Err` otherwise. Emits the report to stdout.
+pub struct Verify {
+    tier: Option<u8>,
+    model: Option<String>,
+    golden_dir: Option<PathBuf>,
+    json: bool,
+    device: Option<Device>,
+}
+
+impl Default for Verify {
+    fn default() -> Self {
+        Verify::new()
+    }
+}
+
+impl Verify {
+    /// Verify everything (all tiers, all models) by default.
+    pub fn new() -> Self {
+        Verify { tier: None, model: None, golden_dir: None, json: false, device: None }
+    }
+    /// Restrict to a single tier (0 structural, 1 per-module, 2 end-to-end).
+    pub fn tier(mut self, tier: u8) -> Self {
+        self.tier = Some(tier);
+        self
+    }
+    /// Restrict to a single model alias.
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+    /// Use golden tensors from a local directory instead of fetching from Hugging Face.
+    pub fn golden_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.golden_dir = Some(dir.into());
+        self
+    }
+    /// Emit the report as JSON.
+    pub fn json(mut self, json: bool) -> Self {
+        self.json = json;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run verification. `Ok(())` iff every check passed.
+    pub async fn run(self) -> Result<()> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        crate::verify::run(&crate::verify::VerifyConfig {
+            tier: self.tier,
+            model: self.model,
+            golden_dir: self.golden_dir,
+            device,
+            json: self.json,
+        })
+        .await
+    }
+}
+
+/// Generate an animation — a 2-prompt CLIP-lerp (SD/SD3/Flux) or true motion via AnimateDiff.
+/// Returns the frames in order; optionally also encodes a GIF/MP4/WebM into `out`.
+pub struct Animate {
+    model: String,
+    from: String,
+    to: String,
+    negative: String,
+    frames: u32,
+    width: u32,
+    height: u32,
+    steps: usize,
+    guidance: f64,
+    seed: Option<u64>,
+    scheduler: SchedulerKind,
+    animatediff: bool,
+    format: VideoFormat,
+    out: Option<PathBuf>,
+    device: Option<Device>,
+}
+
+impl Animate {
+    /// Animate `model` from prompt `from` to prompt `to`. Defaults: 16 frames, 512×512,
+    /// 20 steps, guidance 7.5, frames-only output (no video encode).
+    pub fn new(model: impl Into<String>, from: impl Into<String>, to: impl Into<String>) -> Self {
+        Animate {
+            model: model.into(),
+            from: from.into(),
+            to: to.into(),
+            negative: String::new(),
+            frames: 16,
+            width: 512,
+            height: 512,
+            steps: 20,
+            guidance: 7.5,
+            seed: None,
+            scheduler: SchedulerKind::default(),
+            animatediff: false,
+            format: VideoFormat::Frames,
+            out: None,
+            device: None,
+        }
+    }
+    /// Negative prompt.
+    pub fn negative(mut self, negative: impl Into<String>) -> Self {
+        self.negative = negative.into();
+        self
+    }
+    /// Number of frames.
+    pub fn frames(mut self, frames: u32) -> Self {
+        self.frames = frames.max(1);
+        self
+    }
+    /// Frame size.
+    pub fn size(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+    /// Denoise steps per frame.
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    /// Guidance scale.
+    pub fn guidance(mut self, guidance: f64) -> Self {
+        self.guidance = guidance;
+        self
+    }
+    /// RNG seed.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// Sampler / scheduler.
+    pub fn scheduler(mut self, scheduler: SchedulerKind) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+    /// Use AnimateDiff (true motion module) instead of the 2-prompt CLIP-lerp.
+    pub fn animatediff(mut self, on: bool) -> Self {
+        self.animatediff = on;
+        self
+    }
+    /// Also encode the frames to this container. See [`VideoFormat`].
+    pub fn format(mut self, format: VideoFormat) -> Self {
+        self.format = format;
+        self
+    }
+    /// Where to write frames (and any encoded video). Default: a temp dir cleaned up after
+    /// the frames are returned. Set this to keep the output.
+    pub fn out(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.out = Some(dir.into());
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run the animation, returning the frames in order.
+    pub async fn run(self) -> Result<Vec<Image>> {
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let keep = self.out.is_some();
+        let out = match self.out {
+            Some(d) => {
+                std::fs::create_dir_all(&d).with_context(|| format!("out dir {}", d.display()))?;
+                d
+            }
+            None => scratch_dir()?,
+        };
+        let args = crate::cli::animate::AnimateArgs {
+            from: self.from,
+            to: self.to,
+            frames: self.frames,
+            seed: self.seed,
+            model: self.model,
+            size: format!("{}x{}", self.width, self.height),
+            steps: self.steps,
+            guidance: self.guidance,
+            negative: self.negative,
+            scheduler: self.scheduler,
+            out: out.clone(),
+            gif: matches!(self.format, VideoFormat::Gif),
+            gif_delay_ms: 80,
+            animatediff: self.animatediff,
+            motion_loras: Vec::new(),
+            motion_lora_scale: 1.0,
+            format: self.format,
+            no_metadata: true,
+            resume: false,
+            control: None,
+            control_image: None,
+            control_from: None,
+            control_strength: 1.0,
+            control_specs: Vec::new(),
+            lcm: false,
+            window_size: 16,
+            window_overlap: 4,
+            free_noise: false,
+        };
+        let run_result = crate::cli::animate::run(args, device).await;
+        // Frames are written as frame-NNNN.png (sorted name == frame order).
+        let frames = collect_images(&out);
+        if !keep {
+            let _ = std::fs::remove_dir_all(&out);
+        }
+        run_result?;
+        frames
+    }
+}
+
 /// Read every PNG in `dir` (sorted) into [`Image`]s.
 fn collect_images(dir: &Path) -> Result<Vec<Image>> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -1323,5 +1792,37 @@ mod tests {
         let loras = build_loras(&[Lora { source: "latent-consistency/lcm-lora-sdv1-5".into(), scale: 0.8 }]).unwrap();
         assert_eq!(loras.len(), 1);
         assert_eq!(loras[0].scale, 0.8);
+    }
+
+    #[test]
+    fn portrait_and_multiperson_accept_photos_and_people() {
+        let p = Portrait::new("sdxl").prompt("x").photo("a.png", 0.9).identity(IdentityKind::FaceIdSdxl).count(2);
+        assert_eq!(p.photos.len(), 1);
+        assert_eq!(p.count, 2);
+        let mp = Multiperson::new("two friends at a cafe")
+            .person(Person::new("alice").photo("a.png", 1.0).place(Position::Left, Distance::Mid, Facing::Front))
+            .person(Person::new("bob").photo("b.png", 1.0));
+        assert_eq!(mp.people.len(), 2);
+        assert!(mp.composite);
+    }
+
+    #[test]
+    fn training_and_verify_builders_default_sanely() {
+        let st = StyleTrain::new("sd15", vec!["a.png".into()], "out.safetensors").trigger("mystyle").rank(8);
+        assert_eq!(st.trigger, "mystyle");
+        assert_eq!(st.rank, 8);
+        let et = EmbeddingTrain::new("sdxl", vec!["a.png".into()], "<tok>", "e.safetensors").init_word("cat");
+        assert_eq!(et.init_word, "cat");
+        let v = Verify::new().tier(1).model("sdxl");
+        assert_eq!(v.tier, Some(1));
+        assert_eq!(v.model.as_deref(), Some("sdxl"));
+    }
+
+    #[test]
+    fn animate_builder_formats_size_and_defaults() {
+        let a = Animate::new("sd15", "a fox", "a wolf").frames(24).size(768, 512).animatediff(true);
+        assert_eq!(a.frames, 24);
+        assert_eq!((a.width, a.height), (768, 512));
+        assert!(a.animatediff);
     }
 }
