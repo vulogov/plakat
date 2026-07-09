@@ -547,26 +547,59 @@ impl Pipeline {
         // ---- Denoise loop. ----
         let bar = crate::ui::progress::step_bar(timesteps.len() as u64, "pixart");
         let n_steps = timesteps.len();
+        // Step-caching (TeaCache-lite, opt-in via PLAKAT_STEP_CACHE=<thresh>, e.g. 0.1). Consecutive
+        // DiT outputs change little in the stable middle of the schedule; we accumulate the per-step
+        // relative change of the model input and REUSE the cached DiT output while it stays below
+        // the threshold, skipping the (expensive) forward. Unset ⇒ exact (verify unaffected). This
+        // is a quality↔speed trade, not bit-exact — hence opt-in.
+        let cache_thresh: Option<f32> =
+            std::env::var("PLAKAT_STEP_CACHE").ok().and_then(|s| s.parse().ok());
+        let mut cache_pred: Option<Tensor> = None;
+        let mut cache_accum = 0.0f32;
+        let mut prev_scaled: Option<Tensor> = None;
         for (step_i, &t) in timesteps.iter().enumerate() {
             let scaled = scheduler.scale_model_input(latents.clone(), t)?;
-            // Replicate along batch for CFG: (2, 4, lh, lw).
-            let scaled_cfg = Tensor::cat(&[&scaled, &scaled], 0)?;
-            let t_tensor = Tensor::new(&[t as f32], &self.device)?
-                .to_dtype(self.dtype)?
-                .expand((2,))?;
-            // The DiT runs in F32 (see load); cast inputs up and the
-            // prediction back down to the pipeline dtype for the scheduler.
-            let pred = self
-                .dit
-                .forward(
-                    &scaled_cfg.to_dtype(DType::F32)?,
-                    &t_tensor.to_dtype(DType::F32)?,
-                    &caption_cfg.to_dtype(DType::F32)?,
-                    &res_cfg.to_dtype(DType::F32)?,
-                    &asp_cfg.to_dtype(DType::F32)?,
-                    Some(&mask_cfg.to_dtype(DType::F32)?),
-                )?
-                .to_dtype(self.dtype)?;
+            // Reuse the cached DiT output while the accumulated input change is under threshold.
+            // Always recompute step 0 (no cache) and the final step (quality tail).
+            let reuse = match (cache_thresh, &prev_scaled, &cache_pred) {
+                (Some(thresh), Some(prev), Some(_)) if step_i + 1 < n_steps => {
+                    let num = (&scaled - prev)?.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()?;
+                    let den = prev.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()? + 1e-8;
+                    cache_accum += num / den;
+                    if cache_accum >= thresh {
+                        cache_accum = 0.0;
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            };
+            prev_scaled = Some(scaled.clone());
+            let pred = if reuse {
+                cache_pred.clone().expect("reuse implies a cached prediction")
+            } else {
+                // Replicate along batch for CFG: (2, 4, lh, lw).
+                let scaled_cfg = Tensor::cat(&[&scaled, &scaled], 0)?;
+                let t_tensor = Tensor::new(&[t as f32], &self.device)?
+                    .to_dtype(self.dtype)?
+                    .expand((2,))?;
+                // The DiT runs in F32 (see load); cast inputs up and the
+                // prediction back down to the pipeline dtype for the scheduler.
+                let p = self
+                    .dit
+                    .forward(
+                        &scaled_cfg.to_dtype(DType::F32)?,
+                        &t_tensor.to_dtype(DType::F32)?,
+                        &caption_cfg.to_dtype(DType::F32)?,
+                        &res_cfg.to_dtype(DType::F32)?,
+                        &asp_cfg.to_dtype(DType::F32)?,
+                        Some(&mask_cfg.to_dtype(DType::F32)?),
+                    )?
+                    .to_dtype(self.dtype)?;
+                cache_pred = Some(p.clone());
+                p
+            };
             // learn_sigma=True → first 4 channels are noise; the
             // log-variance half is discarded (standard inference path).
             let noise_pred = pred.narrow(1, 0, 4)?;
