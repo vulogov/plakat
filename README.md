@@ -17,30 +17,37 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.2.0 — every model, end-to-end regression-gated
+## What's new in 2.3.0 — plakat is now a Rust library
 
-2.0.0 built `plakat verify`; 2.1.0 used it to fix a real caption bug. 2.2.0 takes the harness
-to **full coverage** — every rendering model now has a whole-pipeline regression gate, and
-that gate is cheap enough to run in CI.
+The 2.x arc has been about confidence; 2.3.0 turns outward. plakat has always been a CLI (and a
+Bund scripting language); now it's a **first-class Rust library** too — embed generation in your
+own programs without shelling out.
 
-**End-to-end gates for all six rendering models.** The Tier-2 perceptual gate — render a
-fixture through the *entire* real pipeline and compare to a frozen reference image — now
-covers SD 1.5, SD 2.1, SDXL, PixArt-Σ, Stable Cascade, and SD 3.5, across **four different
-rendering architectures**. If any change ever perturbs a model's output, the gate catches it.
+**`plakat::api` — a small, stable, documented API.** Fourteen builder types cover everything the
+CLI does except the interactive UI:
 
-**Finishing the coverage found two more determinism bugs** — exactly what the harness is for:
-SD 3.5's text-to-image path and Stable Cascade's (stochastic) sampler weren't fully
-reproducible; both are now pinned. A third prompt fixture (tokenization edge cases — numbers,
-punctuation) rounds out the per-module checks at three prompt lengths.
+```rust
+use plakat::api::Generate;
+let images = Generate::new("sdxl").prompt("a fox").steps(28).seed(42).run().await?;
+images[0].save("fox.png")?;
+```
 
-**Cheaper CI.** The weight-backed verification job now caches model weights across runs, so
-after the first run it's just build + inference — practical enough to gate a release on. The
-zero-download structural tier still runs on every push.
+`Generate`, `Portrait`, `Img2img` (+ inpaint via `.mask()`), `Upscale`, `Relight`, `Stylize`,
+`Transparent`, `Segment`, `Multiperson`, `Map`, `Animate`, `StyleTrain`, `EmbeddingTrain`,
+`Verify` — same builder shape throughout: `new(...) → chain options → .run().await`. Results come
+back in memory as `Image`s. The crate's internal modules are now `#[doc(hidden)]` with **no
+semver promise**, so `plakat::api` is the one supported surface — locked by a compile-time
+surface test and documented in full at [`Documentation/API.md`](Documentation/API.md), with a
+runnable `examples/library.rs`.
 
-Day-to-day use is unchanged — this is a confidence release: the same one loop, now with a
-safety net under every model. See [`Documentation/VERIFY.md`](Documentation/VERIFY.md).
+**Bund scripting caught up to the CLI.** Six new host words close the gaps — `plakat.relight`,
+`plakat.transparent`, `plakat.segment`, `plakat.compose`, and (finally) training:
+`plakat.style.train` / `plakat.embedding.train` — plus a `decoder_guidance` config key. 51 → 57
+words. See [`Documentation/SCRIPTING.md`](Documentation/SCRIPTING.md).
 
-**Earlier releases** (v0.13 – 2.1):
+Nothing about the CLI changes — this release *adds* ways to drive the same engine.
+
+**Earlier releases** (v0.13 – 2.2):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

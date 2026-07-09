@@ -8,6 +8,29 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.2.0 — every model, end-to-end regression-gated
+
+2.0.0 built `plakat verify`; 2.1.0 used it to fix a real caption bug. 2.2.0 takes the harness
+to **full coverage** — every rendering model now has a whole-pipeline regression gate, and
+that gate is cheap enough to run in CI.
+
+**End-to-end gates for all six rendering models.** The Tier-2 perceptual gate — render a
+fixture through the *entire* real pipeline and compare to a frozen reference image — now
+covers SD 1.5, SD 2.1, SDXL, PixArt-Σ, Stable Cascade, and SD 3.5, across **four different
+rendering architectures**. If any change ever perturbs a model's output, the gate catches it.
+
+**Finishing the coverage found two more determinism bugs** — exactly what the harness is for:
+SD 3.5's text-to-image path and Stable Cascade's (stochastic) sampler weren't fully
+reproducible; both are now pinned. A third prompt fixture (tokenization edge cases — numbers,
+punctuation) rounds out the per-module checks at three prompt lengths.
+
+**Cheaper CI.** The weight-backed verification job now caches model weights across runs, so
+after the first run it's just build + inference — practical enough to gate a release on. The
+zero-download structural tier still runs on every push.
+
+Day-to-day use is unchanged — this is a confidence release: the same one loop, now with a
+safety net under every model. See [`VERIFY.md`](VERIFY.md).
+
 ## What's new in 2.1.0 — the harness pays off: a real caption bug, fixed
 
 2.0.0 shipped `plakat verify`, a self-contained model-correctness harness. 2.1.0 is that
