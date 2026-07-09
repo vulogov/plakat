@@ -1,35 +1,69 @@
-# plakat 2.4.0 — roadmap (planning)
+# plakat 2.4.0 — roadmap: the performance pass
 
-2.3.0 made plakat a first-class **library** (`plakat::api`, 14 builders) and brought Bund
-scripting up to CLI parity (bar one plumbing item). 2.4.0 opens as a **planning landing pad** —
-scope is decided with the user, not pre-committed.
+2.3.0 made plakat a first-class **library** (`plakat::api`). 2.4.0's anchor is a **performance
+pass** — the one dimension the 2.x line hasn't touched, and directly user-visible.
+
+The organizing idea plays to plakat's unique asset: **the verify harness makes this a
+provably-safe perf pass.** Every optimization is gated behind `plakat verify` — Tier 1 (golden
+tensors, corr 1.0) + Tier 2 (end-to-end SSIM 1.0) — so **speed never costs correctness**. No
+other local generator can optimize with that guarantee.
+
+Goal: implement all the perf-pass items below. (`plakat serve` — the persistent daemon — is
+**deferred**: the user is authoring an architecture RFC for it; do NOT implement serve here.)
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
-## Carried-over follow-ups (bounded, incremental)
+## Phase 0 — Measure (build the ruler first)
 
-- [ ] **Regional prompting in Bund** (`plakat.region.*`) — the one Bund gap left. NOT just a
-      word: needs `t2i::GenRequest` to gain a `regions` field + the SD regional-denoise wiring
-      (sd3::GenRequest already has it), then a `region.{add,clear,list}` namespace threaded like
-      `plakat.lora.*`. A focused pipeline + scripting change.
-- [ ] **Per-builder API knobs** — the `plakat::api` builders cover every *feature* but expose the
-      common knobs only. Add the finer ones the CLI has: ControlNet, embeddings, refiner, tiled,
-      regions, flux-quant. Purely additive to the (locked) surface.
-- [ ] **`cargo public-api` in CI** — richer than the compile-time `tests/api_surface.rs` floor:
-      a full public-surface diff so any semver-affecting change to `plakat::api` is flagged in a
-      PR. (The internals are `#[doc(hidden)]`; scope the check to the api module.)
-- [ ] **`sd21 unet.out` verify symmetry** — trivial: SD 2.1 uses the same candle UNet as SD 1.5
-      (which has `unet.out` at corr 1.0); just author the golden. Closes the last cheap verify
-      gap.
+- [x] **`plakat bench`** — new subcommand (`src/cli/bench.rs`). Real generation, decomposed into
+      **load / encode+first-step / per-step (mean) / VAE-decode tail / total** + **peak RSS**
+      (background sampler). Fixed prompt+seed; `--json` for CI; `--repeat K` reports the best.
+      SD family wired (sd15/sd21/sdxl/pony/turbo); PixArt/SD3.5/Cascade/Flux in a later phase.
+- [~] **Freeze baselines** — first data point: **sd15 CPU 256² 4-step → total 29.9 s, of which
+      _load is 21.8 s (73%)_**, VAE tail 2.1 s, per-step 1.47 s, peak 5.6 GB. → confirms the
+      hypothesis: **cold load dominates**; weight-load + a persistent model (the deferred daemon)
+      are the top prize, not per-step micro-tuning. Still to freeze: Metal + the other families.
+- [x] **No optimization lands without a before/after number** from this harness.
 
-## Candidate themes (bigger, standalone — pick one to anchor 2.4)
+## Phase 1 — Profile the hot paths
 
-- [?] **Performance pass** — profile + optimize hot paths (VAE decode, attention, weight load);
-      user-visible generation speedups on the 24 GB Metal box. A natural next theme now that
-      correctness (verify) and reach (library API) are solid.
-- [?] **Flux in the UI** — carried since 1.16; unblock when capable hardware is available.
-- [?] **Library polish** — a `plakat::api` prelude, streaming/progress callbacks on `run()`, and
-      builder ergonomics (accept `Device` as well as `&str`), if the library gets real users.
+- [ ] Instrument load / text-encode / per-step denoise / VAE decode; attribute wall-clock.
+      Expected culprits to confirm (not assume): weight load (cold), attention (per-step),
+      VAE decode (tail), needless F16↔F32 casts.
+
+## Phase 2 — Optimize (highest-leverage first; each verified-safe)
+
+- [ ] **Step-caching** — TeaCache / DeepCache / first-block caching for the DiT/MMDiT/Flux
+      models. Algorithmic 1.5–2× with near-zero quality drift. (Direction #2.) Gate: Tier-2 SSIM
+      stays within the perceptual bound; expose as an opt-in knob (quality↔speed).
+- [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
+- [ ] **VAE decode** — tiled + F16 decode (memory *and* the latency tail).
+- [ ] **Weight load** — parallel mmap, lazy/on-demand submodules, warm-cache reuse across a batch.
+- [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
+      they stop being rejected on Metal (`scheduler.rs check_device_support`). Removes a
+      correctness-forced fallback *and* speeds sampling. (Direction #4.)
+
+## Phase 3 — Lock it in
+
+- [ ] **Perf CI gate** — `plakat bench` thresholds fail a PR on regression (the speed analogue of
+      the Tier-0 correctness gate).
+- [ ] **Every optimization verified** — `plakat verify` Tier 1 (corr 1.0) + Tier 2 (SSIM 1.0)
+      green after each change; document the measured speedup per model.
+
+## Deferred / parked (see memory `reference_feature_directions`)
+
+- [⏸] **`plakat serve`** (Direction #1) — user's own architecture RFC pending. Not in scope.
+- Feature backlog (PAG/FreeU/CFG-rescale, SDXL Lightning/Hyper, ControlNet-Tile + diffusion
+  tiled-upscale, Sana, one-shot edit commands, fp8/broader quant) — future cycles.
+
+## Parked follow-ups (not the anchor; pick up opportunistically)
+
+- [ ] **Regional prompting in Bund** (`plakat.region.*`) — needs `t2i::GenRequest` to gain a
+      `regions` field + SD regional-denoise wiring, then a `region.{add,clear,list}` namespace.
+- [ ] **Per-builder API knobs** — ControlNet/embeddings/refiner/tiled/regions/flux-quant on the
+      `plakat::api` builders (additive to the locked surface).
+- [ ] **`cargo public-api` in CI** — full public-surface diff scoped to `plakat::api`.
+- [ ] **`sd21 unet.out` verify symmetry** — trivial (same candle UNet as sd15); author the golden.
 
 ## House-keeping
 

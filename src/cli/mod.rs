@@ -11,6 +11,7 @@ pub mod compile;
 pub mod convert_onnx;
 pub mod compose;
 pub mod map;
+pub mod bench;
 pub mod doctor;
 pub mod verify;
 pub mod embedding;
@@ -121,6 +122,8 @@ pub enum Command {
     /// determinism) runs offline with no downloads; higher tiers compare
     /// against Hugging Face-hosted golden data. `--json` for CI gating.
     Verify(verify::VerifyArgs),
+    /// Benchmark real generation (load / per-step / VAE / peak-mem). Phase 0 of the perf pass.
+    Bench(bench::BenchArgs),
     /// Inspect a .safetensors file — list every tensor name, dtype,
     /// and shape. Useful when a weight load fails and you want to see
     /// what's actually in the file vs what the model expected.
@@ -219,6 +222,7 @@ impl Command {
                 | Command::Run(_)
                 | Command::Style(_)
                 | Command::Embedding(_)
+                | Command::Bench(_)
         )
     }
 }
@@ -277,6 +281,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Models(cmd) => models::run(cmd).await,
         Command::Doctor(args) => doctor::run(args).await,
         Command::Verify(args) => verify::run(args).await,
+        Command::Bench(args) => bench::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
