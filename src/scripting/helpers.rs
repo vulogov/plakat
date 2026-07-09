@@ -126,6 +126,28 @@ pub fn resolve_image_arg(
     }
 }
 
+/// Collect the image files (png/jpg/jpeg/webp) directly inside `dir`, sorted by name. Used by
+/// the training words (`plakat.style.train` / `plakat.embedding.train`) which take a folder of
+/// training images. `tag` names the calling word for error messages.
+pub fn collect_images_in_dir(dir: &str, tag: &str) -> Result<Vec<std::path::PathBuf>> {
+    let rd = std::fs::read_dir(dir)
+        .map_err(|e| anyhow!("{tag}: reading images dir {dir:?}: {e}"))?;
+    let mut paths: Vec<std::path::PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| matches!(x.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
+        anyhow::bail!("{tag}: no image files (png/jpg/jpeg/webp) in {dir:?}");
+    }
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

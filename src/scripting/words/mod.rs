@@ -196,6 +196,8 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.style.clear: {e}"))?;
     vm.register_inline("plakat.style.list".to_string(), style::plakat_style_list)
         .map_err(|e| anyhow!("registering plakat.style.list: {e}"))?;
+    vm.register_inline("plakat.style.train".to_string(), style::plakat_style_train)
+        .map_err(|e| anyhow!("registering plakat.style.train: {e}"))?;
     // v0.25 phase 8: plakat.look.* + plakat.genre.* namespaces.
     vm.register_inline("plakat.look.apply".to_string(), look::plakat_look_apply)
         .map_err(|e| anyhow!("registering plakat.look.apply: {e}"))?;
@@ -247,6 +249,11 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         embedding::plakat_embedding_list,
     )
     .map_err(|e| anyhow!("registering plakat.embedding.list: {e}"))?;
+    vm.register_inline(
+        "plakat.embedding.train".to_string(),
+        embedding::plakat_embedding_train,
+    )
+    .map_err(|e| anyhow!("registering plakat.embedding.train: {e}"))?;
     // v0.24 phase 6: plakat.stylize (IP-Adapter style transfer).
     vm.register_inline("plakat.stylize".to_string(), stylize::plakat_stylize)
         .map_err(|e| anyhow!("registering plakat.stylize: {e}"))?;

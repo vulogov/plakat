@@ -1338,85 +1338,115 @@ impl StyleTrain {
             Some(d) => d,
             None => device("auto")?,
         };
-        let m = self.model.to_lowercase();
-        if m.contains("cascade") || m.contains("stage-c") {
-            crate::pipelines::cascade::train_style_lora(crate::pipelines::cascade::StyleTrainRequest {
-                repo: self.model,
+        style_train(
+            self.model,
+            self.images,
+            self.trigger,
+            self.rank,
+            self.steps,
+            self.lr,
+            self.size,
+            self.out,
+            self.log_every,
+            device,
+        )
+        .await
+    }
+}
+
+/// Dispatch a style-LoRA training run to the right family trainer. Shared by
+/// [`StyleTrain`] and the `plakat.style.train` Bund word so the family routing lives once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn style_train(
+    model: String,
+    images: Vec<PathBuf>,
+    trigger: String,
+    rank: usize,
+    steps: usize,
+    lr: f64,
+    size: u32,
+    out: PathBuf,
+    log_every: usize,
+    device: Device,
+) -> Result<()> {
+    let m = model.to_lowercase();
+    if m.contains("cascade") || m.contains("stage-c") {
+        crate::pipelines::cascade::train_style_lora(crate::pipelines::cascade::StyleTrainRequest {
+            repo: model,
+            device,
+            images,
+            trigger,
+            rank,
+            steps,
+            lr,
+            size,
+            out,
+            checkpoint_every: None,
+            log_every,
+            resume_from: None,
+        })
+        .await
+    } else if m.contains("pixart") {
+        crate::pipelines::pixart::train_style_lora(crate::pipelines::pixart::StyleTrainRequest {
+            repo: model,
+            device,
+            images,
+            trigger,
+            rank,
+            steps,
+            lr,
+            size,
+            out,
+            checkpoint_every: None,
+            log_every,
+            resume_from: None,
+            class_images: Vec::new(),
+            class_prompt: None,
+            prior_weight: 1.0,
+        })
+        .await
+    } else if m.contains("sd3") || m.contains("sd35") {
+        crate::pipelines::sd3::train_style_lora(crate::pipelines::sd3::StyleTrainRequest {
+            variant: crate::pipelines::sd3::Variant::Sd35Medium,
+            repo: model,
+            device,
+            images,
+            trigger,
+            rank,
+            steps,
+            lr,
+            size,
+            out,
+            checkpoint_every: None,
+            log_every,
+            resume_from: None,
+            class_images: Vec::new(),
+            class_prompt: None,
+            prior_weight: 1.0,
+        })
+        .await
+    } else {
+        // SD 1.5 / 2.1 / SDXL — the kohya LoRA trainer.
+        crate::pipelines::sd_train::trainer::train_style_lora_sd(
+            crate::pipelines::sd_train::trainer::SdStyleTrainRequest {
+                model,
                 device,
-                images: self.images,
-                trigger: self.trigger,
-                rank: self.rank,
-                steps: self.steps,
-                lr: self.lr,
-                size: self.size,
-                out: self.out,
+                images,
+                trigger,
+                rank,
+                steps,
+                lr,
+                size,
+                out,
                 checkpoint_every: None,
-                log_every: self.log_every,
-                resume_from: None,
-            })
-            .await
-        } else if m.contains("pixart") {
-            crate::pipelines::pixart::train_style_lora(crate::pipelines::pixart::StyleTrainRequest {
-                repo: self.model,
-                device,
-                images: self.images,
-                trigger: self.trigger,
-                rank: self.rank,
-                steps: self.steps,
-                lr: self.lr,
-                size: self.size,
-                out: self.out,
-                checkpoint_every: None,
-                log_every: self.log_every,
+                log_every,
                 resume_from: None,
                 class_images: Vec::new(),
                 class_prompt: None,
                 prior_weight: 1.0,
-            })
-            .await
-        } else if m.contains("sd3") || m.contains("sd35") {
-            crate::pipelines::sd3::train_style_lora(crate::pipelines::sd3::StyleTrainRequest {
-                variant: crate::pipelines::sd3::Variant::Sd35Medium,
-                repo: self.model,
-                device,
-                images: self.images,
-                trigger: self.trigger,
-                rank: self.rank,
-                steps: self.steps,
-                lr: self.lr,
-                size: self.size,
-                out: self.out,
-                checkpoint_every: None,
-                log_every: self.log_every,
-                resume_from: None,
-                class_images: Vec::new(),
-                class_prompt: None,
-                prior_weight: 1.0,
-            })
-            .await
-        } else {
-            // SD 1.5 / 2.1 / SDXL — the kohya LoRA trainer.
-            crate::pipelines::sd_train::trainer::train_style_lora_sd(
-                crate::pipelines::sd_train::trainer::SdStyleTrainRequest {
-                    model: self.model,
-                    device,
-                    images: self.images,
-                    trigger: self.trigger,
-                    rank: self.rank,
-                    steps: self.steps,
-                    lr: self.lr,
-                    size: self.size,
-                    out: self.out,
-                    checkpoint_every: None,
-                    log_every: self.log_every,
-                    resume_from: None,
-                    class_images: Vec::new(),
-                    class_prompt: None,
-                    prior_weight: 1.0,
-                },
-            )
-            .await
-        }
+            },
+        )
+        .await
     }
 }
 

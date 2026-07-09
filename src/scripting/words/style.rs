@@ -33,8 +33,58 @@ use std::path::PathBuf;
 
 use crate::scripting::ctx::{with_ctx, with_ctx_mut};
 use crate::scripting::helpers::{
-    BundResult, pull, push, require_depth, to_bund_err, value_to_string,
+    collect_images_in_dir, BundResult, pull, push, require_depth, to_bund_err, value_to_string,
 };
+
+// ---- plakat.style.train ( images-dir trigger out -- out ) --------
+//
+// Train a style LoRA from a folder of images. The base model is the one loaded via
+// `plakat.load` (family auto-detected). Uses sensible training defaults (rank 16, 800 steps,
+// lr 1e-4, 512px) — for full control use the `plakat style train` CLI. Pushes the output path
+// back so it can be chained (e.g. into `plakat.lora.add`).
+
+const TRAIN_TAG: &str = "plakat.style.train";
+
+pub fn plakat_style_train(vm: &mut VM) -> BundResult<'_> {
+    do_plakat_style_train(vm).map_err(to_bund_err)
+}
+
+fn do_plakat_style_train(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    require_depth(vm, 3, TRAIN_TAG)?;
+    // Top pops first: out, then trigger, then images-dir.
+    let out_v = pull(vm, TRAIN_TAG)?;
+    let trigger_v = pull(vm, TRAIN_TAG)?;
+    let dir_v = pull(vm, TRAIN_TAG)?;
+    let out = value_to_string(out_v, "out", TRAIN_TAG)?;
+    let trigger = value_to_string(trigger_v, "trigger", TRAIN_TAG)?;
+    let dir = value_to_string(dir_v, "images-dir", TRAIN_TAG)?;
+    let images = collect_images_in_dir(&dir, TRAIN_TAG)?;
+
+    let (model, device) = with_ctx(|ctx| (ctx.loaded_model().map(|s| s.to_string()), ctx.device.clone()))?;
+    let model = model.ok_or_else(|| {
+        anyhow::anyhow!("{TRAIN_TAG}: no model loaded. Call \"sd15\" plakat.load before {TRAIN_TAG}.")
+    })?;
+
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| anyhow::anyhow!("{TRAIN_TAG}: no tokio runtime in scope. {e}"))?;
+    tokio::task::block_in_place(|| {
+        handle.block_on(crate::api::style_train(
+            model,
+            images,
+            trigger,
+            16,           // rank
+            800,          // steps
+            1e-4,         // lr
+            512,          // size
+            PathBuf::from(&out),
+            25,           // log_every
+            device,
+        ))
+    })?;
+    tracing::info!(target: "plakat", "{TRAIN_TAG}: wrote {out}");
+    push(vm, Value::from_string(out));
+    Ok(vm)
+}
 
 // ---- plakat.style.apply ( id -- ) --------------------------------
 

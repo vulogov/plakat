@@ -37,10 +37,61 @@ use rust_multistackvm::multistackvm::VM;
 use std::str::FromStr;
 
 use crate::pipelines::embedding::EmbeddingSpec;
-use crate::scripting::ctx::with_ctx_mut;
+use crate::scripting::ctx::{with_ctx, with_ctx_mut};
 use crate::scripting::helpers::{
-    BundResult, pull, push, require_depth, to_bund_err, value_to_string,
+    collect_images_in_dir, BundResult, pull, push, require_depth, to_bund_err, value_to_string,
 };
+
+// ---- plakat.embedding.train ( images-dir token out -- out ) ------
+//
+// Train a Textual Inversion embedding (a new token) from a folder of images, using the loaded
+// model as the base (SDXL / SD3.5 supported). Defaults: init word "object", 1000 steps, lr
+// 5e-4, 512px — for full control use the `plakat embedding train` CLI. Pushes the output path.
+
+const TRAIN_TAG: &str = "plakat.embedding.train";
+
+pub fn plakat_embedding_train(vm: &mut VM) -> BundResult<'_> {
+    do_plakat_embedding_train(vm).map_err(to_bund_err)
+}
+
+fn do_plakat_embedding_train(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    require_depth(vm, 3, TRAIN_TAG)?;
+    // Top pops first: out, then token, then images-dir.
+    let out_v = pull(vm, TRAIN_TAG)?;
+    let token_v = pull(vm, TRAIN_TAG)?;
+    let dir_v = pull(vm, TRAIN_TAG)?;
+    let out = value_to_string(out_v, "out", TRAIN_TAG)?;
+    let token = value_to_string(token_v, "token", TRAIN_TAG)?;
+    let dir = value_to_string(dir_v, "images-dir", TRAIN_TAG)?;
+    let images = collect_images_in_dir(&dir, TRAIN_TAG)?;
+
+    let (model, device) = with_ctx(|ctx| (ctx.loaded_model().map(|s| s.to_string()), ctx.device.clone()))?;
+    let model = model.ok_or_else(|| {
+        anyhow::anyhow!("{TRAIN_TAG}: no model loaded. Call \"sdxl\" plakat.load before {TRAIN_TAG}.")
+    })?;
+
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| anyhow::anyhow!("{TRAIN_TAG}: no tokio runtime in scope. {e}"))?;
+    tokio::task::block_in_place(|| {
+        handle.block_on(crate::pipelines::ti_train::train_textual_inversion(
+            crate::pipelines::ti_train::TiTrainRequest {
+                model,
+                device,
+                images,
+                token,
+                init_word: "object".to_string(),
+                steps: 1000,
+                lr: 5e-4,
+                size: 512,
+                out: std::path::PathBuf::from(&out),
+                log_every: 25,
+            },
+        ))
+    })?;
+    tracing::info!(target: "plakat", "{TRAIN_TAG}: wrote {out}");
+    push(vm, Value::from_string(out));
+    Ok(vm)
+}
 
 // ---- plakat.embedding.add ( spec -- ) ----------------------------
 
