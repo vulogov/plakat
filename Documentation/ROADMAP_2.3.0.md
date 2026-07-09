@@ -38,6 +38,27 @@ ergonomically. Design confirmed by a full CLI→lib-entry-point map (see below).
 - [x] **Semver hygiene** — `tests/api_surface.rs` locks the surface at compile time (rename/
       remove a public item ⇒ red test). `cargo public-api` can layer on later for a full diff.
 
+## Bund scripting — close the coverage gaps (asked 2026-07-08)
+
+Audit found CLI features with no Bund host-word equivalent. Closed:
+
+- [x] **4 image-producing words** — `plakat.relight`, `plakat.transparent`, `plakat.segment`,
+      `plakat.compose`. Each mirrors its CLI subcommand (block_in_place + block_on the async
+      pipeline). Shared `helpers::resolve_image_arg`.
+- [x] **Training words** — `plakat.style.train` (all families, dispatched via the shared
+      `api::style_train`) + `plakat.embedding.train` (SDXL/SD3.5). Take a folder of images, use
+      the loaded model as the base, sensible training defaults.
+- [x] **Cascade `decoder_guidance`** — new `plakat.config.set` key (was hardcoded 1.1 in
+      `plakat.cascade`); threads Stage-B CFG through.
+- [x] **Flux quant split** — *already covered* (`quant_level` + `t5_quant_level` config keys
+      thread into the Flux request via `ctx.rs`); the audit was stale. No work needed.
+- [ ] **Regional prompting** (`plakat.region.*`) — deferred: NOT a partial-knob fix. The script
+      path's `t2i::GenRequest` has no `regions` field (unlike `sd3::GenRequest`), so it needs
+      pipeline plumbing (thread regions → the SD regional-denoise wiring) + a new namespace, not
+      just a word. A focused follow-up.
+
+Host words: 51 → **57**. SCRIPTING.md updated.
+
 ## Verify track — status (asked 2026-07-08)
 
 **Essentially complete.** 6 families × 3 tiers × 3 fixtures, all hosted + green; CI-gated

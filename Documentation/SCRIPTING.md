@@ -59,7 +59,7 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (51 total)
+## Host words (57 total)
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
@@ -79,8 +79,12 @@ input (popped first).
 | `plakat.stylize` | `( subject style -- handle )` | **v0.24 phase 6.** IP-Adapter style transfer. No prompt (CLI parity). Strength from `config.strength`. SD 1.5 only. |
 | `plakat.upscale` | `( handle scale -- handle )` | **v0.26 phase 9**: scale = integer 2/4 (Lanczos) OR string `"real-esrgan-x2"` / `"real-esrgan-x4"` / `"real-esrgan-anime-x4"` (ML). |
 | `plakat.animate` | `( prompt out_dir -- )` | **v0.28 phase 2 + v0.29 phases 0/1.** AnimateDiff single-prompt N-frame generation. Writes `frame-NNNN.png` + JSON sidecars under `out_dir`. Reads `animate_frames` / `animate_window_size` / `animate_window_overlap` / `animate_lcm` / `animate_format` from config. **SD 1.5 + SDXL** (variant detected from `plakat.load` alias; AnimateLCM is SD 1.5 only). |
+| `plakat.relight` | `( subject prompt -- handle )` | **v2.3.** IC-Light re-illumination of a cut-out subject under a described light. Size/steps/guidance/seed/negative from config. Self-contained (no `plakat.load`). |
+| `plakat.transparent` | `( subject -- handle )` | **v2.3.** U2Net cut-out → RGBA handle. Save to `.png`/`.webp` to keep alpha. Self-contained. |
+| `plakat.segment` | `( subject x y -- handle )` | **v2.3.** SAM/MobileSAM point segmentation → binary mask handle (feeds `plakat.inpaint`). Self-contained. |
+| `plakat.compose` | `( scene-path -- )` | **v2.3.** Run a layered-composition HJSON scene (`load`/`matte`/`generate` layers). Terminal — writes to the scene's `out:`. |
 | `plakat.save` | `( handle path -- )` | **v0.26 phase 8**: writes A1111 `parameters` tEXt + JSON sidecar when the handle has metadata (rendering paths populate it). Relative paths resolve under `--out`. |
-| `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. |
+| `plakat.config.set` | `( value key -- )` | Mutate one knob. Stack order: value below, key on top. **v2.3**: adds `decoder_guidance` (Stable Cascade Stage-B CFG). |
 
 #### Supported aliases (v0.22)
 
@@ -213,6 +217,7 @@ overrides remain HJSON-only). SD-family only.
 | `plakat.style.detect` | `( photo -- )` — pick by CLIP-H matching against a reference photo |
 | `plakat.style.clear` | `( -- )` |
 | `plakat.style.list` | `( -- s_1 … s_n n )` — push every catalog id + count |
+| `plakat.style.train` | `( images-dir trigger out -- out )` — **v2.3.** Train a style LoRA from a folder (base = loaded model, family auto-detected). Defaults rank 16 / 800 steps / lr 1e-4 / 512px; full knobs on the CLI. |
 
 State (`style_id` / `style_ref`) lives on `ScriptCtx`. Resolution
 runs lazily at `plakat.generate` request-build time: catalog
@@ -305,6 +310,7 @@ bails loudly otherwise.
 | `plakat.embedding.add` | `( spec -- )` |
 | `plakat.embedding.clear` | `( -- )` |
 | `plakat.embedding.list` | `( -- s_1 … s_n n )` |
+| `plakat.embedding.train` | `( images-dir token out -- out )` — **v2.3.** Train a Textual Inversion embedding from a folder (base = loaded model; SDXL / SD3.5). Defaults init "object" / 1000 steps / lr 5e-4 / 512px; full knobs on the CLI. |
 
 Spec grammar matches the CLI's `--embedding`:
 `"path[:trigger][:scale]"` (path or HF repo as source). Threaded

@@ -106,6 +106,7 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
             total_steps.saturating_sub(stage_c_steps).max(1)
         });
         let guidance = ctx.config.guidance;
+        let decoder_guidance = ctx.config.decoder_guidance;
         let scheduler = ctx.config.scheduler;
         let negative = ctx.config.negative.clone();
         let seed = ctx.config.seed.unwrap_or_else(rand::random::<u64>);
@@ -201,8 +202,8 @@ fn do_plakat_cascade(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 stage_c_steps,
                 stage_b_steps,
                 guidance,
-                // v0.42 phase 0: decoder guidance default.
-                1.1,
+                // v2.3: Stage-B decoder CFG, now settable via `decoder_guidance`.
+                decoder_guidance,
                 seed,
                 scheduler,
                 control.as_ref(),

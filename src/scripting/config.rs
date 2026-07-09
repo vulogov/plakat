@@ -23,6 +23,9 @@ use crate::pipelines::scheduler::SchedulerKind;
 pub struct GenerationConfig {
     pub steps: usize,
     pub guidance: f64,
+    /// Stable Cascade Stage-B (decoder) CFG scale — distinct from `guidance` (the Stage-C
+    /// prior CFG). Default 1.1. Only consumed by `plakat.cascade`.
+    pub decoder_guidance: f64,
     /// `None` → pipeline picks a random seed per call. Setting an
     /// explicit seed via `plakat.config.set` pins it across calls.
     pub seed: Option<u64>,
@@ -350,6 +353,7 @@ impl Default for GenerationConfig {
             // the CLI does for the same inputs.
             steps: 28,
             guidance: 7.5,
+            decoder_guidance: 1.1,
             seed: None,
             width: 0,  // sentinel — see `size_explicit`
             height: 0, // sentinel — see `size_explicit`
@@ -427,6 +431,9 @@ impl GenerationConfig {
             }
             "guidance" => {
                 self.guidance = parse_finite_float(value, key)?;
+            }
+            "decoder_guidance" => {
+                self.decoder_guidance = parse_finite_float(value, key)?;
             }
             "seed" => {
                 self.seed = Some(parse_pos_int(value, key)?);
@@ -880,7 +887,7 @@ impl GenerationConfig {
     /// keys that don't accept ints.
     pub fn set_int(&mut self, key: &str, value: i64) -> Result<()> {
         match key {
-            "steps" | "guidance" | "seed" | "width" | "height"
+            "steps" | "guidance" | "decoder_guidance" | "seed" | "width" | "height"
             | "strength" | "face_strength" | "tile_size" | "tile_stride"
             | "lora_scale" | "refine_steps" | "refine_strength"
             | "refiner_frac" | "style_strength"
@@ -939,6 +946,16 @@ impl GenerationConfig {
                     );
                 }
                 self.guidance = value;
+                Ok(())
+            }
+            "decoder_guidance" => {
+                if !value.is_finite() {
+                    bail!(
+                        "plakat.config.set: decoder_guidance {value} isn't finite \
+                         (NaN / Infinity / -Infinity rejected)"
+                    );
+                }
+                self.decoder_guidance = value;
                 Ok(())
             }
             "strength" => {
