@@ -82,11 +82,20 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
        checking, but it's the user's environment.)*
    → **Strategic pivot:** load is disk-bound with little in-process headroom; the remaining
      leverage is in the **compute** phases (below), which are not I/O-bound.
-2. [ ] **VAE decode** *(SDXL 1024² = 17.8 s)* — tiled + F16 decode (memory *and* the latency tail).
+2. [⏸] **VAE decode** *(SDXL 1024² = 15.6 s)* — **tiled decode rejected (measured negative).**
+   Confirmed the cost is the mid-block spatial self-attention going quadratic (512²→1024² VAE-tail
+   2.76 s→17.8 s = 6.45× for 4× pixels; solving linear+quadratic ⇒ ~9 s is attention at 1024²).
+   But `tile_decode_2d` (64 tile / 56 stride) made it **worse: 15.6 s → 21.5 s** — the VAE is slow
+   *per unit area* (a 64² tile decode is 2.76 s on candle/Metal), so the overlapping-tile **conv
+   redundancy** (9 tiles) outweighs the attention saving. A real win needs kernel-level VAE work
+   (the slow Metal groupnorm/conv/attention), not tiling — deferred.
 3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
        into the bench + cache the encode across a batch; measure the quality/speed trade.
-4. [ ] **Step-caching** — TeaCache / DeepCache / first-block caching for DiT/MMDiT/Flux. Algorithmic
-       1.5–2×; opt-in knob (quality↔speed). (Direction #2.) Biggest per-step win, esp. SDXL@1024.
+4. [x] **Step-caching** — TeaCache-lite loop cache for **PixArt** (`PLAKAT_STEP_CACHE=<thresh>`,
+       unset = exact ⇒ verify unaffected). Accumulate the per-step input change, reuse the cached
+       DiT output under threshold. **Measured (pixart 512², 20 steps): thresh 0.10 → 1.37× at
+       SSIM 0.9987 (imperceptible, mad 2.74/255); 0.30 → 2.6× at SSIM 0.856 (too far).** Sweet
+       spot ~0.10–0.15. Loop-level + model-agnostic → SD3/Flux/SD can adopt the same pattern next.
 5. [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
 6. [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
        they stop being rejected on Metal (`scheduler.rs check_device_support`). (Direction #4.)
