@@ -269,13 +269,40 @@ pub async fn run(args: BenchArgs) -> Result<()> {
                 pipeline.generate_hooked(&req, Some(hook))
             })?
         }
-        Family::Cascade | Family::Flux => {
+        Family::Cascade => {
+            let t = Instant::now();
+            let mut pipeline = crate::pipelines::cascade::Pipeline::load(
+                crate::pipelines::cascade::LoadRequest {
+                    repo: repo.clone(),
+                    device: device.clone(),
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                    controlnet_weights: None,
+                    image_encoder_weights: None,
+                },
+            )
+            .await
+            .with_context(|| format!("loading Cascade {:?}", args.model))?;
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+            // Cascade output is square (Stage-C prior is fixed 24²×16). Split the step budget
+            // Stage-C 2/3 : Stage-B 1/3 (the CLI default). The hook fires across both stages.
+            let stage_c = (args.steps * 2).div_ceil(3).max(1);
+            let stage_b = args.steps.saturating_sub(stage_c).max(1);
+            time_runs(load_ms, args.repeat, &peak, |hook| {
+                let mut opt: Option<&mut dyn StepHook> = Some(hook);
+                pipeline
+                    .generate(prompt, "blurry", width, stage_c, stage_b, args.guidance, 1.1, 42,
+                        SchedulerKind::default(), None, &mut opt)
+                    .map(|_| ())
+            })?
+        }
+        Family::Flux => {
             stop.store(true, Ordering::Relaxed);
             let _ = sampler.join();
             anyhow::bail!(
-                "plakat bench doesn't cover {:?} yet — wired for SD / PixArt / SD3. \
-                 (Cascade's 3-stage sampler and Flux's variant+quant paths land in a later phase.)",
-                family
+                "plakat bench defers Flux: it can't be tested faithfully on this hardware \
+                 (GGUF-quantized Flux is broken on Metal — candle 0.10.2 kernel bug — and \
+                 BF16 Flux is too large to bench meaningfully here). Wired: SD / PixArt / SD3 / Cascade."
             );
         }
     };
