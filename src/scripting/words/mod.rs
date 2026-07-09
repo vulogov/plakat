@@ -34,10 +34,14 @@ pub mod outpaint;
 pub mod pixart;
 pub mod portrait;
 pub mod portrait_photo;
+pub mod compose;
 pub mod refiner;
+pub mod relight;
 pub mod save;
+pub mod segment;
 pub mod style;
 pub mod stylize;
+pub mod transparent;
 pub mod upscale;
 
 /// Register every `plakat.*` word into `vm`. v0.21 shipped 7
@@ -246,6 +250,15 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // v0.24 phase 6: plakat.stylize (IP-Adapter style transfer).
     vm.register_inline("plakat.stylize".to_string(), stylize::plakat_stylize)
         .map_err(|e| anyhow!("registering plakat.stylize: {e}"))?;
+    // v2.3: image-producing words that mirror the like-named CLI subcommands.
+    vm.register_inline("plakat.relight".to_string(), relight::plakat_relight)
+        .map_err(|e| anyhow!("registering plakat.relight: {e}"))?;
+    vm.register_inline("plakat.transparent".to_string(), transparent::plakat_transparent)
+        .map_err(|e| anyhow!("registering plakat.transparent: {e}"))?;
+    vm.register_inline("plakat.segment".to_string(), segment::plakat_segment)
+        .map_err(|e| anyhow!("registering plakat.segment: {e}"))?;
+    vm.register_inline("plakat.compose".to_string(), compose::plakat_compose)
+        .map_err(|e| anyhow!("registering plakat.compose: {e}"))?;
     // v0.24 phase 7: plakat.metadata.read (JSON sidecar reader).
     vm.register_inline(
         "plakat.metadata.read".to_string(),

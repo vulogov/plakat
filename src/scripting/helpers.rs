@@ -87,6 +87,45 @@ pub fn value_to_float(v: Value, field: &str, tag: &str) -> Result<f64> {
     ))
 }
 
+/// Resolve a stack arg that is either a **string path** or an **integer image handle** into a
+/// filesystem `PathBuf` (plus a tempfile guard that must outlive the path when the arg was a
+/// handle — the handle's image is materialised to disk so pipelines can read it). Shared by the
+/// image-consuming words (stylize/img2img/relight/transparent/segment/…) so they all accept the
+/// same two shapes. `tag` names the calling word for error messages.
+pub fn resolve_image_arg(
+    v: Value,
+    field: &str,
+    tag: &str,
+) -> Result<(Option<tempfile::NamedTempFile>, std::path::PathBuf)> {
+    use rust_dynamic::types;
+    match v.dt {
+        types::STRING => {
+            let s = value_to_string(v, field, tag)?;
+            if s.is_empty() {
+                anyhow::bail!("{tag}: {field} path can't be empty");
+            }
+            Ok((None, std::path::PathBuf::from(s)))
+        }
+        types::INTEGER => {
+            let handle = v.cast_int().unwrap_or(0);
+            let img = crate::scripting::ctx::with_ctx_mut(|ctx| ctx.image_at(handle).cloned())??;
+            let tmp = tempfile::Builder::new()
+                .prefix(&format!("plakat-script-{field}-"))
+                .suffix(".png")
+                .tempfile()
+                .map_err(|e| anyhow!("{tag}: tempfile for {field} handle {handle}: {e}"))?;
+            img.save(tmp.path())
+                .map_err(|e| anyhow!("{tag}: writing {field} handle {handle} to tempfile: {e}"))?;
+            let path = tmp.path().to_path_buf();
+            Ok((Some(tmp), path))
+        }
+        _ => anyhow::bail!(
+            "{tag}: {field} must be a string path or an integer handle (got dt = {})",
+            v.dt
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
