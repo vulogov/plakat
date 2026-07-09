@@ -1134,6 +1134,15 @@ impl Pipeline {
                 timesteps.len().saturating_sub(1)
             ));
 
+            // Step-caching (TeaCache-lite, opt-in via PLAKAT_STEP_CACHE=<thresh>; unset ⇒ exact so
+            // verify is unaffected). Accumulate the per-step relative change of the latent `x` and
+            // REUSE the cached MMDiT velocity while it stays under threshold, skipping the forward.
+            // Same mechanism as the PixArt path. Always recomputes step 0 and the final step.
+            let cache_thresh: Option<f32> =
+                std::env::var("PLAKAT_STEP_CACHE").ok().and_then(|s| s.parse().ok());
+            let mut cache_pred: Option<Tensor> = None;
+            let mut cache_accum = 0.0f32;
+            let mut prev_x: Option<Tensor> = None;
             for (step_i, window) in timesteps.windows(2).enumerate() {
                 let (t_curr, t_prev) = match window {
                     [a, b] => (*a, *b),
@@ -1147,41 +1156,62 @@ impl Pipeline {
                 // so the CN forwards can run + step-gating works.
                 let num_steps = timesteps.windows(2).count().max(1);
                 let progress = step_i as f32 / num_steps as f32;
-                let pred = if let Some(base_mask) = region_base_mask.as_ref() {
-                    // Regional: blend the base + per-region velocities by masks.
-                    self.predict_velocity_regional(
-                        &x,
-                        t_curr,
-                        &cfg_y,
-                        &cfg_ctx,
-                        base_mask,
-                        &region_data,
-                        guidance,
-                        &cn_conditionings,
-                        progress,
-                    )?
-                } else {
-                    match req.tiled.as_ref() {
-                        None => self.predict_velocity_full(
-                            &x,
-                            t_curr,
-                            &cfg_y,
-                            &cfg_ctx,
-                            guidance,
-                            &cn_conditionings,
-                            progress,
-                        )?,
-                        Some(cfg) => self.predict_velocity_tiled(
-                            &x,
-                            t_curr,
-                            &cfg_y,
-                            &cfg_ctx,
-                            guidance,
-                            cfg,
-                            &cn_conditionings,
-                            progress,
-                        )?,
+                let reuse = match (cache_thresh, &prev_x, &cache_pred) {
+                    (Some(thresh), Some(prev), Some(_)) if step_i + 1 < num_steps => {
+                        let n = (&x - prev)?.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()?;
+                        let d = prev.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()? + 1e-8;
+                        cache_accum += n / d;
+                        if cache_accum >= thresh {
+                            cache_accum = 0.0;
+                            false
+                        } else {
+                            true
+                        }
                     }
+                    _ => false,
+                };
+                prev_x = Some(x.clone());
+                let pred = if reuse {
+                    cache_pred.clone().expect("reuse implies a cached prediction")
+                } else {
+                    let p = if let Some(base_mask) = region_base_mask.as_ref() {
+                        // Regional: blend the base + per-region velocities by masks.
+                        self.predict_velocity_regional(
+                            &x,
+                            t_curr,
+                            &cfg_y,
+                            &cfg_ctx,
+                            base_mask,
+                            &region_data,
+                            guidance,
+                            &cn_conditionings,
+                            progress,
+                        )?
+                    } else {
+                        match req.tiled.as_ref() {
+                            None => self.predict_velocity_full(
+                                &x,
+                                t_curr,
+                                &cfg_y,
+                                &cfg_ctx,
+                                guidance,
+                                &cn_conditionings,
+                                progress,
+                            )?,
+                            Some(cfg) => self.predict_velocity_tiled(
+                                &x,
+                                t_curr,
+                                &cfg_y,
+                                &cfg_ctx,
+                                guidance,
+                                cfg,
+                                &cn_conditionings,
+                                progress,
+                            )?,
+                        }
+                    };
+                    cache_pred = Some(p.clone());
+                    p
                 };
                 x = (x + pred * (t_prev - t_curr))?;
 

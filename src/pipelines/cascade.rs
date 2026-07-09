@@ -756,6 +756,15 @@ impl Pipeline {
             "cascade stage C (prior)",
         );
         let c_total = c_timesteps.len().max(1);
+        // Step-caching (TeaCache-lite, opt-in via PLAKAT_STEP_CACHE=<thresh>; unset ⇒ exact).
+        // Applies to the heavy Stage-C prior loop. NOTE: Cascade's Wuerstchen scheduler is
+        // stochastic (fresh noise each step), which inflates the per-step latent change, so the
+        // accumulator crosses the threshold sooner ⇒ fewer cache hits than the deterministic DiTs.
+        let cache_thresh: Option<f32> =
+            std::env::var("PLAKAT_STEP_CACHE").ok().and_then(|s| s.parse().ok());
+        let mut cache_pred: Option<Tensor> = None;
+        let mut cache_accum = 0.0f32;
+        let mut prev_latent: Option<Tensor> = None;
         for (step_idx, &t) in c_timesteps.iter().enumerate() {
             let cfg_latent = Tensor::cat(&[&latent_c, &latent_c], 0)?;
             let t_scalar = Tensor::new(&[t as f32], &self.device)?
@@ -769,26 +778,47 @@ impl Pipeline {
                 let progress = step_idx as f32 / c_total as f32;
                 progress >= *start && progress < *end
             });
-            let pred = match cn_active {
-                Some((residuals, blocks, scale, _, _)) => self.stage_c.forward_with_cn(
-                    &cfg_latent,
-                    &t_emb,
-                    Some(&zero_cond_emb),
-                    Some(&zero_cond_emb),
-                    &clip_c,
-                    residuals,
-                    blocks,
-                    *scale,
-                )?,
-                None => self.stage_c.forward(
-                    &cfg_latent,
-                    &t_emb,
-                    Some(&zero_cond_emb),
-                    Some(&zero_cond_emb),
-                    &clip_c,
-                    None,
-                    None,
-                )?,
+            let reuse = match (cache_thresh, &prev_latent, &cache_pred) {
+                (Some(thresh), Some(prev), Some(_)) if step_idx + 1 < c_total => {
+                    let n = (&latent_c - prev)?.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()?;
+                    let d = prev.abs()?.mean_all()?.to_dtype(DType::F32)?.to_scalar::<f32>()? + 1e-8;
+                    cache_accum += n / d;
+                    if cache_accum >= thresh {
+                        cache_accum = 0.0;
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            };
+            prev_latent = Some(latent_c.clone());
+            let pred = if reuse {
+                cache_pred.clone().expect("reuse implies a cached prediction")
+            } else {
+                let p = match cn_active {
+                    Some((residuals, blocks, scale, _, _)) => self.stage_c.forward_with_cn(
+                        &cfg_latent,
+                        &t_emb,
+                        Some(&zero_cond_emb),
+                        Some(&zero_cond_emb),
+                        &clip_c,
+                        residuals,
+                        blocks,
+                        *scale,
+                    )?,
+                    None => self.stage_c.forward(
+                        &cfg_latent,
+                        &t_emb,
+                        Some(&zero_cond_emb),
+                        Some(&zero_cond_emb),
+                        &clip_c,
+                        None,
+                        None,
+                    )?,
+                };
+                cache_pred = Some(p.clone());
+                p
             };
             let chunks = pred.chunk(2, 0)?;
             let neg = &chunks[0];
