@@ -22,18 +22,21 @@ Decision (2026-07-08, with the user): cover **all CLI features except the UI**, 
 is `async` + a `(device, request) → result` call, so the facade wraps those request structs
 ergonomically. Design confirmed by a full CLI→lib-entry-point map (see below).
 
-- [~] **Facade module `plakat::api`** — builder-per-feature-area returning `Image`s in memory
-      (render-to-temp + read-back hidden inside). **Done so far:** `Generate` (t2i, all
-      families), `Img2img` (+ inpaint via `.mask()`), `Upscale` (classical + Real-ESRGAN),
-      `Image` (save/open/pixels), `device()`, re-exported `SchedulerKind`/`UpscaleMethod`.
-      **Remaining builders:** portrait, stylize, relight, multiperson, segment, animate, map,
-      compose, transparent, style-train, embedding-train, verify — plus knobs
-      (controlnet/embeddings/refiner/tiled/regions/flux-quant).
-- [ ] **Hide internals** — move the 22 accidental `pub mod`s behind `#[doc(hidden)]` / an
-      `internals` feature so only `plakat::api` is the promised surface.
-- [x] **Docs + examples** — module rustdoc + a runnable doctest + `examples/library.rs`
-      (generate → img2img → upscale) compiling in CI.
-- [ ] **Semver hygiene** — a public-API snapshot test so breaking changes are caught.
+- [x] **Facade module `plakat::api`** — **14 builders** covering every non-UI feature area,
+      returning `Image`s in memory (render-to-temp + read-back hidden inside): `Generate`,
+      `Img2img` (+inpaint), `Upscale`, `Relight`, `Stylize`, `Transparent`, `Segment`,
+      `Portrait`, `Multiperson`, `Map`, `Animate`, `StyleTrain`, `EmbeddingTrain`, `Verify` +
+      `Image`/`device()` + re-exported value types. Purely additive (wraps existing async
+      entries; no internal refactor). *Follow-up knobs — controlnet/embeddings/refiner/tiled/
+      regions/flux-quant on the builders — deferred; the CLI still exposes them.*
+- [x] **Hide internals** — all 22 internal `pub mod`s marked `#[doc(hidden)]` with a crate-doc
+      pointing at `plakat::api` as the sole stable surface (kept `pub` so the bin/tests share
+      them; no semver promise). `#[doc(hidden)]` over a feature gate because the in-crate bin
+      needs them unconditionally.
+- [x] **Docs + examples** — crate + module rustdoc, a runnable doctest, and
+      `examples/library.rs` (generate → img2img → upscale).
+- [x] **Semver hygiene** — `tests/api_surface.rs` locks the surface at compile time (rename/
+      remove a public item ⇒ red test). `cargo public-api` can layer on later for a full diff.
 
 ## Verify track — status (asked 2026-07-08)
 
