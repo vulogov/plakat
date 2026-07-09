@@ -343,6 +343,10 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 ## Documentation
 
+- **[`API.md`](Documentation/API.md)** — use plakat as a **Rust library**
+  (`plakat::api`): a small builder API covering every non-UI feature
+  (generate, img2img, upscale, relight, portrait, multiperson, map,
+  animate, training, verify). Full reference with examples.
 - **[Tutorials](Documentation/Tutorials/)** — beginner-friendly,
   step-by-step walkthroughs. Start here if you're new to plakat or
   text-to-image generation. See

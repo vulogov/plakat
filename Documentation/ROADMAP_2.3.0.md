@@ -33,8 +33,9 @@ ergonomically. Design confirmed by a full CLI→lib-entry-point map (see below).
       pointing at `plakat::api` as the sole stable surface (kept `pub` so the bin/tests share
       them; no semver promise). `#[doc(hidden)]` over a feature gate because the in-crate bin
       needs them unconditionally.
-- [x] **Docs + examples** — crate + module rustdoc, a runnable doctest, and
-      `examples/library.rs` (generate → img2img → upscale).
+- [x] **Docs + examples** — crate + module rustdoc, a runnable doctest,
+      `examples/library.rs` (generate → img2img → upscale), and a full prose reference
+      [`Documentation/API.md`](API.md) (every builder, options, defaults, examples).
 - [x] **Semver hygiene** — `tests/api_surface.rs` locks the surface at compile time (rename/
       remove a public item ⇒ red test). `cargo public-api` can layer on later for a full diff.
 
