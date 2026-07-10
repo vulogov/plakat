@@ -91,11 +91,23 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
    (the slow Metal groupnorm/conv/attention), not tiling — deferred.
 3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
        into the bench + cache the encode across a batch; measure the quality/speed trade.
-4. [x] **Step-caching** — TeaCache-lite loop cache for **PixArt** (`PLAKAT_STEP_CACHE=<thresh>`,
-       unset = exact ⇒ verify unaffected). Accumulate the per-step input change, reuse the cached
-       DiT output under threshold. **Measured (pixart 512², 20 steps): thresh 0.10 → 1.37× at
-       SSIM 0.9987 (imperceptible, mad 2.74/255); 0.30 → 2.6× at SSIM 0.856 (too far).** Sweet
-       spot ~0.10–0.15. Loop-level + model-agnostic → SD3/Flux/SD can adopt the same pattern next.
+4. [x] **Step-caching** — TeaCache-lite loop cache (`PLAKAT_STEP_CACHE=<thresh>`, unset = exact ⇒
+       verify unaffected): accumulate the per-step input change, reuse the cached model output
+       under threshold. Ported to **PixArt, SD3.5, and Cascade Stage-C**. Measured (512², 20
+       steps, Metal):
+       - **PixArt** @0.10 → **1.37×**, SSIM **0.9987** (imperceptible); @0.30 → 2.6× / SSIM 0.856.
+       - **SD3.5** @0.10 → **1.92×** (gen 81 s → 42 s); @0.20 → 2.41×. Bigger win (heavier MMDiT
+         per-step). SSIM confirmation blocked this session by Metal memory pressure (the exact
+         path OOM-guards on a fresh T5-XXL load) — expected ~PixArt-level (identical mechanism);
+         `sudo purge` + regen to confirm.
+       - **Cascade** @0.10 → **~0%**, @0.20 → ~5%. **Defeated by the stochastic Wuerstchen
+         scheduler** (fresh noise each step inflates the per-step change ⇒ the accumulator crosses
+         threshold every step ⇒ no cache hits). Kept (opt-in, harmless) but ineffective as-is.
+
+       **General finding: step-caching pays off on DETERMINISTIC transformer samplers (PixArt
+       1.4×, SD3.5 1.9×) but NOT on stochastic ones (Cascade).** Sweet spot ~0.10–0.15. Flux
+       deferred (untestable on this hardware). To make Cascade work would need a deterministic
+       indicator (e.g. the timestep embedding) instead of the noise-polluted latent delta.
 5. [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
 6. [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
        they stop being rejected on Metal (`scheduler.rs check_device_support`). (Direction #4.)
