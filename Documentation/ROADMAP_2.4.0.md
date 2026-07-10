@@ -119,8 +119,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
        deferred (untestable on this hardware). To make Cascade work would need a deterministic
        indicator (e.g. the timestep embedding) instead of the noise-polluted latent delta.
 5. [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
-6. [ ] **Metal-native schedulers** — reimplement UniPC / DPM++ 2M Karras sigma math in **F32** so
-       they stop being rejected on Metal (`scheduler.rs check_device_support`). (Direction #4.)
+6. [x] **Metal schedulers unblocked** — DPM++ 2M Karras / UniPC / UniPC-exp were rejected on
+       Metal (their solver-coefficient math builds F64 tensors on the device; candle 0.10.2 has
+       no F64 Metal backend). Instead of a full F32 rewrite or vendoring candle's 1005-line
+       `uni_pc.rs`, wrapped it in a **`CpuHopScheduler`** that routes the tiny per-step scheduler
+       tensors through the CPU (F64 works there) and moves the result back. **Verified: det-init
+       Metal-DPM++ vs CPU-DPM++ = SSIM 1.0000** (mad 0.10/255). `check_device_support` is now a
+       no-op. Payoff: the community-standard samplers on Apple Silicon → good quality at fewer
+       steps (DPM++ ~20 vs Euler ~28–30; UniPC ~10–15), compounding with step-caching.
 
 ## Phase 3 — Lock it in
 
