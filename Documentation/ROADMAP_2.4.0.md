@@ -123,11 +123,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
        realistic dims — unlike VAE/int8, the kernel *works*, and it takes a mask + supports the
        models' head_dim (64/72). Wired into **PixArt self-attention** (GPU-only — candle SDPA has
        no CPU impl, so CPU + verify stay on eager; masked cross-attn stays eager to keep the v2.1
-       fix bit-identical). **Measured: per-step 1560→1026 ms = 1.52×** (self-attn alone),
-       correctness isolated **SSIM 0.99873** (mad 2.3/255). Escape hatch `PLAKAT_NO_SDPA=1`.
-       **Remaining rollout:** SD3 MMDiT + Flux + SD UNet self-attn, then the masked cross-attn
-       paths (validate the SDPA additive-mask shape) — likely the single biggest lever left, and
-       it compounds with step-caching + the Metal samplers.
+       fix bit-identical). Measured: **PixArt self-attn per-step 1560→1026 ms = 1.52×** (isolated
+       SSIM 0.99873, mad 2.3/255); **SD3.5 MMDiT joint-attn 1910→1555 ms = 1.23×** (probe covers
+       the exact dims h=24 s=1024 d=64 at 3.6e-6; sd35 end-to-end isolation OOM-blocked this
+       session). Escape hatch `PLAKAT_NO_SDPA=1`. Compounds with step-caching + the Metal samplers.
+       **Remaining rollout:** Flux + SD UNet self-attn, then the masked cross-attn paths (validate
+       the SDPA additive-mask shape).
 6. [x] **Metal schedulers unblocked** — DPM++ 2M Karras / UniPC / UniPC-exp were rejected on
        Metal (their solver-coefficient math builds F64 tensors on the device; candle 0.10.2 has
        no F64 Metal backend). Instead of a full F32 rewrite or vendoring candle's 1005-line
