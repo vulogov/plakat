@@ -8,6 +8,32 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.3.0 — plakat is now a Rust library
+
+The 2.x arc has been about confidence; 2.3.0 turns outward. plakat has always been a CLI (and a
+Bund scripting language); now it's a **first-class Rust library** too — embed generation in your
+own programs without shelling out.
+
+**`plakat::api` — a small, stable, documented API.** Fourteen builder types cover everything the
+CLI does except the interactive UI:
+
+```rust
+use plakat::api::Generate;
+let images = Generate::new("sdxl").prompt("a fox").steps(28).seed(42).run().await?;
+images[0].save("fox.png")?;
+```
+
+`Generate`, `Portrait`, `Img2img` (+ inpaint via `.mask()`), `Upscale`, `Relight`, `Stylize`,
+`Transparent`, `Segment`, `Multiperson`, `Map`, `Animate`, `StyleTrain`, `EmbeddingTrain`,
+`Verify` — same builder shape throughout. Results come back in memory as `Image`s. The crate's
+internal modules are `#[doc(hidden)]` with **no semver promise**, so `plakat::api` is the one
+supported surface — locked by a compile-time surface test and documented in full at
+[`API.md`](API.md), with a runnable `examples/library.rs`.
+
+**Bund scripting caught up to the CLI.** Six new host words — `plakat.relight`,
+`plakat.transparent`, `plakat.segment`, `plakat.compose`, and training: `plakat.style.train` /
+`plakat.embedding.train` — plus a `decoder_guidance` key. 51 → 57 words. See [`SCRIPTING.md`](SCRIPTING.md).
+
 ## What's new in 2.2.0 — every model, end-to-end regression-gated
 
 2.0.0 built `plakat verify`; 2.1.0 used it to fix a real caption bug. 2.2.0 takes the harness

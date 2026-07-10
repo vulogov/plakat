@@ -17,37 +17,39 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.3.0 — plakat is now a Rust library
+## What's new in 2.4.0 — faster on Apple Silicon, provably safe
 
-The 2.x arc has been about confidence; 2.3.0 turns outward. plakat has always been a CLI (and a
-Bund scripting language); now it's a **first-class Rust library** too — embed generation in your
-own programs without shelling out.
+2.0–2.3 were about confidence (verify) and reach (library). 2.4.0 is a **performance pass** —
+measured, and *verified*: every speedup below is gated behind `plakat verify`, so **speed never
+costs correctness**. It's also honest — several avenues were tried, measured, and rejected (the
+roadmap keeps the negatives).
 
-**`plakat::api` — a small, stable, documented API.** Fourteen builder types cover everything the
-CLI does except the interactive UI:
+**Step-caching** (`PLAKAT_STEP_CACHE=<thresh>`, opt-in). Consecutive transformer steps change
+little, so we reuse the cached model output while the change stays under threshold. On the
+DiT/MMDiT models: **PixArt ~1.37×, SD 3.5 ~1.92×** at thresh 0.10 — near-imperceptible
+(SSIM 0.999). (Stochastic samplers like Cascade don't benefit — documented.)
 
-```rust
-use plakat::api::Generate;
-let images = Generate::new("sdxl").prompt("a fox").steps(28).seed(42).run().await?;
-images[0].save("fox.png")?;
-```
+**Fused attention (SDPA).** plakat's transformer attention now uses candle's fused Metal SDPA
+kernel — **~16× faster than the old eager path on the kernel itself**, correct to ~1e-6:
+**PixArt self-attention ~1.52×/step, SD 3.5 MMDiT ~1.23×/step**. GPU-only (CPU keeps the exact
+path); escape hatch `PLAKAT_NO_SDPA=1`.
 
-`Generate`, `Portrait`, `Img2img` (+ inpaint via `.mask()`), `Upscale`, `Relight`, `Stylize`,
-`Transparent`, `Segment`, `Multiperson`, `Map`, `Animate`, `StyleTrain`, `EmbeddingTrain`,
-`Verify` — same builder shape throughout: `new(...) → chain options → .run().await`. Results come
-back in memory as `Image`s. The crate's internal modules are now `#[doc(hidden)]` with **no
-semver promise**, so `plakat::api` is the one supported surface — locked by a compile-time
-surface test and documented in full at [`Documentation/API.md`](Documentation/API.md), with a
-runnable `examples/library.rs`.
+**Top-tier samplers on Metal, finally.** DPM++ 2M Karras and UniPC were *rejected* on Apple
+Silicon (they need F64, which candle's Metal backend lacks). They now run via a CPU-hop for the
+tiny per-step scheduler math — verified bit-accurate (SSIM 1.0). That means the community-standard
+samplers on Metal → good quality at **fewer steps**.
 
-**Bund scripting caught up to the CLI.** Six new host words close the gaps — `plakat.relight`,
-`plakat.transparent`, `plakat.segment`, `plakat.compose`, and (finally) training:
-`plakat.style.train` / `plakat.embedding.train` — plus a `decoder_guidance` config key. 51 → 57
-words. See [`Documentation/SCRIPTING.md`](Documentation/SCRIPTING.md).
+These **compound**: SD 3.5 with step-caching × SDPA × a DPM++ recipe is comfortably several ×
+faster than before — all opt-in or verify-safe.
 
-Nothing about the CLI changes — this release *adds* ways to drive the same engine.
+**`plakat bench`.** A new subcommand times a real generation (load / per-step / VAE / peak-mem),
+`--json` for CI — the ruler the whole pass was built on.
 
-**Earlier releases** (v0.13 – 2.2):
+Also in 2.4.0 (see [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md)): 2.3.0
+made plakat a first-class **Rust library** (`plakat::api`, 14 builders) and brought Bund scripting
+to CLI parity.
+
+**Earlier releases** (v0.13 – 2.3):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
