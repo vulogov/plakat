@@ -557,6 +557,13 @@ impl Pipeline {
         let mut cache_pred: Option<Tensor> = None;
         let mut cache_accum = 0.0f32;
         let mut prev_scaled: Option<Tensor> = None;
+        // PAG (Perturbed-Attention Guidance), opt-in via PLAKAT_PAG_SCALE=<scale> (e.g. 2.0). An
+        // extra conditional forward with self-attention perturbed to identity; the prediction is
+        // pushed away from that degenerate output → sharper structure. 0 = off (exact CFG).
+        let pag_scale: f64 = std::env::var("PLAKAT_PAG_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
         for (step_i, &t) in timesteps.iter().enumerate() {
             let scaled = scheduler.scale_model_input(latents.clone(), t)?;
             // Reuse the cached DiT output while the accumulated input change is under threshold.
@@ -606,7 +613,28 @@ impl Pipeline {
             let chunks = noise_pred.chunk(2, 0)?;
             let neg = &chunks[0];
             let pos = &chunks[1];
-            let guided = (neg + ((pos - neg)? * guidance)?)?;
+            let cfg_guided = (neg + ((pos - neg)? * guidance)?)?;
+            let guided = if pag_scale > 0.0 {
+                // Perturbed conditional forward (self-attention → identity), then
+                // guided = cfg + pag·(cond − cond_perturbed).
+                let t_single = Tensor::new(&[t as f32], &self.device)?.to_dtype(DType::F32)?;
+                let pred_pert = self
+                    .dit
+                    .forward_pag(
+                        &scaled.to_dtype(DType::F32)?,
+                        &t_single,
+                        &pos_caption.to_dtype(DType::F32)?,
+                        &res.to_dtype(DType::F32)?,
+                        &asp.to_dtype(DType::F32)?,
+                        Some(&pos_mask.to_dtype(DType::F32)?),
+                        true,
+                    )?
+                    .to_dtype(self.dtype)?;
+                let pos_pert = pred_pert.narrow(1, 0, 4)?;
+                (cfg_guided + ((pos - &pos_pert)? * pag_scale)?)?
+            } else {
+                cfg_guided
+            };
             latents = scheduler.step(&guided, t, &latents)?;
             bar.inc(1);
             bar.set_message(format!("t={t}"));

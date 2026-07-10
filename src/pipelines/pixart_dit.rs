@@ -576,13 +576,13 @@ impl Attention {
     /// Cross-attention path: `kv` is taken as-is (the T5 sequence
     /// in PixArt's case). No grid dims required.
     pub fn forward(&self, x: &Tensor, kv: &Tensor) -> Result<Tensor> {
-        self.forward_inner(x, kv, None, None)
+        self.forward_inner(x, kv, None, None, false)
     }
 
     /// Cross-attention with an optional additive caption key mask (`(B,1,1,lkv)`) — pad-position
     /// caption keys get a large-negative bias so image queries don't attend to them.
     pub fn forward_masked(&self, x: &Tensor, kv: &Tensor, kv_mask: Option<&Tensor>) -> Result<Tensor> {
-        self.forward_inner(x, kv, None, kv_mask)
+        self.forward_inner(x, kv, None, kv_mask, false)
     }
 
     /// v0.36 phase 3: self-attention path with optional KV
@@ -595,7 +595,18 @@ impl Attention {
         x: &Tensor,
         grid_dims: Option<(usize, usize)>,
     ) -> Result<Tensor> {
-        self.forward_inner(x, x, grid_dims, None)
+        self.forward_inner(x, x, grid_dims, None, false)
+    }
+
+    /// v2.5: self-attention with an optional **PAG perturbation** (`pag = true` replaces the
+    /// self-attention with identity — output = V — the degenerate pass PAG guides away from).
+    pub fn forward_self_attn_pag(
+        &self,
+        x: &Tensor,
+        grid_dims: Option<(usize, usize)>,
+        pag: bool,
+    ) -> Result<Tensor> {
+        self.forward_inner(x, x, grid_dims, None, pag)
     }
 
     fn forward_inner(
@@ -604,6 +615,7 @@ impl Attention {
         kv_in: &Tensor,
         grid_dims: Option<(usize, usize)>,
         kv_mask: Option<&Tensor>,
+        pag: bool,
     ) -> Result<Tensor> {
         let (b, lq, hidden) = x.dims3()?;
 
@@ -656,7 +668,11 @@ impl Attention {
         // SDPA supported set {32,64,72,80,96,128,256,512}.
         let gpu = (q.device().is_metal() || q.device().is_cuda())
             && std::env::var("PLAKAT_NO_SDPA").is_err();
-        let out = if kv_mask.is_none() && gpu {
+        let out = if pag && kv_mask.is_none() {
+            // PAG: perturb self-attention to identity (attention matrix = I) → output = V. This is
+            // the degenerate pass Perturbed-Attention Guidance steers the prediction away from.
+            v.contiguous()?
+        } else if kv_mask.is_none() && gpu {
             candle_nn::ops::sdpa(
                 &q.contiguous()?,
                 &k.contiguous()?,
@@ -773,6 +789,21 @@ impl PixArtBlock {
         grid_dims: Option<(usize, usize)>,
         kv_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
+        self.forward_pag(x, t_block, kv, grid_dims, kv_mask, false)
+    }
+
+    /// As [`forward`](Self::forward), with an optional **PAG** self-attention perturbation
+    /// (`pag = true` replaces `attn1`'s self-attention with identity — see `forward_self_attn_pag`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_pag(
+        &self,
+        x: &Tensor,
+        t_block: &Tensor,
+        kv: &Tensor,
+        grid_dims: Option<(usize, usize)>,
+        kv_mask: Option<&Tensor>,
+        pag: bool,
+    ) -> Result<Tensor> {
         let (b, _t, hidden) = x.dims3()?;
         // (6, hidden) + (B, 6*hidden) → broadcast → (B, 6, hidden).
         let t_block = t_block.reshape((b, 6, hidden))?;
@@ -794,7 +825,7 @@ impl PixArtBlock {
             .broadcast_add(&shift_msa_3d)?;
         // v0.36 phase 3: self-attn forward picks up grid_dims so
         // the Conv2d (if any) can reshape the KV side spatially.
-        let attn1_out = self.attn1.forward_self_attn(&modulated_x, grid_dims)?;
+        let attn1_out = self.attn1.forward_self_attn_pag(&modulated_x, grid_dims, pag)?;
         let x = x.add(&attn1_out.broadcast_mul(&gate_msa.unsqueeze(1)?)?)?;
 
         let attn2_out = self.attn2.forward_masked(&x, kv, kv_mask)?;
@@ -967,6 +998,23 @@ impl PixArtSigmaXL {
         aspect_ratio: &Tensor,
         caption_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
+        self.forward_pag(latent, timestep, caption, resolution, aspect_ratio, caption_mask, false)
+    }
+
+    /// As [`forward`](Self::forward), with **PAG**: `pag = true` perturbs every block's
+    /// self-attention to identity, producing the degenerate prediction PAG guides away from.
+    /// The caller runs this once per step on the conditional inputs and combines the two.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_pag(
+        &self,
+        latent: &Tensor,
+        timestep: &Tensor,
+        caption: &Tensor,
+        resolution: &Tensor,
+        aspect_ratio: &Tensor,
+        caption_mask: Option<&Tensor>,
+        pag: bool,
+    ) -> Result<Tensor> {
         let (b, _c, lh, lw) = latent.dims4()?;
         let x = self.patch_embed.forward(latent)?;
         let (grid_h, grid_w) = self.patch_embed.grid_dims(lh, lw);
@@ -996,7 +1044,7 @@ impl PixArtSigmaXL {
         // reshape spatially. Same `grid_dims` shared by every layer.
         let mut x = x;
         for block in &self.blocks {
-            x = block.forward(&x, &t_block, &kv, Some((grid_h, grid_w)), kv_bias.as_ref())?;
+            x = block.forward_pag(&x, &t_block, &kv, Some((grid_h, grid_w)), kv_bias.as_ref(), pag)?;
         }
 
         // Final adaLN + proj_out. diffusers uses the raw `embedded_timestep`
