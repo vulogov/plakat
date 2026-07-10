@@ -127,8 +127,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
        SSIM 0.99873, mad 2.3/255); **SD3.5 MMDiT joint-attn 1910→1555 ms = 1.23×** (probe covers
        the exact dims h=24 s=1024 d=64 at 3.6e-6; sd35 end-to-end isolation OOM-blocked this
        session). Escape hatch `PLAKAT_NO_SDPA=1`. Compounds with step-caching + the Metal samplers.
-       **Remaining rollout:** Flux + SD UNet self-attn, then the masked cross-attn paths (validate
-       the SDPA additive-mask shape).
+       **Parked (post-2.4):** SD UNet self-attn — unlike the DiTs, the SD generation UNet builds
+       its attention from **candle's registry** `stable_diffusion` (not plakat-editable), so it
+       needs *vendoring* candle's SD attention (+ blocks) or re-architecting generation onto
+       plakat's own `sd_train` UNet; also head-dim-partial (SDXL 64 full; SD1.5/2.1 40/80/160 →
+       80-only). Deferred as a focused follow-up. Flux stays deferred (untestable here); the masked
+       cross-attn paths (SDPA additive-mask shape) also parked.
 6. [x] **Metal schedulers unblocked** — DPM++ 2M Karras / UniPC / UniPC-exp were rejected on
        Metal (their solver-coefficient math builds F64 tensors on the device; candle 0.10.2 has
        no F64 Metal backend). Instead of a full F32 rewrite or vendoring candle's 1005-line
