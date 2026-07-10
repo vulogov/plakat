@@ -118,7 +118,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
        1.4×, SD3.5 1.9×) but NOT on stochastic ones (Cascade).** Sweet spot ~0.10–0.15. Flux
        deferred (untestable on this hardware). To make Cascade work would need a deterministic
        indicator (e.g. the timestep embedding) instead of the noise-polluted latent delta.
-5. [ ] **Attention** — Metal SDPA / fused paths, F16 accumulation, eliminate redundant casts.
+5. [~] **Attention — fused SDPA (the surprise win).** Probe (`examples/sdpa_probe.rs`) decided
+       GO: candle's **Metal SDPA kernel is correct (~1e-6 vs eager) and 15–17× faster** at
+       realistic dims — unlike VAE/int8, the kernel *works*, and it takes a mask + supports the
+       models' head_dim (64/72). Wired into **PixArt self-attention** (GPU-only — candle SDPA has
+       no CPU impl, so CPU + verify stay on eager; masked cross-attn stays eager to keep the v2.1
+       fix bit-identical). **Measured: per-step 1560→1026 ms = 1.52×** (self-attn alone),
+       correctness isolated **SSIM 0.99873** (mad 2.3/255). Escape hatch `PLAKAT_NO_SDPA=1`.
+       **Remaining rollout:** SD3 MMDiT + Flux + SD UNet self-attn, then the masked cross-attn
+       paths (validate the SDPA additive-mask shape) — likely the single biggest lever left, and
+       it compounds with step-caching + the Metal samplers.
 6. [x] **Metal schedulers unblocked** — DPM++ 2M Karras / UniPC / UniPC-exp were rejected on
        Metal (their solver-coefficient math builds F64 tensors on the device; candle 0.10.2 has
        no F64 Metal backend). Instead of a full F32 rewrite or vendoring candle's 1005-line
