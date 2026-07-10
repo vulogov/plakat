@@ -648,19 +648,37 @@ impl Attention {
         let k = k.reshape((b, lkv, self.num_heads, self.head_dim))?.transpose(1, 2)?;
         let v = v.reshape((b, lkv, self.num_heads, self.head_dim))?.transpose(1, 2)?;
         let scale = 1.0 / (self.head_dim as f64).sqrt();
-        let scores = q
-            .contiguous()?
-            .matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)?
-            .affine(scale, 0.)?;
-        // Cross-attention caption mask (v2.1): image queries must not attend to pad-position
-        // caption keys. `kv_mask` is an additive `(B,1,1,lkv)` bias — 0 for real caption keys,
-        // large-negative for pad — added before softmax. Matches diffusers `encoder_attention_mask`.
-        let scores = match kv_mask {
-            Some(bias) => scores.broadcast_add(bias)?,
-            None => scores,
+        // v2.4: fused SDPA (candle's Metal kernel) is ~16× faster than eager and matches it to
+        // ~1e-6 (probe). Taken for the UNMASKED path (self-attention) on GPU only — candle's SDPA
+        // has NO CPU impl, so CPU (incl. the verify harness) keeps the exact eager path. The masked
+        // cross-attention (v2.1 caption pad-mask) also stays eager everywhere — bit-identical caption
+        // fix — until the SDPA additive-mask shape is validated per model. head_dim 72 ∈ the Metal
+        // SDPA supported set {32,64,72,80,96,128,256,512}.
+        let gpu = (q.device().is_metal() || q.device().is_cuda())
+            && std::env::var("PLAKAT_NO_SDPA").is_err();
+        let out = if kv_mask.is_none() && gpu {
+            candle_nn::ops::sdpa(
+                &q.contiguous()?,
+                &k.contiguous()?,
+                &v.contiguous()?,
+                None,
+                false,
+                scale as f32,
+                1.0,
+            )?
+        } else {
+            let scores = q
+                .contiguous()?
+                .matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)?
+                .affine(scale, 0.)?;
+            // Cross-attention caption mask (v2.1): image queries must not attend to pad-position
+            // caption keys — additive `(B,1,1,lkv)` bias added before softmax.
+            let scores = match kv_mask {
+                Some(bias) => scores.broadcast_add(bias)?,
+                None => scores,
+            };
+            nn::ops::softmax(&scores, D::Minus1)?.matmul(&v.contiguous()?)?
         };
-        let probs = nn::ops::softmax(&scores, D::Minus1)?;
-        let out = probs.matmul(&v.contiguous()?)?;
         let out = out
             .transpose(1, 2)?
             .reshape((b, lq, self.num_heads * self.head_dim))?;
