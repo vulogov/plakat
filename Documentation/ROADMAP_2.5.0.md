@@ -17,9 +17,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [ ] **SD UNet SDPA** — bring the 2.4 attention win to the SD1.5/2.1/SDXL workhorses. Needs
       vendoring candle's `stable_diffusion` attention (+ the UNet blocks that call it) since it's
       registry code; SDXL gets full head-dim-64 coverage, SD1.5/2.1 partial. Verify-gated.
-- [ ] **Free-quality guidance** — **PAG** (perturbed-attention guidance; now tractable post-SDPA),
-      **FreeU**, **CFG-rescale** / dynamic thresholding. No new weights, real quality; opt-in flags,
-      verify-safe. Highest quality ROI.
+- [~] **Free-quality guidance** — **PAG landed for PixArt** (opt-in `PLAKAT_PAG_SCALE=<s>`, default
+      off ⇒ verify-safe; extra conditional forward with self-attn→identity, guided = cfg +
+      pag·(cond−cond_ptb)). pag-off bit-identical by construction; pag-on coherent. Perturbs all
+      self-attn blocks (strong; scale ~1–2). **Remaining:** SD3 MMDiT PAG, layer-subset selection,
+      a `--pag-scale` CLI flag, then **FreeU** + **CFG-rescale** / dynamic thresholding.
 
 ## Carried-over (opportunistic)
 
