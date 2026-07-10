@@ -89,8 +89,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
    *per unit area* (a 64² tile decode is 2.76 s on candle/Metal), so the overlapping-tile **conv
    redundancy** (9 tiles) outweighs the attention saving. A real win needs kernel-level VAE work
    (the slow Metal groupnorm/conv/attention), not tiling — deferred.
-3. [ ] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — wire the existing int8 T5 (`--quantize-t5`)
-       into the bench + cache the encode across a batch; measure the quality/speed trade.
+3. [⏸] **T5-XXL text-encode** *(SD3.5 = 14.4 s)* — **int8 T5 blocked on this hardware (two
+       confirmed reasons):** (1) candle's `quantized_t5` encoder `forward(input_ids)` has **no
+       padding attention-mask** param, so it can't do SD3's pad-masking → dropping it in would
+       **regress the v2.1 caption fix** (SD3 uses `vendored_t5` precisely for `forward_with_mask`);
+       (2) it runs on **`QMatMul`, the candle-0.10.2 Metal quantized-matmul kernel that produces
+       corrupted output** — the same general bug that defers GGUF Flux (`gguf_metal_blocked`).
+       So the int8 *compute* win isn't reachable here. Not shipping a broken/regressing path.
+       Achievable alternatives (future): (a) **int8-on-disk → BF16-in-compute** to cut the T5
+       portion of the 137 s *load* (fewer bytes, Metal-safe, masked forward unchanged) — but
+       that's the load metric, not the 14.4 s encode; (b) **cache the T5 encode across a batch**
+       (Metal-safe; helps count>1 / scenario, not single-image); (c) revisit with Flux once the
+       candle Metal quant kernel is fixed.
 4. [x] **Step-caching** — TeaCache-lite loop cache (`PLAKAT_STEP_CACHE=<thresh>`, unset = exact ⇒
        verify unaffected): accumulate the per-step input change, reuse the cached model output
        under threshold. Ported to **PixArt, SD3.5, and Cascade Stage-C**. Measured (512², 20
