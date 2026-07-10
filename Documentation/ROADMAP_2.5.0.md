@@ -14,9 +14,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       1.0). The spike playbook is preserved for then: bump → `plakat verify` all 7 families
       (regression = corr < 1.0) → test the 3 blockers (GGUF-Flux-Metal / quant-matmul / DPM++
       without the CpuHopScheduler).
-- [ ] **SD UNet SDPA** — bring the 2.4 attention win to the SD1.5/2.1/SDXL workhorses. Needs
-      vendoring candle's `stable_diffusion` attention (+ the UNet blocks that call it) since it's
-      registry code; SDXL gets full head-dim-64 coverage, SD1.5/2.1 partial. Verify-gated.
+- [~] **SD UNet SDPA** — **Step 1 done:** SDPA in plakat's own SD attention (`sd_train/attention.rs`)
+      → **stylize/instantstyle** get it now (GPU-only, head-dim-guarded, unmasked, probe-verified
+      kernel). **Step 2 (the workhorses):** route main t2i through plakat's `sd_train::unet` (already
+      exposes `forward`/`forward_sdxl` matching `SdCore`) instead of candle's `SdxlUNet2DConditionModel`
+      — feasible but touches the `SdUNet` enum + LoRA + ControlNet + motion + weight-load keys; must be
+      verify-gated (switch → `plakat verify` → corr 1.0 confirms UNet equivalence). Focused follow-up.
+      *(Vendoring the SD UNet also decouples plakat from candle's churny surface — aligns with the
+      candle-stability wariness.)*
 - [~] **Free-quality guidance** — **PAG landed for PixArt** (opt-in `PLAKAT_PAG_SCALE=<s>`, default
       off ⇒ verify-safe; extra conditional forward with self-attn→identity, guided = cfg +
       pag·(cond−cond_ptb)). pag-off bit-identical by construction; pag-on coherent. Perturbs all
