@@ -949,6 +949,28 @@ fn joint_attn(
 fn attn(qkv: &Qkv, num_heads: usize, use_flash_attn: bool) -> Result<Tensor> {
     let batch_size = qkv.q.dim(0)?;
     let seqlen = qkv.q.dim(1)?;
+    // v2.4: fused SDPA fast path for MMDiT joint attention (unmasked — SD3's joint attention
+    // takes no mask). candle's Metal SDPA kernel is ~16× faster than eager and matches it to
+    // ~1e-6 (probe). GPU-only — candle SDPA has NO CPU impl, so CPU + the verify harness keep
+    // the exact eager path below. `use_flash_attn` (CUDA flash-attn) keeps priority. Guarded on
+    // the kernel's supported head-dim set. Escape hatch: PLAKAT_NO_SDPA=1.
+    let hidden = qkv.q.dim(2)?;
+    let head_dim = hidden / num_heads;
+    let sdpa_ok = !use_flash_attn
+        && (qkv.q.device().is_metal() || qkv.q.device().is_cuda())
+        && std::env::var("PLAKAT_NO_SDPA").is_err()
+        && [32, 64, 72, 80, 96, 128, 256, 512].contains(&head_dim);
+    if sdpa_ok {
+        let to_bhsd = |t: &Tensor| -> Result<Tensor> {
+            t.reshape((batch_size, seqlen, num_heads, head_dim))?
+                .transpose(1, 2)?
+                .contiguous()
+        };
+        let (q, k, v) = (to_bhsd(&qkv.q)?, to_bhsd(&qkv.k)?, to_bhsd(&qkv.v)?);
+        let scale = 1.0 / (head_dim as f64).sqrt();
+        let out = candle_nn::ops::sdpa(&q, &k, &v, None, false, scale as f32, 1.0)?; // (b,h,s,d)
+        return out.transpose(1, 2)?.reshape((batch_size, seqlen, hidden));
+    }
     let qkv = Qkv {
         q: qkv.q.reshape((batch_size, seqlen, num_heads, ()))?,
         k: qkv.k.reshape((batch_size, seqlen, num_heads, ()))?,
