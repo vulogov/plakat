@@ -80,24 +80,75 @@ impl std::str::FromStr for SchedulerKind {
 
 /// Refuse known-broken combinations early so the user gets a useful message
 /// instead of a cryptic mid-inference error.
-pub fn check_device_support(kind: SchedulerKind, device: &Device) -> Result<()> {
-    if matches!(
-        kind,
-        SchedulerKind::UniPc | SchedulerKind::DpmppKarras | SchedulerKind::UniPcExp
-    ) && device.is_metal()
-    {
-        return Err(anyhow!(
-            "{kind:?} uses F64 ops candle's Metal backend doesn't implement \
-             (all variants of the UniPC / DPM-Solver++ family share the same \
-             scheduler class). Use --scheduler euler-a (works on Metal) or \
-             --device cpu."
-        ));
-    }
+pub fn check_device_support(_kind: SchedulerKind, _device: &Device) -> Result<()> {
+    // v2.4: the UniPC / DPM-Solver++ family (UniPc / DpmppKarras / UniPcExp) used to be rejected
+    // on Metal — their solver-coefficient math builds F64 tensors on the sample's device, and
+    // candle 0.10.2 has no F64 Metal backend. They now run on Metal via `CpuHopScheduler`, which
+    // routes the (tiny) per-step scheduler math through the CPU. So every scheduler is supported
+    // on every device; this stays as a no-op hook in case a future scheduler needs gating.
     Ok(())
 }
 
 /// Build a Scheduler for `steps` steps. PredictionType=Epsilon is the trained
 /// type for SD 1.5 / 2.1 / SDXL / SDXL-Turbo; we don't yet expose v-prediction.
+/// Wraps a candle scheduler whose internals use **F64 tensor ops** (the UniPC / DPM-Solver++
+/// family: they build F64 solver-coefficient tensors on the *sample's* device) so it runs on
+/// **Metal**, where candle 0.10.2 has no F64 backend. Every tensor method is routed through the
+/// CPU — where F64 works — and the result is moved back to the caller's device. The latent is
+/// tiny (~64–256 KB), so the round-trip is negligible next to the denoiser forward (seconds).
+/// On a CPU device the hop is a no-op. This unblocks DPM++ 2M Karras / UniPC on Apple Silicon.
+struct CpuHopScheduler {
+    inner: Box<dyn Scheduler>,
+}
+
+impl CpuHopScheduler {
+    fn to_cpu(t: &candle_core::Tensor) -> candle_core::Result<candle_core::Tensor> {
+        t.to_device(&Device::Cpu)
+    }
+}
+
+impl Scheduler for CpuHopScheduler {
+    fn timesteps(&self) -> &[usize] {
+        self.inner.timesteps()
+    }
+    fn init_noise_sigma(&self) -> f64 {
+        self.inner.init_noise_sigma()
+    }
+    fn add_noise(
+        &self,
+        original: &candle_core::Tensor,
+        noise: candle_core::Tensor,
+        timestep: usize,
+    ) -> candle_core::Result<candle_core::Tensor> {
+        let dev = original.device().clone();
+        let out = self
+            .inner
+            .add_noise(&Self::to_cpu(original)?, noise.to_device(&Device::Cpu)?, timestep)?;
+        out.to_device(&dev)
+    }
+    fn scale_model_input(
+        &self,
+        sample: candle_core::Tensor,
+        timestep: usize,
+    ) -> candle_core::Result<candle_core::Tensor> {
+        let dev = sample.device().clone();
+        let out = self.inner.scale_model_input(sample.to_device(&Device::Cpu)?, timestep)?;
+        out.to_device(&dev)
+    }
+    fn step(
+        &mut self,
+        model_output: &candle_core::Tensor,
+        timestep: usize,
+        sample: &candle_core::Tensor,
+    ) -> candle_core::Result<candle_core::Tensor> {
+        let dev = sample.device().clone();
+        let out = self
+            .inner
+            .step(&Self::to_cpu(model_output)?, timestep, &Self::to_cpu(sample)?)?;
+        out.to_device(&dev)
+    }
+}
+
 pub fn build(
     kind: SchedulerKind,
     cfg: &StableDiffusionConfig,
@@ -116,29 +167,35 @@ pub fn build(
         }
         .build(steps)?,
         // UniPC with corrector + DPM-Solver++ algorithm + Karras sigmas (default).
-        SchedulerKind::UniPc => UniPCSchedulerConfig {
-            prediction_type: PredictionType::Epsilon,
-            ..Default::default()
-        }
-        .build(steps)?,
+        SchedulerKind::UniPc => Box::new(CpuHopScheduler {
+            inner: UniPCSchedulerConfig {
+                prediction_type: PredictionType::Epsilon,
+                ..Default::default()
+            }
+            .build(steps)?,
+        }),
         // DPM-Solver++ 2M Karras — corrector disabled, otherwise UniPC defaults.
         // (candle's `UniPCSchedulerConfig` doesn't expose an algorithm_type
         // toggle even though the AlgorithmType enum exists — the corrector
         // on/off is the meaningful behavior difference.)
-        SchedulerKind::DpmppKarras => UniPCSchedulerConfig {
-            prediction_type: PredictionType::Epsilon,
-            corrector: CorrectorConfiguration::Disabled,
-            sigma_schedule: SigmaSchedule::Karras(KarrasSigmaSchedule::default()),
-            ..Default::default()
-        }
-        .build(steps)?,
+        SchedulerKind::DpmppKarras => Box::new(CpuHopScheduler {
+            inner: UniPCSchedulerConfig {
+                prediction_type: PredictionType::Epsilon,
+                corrector: CorrectorConfiguration::Disabled,
+                sigma_schedule: SigmaSchedule::Karras(KarrasSigmaSchedule::default()),
+                ..Default::default()
+            }
+            .build(steps)?,
+        }),
         // UniPC with exponential sigma schedule (less common but sometimes useful).
-        SchedulerKind::UniPcExp => UniPCSchedulerConfig {
-            prediction_type: PredictionType::Epsilon,
-            sigma_schedule: SigmaSchedule::Exponential(ExponentialSigmaSchedule::default()),
-            ..Default::default()
-        }
-        .build(steps)?,
+        SchedulerKind::UniPcExp => Box::new(CpuHopScheduler {
+            inner: UniPCSchedulerConfig {
+                prediction_type: PredictionType::Epsilon,
+                sigma_schedule: SigmaSchedule::Exponential(ExponentialSigmaSchedule::default()),
+                ..Default::default()
+            }
+            .build(steps)?,
+        }),
         // LCM — consistency-function sampling, designed for LCM-LoRAs.
         SchedulerKind::Lcm => crate::pipelines::lcm_scheduler::LcmSchedulerConfig {
             prediction_type: PredictionType::Epsilon,
