@@ -55,10 +55,11 @@ Ranked by ROI (grounded in the capability inventory — many are cheap, no new w
 2.4 found: disk-bound load (~130–250 MB/s), step-caching + SDPA are the clean compute wins, and
 several items are candle-Metal-kernel-blocked. Next:
 
-1. **candle 0.11 spike** *(asked)* — 0.11 is out (candle is pre-1.0, so not "stable"). The prize:
-   *if* it fixes the Metal quantized-matmul kernel, it **unblocks GGUF Flux on Metal + int8 T5** —
-   exactly what 2.4 couldn't reach. Bump on a branch, fix breaks, `plakat verify` all 7 families
-   (any regression = corr < 1.0), test the 3 blockers. Decide from data.
+1. **candle upgrade — DEFERRED until candle stabilizes** *(owner call)*. 0.11 is out but candle is
+   pre-1.0 (breaking changes), and the payoff (does it fix the Metal quant kernel → unblock GGUF
+   Flux + int8 T5?) is unconfirmed — not worth churning the dep yet. Stay on `0.10`. Revisit when a
+   candle release matures. Spike playbook preserved: bump → `plakat verify` all 7 families → test
+   the 3 blockers. **This is the gate for GGUF Flux on Metal + int8 T5** — both wait on it.
 2. **SD UNet SDPA** — the workhorses (SD1.5/2.1/SDXL). Parked in 2.4 because the SD generation UNet
    uses candle-registry attention → needs vendoring candle's SD attention (SDXL gets full head-dim-64
    coverage). ~1.2–1.5×/step like the DiTs.

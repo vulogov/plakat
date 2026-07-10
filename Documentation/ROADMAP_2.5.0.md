@@ -7,11 +7,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Candidate anchor items
 
-- [?] **candle 0.11 spike** — 0.11.0 is released (candle is pre-1.0). Bump on a throwaway branch,
-      fix the API breaks, run `plakat verify` across all 7 families (any kernel regression =
-      corr < 1.0), and test the three 2.4 blockers: **GGUF Flux on Metal**, a **quantized-matmul**
-      sanity check, and **DPM++ without the CpuHopScheduler**. If 0.11 fixes the Metal quant kernel,
-      migration unblocks GGUF Flux + int8 T5 — the biggest latent win. Decide from the data.
+- [⏸] **candle 0.11 spike — DEFERRED until candle stabilizes** (owner call, 2026-07-10). candle
+      is pre-1.0; 0.11 carries breaking changes and the payoff (does it fix the Metal quant kernel
+      → unblock GGUF Flux + int8 T5?) is unconfirmed. Not worth churning the dependency yet. Stay
+      on `0.10` (pinned). Revisit when a candle release reaches real stability (a matured 0.1x or
+      1.0). The spike playbook is preserved for then: bump → `plakat verify` all 7 families
+      (regression = corr < 1.0) → test the 3 blockers (GGUF-Flux-Metal / quant-matmul / DPM++
+      without the CpuHopScheduler).
 - [ ] **SD UNet SDPA** — bring the 2.4 attention win to the SD1.5/2.1/SDXL workhorses. Needs
       vendoring candle's `stable_diffusion` attention (+ the UNet blocks that call it) since it's
       registry code; SDXL gets full head-dim-64 coverage, SD1.5/2.1 partial. Verify-gated.
