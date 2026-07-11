@@ -884,7 +884,12 @@ impl SdUNet {
     ) -> Result<Tensor> {
         match self {
             SdUNet::Sd(u) => u.forward(xs, timestep, encoder_hidden_states),
-            SdUNet::SdOwn(u) => u.forward(xs, timestep, encoder_hidden_states),
+            SdUNet::SdOwn(u) => match (add_text_embeds, add_time_ids) {
+                (Some(te), Some(ti)) => {
+                    u.forward_sdxl(xs, timestep, encoder_hidden_states, te, ti)
+                }
+                _ => u.forward(xs, timestep, encoder_hidden_states),
+            },
             SdUNet::Sdxl(u) => {
                 let te = add_text_embeds.ok_or_else(|| {
                     candle_core::Error::Msg(
@@ -921,14 +926,26 @@ impl SdUNet {
                 down_block_additional_residuals,
                 mid_block_additional_residual,
             ),
-            SdUNet::SdOwn(u) => u.forward_with_additional_residuals(
-                xs,
-                timestep,
-                encoder_hidden_states,
-                down_block_additional_residuals,
-                mid_block_additional_residual,
-                None, // aug_emb: SD 1.5/2.1 has no add-embedding
-            ),
+            SdUNet::SdOwn(u) => match (add_text_embeds, add_time_ids) {
+                (Some(te), Some(ti)) => u.forward_sdxl_with_residuals(
+                    xs,
+                    timestep,
+                    encoder_hidden_states,
+                    te,
+                    ti,
+                    down_block_additional_residuals,
+                    mid_block_additional_residual,
+                ),
+                // SD 1.5/2.1: no add-embedding.
+                _ => u.forward_with_additional_residuals(
+                    xs,
+                    timestep,
+                    encoder_hidden_states,
+                    down_block_additional_residuals,
+                    mid_block_additional_residual,
+                    None,
+                ),
+            },
             SdUNet::Sdxl(u) => {
                 let te = add_text_embeds.ok_or_else(|| {
                     candle_core::Error::Msg(

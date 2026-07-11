@@ -389,6 +389,42 @@ impl UNet2DConditionModel {
         )
     }
 
+    /// SDXL denoise step **with ControlNet residuals** — computes the add-embedding like
+    /// `forward_sdxl`, then threads the residuals through. Used by `SdUNet::SdOwn` for SDXL+CN.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_sdxl_with_residuals(
+        &self,
+        xs: &Tensor,
+        timestep: f64,
+        encoder_hidden_states: &Tensor,
+        add_text_embeds: &Tensor,
+        add_time_ids: &Tensor,
+        down_block_additional_residuals: Option<&[Tensor]>,
+        mid_block_additional_residual: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        let atp = self.add_time_proj.as_ref().ok_or_else(|| {
+            candle_core::Error::Msg("forward_sdxl on a non-SDXL UNet (no add_embedding)".into())
+        })?;
+        let ae = self.add_embedding.as_ref().unwrap();
+        let addition_dim = self.add_cfg.as_ref().unwrap().addition_time_embed_dim;
+        let (b_a, n_ids) = add_time_ids.dims2()?;
+        let flat_ids = add_time_ids.reshape((b_a * n_ids,))?;
+        let time_ids_emb = atp.forward(&flat_ids)?.reshape((b_a, n_ids * addition_dim))?;
+        let add_in = Tensor::cat(
+            &[&add_text_embeds.to_dtype(time_ids_emb.dtype())?, &time_ids_emb],
+            candle_core::D::Minus1,
+        )?;
+        let aug_emb = ae.forward(&add_in)?;
+        self.forward_with_additional_residuals(
+            xs,
+            timestep,
+            encoder_hidden_states,
+            down_block_additional_residuals,
+            mid_block_additional_residual,
+            Some(&aug_emb),
+        )
+    }
+
     pub fn forward_with_additional_residuals(
         &self,
         xs: &Tensor,

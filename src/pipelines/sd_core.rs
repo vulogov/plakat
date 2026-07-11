@@ -503,14 +503,11 @@ impl SdCore {
         prof.mark("tokenizers+vae");
         let unet_in_channels = if is_inpaint { 9 } else { 4 };
         let unet = match variant {
-            // SD 1.5 / SD 2.1 — candle's stock UNet (no add_embedding).
-            // v2.6 (env-gated A/B): PLAKAT_OWN_UNET routes SD 1.5 through plakat's OWN
-            // SDPA-accelerated UNet (`sd_train::unet`) instead of candle's, to verify output
-            // equivalence (unet.out corr 1.0) before making it the default. SD 2.1 keeps candle's
-            // for now (its config differs; enable after 1.5 is proven).
-            SdVariant::Sd15
-                if std::env::var("PLAKAT_OWN_UNET").is_ok() =>
-            {
+            // v2.6: SD 1.5 defaults to plakat's OWN SDPA-accelerated UNet (`sd_train::unet`),
+            // verified output-equivalent to candle's (sd15.unet.out corr 1.00000). `PLAKAT_CANDLE_UNET=1`
+            // reverts to candle's. SD 2.1 stays on candle (its UNet config isn't wired for the own
+            // path yet).
+            SdVariant::Sd15 if std::env::var("PLAKAT_CANDLE_UNET").is_err() => {
                 let vs_unet = unsafe {
                     VarBuilder::from_mmaped_safetensors(
                         &[effective_unet_path.as_path()],
@@ -527,6 +524,7 @@ impl SdCore {
                     None,
                 )?)
             }
+            // SD 1.5 (escape hatch) / SD 2.1 — candle's stock UNet.
             SdVariant::Sd15 | SdVariant::Sd21 => SdUNet::Sd(
                 cfg.build_unet(
                     &effective_unet_path,
@@ -536,6 +534,25 @@ impl SdCore {
                     dtype,
                 )?,
             ),
+            // v2.6: SDXL defaults to plakat's OWN SDPA UNet (head_dim 64 → full SDPA coverage).
+            // `PLAKAT_CANDLE_UNET=1` reverts to candle's `SdxlUNet2DConditionModel`.
+            SdVariant::Sdxl if std::env::var("PLAKAT_CANDLE_UNET").is_err() => {
+                let vs_unet = unsafe {
+                    VarBuilder::from_mmaped_safetensors(
+                        &[effective_unet_path.as_path()],
+                        dtype,
+                        &req.device,
+                    )?
+                };
+                SdUNet::SdOwn(crate::pipelines::sd_train::unet::UNet2DConditionModel::new(
+                    vs_unet,
+                    unet_in_channels,
+                    4,
+                    false,
+                    crate::pipelines::controlnet::sdxl_unet_config(),
+                    Some(SdxlAddEmbedConfig::base()),
+                )?)
+            }
             // SDXL — vendored UNet with `text_time` add_embedding.
             // Reuses controlnet::sdxl_unet_config() so the SDXL UNet
             // shape stays defined in one place. AddEmbedConfig::base()
