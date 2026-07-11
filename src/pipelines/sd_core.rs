@@ -504,6 +504,29 @@ impl SdCore {
         let unet_in_channels = if is_inpaint { 9 } else { 4 };
         let unet = match variant {
             // SD 1.5 / SD 2.1 — candle's stock UNet (no add_embedding).
+            // v2.6 (env-gated A/B): PLAKAT_OWN_UNET routes SD 1.5 through plakat's OWN
+            // SDPA-accelerated UNet (`sd_train::unet`) instead of candle's, to verify output
+            // equivalence (unet.out corr 1.0) before making it the default. SD 2.1 keeps candle's
+            // for now (its config differs; enable after 1.5 is proven).
+            SdVariant::Sd15
+                if std::env::var("PLAKAT_OWN_UNET").is_ok() =>
+            {
+                let vs_unet = unsafe {
+                    VarBuilder::from_mmaped_safetensors(
+                        &[effective_unet_path.as_path()],
+                        dtype,
+                        &req.device,
+                    )?
+                };
+                SdUNet::SdOwn(crate::pipelines::sd_train::unet::UNet2DConditionModel::new(
+                    vs_unet,
+                    unet_in_channels,
+                    4,
+                    false,
+                    crate::pipelines::sd_train::trainer::sd15_unet_config(),
+                    None,
+                )?)
+            }
             SdVariant::Sd15 | SdVariant::Sd21 => SdUNet::Sd(
                 cfg.build_unet(
                     &effective_unet_path,

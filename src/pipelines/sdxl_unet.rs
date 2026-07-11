@@ -865,6 +865,10 @@ pub enum SdUNet {
     /// triggers an error so we fail loudly rather than silently
     /// run the model with broken micro-conditioning.
     Sdxl(SdxlUNet2DConditionModel),
+    /// v2.6: plakat's **own** SD UNet (`sd_train::unet`) — the SDPA-accelerated path. Selected for
+    /// SD 1.5 / 2.1 when `PLAKAT_OWN_UNET=1` (env-gated A/B against candle's `Sd` for
+    /// verify-equivalence; add_text_embeds/add_time_ids ignored, same as `Sd`).
+    SdOwn(crate::pipelines::sd_train::unet::UNet2DConditionModel),
 }
 
 impl SdUNet {
@@ -880,6 +884,7 @@ impl SdUNet {
     ) -> Result<Tensor> {
         match self {
             SdUNet::Sd(u) => u.forward(xs, timestep, encoder_hidden_states),
+            SdUNet::SdOwn(u) => u.forward(xs, timestep, encoder_hidden_states),
             SdUNet::Sdxl(u) => {
                 let te = add_text_embeds.ok_or_else(|| {
                     candle_core::Error::Msg(
@@ -915,6 +920,14 @@ impl SdUNet {
                 encoder_hidden_states,
                 down_block_additional_residuals,
                 mid_block_additional_residual,
+            ),
+            SdUNet::SdOwn(u) => u.forward_with_additional_residuals(
+                xs,
+                timestep,
+                encoder_hidden_states,
+                down_block_additional_residuals,
+                mid_block_additional_residual,
+                None, // aug_emb: SD 1.5/2.1 has no add-embedding
             ),
             SdUNet::Sdxl(u) => {
                 let te = add_text_embeds.ok_or_else(|| {
