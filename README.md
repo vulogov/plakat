@@ -17,39 +17,27 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.4.0 — faster on Apple Silicon, provably safe
+## What's new in 2.5.0 — the image-quality track opens, on the road to 3.0
 
-2.0–2.3 were about confidence (verify) and reach (library). 2.4.0 is a **performance pass** —
-measured, and *verified*: every speedup below is gated behind `plakat verify`, so **speed never
-costs correctness**. It's also honest — several avenues were tried, measured, and rejected (the
-roadmap keeps the negatives).
+2.4.0 was performance; 2.5.0 opens the **image-quality** track — and maps the road to the 3.x
+flagship (a **TUI photo/image collection manager**).
 
-**Step-caching** (`PLAKAT_STEP_CACHE=<thresh>`, opt-in). Consecutive transformer steps change
-little, so we reuse the cached model output while the change stays under threshold. On the
-DiT/MMDiT models: **PixArt ~1.37×, SD 3.5 ~1.92×** at thresh 0.10 — near-imperceptible
-(SSIM 0.999). (Stochastic samplers like Cascade don't benefit — documented.)
+**PAG — Perturbed-Attention Guidance** (opt-in, `PLAKAT_PAG_SCALE=<scale>`). An extra conditional
+forward with self-attention perturbed to identity, then the prediction is pushed *away* from that
+degenerate output → **sharper structure and coherence, with no new weights**. Landed for PixArt;
+default off (so it's verify-safe). SD 3.5 MMDiT + a `--pag-scale` flag are next.
 
-**Fused attention (SDPA).** plakat's transformer attention now uses candle's fused Metal SDPA
-kernel — **~16× faster than the old eager path on the kernel itself**, correct to ~1e-6:
-**PixArt self-attention ~1.52×/step, SD 3.5 MMDiT ~1.23×/step**. GPU-only (CPU keeps the exact
-path); escape hatch `PLAKAT_NO_SDPA=1`.
+**More fused SDPA.** The 2.4 attention speedup now also covers plakat's *own* SD attention path
+(used by `stylize` / `instantstyle`). Routing the SD 1.5 / 2.1 / SDXL main generation through it
+is the next step — which also decouples plakat further from candle's fast-moving internals.
 
-**Top-tier samplers on Metal, finally.** DPM++ 2M Karras and UniPC were *rejected* on Apple
-Silicon (they need F64, which candle's Metal backend lacks). They now run via a CPU-hop for the
-tiny per-step scheduler math — verified bit-accurate (SSIM 1.0). That means the community-standard
-samplers on Metal → good quality at **fewer steps**.
+**Planning.** The candle upgrade is **deferred until candle stabilizes** (it's pre-1.0), and the
+road to 3.0 is mapped across three tracks — quality, performance, stability — all feeding the
+collection-manager flagship. See [`Documentation/ROADMAP_TO_3.0.md`](Documentation/ROADMAP_TO_3.0.md).
 
-These **compound**: SD 3.5 with step-caching × SDPA × a DPM++ recipe is comfortably several ×
-faster than before — all opt-in or verify-safe.
+Nothing default changes — the new knobs are opt-in.
 
-**`plakat bench`.** A new subcommand times a real generation (load / per-step / VAE / peak-mem),
-`--json` for CI — the ruler the whole pass was built on.
-
-Also in 2.4.0 (see [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md)): 2.3.0
-made plakat a first-class **Rust library** (`plakat::api`, 14 builders) and brought Bund scripting
-to CLI parity.
-
-**Earlier releases** (v0.13 – 2.3):
+**Earlier releases** (v0.13 – 2.4):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

@@ -8,6 +8,27 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.4.0 — faster on Apple Silicon, provably safe
+
+2.0–2.3 were about confidence (verify) and reach (library). 2.4.0 is a **performance pass** —
+measured, and *verified*: every speedup below is gated behind `plakat verify`, so **speed never
+costs correctness**. It's also honest — several avenues were tried, measured, and rejected.
+
+**Step-caching** (`PLAKAT_STEP_CACHE=<thresh>`, opt-in). Reuse the cached model output while the
+step-to-step change stays under threshold. **PixArt ~1.37×, SD 3.5 ~1.92×** at thresh 0.10 —
+near-imperceptible (SSIM 0.999). (Stochastic samplers like Cascade don't benefit — documented.)
+
+**Fused attention (SDPA).** plakat's transformer attention uses candle's fused Metal SDPA kernel
+— **~16× faster than eager**, correct to ~1e-6: **PixArt ~1.52×/step, SD 3.5 MMDiT ~1.23×/step**.
+GPU-only; escape hatch `PLAKAT_NO_SDPA=1`.
+
+**Top-tier samplers on Metal.** DPM++ 2M Karras + UniPC were rejected on Apple Silicon (F64);
+they now run via a CPU-hop for the tiny per-step math — verified bit-accurate (SSIM 1.0) → the
+community-standard samplers on Metal, good quality at **fewer steps**.
+
+**`plakat bench`** — a new subcommand timing a real generation (load / per-step / VAE / peak-mem),
+`--json` for CI. These wins **compound**, all opt-in or verify-safe.
+
 ## What's new in 2.3.0 — plakat is now a Rust library
 
 The 2.x arc has been about confidence; 2.3.0 turns outward. plakat has always been a CLI (and a
