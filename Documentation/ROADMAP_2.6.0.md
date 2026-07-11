@@ -7,12 +7,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Carried from 2.5 (finish these first)
 
-- [~] **SD UNet SDPA — step 2 (the workhorses)** *(in progress next)*. Route main SD1.5/2.1/SDXL
-      generation through plakat's own `sd_train::unet` (which has the 2.5 SDPA attention) instead of
-      candle's `SdxlUNet2DConditionModel`. Signatures already match (`forward`/`forward_sdxl`);
-      touches the `SdUNet` enum + LoRA + ControlNet + motion + weight-load keys. **Verify-gated**:
-      switch → `plakat verify` → corr 1.0 confirms UNet equivalence (corr < 1.0 = mismatch to debug;
-      bail cleanly if so). Also decouples plakat from candle's churny surface.
+- [~] **SD UNet SDPA — step 2.** The hard question is **answered**: added env-gated
+      `SdUNet::SdOwn(sd_train::unet)` for SD 1.5, and **`sd15.unet.out` verifies corr 1.00000
+      (max_abs 3e-4) vs candle's golden** — plakat's own UNet is output-equivalent, so the switch
+      is *proven safe*. BUT the SD 1.5 SDPA speedup is **marginal (~2.5%, 708→690 ms/step)** —
+      SD 1.5's head dims are 40/80/160 (only 80 qualifies for the Metal SDPA kernel) and its UNet
+      is conv-dominated (attention is a small slice). → **Redirect: SDXL is the real SD-family
+      target** (head_dim 64 everywhere → full SDPA; more attention). Wire SDXL through
+      `sd_train::unet::forward_sdxl` (sdxl config + add-embeds), verify (`sdxl` unet.out corr 1.0),
+      bench. If SDXL wins like the DiTs (~1.2–1.5×), route SDXL through the own UNet; SD 1.5/2.1
+      stay on candle (the SDPA win isn't worth switching them). *Own-UNet also decouples from candle.*
 - [ ] **SD3 MMDiT PAG** + a **`--pag-scale` CLI flag** (promote PAG off the env knob).
 - [ ] **FreeU** + **CFG-rescale** / dynamic thresholding (finish free-quality guidance).
 
