@@ -279,6 +279,21 @@ pub async fn run_model(model: &str, golden_dir: Option<&Path>, device: &Device) 
         Ok(v) => v,
         Err(e) => return vec![Check::skip(name, 2, format!("render failed (weights?): {e:#}"))],
     };
+
+    // Authoring hook: `PLAKAT_VERIFY_AUTHOR_GOLDEN=<path>` freezes THIS exact rendered buffer as the
+    // new golden PNG (byte-identical to what the gate compares) and returns — used to re-author a
+    // stale regression snapshot after a deliberate, Tier-1-verified pipeline change. Run on
+    // CPU/eager for the most portable reference.
+    if let Ok(path) = std::env::var("PLAKAT_VERIFY_AUTHOR_GOLDEN") {
+        let res = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(rw, rh, rpix.clone())
+            .ok_or_else(|| anyhow::anyhow!("rendered buffer {}x{} won't fit an RGB image", rw, rh))
+            .and_then(|img| img.save(&path).map_err(anyhow::Error::from));
+        return match res {
+            Ok(()) => vec![Check::pass(name, 2, format!("authored golden → {path} ({rw}x{rh})"))],
+            Err(e) => vec![Check::fail(name, 2, format!("author failed: {e:#}"))],
+        };
+    }
+
     if (rw, rh) != (gw, gh) || rpix.len() != gpix.len() {
         return vec![Check::fail(
             name,
