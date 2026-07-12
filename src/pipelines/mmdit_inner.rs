@@ -1468,13 +1468,22 @@ impl MMDiTCore {
             }
             _ => 1,
         };
+        // PAG applied-layer set. Perturbing EVERY block's image self-attention to identity makes
+        // the degenerate prediction so far from the real one that any guidance scale blows up the
+        // latents (black frame + patch-grid). Diffusers' SD3 PAG restricts to a small subset; we
+        // default to the single middle joint block and allow `PLAKAT_PAG_LAYERS=8,12,16` to tune.
+        let pag_layers: Vec<usize> = if pag {
+            resolve_pag_layers(self.joint_blocks.len())
+        } else {
+            Vec::new()
+        };
         for (i, joint_block) in self.joint_blocks.iter().enumerate() {
             if let Some(skip_layers) = &skip_layers {
                 if skip_layers.contains(&i) {
                     continue;
                 }
             }
-            (context, x) = joint_block.forward(&context, &x, c, pag)?;
+            (context, x) = joint_block.forward(&context, &x, c, pag && pag_layers.contains(&i))?;
             if let Some(r) = residuals {
                 let idx = i / interval;
                 if idx < r.len() {
@@ -1482,8 +1491,28 @@ impl MMDiTCore {
                 }
             }
         }
-        let x = self.context_qkv_only_joint_block.forward(&context, &x, c, pag)?;
+        // Final (context-qkv-only) block index == joint_blocks.len(); perturb only if selected.
+        let final_idx = self.joint_blocks.len();
+        let x = self.context_qkv_only_joint_block.forward(
+            &context,
+            &x,
+            c,
+            pag && pag_layers.contains(&final_idx),
+        )?;
         self.final_layer.forward(&x, c)
+    }
+}
+
+/// PAG applied-layer indices for a model with `n_joint` joint blocks (the final context-qkv-only
+/// block is index `n_joint`). `PLAKAT_PAG_LAYERS` is a comma-separated override (e.g. `10,12,14`);
+/// otherwise defaults to the single middle joint block — the gentlest useful perturbation.
+fn resolve_pag_layers(n_joint: usize) -> Vec<usize> {
+    match std::env::var("PLAKAT_PAG_LAYERS") {
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| t.trim().parse::<usize>().ok())
+            .collect(),
+        Err(_) => vec![n_joint / 2],
     }
 }
 
