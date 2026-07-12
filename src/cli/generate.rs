@@ -113,6 +113,13 @@ pub struct GenerateArgs {
     #[arg(long = "decoder-guidance", default_value_t = 1.1)]
     pub decoder_guidance: f64,
 
+    /// Perturbed-Attention Guidance scale (0 = off). An extra conditional forward with
+    /// self-attention perturbed to identity sharpens structure/detail, especially at low CFG.
+    /// Try 2.0–3.0. Supported on SD3/3.5 (MMDiT) and PixArt-Σ; ignored on other models.
+    /// Sets `PLAKAT_PAG_SCALE` for the run.
+    #[arg(long = "pag-scale", default_value_t = 0.0)]
+    pub pag_scale: f64,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -747,6 +754,12 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // named local so it lives until run() returns.
     crate::hw::memory_preflight(&device, &args.model);
     let _mem_guard = crate::memwatch::MemoryGuard::start(&device, &args.model);
+
+    // Promote --pag-scale to the PLAKAT_PAG_SCALE env the SD3/PixArt pipelines read. Only when
+    // explicitly set (>0), so a pre-existing env still applies when the flag is left at default.
+    if args.pag_scale > 0.0 {
+        unsafe { std::env::set_var("PLAKAT_PAG_SCALE", args.pag_scale.to_string()) };
+    }
 
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
     // resolution (negative-preset combine, wildcards, enhance,

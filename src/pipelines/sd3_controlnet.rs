@@ -320,7 +320,7 @@ impl Sd3ControlNet {
         let mut residuals = Vec::with_capacity(self.joint_blocks.len());
         let (mut ctx, mut x) = (context, x);
         for (i, block) in self.joint_blocks.iter().enumerate() {
-            (ctx, x) = block.forward(&ctx, &x, &c)?;
+            (ctx, x) = block.forward(&ctx, &x, &c, false)?;
             let res = x.apply(&self.controlnet_blocks[i])?;
             residuals.push(res);
         }

@@ -775,7 +775,10 @@ fn modulate(x: &Tensor, shift: &Tensor, scale: &Tensor) -> Result<Tensor> {
 // `candle_nn::Linear` / `LayerNorm` etc which are already
 // Send + Sync; the trait just needed to advertise the bound.
 pub trait JointBlock: Send + Sync {
-    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)>;
+    /// `pag = true` perturbs the **image (x) stream** self-attention to identity (attention
+    /// output = V — the degenerate pass PAG guides away from). The context stream keeps its real
+    /// joint attention. Mirrors the PixArt DiT PAG perturbation.
+    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor, pag: bool) -> Result<(Tensor, Tensor)>;
 }
 
 pub struct MMDiTJointBlock {
@@ -807,11 +810,15 @@ impl MMDiTJointBlock {
 }
 
 impl JointBlock for MMDiTJointBlock {
-    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)> {
+    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor, pag: bool) -> Result<(Tensor, Tensor)> {
         let (context_qkv, context_interm) = self.context_block.pre_attention(context, c)?;
         let (x_qkv, x_interm) = self.x_block.pre_attention(x, c)?;
         let (context_attn, x_attn) =
             joint_attn(&context_qkv, &x_qkv, self.num_heads, self.use_flash_attn)?;
+        // PAG: replace the image self-attention output with its own V (attention matrix = I).
+        // `v` is 4D (b,seq,heads,head_dim) out of split_qkv → flatten heads back to (b,seq,hidden),
+        // the layout `attn()` returns and `post_attention`'s proj expects.
+        let x_attn = if pag { x_qkv.v.flatten_from(2)?.contiguous()? } else { x_attn };
         let context_out =
             self.context_block
                 .post_attention(&context_attn, context, &context_interm)?;
@@ -849,12 +856,18 @@ impl MMDiTXJointBlock {
 }
 
 impl JointBlock for MMDiTXJointBlock {
-    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)> {
+    fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor, pag: bool) -> Result<(Tensor, Tensor)> {
         let (context_qkv, context_interm) = self.context_block.pre_attention(context, c)?;
         let (x_qkv, x_qkv2, x_interm) = self.x_block.pre_attention(x, c)?;
         let (context_attn, x_attn) =
             joint_attn(&context_qkv, &x_qkv, self.num_heads, self.use_flash_attn)?;
         let x_attn2 = attn(&x_qkv2, self.num_heads, self.use_flash_attn)?;
+        // PAG: perturb BOTH the joint and the second (x-only) image self-attentions to identity.
+        let (x_attn, x_attn2) = if pag {
+            (x_qkv.v.flatten_from(2)?.contiguous()?, x_qkv2.v.flatten_from(2)?.contiguous()?)
+        } else {
+            (x_attn, x_attn2)
+        };
         let context_out =
             self.context_block
                 .post_attention(&context_attn, context, &context_interm)?;
@@ -893,10 +906,12 @@ impl ContextQkvOnlyJointBlock {
         })
     }
 
-    pub fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor) -> Result<Tensor> {
+    pub fn forward(&self, context: &Tensor, x: &Tensor, c: &Tensor, pag: bool) -> Result<Tensor> {
         let context_qkv = self.context_block.pre_attention(context, c)?;
         let (x_qkv, x_interm) = self.x_block.pre_attention(x, c)?;
         let (_, x_attn) = joint_attn(&context_qkv, &x_qkv, self.num_heads, self.use_flash_attn)?;
+        // PAG: perturb the image self-attention to identity (output = V, heads flattened).
+        let x_attn = if pag { x_qkv.v.flatten_from(2)?.contiguous()? } else { x_attn };
         self.x_block.post_attention(&x_attn, x, &x_interm)
     }
 }
@@ -1298,7 +1313,38 @@ impl MMDiT {
         let context = self.context_embedder.forward(context)?;
         let x = self
             .core
-            .forward_with_residuals(&context, &x, &c, skip_layers, residuals)?;
+            .forward_with_residuals(&context, &x, &c, skip_layers, residuals, false)?;
+        let x = self.unpatchifier.unpatchify(&x, h, w)?;
+        x.narrow(2, 0, h)?.narrow(3, 0, w)
+    }
+
+    /// As [`forward`](Self::forward), with **PAG**: `pag = true` perturbs every joint block's
+    /// image self-attention to identity, producing the degenerate prediction PAG guides away
+    /// from. The caller runs this once per step on the conditional inputs and combines the two
+    /// (`guided = cfg + pag·(cond − cond_perturbed)`). No ControlNet residuals on the PAG pass.
+    pub fn forward_pag(
+        &self,
+        x: &Tensor,
+        t: &Tensor,
+        y: &Tensor,
+        context: &Tensor,
+        skip_layers: Option<&[usize]>,
+        pag: bool,
+    ) -> Result<Tensor> {
+        let h = x.dim(D::Minus2)?;
+        let w = x.dim(D::Minus1)?;
+        let cropped_pos_embed = self.pos_embedder.get_cropped_pos_embed(h, w)?;
+        let x = self
+            .patch_embedder
+            .forward(x)?
+            .broadcast_add(&cropped_pos_embed)?;
+        let c = self.timestep_embedder.forward(t)?;
+        let y = self.vector_embedder.forward(y)?;
+        let c = (c + y)?;
+        let context = self.context_embedder.forward(context)?;
+        let x = self
+            .core
+            .forward_with_residuals(&context, &x, &c, skip_layers, None, pag)?;
         let x = self.unpatchifier.unpatchify(&x, h, w)?;
         x.narrow(2, 0, h)?.narrow(3, 0, w)
     }
@@ -1319,7 +1365,7 @@ impl MMDiT {
         let y = self.vector_embedder.forward(y)?;
         let c = (c + y)?;
         let context = self.context_embedder.forward(context)?;
-        let (_context, x) = self.core.joint_blocks[0].forward(&context, &x, &c)?;
+        let (_context, x) = self.core.joint_blocks[0].forward(&context, &x, &c, false)?;
         Ok(x)
     }
 }
@@ -1393,7 +1439,7 @@ impl MMDiTCore {
         c: &Tensor,
         skip_layers: Option<&[usize]>,
     ) -> Result<Tensor> {
-        self.forward_with_residuals(context, x, c, skip_layers, None)
+        self.forward_with_residuals(context, x, c, skip_layers, None, false)
     }
 
     /// v0.15 phase 6a: forward with optional per-block residuals on
@@ -1408,6 +1454,7 @@ impl MMDiTCore {
         c: &Tensor,
         skip_layers: Option<&[usize]>,
         residuals: Option<&[Tensor]>,
+        pag: bool,
     ) -> Result<Tensor> {
         let (mut context, mut x) = (context.clone(), x.clone());
         // Residual interleave. `ceil(blocks/residuals)` step — same
@@ -1427,7 +1474,7 @@ impl MMDiTCore {
                     continue;
                 }
             }
-            (context, x) = joint_block.forward(&context, &x, c)?;
+            (context, x) = joint_block.forward(&context, &x, c, pag)?;
             if let Some(r) = residuals {
                 let idx = i / interval;
                 if idx < r.len() {
@@ -1435,7 +1482,7 @@ impl MMDiTCore {
                 }
             }
         }
-        let x = self.context_qkv_only_joint_block.forward(&context, &x, c)?;
+        let x = self.context_qkv_only_joint_block.forward(&context, &x, c, pag)?;
         self.final_layer.forward(&x, c)
     }
 }

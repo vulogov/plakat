@@ -1386,7 +1386,28 @@ impl Pipeline {
             .forward_with_residuals(&x_doubled, &t_vec, cfg_y, cfg_ctx, None, residuals)?;
         let pred_neg = pred_doubled.i(0..1)?;
         let pred_pos = pred_doubled.i(1..2)?;
-        Ok((&pred_neg + ((pred_pos - &pred_neg)? * guidance)?)?)
+        let cfg_guided = (&pred_neg + ((&pred_pos - &pred_neg)? * guidance)?)?;
+
+        // PAG (Perturbed-Attention Guidance), opt-in via PLAKAT_PAG_SCALE=<scale> (set by the
+        // `--pag-scale` CLI flag). One extra forward on the conditional inputs with every joint
+        // block's image self-attention perturbed to identity; the prediction is pushed away from
+        // that degenerate output → sharper structure. 0 = off (exact CFG). No CN residuals on the
+        // PAG pass (it guides the base backbone).
+        let pag_scale: f64 = std::env::var("PLAKAT_PAG_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        if pag_scale > 0.0 {
+            let t_single = Tensor::full((t_curr * 1000.0) as f32, 1, &self.device)?;
+            let y_pos = cfg_y.i(1..2)?;
+            let ctx_pos = cfg_ctx.i(1..2)?;
+            let pred_pos_pert =
+                self.mmdit_model
+                    .forward_pag(x, &t_single, &y_pos, &ctx_pos, None, true)?;
+            Ok((cfg_guided + ((&pred_pos - &pred_pos_pert)? * pag_scale)?)?)
+        } else {
+            Ok(cfg_guided)
+        }
     }
 
     /// v0.15 phase 5: tiled MultiDiffusion-style post-CFG velocity
