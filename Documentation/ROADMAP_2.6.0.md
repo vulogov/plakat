@@ -39,8 +39,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       (b,seq,heads,head_dim) while q/k are flattened → the identity output must `flatten_from(2)` to
       match `attn()`'s (b,seq,hidden) layout. **Verified safe**: pag=false is byte-identical
       (`sd35-medium mmdit.block0` corr 1.00000, generation unchanged). pag=true correctness is
-      by-construction + mirrors the proven PixArt PAG; the live end-to-end PAG *image* on this box is
-      blocked by the sd35 T5-XXL OOM (ambient RAM), not the code — pending a low-memory moment.
+      by-construction + mirrors the proven PixArt PAG. **Live render caveat (f9d14e3):** a completed
+      PAG-on image showed all-blocks perturbation at scale 3.0 destabilises MMDiT (black + patch-grid)
+      — the joint stack is deeper/more fragile than PixArt's. Fixed by restricting PAG to a middle
+      layer subset (default single mid block, `PLAKAT_PAG_LAYERS` to tune), diffusers-aligned. SD3 PAG
+      is now **opt-in + EXPERIMENTAL** (default off; scale calibration still pending — can't iterate
+      sd35 renders on this box due to T5-XXL OOM). PixArt PAG unaffected.
 - [ ] **FreeU** + **CFG-rescale** / dynamic thresholding (finish free-quality guidance).
 
 ## 2.6 flavour — high-res & control quality
