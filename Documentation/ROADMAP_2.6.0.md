@@ -31,7 +31,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
             re-author — run it on CPU.
       - [ ] **Follow-up: exercise ControlNet + inpaint through the own UNet default** end-to-end
             (`forward_sdxl_with_residuals` / 9-ch inpaint conv_in) — wired but not yet run.
-- [ ] **SD3 MMDiT PAG** + a **`--pag-scale` CLI flag** (promote PAG off the env knob).
+- [x] **SD3 MMDiT PAG** + a **`--pag-scale` CLI flag** (2df27e7). PAG threaded through the
+      JointBlock trait / all 3 block types / MMDiTCore / new `MMDiT::forward_pag`; x-stream self-attn
+      perturbed to identity (output = V), context stream untouched. Applied at the
+      `predict_velocity_full` chokepoint. `--pag-scale <f>` promotes it off the raw env knob (sets
+      `PLAKAT_PAG_SCALE` → SD3 **and** PixArt honor it). Gotcha fixed: `split_qkv` leaves `v` 4D
+      (b,seq,heads,head_dim) while q/k are flattened → the identity output must `flatten_from(2)` to
+      match `attn()`'s (b,seq,hidden) layout. **Verified safe**: pag=false is byte-identical
+      (`sd35-medium mmdit.block0` corr 1.00000, generation unchanged). pag=true correctness is
+      by-construction + mirrors the proven PixArt PAG; the live end-to-end PAG *image* on this box is
+      blocked by the sd35 T5-XXL OOM (ambient RAM), not the code — pending a low-memory moment.
 - [ ] **FreeU** + **CFG-rescale** / dynamic thresholding (finish free-quality guidance).
 
 ## 2.6 flavour — high-res & control quality
