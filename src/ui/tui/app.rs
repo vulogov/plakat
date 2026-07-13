@@ -185,6 +185,12 @@ pub struct App {
     // default. Captured into and restored from named presets.
     steps_override: Option<usize>,
     guidance_override: Option<f64>,
+    // v2.7 free-quality guidance-bundle session overrides (`/pag`, `/rescale`, `/freeu`,
+    // `/dynthresh`). Applied by setting the env the pipelines read at dispatch time.
+    pag_override: Option<f64>,
+    rescale_override: Option<f64>,
+    freeu_override: bool,
+    dynthresh_override: Option<f64>,
     // Shared Output pane (messages + live progress, fed by the rerouted sink).
     pub output: OutputPane,
     progress_rx: Receiver<String>,
@@ -359,6 +365,10 @@ impl App {
             gen_sizes: std::collections::HashMap::new(),
             steps_override: None,
             guidance_override: None,
+            pag_override: None,
+            rescale_override: None,
+            freeu_override: false,
+            dynthresh_override: None,
             chat: ChatState::new(),
             models: ModelsState::new(),
             output: OutputPane::new(),
@@ -2626,6 +2636,55 @@ impl App {
             }
             return;
         }
+        // `/pag <x>` | `off` — Perturbed-Attention Guidance (SD 1.5/SDXL/PixArt/SD3). Sharper detail.
+        if let Some(rest) = text.strip_prefix("/pag") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("off") {
+                self.pag_override = None;
+                self.chat.push_system("pag → off".into());
+            } else if let Some(v) = arg.parse::<f64>().ok().filter(|v| (0.0..=10.0).contains(v)) {
+                self.pag_override = (v > 0.0).then_some(v);
+                self.chat.push_system(format!("pag → {v:.1} (try 2–3)"));
+            } else {
+                self.chat.push_system("pag must be 0–10 (or 'off')".into());
+            }
+            return;
+        }
+        // `/rescale <phi>` | `off` — CFG-rescale (curbs high-CFG over-exposure). ~0.7.
+        if let Some(rest) = text.strip_prefix("/rescale") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("off") {
+                self.rescale_override = None;
+                self.chat.push_system("rescale → off".into());
+            } else if let Some(v) = arg.parse::<f64>().ok().filter(|v| (0.0..=1.0).contains(v)) {
+                self.rescale_override = (v > 0.0).then_some(v);
+                self.chat.push_system(format!("rescale → {v:.2}"));
+            } else {
+                self.chat.push_system("rescale must be 0–1 (or 'off')".into());
+            }
+            return;
+        }
+        // `/freeu [on|off]` — FreeU up-block reweighting (richer detail/texture). SD 1.5/SDXL.
+        if let Some(rest) = text.strip_prefix("/freeu") {
+            let arg = rest.trim();
+            self.freeu_override = !(arg.eq_ignore_ascii_case("off") || arg == "0");
+            self.chat.push_system(format!("freeu → {}", if self.freeu_override { "on" } else { "off" }));
+            return;
+        }
+        // `/dynthresh <pctl>` | `off` — dynamic thresholding (epsilon SD). ~99.5.
+        if let Some(rest) = text.strip_prefix("/dynthresh") {
+            let arg = rest.trim();
+            if arg.is_empty() || arg.eq_ignore_ascii_case("off") {
+                self.dynthresh_override = None;
+                self.chat.push_system("dynthresh → off".into());
+            } else if let Some(v) = arg.parse::<f64>().ok().filter(|v| (0.0..=100.0).contains(v)) {
+                self.dynthresh_override = (v > 0.0).then_some(v);
+                self.chat.push_system(format!("dynthresh → {v:.1}"));
+            } else {
+                self.chat.push_system("dynthresh must be 0–100 (or 'off')".into());
+            }
+            return;
+        }
         // `/enhance <prompt>` AI-expands the prompt, then generates fresh.
         if let Some(rest) = text.strip_prefix("/enhance") {
             let p = rest.trim().to_string();
@@ -2820,6 +2879,20 @@ impl App {
             .unwrap_or((768, 768));
         let steps = self.steps_override.unwrap_or(self.workspace.config.default_steps);
         let guidance = self.guidance_override.unwrap_or(self.workspace.config.default_guidance);
+        // v2.7: apply the free-quality guidance-bundle session overrides to the process env the
+        // pipelines read (same mechanism as the `generate` CLI / scenarios). Cleared when off.
+        let apply_env = |key: &str, val: Option<f64>| match val {
+            Some(v) => unsafe { std::env::set_var(key, v.to_string()) },
+            None => unsafe { std::env::remove_var(key) },
+        };
+        apply_env("PLAKAT_PAG_SCALE", self.pag_override);
+        apply_env("PLAKAT_CFG_RESCALE", self.rescale_override);
+        apply_env("PLAKAT_DYNTHRESH", self.dynthresh_override);
+        if self.freeu_override {
+            unsafe { std::env::set_var("PLAKAT_FREEU", "1") };
+        } else {
+            unsafe { std::env::remove_var("PLAKAT_FREEU") };
+        }
         let preview_every = self.workspace.config.preview_every_n_steps;
         let out_dir = self.workspace.out_dir().join("chat");
         // Seed priority: an explicit `/seed` pin > the conversation's stable seed (so
@@ -2995,6 +3068,7 @@ impl App {
                 ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
                 ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
+                ("/pag X · /rescale φ · /freeu · /dynthresh P", "quality: PAG · CFG-rescale · FreeU · dyn-threshold"),
                 ("/new /seed /strength /negative /auto", "session commands"),
             ]),
             ActiveScreen::Models => ("Models", &[
