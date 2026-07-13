@@ -64,8 +64,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## 2.6 flavour — high-res & control quality
 
-- [ ] **ControlNet-Tile + diffusion tiled-upscale (SUPIR-lite)** — coherent 512→2K/4K with
-      hallucinated detail; the missing control kind.
+- [x] **ControlNet-Tile + diffusion tiled-upscale (SUPIR-lite)** (938a9d4) — `upscale --diffusion`.
+      Lanczos pre-upscale → tiled img2img refine, each tile conditioned by ControlNet-Tile on its own
+      blurry content → feathered overlap blend. New `ControlKind::Tile` (conditioning = the image
+      itself, no annotator) + `diffusion_upscale.rs` on `portrait::Pipeline` (own SD UNet default) via
+      `blend_latents_one` + per-tile `ControlRequest`. CLI: `--scale/--tile/--overlap/--tile-strength/
+      --cn-strength/--steps/--guidance/--prompt`. **Validated** forest 512→1024 (9 tiles): richer
+      bark/moss/leaf detail, no seams, structure-faithful. Gotcha: tile CN weights from
+      `takuma104/control_v11` (diffusers-safetensors mirror; lllyasviel ships only .bin).
 - [ ] **Face/detail restoration** (GFPGAN / CodeFormer) + better upscalers.
 - [ ] **Aesthetic scoring** (CLIP predictor → rank generations) — feeds the 3.0 manager's curation.
 
