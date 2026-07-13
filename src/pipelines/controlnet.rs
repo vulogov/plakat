@@ -814,14 +814,11 @@ fn candidates_for(
             ),
         ],
         (ControlKind::Tile, ControlNetVariant::Sd15) => vec![
-            // lllyasviel's ControlNet-Tile v1.1 — the canonical tile model for diffusion upscaling.
+            // lllyasviel's ControlNet-Tile v1.1. The canonical repo ships only a .bin; takuma104's
+            // mirror is the well-known DIFFUSERS-format safetensors (subfolder layout) plakat needs.
             (
-                "lllyasviel/control_v11f1e_sd15_tile",
-                "diffusion_pytorch_model.safetensors",
-            ),
-            (
-                "lllyasviel/control_v11f1e_sd15_tile",
-                "diffusion_pytorch_model.fp16.safetensors",
+                "takuma104/control_v11",
+                "control_v11f1e_sd15_tile/diffusion_pytorch_model.safetensors",
             ),
         ],
         (ControlKind::Tile, ControlNetVariant::Sdxl) => vec![

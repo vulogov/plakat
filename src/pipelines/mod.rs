@@ -23,6 +23,7 @@ pub mod tiled;
 pub mod extra_schedulers;
 pub mod guidance;
 pub mod fft;
+pub mod diffusion_upscale;
 pub mod hires_fix;
 pub mod img2img;
 pub mod animatediff;

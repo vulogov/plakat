@@ -1038,11 +1038,10 @@ impl Pipeline {
     }
 
     /// VAE-decode `latents` and save as PNG at `out_path`.
-    pub fn save_image(
-        &self,
-        latents: &Tensor,
-        out_path: &std::path::Path,
-    ) -> Result<()> {
+    /// VAE-decode `latents` to a packed RGB8 buffer `(bytes, width, height)` — the shared core of
+    /// [`Self::save_image`], reused by the tiled diffusion upscaler which blends decoded tiles in
+    /// pixel space before writing.
+    pub fn decode_to_rgb8(&self, latents: &Tensor) -> Result<(Vec<u8>, u32, u32)> {
         let vae_scale: f64 = self.core.variant.vae_scale();
         let image = self.core.vae.decode(&(latents / vae_scale)?)?;
         let image = ((image / 2.0)? + 0.5)?.clamp(0f32, 1f32)?;
@@ -1052,12 +1051,21 @@ impl Pipeline {
             .permute((1, 2, 0))?;
         let (oh, ow, _) = image.dims3()?;
         let buf = image.flatten_all()?.to_vec1::<u8>()?;
+        Ok((buf, ow as u32, oh as u32))
+    }
+
+    pub fn save_image(
+        &self,
+        latents: &Tensor,
+        out_path: &std::path::Path,
+    ) -> Result<()> {
+        let (buf, ow, oh) = self.decode_to_rgb8(latents)?;
         if let Some(parent) = out_path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        crate::imaging::io::save_rgb_u8(&buf, ow as u32, oh as u32, out_path)?;
+        crate::imaging::io::save_rgb_u8(&buf, ow, oh, out_path)?;
         crate::ui::progress::println(&format!("→ {}", out_path.display()));
         Ok(())
     }
