@@ -143,6 +143,11 @@ pub struct GenerateArgs {
     #[arg(long = "dynamic-threshold", default_value_t = 0.0)]
     pub dynamic_threshold: f64,
 
+    /// After a `--count N` batch, keep only the K aesthetically best outputs (LAION CLIP predictor,
+    /// same as `plakat rank`) and delete the rest. Only prunes files this run created.
+    #[arg(long = "keep-best", value_name = "K")]
+    pub keep_best: Option<usize>,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -762,7 +767,73 @@ pub struct GenerateArgs {
     pub preview_size: u32,
 }
 
-pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+/// Image files in `dir` (non-recursive) as a set — used to diff before/after a run so `--keep-best`
+/// only ever touches files this run created.
+fn image_snapshot(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
+    let exts = ["png", "jpg", "jpeg", "webp"];
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
+    let keep_best = args.keep_best;
+    let count = args.count;
+    let out_dir = args.out.clone();
+    // Snapshot the out-dir before generating so we can identify (and only prune) this run's outputs.
+    let before = keep_best.map(|_| image_snapshot(&out_dir));
+
+    run_inner(args, device.clone()).await?;
+
+    if let (Some(k), Some(before)) = (keep_best, before) {
+        if (k as u32) < count {
+            let new_files: Vec<PathBuf> =
+                image_snapshot(&out_dir).difference(&before).cloned().collect();
+            if new_files.len() > k {
+                keep_top_k(new_files, k, &device).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Score `files` with the aesthetic predictor, keep the top-`k`, delete the rest.
+async fn keep_top_k(files: Vec<PathBuf>, k: usize, device: &Device) -> Result<()> {
+    let scorer = crate::pipelines::aesthetic::AestheticScorer::load(device)
+        .await
+        .context("loading the aesthetic scorer for --keep-best")?;
+    let mut scored: Vec<(PathBuf, f32)> = Vec::with_capacity(files.len());
+    for f in &files {
+        let s = scorer.score_path(f).with_context(|| format!("scoring {}", f.display()))?;
+        scored.push((f.clone(), s));
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (rank, (path, score)) in scored.iter().enumerate() {
+        if rank < k {
+            crate::ui::progress::println(&format!("  keep  {:6.3}  {}", score, path.display()));
+        } else {
+            let _ = std::fs::remove_file(path);
+            // Also drop the PNG's metadata sidecar (`<file>.json`) so nothing is orphaned.
+            let sidecar = std::path::PathBuf::from(format!("{}.json", path.display()));
+            let _ = std::fs::remove_file(&sidecar);
+            crate::ui::progress::println(&format!("  drop  {:6.3}  {}", score, path.display()));
+        }
+    }
+    crate::ui::progress::println(&format!("--keep-best: kept {k} of {}", scored.len()));
+    Ok(())
+}
+
+async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
     // v0.33 phase 1: actionable hint when --model is a typo'd alias.
     // The check skips org/name shapes (those go through the HF
     // resolver's friendly_error path) and the recipe-load path
@@ -1793,6 +1864,7 @@ mod tests {
             freeu: false,
             freeu_params: None,
             dynamic_threshold: 0.0,
+            keep_best: None,
             negative: String::new(),
             negative_preset: None,
             seed: None,
