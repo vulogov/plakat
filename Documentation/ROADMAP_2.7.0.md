@@ -8,14 +8,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Tier 1 — core (highest leverage, feasible on the 24 GB dev box)
 
-- [~] **Aesthetic scoring + `--keep-best K` batch curation.** LAION aesthetic predictor v2 —
-      CLIP ViT-L/14 image embed (768-d, L2-normalised) → tiny MLP (768→1024→128→64→16→1, ~4 MB).
-      `plakat rank <dir>` scores+sorts; `generate --count N --keep-best K` generates N, keeps the
-      top-K, writes the score into the existing PNG metadata sidecar. **Load-bearing:** turns
-      "roll the dice N times, sift by hand" into "generate a batch, auto-keep the winners" — AND the
-      score is the first sort/filter key the 3.0 manager needs (manager plumbing in disguise). Needs a
-      CLIP ViT-L/14 **vision** tower (plakat's CLIP-L is the text encoder; IP-Adapter/Cascade have
-      image encoders to reuse or model after). **STARTING HERE.**
+- [x] **Aesthetic scoring + `--keep-best K` batch curation** (e44c975 / 77d2715). LAION aesthetic
+      predictor v2 — reused plakat's `ImageEncoder` (CLIP ViT-L/14 vision, openai/clip-vit-large-patch14)
+      → L2-normalised 768-d embed → MLP (768→1024→128→64→16→1, no activations), loaded straight from
+      LAION's `.pth` via candle's pickle reader (no upload/conversion). `plakat rank <paths>`
+      (`--top`, `--json`) + `generate --count N --keep-best K` (snapshot-diff so only this run's
+      outputs are pruned; PNG + `.json` sidecar). **Validated:** ranks coherent renders (6.0–6.25)
+      cleanly above degenerate ones (3.9–4.4); keep-best 2-of-4 kept the top two. First real slab of
+      the 3.0 manager's curation.
+      - [ ] Follow-up: write the score into the generation PNG metadata sidecar at gen time (persistent
+            sort key for the manager) — currently computed on-demand by `rank`/`--keep-best`.
 
 - [ ] **PAG for the SDXL / SD 1.5 own UNet** (`--pag-scale` reaches the workhorses). The 2.6
       own-UNet flip made `sd_train::unet`/`attention` the default and editable (that's how FreeU got
