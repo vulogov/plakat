@@ -137,6 +137,12 @@ pub struct GenerateArgs {
     #[arg(long = "freeu-params", value_name = "b1,b2,s1,s2")]
     pub freeu_params: Option<String>,
 
+    /// Dynamic thresholding percentile (0 = off, ~99.5 = Imagen default). Per-step, clamps the
+    /// predicted x0 to its per-sample percentile and rescales — curbs high-CFG saturation. Applies
+    /// to epsilon SD (1.5 / SDXL); ignored on v-pred (2.1) and non-SD. Sets `PLAKAT_DYNTHRESH`.
+    #[arg(long = "dynamic-threshold", default_value_t = 0.0)]
+    pub dynamic_threshold: f64,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -784,6 +790,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         unsafe { std::env::set_var("PLAKAT_FREEU", p) };
     } else if args.freeu {
         unsafe { std::env::set_var("PLAKAT_FREEU", "1") };
+    }
+    if args.dynamic_threshold > 0.0 {
+        unsafe { std::env::set_var("PLAKAT_DYNTHRESH", args.dynamic_threshold.to_string()) };
     }
 
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
@@ -1783,6 +1792,7 @@ mod tests {
             guidance_rescale: 0.0,
             freeu: false,
             freeu_params: None,
+            dynamic_threshold: 0.0,
             negative: String::new(),
             negative_preset: None,
             seed: None,

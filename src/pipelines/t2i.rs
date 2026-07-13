@@ -471,6 +471,11 @@ impl Variant {
     pub fn is_xl(self) -> bool {
         matches!(self, Self::Sdxl | Self::SdxlTurbo)
     }
+    /// SD 2.1 is v-prediction; the other SD-family variants (1.5 / SDXL) are epsilon. Gates
+    /// dynamic thresholding, whose x0 reconstruction assumes epsilon.
+    pub fn is_v_prediction(self) -> bool {
+        matches!(self, Self::Sd21)
+    }
     pub fn is_flux(self) -> bool {
         matches!(
             self,
@@ -1985,6 +1990,12 @@ impl Pipeline {
                 // Average: noise_pred_full = acc / weights (broadcast
                 // across the 4 channels).
                 let noise_pred = acc.broadcast_div(&weights)?;
+                let noise_pred = crate::pipelines::guidance::apply_dynamic_threshold(
+                    &noise_pred,
+                    &latents,
+                    timestep,
+                    !self.variant.is_v_prediction(),
+                )?;
                 latents = scheduler.step(&noise_pred, timestep, &latents)?;
 
                 bar.inc(1);
@@ -2159,6 +2170,12 @@ impl Pipeline {
                     acc.device().synchronize()?;
                 }
                 let noise_pred = acc.broadcast_div(&weights)?;
+                let noise_pred = crate::pipelines::guidance::apply_dynamic_threshold(
+                    &noise_pred,
+                    &latents,
+                    timestep,
+                    !self.variant.is_v_prediction(),
+                )?;
                 latents = scheduler.step(&noise_pred, timestep, &latents)?;
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
@@ -2254,6 +2271,12 @@ impl Pipeline {
         } else {
             noise_pred
         };
+        let noise_pred = crate::pipelines::guidance::apply_dynamic_threshold(
+            &noise_pred,
+            latents,
+            timestep,
+            !self.variant.is_v_prediction(),
+        )?;
         Ok(scheduler.step(&noise_pred, timestep, latents)?)
     }
 }

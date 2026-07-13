@@ -15,8 +15,10 @@
 //! `PLAKAT_CFG_RESCALE` env (set by the `--guidance-rescale` CLI flag), so every pipeline that
 //! routes its CFG blend through [`cfg_rescale`] honors one uniform knob — mirrors the PAG pattern.
 
+use std::sync::OnceLock;
+
 use anyhow::Result;
-use candle_core::Tensor;
+use candle_core::{DType, Device, Tensor};
 
 /// The active CFG-rescale factor `phi` from `PLAKAT_CFG_RESCALE` (0 = off, the default).
 pub fn cfg_rescale_phi() -> f64 {
@@ -73,6 +75,79 @@ pub fn cfg_rescale(cfg_pred: &Tensor, cond_pred: &Tensor) -> Result<Tensor> {
     Ok(((rescaled * phi)? + (cfg_pred * (1.0 - phi))?)?)
 }
 
+/// Dynamic-thresholding percentile from `PLAKAT_DYNTHRESH` (0 = off; ~99.5 = Imagen default).
+pub fn dynthresh_percentile() -> f64 {
+    std::env::var("PLAKAT_DYNTHRESH")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(0.0)
+}
+
+/// Standard SD ᾱ (alphas_cumprod) over 1000 train steps — scaled-linear betas
+/// `(0.00085 → 0.012)`, byte-matching candle's `DDIMSchedulerConfig` default. Computed once.
+fn sd_alphas_cumprod() -> &'static Vec<f64> {
+    static A: OnceLock<Vec<f64>> = OnceLock::new();
+    A.get_or_init(|| {
+        let (n, bs, be) = (1000usize, 0.00085f64, 0.012f64);
+        let mut acc = 1.0;
+        (0..n)
+            .map(|i| {
+                let f = i as f64 / (n - 1) as f64;
+                let beta = (bs.sqrt() + f * (be.sqrt() - bs.sqrt())).powi(2);
+                acc *= 1.0 - beta;
+                acc
+            })
+            .collect()
+    })
+}
+
+/// Imagen dynamic thresholding of a predicted `x0` sample: per batch sample, take `s =
+/// max(percentile(|x0|), 1.0)`, clamp `x0` to `[-s, s]`, and rescale by `1/s`. Compresses the
+/// dynamic range so high-CFG saturation is pulled back without a hard static clip. The percentile
+/// is computed on CPU (a cheap sort over the small latent) — the schedulers already run on CPU.
+fn dynamic_threshold_sample(x0: &Tensor, percentile: f64) -> Result<Tensor> {
+    let b = x0.dim(0)?;
+    let flat = x0.reshape((b, ()))?.abs()?.to_dtype(DType::F32)?.to_device(&Device::Cpu)?.to_vec2::<f32>()?;
+    let mut s_vals = Vec::with_capacity(b);
+    for row in &flat {
+        let mut v = row.clone();
+        v.sort_by(|a, c| a.partial_cmp(c).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = (((percentile / 100.0) * (v.len() - 1) as f64).round() as usize).min(v.len() - 1);
+        s_vals.push(v[idx].max(1.0));
+    }
+    let mut shape = vec![b];
+    shape.extend(std::iter::repeat(1).take(x0.rank() - 1));
+    let s = Tensor::from_vec(s_vals, shape, x0.device())?.to_dtype(x0.dtype())?;
+    let clamped = x0.broadcast_minimum(&s)?.broadcast_maximum(&s.neg()?)?;
+    Ok(clamped.broadcast_div(&s)?)
+}
+
+/// Dynamic-threshold an **epsilon** prediction: reconstruct `x0` from `(sample, noise_pred)` at
+/// `timestep` via the SD schedule, threshold it, and re-derive `epsilon`. No-op when the knob is
+/// off or `is_epsilon` is false (v-prediction / flow-matching aren't handled). `sample` is the raw
+/// latent `x_t` fed to `scheduler.step`.
+pub fn apply_dynamic_threshold(
+    noise_pred: &Tensor,
+    sample: &Tensor,
+    timestep: usize,
+    is_epsilon: bool,
+) -> Result<Tensor> {
+    let p = dynthresh_percentile();
+    if p <= 0.0 || !is_epsilon {
+        return Ok(noise_pred.clone());
+    }
+    let ac = sd_alphas_cumprod();
+    let abar = ac[timestep.min(ac.len() - 1)];
+    let sa = abar.sqrt();
+    let soma = (1.0 - abar).sqrt();
+    // x0 = (x_t − √(1−ᾱ)·ε) / √ᾱ
+    let x0 = ((sample - (noise_pred * soma)?)? / sa)?;
+    let x0 = dynamic_threshold_sample(&x0, p)?;
+    // ε' = (x_t − √ᾱ·x0) / √(1−ᾱ)
+    Ok(((sample - (x0 * sa)?)? / soma)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +176,32 @@ mod tests {
         let s_cond = std_over_features(&cond).unwrap().to_vec2::<f32>().unwrap()[0][0];
         unsafe { std::env::remove_var("PLAKAT_CFG_RESCALE") };
         assert!((s_out - s_cond).abs() < 1e-4, "out std {s_out} vs cond std {s_cond}");
+    }
+
+    #[test]
+    fn dynamic_threshold_compresses_outliers() {
+        // A bulk of small values plus one big outlier: percentile≈95 → s≈max(0.2,1)=1, so the
+        // outlier is clamped and the whole sample compressed to ≤1 in magnitude.
+        let d = Device::Cpu;
+        let mut data = vec![0.2f32; 63];
+        data.push(9.0);
+        let x0 = Tensor::from_vec(data, (1, 1, 8, 8), &d).unwrap();
+        let out = dynamic_threshold_sample(&x0, 95.0).unwrap();
+        let mx = out.abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert!(mx <= 1.0 + 1e-5, "outlier not clamped: max {mx}");
+    }
+
+    #[test]
+    fn dynthresh_off_and_non_epsilon_are_noops() {
+        let d = Device::Cpu;
+        let eps = Tensor::randn(0f32, 1.0, (1, 4, 8, 8), &d).unwrap();
+        let x_t = Tensor::randn(0f32, 1.0, (1, 4, 8, 8), &d).unwrap();
+        let unchanged = |o: Tensor| (o - &eps).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        unsafe { std::env::remove_var("PLAKAT_DYNTHRESH") };
+        assert_eq!(unchanged(apply_dynamic_threshold(&eps, &x_t, 500, true).unwrap()), 0.0);
+        unsafe { std::env::set_var("PLAKAT_DYNTHRESH", "99.5") };
+        // Guarded off for non-epsilon predictions.
+        assert_eq!(unchanged(apply_dynamic_threshold(&eps, &x_t, 500, false).unwrap()), 0.0);
+        unsafe { std::env::remove_var("PLAKAT_DYNTHRESH") };
     }
 }
