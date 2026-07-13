@@ -127,6 +127,16 @@ pub struct GenerateArgs {
     #[arg(long = "guidance-rescale", default_value_t = 0.0)]
     pub guidance_rescale: f64,
 
+    /// Enable FreeU: reweight the UNet up-blocks (boost backbone, Fourier-suppress skip low-freqs)
+    /// for better detail/texture at no extra cost. SD 1.5/2.1/SDXL (the own-UNet path). Defaults to
+    /// (b1,b2,s1,s2)=(1.2,1.4,0.9,0.2); override with `--freeu-params`.
+    #[arg(long = "freeu", default_value_t = false)]
+    pub freeu: bool,
+
+    /// FreeU factors as `b1,b2,s1,s2` (implies --freeu). SDXL wants `1.3,1.4,0.9,0.2`.
+    #[arg(long = "freeu-params", value_name = "b1,b2,s1,s2")]
+    pub freeu_params: Option<String>,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -769,6 +779,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     }
     if args.guidance_rescale > 0.0 {
         unsafe { std::env::set_var("PLAKAT_CFG_RESCALE", args.guidance_rescale.to_string()) };
+    }
+    if let Some(p) = &args.freeu_params {
+        unsafe { std::env::set_var("PLAKAT_FREEU", p) };
+    } else if args.freeu {
+        unsafe { std::env::set_var("PLAKAT_FREEU", "1") };
     }
 
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
@@ -1766,6 +1781,8 @@ mod tests {
             decoder_guidance: 1.1,
             pag_scale: 0.0,
             guidance_rescale: 0.0,
+            freeu: false,
+            freeu_params: None,
             negative: String::new(),
             negative_preset: None,
             seed: None,

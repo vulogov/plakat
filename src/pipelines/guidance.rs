@@ -27,6 +27,20 @@ pub fn cfg_rescale_phi() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// FreeU backbone/skip factors `(b1, b2, s1, s2)` when enabled, else `None`. Read from
+/// `PLAKAT_FREEU` (set by `--freeu` / `--freeu-params`): any value enables with the SD1.5 defaults
+/// `(1.2, 1.4, 0.9, 0.2)`; a 4-value CSV `b1,b2,s1,s2` overrides (SDXL wants `1.3,1.4,0.9,0.2`).
+/// `b*` boost the low-res backbone features; `s*` suppress the skip connections' low frequencies.
+pub fn freeu_params() -> Option<(f64, f64, f64, f64)> {
+    let v = std::env::var("PLAKAT_FREEU").ok()?;
+    let parts: Vec<f64> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    if parts.len() == 4 {
+        Some((parts[0], parts[1], parts[2], parts[3]))
+    } else {
+        Some((1.2, 1.4, 0.9, 0.2))
+    }
+}
+
 /// Per-sample standard deviation over every non-batch dim, shape `(b, 1)`.
 fn std_over_features(t: &Tensor) -> Result<Tensor> {
     let b = t.dim(0)?;

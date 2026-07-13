@@ -500,6 +500,9 @@ impl UNet2DConditionModel {
         // 5. up
         let mut xs = xs;
         let mut upsample_size = None;
+        // FreeU (opt-in): on the first two up-stages, boost the backbone's low-res features and
+        // Fourier-suppress the skip connections' low frequencies → better detail/texture, free.
+        let freeu = crate::pipelines::guidance::freeu_params();
         for (i, up_block) in self.up_blocks.iter().enumerate() {
             let n_resnets = match up_block {
                 UNetUpBlock::Basic(b) => b.resnets.len(),
@@ -510,11 +513,30 @@ impl UNet2DConditionModel {
                 let (_, _, h, w) = down_block_res_xs.last().unwrap().dims4()?;
                 upsample_size = Some((h, w))
             }
+            // Apply FreeU to up-stages 0 and 1 (the lowest-resolution, most-semantic blocks).
+            let (xs_fu, res_fu) = match freeu {
+                Some((b1, b2, s1, s2)) if i < 2 => {
+                    let (b, s) = if i == 0 { (b1, s1) } else { (b2, s2) };
+                    // Backbone: scale the first half of channels by b.
+                    let c = xs.dim(1)?;
+                    let half = c / 2;
+                    let boosted = (xs.narrow(1, 0, half)? * b)?;
+                    let rest = xs.narrow(1, half, c - half)?;
+                    let xs_fu = Tensor::cat(&[&boosted, &rest], 1)?;
+                    // Skip: Fourier low-pass suppression by s.
+                    let res_fu = res_xs
+                        .iter()
+                        .map(|r| crate::pipelines::fft::fourier_filter(r, 1, s))
+                        .collect::<Result<Vec<_>>>()?;
+                    (xs_fu, res_fu)
+                }
+                _ => (xs.clone(), res_xs),
+            };
             xs = match up_block {
-                UNetUpBlock::Basic(b) => b.forward(&xs, &res_xs, Some(&emb), upsample_size)?,
+                UNetUpBlock::Basic(b) => b.forward(&xs_fu, &res_fu, Some(&emb), upsample_size)?,
                 UNetUpBlock::CrossAttn(b) => b.forward(
-                    &xs,
-                    &res_xs,
+                    &xs_fu,
+                    &res_fu,
                     Some(&emb),
                     upsample_size,
                     Some(encoder_hidden_states),
