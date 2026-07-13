@@ -489,10 +489,20 @@ impl UNet2DConditionModel {
             };
         let mut down_block_res_xs = new_down_block_res_xs;
 
-        // 4. mid
-        let xs = self
+        // 4. mid — on the PAG-perturbed pass, bracket the mid block so its self-attention
+        // degenerates to identity (see `attention::set_pag_mid`). Only the mid block, not the whole
+        // net (all-blocks destabilises — the SD3 lesson).
+        let pag = crate::pipelines::sd_train::attention::pag_pass_active();
+        if pag {
+            crate::pipelines::sd_train::attention::set_pag_mid(true);
+        }
+        let mid_out = self
             .mid_block
-            .forward(&xs, Some(&emb), Some(encoder_hidden_states))?;
+            .forward(&xs, Some(&emb), Some(encoder_hidden_states));
+        if pag {
+            crate::pipelines::sd_train::attention::set_pag_mid(false);
+        }
+        let xs = mid_out?;
         let xs = match mid_block_additional_residual {
             None => xs,
             Some(m) => (m + xs)?,

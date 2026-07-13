@@ -125,6 +125,32 @@ pub struct IpInjection {
     tokens: Arc<RwLock<Option<Tensor>>>,
 }
 
+// PAG (Perturbed-Attention Guidance) for the own SD UNet. Two thread-locals (the denoise runs on one
+// synchronous thread): the denoise loop marks the perturbed forward pass with `set_pag_pass`, and the
+// UNet brackets ONLY the mid block with `set_pag_mid` — so self-attention there degenerates to
+// identity (output = V) while the rest of the network is untouched. Diffusers' SDXL-PAG default is
+// likewise the mid block; perturbing every block destabilises (the SD3 lesson).
+thread_local! {
+    static PAG_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PAG_MID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Denoise loop: mark (true) the extra conditional forward as the PAG-perturbed pass.
+pub fn set_pag_pass(on: bool) {
+    PAG_PASS.with(|f| f.set(on));
+}
+/// UNet: is the current forward the PAG-perturbed pass? (→ perturb the mid block).
+pub fn pag_pass_active() -> bool {
+    PAG_PASS.with(|f| f.get())
+}
+/// UNet: enable/disable the mid-block self-attention perturbation (bracket the mid-block forward).
+pub fn set_pag_mid(on: bool) {
+    PAG_MID.with(|f| f.set(on));
+}
+fn pag_mid_active() -> bool {
+    PAG_MID.with(|f| f.get())
+}
+
 #[derive(Debug)]
 pub struct CrossAttention {
     to_q: LoraLinear,
@@ -274,6 +300,10 @@ impl CrossAttention {
 
     pub fn forward(&self, xs: &Tensor, context: Option<&Tensor>) -> Result<Tensor> {
         let _enter = self.span.enter();
+        // PAG: on the perturbed pass, the mid block's SELF-attention (context = None) degenerates to
+        // identity — its output is just V, the degenerate prediction guidance pushes away from. Cross-
+        // attention (context = Some, the text conditioning) is never perturbed.
+        let pag_identity = context.is_none() && pag_mid_active();
         let query = self.to_q.forward(xs)?;
         let context = context.unwrap_or(xs).contiguous()?;
         let key = self.to_k.forward(&context)?;
@@ -289,9 +319,14 @@ impl CrossAttention {
                 Some(slice_size)
             }
         });
-        let mut xs = match slice_size {
-            None => self.attention(&query, &key, &value)?,
-            Some(slice_size) => self.sliced_attention(&query, &key, &value, slice_size)?,
+        let mut xs = if pag_identity {
+            // Attention matrix = I → output = V (reshaped back from the per-head batch layout).
+            self.reshape_batch_dim_to_heads(&value)?
+        } else {
+            match slice_size {
+                None => self.attention(&query, &key, &value)?,
+                Some(slice_size) => self.sliced_attention(&query, &key, &value, slice_size)?,
+            }
         };
         // InstantStyle: add the decoupled IP (style) attention — same query,
         // separate K/V over the style tokens — scaled and summed before `to_out`.

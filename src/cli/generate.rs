@@ -113,11 +113,11 @@ pub struct GenerateArgs {
     #[arg(long = "decoder-guidance", default_value_t = 1.1)]
     pub decoder_guidance: f64,
 
-    /// Perturbed-Attention Guidance scale (0 = off). An extra conditional forward with
-    /// self-attention perturbed to identity sharpens structure/detail, especially at low CFG.
-    /// PixArt-Σ: try 2.0–3.0 (calibrated). SD3/3.5 (MMDiT): EXPERIMENTAL — perturbs only the middle
-    /// joint block by default (tune with `PLAKAT_PAG_LAYERS=10,12,14`); start low (~1.0) and raise
-    /// carefully, high scales can destabilise. Ignored on other models. Sets `PLAKAT_PAG_SCALE`.
+    /// Perturbed-Attention Guidance scale (0 = off). An extra conditional forward with self-attention
+    /// perturbed to identity sharpens structure/detail, especially at low CFG. SD 1.5 / SDXL and
+    /// PixArt-Σ: try 2.0–3.0 (calibrated; SD perturbs the mid block via the own UNet). SD3/3.5 (MMDiT):
+    /// EXPERIMENTAL — mid joint block by default, tune `PLAKAT_PAG_LAYERS`, start low. Ignored on
+    /// candle-UNet (`PLAKAT_CANDLE_UNET=1`), SD 2.1 (v-pred), and other models. Sets `PLAKAT_PAG_SCALE`.
     #[arg(long = "pag-scale", default_value_t = 0.0)]
     pub pag_scale: f64,
 

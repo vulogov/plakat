@@ -2140,6 +2140,19 @@ impl Pipeline {
                 &format!("regional img {}/{}", idx + 1, req.count),
             );
 
+            // PAG (Perturbed-Attention Guidance) — opt-in via PLAKAT_PAG_SCALE / --pag-scale. Only on
+            // the own SD UNet (default for sd15/sdxl; the perturbation is a no-op on candle's UNet /
+            // v-pred sd21), and only under CFG. One extra conditional forward with the mid block's
+            // self-attention perturbed to identity → guided = cfg + pag·(cond − cond_perturbed).
+            let pag_scale: f64 = std::env::var("PLAKAT_PAG_SCALE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let pag_on = pag_scale > 0.0
+                && do_cfg
+                && std::env::var("PLAKAT_CANDLE_UNET").is_err()
+                && !self.variant.is_v_prediction();
+
             for &timestep in &timesteps {
                 // Scale the (CFG-batched) latent once — all prompts denoise the
                 // SAME latent, only the conditioning differs. Computed outside the
@@ -2161,7 +2174,26 @@ impl Pipeline {
                     if do_cfg {
                         let c = pred.chunk(2, 0)?;
                         let cfg = (&c[0] + ((&c[1] - &c[0])? * req.guidance)?)?;
-                        crate::pipelines::guidance::cfg_rescale(&cfg, &c[1])
+                        let cfg = crate::pipelines::guidance::cfg_rescale(&cfg, &c[1])?;
+                        if !pag_on {
+                            return Ok(cfg);
+                        }
+                        // Perturbed forward on the conditional half only (mid-block self-attn → I).
+                        let cond_latent = latent_in.narrow(0, 1, 1)?;
+                        let cond_emb = emb.narrow(0, 1, 1)?;
+                        let cond_pooled = pooled.as_ref().map(|p| p.narrow(0, 1, 1)).transpose()?;
+                        let cond_ati = add_time_ids.as_ref().map(|a| a.narrow(0, 1, 1)).transpose()?;
+                        crate::pipelines::sd_train::attention::set_pag_pass(true);
+                        let pert = self.core.unet.forward(
+                            &cond_latent,
+                            timestep as f64,
+                            &cond_emb,
+                            cond_pooled.as_ref(),
+                            cond_ati.as_ref(),
+                        );
+                        crate::pipelines::sd_train::attention::set_pag_pass(false);
+                        let pert = pert?;
+                        Ok((cfg + ((&c[1] - &pert)? * pag_scale)?)?)
                     } else {
                         Ok(pred)
                     }
