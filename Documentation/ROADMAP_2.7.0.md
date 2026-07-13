@@ -24,6 +24,21 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       PAG today is PixArt + SD3-experimental-uncalibratable-here; SDXL is the actual workhorse and
       doesn't OOM → finally calibratable on this hardware. Completes the PAG thread.
 
+## Feature-sync (coverage — no feature is real until it's reachable everywhere)
+
+- [ ] **Scenario-processing feature sync + gap audit.** Sweep every feature added recently (2.5/2.6:
+      the guidance bundle `--guidance-rescale`/`--freeu`/`--dynamic-threshold`, `--pag-scale`,
+      `upscale --diffusion` / ControlNet-Tile, `ControlKind::Tile`, the own-UNet knob) and confirm each
+      is expressible in the scenario HJSON + Tera pipeline. Audit `cli/scenario.rs` for gaps: which CLI
+      knobs have no scenario field, which pipeline task types are missing. Close them so a scenario can
+      drive the full toolchain, not a subset. **Load-bearing:** scenarios are how batches/pipelines are
+      authored; a feature that only exists on the `generate` CLI is invisible to production runs.
+- [ ] **`plakat ui` feature sync + gap audit.** Same sweep for the TUI: surface the new quality knobs
+      (guidance bundle, PAG) and the diffusion upscaler / restoration in the UI's generate + tools
+      panes, plus any 2.x features that never got UI (map, compose/segment, relight, style/embedding
+      train). Audit which subsystems the TUI can't reach. **Load-bearing:** the TUI is the 3.0
+      flagship's foundation — every gap now is a gap the collection manager inherits.
+
 ## Tier 2 — strong, bigger (pick one)
 
 - [ ] **Face/detail restoration (GFPGAN or CodeFormer).** SCRFD detect + ArcFace align (both already
