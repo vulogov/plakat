@@ -30,13 +30,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Feature-sync (coverage — no feature is real until it's reachable everywhere)
 
-- [ ] **Scenario-processing feature sync + gap audit.** Sweep every feature added recently (2.5/2.6:
-      the guidance bundle `--guidance-rescale`/`--freeu`/`--dynamic-threshold`, `--pag-scale`,
-      `upscale --diffusion` / ControlNet-Tile, `ControlKind::Tile`, the own-UNet knob) and confirm each
-      is expressible in the scenario HJSON + Tera pipeline. Audit `cli/scenario.rs` for gaps: which CLI
-      knobs have no scenario field, which pipeline task types are missing. Close them so a scenario can
-      drive the full toolchain, not a subset. **Load-bearing:** scenarios are how batches/pipelines are
-      authored; a feature that only exists on the `generate` CLI is invisible to production runs.
+- [~] **Scenario-processing feature sync + gap audit.** Audited `cli/scenario.rs` vs recent CLI knobs.
+      - [x] **Guidance bundle closed** (7b16bec) — scenario-global `pag-scale` / `guidance-rescale` /
+            `freeu`(+`freeu-params`) / `dynamic-threshold`, env-promoted after parse like the CLI.
+            Dry-run validated. Scenarios can now drive PAG + CFG-rescale + FreeU + dyn-threshold.
+      - [ ] **Remaining gaps:** `keep-best` (post-process — add a scenario-global that prunes each
+            task's outputs by aesthetic score); **diffusion-upscale as a task kind** (`ControlNet-Tile`
+            `upscale --diffusion` isn't a scenario task type yet); per-task guidance overrides (currently
+            scenario-global only).
 - [ ] **`plakat ui` feature sync + gap audit.** Same sweep for the TUI: surface the new quality knobs
       (guidance bundle, PAG) and the diffusion upscaler / restoration in the UI's generate + tools
       panes, plus any 2.x features that never got UI (map, compose/segment, relight, style/embedding
