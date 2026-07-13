@@ -45,7 +45,7 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       layer subset (default single mid block, `PLAKAT_PAG_LAYERS` to tune), diffusers-aligned. SD3 PAG
       is now **opt-in + EXPERIMENTAL** (default off; scale calibration still pending — can't iterate
       sd35 renders on this box due to T5-XXL OOM). PixArt PAG unaffected.
-- [~] **FreeU** + **CFG-rescale** / dynamic thresholding (free-quality guidance).
+- [x] **FreeU** + **CFG-rescale** / dynamic thresholding (free-quality guidance) — **BUNDLE COMPLETE**.
   - [x] **CFG-rescale** (648217e) — `--guidance-rescale <phi>` (0 = off, ~0.7 sweet spot). Shared
         `guidance::cfg_rescale` wired at every CFG blend in SD (t2i ×3) / PixArt / SD3; env-promoted
         `PLAKAT_CFG_RESCALE` like `--pag-scale`. **Validated** on SD1.5 @ guidance 14 (off = neon
@@ -56,8 +56,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
         first two up-stages). `--freeu` / `--freeu-params b1,b2,s1,s2` (env `PLAKAT_FREEU`). **Verified**
         off = byte-identical (sd15 unet.out corr 1.0); **validated** on SD1.5 — richer detail/texture/
         contrast vs baseline. Own-UNet-default (v2.6 flip) is what made the up-block hooks editable.
-  - [ ] **Dynamic thresholding** — scheduler-level x0 percentile clamp (no FFT). Optional; complements
-        CFG-rescale. Not yet done.
+  - [x] **Dynamic thresholding** (724bcc9) — Imagen x0 percentile clamp. candle exposes no x0/alphas,
+        so reconstruct x0 from (sample, ε) via the standard SD schedule (matches candle DDIM), threshold,
+        re-derive ε before `scheduler.step`. `--dynamic-threshold <pctl>` (env `PLAKAT_DYNTHRESH`).
+        Epsilon-SD only (sd15/sdxl; v-pred 2.1 + SD3 guarded out). Off = byte-identical (sd15 Tier-2
+        SSIM 1.0); validated on SD1.5 @ g14 (curbs the neon blow-out, recovers the subject).
 
 ## 2.6 flavour — high-res & control quality
 
