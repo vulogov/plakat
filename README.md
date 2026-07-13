@@ -17,27 +17,42 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.5.0 — the image-quality track opens, on the road to 3.0
+## What's new in 2.6.0 — image quality lands + the SD UNet goes native
 
-2.4.0 was performance; 2.5.0 opens the **image-quality** track — and maps the road to the 3.x
-flagship (a **TUI photo/image collection manager**).
+2.5.0 opened the image-quality track; **2.6.0 delivers it** — a full free-quality guidance bundle
+and diffusion upscaling, plus a quieter structural win: plakat's own SD UNet is now the default.
 
-**PAG — Perturbed-Attention Guidance** (opt-in, `PLAKAT_PAG_SCALE=<scale>`). An extra conditional
-forward with self-attention perturbed to identity, then the prediction is pushed *away* from that
-degenerate output → **sharper structure and coherence, with no new weights**. Landed for PixArt;
-default off (so it's verify-safe). SD 3.5 MMDiT + a `--pag-scale` flag are next.
+**Free-quality guidance bundle** — three training-free levers on the denoise, all opt-in and
+verify-safe (default off = byte-identical output):
 
-**More fused SDPA.** The 2.4 attention speedup now also covers plakat's *own* SD attention path
-(used by `stylize` / `instantstyle`). Routing the SD 1.5 / 2.1 / SDXL main generation through it
-is the next step — which also decouples plakat further from candle's fast-moving internals.
+* **CFG-rescale** (`--guidance-rescale <phi>`, ~0.7) — rescales the guided prediction back toward
+  the conditional's statistics, curing high-`--guidance` over-exposure and colour wash-out.
+  SD 1.5 / SDXL / PixArt / SD3.
+* **FreeU** (`--freeu`) — reweights the UNet up-blocks (backbone boost + Fourier low-pass on the
+  skip connections) for richer detail and texture at no extra cost. Ships a from-scratch 2D DFT
+  (candle has no FFT), so it works at any resolution.
+* **Dynamic thresholding** (`--dynamic-threshold <pctl>`, ~99.5) — Imagen-style x0 percentile
+  clamp; a second, stronger lever on high-CFG saturation. Epsilon SD (1.5 / SDXL).
 
-**Planning.** The candle upgrade is **deferred until candle stabilizes** (it's pre-1.0), and the
-road to 3.0 is mapped across three tracks — quality, performance, stability — all feeding the
-collection-manager flagship. See [`Documentation/ROADMAP_TO_3.0.md`](Documentation/ROADMAP_TO_3.0.md).
+**ControlNet-Tile diffusion upscaling** (`plakat upscale --diffusion --scale N`) — coherent
+512 → 2K/4K with *hallucinated* detail (SUPIR-lite): pre-upscale, then a tiled img2img refine where
+each tile is guided by ControlNet-Tile to stay faithful to its structure while adding detail, blended
+seamlessly with a feathered overlap.
 
-Nothing default changes — the new knobs are opt-in.
+**SD 3.5 MMDiT PAG** + a **`--pag-scale`** flag. Perturbed-Attention Guidance now covers SD 3.5's
+MMDiT (experimental, layer-restricted) alongside PixArt, promoted off the raw env knob to a proper
+CLI flag that both honour.
 
-**Earlier releases** (v0.13 – 2.4):
+**The SD UNet goes native.** SD 1.5 + SDXL main generation now runs plakat's *own* SDPA UNet by
+default (it was candle's) — proven output-equivalent (`unet.out` corr 1.0 vs the diffusers golden),
+a modest Metal speedup, and crucially **decoupled from candle's fast-moving internals**. ControlNet
+and inpaint paths are verified through it. `PLAKAT_CANDLE_UNET=1` reverts.
+
+Nothing default changes for image output — the own-UNet flip is verified byte-identical, and every
+new quality knob is opt-in. On the [road to 3.0](Documentation/ROADMAP_TO_3.0.md) (the 3.x flagship:
+a TUI photo/image collection manager).
+
+**Earlier releases** (v0.13 – 2.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

@@ -8,6 +8,26 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.5.0 — the image-quality track opens, on the road to 3.0
+
+2.4.0 was performance; 2.5.0 opens the **image-quality** track — and maps the road to the 3.x
+flagship (a **TUI photo/image collection manager**).
+
+**PAG — Perturbed-Attention Guidance** (opt-in, `PLAKAT_PAG_SCALE=<scale>`). An extra conditional
+forward with self-attention perturbed to identity, then the prediction is pushed *away* from that
+degenerate output → **sharper structure and coherence, with no new weights**. Landed for PixArt;
+default off (so it's verify-safe). SD 3.5 MMDiT + a `--pag-scale` flag are next.
+
+**More fused SDPA.** The 2.4 attention speedup now also covers plakat's *own* SD attention path
+(used by `stylize` / `instantstyle`). Routing the SD 1.5 / 2.1 / SDXL main generation through it
+is the next step — which also decouples plakat further from candle's fast-moving internals.
+
+**Planning.** The candle upgrade is **deferred until candle stabilizes** (it's pre-1.0), and the
+road to 3.0 is mapped across three tracks — quality, performance, stability — all feeding the
+collection-manager flagship.
+
+Nothing default changes — the new knobs are opt-in.
+
 ## What's new in 2.4.0 — faster on Apple Silicon, provably safe
 
 2.0–2.3 were about confidence (verify) and reach (library). 2.4.0 is a **performance pass** —
