@@ -34,6 +34,7 @@ pub mod style;
 pub mod stylize;
 pub mod transparent;
 pub mod upscale;
+pub mod rank;
 
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
@@ -95,6 +96,9 @@ pub enum Command {
     Segment(segment::SegmentArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
+    /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
+    /// best first. Feeds `generate --keep-best` and the collection manager's curation.
+    Rank(rank::RankArgs),
     /// Batch-generate images from an HJSON scenario file.
     Scenario(scenario::ScenarioArgs),
     /// Compose a layered scene from an HJSON file: stack image layers
@@ -216,6 +220,7 @@ impl Command {
                 | Command::Multiperson(_)
                 | Command::Segment(_)
                 | Command::Upscale(_)
+                | Command::Rank(_)
                 | Command::Scenario(_)
                 | Command::Compose(_)
                 | Command::Animate(_)
@@ -270,6 +275,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;
             upscale::run(args, device).await
+        }
+        Command::Rank(args) => {
+            let device = crate::device::select(&cli.device)?;
+            rank::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
