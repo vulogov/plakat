@@ -45,7 +45,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       layer subset (default single mid block, `PLAKAT_PAG_LAYERS` to tune), diffusers-aligned. SD3 PAG
       is now **opt-in + EXPERIMENTAL** (default off; scale calibration still pending — can't iterate
       sd35 renders on this box due to T5-XXL OOM). PixArt PAG unaffected.
-- [ ] **FreeU** + **CFG-rescale** / dynamic thresholding (finish free-quality guidance).
+- [~] **FreeU** + **CFG-rescale** / dynamic thresholding (free-quality guidance).
+  - [x] **CFG-rescale** (648217e) — `--guidance-rescale <phi>` (0 = off, ~0.7 sweet spot). Shared
+        `guidance::cfg_rescale` wired at every CFG blend in SD (t2i ×3) / PixArt / SD3; env-promoted
+        `PLAKAT_CFG_RESCALE` like `--pag-scale`. **Validated** on SD1.5 @ guidance 14 (off = neon
+        blow-out + banding + clipped subject; 0.7 = natural exposure, complete portrait). phi=0 no-op.
+  - [⏸] **FreeU** — canonical FreeU needs **FFT** on the skip connections, and **candle has no FFT**.
+        Only the FFT-free "FreeU-S" backbone-scaling variant is directly feasible (weaker). The own SD
+        UNet is now the default (v2.6 flip) so the up-block hooks ARE editable — but the skip-spectrum
+        filter isn't. Options: implement a small FFT, ship FreeU-S only, or defer. DEFERRED pending a
+        decision.
+  - [ ] **Dynamic thresholding** — scheduler-level x0 percentile clamp (no FFT). Not yet done.
 
 ## 2.6 flavour — high-res & control quality
 
