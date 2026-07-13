@@ -1,31 +1,51 @@
 # plakat 2.7.0 — roadmap (planning)
 
-On the [road to 3.0](ROADMAP_TO_3.0.md). Theme: **finish the image-quality track and start feeding the
-3.x flagship** (a TUI photo/image collection manager). 2.6 delivered the guidance bundle + diffusion
-upscaling + the own-UNet flip; 2.7 adds restoration/curation and begins the manager plumbing. Scope
-with the user.
+On the [road to 3.0](ROADMAP_TO_3.0.md). **Theme: "curate & finish"** — the pieces that turn raw
+generation into a *keepable* collection, bridging 2.6's quality work into 3.0's collection manager.
+Filtered hard for load-bearing (fixes a real gap or compounds toward 3.0) over nice-to-have.
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
-## Carried from 2.6
+## Tier 1 — core (highest leverage, feasible on the 24 GB dev box)
 
-- [ ] **Face/detail restoration** (GFPGAN / CodeFormer) + better upscalers. Pairs naturally with the
-      new `upscale --diffusion` (restore faces after a diffusion upscale). Detail-restoration nets are
-      GAN-based (RRDBNet-adjacent) — reuse the ESRGAN loader pattern.
-- [ ] **Aesthetic scoring** (CLIP + a small MLP predictor → rank generations). Feeds the 3.0 manager's
-      curation directly, so it doubles as the first piece of manager plumbing. Opt-in `--rank` /
-      `plakat rank` over a batch; writes scores to the PNG metadata sidecar.
-- [⏸] **SD3 MMDiT PAG — scale calibration.** The mechanics shipped in 2.6 (opt-in, experimental,
-      layer-restricted); calibrating a good default `--pag-scale` / `PLAKAT_PAG_LAYERS` needs iterating
-      sd35 renders, which the dev box can't hold (T5-XXL OOM). Do on a higher-memory machine or defer.
+- [~] **Aesthetic scoring + `--keep-best K` batch curation.** LAION aesthetic predictor v2 —
+      CLIP ViT-L/14 image embed (768-d, L2-normalised) → tiny MLP (768→1024→128→64→16→1, ~4 MB).
+      `plakat rank <dir>` scores+sorts; `generate --count N --keep-best K` generates N, keeps the
+      top-K, writes the score into the existing PNG metadata sidecar. **Load-bearing:** turns
+      "roll the dice N times, sift by hand" into "generate a batch, auto-keep the winners" — AND the
+      score is the first sort/filter key the 3.0 manager needs (manager plumbing in disguise). Needs a
+      CLIP ViT-L/14 **vision** tower (plakat's CLIP-L is the text encoder; IP-Adapter/Cascade have
+      image encoders to reuse or model after). **STARTING HERE.**
 
-## 2.7 flavour — curation + the road to 3.0
+- [ ] **PAG for the SDXL / SD 1.5 own UNet** (`--pag-scale` reaches the workhorses). The 2.6
+      own-UNet flip made `sd_train::unet`/`attention` the default and editable (that's how FreeU got
+      in). Add the identity-attention perturbation to a mid block's self-attention, layer-restricted
+      (SD3 lesson), through the existing `--pag-scale` / `PLAKAT_PAG_SCALE` plumbing. **Load-bearing:**
+      PAG today is PixArt + SD3-experimental-uncalibratable-here; SDXL is the actual workhorse and
+      doesn't OOM → finally calibratable on this hardware. Completes the PAG thread.
 
-- [ ] **Manager plumbing (first slice).** Aesthetic scores + existing History semantic search + the
-      metadata sidecars are the raw material for the 3.x collection manager. Start shaping the index
-      (what a "collection" is, how scores/tags/prompts are stored) — see ROADMAP_TO_3.0.md.
-- [ ] Candidate quality items (pick with the user): PAG-for-SDXL-UNet (own UNet makes it editable),
-      Kandinsky/Sana support, LCM/Turbo distillation polish, tiled ControlNet-Tile at 4K.
+## Tier 2 — strong, bigger (pick one)
+
+- [ ] **Face/detail restoration (GFPGAN or CodeFormer).** SCRFD detect + ArcFace align (both already
+      in plakat) → restore → paste back. Pairs with `upscale --diffusion` + `multiperson`.
+      **Load-bearing:** plakat invests in portraits/faceswap; generated/swapped/upscaled faces
+      routinely degrade — the standard finishing step is missing. **High effort** (GAN or
+      VQ-transformer port + weights); GFPGAN likely simpler than CodeFormer.
+- [ ] **sd35 T5-XXL memory relief.** Encode the T5-XXL prompt then free it before the MMDiT denoise
+      (or encode on CPU), so ~10 GB of T5 isn't co-resident with MMDiT+VAE on 24 GB Metal.
+      **Load-bearing:** the sd35 OOM blocked PAG calibration all of the 2.6 cycle and makes SD3.5
+      unusable on 24 GB-class Macs — unblocks a whole model family. Medium–high effort.
+
+## Tier 3 — stability (fold in as you go; the verify DNA)
+
+- [ ] **Regression taps for the 2.6 quality features.** A **T5-free MMDiT-PAG structural tap**
+      (finally exercises `forward_pag` on real weights — the check the sd35 OOM blocked) + FreeU /
+      CFG-rescale determinism taps. Locks 2.6 in. Low effort.
+
+## Explicitly excluded (nice-to-have, not load-bearing now)
+
+New base models (Kandinsky/Sana) for reach's sake · more schedulers · cosmetic PAG-FreeU combos ·
+a full manager UI (that's 3.0, not 2.7).
 
 ## House-keeping
 
