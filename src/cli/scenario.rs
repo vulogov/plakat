@@ -4426,6 +4426,9 @@ pub async fn run_with_events(
                                 CK::SoftEdge => 1u32,
                                 CK::OpenPose => 2u32,
                                 CK::Depth => 3u32,
+                                CK::Tile => anyhow::bail!(
+                                    "Tile ControlNet is not supported on Flux (SD 1.5/SDXL only)"
+                                ),
                             });
                             let scale = cspec.strength.unwrap_or(1.0);
                             let start = cspec.start.unwrap_or(0.0);

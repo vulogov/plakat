@@ -581,6 +581,8 @@ pub(crate) fn flux_controlnet_load_for(
         // close-enough results via the canny channel (canny is
         // strict edge detection; lineart is softer pen-style).
         ControlKind::Lineart => Some(0u32),
+        // Tile is an SD 1.5 / SDXL upscaling control; no Flux equivalent.
+        ControlKind::Tile => anyhow::bail!("Tile ControlNet is not supported on Flux (SD 1.5/SDXL only)"),
     };
     Ok(flux::FluxControlNetLoad {
         repo: union_pro_v2_repo.to_string(),
@@ -646,6 +648,9 @@ pub(crate) fn sd3_controlnet_load_for(
                          pose conditioning, or switch to Canny / Depth / SoftEdge."
                     )
                 }
+                ControlKind::Tile => {
+                    anyhow::bail!("Tile ControlNet is SD 1.5/SDXL-only (see `plakat upscale --diffusion`)")
+                }
             };
             (repo, Config::instantx_sd35_large())
         }
@@ -663,6 +668,9 @@ pub(crate) fn sd3_controlnet_load_for(
                 // softedge input gives a usable structure pull.
                 ControlKind::SoftEdge => "InstantX/SD3-Controlnet-Canny",
                 ControlKind::OpenPose => "InstantX/SD3-Controlnet-Pose",
+                ControlKind::Tile => {
+                    anyhow::bail!("Tile ControlNet is SD 1.5/SDXL-only (see `plakat upscale --diffusion`)")
+                }
                 ControlKind::Depth => {
                     anyhow::bail!(
                         "SD3 / SD3.5-Medium InstantX ControlNet family doesn't \

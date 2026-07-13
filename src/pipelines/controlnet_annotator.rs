@@ -59,6 +59,11 @@ pub async fn annotate(
         ControlKind::SoftEdge => annotate_softedge(src_path, out_w, out_h, device, dtype).await,
         ControlKind::Lineart => annotate_lineart(src_path, out_w, out_h, device, dtype).await,
         ControlKind::OpenPose => annotate_openpose(src_path, out_w, out_h, device, dtype).await,
+        // Tile: the conditioning hint IS the (blurry) image — no annotator, just the identity
+        // resize `prepare_conditioning` performs.
+        ControlKind::Tile => {
+            crate::pipelines::controlnet::prepare_conditioning(src_path, out_w, out_h, device, dtype)
+        }
     }
 }
 

@@ -813,6 +813,24 @@ fn candidates_for(
                 "diffusion_pytorch_model.safetensors",
             ),
         ],
+        (ControlKind::Tile, ControlNetVariant::Sd15) => vec![
+            // lllyasviel's ControlNet-Tile v1.1 — the canonical tile model for diffusion upscaling.
+            (
+                "lllyasviel/control_v11f1e_sd15_tile",
+                "diffusion_pytorch_model.safetensors",
+            ),
+            (
+                "lllyasviel/control_v11f1e_sd15_tile",
+                "diffusion_pytorch_model.fp16.safetensors",
+            ),
+        ],
+        (ControlKind::Tile, ControlNetVariant::Sdxl) => vec![
+            // xinsir's SDXL tile ControlNet (community; the widely-used SDXL analog).
+            (
+                "xinsir/controlnet-tile-sdxl-1.0",
+                "diffusion_pytorch_model.safetensors",
+            ),
+        ],
     }
 }
 
@@ -1218,6 +1236,10 @@ pub enum ControlKind {
     /// `ControlNetHED.pth` (VGG-16 + side outputs + fuse layer).
     /// Pairs with `control_v11p_sd15_softedge` / SDXL equivalents.
     SoftEdge,
+    /// Tile conditioning: the (blurry/low-res) image itself is the hint — no annotator. Pairs with
+    /// `control_v11f1e_sd15_tile`. The backbone of ControlNet-Tile diffusion upscaling: it lets a
+    /// tiled img2img pass hallucinate detail while staying faithful to each tile's structure.
+    Tile,
 }
 
 impl ControlKind {
@@ -1228,6 +1250,7 @@ impl ControlKind {
             Self::OpenPose => "openpose",
             Self::Lineart => "lineart",
             Self::SoftEdge => "softedge",
+            Self::Tile => "tile",
         }
     }
 }
@@ -1241,9 +1264,10 @@ impl std::str::FromStr for ControlKind {
             "openpose" | "pose" => Ok(Self::OpenPose),
             "lineart" => Ok(Self::Lineart),
             "softedge" | "hed" => Ok(Self::SoftEdge),
+            "tile" => Ok(Self::Tile),
             other => anyhow::bail!(
                 "unknown control kind {other:?} \
-                 (v0.11 supports: depth, canny, openpose, lineart, softedge)"
+                 (supports: depth, canny, openpose, lineart, softedge, tile)"
             ),
         }
     }
