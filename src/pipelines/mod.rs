@@ -21,6 +21,7 @@ pub mod vendored_clip;
 pub mod vendored_t5;
 pub mod tiled;
 pub mod extra_schedulers;
+pub mod guidance;
 pub mod hires_fix;
 pub mod img2img;
 pub mod animatediff;

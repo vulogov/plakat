@@ -1948,7 +1948,8 @@ impl Pipeline {
                         let chunks = tile_noise_pred.chunk(2, 0)?;
                         let uncond = &chunks[0];
                         let text = &chunks[1];
-                        (uncond + ((text - uncond)? * req.guidance)?)?
+                        let cfg = (uncond + ((text - uncond)? * req.guidance)?)?;
+                        crate::pipelines::guidance::cfg_rescale(&cfg, text)?
                     } else {
                         tile_noise_pred
                     };
@@ -2140,7 +2141,8 @@ impl Pipeline {
                     )?;
                     if do_cfg {
                         let c = pred.chunk(2, 0)?;
-                        Ok((&c[0] + ((&c[1] - &c[0])? * req.guidance)?)?)
+                        let cfg = (&c[0] + ((&c[1] - &c[0])? * req.guidance)?)?;
+                        crate::pipelines::guidance::cfg_rescale(&cfg, &c[1])
                     } else {
                         Ok(pred)
                     }
@@ -2247,7 +2249,8 @@ impl Pipeline {
             let chunks = noise_pred.chunk(2, 0)?;
             let uncond = &chunks[0];
             let text = &chunks[1];
-            (uncond + ((text - uncond)? * guidance)?)?
+            let cfg = (uncond + ((text - uncond)? * guidance)?)?;
+            crate::pipelines::guidance::cfg_rescale(&cfg, text)?
         } else {
             noise_pred
         };

@@ -614,6 +614,9 @@ impl Pipeline {
             let neg = &chunks[0];
             let pos = &chunks[1];
             let cfg_guided = (neg + ((pos - neg)? * guidance)?)?;
+            // CFG-rescale (opt-in via PLAKAT_CFG_RESCALE / --guidance-rescale): pull the guided
+            // prediction's std back toward the conditional's to curb over-exposure at high CFG.
+            let cfg_guided = crate::pipelines::guidance::cfg_rescale(&cfg_guided, &pos)?;
             let guided = if pag_scale > 0.0 {
                 // Perturbed conditional forward (self-attention → identity), then
                 // guided = cfg + pag·(cond − cond_perturbed).

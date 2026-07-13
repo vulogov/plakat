@@ -1387,6 +1387,9 @@ impl Pipeline {
         let pred_neg = pred_doubled.i(0..1)?;
         let pred_pos = pred_doubled.i(1..2)?;
         let cfg_guided = (&pred_neg + ((&pred_pos - &pred_neg)? * guidance)?)?;
+        // CFG-rescale (opt-in via PLAKAT_CFG_RESCALE / --guidance-rescale): rescale toward the
+        // conditional's std to curb over-exposure at high CFG. No-op when the knob is off.
+        let cfg_guided = crate::pipelines::guidance::cfg_rescale(&cfg_guided, &pred_pos)?;
 
         // PAG (Perturbed-Attention Guidance), opt-in via PLAKAT_PAG_SCALE=<scale> (set by the
         // `--pag-scale` CLI flag). One extra forward on the conditional inputs with every joint

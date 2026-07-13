@@ -121,6 +121,12 @@ pub struct GenerateArgs {
     #[arg(long = "pag-scale", default_value_t = 0.0)]
     pub pag_scale: f64,
 
+    /// CFG-rescale factor φ (0 = off, ~0.7 = paper sweet spot). Rescales the guided prediction
+    /// toward the conditional's std to curb over-exposure/wash-out at high `--guidance`. Applies to
+    /// SD 1.5/2.1/SDXL, PixArt-Σ, and SD3/3.5. Sets `PLAKAT_CFG_RESCALE` for the run.
+    #[arg(long = "guidance-rescale", default_value_t = 0.0)]
+    pub guidance_rescale: f64,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -760,6 +766,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     // explicitly set (>0), so a pre-existing env still applies when the flag is left at default.
     if args.pag_scale > 0.0 {
         unsafe { std::env::set_var("PLAKAT_PAG_SCALE", args.pag_scale.to_string()) };
+    }
+    if args.guidance_rescale > 0.0 {
+        unsafe { std::env::set_var("PLAKAT_CFG_RESCALE", args.guidance_rescale.to_string()) };
     }
 
     // v0.20: apply --recipe FIRST so subsequent flags + downstream
@@ -1755,6 +1764,8 @@ mod tests {
             image_variation: None,
             guidance: 7.5,
             decoder_guidance: 1.1,
+            pag_scale: 0.0,
+            guidance_rescale: 0.0,
             negative: String::new(),
             negative_preset: None,
             seed: None,
