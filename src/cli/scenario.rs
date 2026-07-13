@@ -164,6 +164,22 @@ struct ScenarioFile {
     #[serde(rename = "refiner-frac")]
     refiner_frac: Option<f32>,
 
+    // ---------- v2.7: free-quality guidance bundle (env-driven; scenario-global) ----------
+    /// Perturbed-Attention Guidance scale (0/omitted = off). SD 1.5/SDXL + PixArt + SD3. → PLAKAT_PAG_SCALE.
+    #[serde(rename = "pag-scale")]
+    pag_scale: Option<f64>,
+    /// CFG-rescale φ (~0.7). Curbs high-guidance over-exposure. → PLAKAT_CFG_RESCALE.
+    #[serde(rename = "guidance-rescale")]
+    guidance_rescale: Option<f64>,
+    /// FreeU on/off (defaults 1.2,1.4,0.9,0.2). `freeu-params` overrides. → PLAKAT_FREEU.
+    #[serde(default)]
+    freeu: bool,
+    #[serde(rename = "freeu-params")]
+    freeu_params: Option<String>,
+    /// Dynamic-thresholding percentile (~99.5). Epsilon SD. → PLAKAT_DYNTHRESH.
+    #[serde(rename = "dynamic-threshold")]
+    dynamic_threshold: Option<f64>,
+
     // ---------- v0.13 phase 10: GGUF + quant + tiled ----------
     /// v0.13 phase 1b: load T5-XXL as a quantized GGUF when running
     /// Flux GGUF. Requires `model: flux-*-gguf`. Bails loud otherwise.
@@ -1488,6 +1504,30 @@ pub async fn run_with_events(
     // -------- validate structure --------
     if s.tasks.is_empty() {
         bail!("scenario has no `tasks` to run");
+    }
+
+    // v2.7 feature-sync: promote the free-quality guidance-bundle knobs to the env the pipelines
+    // read (same mechanism as the `generate` CLI), so scenarios can drive the full quality toolchain.
+    // Scenario-global (applies to every task); only set when explicitly requested.
+    if let Some(v) = s.pag_scale {
+        if v > 0.0 {
+            unsafe { std::env::set_var("PLAKAT_PAG_SCALE", v.to_string()) };
+        }
+    }
+    if let Some(v) = s.guidance_rescale {
+        if v > 0.0 {
+            unsafe { std::env::set_var("PLAKAT_CFG_RESCALE", v.to_string()) };
+        }
+    }
+    if let Some(v) = s.dynamic_threshold {
+        if v > 0.0 {
+            unsafe { std::env::set_var("PLAKAT_DYNTHRESH", v.to_string()) };
+        }
+    }
+    if let Some(p) = &s.freeu_params {
+        unsafe { std::env::set_var("PLAKAT_FREEU", p) };
+    } else if s.freeu {
+        unsafe { std::env::set_var("PLAKAT_FREEU", "1") };
     }
 
     // v0.29 phases 2+3: classify each task by kind + validate the
