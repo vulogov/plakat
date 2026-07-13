@@ -38,11 +38,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
             task's outputs by aesthetic score); **diffusion-upscale as a task kind** (`ControlNet-Tile`
             `upscale --diffusion` isn't a scenario task type yet); per-task guidance overrides (currently
             scenario-global only).
-- [ ] **`plakat ui` feature sync + gap audit.** Same sweep for the TUI: surface the new quality knobs
-      (guidance bundle, PAG) and the diffusion upscaler / restoration in the UI's generate + tools
-      panes, plus any 2.x features that never got UI (map, compose/segment, relight, style/embedding
-      train). Audit which subsystems the TUI can't reach. **Load-bearing:** the TUI is the 3.0
-      flagship's foundation — every gap now is a gap the collection manager inherits.
+- [~] **`plakat ui` feature sync + gap audit.** Audited the TUI Chat generate (exposed only
+      `/steps` + `/cfg`).
+      - [x] **Guidance bundle + PAG closed** (627672b) — session slash-commands `/pag`, `/rescale`,
+            `/freeu`, `/dynthresh` mirroring `/steps`, applied via the env at dispatch. Help pane updated;
+            178 UI tests green. The TUI drives the full guidance toolchain conversationally.
+      - [ ] **Remaining UI gaps:** diffusion upscaler + rank/keep-best as UI actions; 2.x subsystems
+            never surfaced in the TUI (map, compose/segment, relight, style/embedding train). These feed
+            the 3.0 collection-manager flagship.
 
 ## Tier 2 — strong, bigger (pick one)
 
