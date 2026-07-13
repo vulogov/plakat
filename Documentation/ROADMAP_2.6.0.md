@@ -29,8 +29,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
             don't run Tier-2 on Metal and read the drift as staleness. Added `PLAKAT_VERIFY_AUTHOR_GOLDEN`
             (the "Tier-2 freeze step" the golden.rs error message references) for any *genuine* future
             re-author — run it on CPU.
-      - [ ] **Follow-up: exercise ControlNet + inpaint through the own UNet default** end-to-end
-            (`forward_sdxl_with_residuals` / 9-ch inpaint conv_in) — wired but not yet run.
+      - [x] **Follow-up DONE: ControlNet + inpaint through the own UNet default verified** (pre-release
+            safety check). SD1.5+CN (Tile upscaler, 9 coherent tiles), SDXL+CN
+            (`forward_sdxl_with_residuals` → structure-conditioned forest, no shape errors), and 9-ch
+            SD1.5 inpaint (seamless mask region, forest preserved outside) all render coherently through
+            the own UNet. The default flip is de-risked across plain/CN/inpaint paths.
 - [x] **SD3 MMDiT PAG** + a **`--pag-scale` CLI flag** (2df27e7). PAG threaded through the
       JointBlock trait / all 3 block types / MMDiTCore / new `MMDiT::forward_pag`; x-stream self-attn
       perturbed to identity (output = V), context stream untouched. Applied at the
