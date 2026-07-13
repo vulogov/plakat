@@ -19,12 +19,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       - [ ] Follow-up: write the score into the generation PNG metadata sidecar at gen time (persistent
             sort key for the manager) — currently computed on-demand by `rank`/`--keep-best`.
 
-- [ ] **PAG for the SDXL / SD 1.5 own UNet** (`--pag-scale` reaches the workhorses). The 2.6
-      own-UNet flip made `sd_train::unet`/`attention` the default and editable (that's how FreeU got
-      in). Add the identity-attention perturbation to a mid block's self-attention, layer-restricted
-      (SD3 lesson), through the existing `--pag-scale` / `PLAKAT_PAG_SCALE` plumbing. **Load-bearing:**
-      PAG today is PixArt + SD3-experimental-uncalibratable-here; SDXL is the actual workhorse and
-      doesn't OOM → finally calibratable on this hardware. Completes the PAG thread.
+- [x] **PAG for the SDXL / SD 1.5 own UNet** (9a14837) — `--pag-scale` reaches the workhorses.
+      Two thread-locals (one synchronous denoise thread): the loop marks the perturbed conditional
+      forward, the UNet brackets ONLY the mid block so its self-attention → identity (output = V);
+      cross-attention (text) untouched. Wired at the main t2i denoise closure (`guided = cfg + pag·(cond
+      − cond_pert)`), gated to the own UNet under CFG. **Verified** off = byte-identical (sd15 unet.out
+      corr 1.0); **calibrated** on SD1.5 @ g5 — scale 2.0/3.0 both stable (no black/grid — the mid-block
+      restriction holds, unlike SD3 all-blocks) and clearly sharpen detail/depth. 2.0–3.0 range.
+      Completes the PAG thread on the workhorse that actually calibrates on this box.
 
 ## Feature-sync (coverage — no feature is real until it's reachable everywhere)
 
