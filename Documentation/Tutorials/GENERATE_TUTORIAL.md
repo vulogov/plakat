@@ -918,7 +918,34 @@ qlmanage -p ./out/plakat-42-preview.png &
 plakat generate "..." --seed 42 --preview-every 2 --steps 50
 ```
 
-## 22. Common issues
+## 22. Quality knobs (free-quality guidance)
+
+Four opt-in, default-off knobs that improve sampling quality at little
+or no extra cost. All are **verify-safe**: leave them off and the output
+is byte-identical to previous releases. Turn them on when you want a
+specific improvement.
+
+| Flag | What it does | When to use |
+|---|---|---|
+| `--pag-scale <x>` | Perturbed-Attention Guidance. `0` = off; try `2`–`3`. Runs an extra conditional forward with self-attention perturbed to identity, giving sharper structure/detail — especially at low `--guidance`. | Soft or mushy structure, or you're running low CFG. SD 1.5 / SDXL (perturbs the mid block) + PixArt; SD 3.5 experimental. |
+| `--guidance-rescale <phi>` | CFG-rescale (~`0.7`). Rescales the guided prediction toward the conditional's statistics, curing high-`--guidance` over-exposure / colour wash-out. | High-CFG images that look blown-out or over-saturated. SD 1.5 / SDXL / PixArt / SD3. |
+| `--freeu` | FreeU. Reweights the UNet up-blocks (backbone boost + Fourier skip low-pass) for richer detail/texture at no runtime cost. Tune with `--freeu-params b1,b2,s1,s2`. | Free detail/texture bump. SD 1.5 / SDXL. Defaults `1.2,1.4,0.9,0.2`; SDXL wants `1.3,1.4,0.9,0.2`. |
+| `--dynamic-threshold <pctl>` | Imagen dynamic thresholding (~`99.5`). Clamps the predicted x0 to its per-sample percentile — another lever on high-CFG saturation. | High-CFG saturation, as an alternative/complement to `--guidance-rescale`. Epsilon SD (1.5 / SDXL). |
+
+They compose freely. A good combined recipe for sharp, well-exposed
+output at moderate CFG:
+
+```bash
+# Sharper, well-exposed SDXL at moderate CFG
+plakat generate "a detailed owl in a forest" --model sdxl \
+  --guidance 5 --pag-scale 2.5 --guidance-rescale 0.7 --freeu
+```
+
+Note `--pag-scale` costs an extra forward pass per step (roughly the
+same overhead as CFG itself); `--freeu`, `--guidance-rescale`, and
+`--dynamic-threshold` are essentially free.
+
+## 23. Common issues
 
 **Image takes forever / runs out of memory.**
 SD 1.5 needs ~5 GB resident at 512² (its training resolution). SDXL

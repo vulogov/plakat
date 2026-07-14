@@ -157,6 +157,10 @@ lose an earlier version.
 | `/seed <n>` \| `/seed random` | Pin a seed for reproducible / comparable runs |
 | `/size <WxH>` \| `<N>` \| `native` | Per-model generation size (budget-guarded; each model remembers its own) |
 | `/steps <n>` \| `/cfg <x>` | Override denoise steps / guidance (bare or `default` clears) |
+| `/pag <x>` \| `/pag off` | Perturbed-Attention Guidance for later generations (`0`/`off` disables) |
+| `/rescale <phi>` | CFG-rescale (~`0.7`) — cures high-guidance over-exposure |
+| `/freeu [on\|off]` | Toggle FreeU up-block reweighting (richer detail/texture) |
+| `/dynthresh <pctl>` | Imagen dynamic thresholding (~`99.5`) — another high-CFG saturation lever |
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
 | `/preset save <name>` | Save the current model + LoRA stack + negative + size/steps/guidance as a named preset |

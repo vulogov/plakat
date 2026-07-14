@@ -546,7 +546,37 @@ plakat scenario alice_series.hjson --only morning_soft,morning_cine
 5 tasks × 2 images = 10 images, all of "alice" in different
 scenes / lightings, consistent identity, consistent style.
 
-## 12. Limitations
+## 12. Quality knobs
+
+The free-quality guidance bundle (see the
+[`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) "Quality knobs" section)
+is available **scenario-global** — set it once and it applies to every
+task:
+
+```hjson
+{
+  model: sdxl
+  guidance: 5
+  pag-scale: 2.5              # Perturbed-Attention Guidance (0 = off)
+  guidance-rescale: 0.7       # CFG-rescale — cures high-CFG wash-out
+  freeu: true                 # FreeU up-block reweighting
+  freeu-params: "1.3,1.4,0.9,0.2"   # SDXL defaults (optional)
+  dynamic-threshold: 99.5     # Imagen dynamic thresholding (optional)
+  tasks: [ ... ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `pag-scale` | number | `0` = off; `2`–`3` for sharper structure. |
+| `guidance-rescale` | number | `~0.7`. |
+| `freeu` | boolean | `true` / `false`. |
+| `freeu-params` | string | `"b1,b2,s1,s2"`. |
+| `dynamic-threshold` | number | percentile, `~99.5`. |
+
+All default off (output unchanged when omitted).
+
+## 13. Limitations
 
 - **Cross-product is explicit**, not implicit. You list every
   `(scene, weather, persona)` combo as its own task. Some users

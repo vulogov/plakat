@@ -17,42 +17,32 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.6.0 — image quality lands + the SD UNet goes native
+## What's new in 2.7.0 — curate & finish, on the road to 3.0
 
-2.5.0 opened the image-quality track; **2.6.0 delivers it** — a full free-quality guidance bundle
-and diffusion upscaling, plus a quieter structural win: plakat's own SD UNet is now the default.
+2.6 delivered image quality; **2.7 makes it usable at scale and reaches everywhere** — batch
+curation, PAG on the workhorse models, and every quality knob wired across CLI, scenarios, and the TUI.
 
-**Free-quality guidance bundle** — three training-free levers on the denoise, all opt-in and
-verify-safe (default off = byte-identical output):
+**Aesthetic scoring + batch curation.** `plakat rank <paths>` scores images with the LAION aesthetic
+predictor (a CLIP ViT-L/14 model) and prints them best-first (`--top N`, `--json`). And
+`plakat generate --count N --keep-best K` generates a batch and **auto-keeps the K best**, deleting
+the rest — "roll the dice, keep the winners" instead of sifting by hand. The score is also the first
+sort key for the 3.x collection manager this all builds toward.
 
-* **CFG-rescale** (`--guidance-rescale <phi>`, ~0.7) — rescales the guided prediction back toward
-  the conditional's statistics, curing high-`--guidance` over-exposure and colour wash-out.
-  SD 1.5 / SDXL / PixArt / SD3.
-* **FreeU** (`--freeu`) — reweights the UNet up-blocks (backbone boost + Fourier low-pass on the
-  skip connections) for richer detail and texture at no extra cost. Ships a from-scratch 2D DFT
-  (candle has no FFT), so it works at any resolution.
-* **Dynamic thresholding** (`--dynamic-threshold <pctl>`, ~99.5) — Imagen-style x0 percentile
-  clamp; a second, stronger lever on high-CFG saturation. Epsilon SD (1.5 / SDXL).
+**PAG on the workhorses.** Perturbed-Attention Guidance now covers **SD 1.5 and SDXL** (`--pag-scale`,
+try 2–3) — the models people actually generate with. It perturbs the UNet mid block's self-attention
+to identity for a sharper, more coherent result, especially at lower `--guidance`. Enabled by 2.6's
+own-UNet flip, and calibrated (unlike the memory-bound SD 3.5 path).
 
-**ControlNet-Tile diffusion upscaling** (`plakat upscale --diffusion --scale N`) — coherent
-512 → 2K/4K with *hallucinated* detail (SUPIR-lite): pre-upscale, then a tiled img2img refine where
-each tile is guided by ControlNet-Tile to stay faithful to its structure while adding detail, blended
-seamlessly with a feathered overlap.
+**Every quality knob, everywhere.** The 2.6 guidance bundle (PAG, CFG-rescale, FreeU, dynamic
+thresholding) was CLI-only; 2.7 syncs it to **scenarios** (`pag-scale` / `guidance-rescale` / `freeu`
+/ `dynamic-threshold` HJSON fields, scenario-global) and the **TUI** (`/pag`, `/rescale`, `/freeu`,
+`/dynthresh` Chat commands). A feature is no longer stranded on one surface.
 
-**SD 3.5 MMDiT PAG** + a **`--pag-scale`** flag. Perturbed-Attention Guidance now covers SD 3.5's
-MMDiT (experimental, layer-restricted) alongside PixArt, promoted off the raw env knob to a proper
-CLI flag that both honour.
+Everything new is opt-in and verify-safe — default image output is unchanged. On the
+[road to 3.0](Documentation/ROADMAP_TO_3.0.md) (the 3.x flagship: a TUI photo/image collection
+manager — aesthetic scores are its first curation signal).
 
-**The SD UNet goes native.** SD 1.5 + SDXL main generation now runs plakat's *own* SDPA UNet by
-default (it was candle's) — proven output-equivalent (`unet.out` corr 1.0 vs the diffusers golden),
-a modest Metal speedup, and crucially **decoupled from candle's fast-moving internals**. ControlNet
-and inpaint paths are verified through it. `PLAKAT_CANDLE_UNET=1` reverts.
-
-Nothing default changes for image output — the own-UNet flip is verified byte-identical, and every
-new quality knob is opt-in. On the [road to 3.0](Documentation/ROADMAP_TO_3.0.md) (the 3.x flagship:
-a TUI photo/image collection manager).
-
-**Earlier releases** (v0.13 – 2.5):
+**Earlier releases** (v0.13 – 2.6):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

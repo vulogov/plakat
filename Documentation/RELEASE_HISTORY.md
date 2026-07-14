@@ -8,6 +8,40 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.6.0 — image quality lands + the SD UNet goes native
+
+2.5.0 opened the image-quality track; **2.6.0 delivers it** — a full free-quality guidance bundle
+and diffusion upscaling, plus a quieter structural win: plakat's own SD UNet is now the default.
+
+**Free-quality guidance bundle** — three training-free levers on the denoise, all opt-in and
+verify-safe (default off = byte-identical output):
+
+* **CFG-rescale** (`--guidance-rescale <phi>`, ~0.7) — rescales the guided prediction back toward
+  the conditional's statistics, curing high-`--guidance` over-exposure and colour wash-out.
+  SD 1.5 / SDXL / PixArt / SD3.
+* **FreeU** (`--freeu`) — reweights the UNet up-blocks (backbone boost + Fourier low-pass on the
+  skip connections) for richer detail and texture at no extra cost. Ships a from-scratch 2D DFT
+  (candle has no FFT), so it works at any resolution.
+* **Dynamic thresholding** (`--dynamic-threshold <pctl>`, ~99.5) — Imagen-style x0 percentile
+  clamp; a second, stronger lever on high-CFG saturation. Epsilon SD (1.5 / SDXL).
+
+**ControlNet-Tile diffusion upscaling** (`plakat upscale --diffusion --scale N`) — coherent
+512 → 2K/4K with *hallucinated* detail (SUPIR-lite): pre-upscale, then a tiled img2img refine where
+each tile is guided by ControlNet-Tile to stay faithful to its structure while adding detail, blended
+seamlessly with a feathered overlap.
+
+**SD 3.5 MMDiT PAG** + a **`--pag-scale`** flag. Perturbed-Attention Guidance now covers SD 3.5's
+MMDiT (experimental, layer-restricted) alongside PixArt, promoted off the raw env knob to a proper
+CLI flag that both honour.
+
+**The SD UNet goes native.** SD 1.5 + SDXL main generation now runs plakat's *own* SDPA UNet by
+default (it was candle's) — proven output-equivalent (`unet.out` corr 1.0 vs the diffusers golden),
+a modest Metal speedup, and crucially **decoupled from candle's fast-moving internals**. ControlNet
+and inpaint paths are verified through it. `PLAKAT_CANDLE_UNET=1` reverts.
+
+Nothing default changes for image output — the own-UNet flip is verified byte-identical, and every
+new quality knob is opt-in.
+
 ## What's new in 2.5.0 — the image-quality track opens, on the road to 3.0
 
 2.4.0 was performance; 2.5.0 opens the **image-quality** track — and maps the road to the 3.x
