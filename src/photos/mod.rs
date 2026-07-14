@@ -35,11 +35,12 @@ pub enum Focus {
     Album,
 }
 
-/// Album pane sub-mode (RFC §6): thumbnail grid vs full-pane image view.
+/// Album pane sub-mode (RFC §6): thumbnail grid, full-pane image view, or the culling loupe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AlbumMode {
     Grid,
     Image,
+    Cull,
 }
 
 /// A tree/curation action awaiting text or confirmation in the command pane (RFC §11).
@@ -72,7 +73,13 @@ struct App {
     album_dir: Option<PathBuf>,
     album_meta: hjson::AlbumMeta,
     album_paths: Vec<PathBuf>,
+    /// Filtered view: indices into `album_paths` that pass `filter` (all when empty). `album_cursor`
+    /// indexes into this, so navigation/rendering operate on the filtered set.
+    view: Vec<usize>,
+    filter: String,
+    filter_active: bool,
     album_cursor: usize,
+    /// Multi-selection stored as `album_paths` indices (survives filter changes).
     selected: HashSet<usize>,
     mode: AlbumMode,
     show_exif: bool,
@@ -109,6 +116,9 @@ impl App {
             album_dir: None,
             album_meta: hjson::AlbumMeta::default(),
             album_paths: Vec::new(),
+            view: Vec::new(),
+            filter: String::new(),
+            filter_active: false,
             album_cursor: 0,
             selected: HashSet::new(),
             mode: AlbumMode::Grid,
@@ -147,7 +157,7 @@ impl App {
                 paths.sort();
                 self.thumbs.retain(|k, _| paths.contains(k)); // drop thumbs for removed files
                 self.album_paths = paths;
-                self.album_cursor = self.album_cursor.min(self.album_paths.len().saturating_sub(1));
+                self.rebuild_view();
             }
         }
     }
@@ -198,25 +208,49 @@ impl App {
         self.album_paths = paths;
         self.album_cursor = 0;
         self.selected.clear();
+        self.filter.clear();
+        self.rebuild_view();
         self.mode = AlbumMode::Grid;
         self.view_proto = None;
         self.thumbs.clear();
         self.focus = Focus::Album;
     }
 
-    /// Filename (no path) of the album image at index `i`.
+    /// Filename (no path) of the album image at `album_paths` index `i`.
     fn image_name(&self, i: usize) -> Option<String> {
         self.album_paths.get(i).and_then(|p| p.file_name()).and_then(|n| n.to_str()).map(String::from)
     }
 
-    /// Indices the next curation op applies to: the multi-selection if any, else the cursor.
+    /// The `album_paths` index at the cursor (through the filtered view).
+    fn cur_idx(&self) -> Option<usize> {
+        self.view.get(self.album_cursor).copied()
+    }
+
+    /// `album_paths` indices the next curation op applies to: the multi-selection if any, else the
+    /// cursor image.
     fn targets(&self) -> Vec<usize> {
         if self.selected.is_empty() {
-            vec![self.album_cursor]
+            self.cur_idx().into_iter().collect()
         } else {
             let mut v: Vec<usize> = self.selected.iter().copied().collect();
             v.sort_unstable();
             v
+        }
+    }
+
+    /// Rebuild the filtered view from `filter` over `album_paths` + the curation records.
+    fn rebuild_view(&mut self) {
+        let f = self.filter.trim().to_string();
+        self.view = (0..self.album_paths.len())
+            .filter(|&i| {
+                let name = self.album_paths[i].file_name().and_then(|n| n.to_str()).unwrap_or("");
+                matches_filter(name, self.album_meta.images.get(name), &f)
+            })
+            .collect();
+        if self.view.is_empty() {
+            self.album_cursor = 0;
+        } else {
+            self.album_cursor = self.album_cursor.min(self.view.len() - 1);
         }
     }
 
@@ -292,7 +326,7 @@ impl App {
 
     /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF.
     fn load_view(&mut self) {
-        let path = self.album_paths.get(self.album_cursor).cloned();
+        let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
         self.view_proto = path
             .as_ref()
             .and_then(|p| loader::thumbnail(p, 1600).ok())
@@ -303,14 +337,17 @@ impl App {
     /// Lazily decode a few thumbnails per tick for images near the cursor that aren't built yet.
     fn build_thumbs(&mut self, budget: usize) {
         let mut built = 0;
-        // Prioritise from the cursor forward (the visible page), then wrap.
-        let n = self.album_paths.len();
+        // Prioritise the visible view from the cursor forward, then wrap.
+        let n = self.view.len();
         for off in 0..n {
             if built >= budget {
                 break;
             }
-            let idx = (self.album_cursor + off) % n.max(1);
-            let Some(path) = self.album_paths.get(idx).cloned() else { break };
+            let vi = (self.album_cursor + off) % n.max(1);
+            let Some(path) = self.view.get(vi).and_then(|&pi| self.album_paths.get(pi)).cloned()
+            else {
+                break;
+            };
             if self.thumbs.contains_key(&path) {
                 continue;
             }
@@ -404,11 +441,40 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_cmd_key(app, k.code);
         return false;
     }
+    if app.filter_active {
+        handle_filter_key(app, k.code);
+        return false;
+    }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match app.focus {
         Focus::Tree => handle_tree_key(app, k.code),
         Focus::Album if app.mode == AlbumMode::Image => handle_image_key(app, k.code),
+        Focus::Album if app.mode == AlbumMode::Cull => handle_cull_key(app, k.code),
         Focus::Album => handle_grid_key(app, k.code, ctrl),
+    }
+}
+
+/// Filter-bar input: type a filter expression, Enter applies, Esc clears.
+fn handle_filter_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.filter_active = false;
+            app.filter.clear();
+            app.rebuild_view();
+        }
+        KeyCode::Enter => {
+            app.filter_active = false;
+            app.rebuild_view();
+        }
+        KeyCode::Backspace => {
+            app.filter.pop();
+            app.rebuild_view();
+        }
+        KeyCode::Char(c) => {
+            app.filter.push(c);
+            app.rebuild_view();
+        }
+        _ => {}
     }
 }
 
@@ -492,7 +558,7 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
 }
 
 fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
-    let n = app.album_paths.len();
+    let n = app.view.len();
     let cols = app.cols.max(1);
     match code {
         KeyCode::Char('q') => return true,
@@ -518,17 +584,28 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.enter_image_view();
             }
         }
-        // Selection (RFC §8.4).
-        KeyCode::Char(' ') => {
-            if !app.selected.insert(app.album_cursor) {
-                app.selected.remove(&app.album_cursor);
+        // Filter bar (`/`) + culling loupe (`C`).
+        KeyCode::Char('/') => app.filter_active = true,
+        KeyCode::Char('C') => {
+            if n > 0 {
+                app.selected.clear(); // cull operates one image at a time
+                app.mode = AlbumMode::Cull;
+                app.load_view();
             }
         }
-        KeyCode::Char('a') if ctrl => app.selected = (0..n).collect(),
+        // Selection (RFC §8.4) — indices are into `album_paths`, restricted to the visible view.
+        KeyCode::Char(' ') => {
+            if let Some(i) = app.cur_idx() {
+                if !app.selected.insert(i) {
+                    app.selected.remove(&i);
+                }
+            }
+        }
+        KeyCode::Char('a') if ctrl => app.selected = app.view.iter().copied().collect(),
         KeyCode::Char('d') if ctrl => app.selected.clear(),
         KeyCode::Char('i') if ctrl => {
-            let all: HashSet<usize> = (0..n).collect();
-            app.selected = all.difference(&app.selected).copied().collect();
+            let visible: HashSet<usize> = app.view.iter().copied().collect();
+            app.selected = visible.difference(&app.selected).copied().collect();
         }
         // Curation (RFC §8.5) — applies to selection or cursor; persisted to album.hjson.
         _ => return apply_curation(app, code),
@@ -536,8 +613,47 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
     false
 }
 
+/// Culling loupe (RFC §21.1): one image at a time, keep / reject / rate, advancing.
+fn handle_cull_key(app: &mut App, code: KeyCode) -> bool {
+    let advance = |app: &mut App| {
+        if app.album_cursor + 1 < app.view.len() {
+            app.album_cursor += 1;
+            app.load_view();
+        } else {
+            app.mode = AlbumMode::Grid; // end of album → back to grid
+        }
+    };
+    match code {
+        KeyCode::Char('q') => return true,
+        KeyCode::Esc => app.mode = AlbumMode::Grid,
+        KeyCode::Right | KeyCode::Char(' ') => advance(app), // keep + advance
+        KeyCode::Left => {
+            if app.album_cursor > 0 {
+                app.album_cursor -= 1;
+                app.load_view();
+            }
+        }
+        KeyCode::Char('x') => {
+            app.edit_targets(|rec| rec.rejected = true);
+            advance(app);
+        }
+        KeyCode::Char('f') => {
+            app.edit_targets(|rec| rec.flagged = true);
+            advance(app);
+        }
+        KeyCode::Char(d @ '1'..='5') => {
+            let r = d.to_digit(10).unwrap() as u8;
+            app.edit_targets(|rec| rec.rating = r);
+            advance(app);
+        }
+        KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        _ => {}
+    }
+    false
+}
+
 fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
-    let n = app.album_paths.len();
+    let n = app.view.len();
     match code {
         KeyCode::Char('q') => return true,
         KeyCode::Esc => {
@@ -673,27 +789,47 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    if app.mode == AlbumMode::Image {
+    if app.mode == AlbumMode::Image || app.mode == AlbumMode::Cull {
         draw_image_view(f, app, inner);
         return;
     }
 
+    // Optional filter bar at the top of the grid (shown while typing or when a filter is set).
+    let grid_area = if app.filter_active || !app.filter.is_empty() {
+        let [bar, grid] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+        let cursor = if app.filter_active { "_" } else { "" };
+        let txt = format!(" filter ▸ {}{}   ({} match)", app.filter, cursor, app.view.len());
+        f.render_widget(Paragraph::new(txt).style(Style::new().fg(Color::Yellow)), bar);
+        grid
+    } else {
+        inner
+    };
+
+    if app.view.is_empty() {
+        f.render_widget(
+            Paragraph::new("  no images match the filter").style(Style::new().fg(Color::DarkGray)),
+            grid_area,
+        );
+        return;
+    }
+
     let cols = app.cols.max(1);
-    let rows = inner.height as usize / 8; // ~8 text rows per thumbnail cell
+    let rows = grid_area.height as usize / 8; // ~8 text rows per thumbnail cell
     let per_page = (cols * rows).max(1);
     let page = app.album_cursor / per_page;
     let start = page * per_page;
 
-    let row_rects = Layout::vertical(vec![Constraint::Ratio(1, rows.max(1) as u32); rows.max(1)]).split(inner);
+    let row_rects = Layout::vertical(vec![Constraint::Ratio(1, rows.max(1) as u32); rows.max(1)]).split(grid_area);
     for r in 0..rows.max(1) {
         let col_rects =
             Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(row_rects[r]);
         for c in 0..cols {
             let vi = start + r * cols + c;
-            let Some(path) = app.album_paths.get(vi).cloned() else { continue };
+            let Some(&pi) = app.view.get(vi) else { continue };
+            let Some(path) = app.album_paths.get(pi).cloned() else { continue };
             let cell = col_rects[c];
             let is_cursor = vi == app.album_cursor;
-            let is_sel = app.selected.contains(&vi);
+            let is_sel = app.selected.contains(&pi);
             let name: String = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             let cap: String = {
                 let cs: Vec<char> = name.chars().collect();
@@ -725,6 +861,38 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
             }
             f.render_widget(Paragraph::new(badge), badge_area);
         }
+    }
+}
+
+/// Filter grammar (RFC §16 subset): whitespace-separated predicates, ALL must match. Supports
+/// `rating>=N` / `rating>N` / `rating=N` / `unrated`, `flag` / `-flag`, `rejected` / `-rejected`,
+/// `ai` (scored), `tag:X` / `-tag:X`, and free text (filename contains).
+fn matches_filter(name: &str, rec: Option<&hjson::ImageRecord>, filter: &str) -> bool {
+    let f = filter.trim();
+    if f.is_empty() {
+        return true;
+    }
+    f.split_whitespace().all(|tok| tok_match(tok, name, rec))
+}
+
+fn tok_match(tok: &str, name: &str, rec: Option<&hjson::ImageRecord>) -> bool {
+    let rating = rec.map(|r| r.rating).unwrap_or(0);
+    let flagged = rec.map(|r| r.flagged).unwrap_or(false);
+    let rejected = rec.map(|r| r.rejected).unwrap_or(false);
+    let has_tag = |t: &str| rec.map(|r| r.tags.iter().any(|g| g.eq_ignore_ascii_case(t))).unwrap_or(false);
+    match tok {
+        "unrated" => rating == 0,
+        "flag" | "flagged" => flagged,
+        "-flag" => !flagged,
+        "rejected" => rejected,
+        "-rejected" => !rejected,
+        "ai" | "scored" => rec.map(|r| r.score.is_some()).unwrap_or(false),
+        _ if tok.starts_with("rating>=") => tok[8..].parse::<u8>().map(|n| rating >= n).unwrap_or(true),
+        _ if tok.starts_with("rating>") => tok[7..].parse::<u8>().map(|n| rating > n).unwrap_or(true),
+        _ if tok.starts_with("rating=") => tok[7..].parse::<u8>().map(|n| rating == n).unwrap_or(true),
+        _ if tok.starts_with("tag:") => has_tag(&tok[4..]),
+        _ if tok.starts_with("-tag:") => !has_tag(&tok[5..]),
+        _ => name.to_lowercase().contains(&tok.to_lowercase()),
     }
 }
 
@@ -775,7 +943,7 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if let Some(panel) = panel {
-        let name = app.image_name(app.album_cursor).unwrap_or_default();
+        let name = app.cur_idx().and_then(|i| app.image_name(i)).unwrap_or_default();
         let mut lines: Vec<Line> = vec![Line::from(Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)))];
         if let Some(e) = &app.view_exif {
             let mut kv = |k: &str, v: Option<String>| {
@@ -817,5 +985,27 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" EXIF ")),
             panel,
         );
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::photos::hjson::ImageRecord;
+
+    #[test]
+    fn filter_predicates() {
+        let mut rec = ImageRecord { rating: 4, flagged: true, ..Default::default() };
+        rec.tags = vec!["waterfall".into()];
+        let r = Some(&rec);
+        assert!(matches_filter("a.jpg", r, ""));            // empty → all
+        assert!(matches_filter("a.jpg", r, "rating>=4"));
+        assert!(!matches_filter("a.jpg", r, "rating>=5"));
+        assert!(matches_filter("a.jpg", r, "flag tag:waterfall"));  // AND
+        assert!(!matches_filter("a.jpg", r, "-flag"));
+        assert!(matches_filter("a.jpg", r, "-rejected"));
+        assert!(matches_filter("IMG_1.jpg", r, "img"));     // free text (case-insensitive)
+        assert!(!matches_filter("a.jpg", None, "rating>=1")); // no record → rating 0
+        assert!(matches_filter("a.jpg", None, "unrated"));
     }
 }
