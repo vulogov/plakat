@@ -33,8 +33,14 @@ index" to build; it's the HJSON model itself.
 - [~] **Phase 2 — Image view + curation** (the 3.0.0 release gate).
   - [x] Image view (Enter → full-pane render, ←/→, Esc) + EXIF overlay (`i`, cached kamadak read).
   - [x] Curation: 1–5/0 rating, `f` flag, `x` reject, `c` color-label → album.hjson; grid badges.
-  - [ ] Remaining: culling mode (`Ctrl-b c`), filter bar + sort (`Ctrl-b f`), smart albums (`Ctrl-b F`),
-        notes/caption editing.
+  - [x] Filter bar (`/`, view layer + grammar rating/flag/rejected/tag/ai/free-text, unit-tested) +
+        culling loupe (`C`, keep/reject/rate one-at-a-time).
+  - [ ] Remaining: smart albums (`Ctrl-b F`), notes/caption editing, sort order.
+- [ ] **`--import` for the generation commands** (user request) — `generate`/`upscale`/`portrait`/
+      `multiperson`/… gain `--import <album>`: the output is copied/moved into the album, its gen
+      params (the existing `GenerationMetadata`) are written into the album.hjson per-image record, and
+      the album is updated. Closes the loop: generate → land in the manager. Design below in
+      RFC_PHOTOS_1 / a follow-up note.
 - [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).
