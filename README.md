@@ -17,32 +17,30 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.7.0 — curate & finish, on the road to 3.0
+## What's new in 2.8.0 — SD3.5 unblocked, curation persists, faces restored
 
-2.6 delivered image quality; **2.7 makes it usable at scale and reaches everywhere** — batch
-curation, PAG on the workhorse models, and every quality knob wired across CLI, scenarios, and the TUI.
+The 2.x send-off, right at the gate of the 3.x photo-manager flagship: it removes the last big
+blocker on SD3.5, makes curation durable, and adds a standalone face-restore finisher.
 
-**Aesthetic scoring + batch curation.** `plakat rank <paths>` scores images with the LAION aesthetic
-predictor (a CLIP ViT-L/14 model) and prints them best-first (`--top N`, `--json`). And
-`plakat generate --count N --keep-best K` generates a batch and **auto-keeps the K best**, deleting
-the rest — "roll the dice, keep the winners" instead of sifting by hand. The score is also the first
-sort key for the 3.x collection manager this all builds toward.
+**SD 3.5 runs on 24 GB.** SD3.5's T5-XXL (~9.5 GB) and its MMDiT used to be resident at once,
+OOM-locking the whole family on 24 GB Apple Silicon. A new **low-mem mode** loads them
+**sequentially** — T5 encodes the prompt → is freed → the MMDiT loads → denoises — dropping peak
+memory from the sum to the max. Auto-enabled on Metal when RAM is tight (`PLAKAT_SD3_LOWMEM`
+overrides). SD3.5 now generates where every prior attempt OOM'd.
 
-**PAG on the workhorses.** Perturbed-Attention Guidance now covers **SD 1.5 and SDXL** (`--pag-scale`,
-try 2–3) — the models people actually generate with. It perturbs the UNet mid block's self-attention
-to identity for a sharper, more coherent result, especially at lower `--guidance`. Enabled by 2.6's
-own-UNet flip, and calibrated (unlike the memory-bound SD 3.5 path).
+**Curation that persists.** `generate --score` (and `--keep-best`) now write the LAION aesthetic
+score into each image's `.json` metadata sidecar, and `plakat rank --write` does the same for an
+existing folder — an on-disk sort key ready for the 3.x collection manager.
 
-**Every quality knob, everywhere.** The 2.6 guidance bundle (PAG, CFG-rescale, FreeU, dynamic
-thresholding) was CLI-only; 2.7 syncs it to **scenarios** (`pag-scale` / `guidance-rescale` / `freeu`
-/ `dynamic-threshold` HJSON fields, scenario-global) and the **TUI** (`/pag`, `/rescale`, `/freeu`,
-`/dynthresh` Chat commands). A feature is no longer stranded on one surface.
+**`plakat restore-faces`.** Standalone face restoration for existing images: SCRFD-detect each face,
+diffusion-refine the crop at a gentle strength (identity-preserving), feather-composite back. The
+standalone form of `--adetailer` — run it on photos or after `upscale --diffusion`.
 
-Everything new is opt-in and verify-safe — default image output is unchanged. On the
-[road to 3.0](Documentation/ROADMAP_TO_3.0.md) (the 3.x flagship: a TUI photo/image collection
-manager — aesthetic scores are its first curation signal).
+Everything new is opt-in and verify-safe. **Next: 3.0 — `plakat photos`, a TUI photo & image
+collection manager** ([road to 3.0](Documentation/ROADMAP_TO_3.0.md)). The 2.6–2.8 quality,
+curation, and editing pipelines are its engine.
 
-**Earlier releases** (v0.13 – 2.6):
+**Earlier releases** (v0.13 – 2.7):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

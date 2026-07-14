@@ -8,6 +8,28 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.7.0 — curate & finish, on the road to 3.0
+
+2.6 delivered image quality; **2.7 makes it usable at scale and reaches everywhere** — batch
+curation, PAG on the workhorse models, and every quality knob wired across CLI, scenarios, and the TUI.
+
+**Aesthetic scoring + batch curation.** `plakat rank <paths>` scores images with the LAION aesthetic
+predictor (a CLIP ViT-L/14 model) and prints them best-first (`--top N`, `--json`). And
+`plakat generate --count N --keep-best K` generates a batch and **auto-keeps the K best**, deleting
+the rest — "roll the dice, keep the winners" instead of sifting by hand.
+
+**PAG on the workhorses.** Perturbed-Attention Guidance now covers **SD 1.5 and SDXL** (`--pag-scale`,
+try 2–3) — the models people actually generate with. It perturbs the UNet mid block's self-attention
+to identity for a sharper, more coherent result, especially at lower `--guidance`. Enabled by 2.6's
+own-UNet flip, and calibrated (unlike the memory-bound SD 3.5 path).
+
+**Every quality knob, everywhere.** The 2.6 guidance bundle (PAG, CFG-rescale, FreeU, dynamic
+thresholding) was CLI-only; 2.7 syncs it to **scenarios** (HJSON fields, scenario-global) and the
+**TUI** (`/pag`, `/rescale`, `/freeu`, `/dynthresh` Chat commands). A feature is no longer stranded
+on one surface.
+
+Everything new is opt-in and verify-safe — default image output is unchanged.
+
 ## What's new in 2.6.0 — image quality lands + the SD UNet goes native
 
 2.5.0 opened the image-quality track; **2.6.0 delivers it** — a full free-quality guidance bundle
