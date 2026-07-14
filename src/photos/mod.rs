@@ -9,11 +9,12 @@ pub mod exif;
 pub mod hjson;
 pub mod library;
 pub mod loader;
+pub mod watcher;
 
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -62,6 +63,10 @@ struct App {
 
     picker: Picker,
     status: String,
+
+    // Live filesystem watch (RFC §23) + debounce.
+    watch: Option<watcher::Watch>,
+    dirty_since: Option<Instant>,
 }
 
 impl App {
@@ -82,6 +87,31 @@ impl App {
             thumb_px,
             picker,
             status: String::from("↑/↓ move · →/Enter open · h collapse · Tab pane · q quit"),
+            watch: None,
+            dirty_since: None,
+        }
+    }
+
+    /// Re-walk the library and reload the open album (after a filesystem change). Keeps the album
+    /// cursor in range; new thumbnails decode lazily on the next ticks.
+    fn rescan(&mut self) {
+        if let Ok(root) = library::walk(&self.root_dir) {
+            self.root = root;
+        }
+        if let Some(dir) = self.album_dir.clone() {
+            if dir.is_dir() {
+                let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_file() && library::is_image(p))
+                    .collect();
+                paths.sort();
+                self.thumbs.retain(|k, _| paths.contains(k)); // drop thumbs for removed files
+                self.album_paths = paths;
+                self.album_cursor = self.album_cursor.min(self.album_paths.len().saturating_sub(1));
+            }
         }
     }
 
@@ -174,7 +204,9 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
         )
     })?;
     let root = library::walk(&root_dir)?;
-    let mut app = App::new(root, root_dir, picker, thumb_px);
+    let mut app = App::new(root, root_dir.clone(), picker, thumb_px);
+    // Live watch (best-effort — the manager still works statically if it can't be started).
+    app.watch = watcher::spawn(&root_dir).ok();
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -207,6 +239,22 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
         }
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
+        }
+        // Filesystem watch: coalesce change signals, then rescan after a 500 ms quiet period.
+        if let Some(w) = &app.watch {
+            let mut changed = false;
+            while w.rx.try_recv().is_ok() {
+                changed = true;
+            }
+            if changed {
+                app.dirty_since = Some(Instant::now());
+            }
+        }
+        if let Some(t) = app.dirty_since {
+            if t.elapsed() >= Duration::from_millis(500) {
+                app.rescan();
+                app.dirty_since = None;
+            }
         }
     }
     Ok(())
