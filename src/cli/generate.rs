@@ -148,6 +148,12 @@ pub struct GenerateArgs {
     #[arg(long = "keep-best", value_name = "K")]
     pub keep_best: Option<usize>,
 
+    /// Score each output with the aesthetic predictor and write the score into its `.json` metadata
+    /// sidecar (no pruning). The persistent sort key for the collection manager. Implied by
+    /// `--keep-best` (which writes the kept images' scores).
+    #[arg(long, default_value_t = false)]
+    pub score: bool,
+
     /// Negative prompt.
     #[arg(long, default_value = "")]
     pub negative: String,
@@ -788,30 +794,30 @@ fn image_snapshot(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
 
 pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
     let keep_best = args.keep_best;
-    let count = args.count;
+    let want_score = args.score || keep_best.is_some();
     let out_dir = args.out.clone();
-    // Snapshot the out-dir before generating so we can identify (and only prune) this run's outputs.
-    let before = keep_best.map(|_| image_snapshot(&out_dir));
+    // Snapshot the out-dir before generating so we only touch this run's outputs.
+    let before = want_score.then(|| image_snapshot(&out_dir));
 
     run_inner(args, device.clone()).await?;
 
-    if let (Some(k), Some(before)) = (keep_best, before) {
-        if (k as u32) < count {
-            let new_files: Vec<PathBuf> =
-                image_snapshot(&out_dir).difference(&before).cloned().collect();
-            if new_files.len() > k {
-                keep_top_k(new_files, k, &device).await?;
-            }
+    if let Some(before) = before {
+        let new_files: Vec<PathBuf> =
+            image_snapshot(&out_dir).difference(&before).cloned().collect();
+        if !new_files.is_empty() {
+            score_outputs(new_files, keep_best, &device).await?;
         }
     }
     Ok(())
 }
 
-/// Score `files` with the aesthetic predictor, keep the top-`k`, delete the rest.
-async fn keep_top_k(files: Vec<PathBuf>, k: usize, device: &Device) -> Result<()> {
+/// Score `files` with the aesthetic predictor, write each score into its `.json` sidecar (the
+/// collection manager's sort key), and — when `keep_best` is set — keep only the top-K, deleting the
+/// rest (PNG + sidecar). Pre-existing files are never touched (the caller passes only this run's).
+async fn score_outputs(files: Vec<PathBuf>, keep_best: Option<usize>, device: &Device) -> Result<()> {
     let scorer = crate::pipelines::aesthetic::AestheticScorer::load(device)
         .await
-        .context("loading the aesthetic scorer for --keep-best")?;
+        .context("loading the aesthetic scorer")?;
     let mut scored: Vec<(PathBuf, f32)> = Vec::with_capacity(files.len());
     for f in &files {
         let s = scorer.score_path(f).with_context(|| format!("scoring {}", f.display()))?;
@@ -819,17 +825,21 @@ async fn keep_top_k(files: Vec<PathBuf>, k: usize, device: &Device) -> Result<()
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (rank, (path, score)) in scored.iter().enumerate() {
-        if rank < k {
-            crate::ui::progress::println(&format!("  keep  {:6.3}  {}", score, path.display()));
-        } else {
+        let drop = keep_best.map(|k| rank >= k).unwrap_or(false);
+        if drop {
             let _ = std::fs::remove_file(path);
-            // Also drop the PNG's metadata sidecar (`<file>.json`) so nothing is orphaned.
-            let sidecar = std::path::PathBuf::from(format!("{}.json", path.display()));
-            let _ = std::fs::remove_file(&sidecar);
+            let _ = std::fs::remove_file(crate::imaging::io::sidecar_path(path));
             crate::ui::progress::println(&format!("  drop  {:6.3}  {}", score, path.display()));
+        } else {
+            // Persist the score into the sidecar (kept images / plain --score).
+            let _ = crate::imaging::io::patch_sidecar_score(path, *score as f64);
+            let tag = if keep_best.is_some() { "keep" } else { "score" };
+            crate::ui::progress::println(&format!("  {tag}  {:6.3}  {}", score, path.display()));
         }
     }
-    crate::ui::progress::println(&format!("--keep-best: kept {k} of {}", scored.len()));
+    if let Some(k) = keep_best {
+        crate::ui::progress::println(&format!("--keep-best: kept {k} of {}", scored.len()));
+    }
     Ok(())
 }
 
@@ -1865,6 +1875,7 @@ mod tests {
             freeu_params: None,
             dynamic_threshold: 0.0,
             keep_best: None,
+            score: false,
             negative: String::new(),
             negative_preset: None,
             seed: None,

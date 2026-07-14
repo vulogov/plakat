@@ -70,6 +70,27 @@ pub fn sidecar_path(image_path: &Path) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
+/// v2.8: patch an image's `.json` sidecar with an aesthetic `score`, preserving every other field.
+/// Best-effort: no sidecar → skip (a bare score without the gen params isn't useful). Used by
+/// `--score` / `--keep-best` / `plakat rank` so the collection manager has an on-disk sort key.
+pub fn patch_sidecar_score(image_path: &Path, score: f64) -> Result<()> {
+    let sidecar = sidecar_path(image_path);
+    if !sidecar.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&sidecar)
+        .with_context(|| format!("reading sidecar {}", sidecar.display()))?;
+    let mut meta: crate::imaging::metadata::GenerationMetadata =
+        serde_json::from_str(&text).with_context(|| format!("parsing sidecar {}", sidecar.display()))?;
+    meta.score = Some(score);
+    let json = meta
+        .to_json_pretty()
+        .with_context(|| format!("serialising sidecar {}", sidecar.display()))?;
+    std::fs::write(&sidecar, json)
+        .with_context(|| format!("writing sidecar {}", sidecar.display()))?;
+    Ok(())
+}
+
 pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;

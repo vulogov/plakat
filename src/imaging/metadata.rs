@@ -182,6 +182,10 @@ pub struct GenerationMetadata {
     /// noise-sharing mode that produced the seams (or lack thereof).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_noise: Option<bool>,
+    /// v2.8: LAION aesthetic score, written post-hoc by `--score` / `--keep-best` / `plakat rank`.
+    /// The 3.x collection manager's sort/filter key. Absent until an image is scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
 }
 
 impl GenerationMetadata {
@@ -229,6 +233,7 @@ impl GenerationMetadata {
             control_stack: None,
             enhancement: None,
             free_noise: None,
+            score: None,
         }
     }
 
