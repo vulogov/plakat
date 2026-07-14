@@ -20,13 +20,15 @@ index" to build; it's the HJSON model itself.
 ## Phased build (per RFC §29)
 
 - [~] **Phase 1 — Core library + display.** `plakat photos ~/Photos` opens: tree + thumbnail grid.
-  - [ ] `cli/photos.rs` + `cli/mod.rs` subcommand skeleton (feature-gated).
-  - [ ] `photos/library/` — walk, classify (folder vs album), HJSON read/write (atomic).
-  - [ ] `photos/loader/` — standard + RAW decode, thumbnail cache, EXIF reader (kamadak-exif).
-  - [ ] `photos/library/watcher.rs` — notify watcher + 500 ms debounce.
-  - [ ] `photos/panes/tree.rs` + `album_grid.rs` — layout, nav, thumbnail render.
-  - [ ] `photos/state.rs` + `mod.rs` — event loop, focus model, 100 ms tick.
-  - [ ] Tree mutations + selection model.
+  - [x] `cli/photos.rs` + `cli/mod.rs` subcommand (feature-gated; root = arg > env > ~/Pictures).
+  - [x] `photos/library.rs` — walk, classify (folder vs album), image/RAW detection. Tested.
+  - [x] `photos/hjson.rs` — folder/album HJSON store, sparse per-image records, atomic writes. Tested.
+  - [x] `photos/loader.rs` — standard + RAW (2×2-quad demosaic) decode + XDG thumbnail cache. Tested.
+  - [x] `photos/exif.rs` — kamadak-exif → ExifRecord.
+  - [x] `photos/watcher.rs` — notify watcher + 500 ms debounced rescan.
+  - [x] `photos/mod.rs` — three-pane shell, Tree pane (nav/collapse) + Album grid (lazy thumbnails,
+        StatefulProtocol, [/] columns), Tree↔Album focus, event loop + tick.
+  - [ ] Tree mutations (n/a/R/D via command pane) + grid selection model (Space/Ctrl-A/D/I) — remaining.
 - [ ] **Phase 2 — Image view + curation** (rating/flag/reject/label/notes, culling, filter, smart albums).
 - [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
