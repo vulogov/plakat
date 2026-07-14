@@ -427,9 +427,17 @@ pub struct Pipeline {
     clip_l_cfg: crate::pipelines::vendored_clip::Config,
     clip_g: SdxlClipGTextTransformer,
     clip_g_tok: Tokenizer,
-    t5_enc: t5::T5EncoderModel,
+    // v2.8 low-mem: T5-XXL (~9.5 GB) and the MMDiT are the two heavyweights. In `low_mem` they're
+    // lazy/droppable and NEVER co-resident (T5 encodes → freed → MMDiT loads → denoises), dropping
+    // peak from sum to max so SD3.5 fits on 24 GB Metal. Eager (both Some) otherwise. The stored
+    // load-info reloads either on demand.
+    t5_enc: Option<t5::T5EncoderModel>,
     t5_tok: Tokenizer,
-    mmdit_model: mmdit::MMDiT,
+    mmdit_model: Option<mmdit::MMDiT>,
+    low_mem: bool,
+    t5_shards: Vec<std::path::PathBuf>,
+    t5_cfg: t5::Config,
+    mmdit_path: std::path::PathBuf,
     vae: sdvae::AutoEncoderKL,
     /// v0.16 phase 3: loaded SD3 ControlNets. Each entry carries a
     /// `Sd3ControlNet` + the per-instance runtime knobs (scale,
@@ -566,16 +574,34 @@ impl Pipeline {
             Tokenizer::from_file(&clip_g_tok_path).map_err(|e| anyhow!("CLIP-G tokenizer: {e}"))?;
 
         // ---------- T5-XXL ----------
+        // v2.8 low-mem gate: opt in via PLAKAT_SD3_LOWMEM (`0`/`false` forces eager), else auto when
+        // Metal + available RAM is tight — SD3.5's T5-XXL (~9.5 GB) + MMDiT don't co-fit in 24 GB.
+        let low_mem = match std::env::var("PLAKAT_SD3_LOWMEM").ok().as_deref() {
+            Some("0") | Some("false") => false,
+            Some(_) => true,
+            None => req.device.is_metal() && crate::hw::available_ram_gb() < 22.0,
+        };
         let t5_cfg_str = std::fs::read_to_string(&t5_cfg_path)
             .with_context(|| format!("read T5 config {}", t5_cfg_path.display()))?;
         let t5_cfg: t5::Config =
             serde_json::from_str(&t5_cfg_str).context("parse T5 config")?;
-        let t5_vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&t5_shard1, &t5_shard2], dtype, &req.device)?
+        let t5_shards = vec![t5_shard1.clone(), t5_shard2.clone()];
+        // Low-mem: defer T5 — it loads on first encode, then frees before the MMDiT denoise.
+        let t5_enc = if low_mem {
+            None
+        } else {
+            let t5_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&t5_shards, dtype, &req.device)?
+            };
+            Some(t5::T5EncoderModel::load(t5_vb, &t5_cfg)?)
         };
-        let t5_enc = t5::T5EncoderModel::load(t5_vb, &t5_cfg)?;
         let mut t5_tok =
             Tokenizer::from_file(&t5_tok_json).map_err(|e| anyhow!("T5 tokenizer: {e}"))?;
+        if low_mem {
+            crate::ui::progress::println(
+                "SD3 low-mem: T5-XXL + MMDiT load sequentially (never co-resident)",
+            );
+        }
         build.finish_with_message("✓ text encoders ready");
 
         // ---------- v1.10.0: Textual Inversion (runtime splice) ----------
@@ -693,13 +719,19 @@ impl Pipeline {
 
         // ---------- MMDiT + VAE ----------
         let load = progress::spinner("Loading MMDiT + VAE");
-        let mmdit_vb = build_mmdit_vb(
-            effective_mmdit_path.as_path(),
-            dtype,
-            &req.device,
-            req.variant.mmdit_config().depth,
-        )?;
-        let mmdit_model = mmdit::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?;
+        let mmdit_path = effective_mmdit_path.to_path_buf();
+        // Low-mem: defer the MMDiT — it loads after T5 is freed (see `ensure_mmdit`).
+        let mmdit_model = if low_mem {
+            None
+        } else {
+            let mmdit_vb = build_mmdit_vb(
+                mmdit_path.as_path(),
+                dtype,
+                &req.device,
+                req.variant.mmdit_config().depth,
+            )?;
+            Some(mmdit::MMDiT::new(&req.variant.mmdit_config(), false, mmdit_vb)?)
+        };
 
         // SD3 VAE: 4 down-blocks (128, 256, 512, 512), 2 layers each,
         // 16 latent channels, no quant/post-quant convs (diffusers
@@ -761,10 +793,52 @@ impl Pipeline {
             t5_enc,
             t5_tok,
             mmdit_model,
+            low_mem,
+            t5_shards,
+            t5_cfg,
+            mmdit_path,
             vae,
             controlnets,
             tis,
         })
+    }
+
+    /// Low-mem lazy loaders. `ensure_t5` frees the MMDiT first (and vice-versa) so the two
+    /// heavyweights are never co-resident; in eager mode both stay `Some` and these are no-ops.
+    fn ensure_t5(&mut self) -> Result<()> {
+        if self.t5_enc.is_none() {
+            if self.low_mem {
+                self.mmdit_model = None; // free ~MMDiT before materialising T5
+            }
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&self.t5_shards, self.dtype, &self.device)?
+            };
+            self.t5_enc = Some(t5::T5EncoderModel::load(vb, &self.t5_cfg)?);
+        }
+        Ok(())
+    }
+
+    fn ensure_mmdit(&mut self) -> Result<()> {
+        if self.mmdit_model.is_none() {
+            if self.low_mem {
+                self.t5_enc = None; // free T5-XXL (~9.5 GB) before materialising the MMDiT
+            }
+            let vb = build_mmdit_vb(
+                self.mmdit_path.as_path(),
+                self.dtype,
+                &self.device,
+                self.variant.mmdit_config().depth,
+            )?;
+            self.mmdit_model = Some(mmdit::MMDiT::new(&self.variant.mmdit_config(), false, vb)?);
+        }
+        Ok(())
+    }
+
+    /// Borrow the loaded MMDiT (panics if not ensured — internal callers ensure before denoise).
+    fn mmdit(&self) -> &mmdit::MMDiT {
+        self.mmdit_model
+            .as_ref()
+            .expect("mmdit_model not loaded — call ensure_mmdit() before denoise")
     }
 
     /// v0.16 phase 3: are any ControlNets loaded? Cheap check used
@@ -838,18 +912,28 @@ impl Pipeline {
             Vec<crate::pipelines::lora_linear::LoraSpec>,
         >,
     ) -> Result<usize> {
-        let applied = self
-            .mmdit_model
-            .apply_loras(specs, self.dtype, &self.device)
-            .map_err(|e| anyhow!("SD3 apply_loras: {e}"))?;
-        Ok(applied)
+        match self.mmdit_model.as_ref() {
+            Some(m) => Ok(m
+                .apply_loras(specs, self.dtype, &self.device)
+                .map_err(|e| anyhow!("SD3 apply_loras: {e}"))?),
+            None => {
+                // Low-mem: the MMDiT loads lazily per denoise, so runtime LoRAs aren't applied here
+                // yet (they'd need re-application after each reload). Disable low-mem
+                // (PLAKAT_SD3_LOWMEM=0) on a machine with the RAM to run SD3.5 LoRAs.
+                crate::ui::progress::println(
+                    "SD3 low-mem: runtime LoRAs skipped (MMDiT loads per-denoise; set PLAKAT_SD3_LOWMEM=0 to use LoRAs)",
+                );
+                Ok(0)
+            }
+        }
     }
 
     /// v0.16 phase 2: clear every runtime LoRA on the MMDiT.
     pub fn clear_all_loras(&self) -> Result<()> {
-        self.mmdit_model
-            .clear_all_loras()
-            .map_err(|e| anyhow!("SD3 clear_all_loras: {e}"))?;
+        if let Some(m) = self.mmdit_model.as_ref() {
+            m.clear_all_loras()
+                .map_err(|e| anyhow!("SD3 clear_all_loras: {e}"))?;
+        }
         Ok(())
     }
 
@@ -956,6 +1040,10 @@ impl Pipeline {
         if region_base_mask.is_some() && req.tiled.is_some() {
             bail!("regions don't compose with tiled hi-res on SD3.5 — use one or the other");
         }
+
+        // Low-mem: all prompt encoding is done → free T5-XXL and materialise the MMDiT for the
+        // denoise. Eager mode: a no-op (both stay resident).
+        self.ensure_mmdit()?;
 
         let time_shift = self.variant.default_time_shift();
 
@@ -1382,7 +1470,7 @@ impl Pipeline {
         let residuals = summed_residuals.as_deref();
 
         let pred_doubled = self
-            .mmdit_model
+            .mmdit()
             .forward_with_residuals(&x_doubled, &t_vec, cfg_y, cfg_ctx, None, residuals)?;
         let pred_neg = pred_doubled.i(0..1)?;
         let pred_pos = pred_doubled.i(1..2)?;
@@ -1405,7 +1493,7 @@ impl Pipeline {
             let y_pos = cfg_y.i(1..2)?;
             let ctx_pos = cfg_ctx.i(1..2)?;
             let pred_pos_pert =
-                self.mmdit_model
+                self.mmdit()
                     .forward_pag(x, &t_single, &y_pos, &ctx_pos, None, true)?;
             Ok((cfg_guided + ((&pred_pos - &pred_pos_pert)? * pag_scale)?)?)
         } else {
@@ -1699,6 +1787,7 @@ impl Pipeline {
         prompt: &str,
         wanted: &std::collections::HashSet<String>,
     ) -> Result<std::collections::HashMap<String, Tensor>> {
+        self.ensure_t5()?;
         let mut out = std::collections::HashMap::new();
         if wanted.contains("pooled_y") {
             let (pooled_y, _joint_context) = self.encode_prompt(prompt)?;
@@ -1719,7 +1808,7 @@ impl Pipeline {
             ids.resize(t5_seq, 0);
             let ids_t = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
             let mask = ids_t.ne(0u32)?.to_dtype(candle_core::DType::F32)?;
-            let hidden = self.t5_enc.forward_with_mask(&ids_t, &mask)?.to_dtype(candle_core::DType::F32)?;
+            let hidden = self.t5_enc.as_ref().unwrap().forward_with_mask(&ids_t, &mask)?.to_dtype(candle_core::DType::F32)?;
             out.insert("t5.hidden".to_string(), hidden);
         }
         // MMDiT joint-block-0 tap: run the embed prologue + joint_blocks[0] on a shared
@@ -1737,13 +1826,15 @@ impl Pipeline {
                 &[1, CONTEXT_SEQ, cfg.context_embed_size], 2, &self.device, self.dtype,
             )?;
             let t = Tensor::full(500.0f32, (1usize,), &self.device)?.to_dtype(self.dtype)?;
-            let b0 = self.mmdit_model.capture_block0(&latent, &t, &y, &context)?;
+            self.ensure_mmdit()?;
+            let b0 = self.mmdit().capture_block0(&latent, &t, &y, &context)?;
             out.insert("mmdit.block0".to_string(), b0);
         }
         Ok(out)
     }
 
     fn encode_prompt(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        self.ensure_t5()?; // low-mem: materialise T5 (freeing the MMDiT) before encoding
         // v1.10.0: when any Textual Inversion is loaded, take the splice path
         // (it registers + locates the trigger token and overrides its embedding
         // row in each encoder). Gated so the verified path below is untouched
@@ -1898,7 +1989,7 @@ impl Pipeline {
         // (ids != 0): 1 for real tokens incl. EOS, 0 for pad. Without it the caption drifts
         // (corr ~0.7 vs correct) — the same bug fixed for PixArt.
         let t5_mask = t5_ids_t.ne(0u32)?.to_dtype(candle_core::DType::F32)?;
-        let mut t5_hidden = self.t5_enc.forward_with_mask(&t5_ids_t, &t5_mask)?.to_dtype(self.dtype)?;
+        let mut t5_hidden = self.t5_enc.as_ref().unwrap().forward_with_mask(&t5_ids_t, &t5_mask)?.to_dtype(self.dtype)?;
         if let Some(w) = &t5_weights {
             t5_hidden = t5_hidden.broadcast_mul(&w.to_dtype(self.dtype)?)?;
         }
@@ -1953,6 +2044,7 @@ impl Pipeline {
     /// the encoder stack runs. (A1111 attention weighting isn't combined with
     /// TI here — a niche overlap; the plain tokenization is used.)
     fn encode_prompt_ti(&mut self, prompt: &str) -> Result<(Tensor, Tensor)> {
+        self.ensure_t5()?;
         let dtype = self.dtype;
 
         // ---- CLIP-L (pooled at EOT + penultimate) ----
@@ -1996,7 +2088,7 @@ impl Pipeline {
         t_ids.truncate(t5_seq);
         t_ids.resize(t5_seq, 0);
         let t5_embeds = self.ti_embeds_t5(&t_ids)?;
-        let t5_hidden = self.t5_enc.forward_from_input_embeds(&t5_embeds)?.to_dtype(dtype)?;
+        let t5_hidden = self.t5_enc.as_ref().unwrap().forward_from_input_embeds(&t5_embeds)?.to_dtype(dtype)?;
 
         // ---- assemble (identical layout to encode_prompt) ----
         let y = Tensor::cat(&[&l_pooled, &g_pooled], candle_core::D::Minus1)?;
@@ -2061,7 +2153,7 @@ impl Pipeline {
             .map(|&id| if self.tis.iter().any(|t| t.id_t5 == id) { 0 } else { id })
             .collect();
         let ids_t = Tensor::new(clamped.as_slice(), &self.device)?.unsqueeze(0)?;
-        let mut embeds = self.t5_enc.embed_tokens(&ids_t)?;
+        let mut embeds = self.t5_enc.as_ref().unwrap().embed_tokens(&ids_t)?;
         for (pos, &id) in ids.iter().enumerate() {
             if let Some(ti) = self.tis.iter().find(|t| t.id_t5 == id) {
                 let row = ti.t5.affine(ti.scale as f64, 0.0)?
@@ -2571,7 +2663,7 @@ pub async fn train_textual_inversion(
         &pipe.clip_g.embed_tokens(&ids_g)?.i((0, slot_g))?.to_dtype(DType::F32)?.unsqueeze(0)?,
     )?;
     let ph_t5 = Var::from_tensor(
-        &pipe.t5_enc.embed_tokens(&ids_t5)?.i((0, slot_t5))?.to_dtype(DType::F32)?.unsqueeze(0)?,
+        &pipe.t5_enc.as_ref().unwrap().embed_tokens(&ids_t5)?.i((0, slot_t5))?.to_dtype(DType::F32)?.unsqueeze(0)?,
     )?;
 
     let (mask_l, inv_l) = slot_masks(slot_l, l_max, &device, dtype)?;
@@ -2606,8 +2698,8 @@ pub async fn train_textual_inversion(
         let g_penult = g_penult.to_dtype(dtype)?;
         let g_pooled = g_pooled.to_dtype(dtype)?;
 
-        let spliced_t5 = splice(&pipe.t5_enc.embed_tokens(&ids_t5)?, &ph_t5, &mask_t5, &inv_t5, dtype)?;
-        let t5_hidden = pipe.t5_enc.forward_from_input_embeds(&spliced_t5)?.to_dtype(dtype)?;
+        let spliced_t5 = splice(&pipe.t5_enc.as_ref().unwrap().embed_tokens(&ids_t5)?, &ph_t5, &mask_t5, &inv_t5, dtype)?;
+        let t5_hidden = pipe.t5_enc.as_ref().unwrap().forward_from_input_embeds(&spliced_t5)?.to_dtype(dtype)?;
 
         // y = [CLIP-L pooled, CLIP-G pooled] (768+1280=2048) — the SD3 order.
         let y = Tensor::cat(&[&l_pooled, &g_pooled], candle_core::D::Minus1)?;
@@ -2626,7 +2718,7 @@ pub async fn train_textual_inversion(
         let x_t = ((x0 * (1.0 - sigma))? + (&noise * sigma)?)?;
         let target = (&noise - x0)?;
         let t_vec = Tensor::full((sigma * 1000.0) as f32, (1usize,), &device)?;
-        let pred = pipe.mmdit_model.forward(&x_t, &t_vec, &y, &context, None)?;
+        let pred = pipe.mmdit().forward(&x_t, &t_vec, &y, &context, None)?;
         let loss = (&pred - &target)?.sqr()?.mean_all()?.to_dtype(DType::F32)?;
         let grads = loss.backward()?;
         opt.step(&grads)?;
