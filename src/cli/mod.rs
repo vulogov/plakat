@@ -36,6 +36,8 @@ pub mod transparent;
 pub mod upscale;
 pub mod rank;
 pub mod restore_faces;
+#[cfg(feature = "photos")]
+pub mod photos;
 
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
@@ -149,6 +151,10 @@ pub enum Command {
     #[cfg(feature = "ui")]
     #[command(name = "ui")]
     Ui(crate::ui::tui::UiArgs),
+    /// TUI photo & image collection manager (RFC PHOTOS-1): browse → curate → edit → generate over
+    /// an image library. The 3.x flagship. Needs a graphics-capable terminal.
+    #[cfg(feature = "photos")]
+    Photos(photos::PhotosArgs),
     /// Art-style detection from a reference photo.
     #[command(subcommand_value_name = "OP")]
     Style(style::StyleArgs),
@@ -305,6 +311,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]
         Command::Ui(args) => crate::ui::tui::run(args),
+        #[cfg(feature = "photos")]
+        Command::Photos(args) => photos::run(args).await,
         Command::Style(args) => {
             let device = crate::device::select(&cli.device)?;
             style::run(args, device).await

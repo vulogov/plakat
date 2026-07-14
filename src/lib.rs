@@ -54,6 +54,9 @@ pub mod memwatch;
 pub mod llm;
 #[doc(hidden)]
 pub mod pipelines;
+/// v3.0 flagship: `plakat photos` TUI collection manager (RFC PHOTOS-1). Behind `--features photos`.
+#[cfg(feature = "photos")]
+pub mod photos;
 #[doc(hidden)]
 pub mod preset;
 #[doc(hidden)]
