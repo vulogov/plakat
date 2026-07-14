@@ -35,6 +35,7 @@ pub mod stylize;
 pub mod transparent;
 pub mod upscale;
 pub mod rank;
+pub mod restore_faces;
 
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
@@ -99,6 +100,9 @@ pub enum Command {
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
     /// best first. Feeds `generate --keep-best` and the collection manager's curation.
     Rank(rank::RankArgs),
+    /// Restore degraded faces in existing images (SCRFD-detect → diffusion-refine → composite).
+    /// The standalone form of `generate --adetailer`; pairs with `upscale --diffusion`.
+    RestoreFaces(restore_faces::RestoreFacesArgs),
     /// Batch-generate images from an HJSON scenario file.
     Scenario(scenario::ScenarioArgs),
     /// Compose a layered scene from an HJSON file: stack image layers
@@ -221,6 +225,7 @@ impl Command {
                 | Command::Segment(_)
                 | Command::Upscale(_)
                 | Command::Rank(_)
+                | Command::RestoreFaces(_)
                 | Command::Scenario(_)
                 | Command::Compose(_)
                 | Command::Animate(_)
@@ -279,6 +284,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Rank(args) => {
             let device = crate::device::select(&cli.device)?;
             rank::run(args, device).await
+        }
+        Command::RestoreFaces(args) => {
+            let device = crate::device::select(&cli.device)?;
+            restore_faces::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
