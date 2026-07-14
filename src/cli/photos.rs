@@ -40,5 +40,5 @@ fn resolve_root(arg: Option<PathBuf>) -> Result<PathBuf> {
 
 pub async fn run(args: PhotosArgs) -> Result<()> {
     let root = resolve_root(args.root)?;
-    crate::photos::run(root).await
+    crate::photos::run_with(root, args.thumb_size).await
 }
