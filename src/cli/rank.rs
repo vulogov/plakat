@@ -21,6 +21,11 @@ pub struct RankArgs {
     /// Emit JSON (`[{"path":…,"score":…}]`) instead of the aligned table.
     #[arg(long, default_value_t = false)]
     pub json: bool,
+
+    /// Also write each score into the image's `.json` metadata sidecar (the collection manager's
+    /// sort key). No-op for images without a sidecar.
+    #[arg(long, default_value_t = false)]
+    pub write: bool,
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp"];
@@ -70,6 +75,15 @@ pub async fn run(args: RankArgs, device: Device) -> Result<()> {
     }
     // Descending by score (best first).
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Persist scores into sidecars before truncating (so every scored image is recorded, not just
+    // the printed top-N).
+    if args.write {
+        for (p, s) in &scored {
+            let _ = crate::imaging::io::patch_sidecar_score(p, *s as f64);
+        }
+    }
+
     if let Some(n) = args.top {
         scored.truncate(n);
     }
