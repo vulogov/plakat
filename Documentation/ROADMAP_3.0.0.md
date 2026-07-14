@@ -28,8 +28,13 @@ index" to build; it's the HJSON model itself.
   - [x] `photos/watcher.rs` — notify watcher + 500 ms debounced rescan.
   - [x] `photos/mod.rs` — three-pane shell, Tree pane (nav/collapse) + Album grid (lazy thumbnails,
         StatefulProtocol, [/] columns), Tree↔Album focus, event loop + tick.
-  - [ ] Tree mutations (n/a/R/D via command pane) + grid selection model (Space/Ctrl-A/D/I) — remaining.
-- [ ] **Phase 2 — Image view + curation** (rating/flag/reject/label/notes, culling, filter, smart albums).
+  - [x] Tree mutations (n/a/R/D via command pane, pending-action model) + grid selection model
+        (Space/Ctrl-A/D/I). **Phase 1 COMPLETE.**
+- [~] **Phase 2 — Image view + curation** (the 3.0.0 release gate).
+  - [x] Image view (Enter → full-pane render, ←/→, Esc) + EXIF overlay (`i`, cached kamadak read).
+  - [x] Curation: 1–5/0 rating, `f` flag, `x` reject, `c` color-label → album.hjson; grid badges.
+  - [ ] Remaining: culling mode (`Ctrl-b c`), filter bar + sort (`Ctrl-b f`), smart albums (`Ctrl-b F`),
+        notes/caption editing.
 - [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).
