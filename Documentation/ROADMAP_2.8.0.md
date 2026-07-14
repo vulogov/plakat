@@ -23,8 +23,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [?] **Face/detail restoration (GFPGAN or CodeFormer)** — SCRFD detect + ArcFace align (both present)
       → restore → paste back. Pairs with `upscale --diffusion` + `multiperson`. High effort (GAN/VQ
       port + weights). **or**
-- [?] **sd35 T5-XXL memory relief** — offload/CPU-encode T5 then free before the MMDiT denoise so SD3.5
-      fits on 24 GB. Unblocks a whole model family (and lets SD3 PAG finally calibrate). Medium-high.
+- [x] **sd35 T5-XXL memory relief** (0213e31) — DONE. Low-mem mode: T5-XXL and the MMDiT are lazy +
+      droppable and never co-resident (T5 encodes → freed → MMDiT loads → denoises), dropping peak from
+      sum to max (~17→12 GB). `PLAKAT_SD3_LOWMEM` (auto on Metal when RAM < 22 GB). **Validated**:
+      sd35-medium generated a clean detailed fox @512 on Metal — where every attempt OOM'd all the 2.6
+      cycle. Unblocks SD3.5 on 24 GB **and** SD3-PAG calibration. Limitation: runtime LoRAs skip in
+      low-mem (warns).
 
 ## Road to 3.0 — first real manager plumbing
 
