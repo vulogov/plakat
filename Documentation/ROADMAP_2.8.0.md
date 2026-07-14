@@ -9,20 +9,24 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Carried from 2.7 — close the loops
 
-- [ ] **Aesthetic score → gen PNG metadata** (small; the persistent manager sort key). Write the score
-      into the generation `.json` sidecar at gen time — but only when scoring already happens
-      (`--keep-best` / a new `--score` flag), so it never loads the scorer on every generate.
-- [ ] **Scenario remainder:** `keep-best` (scenario-global post-process pruning each task's outputs
-      by aesthetic score) + **diffusion-upscale as a task kind** (`upscale --diffusion` isn't a scenario
-      `type:` yet) + per-task guidance-bundle overrides (currently scenario-global only).
+- [x] **Aesthetic score → gen PNG metadata** (6673030). `generate --score` (+ `--keep-best`) scores
+      each output and writes it into the `.json` sidecar via `io::patch_sidecar_score`; `rank --write`
+      (4a07cf5) does the same for existing folders. Optional `score` field on GenerationMetadata
+      (additive). Never loads the scorer unless a flag is set. The manager's on-disk sort key.
+- [ ] **Scenario remainder:** `keep-best` (needs per-task integration across the scattered generate-
+      dispatch arms — a whole-scenario keep-best would delete whole tasks' outputs; deferred, not a
+      quick win) + **diffusion-upscale as a task kind** + per-task guidance overrides.
 - [ ] **`plakat ui` remainder:** the diffusion upscaler + `rank`/`--keep-best` as UI actions; surface
       the older subsystems the TUI never got (map, compose/segment, relight, style/embedding train).
 
 ## Tier 2 — pick one (still open from 2.7)
 
-- [?] **Face/detail restoration (GFPGAN or CodeFormer)** — SCRFD detect + ArcFace align (both present)
-      → restore → paste back. Pairs with `upscale --diffusion` + `multiperson`. High effort (GAN/VQ
-      port + weights). **or**
+- [x] **Face/detail restoration** (1c89c09) — `plakat restore-faces`. Delivered via the diffusion
+      approach (the existing ADetailer engine: SCRFD-detect → img2img-refine each face → feather-
+      composite) as a STANDALONE command for existing images, instead of a GFPGAN/CodeFormer GAN port
+      — reuses `refine_files`, pairs with `upscale --diffusion`. Validated: refined a portrait's face
+      cleanly, seamless composite. (A dedicated GAN restorer stays available as future work if a
+      non-diffusion path is wanted.)
 - [x] **sd35 T5-XXL memory relief** (0213e31) — DONE. Low-mem mode: T5-XXL and the MMDiT are lazy +
       droppable and never co-resident (T5 encodes → freed → MMDiT loads → denoises), dropping peak from
       sum to max (~17→12 GB). `PLAKAT_SD3_LOWMEM` (auto on Metal when RAM < 22 GB). **Validated**:
